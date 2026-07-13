@@ -24,9 +24,8 @@ use koushi_core::{
     IntentOutcome, MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand, RoomEvent,
     RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand, SearchEvent, SearchScope,
     SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SetAvatarRequest, SyncCommand,
-    TimelineCommand, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineKey,
-    TimelineKind, TimelineViewportObservation, UploadMediaKind, UploadMediaRequest,
-    UploadMediaThumbnail,
+    TimelineCommand, TimelineEvent, TimelineGeneration, TimelineKey, TimelineKind,
+    TimelineViewportObservation, UploadMediaKind, UploadMediaRequest, UploadMediaThumbnail,
 };
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_state::{
@@ -538,91 +537,6 @@ async fn wait_for_focused_context(
             Err(_) => continue,
         }
     }
-}
-
-async fn wait_for_focused_timeline_event(
-    event_conn: &mut CoreConnection,
-    request_id: RequestId,
-    room_id: &str,
-    event_id: &str,
-    timeout: std::time::Duration,
-) -> Result<(), String> {
-    let deadline = tokio::time::Instant::now() + timeout;
-
-    loop {
-        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
-            .await
-            .map_err(|_| "focused timeline did not emit target event".to_owned())?;
-        match event {
-            Ok(CoreEvent::Timeline(event))
-                if timeline_event_contains_focused_event(&event, room_id, event_id) =>
-            {
-                return Ok(());
-            }
-            Ok(CoreEvent::OperationFailed {
-                request_id: failed_request_id,
-                failure,
-            }) if failed_request_id == request_id => {
-                return Err(invoke_error_from_core_failure(
-                    "focused timeline open failed",
-                    failure,
-                ));
-            }
-            Ok(_) => {}
-            Err(_) => continue,
-        }
-    }
-}
-
-fn timeline_event_contains_focused_event(
-    event: &TimelineEvent,
-    room_id: &str,
-    event_id: &str,
-) -> bool {
-    match event {
-        TimelineEvent::InitialItems { key, items, .. }
-            if timeline_key_matches_focused_event(key, room_id, event_id) =>
-        {
-            items
-                .iter()
-                .any(|item| timeline_item_matches_event_id(item, event_id))
-        }
-        TimelineEvent::ItemsUpdated { key, diffs, .. }
-            if timeline_key_matches_focused_event(key, room_id, event_id) =>
-        {
-            diffs
-                .iter()
-                .any(|diff| timeline_diff_contains_event_id(diff, event_id))
-        }
-        _ => false,
-    }
-}
-
-fn timeline_key_matches_focused_event(key: &TimelineKey, room_id: &str, event_id: &str) -> bool {
-    matches!(
-        &key.kind,
-        TimelineKind::Focused {
-            room_id: focused_room_id,
-            event_id: focused_event_id,
-        } if focused_room_id == room_id && focused_event_id == event_id
-    )
-}
-
-fn timeline_diff_contains_event_id(diff: &TimelineDiff, event_id: &str) -> bool {
-    match diff {
-        TimelineDiff::PushFront { item }
-        | TimelineDiff::PushBack { item }
-        | TimelineDiff::Insert { item, .. }
-        | TimelineDiff::Set { item, .. } => timeline_item_matches_event_id(item, event_id),
-        TimelineDiff::Reset { items } => items
-            .iter()
-            .any(|item| timeline_item_matches_event_id(item, event_id)),
-        TimelineDiff::Remove { .. } | TimelineDiff::Truncate { .. } | TimelineDiff::Clear => false,
-    }
-}
-
-fn timeline_item_matches_event_id(item: &TimelineItem, event_id: &str) -> bool {
-    matches!(&item.id, TimelineItemId::Event { event_id: item_event_id } if item_event_id == event_id)
 }
 
 async fn wait_for_main_timeline_anchor(
@@ -6439,25 +6353,27 @@ mod tests {
     fn select_search_result_selects_room_then_enters_anchored_timeline_without_room_resubscribe() {
         let source = commands_source();
         let fn_name = "pub async fn select_search_result";
-        let select_token = "select_search_result";
+        let helper_name = "async fn open_anchored_timeline";
         let close_token = "CloseFocusedContext";
-        let open_token = "OpenFocusedContext";
-        let anchor_token = "EnterAnchoredTimeline";
+        let open_token = "OpenAnchoredTimeline";
         let select_room_token = concat!("build_select", "_room_command");
         let subscribe_room_token = "build_subscribe_timeline_command";
 
         let fn_offset = source
             .find(fn_name)
             .expect("select_search_result command should exist");
-        let rest = &source[fn_offset..];
-        let end = rest
-            .find("pub async fn close_focused_context")
-            .expect("next command should exist");
-        let select_source = &rest[..end];
+        let helper_offset = source
+            .find(helper_name)
+            .expect("shared helper should exist");
+        let helper_rest = &source[helper_offset..];
+        let end = helper_rest
+            .find("pub async fn acknowledge_timeline_projection")
+            .expect("ack command should follow helper");
+        let select_source = &helper_rest[..end];
 
         assert!(
-            select_source.contains(select_token),
-            "select_search_result should name the command path"
+            source[fn_offset..helper_offset].contains("open_anchored_timeline"),
+            "select_search_result should use the shared anchored navigation path"
         );
         assert!(
             select_source.contains(close_token),
@@ -6467,10 +6383,8 @@ mod tests {
             select_source.contains(open_token),
             "select_search_result should subscribe the focused event timeline"
         );
-        assert!(
-            select_source.contains(anchor_token),
-            "select_search_result should route the selected result into the main anchored timeline"
-        );
+        assert!(!select_source.contains("EnterAnchoredTimeline"));
+        assert!(!select_source.contains("wait_for_focused_timeline_event"));
         assert!(
             select_source.contains(select_room_token),
             "select_search_result should select the room before opening the focused context"
@@ -6498,8 +6412,8 @@ mod tests {
             .find(open_token)
             .expect("search result command should open focused context");
         let anchor_offset = select_source
-            .find(anchor_token)
-            .expect("search result command should enter anchored timeline");
+            .find("wait_for_main_timeline_anchor")
+            .expect("search result command should wait for the acknowledged anchor");
         assert!(
             select_offset < wait_offset && wait_offset < open_offset && open_offset < anchor_offset,
             "focused event timeline should open and become the main anchored timeline only after the selected room state is observed"
@@ -6566,17 +6480,16 @@ mod tests {
     #[test]
     fn open_activity_event_opens_anchored_main_timeline_without_room_resubscribe() {
         let source = commands_source();
-        let fn_name = "pub async fn open_activity_event";
-        let open_token = "OpenFocusedContext";
-        let anchor_token = "EnterAnchoredTimeline";
+        let fn_name = "async fn open_anchored_timeline";
+        let open_token = "OpenAnchoredTimeline";
 
         let fn_offset = source
             .find(fn_name)
             .expect("open_activity_event command should exist");
         let rest = &source[fn_offset..];
         let end = rest
-            .find("pub async fn select_search_result")
-            .expect("select_search_result command should follow open_activity_event");
+            .find("pub async fn acknowledge_timeline_projection")
+            .expect("projection acknowledgement command should follow the shared helper");
         let command_source = &rest[..end];
 
         assert!(
@@ -6591,18 +6504,8 @@ mod tests {
             command_source.contains(open_token),
             "activity event navigation should subscribe the focused event timeline"
         );
-        assert!(
-            command_source.contains(anchor_token),
-            "activity event navigation should route the activity event into the main anchored timeline"
-        );
-        assert!(
-            command_source.contains("wait_for_focused_context"),
-            "activity event navigation should wait for the focused event timeline"
-        );
-        assert!(
-            command_source.contains("wait_for_focused_timeline_event"),
-            "activity event navigation should wait for the focused timeline item before anchoring"
-        );
+        assert!(!command_source.contains("EnterAnchoredTimeline"));
+        assert!(!command_source.contains("wait_for_focused_timeline_event"));
         assert!(
             command_source.contains("wait_for_main_timeline_anchor"),
             "activity event navigation should wait for the main anchored timeline"
@@ -6616,17 +6519,16 @@ mod tests {
     #[test]
     fn open_activity_event_waits_before_opening_anchored_event_timeline() {
         let source = commands_source();
-        let fn_name = "pub async fn open_activity_event";
-        let open_token = "OpenFocusedContext";
-        let anchor_token = "EnterAnchoredTimeline";
+        let fn_name = "async fn open_anchored_timeline";
+        let open_token = "OpenAnchoredTimeline";
 
         let fn_offset = source
             .find(fn_name)
             .expect("open_activity_event command should exist");
         let rest = &source[fn_offset..];
         let end = rest
-            .find("pub async fn select_search_result")
-            .expect("select_search_result command should follow open_activity_event");
+            .find("pub async fn acknowledge_timeline_projection")
+            .expect("projection acknowledgement command should follow the shared helper");
         let command_source = &rest[..end];
 
         let close_offset = command_source
@@ -6646,27 +6548,18 @@ mod tests {
         let open_offset = command_source
             .find(open_token)
             .expect("activity event navigation should open the focused event timeline");
-        let wait_open_offset = command_source[open_offset..]
-            .find("wait_for_focused_context(")
+        let wait_anchor_offset = command_source[open_offset..]
+            .find("wait_for_main_timeline_anchor")
             .map(|offset| open_offset + offset)
-            .expect("activity event navigation should wait for focused event timeline state");
-        let wait_item_offset = command_source[wait_open_offset..]
-            .find("wait_for_focused_timeline_event")
-            .map(|offset| wait_open_offset + offset)
-            .expect("activity event navigation should wait for the focused timeline item");
-        let anchor_offset = command_source
-            .find(anchor_token)
-            .expect("activity event navigation should enter the main anchored timeline");
+            .expect("activity navigation should wait for the acknowledged Core anchor");
 
         assert!(
             close_offset < wait_close_offset
                 && wait_close_offset < select_offset
                 && select_offset < wait_select_offset
                 && wait_select_offset < open_offset
-                && open_offset < wait_open_offset
-                && wait_open_offset < wait_item_offset
-                && wait_item_offset < anchor_offset,
-            "activity event navigation must clear the previous anchor, select the room, open the focused event timeline, observe the target item, then enter the main anchored timeline"
+                && open_offset < wait_anchor_offset,
+            "activity event navigation must clear the previous owner, select the room, start one Core-owned focused navigation, then wait for its acknowledged anchor"
         );
     }
 

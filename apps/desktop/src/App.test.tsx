@@ -1528,26 +1528,6 @@ describe("Tauri state refresh wiring", () => {
     expect(activityRenderSource).not.toContain("selectSearchResult(row.room_id, row.event_id)");
   });
 
-  test("activity event command opens an anchored main timeline", () => {
-    const source = readFileSync(
-      new URL("../src-tauri/src/commands/navigation.rs", import.meta.url),
-      "utf8"
-    );
-    const openActivityStart = source.indexOf("pub async fn open_activity_event");
-    const openActivityEnd = source.indexOf("#[tauri::command]", openActivityStart + 1);
-    const openActivitySource = source.slice(openActivityStart, openActivityEnd);
-    const openFocusedContextIndex = openActivitySource.indexOf("AppCommand::OpenFocusedContext");
-    const enterAnchoredTimelineIndex = openActivitySource.indexOf("AppCommand::EnterAnchoredTimeline");
-
-    expect(openActivityStart).toBeGreaterThanOrEqual(0);
-    expect(openActivitySource).toContain("wait_for_focused_context");
-    expect(openActivitySource).toContain("wait_for_focused_timeline_event");
-    expect(openActivitySource).toContain("wait_for_main_timeline_anchor");
-    expect(openFocusedContextIndex).toBeGreaterThanOrEqual(0);
-    expect(enterAnchoredTimelineIndex).toBeGreaterThan(openFocusedContextIndex);
-    expect(openActivitySource).not.toContain("build_update_navigation_scroll_anchor_command");
-  });
-
   test("home rail button resets Home to Activity Recent instead of restoring the saved Home pane", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     const sidebarRenderStart = source.indexOf("<Sidebar");

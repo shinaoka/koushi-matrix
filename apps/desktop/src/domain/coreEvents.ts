@@ -324,6 +324,8 @@ export type TimelineEvent =
       InitialItems: {
         request_id: RequestId | null;
         key: TimelineKey;
+        /** Monotonic owner generation; distinct from relay generation. */
+        actor_generation?: number;
         /** TimelineGeneration newtype → number. */
         generation: number;
         items: TimelineItem[];

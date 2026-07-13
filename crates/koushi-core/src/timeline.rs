@@ -50,7 +50,10 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel};
@@ -156,6 +159,12 @@ const RESTORE_ANCHOR_RELAY_WAIT_TICK_MS: u64 = 50;
 /// Messages routed to the `TimelineManagerActor`.
 pub enum TimelineMessage {
     Command(TimelineCommand),
+    AcknowledgeProjection {
+        projection_request_id: RequestId,
+        key: TimelineKey,
+        generation: TimelineGeneration,
+        response: oneshot::Sender<bool>,
+    },
     /// Sync started: carries the live `RoomListService` on the SyncService
     /// backend (None on LegacySync). Subscribing a timeline must also
     /// subscribe its room with the live service so the server streams that
@@ -301,8 +310,12 @@ struct ReplayKnownThreadRootProjectionUpdate {
 #[derive(Default)]
 struct TimelineActorGenerationGateState {
     entries: HashMap<TimelineKey, TimelineActorGenerationGateEntry>,
-    next_generation: u64,
 }
+
+/// Process-global owner epoch. TimelineManagerActor may be recreated during
+/// sync/account lifecycle repair while the WebView canonical store survives;
+/// therefore per-manager counters are not a valid replacement fence.
+static NEXT_TIMELINE_ACTOR_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 struct TimelineActorGenerationGateEntry {
     generation: u64,
@@ -523,10 +536,36 @@ impl Drop for TimelineActorGenerationLease {
     }
 }
 
-fn next_timeline_actor_generation(state: &mut TimelineActorGenerationGateState) -> u64 {
-    let generation = state.next_generation.max(1);
-    state.next_generation = generation.wrapping_add(1).max(1);
-    generation
+fn next_timeline_actor_generation(_state: &mut TimelineActorGenerationGateState) -> u64 {
+    NEXT_TIMELINE_ACTOR_GENERATION.fetch_add(1, Ordering::Relaxed)
+}
+
+fn accept_projection_ack_for_active_actor(
+    timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
+    key: &TimelineKey,
+    actor_generation: u64,
+    expected_projection_request_id: RequestId,
+    expected_generation: TimelineGeneration,
+    projection_request_id: RequestId,
+    generation: TimelineGeneration,
+    projection_acknowledged: &mut bool,
+) -> bool {
+    if projection_request_id != expected_projection_request_id || generation != expected_generation
+    {
+        return false;
+    }
+    let Some(_lease) = timeline_actor_generations.try_acquire(key, actor_generation) else {
+        return false;
+    };
+    *projection_acknowledged = true;
+    true
+}
+
+fn replay_projection_request_id(
+    projection_request_id: RequestId,
+    projection_acknowledged: bool,
+) -> Option<RequestId> {
+    (!projection_acknowledged).then_some(projection_request_id)
 }
 
 /// The only emission gateway for TimelineActor-owned Core timeline events.
@@ -753,6 +792,7 @@ where
         vec![TimelineEvent::InitialItems {
             request_id,
             key: key.clone(),
+            actor_generation,
             generation,
             items,
         }],
@@ -1204,6 +1244,17 @@ impl TimelineManagerActor {
                 }
                 TimelineMessage::Command(command) => {
                     self.handle_command(command).await;
+                }
+                TimelineMessage::AcknowledgeProjection {
+                    projection_request_id,
+                    key,
+                    generation,
+                    response,
+                } => {
+                    let accepted = self
+                        .acknowledge_projection(projection_request_id, &key, generation)
+                        .await;
+                    let _ = response.send(accepted);
                 }
             }
         }
@@ -2139,6 +2190,29 @@ impl TimelineManagerActor {
         }
     }
 
+    async fn acknowledge_projection(
+        &self,
+        projection_request_id: RequestId,
+        key: &TimelineKey,
+        generation: TimelineGeneration,
+    ) -> bool {
+        let Some(handle) = self.timelines.get(key) else {
+            return false;
+        };
+        let (response, accepted) = oneshot::channel();
+        if !handle
+            .send(TimelineActorMessage::AcknowledgeProjection {
+                projection_request_id,
+                generation,
+                response,
+            })
+            .await
+        {
+            return false;
+        }
+        accepted.await.unwrap_or(false)
+    }
+
     async fn handle_subscribe(
         &mut self,
         request_id: RequestId,
@@ -2853,6 +2927,11 @@ enum TimelineActorMessage {
     /// InitialItems batch.
     ReplayInitialItems {
         request_id: RequestId,
+    },
+    AcknowledgeProjection {
+        projection_request_id: RequestId,
+        generation: TimelineGeneration,
+        response: oneshot::Sender<bool>,
     },
 }
 
@@ -4910,6 +4989,10 @@ struct TimelineActor {
     relay_restart_backoff: RelayRestartBackoff,
     relay_restart_task: Option<executor::JoinHandle<()>>,
     generation: TimelineGeneration,
+    /// Stable identity of the actor-owned InitialItems projection. Replays
+    /// preserve this id so a remounted consumer acknowledges the same owner.
+    projection_request_id: RequestId,
+    projection_acknowledged: bool,
     next_batch_id: TimelineBatchId,
     /// Correlates send queue completions across the enqueue / SentEvent race.
     send_completion: SendCompletionTracker,
@@ -5208,13 +5291,12 @@ impl TimelineActor {
 
         // Emit InitialItems (generation 0).
         let generation = TimelineGeneration(0);
-        record_subscribe_stage("initial_emitted", Some(initial_items.len()));
         let replay_known_candidates = replay_known_candidates_for_display_items(
             &key,
             &navigation_items,
             &replay_known_display_items,
         );
-        let _ = emit_initial_items_and_reconcile_replay_known_for_generation(
+        let initial_emitted = emit_initial_items_and_reconcile_replay_known_for_generation(
             &event_tx,
             &replay_known_thread_root_projections,
             &thread_root_projection_service,
@@ -5225,6 +5307,14 @@ impl TimelineActor {
             generation,
             initial_items.clone(),
             replay_known_candidates,
+        );
+        record_subscribe_stage(
+            if initial_emitted {
+                "initial_emitted"
+            } else {
+                "initial_rejected_stale_generation"
+            },
+            Some(initial_items.len()),
         );
         if !initial_activity_rows.is_empty() {
             let _ = action_tx.try_send(vec![AppAction::ActivityRowsObserved {
@@ -5309,6 +5399,8 @@ impl TimelineActor {
             ),
             relay_restart_task: None,
             generation,
+            projection_request_id: subscribe_request_id,
+            projection_acknowledged: false,
             next_batch_id: TimelineBatchId(0),
             send_completion: SendCompletionTracker::default(),
             send_statuses,
@@ -5690,6 +5782,14 @@ impl TimelineActor {
             }
             TimelineActorMessage::ReplayInitialItems { request_id } => {
                 self.handle_replay_initial_items(request_id);
+            }
+            TimelineActorMessage::AcknowledgeProjection {
+                projection_request_id,
+                generation,
+                response,
+            } => {
+                let accepted = self.acknowledge_projection(projection_request_id, generation);
+                let _ = response.send(accepted);
             }
         }
         if self.hydrate_after_restore_flush && self.restore_anchor.is_none() {
@@ -7691,14 +7791,14 @@ impl TimelineActor {
     /// idempotency fast path).  The generation is unchanged; the caller only
     /// needs a fresh InitialItems batch so a re-mounted TimelineView is
     /// populated.
-    fn handle_replay_initial_items(&mut self, request_id: RequestId) {
+    fn handle_replay_initial_items(&mut self, _request_id: RequestId) {
         self.thread_attention_counts = ThreadAttentionCounters::default();
         let items = replay_initial_items_window(
             &self.key.kind,
             &self.navigation_items,
             &self.viewport_observation,
         );
-        record_subscribe_stage("replay_initial_emitted", Some(items.len()));
+        let item_count = items.len();
         trace_timeline_items("replay_initial", &self.key, &items);
         self.replay_known_display_items = normalize_display_timeline_items(&items);
         let replay_known_candidates = replay_known_candidates_for_display_items(
@@ -7706,18 +7806,43 @@ impl TimelineActor {
             &self.navigation_items,
             &self.replay_known_display_items,
         );
-        let _ = emit_initial_items_and_reconcile_replay_known_for_generation(
+        let emitted = emit_initial_items_and_reconcile_replay_known_for_generation(
             &self.event_tx,
             &self.replay_known_thread_root_projections,
             &self.thread_root_projection_service,
             &self.timeline_actor_generations,
             &self.key,
             self.actor_generation,
-            Some(request_id),
+            replay_projection_request_id(self.projection_request_id, self.projection_acknowledged),
             self.generation,
             items,
             replay_known_candidates,
         );
+        record_subscribe_stage(
+            if emitted {
+                "replay_initial_emitted"
+            } else {
+                "replay_initial_rejected_stale_generation"
+            },
+            Some(item_count),
+        );
+    }
+
+    fn acknowledge_projection(
+        &mut self,
+        projection_request_id: RequestId,
+        generation: TimelineGeneration,
+    ) -> bool {
+        accept_projection_ack_for_active_actor(
+            &self.timeline_actor_generations,
+            &self.key,
+            self.actor_generation,
+            self.projection_request_id,
+            self.generation,
+            projection_request_id,
+            generation,
+            &mut self.projection_acknowledged,
+        )
     }
 
     async fn handle_diff_batch(
@@ -13352,6 +13477,195 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn projection_ack_requires_exact_identity_and_current_actor_generation() {
+        let key = focused_key();
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = generations.activate_after_quiescence(&key).await.generation;
+        let projection_request_id = fake_rid(81);
+        let projection_generation = TimelineGeneration(4);
+        let mut acknowledged = false;
+
+        assert!(!accept_projection_ack_for_active_actor(
+            &generations,
+            &key,
+            actor_generation,
+            projection_request_id,
+            projection_generation,
+            fake_rid(80),
+            projection_generation,
+            &mut acknowledged,
+        ));
+        assert!(!acknowledged);
+        assert!(!accept_projection_ack_for_active_actor(
+            &generations,
+            &key,
+            actor_generation,
+            projection_request_id,
+            projection_generation,
+            projection_request_id,
+            TimelineGeneration(3),
+            &mut acknowledged,
+        ));
+        assert!(!acknowledged);
+
+        let replacement_generation = generations.activate_after_quiescence(&key).await.generation;
+        assert_ne!(replacement_generation, actor_generation);
+        assert!(!accept_projection_ack_for_active_actor(
+            &generations,
+            &key,
+            actor_generation,
+            projection_request_id,
+            projection_generation,
+            projection_request_id,
+            projection_generation,
+            &mut acknowledged,
+        ));
+        assert!(!acknowledged);
+        assert!(accept_projection_ack_for_active_actor(
+            &generations,
+            &key,
+            replacement_generation,
+            projection_request_id,
+            projection_generation,
+            projection_request_id,
+            projection_generation,
+            &mut acknowledged,
+        ));
+        assert!(acknowledged);
+    }
+
+    #[tokio::test]
+    async fn actor_owner_generation_remains_monotonic_across_manager_gate_recreation() {
+        let key = focused_key();
+        let first_gate = TimelineActorGenerationGate::default();
+        let first = first_gate.activate_after_quiescence(&key).await.generation;
+        drop(first_gate);
+
+        let replacement_gate = TimelineActorGenerationGate::default();
+        let replacement = replacement_gate
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
+        assert!(replacement > first);
+    }
+
+    #[tokio::test]
+    async fn lost_projection_delivery_replays_same_identity_until_actor_accepts_ack() {
+        let key = focused_key();
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = generations.activate_after_quiescence(&key).await.generation;
+        let projection_request_id = fake_rid(91);
+        let generation = TimelineGeneration(2);
+        let mut acknowledged = false;
+
+        // The first delivery is intentionally treated as lost: no ACK reaches
+        // the actor. EnsureSubscribed must therefore reproject the same lease.
+        assert_eq!(
+            replay_projection_request_id(projection_request_id, acknowledged),
+            Some(projection_request_id)
+        );
+        assert!(!accept_projection_ack_for_active_actor(
+            &generations,
+            &key,
+            actor_generation,
+            projection_request_id,
+            generation,
+            fake_rid(90),
+            generation,
+            &mut acknowledged,
+        ));
+        assert_eq!(
+            replay_projection_request_id(projection_request_id, acknowledged),
+            Some(projection_request_id)
+        );
+
+        assert!(accept_projection_ack_for_active_actor(
+            &generations,
+            &key,
+            actor_generation,
+            projection_request_id,
+            generation,
+            projection_request_id,
+            generation,
+            &mut acknowledged,
+        ));
+        assert_eq!(
+            replay_projection_request_id(projection_request_id, acknowledged),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn lost_delivery_reprojection_emits_same_core_event_under_active_actor_lease() {
+        let key = focused_key();
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = generations.activate_after_quiescence(&key).await.generation;
+        let projection_request_id = fake_rid(96);
+        let projection_generation = TimelineGeneration(6);
+        let (event_tx, mut event_rx) = broadcast::channel(4);
+        let projection = TimelineEvent::InitialItems {
+            request_id: Some(projection_request_id),
+            key: key.clone(),
+            actor_generation,
+            generation: projection_generation,
+            items: vec![timeline_item(
+                "$focused-target:test",
+                Some("synthetic"),
+                "@sender:test",
+                false,
+            )],
+        };
+
+        assert!(emit_timeline_events_for_generation(
+            &event_tx,
+            &generations,
+            &key,
+            actor_generation,
+            vec![projection.clone()],
+        ));
+        let _lost_first_delivery = event_rx.recv().await.expect("first projection broadcasts");
+
+        assert!(emit_timeline_events_for_generation(
+            &event_tx,
+            &generations,
+            &key,
+            actor_generation,
+            vec![projection.clone()],
+        ));
+        let replay = event_rx
+            .recv()
+            .await
+            .expect("actor reprojection broadcasts");
+        assert!(matches!(
+            replay,
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id: Some(found_request_id),
+                key: found_key,
+                actor_generation: found_actor_generation,
+                generation: found_generation,
+                items,
+            }) if found_request_id == projection_request_id
+                && found_key == key
+                && found_actor_generation == actor_generation
+                && found_generation == projection_generation
+                && items.len() == 1
+        ));
+
+        let mut acknowledged = false;
+        assert!(accept_projection_ack_for_active_actor(
+            &generations,
+            &key,
+            actor_generation,
+            projection_request_id,
+            projection_generation,
+            projection_request_id,
+            projection_generation,
+            &mut acknowledged,
+        ));
+        assert!(acknowledged);
+    }
+
+    #[tokio::test]
     async fn stale_actor_generation_cannot_emit_any_timeline_event_after_replacement() {
         let key = room_key();
         let actor_generations = Arc::new(TimelineActorGenerationGate::default());
@@ -13409,6 +13723,7 @@ mod tests {
             vec![TimelineEvent::InitialItems {
                 request_id: None,
                 key: key.clone(),
+                actor_generation: old_generation,
                 generation: TimelineGeneration(0),
                 items: vec![timeline_item(
                     "$old-initial:test",
@@ -13431,6 +13746,7 @@ mod tests {
             vec![TimelineEvent::InitialItems {
                 request_id: None,
                 key: key.clone(),
+                actor_generation: new_generation,
                 generation: TimelineGeneration(0),
                 items: vec![timeline_item(
                     "$new-initial:test",

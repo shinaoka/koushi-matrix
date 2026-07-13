@@ -58,7 +58,7 @@ import {
 } from "./domain/coreEvents";
 import {
   applyGlobalResync,
-  applyTimelineEventWithRetention,
+  applyTimelineEventWithProjectionResultAndRetention,
   createTimelineStore,
   pruneTimelineStore,
   timelineStoreKeyId,
@@ -1932,13 +1932,26 @@ export function App() {
       if (payload.kind !== "Timeline") {
         return;
       }
-      setTimelineStore((current) =>
-        applyTimelineEventWithRetention(
+      setTimelineStore((current) => {
+        const applied = applyTimelineEventWithProjectionResultAndRetention(
           current,
           payload.event,
           retainedTimelineKeyIdsRef.current
-        )
-      );
+        );
+        if (
+          applied.projection.kind === "applied" &&
+          ("Focused" in applied.projection.key.kind || "Thread" in applied.projection.key.kind)
+        ) {
+          // The Core command is idempotent because React may replay updater
+          // functions in development. Store application always precedes ACK.
+          void api.acknowledgeTimelineProjection(
+            applied.projection.requestId,
+            applied.projection.key,
+            applied.projection.generation
+          );
+        }
+        return applied.store;
+      });
     });
 
     return () => {

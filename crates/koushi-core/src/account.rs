@@ -65,7 +65,9 @@ use crate::event::{
 };
 use crate::executor;
 use crate::failure::{CoreFailure, LoginFailureKind, ProfileFailureKind, TimelineFailureKind};
-use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey, TimelineKind};
+use crate::ids::{
+    AccountKey, RequestId, RuntimeConnectionId, TimelineGeneration, TimelineKey, TimelineKind,
+};
 use crate::link_preview::LinkPreviewContext;
 use crate::renderable_thumbnail::{
     RenderableThumbnailKind, clear_renderable_thumbnail_cache, store_renderable_thumbnail,
@@ -160,6 +162,12 @@ pub enum AccountMessage {
     SyncCommand(SyncCommand),
     RoomCommand(RoomCommand),
     TimelineCommand(TimelineCommand),
+    AcknowledgeTimelineProjection {
+        projection_request_id: RequestId,
+        key: TimelineKey,
+        generation: TimelineGeneration,
+        response: oneshot::Sender<bool>,
+    },
     ScheduleServerDelayedSend {
         request_id: RequestId,
         scheduled_id: String,
@@ -753,6 +761,25 @@ impl AccountActor {
                 }
                 AccountMessage::TimelineCommand(timeline_command) => {
                     self.route_timeline_command(timeline_command).await;
+                }
+                AccountMessage::AcknowledgeTimelineProjection {
+                    projection_request_id,
+                    key,
+                    generation,
+                    response,
+                } => {
+                    if !self
+                        .timeline_manager
+                        .send(TimelineMessage::AcknowledgeProjection {
+                            projection_request_id,
+                            key,
+                            generation,
+                            response,
+                        })
+                        .await
+                    {
+                        // Dropping the response sender settles the caller as rejected.
+                    }
                 }
                 AccountMessage::ScheduleServerDelayedSend {
                     request_id,

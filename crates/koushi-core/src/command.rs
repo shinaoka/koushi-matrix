@@ -16,7 +16,7 @@ use koushi_state::{
 use serde::{Deserialize, Serialize};
 
 use crate::event::TimelineViewportObservation;
-use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey};
+use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineGeneration, TimelineKey};
 
 #[derive(Debug)]
 pub enum CoreCommand {
@@ -48,6 +48,8 @@ impl CoreCommand {
                 | AppCommand::OpenThread { request_id, .. }
                 | AppCommand::CloseThread { request_id }
                 | AppCommand::OpenFocusedContext { request_id, .. }
+                | AppCommand::OpenAnchoredTimeline { request_id, .. }
+                | AppCommand::AcknowledgeTimelineProjection { request_id, .. }
                 | AppCommand::EnterAnchoredTimeline { request_id, .. }
                 | AppCommand::OpenTimelineAtTimestamp { request_id, .. }
                 | AppCommand::ResetRoomTimelineCache { request_id, .. }
@@ -318,6 +320,22 @@ pub enum AppCommand {
         room_id: String,
         event_id: String,
     },
+    /// Starts a main-pane Focused navigation whose anchor is withheld until
+    /// the WebView acknowledges applying the matching actor projection.
+    OpenAnchoredTimeline {
+        request_id: RequestId,
+        room_id: String,
+        event_id: String,
+    },
+    /// Confirms that the canonical WebView timeline store applied one exact
+    /// InitialItems projection. The projection request id remains stable when
+    /// the active actor reprojects after a consumer remount.
+    AcknowledgeTimelineProjection {
+        request_id: RequestId,
+        projection_request_id: RequestId,
+        key: TimelineKey,
+        generation: TimelineGeneration,
+    },
     EnterAnchoredTimeline {
         request_id: RequestId,
         room_id: String,
@@ -565,6 +583,24 @@ impl fmt::Debug for AppCommand {
                 .field("request_id", request_id)
                 .field("room_id", room_id)
                 .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::OpenAnchoredTimeline { request_id, .. } => formatter
+                .debug_struct("OpenAnchoredTimeline")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::AcknowledgeTimelineProjection {
+                request_id,
+                projection_request_id,
+                generation,
+                ..
+            } => formatter
+                .debug_struct("AcknowledgeTimelineProjection")
+                .field("request_id", request_id)
+                .field("projection_request_id", projection_request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("generation", generation)
                 .finish(),
             Self::EnterAnchoredTimeline {
                 request_id,
@@ -3311,6 +3347,41 @@ mod tests {
         assert!(debug.contains("Timestamp(..)"), "{debug}");
         assert!(!debug.contains("!private-room:example.invalid"), "{debug}");
         assert!(!debug.contains("1718000000000"), "{debug}");
+    }
+
+    #[test]
+    fn focused_projection_commands_redact_matrix_identifiers() {
+        let request_id = fake_rid(29);
+        let key = TimelineKey {
+            account_key: AccountKey("@private:example.invalid".to_owned()),
+            kind: crate::ids::TimelineKind::Focused {
+                room_id: "!private-room:example.invalid".to_owned(),
+                event_id: "$private-event:example.invalid".to_owned(),
+            },
+        };
+        let debug = format!(
+            "{:?} {:?}",
+            AppCommand::OpenAnchoredTimeline {
+                request_id,
+                room_id: "!private-room:example.invalid".to_owned(),
+                event_id: "$private-event:example.invalid".to_owned(),
+            },
+            AppCommand::AcknowledgeTimelineProjection {
+                request_id,
+                projection_request_id: fake_rid(28),
+                key,
+                generation: TimelineGeneration(3),
+            }
+        );
+        assert!(debug.contains("RoomId(..)"), "{debug}");
+        assert!(debug.contains("TimelineKey(..)"), "{debug}");
+        for private in [
+            "@private:example.invalid",
+            "!private-room:example.invalid",
+            "$private-event:example.invalid",
+        ] {
+            assert!(!debug.contains(private), "{debug}");
+        }
     }
 
     #[test]
