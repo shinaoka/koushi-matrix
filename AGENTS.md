@@ -475,13 +475,18 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   thread chips render the Rust-projected row `thread_summary` DTO. Pane-level
   thread attention is Rust-owned `AppState.thread_attention`; React may render
   the Tauri/TypeScript DTO but must not scan visible thread rows or row chips to
-  derive indicator counts. The current core producer counts only remote live
-  thread timeline message diffs; backfill/prepend diffs and the current user's
-  own messages are ignored.
+  derive indicator counts. The core producer uses the authoritative own
+  threaded receipt plus explicit hydration/live/backfill/replay lifecycle and
+  stable event-ID deduplication. It counts only matching remote `m.thread`
+  replies; roots, own local/remote echoes, history, reset/replay, and reconnect
+  duplicates are ignored. SDK vector mutation shapes such as `PushBack` are not
+  unread evidence.
 - GUI thread indicators, including the Threads nav badge/markers, render only
   `AppState.thread_attention.notification_count`, `highlight_count`, and
   `live_event_marker_count`. Do not derive them from room-list totals,
-  `TimelineItem.thread_summary`, or visible thread rows.
+  `TimelineItem.thread_summary`, or visible thread rows. Total reply count stays
+  in `thread_summary.reply_count`; successful threaded read acknowledgement
+  clears new/unread attention through the Rust actor/reducer snapshot path.
 - Notification sound policy is Rust-owned `SettingsValues.notifications.sound`.
   React may pass that DTO value into native adapter routing so sound is skipped,
   but it must not create an independent notification preference or mutate

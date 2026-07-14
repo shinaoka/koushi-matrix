@@ -15,30 +15,30 @@
 **Files:**
 - Modify: `crates/koushi-core/src/timeline.rs`
 
-- [ ] Replace the existing diff-shape attention unit test with tracker-facing tests for root/history hydration, backfill/reset, own local and remote echoes, one genuine live remote reply, reconnect deduplication, and two-thread isolation.
-- [ ] Add a test that keeps `ThreadSummaryDto.reply_count` separate from new attention.
-- [ ] Run `cargo test -p koushi-core --lib thread_attention`; confirm the new tests fail because the semantic tracker API/behavior is absent.
+- [x] Replace the existing diff-shape attention unit test with tracker-facing tests for root/history hydration, backfill/reset, own local and remote echoes, one genuine live remote reply, reconnect deduplication, and two-thread isolation.
+- [x] Add a test that keeps `ThreadSummaryDto.reply_count` separate from new attention.
+- [x] Run `cargo test -p koushi-core --lib thread_attention`; confirm the new tests fail because the semantic tracker behavior is absent.
 
 ### Task 2: Implement the Rust semantic tracker
 
 **Files:**
 - Modify: `crates/koushi-core/src/timeline.rs`
 
-- [ ] Introduce explicit hydration/live/backfill/replay observation modes and stable-event-ID sets.
-- [ ] Seed the tracker from initial items and `Timeline::latest_user_read_receipt_timeline_event_id`.
-- [ ] Apply diffs to `navigation_items` before reconciling attention; mark pagination/restore as backfill and reset/recovery/replayed initial items as replay.
-- [ ] Subscribe to own read-receipt changes and reconcile them inside the actor.
-- [ ] On successful threaded read receipt, acknowledge the event and reliably project zero or remaining counters.
-- [ ] Run `cargo test -p koushi-core --lib thread_attention`; confirm GREEN.
+- [x] Introduce explicit hydration/live/backfill/replay observation modes and stable-event-ID sets.
+- [x] Seed the tracker from initial items and `Timeline::latest_user_read_receipt_timeline_event_id`.
+- [x] Apply diffs to `navigation_items` before reconciling attention; mark pagination/restore as backfill and reset/recovery/replayed initial items as replay.
+- [x] Subscribe to own read-receipt changes and reconcile them inside the actor.
+- [x] On successful threaded read receipt, acknowledge the event and reliably project zero or remaining counters.
+- [x] Run `cargo test -p koushi-core --lib thread_attention`; confirm GREEN.
 
 ### Task 3: Prove the unchanged GUI projection and acknowledgement clear
 
 **Files:**
 - Modify: `apps/desktop/e2e/basic-operations.spec.ts`
 
-- [ ] Extend the thread-attention browser test so the root affordance and header show the same Rust-shaped count.
-- [ ] Drive the defined read acknowledgement through the mocked command, keep both counts until a new Rust-shaped snapshot arrives, then assert both clear together.
-- [ ] Run `npm --prefix apps/desktop exec -- playwright test e2e/basic-operations.spec.ts -g "thread attention" --workers=1`; confirm RED before any harness/product adjustment and GREEN after the minimal test/harness change.
+- [x] Extend the thread-attention browser test so the root affordance and header show the same Rust-shaped count.
+- [x] Reuse the existing threaded read-receipt dispatch coverage, keep both counts until a new Rust-shaped acknowledgement snapshot arrives, then assert both clear together.
+- [x] Run the focused browser test from `apps/desktop`; confirm RED on the new combined-surface assertion and GREEN after the test setup uses one settled initial-items emission.
 
 ### Task 4: Update normative canon
 
@@ -47,21 +47,21 @@
 - Modify: `docs/architecture/state-machine.md`
 - Modify: `AGENTS.md`
 
-- [ ] Replace the obsolete remote-`PushBack` rule with the receipt/lifecycle tracker contract.
-- [ ] Document stable-ID deduplication, actual-thread-reply filtering, and acknowledgement behavior.
-- [ ] Keep total reply count explicitly separate from new/unread attention.
+- [x] Replace the obsolete remote-`PushBack` rule with the receipt/lifecycle tracker contract.
+- [x] Document stable-ID deduplication, actual-thread-reply filtering, and acknowledgement behavior.
+- [x] Keep total reply count explicitly separate from new/unread attention.
 
 ### Task 5: Run focused and repository verification
 
 **Files:**
 - Test only
 
-- [ ] Run `cargo fmt --all -- --check`.
-- [ ] Run `cargo test -p koushi-core --lib thread_attention`.
-- [ ] Run `cargo test -p koushi-state --test timeline_thread_state`.
-- [ ] Run `npm --prefix apps/desktop run typecheck`.
-- [ ] Run the focused Playwright command from Task 3.
-- [ ] Run the repository secret scan and the CI-relevant gates selected from `.github/workflows/ci.yml` for the changed paths.
+- [x] Run `cargo fmt --all -- --check`.
+- [x] Run `cargo test -p koushi-core --lib thread_attention`.
+- [x] Run `cargo test -p koushi-state --test timeline_thread_state`.
+- [x] Run `npm --prefix apps/desktop run typecheck`.
+- [x] Run the focused Playwright command from Task 3.
+- [x] Run the repository secret scan and the CI-relevant gates selected from `.github/workflows/ci.yml` for the changed paths.
 
 ### Task 6: Independent review, PR, CI, and non-squash merge
 

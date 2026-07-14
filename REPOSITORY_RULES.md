@@ -139,6 +139,14 @@ conflict is being resolved.
   nonblocking `try_send` only when the owning actor retains the newest pending
   payload and retries it later; dropping the only pending update silently is
   still prohibited.
+- Pane-level thread attention is a Rust-owned read-state projection, not a
+  timeline-vector projection. It uses the authoritative threaded receipt when
+  available, explicit hydration/live/backfill/replay lifecycle, matching
+  `m.thread` relations, and stable event-ID deduplication. A vector mutation
+  such as `PushBack` is never sufficient evidence that a reply is new. Thread
+  summary total reply counts remain separate from new/unread attention, and a
+  successful threaded read acknowledgement clears attention through the Rust
+  actor/reducer path.
 
 ## Security Rules
 

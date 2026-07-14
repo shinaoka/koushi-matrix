@@ -58,7 +58,9 @@ explicit lifecycle state, not a vector-diff heuristic.
 
 At actor startup, the tracker reads the SDK timeline's latest own threaded
 receipt. The actor also observes own-receipt changes so another device can
-advance the baseline.
+advance the baseline. A receipt outside the retained canonical window updates
+the fallback baseline but conservatively preserves counts whose relative order
+cannot yet be proven.
 
 A successful `SendReadReceipt` on a thread timeline acknowledges through the
 same tracker before the success event is emitted. The tracker clears counted
@@ -84,4 +86,3 @@ Rust unit tests drive the tracker through hydration, live, backfill, replay,
 receipt acknowledgement, own-echo, cross-thread, and reconnect sequences. A
 browser-headless test proves the root affordance and header consume the same
 Rust-shaped count and both clear only after the next Rust-shaped snapshot.
-

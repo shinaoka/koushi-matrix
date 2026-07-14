@@ -663,11 +663,26 @@ stateDiagram-v2
   three fields directly from `AppState.thread_attention`. They must not be
   derived from room-list unread totals, timeline row `thread_summary` chips, or
   visible thread rows.
-- The current producer increments `notification_count` and
-  `live_event_marker_count` from remote live `PushBack` message diffs in the
-  open thread timeline. Backfill/prepend diffs and the current user's own
-  messages are ignored. Future richer SDK thread notification counts must enter
-  through the same Rust-owned action/state path.
+- The producer is an actor-owned semantic tracker seeded from the SDK
+  timeline's latest own threaded receipt. Hydration, backfill, replay, reset,
+  and reconnect/resubscription observations extend its stable event-ID frontier
+  without incrementing attention. Live reconciliation counts only event-backed,
+  renderable `m.thread` replies whose relation matches the tracked root and
+  whose sender is not the current user. The root, transaction local echoes,
+  later own remote echoes, other roots, and duplicate stable event IDs never
+  count.
+- `PushBack`, insertion position, and other vector-diff shapes are transport
+  facts, not evidence that a reply is new. When the receipt is visible in the
+  canonical thread window, it is the unread baseline; when it is outside the
+  retained window, the explicit lifecycle frontier is the conservative
+  fallback. A successful threaded read receipt, including an observed receipt
+  advance from another device, acknowledges counted events through that event
+  when its canonical position is known and reliably emits the next
+  `ThreadAttentionUpdated` projection. An out-of-window receipt advances the
+  fallback baseline but conservatively retains counts whose ordering cannot be
+  proven yet.
+- `TimelineItem.thread_summary.reply_count` remains the total reply projection.
+  It is never copied into or reconstructed as pane-level new/unread attention.
 
 ## Main Timeline Anchor (Jump To Date)
 

@@ -2609,11 +2609,9 @@ fn send_failed_action(
     }
 }
 
-fn thread_attention_action_from_timeline_diffs(
-    counts: &mut ThreadAttentionCounters,
+fn thread_attention_action(
+    counts: ThreadAttentionCounters,
     key: &TimelineKey,
-    diffs: &[TimelineDiff],
-    own_user_id: Option<&str>,
 ) -> Option<AppAction> {
     let TimelineKind::Thread {
         room_id,
@@ -2622,29 +2620,6 @@ fn thread_attention_action_from_timeline_diffs(
     else {
         return None;
     };
-
-    let live_delta = diffs
-        .iter()
-        .filter(|diff| match diff {
-            TimelineDiff::PushBack { item } => {
-                is_remote_renderable_timeline_message(item, own_user_id)
-            }
-            TimelineDiff::PushFront { .. }
-            | TimelineDiff::Insert { .. }
-            | TimelineDiff::Set { .. }
-            | TimelineDiff::Remove { .. }
-            | TimelineDiff::Truncate { .. }
-            | TimelineDiff::Clear
-            | TimelineDiff::Reset { .. } => false,
-        })
-        .count() as u64;
-
-    if live_delta == 0 {
-        return None;
-    }
-
-    counts.notification_count = counts.notification_count.saturating_add(live_delta);
-    counts.live_event_marker_count = counts.live_event_marker_count.saturating_add(live_delta);
 
     Some(AppAction::ThreadAttentionUpdated {
         room_id: room_id.clone(),
@@ -2655,19 +2630,34 @@ fn thread_attention_action_from_timeline_diffs(
     })
 }
 
-fn is_remote_renderable_timeline_message(item: &TimelineItem, own_user_id: Option<&str>) -> bool {
-    if !matches!(item.id, TimelineItemId::Event { .. }) {
-        return false;
-    }
+fn matching_remote_thread_reply_event_id<'a>(
+    item: &'a TimelineItem,
+    root_event_id: &str,
+    own_user_id: Option<&str>,
+) -> Option<&'a str> {
+    let event_id = matching_thread_reply_event_id(item, root_event_id)?;
     if item.body.is_none() && item.media.is_none() {
-        return false;
+        return None;
     }
     if let (Some(sender), Some(own_user_id)) = (item.sender.as_deref(), own_user_id) {
         if sender == own_user_id {
-            return false;
+            return None;
         }
     }
-    true
+    Some(event_id)
+}
+
+fn matching_thread_reply_event_id<'a>(
+    item: &'a TimelineItem,
+    root_event_id: &str,
+) -> Option<&'a str> {
+    let TimelineItemId::Event { event_id } = &item.id else {
+        return None;
+    };
+    if item.thread_root.as_deref() != Some(root_event_id) {
+        return None;
+    }
+    Some(event_id)
 }
 
 fn validate_composer_body_for_timeline_send(body: &str) -> Result<(), TimelineFailureKind> {
@@ -2785,6 +2775,7 @@ enum TimelineActorMessage {
     PaginationFinished {
         serial: u64,
     },
+    OwnReadReceiptChanged,
     RestoreTimelineAnchor {
         request_id: RequestId,
         event_id: String,
@@ -5019,9 +5010,10 @@ struct TimelineActor {
     /// configured (pre-session or pre-Phase-6 builds). Fire-and-forget: if the
     /// channel is full, we drop the mutation rather than block the diff relay.
     search_index_tx: Option<mpsc::Sender<crate::search::SearchIndexMessage>>,
-    /// Rust-owned pane-level thread attention counters. Only thread timelines
-    /// update these, and React reads them through `AppState.thread_attention`.
-    thread_attention_counts: ThreadAttentionCounters,
+    /// Rust-owned pane-level thread attention read-state tracker. Only thread
+    /// timelines update it, and React reads its projection through
+    /// `AppState.thread_attention`.
+    thread_attention: ThreadAttentionTracker,
     /// Rust-owned navigation projection source. The webview reports viewport
     /// facts; item ordering, unread marker semantics, and counts stay here.
     navigation_items: Vec<TimelineItem>,
@@ -5104,6 +5096,160 @@ struct ThreadAttentionCounters {
     notification_count: u64,
     highlight_count: u64,
     live_event_marker_count: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ThreadAttentionObservation {
+    Live,
+    Backfill,
+    Replay,
+}
+
+#[derive(Debug, Default)]
+struct ThreadAttentionTracker {
+    receipt_event_id: Option<String>,
+    observed_reply_event_ids: HashSet<String>,
+    attention_event_ids: HashSet<String>,
+    counts: ThreadAttentionCounters,
+}
+
+impl ThreadAttentionTracker {
+    fn hydrate(
+        key: &TimelineKey,
+        items: &[TimelineItem],
+        own_user_id: Option<&str>,
+        receipt_event_id: Option<String>,
+    ) -> Self {
+        let mut tracker = Self {
+            receipt_event_id,
+            ..Self::default()
+        };
+        tracker.observe_without_increment(key, items);
+        if let (TimelineKind::Thread { root_event_id, .. }, Some(receipt_event_id)) =
+            (&key.kind, tracker.receipt_event_id.as_deref())
+        {
+            if let Some(receipt_position) = items.iter().position(|item| {
+                matches!(
+                    &item.id,
+                    TimelineItemId::Event { event_id } if event_id == receipt_event_id
+                )
+            }) {
+                tracker.attention_event_ids.extend(
+                    items
+                        .iter()
+                        .skip(receipt_position.saturating_add(1))
+                        .filter_map(|item| {
+                            matching_remote_thread_reply_event_id(item, root_event_id, own_user_id)
+                                .map(str::to_owned)
+                        }),
+                );
+                tracker.refresh_counts();
+            }
+        }
+        tracker
+    }
+
+    fn reconcile(
+        &mut self,
+        key: &TimelineKey,
+        items: &[TimelineItem],
+        own_user_id: Option<&str>,
+        observation: ThreadAttentionObservation,
+    ) -> Option<AppAction> {
+        let TimelineKind::Thread { root_event_id, .. } = &key.kind else {
+            return None;
+        };
+        let previous = self.counts;
+        let receipt_position = self
+            .receipt_event_id
+            .as_deref()
+            .and_then(|receipt_event_id| {
+                items.iter().position(|item| {
+                    matches!(
+                        &item.id,
+                        TimelineItemId::Event { event_id } if event_id == receipt_event_id
+                    )
+                })
+            });
+
+        for (position, item) in items.iter().enumerate() {
+            let Some(stable_event_id) = matching_thread_reply_event_id(item, root_event_id) else {
+                continue;
+            };
+            let first_observation = self
+                .observed_reply_event_ids
+                .insert(stable_event_id.to_owned());
+            if observation != ThreadAttentionObservation::Live || !first_observation {
+                continue;
+            }
+            let Some(event_id) =
+                matching_remote_thread_reply_event_id(item, root_event_id, own_user_id)
+            else {
+                continue;
+            };
+            if receipt_position.is_some_and(|receipt_position| position <= receipt_position) {
+                continue;
+            }
+            self.attention_event_ids.insert(event_id.to_owned());
+        }
+
+        self.refresh_counts();
+        (self.counts != previous)
+            .then(|| thread_attention_action(self.counts, key))
+            .flatten()
+    }
+
+    fn acknowledge(
+        &mut self,
+        key: &TimelineKey,
+        items: &[TimelineItem],
+        event_id: String,
+    ) -> Option<AppAction> {
+        self.receipt_event_id = Some(event_id.clone());
+        let positions = items
+            .iter()
+            .enumerate()
+            .filter_map(|(position, item)| match &item.id {
+                TimelineItemId::Event { event_id } => Some((event_id.as_str(), position)),
+                TimelineItemId::Transaction { .. } | TimelineItemId::Synthetic { .. } => None,
+            })
+            .collect::<HashMap<_, _>>();
+        let receipt_position = positions.get(event_id.as_str()).copied();
+        self.attention_event_ids.retain(|attention_event_id| {
+            match (
+                receipt_position,
+                positions.get(attention_event_id.as_str()).copied(),
+            ) {
+                (Some(receipt_position), Some(attention_position)) => {
+                    attention_position > receipt_position
+                }
+                // A receipt outside the retained window is authoritative as a
+                // future baseline, but its ordering relative to retained
+                // attention is unknown. Preserve the count until the SDK gives
+                // us a correlatable canonical position.
+                (None, _) => true,
+                (Some(_), None) => false,
+            }
+        });
+        self.refresh_counts();
+        thread_attention_action(self.counts, key)
+    }
+
+    fn observe_without_increment(&mut self, key: &TimelineKey, items: &[TimelineItem]) {
+        let TimelineKind::Thread { root_event_id, .. } = &key.kind else {
+            return;
+        };
+        self.observed_reply_event_ids
+            .extend(items.iter().filter_map(|item| {
+                matching_thread_reply_event_id(item, root_event_id).map(str::to_owned)
+            }));
+    }
+
+    fn refresh_counts(&mut self) {
+        let count = self.attention_event_ids.len() as u64;
+        self.counts.notification_count = count;
+        self.counts.live_event_marker_count = count;
+    }
 }
 
 impl Drop for TimelineActor {
@@ -5256,6 +5402,17 @@ impl TimelineActor {
             }
         }
         let own_user_id = session.client().user_id().map(|user_id| user_id.to_owned());
+        let initial_thread_receipt_event_id = if matches!(key.kind, TimelineKind::Thread { .. }) {
+            match own_user_id.as_deref() {
+                Some(own_user_id) => timeline
+                    .latest_user_read_receipt_timeline_event_id(own_user_id)
+                    .await
+                    .map(|event_id| event_id.to_string()),
+                None => None,
+            }
+        } else {
+            None
+        };
         let room_id = key.room_id().to_owned();
 
         let mut media_sources = HashMap::new();
@@ -5288,6 +5445,22 @@ impl TimelineActor {
         let (relay_data_tx, relay_data_rx) = mpsc::channel(256);
         let mut send_statuses = HashMap::new();
         let mut send_handles = HashMap::new();
+        if matches!(key.kind, TimelineKind::Thread { .. }) && own_user_id.is_some() {
+            use futures_util::StreamExt;
+            let mut receipt_changes = timeline.subscribe_own_user_read_receipts_changed().await;
+            let receipt_tx = actor_tx.clone();
+            auxiliary_tasks.push(executor::spawn(async move {
+                while receipt_changes.next().await.is_some() {
+                    if receipt_tx
+                        .send(TimelineActorMessage::OwnReadReceiptChanged)
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }));
+        }
 
         // Emit InitialItems (generation 0).
         let generation = TimelineGeneration(0);
@@ -5381,6 +5554,17 @@ impl TimelineActor {
             }
         }
 
+        let thread_attention = ThreadAttentionTracker::hydrate(
+            &key,
+            &navigation_items,
+            own_user_id.as_ref().map(|user_id| user_id.as_str()),
+            initial_thread_receipt_event_id,
+        );
+        if thread_attention.counts != ThreadAttentionCounters::default() {
+            if let Some(action) = thread_attention_action(thread_attention.counts, &key) {
+                let _ = action_tx.send(vec![action]).await;
+            }
+        }
         let mut actor = TimelineActor {
             key: key.clone(),
             timeline,
@@ -5411,7 +5595,7 @@ impl TimelineActor {
             media_downloads_in_progress: HashSet::new(),
             media_download_tasks: HashMap::new(),
             search_index_tx,
-            thread_attention_counts: ThreadAttentionCounters::default(),
+            thread_attention,
             navigation_items,
             replay_known_display_items,
             media_gallery_items: initial_media_gallery_items,
@@ -5549,6 +5733,9 @@ impl TimelineActor {
                 {
                     self.pagination_task = None;
                 }
+            }
+            TimelineActorMessage::OwnReadReceiptChanged => {
+                self.handle_own_read_receipt_changed().await;
             }
             TimelineActorMessage::RestoreTimelineAnchor {
                 request_id,
@@ -7586,6 +7773,15 @@ impl TimelineActor {
 
         match result {
             Ok(_) => {
+                if matches!(self.key.kind, TimelineKind::Thread { .. }) {
+                    if let Some(action) = self.thread_attention.acknowledge(
+                        &self.key,
+                        &self.navigation_items,
+                        event_id.clone(),
+                    ) {
+                        let _ = self.emit_action_reliable(action).await;
+                    }
+                }
                 trace_timeline_actor_operation(
                     "actor_finish",
                     "send_read_receipt",
@@ -7616,6 +7812,26 @@ impl TimelineActor {
                     },
                 );
             }
+        }
+    }
+
+    async fn handle_own_read_receipt_changed(&mut self) {
+        let Some(own_user_id) = self.own_user_id.as_deref() else {
+            return;
+        };
+        let Some(event_id) = self
+            .timeline
+            .latest_user_read_receipt_timeline_event_id(own_user_id)
+            .await
+            .map(|event_id| event_id.to_string())
+        else {
+            return;
+        };
+        if let Some(action) =
+            self.thread_attention
+                .acknowledge(&self.key, &self.navigation_items, event_id)
+        {
+            let _ = self.emit_action_reliable(action).await;
         }
     }
 
@@ -7803,7 +8019,12 @@ impl TimelineActor {
     /// needs a fresh InitialItems batch so a re-mounted TimelineView is
     /// populated.
     fn handle_replay_initial_items(&mut self, _request_id: RequestId) {
-        self.thread_attention_counts = ThreadAttentionCounters::default();
+        let _ = self.thread_attention.reconcile(
+            &self.key,
+            &self.navigation_items,
+            self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
+            ThreadAttentionObservation::Replay,
+        );
         let items = replay_initial_items_window(
             &self.key.kind,
             &self.navigation_items,
@@ -7923,14 +8144,17 @@ impl TimelineActor {
             }
         }
         trace_timeline_diffs("diff_batch", &self.key, &core_diffs);
-        if let Some(action) = thread_attention_action_from_timeline_diffs(
-            &mut self.thread_attention_counts,
-            &self.key,
-            &core_diffs,
-            self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
-        ) {
-            let _ = self.emit_action_reliable(action).await;
-        }
+        let attention_observation =
+            if self.pagination_task.is_some() || self.restore_anchor.is_some() {
+                ThreadAttentionObservation::Backfill
+            } else if core_diffs
+                .iter()
+                .any(|diff| matches!(diff, TimelineDiff::Reset { .. } | TimelineDiff::Clear))
+            {
+                ThreadAttentionObservation::Replay
+            } else {
+                ThreadAttentionObservation::Live
+            };
         let activity_rows = activity_rows_from_timeline_diffs(&self.key, &core_diffs);
         if !activity_rows.is_empty() {
             let _ = self
@@ -7940,6 +8164,14 @@ impl TimelineActor {
                 }]);
         }
         apply_timeline_diffs_to_items(&mut self.navigation_items, &core_diffs);
+        if let Some(action) = self.thread_attention.reconcile(
+            &self.key,
+            &self.navigation_items,
+            self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
+            attention_observation,
+        ) {
+            let _ = self.emit_action_reliable(action).await;
+        }
         apply_timeline_diffs_to_display_items(&mut self.replay_known_display_items, &core_diffs);
         self.maybe_fetch_visible_reply_details();
         self.emit_media_gallery_if_changed().await;
@@ -9203,6 +9435,12 @@ impl TimelineActor {
                 self.media_gallery_items = replacement.items;
             }
         }
+        let _ = self.thread_attention.reconcile(
+            &self.key,
+            &items,
+            self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
+            ThreadAttentionObservation::Replay,
+        );
         commit_authoritative_recovery_window(
             &mut self.navigation_items,
             &mut self.replay_known_display_items,
@@ -17626,6 +17864,13 @@ mod tests {
         }
     }
 
+    fn thread_reply_item(event_id: &str, sender: &str, root_event_id: &str) -> TimelineItem {
+        TimelineItem {
+            thread_root: Some(root_event_id.to_owned()),
+            ..timeline_message_item(event_id, sender)
+        }
+    }
+
     // --- Direction enforcement ---
 
     #[tokio::test]
@@ -17862,7 +18107,7 @@ mod tests {
     }
 
     #[test]
-    fn replaying_thread_initial_items_resets_thread_attention_counter() {
+    fn replaying_thread_initial_items_preserves_semantic_attention_tracker() {
         let source = include_str!("timeline.rs");
         let replay_helper = source
             .split("fn handle_replay_initial_items")
@@ -17873,9 +18118,9 @@ mod tests {
             .expect("pagination handler should follow replay helper");
 
         assert!(
-            replay_helper
-                .contains("self.thread_attention_counts = ThreadAttentionCounters::default();"),
-            "thread replay must reset the actor-owned attention counter to match the reducer's open-thread zero state"
+            replay_helper.contains("ThreadAttentionObservation::Replay")
+                && !replay_helper.contains("ThreadAttentionTracker::default()"),
+            "thread replay must absorb history without resetting stable-ID deduplication or unread attention"
         );
     }
 
@@ -18710,28 +18955,74 @@ mod tests {
     }
 
     #[test]
-    fn thread_attention_action_counts_remote_live_thread_messages_only() {
+    fn thread_attention_does_not_count_root_or_hydrated_history_pushed_back() {
         let key = thread_key();
         let own_user_id = "@me:test";
-        let mut counts = ThreadAttentionCounters::default();
-        let diffs = vec![
-            TimelineDiff::PushBack {
-                item: timeline_message_item("$remote:test", "@alice:test"),
-            },
-            TimelineDiff::PushBack {
-                item: timeline_message_item("$own:test", own_user_id),
-            },
-            TimelineDiff::PushFront {
-                item: timeline_message_item("$backfill:test", "@bob:test"),
-            },
+        let items = vec![
+            timeline_message_item("$root:test", "@alice:test"),
+            thread_reply_item("$historical:test", "@bob:test", "$root:test"),
+        ];
+        let tracker = ThreadAttentionTracker::hydrate(
+            &key,
+            &items,
+            Some(own_user_id),
+            Some("$historical:test".to_owned()),
+        );
+
+        assert_eq!(tracker.counts, ThreadAttentionCounters::default());
+    }
+
+    #[test]
+    fn thread_attention_hydration_uses_visible_authoritative_receipt_baseline() {
+        let key = thread_key();
+        let items = vec![
+            thread_reply_item("$read:test", "@alice:test", "$root:test"),
+            thread_reply_item("$unread:test", "@bob:test", "$root:test"),
         ];
 
+        let tracker = ThreadAttentionTracker::hydrate(
+            &key,
+            &items,
+            Some("@me:test"),
+            Some("$read:test".to_owned()),
+        );
+
+        assert_eq!(tracker.counts.notification_count, 1);
+        assert_eq!(tracker.counts.live_event_marker_count, 1);
+    }
+
+    #[test]
+    fn thread_attention_counts_one_live_remote_reply_and_deduplicates_replay() {
+        let key = thread_key();
+        let own_user_id = "@me:test";
+        let mut items = vec![thread_reply_item(
+            "$baseline:test",
+            "@alice:test",
+            "$root:test",
+        )];
+        let mut tracker = ThreadAttentionTracker::hydrate(
+            &key,
+            &items,
+            Some(own_user_id),
+            Some("$baseline:test".to_owned()),
+        );
+
+        let mut local_echo = thread_reply_item("$unused:test", own_user_id, "$root:test");
+        local_echo.id = TimelineItemId::Transaction {
+            transaction_id: "txn-own".to_owned(),
+        };
+        items.extend([
+            local_echo,
+            thread_reply_item("$own-remote:test", own_user_id, "$root:test"),
+            thread_reply_item("$live:test", "@bob:test", "$root:test"),
+        ]);
+
         assert_eq!(
-            thread_attention_action_from_timeline_diffs(
-                &mut counts,
+            tracker.reconcile(
                 &key,
-                &diffs,
-                Some(own_user_id)
+                &items,
+                Some(own_user_id),
+                ThreadAttentionObservation::Live,
             ),
             Some(AppAction::ThreadAttentionUpdated {
                 room_id: "!r:test".to_owned(),
@@ -18742,16 +19033,139 @@ mod tests {
             })
         );
         assert_eq!(
-            thread_attention_action_from_timeline_diffs(
-                &mut counts,
-                &room_key(),
-                &[TimelineDiff::PushBack {
-                    item: timeline_message_item("$room:test", "@alice:test"),
-                }],
+            tracker.reconcile(
+                &key,
+                &items,
                 Some(own_user_id),
+                ThreadAttentionObservation::Replay,
+            ),
+            None,
+            "the same stable event must not increment after reconnect/replay"
+        );
+        assert_eq!(tracker.counts.notification_count, 1);
+    }
+
+    #[test]
+    fn thread_attention_backfill_reset_and_other_roots_do_not_increment() {
+        let key = thread_key();
+        let own_user_id = "@me:test";
+        let mut tracker = ThreadAttentionTracker::hydrate(&key, &[], Some(own_user_id), None);
+        let other_root = thread_reply_item("$other:test", "@alice:test", "$other-root:test");
+        let historical = thread_reply_item("$old:test", "@bob:test", "$root:test");
+
+        assert_eq!(
+            tracker.reconcile(
+                &key,
+                std::slice::from_ref(&historical),
+                Some(own_user_id),
+                ThreadAttentionObservation::Backfill,
             ),
             None
         );
+        assert_eq!(
+            tracker.reconcile(
+                &key,
+                &[historical, other_root],
+                Some(own_user_id),
+                ThreadAttentionObservation::Replay,
+            ),
+            None
+        );
+        assert_eq!(tracker.counts, ThreadAttentionCounters::default());
+    }
+
+    #[test]
+    fn thread_attention_trackers_do_not_contaminate_different_threads() {
+        let first_key = thread_key();
+        let second_key = TimelineKey {
+            account_key: first_key.account_key.clone(),
+            kind: TimelineKind::Thread {
+                room_id: "!r:test".to_owned(),
+                root_event_id: "$second-root:test".to_owned(),
+            },
+        };
+        let first_live = thread_reply_item("$first-live:test", "@alice:test", "$root:test");
+        let mut first = ThreadAttentionTracker::hydrate(&first_key, &[], Some("@me:test"), None);
+        let mut second = ThreadAttentionTracker::hydrate(&second_key, &[], Some("@me:test"), None);
+
+        assert!(
+            first
+                .reconcile(
+                    &first_key,
+                    std::slice::from_ref(&first_live),
+                    Some("@me:test"),
+                    ThreadAttentionObservation::Live,
+                )
+                .is_some()
+        );
+        assert_eq!(
+            second.reconcile(
+                &second_key,
+                &[first_live],
+                Some("@me:test"),
+                ThreadAttentionObservation::Live,
+            ),
+            None
+        );
+        assert_eq!(first.counts.notification_count, 1);
+        assert_eq!(second.counts.notification_count, 0);
+    }
+
+    #[test]
+    fn thread_attention_acknowledgement_clears_without_changing_total_reply_count() {
+        let key = thread_key();
+        let own_user_id = "@me:test";
+        let mut root = timeline_message_item("$root:test", "@alice:test");
+        root.thread_summary = Some(ThreadSummaryDto {
+            reply_count: 2,
+            latest_event_id: Some("$live:test".to_owned()),
+            latest_sender: Some("@bob:test".to_owned()),
+            latest_sender_label: Some("Bob".to_owned()),
+            latest_body_preview: Some("preview".to_owned()),
+            latest_timestamp_ms: Some(2),
+        });
+        let items = vec![
+            root,
+            thread_reply_item("$baseline:test", "@alice:test", "$root:test"),
+            thread_reply_item("$live:test", "@bob:test", "$root:test"),
+        ];
+        let mut tracker = ThreadAttentionTracker::hydrate(
+            &key,
+            &items[..2],
+            Some(own_user_id),
+            Some("$baseline:test".to_owned()),
+        );
+        let _ = tracker.reconcile(
+            &key,
+            &items,
+            Some(own_user_id),
+            ThreadAttentionObservation::Live,
+        );
+
+        assert_eq!(tracker.counts.notification_count, 1);
+        assert_eq!(items[0].thread_summary.as_ref().unwrap().reply_count, 2);
+        assert_eq!(
+            tracker.acknowledge(&key, &items, "$outside-window:test".to_owned()),
+            Some(AppAction::ThreadAttentionUpdated {
+                room_id: "!r:test".to_owned(),
+                root_event_id: "$root:test".to_owned(),
+                notification_count: 1,
+                highlight_count: 0,
+                live_event_marker_count: 1,
+            }),
+            "an out-of-window receipt must not guess the relative ordering"
+        );
+        assert_eq!(
+            tracker.acknowledge(&key, &items, "$live:test".to_owned()),
+            Some(AppAction::ThreadAttentionUpdated {
+                room_id: "!r:test".to_owned(),
+                root_event_id: "$root:test".to_owned(),
+                notification_count: 0,
+                highlight_count: 0,
+                live_event_marker_count: 0,
+            })
+        );
+        assert_eq!(items[0].thread_summary.as_ref().unwrap().reply_count, 2);
     }
 
     #[test]
