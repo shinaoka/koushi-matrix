@@ -781,6 +781,46 @@ stateDiagram-v2
   stdout `timeline_nav=ok`. Do not print Matrix room ids, event ids, user ids,
   message bodies, timestamps, or raw SDK errors for this proof.
 
+## Room Timeline Continuity
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unknown
+    Unknown --> Inspecting: InspectRequested
+    Inspecting --> Healthy: InspectionComplete [SDK Complete, matching generation]
+    Inspecting --> Incomplete: InspectionComplete [SDK Gapped, matching generation]
+    Inspecting --> Unknown: InspectionComplete [SDK Unknown, matching generation]
+    Inspecting --> FailedIncomplete: InspectionFailed [explicit gap already known]
+    Inspecting --> Unknown: InspectionFailed [no explicit gap known]
+    Incomplete --> Repairing: RepairRequested [coalesced]
+    FailedIncomplete --> Repairing: RepairRequested [coalesced]
+    Repairing --> Inspecting: Progress / Deferred / Stale
+    Repairing --> Inspecting: BoundariesJoined / StartReached
+    Repairing --> FailedIncomplete: RepairFailed [matching generation]
+    Healthy --> Inspecting: subscription / reconnect / cache update / live event / navigation
+    Incomplete --> Inspecting: cache topology changed
+    FailedIncomplete --> Inspecting: reconnect / retry inspection
+    Unknown --> [*]: logout / account replacement
+    Inspecting --> [*]: logout / account replacement
+    Healthy --> [*]: logout / account replacement
+    Incomplete --> [*]: logout / account replacement
+    Repairing --> [*]: logout / account replacement
+    FailedIncomplete --> [*]: logout / account replacement
+```
+
+- Every inspection/repair start advances a room-local generation. Late SDK
+  outcomes apply only when account, timeline actor, and room-local generations
+  still match.
+- `Healthy` means the SDK proved the persisted timeline complete. No gap rows,
+  an empty local list, a new live event, or edge `EndReached` cannot make this
+  transition.
+- `Stale`, `Progress`, `Deferred`, `BoundariesJoined`, and `StartReached`
+  always re-inspect; Core never closes a gap from an unverified local guess.
+- Manual repair coalesces with an active automatic repair. Failures preserve
+  the current event projection and leave a visible retryable gap state.
+- **Start of conversation** is enabled only by the matching-generation
+  `Complete`/`StartReached` proof.
+
 ## Timeline Reactions
 
 Reaction annotations are Rust-owned timeline projection data. Grouped reaction

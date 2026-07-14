@@ -805,6 +805,35 @@ architectural invariants:
   until the exact supported restore scope is proven or split into an explicit
   follow-up.
 
+## Room Timeline Gap Repair
+
+Room timeline continuity is a Rust-owned, proof-based contract. The Matrix SDK
+owns opaque pagination tokens, persisted linked chunks, targeted cache mutation,
+deduplication, and boundary/start validation. `koushi-sdk` exposes only a
+token-free Rust adapter. SDK gap descriptors are snapshot-scoped actor-private
+values; they never enter `AppState`, IPC, diagnostics, or Koushi persistence.
+
+Core owns one generation-guarded repair scheduler per room and projects
+`Unknown`, `Inspecting`, `Healthy`, `Incomplete`, `Repairing`, or
+`FailedIncomplete`. `Healthy` requires an SDK continuity proof. Live sync,
+local emptiness, edge pagination completion, and visually adjacent event rows
+are not continuity proofs. Restart and reconnect re-inspect rather than restore
+opaque handles.
+
+Timeline gaps cross the WebView boundary only as Rust-positioned, content-free
+rows with coarse state. React renders those rows, reports presentation-only
+viewport facts, preserves the viewport anchor while repair diffs apply, and
+dispatches typed retry/navigation commands. It must not infer gaps, construct
+tokens, select cache boundaries, or synthesize **Start of conversation**.
+
+Manual and automatic repair share the same bounded scheduler. Normal product
+paths must never repair by removing a room event cache. Failure, cancellation,
+stale generations, and unsupported missing-token recovery preserve existing
+events and expose a retryable incomplete state.
+
+See
+`docs/superpowers/specs/2026-07-03-room-timeline-cache-repair-design.md`.
+
 ## QA Model
 
 QA is layered; GUI automation is the last and weakest layer, never the
