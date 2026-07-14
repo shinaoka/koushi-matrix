@@ -5290,7 +5290,9 @@ impl ThreadAttentionTracker {
             let Some(observation) = provenance.observation_for(stable_event_id) else {
                 continue;
             };
-            if observation != ThreadAttentionObservation::Live {
+            let is_authoritatively_unread =
+                receipt_position.is_some_and(|receipt_position| position > receipt_position);
+            if observation != ThreadAttentionObservation::Live && !is_authoritatively_unread {
                 self.observed_reply_event_ids
                     .insert(stable_event_id.to_owned());
                 continue;
@@ -5527,6 +5529,12 @@ impl TimelineActor {
             }
         }
         let own_user_id = session.client().user_id().map(|user_id| user_id.to_owned());
+        let mut initial_thread_receipt_changes =
+            if matches!(key.kind, TimelineKind::Thread { .. }) && own_user_id.is_some() {
+                Some(timeline.subscribe_own_user_read_receipts_changed().await)
+            } else {
+                None
+            };
         let initial_thread_receipt_event_id = if matches!(key.kind, TimelineKind::Thread { .. }) {
             match own_user_id.as_deref() {
                 Some(own_user_id) => timeline
@@ -5570,9 +5578,8 @@ impl TimelineActor {
         let (relay_data_tx, relay_data_rx) = mpsc::channel(256);
         let mut send_statuses = HashMap::new();
         let mut send_handles = HashMap::new();
-        if matches!(key.kind, TimelineKind::Thread { .. }) && own_user_id.is_some() {
+        if let Some(mut receipt_changes) = initial_thread_receipt_changes.take() {
             use futures_util::StreamExt;
-            let mut receipt_changes = timeline.subscribe_own_user_read_receipts_changed().await;
             let receipt_tx = actor_tx.clone();
             auxiliary_tasks.push(executor::spawn(async move {
                 while receipt_changes.next().await.is_some() {
@@ -9554,12 +9561,14 @@ impl TimelineActor {
                 self.media_gallery_items = replacement.items;
             }
         }
-        let _ = self.thread_attention.reconcile(
+        if let Some(action) = self.thread_attention.reconcile(
             &self.key,
             &items,
             self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
             ThreadAttentionObservation::Replay,
-        );
+        ) {
+            let _ = self.emit_action_reliable(action).await;
+        }
         commit_authoritative_recovery_window(
             &mut self.navigation_items,
             &mut self.replay_known_display_items,
@@ -19438,6 +19447,67 @@ mod tests {
                 highlight_count: 0,
                 live_event_marker_count: 0,
             })
+        );
+    }
+
+    #[test]
+    fn recovery_counts_first_seen_unread_reply_after_visible_receipt() {
+        let key = thread_key();
+        let own_user_id = "@me:test";
+        let receipt = thread_reply_item("$read-before-overflow:test", own_user_id, "$root:test");
+        let unread = thread_reply_item("$missed-during-overflow:test", "@bob:test", "$root:test");
+        let mut tracker = ThreadAttentionTracker::hydrate(
+            &key,
+            std::slice::from_ref(&receipt),
+            Some(own_user_id),
+            Some("$read-before-overflow:test".to_owned()),
+        );
+
+        assert_eq!(
+            tracker.reconcile(
+                &key,
+                &[receipt, unread],
+                Some(own_user_id),
+                ThreadAttentionObservation::Replay,
+            ),
+            Some(AppAction::ThreadAttentionUpdated {
+                room_id: "!r:test".to_owned(),
+                root_event_id: "$root:test".to_owned(),
+                notification_count: 1,
+                highlight_count: 0,
+                live_event_marker_count: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn recovery_emits_attention_changes_and_receipt_subscription_precedes_query() {
+        let source = include_str!("timeline.rs");
+        let recovery = source
+            .split("async fn handle_relay_overflow")
+            .nth(1)
+            .and_then(|section| section.split("fn schedule_relay_restart").next())
+            .expect("relay recovery handler must exist");
+        assert!(
+            recovery.contains("if let Some(action) = self.thread_attention.reconcile")
+                && recovery.contains("self.emit_action_reliable(action).await"),
+            "recovery-driven attention changes must reach the reducer"
+        );
+
+        let startup = source
+            .split("let own_user_id = session.client().user_id()")
+            .nth(1)
+            .and_then(|section| section.split("let room_id = key.room_id()").next())
+            .expect("thread receipt startup boundary must exist");
+        let subscribe = startup
+            .find("subscribe_own_user_read_receipts_changed")
+            .expect("receipt changes must be subscribed");
+        let query = startup
+            .find("latest_user_read_receipt_timeline_event_id")
+            .expect("initial receipt must be queried");
+        assert!(
+            subscribe < query,
+            "subscribe-before-query closes the startup receipt race"
         );
     }
 

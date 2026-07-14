@@ -148,7 +148,8 @@ conflict is being resolved.
   sufficient evidence that a reply is new. Thread
   summary total reply counts remain separate from new/unread attention, and a
   successful threaded read acknowledgement clears attention through the Rust
-  actor/reducer path.
+  actor/reducer path. Recovery may add a first-seen reply only when a visible
+  authoritative receipt proves the reply is after the read boundary.
 
 ## Security Rules
 

@@ -480,9 +480,10 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   stable event-ID deduplication. Relay batches carry the SDK event origin so a
   delayed pagination/cache batch cannot become live after ambient task state
   changes. It counts only matching remote `m.thread`
-  replies; roots, own local/remote echoes, history, reset/replay, and reconnect
-  duplicates are ignored. SDK vector mutation shapes such as `PushBack` are not
-  unread evidence.
+  replies; roots, own local/remote echoes, read history, and reconnect
+  duplicates are ignored. A first-seen recovery/reset reply may count only when
+  its position after the authoritative visible receipt proves it unread. SDK
+  vector mutation shapes such as `PushBack` are not unread evidence.
 - GUI thread indicators, including the Threads nav badge/markers, render only
   `AppState.thread_attention.notification_count`, `highlight_count`, and
   `live_event_marker_count`. Do not derive them from room-list totals,

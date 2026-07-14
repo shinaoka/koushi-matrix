@@ -34,7 +34,9 @@ Each thread `TimelineActor` owns one `ThreadAttentionTracker`:
   threaded receipt baseline and stable-event deduplication set.
 - `Backfill`: absorb pagination/anchor-restore history without incrementing.
 - `Replay`: absorb reset, resubscription, and overflow-recovery snapshots
-  without incrementing or duplicating previously counted events.
+  without duplicating previously counted events. A first-seen recovery item may
+  count only when it is canonically after the visible authoritative receipt;
+  this recovers live events lost with an overflowed relay batch.
 
 The tracker records:
 

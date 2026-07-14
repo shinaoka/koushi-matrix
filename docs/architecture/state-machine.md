@@ -665,8 +665,10 @@ stateDiagram-v2
   visible thread rows.
 - The producer is an actor-owned semantic tracker seeded from the SDK
   timeline's latest own threaded receipt. Hydration, backfill, replay, reset,
-  and reconnect/resubscription observations extend its stable event-ID frontier
-  without incrementing attention. Live reconciliation counts only event-backed,
+  and reconnect/resubscription observations normally extend its stable event-ID
+  frontier without incrementing attention. A recovery/reset snapshot may add a
+  first-seen event only when its canonical position after the visible
+  authoritative receipt proves it unread. Live reconciliation counts only event-backed,
   renderable `m.thread` replies whose relation matches the tracked root and
   whose sender is not the current user. The root, transaction local echoes,
   later own remote echoes, other roots, and duplicate stable event IDs never
