@@ -27,6 +27,30 @@ describe("i18n message catalog", () => {
     );
   });
 
+  test("localizes structured room name notices with plain international text", () => {
+    const oldName = "研究室 🧪 العربية";
+    const newName = "<新しい部屋>";
+
+    expect(t("timeline.notice.roomNameSet", { newName })).toBe(
+      "set the room name to <新しい部屋>"
+    );
+    expect(t("timeline.notice.roomNameChanged", { oldName, newName })).toBe(
+      "changed the room name from 研究室 🧪 العربية to <新しい部屋>"
+    );
+    expect(t("timeline.notice.roomNameRemoved")).toBe("removed the room name");
+    expect(t("timeline.notice.roomNameChangedGeneric")).toBe("changed the room name");
+    expect(t("timeline.notice.roomNameSet", { newName }, "ja")).toBe(
+      "ルーム名を「<新しい部屋>」に設定しました"
+    );
+    expect(t("timeline.notice.roomNameChanged", { oldName, newName }, "ja")).toBe(
+      "ルーム名を「研究室 🧪 العربية」から「<新しい部屋>」に変更しました"
+    );
+    expect(t("timeline.notice.roomNameRemoved", {}, "ja")).toBe("ルーム名を削除しました");
+    expect(t("timeline.notice.roomNameChangedGeneric", {}, "ja")).toBe(
+      "ルーム名が変更されました"
+    );
+  });
+
   test("Japanese catalog localizes shipped message ids except the named allowlist", () => {
     const identicalMessageIds = (Object.keys(catalogs.en) as MessageId[]).filter(
       (id) => catalogs.ja[id] === catalogs.en[id] && !japaneseIdenticalMessageAllowlist.has(id)

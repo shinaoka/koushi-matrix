@@ -324,6 +324,77 @@ fn persisted_window_state_is_restorable(state: &PersistedWindowState) -> bool {
     state.width >= MIN_RESTORABLE_WINDOW_WIDTH && state.height >= MIN_RESTORABLE_WINDOW_HEIGHT
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WindowWorkArea {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    primary: bool,
+}
+
+fn rectangle_intersection_area(state: &PersistedWindowState, area: &WindowWorkArea) -> u64 {
+    let left = i64::from(state.x).max(i64::from(area.x));
+    let top = i64::from(state.y).max(i64::from(area.y));
+    let right = (i64::from(state.x) + i64::from(state.width))
+        .min(i64::from(area.x) + i64::from(area.width));
+    let bottom = (i64::from(state.y) + i64::from(state.height))
+        .min(i64::from(area.y) + i64::from(area.height));
+
+    let width = right.saturating_sub(left).max(0) as u64;
+    let height = bottom.saturating_sub(top).max(0) as u64;
+    width.saturating_mul(height)
+}
+
+fn clamp_physical_position(value: i32, minimum: i32, maximum: i64) -> i32 {
+    i64::from(value).clamp(i64::from(minimum), maximum.min(i64::from(i32::MAX))) as i32
+}
+
+fn window_work_area_is_usable(area: &WindowWorkArea) -> bool {
+    area.width >= MIN_RESTORABLE_WINDOW_WIDTH && area.height >= MIN_RESTORABLE_WINDOW_HEIGHT
+}
+
+fn restored_window_geometry(
+    state: &PersistedWindowState,
+    work_areas: &[WindowWorkArea],
+) -> Option<PersistedWindowState> {
+    if !persisted_window_state_is_restorable(state) {
+        return None;
+    }
+
+    let intersecting = work_areas
+        .iter()
+        .filter(|area| window_work_area_is_usable(area))
+        .map(|area| (area, rectangle_intersection_area(state, area)))
+        .filter(|(_, intersection)| *intersection > 0)
+        .max_by_key(|(_, intersection)| *intersection)
+        .map(|(area, _)| area);
+    let selected = intersecting
+        .or_else(|| {
+            work_areas
+                .iter()
+                .find(|area| area.primary && window_work_area_is_usable(area))
+        })
+        .or_else(|| {
+            work_areas
+                .iter()
+                .find(|area| window_work_area_is_usable(area))
+        })?;
+
+    let width = state.width.min(selected.width);
+    let height = state.height.min(selected.height);
+    let maximum_x = i64::from(selected.x) + i64::from(selected.width - width);
+    let maximum_y = i64::from(selected.y) + i64::from(selected.height - height);
+
+    Some(PersistedWindowState {
+        x: clamp_physical_position(state.x, selected.x, maximum_x),
+        y: clamp_physical_position(state.y, selected.y, maximum_y),
+        width,
+        height,
+        maximized: state.maximized,
+    })
+}
+
 fn persisted_window_state_from_geometry(
     position: tauri::PhysicalPosition<i32>,
     size: tauri::PhysicalSize<u32>,
@@ -411,6 +482,38 @@ fn apply_persisted_window_state<R: tauri::Runtime>(
     if !persisted_window_state_is_restorable(&state) {
         return Ok(());
     }
+
+    let monitors = window
+        .available_monitors()
+        .map_err(|_| "active monitors could not be inspected".to_owned())?;
+    let primary = window
+        .primary_monitor()
+        .map_err(|_| "primary monitor could not be inspected".to_owned())?;
+    let work_areas = monitors
+        .iter()
+        .map(|monitor| {
+            let work_area = monitor.work_area();
+            let primary = primary.as_ref().is_some_and(|primary| {
+                primary.position() == monitor.position()
+                    && primary.size() == monitor.size()
+                    && primary.work_area().position == monitor.work_area().position
+                    && primary.work_area().size == monitor.work_area().size
+            });
+            WindowWorkArea {
+                x: work_area.position.x,
+                y: work_area.position.y,
+                width: work_area.size.width,
+                height: work_area.size.height,
+                primary,
+            }
+        })
+        .collect::<Vec<_>>();
+    let Some(state) = restored_window_geometry(&state, &work_areas) else {
+        window
+            .center()
+            .map_err(|_| "window could not be centered".to_owned())?;
+        return Ok(());
+    };
 
     window
         .set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
@@ -1197,12 +1300,13 @@ mod tests {
         forwarded_webview_events_for_lag_resync, serialize_core_event,
     };
     use super::{
-        PersistedWindowState, desktop_menu_items, desktop_standard_menu_items,
+        PersistedWindowState, WindowWorkArea, desktop_menu_items, desktop_standard_menu_items,
         load_window_state_with_base, persist_window_state_with_base,
         persisted_window_state_from_geometry, persisted_window_state_is_restorable,
         qa_control_pipe_path_from_env_value, qa_login_pipe_path_from_env_value,
-        restore_session_enabled_from_env_value, saved_sessions_disabled_from_env_value,
-        window_event_should_persist, window_event_should_stop_background_tasks, window_state_path,
+        restore_session_enabled_from_env_value, restored_window_geometry,
+        saved_sessions_disabled_from_env_value, window_event_should_persist,
+        window_event_should_stop_background_tasks, window_state_path,
     };
     use crate::commands::parse_qa_login_pipe_payload;
 
@@ -1653,6 +1757,164 @@ mod tests {
         );
     }
 
+    fn work_area(x: i32, y: i32, width: u32, height: u32, primary: bool) -> WindowWorkArea {
+        WindowWorkArea {
+            x,
+            y,
+            width,
+            height,
+            primary,
+        }
+    }
+
+    #[test]
+    fn restored_window_geometry_preserves_valid_in_bounds_state() {
+        let state = PersistedWindowState {
+            x: 120,
+            y: 80,
+            width: 1280,
+            height: 820,
+            maximized: false,
+        };
+
+        assert_eq!(
+            restored_window_geometry(&state, &[work_area(0, 0, 1920, 1040, true)]),
+            Some(state)
+        );
+    }
+
+    #[test]
+    fn restored_window_geometry_clamps_retina_sized_state_to_work_area() {
+        let state = PersistedWindowState {
+            x: 0,
+            y: 52,
+            width: 2624,
+            height: 1644,
+            maximized: true,
+        };
+
+        assert_eq!(
+            restored_window_geometry(&state, &[work_area(0, 0, 1312, 848, true)]),
+            Some(PersistedWindowState {
+                x: 0,
+                y: 0,
+                width: 1312,
+                height: 848,
+                maximized: true,
+            })
+        );
+    }
+
+    #[test]
+    fn restored_window_geometry_recovers_wholly_off_screen_state_to_primary() {
+        let state = PersistedWindowState {
+            x: 5000,
+            y: 3000,
+            width: 1280,
+            height: 820,
+            maximized: false,
+        };
+
+        assert_eq!(
+            restored_window_geometry(&state, &[work_area(0, 0, 1920, 1040, true)]),
+            Some(PersistedWindowState {
+                x: 640,
+                y: 220,
+                ..state
+            })
+        );
+    }
+
+    #[test]
+    fn restored_window_geometry_uses_primary_after_secondary_monitor_disconnect() {
+        let state = PersistedWindowState {
+            x: 2300,
+            y: 140,
+            width: 1000,
+            height: 700,
+            maximized: false,
+        };
+
+        assert_eq!(
+            restored_window_geometry(
+                &state,
+                &[
+                    work_area(0, 0, 1920, 1040, true),
+                    work_area(-1600, 0, 1600, 900, false),
+                ],
+            ),
+            Some(PersistedWindowState {
+                x: 920,
+                y: 140,
+                ..state
+            })
+        );
+    }
+
+    #[test]
+    fn restored_window_geometry_preserves_valid_negative_monitor_coordinates() {
+        let state = PersistedWindowState {
+            x: -1800,
+            y: -120,
+            width: 1200,
+            height: 800,
+            maximized: false,
+        };
+
+        assert_eq!(
+            restored_window_geometry(
+                &state,
+                &[
+                    work_area(0, 0, 1920, 1040, true),
+                    work_area(-1920, -200, 1920, 1080, false),
+                ],
+            ),
+            Some(state)
+        );
+    }
+
+    #[test]
+    fn restored_window_geometry_rejects_work_area_smaller_than_minimum_window() {
+        let state = PersistedWindowState {
+            x: 20,
+            y: 20,
+            width: 1280,
+            height: 820,
+            maximized: false,
+        };
+
+        assert_eq!(
+            restored_window_geometry(&state, &[work_area(0, 0, 700, 600, true)]),
+            None
+        );
+    }
+
+    #[test]
+    fn restored_window_geometry_skips_intersecting_unusable_work_area() {
+        let state = PersistedWindowState {
+            x: 2050,
+            y: 50,
+            width: 1280,
+            height: 820,
+            maximized: false,
+        };
+
+        assert_eq!(
+            restored_window_geometry(
+                &state,
+                &[
+                    work_area(0, 0, 1920, 1040, true),
+                    work_area(2000, 0, 700, 600, false),
+                ],
+            ),
+            Some(PersistedWindowState {
+                x: 640,
+                y: 50,
+                ..state
+            })
+        );
+    }
+
     #[test]
     fn window_event_should_persist_for_geometry_changes_but_not_focus() {
         assert!(window_event_should_persist(&tauri::WindowEvent::Resized(
@@ -1802,7 +2064,7 @@ mod tests {
             sender_label: None,
             sender_avatar: None,
             body: Some("hello".to_owned()),
-            notice_i18n_key: None,
+            notice_i18n: None,
             message_kind: TimelineMessageKind::Emote,
             spoiler_spans: vec![TimelineSpoilerSpan {
                 start_utf16: 0,
@@ -1863,7 +2125,7 @@ mod tests {
             sender_label: None,
             sender_avatar: None,
             body: Some("caption".to_owned()),
-            notice_i18n_key: None,
+            notice_i18n: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: Some(456),
@@ -1923,7 +2185,7 @@ mod tests {
             sender_label: None,
             sender_avatar: None,
             body: Some("queued".to_owned()),
-            notice_i18n_key: None,
+            notice_i18n: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: Some(789),
@@ -1956,7 +2218,7 @@ mod tests {
             sender_label: None,
             sender_avatar: None,
             body: Some("reply body".to_owned()),
-            notice_i18n_key: None,
+            notice_i18n: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: Some(987),
@@ -1999,7 +2261,7 @@ mod tests {
             sender_label: None,
             sender_avatar: None,
             body: Some("Check out https://example.invalid/page".to_owned()),
-            notice_i18n_key: None,
+            notice_i18n: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: Some(1111),

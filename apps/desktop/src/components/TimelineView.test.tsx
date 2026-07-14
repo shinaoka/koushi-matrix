@@ -5227,7 +5227,7 @@ describe("TimelineView", () => {
     expect(paginateBackwards).toHaveBeenCalledTimes(1);
   });
 
-  it("renders timeline notice i18n keys in the active locale", async () => {
+  it("renders structured timeline notices in the active locale as plain text", async () => {
     setActiveLocaleProfile("ja", "none");
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const transport = baseTransport({
@@ -5256,7 +5256,18 @@ describe("TimelineView", () => {
           items: [
             {
               ...message("$create", "created the room"),
-              notice_i18n_key: "timeline.notice.roomCreate",
+              notice_i18n: {
+                key: "timeline.notice.roomCreate"
+              },
+              message_kind: "notice"
+            },
+            {
+              ...message("$room-name", "Unsupported event: m.room.name"),
+              notice_i18n: {
+                key: "timeline.notice.roomNameChanged",
+                old_name: "研究室 🧪 العربية",
+                new_name: "<新しい部屋>"
+              },
               message_kind: "notice"
             }
           ]
@@ -5265,7 +5276,12 @@ describe("TimelineView", () => {
     });
 
     expect(await screen.findByText("ルームを作成しました")).toBeTruthy();
+    expect(
+      await screen.findByText("ルーム名を「研究室 🧪 العربية」から「<新しい部屋>」に変更しました")
+    ).toBeTruthy();
     expect(screen.queryByText("created the room")).toBeNull();
+    expect(screen.queryByText("Unsupported event: m.room.name")).toBeNull();
+    expect(document.querySelector("新しい部屋")).toBeNull();
   });
 
   it("paginates an empty thread timeline once after initial items arrive", async () => {
