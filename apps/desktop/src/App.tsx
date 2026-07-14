@@ -801,7 +801,6 @@ export function SessionVerificationGate({ snapshot, onSnapshot, onSignOut, onSta
   const preparationFailure = session.kind === "provisional" && typeof session.phase === "object" && "recheckingTrust" in session.phase
     ? session.phase.recheckingTrust.failureKind
     : null;
-  const preparing = session.kind === "ready" && snapshot.state.domain.sync !== "running";
   const activelyVerifying = session.kind === "verifying";
   const [gateOperation, setGateOperation] = useState<"recovery" | "sas" | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
@@ -813,7 +812,7 @@ export function SessionVerificationGate({ snapshot, onSnapshot, onSignOut, onSta
     setGateOperation(kind);
     try { onSnapshot(await operation()); } catch { setOperationError("Verification command failed. Please try again."); } finally { gateOperationRef.current = null; setGateOperation(null); }
   };
-  const heading = preparing ? t("gate.preparing") : rechecking ? t("gate.finishing") : activelyVerifying ? t("gate.verifying") : t("gate.title");
+  const heading = checking ? t("gate.checking") : rechecking ? t("gate.finishing") : activelyVerifying ? t("gate.verifying") : t("gate.title");
   return <main className="session-verification-gate" aria-label={heading}>
     <div
       className="session-verification-drag-region"
@@ -826,7 +825,6 @@ export function SessionVerificationGate({ snapshot, onSnapshot, onSignOut, onSta
       }}
     />
     <h1>{heading}</h1>
-    {checking && <p>{t("gate.checking")}</p>}
     {discovering && <p>{t("gate.discovering")}</p>}
     {session.kind === "rejecting" && <p>{t("gate.rejecting")}</p>}
     {session.kind === "locked" && <p>{t("gate.locked")}</p>}
@@ -3444,8 +3442,7 @@ export function App() {
     snapshot.state.domain.locale_profile.pseudo_locale
   );
 
-  const verificationGate = ["provisional", "awaitingVerification", "verifying", "awaitingBootstrapConfirmation", "rejecting", "locked"].includes(sessionKind)
-    || (sessionKind === "ready" && snapshot.state.domain.sync !== "running");
+  const verificationGate = ["provisional", "awaitingVerification", "verifying", "awaitingBootstrapConfirmation", "rejecting", "locked"].includes(sessionKind);
   if (verificationGate) {
     return <SessionVerificationGate snapshot={snapshot} onSnapshot={setSnapshot} onSignOut={() => void logout()} />;
   }

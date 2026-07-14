@@ -48,6 +48,33 @@ test("verification states replace the complete desktop shell", async ({ page }) 
   }
 });
 
+test("ready sync lifecycle stays in the normal shell", async ({ page }) => {
+  await page.goto("/appHarness.html");
+
+  for (const sync of ["starting", { reconnecting: "offline" }, { failed: "offline" }] as const) {
+    await page.evaluate((nextSync) => {
+      const snapshot = window.__harness.currentSnapshot();
+      window.__harness.setSnapshot({
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          domain: {
+            ...snapshot.state.domain,
+            session: { ...snapshot.state.domain.session, kind: "ready" },
+            sync: nextSync
+          }
+        }
+      });
+      window.__harness.pushStateChanged();
+    }, sync);
+
+    await expect(page.getByRole("main", { name: "Conversation timeline" })).toBeVisible();
+    await expect(page.getByRole("main", { name: /Verify this session|Preparing your rooms/ })).toHaveCount(0);
+  }
+
+  await expect(page.getByRole("button", { name: "Restart sync" })).toBeVisible();
+});
+
 test("gate controls follow the Core admission matrix", async ({ page }) => {
   await page.goto("/appHarness.html");
   const controls = ["Verify with another device", "Recover", "Create secure backup", "They match", "They do not match", "Cancel", "Retry", "I saved the recovery key"];

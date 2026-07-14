@@ -2339,8 +2339,8 @@ describe("Timeline item row rendering", () => {
     ).resolves.toBe("Sign-in failed. Please try again.");
   });
 
-  test("ready with non-running sync remains behind room preparation gate", () => {
+  test("ready with non-running sync renders the normal shell", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
-    expect(source).toContain('(sessionKind === "ready" && snapshot.state.domain.sync !== "running")');
+    expect(source).not.toContain('(sessionKind === "ready" && snapshot.state.domain.sync !== "running")');
   });
 });
