@@ -166,8 +166,6 @@ pub struct CoreRuntimeState {
     pub(crate) connection: TokioMutex<CoreConnection>,
     /// Tauri-side timeline item count (updated by event loop; QA title only).
     pub(crate) timeline_items_count: AtomicUsize,
-    pub(crate) media_preparation:
-        TokioMutex<koushi_core::media_preparation::MediaPreparationRegistry>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -956,7 +954,6 @@ pub fn run() {
                 runtime,
                 connection: TokioMutex::new(command_conn),
                 timeline_items_count: AtomicUsize::new(0),
-                media_preparation: TokioMutex::new(Default::default()),
             };
             app.manage(core_state);
             install_oidc_deep_link_handler(app)?;
@@ -2302,6 +2299,14 @@ mod tests {
             }))
             .expect("serialize media upload progress");
 
+        let media_send_queued =
+            serialize_core_event(&CoreEvent::Timeline(TimelineEvent::MediaSendQueued {
+                request_id,
+                key: key.clone(),
+                transaction_id: "txn-media".to_owned(),
+            }))
+            .expect("serialize media queue admission");
+
         let media_download_progress =
             serialize_core_event(&CoreEvent::Timeline(TimelineEvent::MediaDownloadProgress {
                 request_id,
@@ -3035,6 +3040,7 @@ mod tests {
             "timelineMediaDownloadProgress": media_download_progress,
             "timelineMediaInitialItems": media_initial,
             "timelineMediaUploadProgress": media_upload_progress,
+            "timelineMediaSendQueued": media_send_queued,
             "timelineMessageForwarded": message_forwarded,
             "timelineMessageSourceLoaded": message_source_loaded,
             "timelineNavigationUpdated": navigation_updated,
@@ -3176,6 +3182,7 @@ mod tests {
             "timelineMediaDownloadProgress",
             "timelineMediaInitialItems",
             "timelineMediaUploadProgress",
+            "timelineMediaSendQueued",
             "timelineMessageForwarded",
             "timelineMessageSourceLoaded",
             "timelineAnchorRestoreFinished",

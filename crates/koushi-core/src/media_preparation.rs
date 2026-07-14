@@ -8,8 +8,95 @@ use koushi_state::{
     MediaPreparationFailureKind, PreparedUploadFormat, PreparedUploadVariant,
     StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind, StagedUploadPreparation,
 };
+use tokio::sync::{Mutex, MutexGuard};
 
 pub const MAX_PREPARATION_BATCH_SIZE: usize = 16;
+
+#[derive(Default)]
+pub struct MediaPreparationService {
+    registry: Mutex<MediaPreparationRegistry>,
+    transitions: Mutex<()>,
+}
+
+impl MediaPreparationService {
+    pub async fn transition(&self) -> MediaPreparationTransition<'_> {
+        let transition = self.transitions.lock().await;
+        let registry = self.registry.lock().await;
+        MediaPreparationTransition {
+            _transition: transition,
+            registry,
+        }
+    }
+
+    pub async fn reconcile_snapshot(&self, snapshot: &koushi_state::AppState) {
+        self.registry.lock().await.reconcile_snapshot(snapshot);
+    }
+}
+
+pub struct MediaPreparationTransition<'a> {
+    _transition: MutexGuard<'a, ()>,
+    registry: MutexGuard<'a, MediaPreparationRegistry>,
+}
+
+impl MediaPreparationTransition<'_> {
+    pub fn reconcile_snapshot(&mut self, snapshot: &koushi_state::AppState) {
+        self.registry.reconcile_snapshot(snapshot);
+    }
+
+    pub fn merge_prepared(&mut self, prepared: MediaPreparationRegistry) {
+        self.registry.merge_prepared(prepared);
+    }
+
+    pub fn source_input(
+        &self,
+        target: &ComposerTarget,
+        staged_id: &str,
+    ) -> Option<StageUploadBytesInput> {
+        self.registry.source_input(target, staged_id)
+    }
+
+    pub fn select_variant(
+        &mut self,
+        target: &ComposerTarget,
+        staged_id: &str,
+        variant_id: &str,
+    ) -> bool {
+        self.registry.select_variant(target, staged_id, variant_id)
+    }
+
+    pub fn selected_upload(
+        &self,
+        target: &ComposerTarget,
+        staged_id: &str,
+    ) -> Option<PreparedMediaUpload> {
+        self.registry.selected_upload(target, staged_id)
+    }
+
+    pub fn variant_bytes(
+        &self,
+        target: &ComposerTarget,
+        staged_id: &str,
+        variant_id: &str,
+    ) -> Option<Vec<u8>> {
+        self.registry.variant_bytes(target, staged_id, variant_id)
+    }
+
+    pub fn use_original(
+        &mut self,
+        target: &ComposerTarget,
+        staged_id: &str,
+    ) -> Option<StagedUploadItem> {
+        self.registry.use_original(target, staged_id)
+    }
+
+    pub fn remove_item(&mut self, target: &ComposerTarget, staged_id: &str) {
+        self.registry.remove_item(target, staged_id);
+    }
+
+    pub fn clear_target(&mut self, target: &ComposerTarget) {
+        self.registry.clear_target(target);
+    }
+}
 
 #[derive(Clone)]
 pub struct StageUploadBytesInput {
@@ -60,6 +147,7 @@ pub struct MediaPreparationRegistry {
     variants: BTreeMap<(ComposerTarget, String, String), CachedVariant>,
     selected: BTreeMap<(ComposerTarget, String), String>,
     sources: BTreeMap<(ComposerTarget, String), StageUploadBytesInput>,
+    account_user_id: Option<String>,
 }
 
 impl MediaPreparationRegistry {
@@ -152,6 +240,64 @@ impl MediaPreparationRegistry {
         self.variants.clear();
         self.selected.clear();
         self.sources.clear();
+        self.account_user_id = None;
+    }
+
+    pub fn merge_prepared(&mut self, prepared: Self) {
+        self.variants.extend(prepared.variants);
+        self.selected.extend(prepared.selected);
+        self.sources.extend(prepared.sources);
+    }
+
+    pub fn source_input(
+        &self,
+        target: &ComposerTarget,
+        staged_id: &str,
+    ) -> Option<StageUploadBytesInput> {
+        self.sources
+            .get(&(target.clone(), staged_id.to_owned()))
+            .cloned()
+    }
+
+    pub fn clear_thread_targets(&mut self) {
+        self.variants
+            .retain(|(target, _, _), _| !matches!(target, ComposerTarget::Thread { .. }));
+        self.selected
+            .retain(|(target, _), _| !matches!(target, ComposerTarget::Thread { .. }));
+        self.sources
+            .retain(|(target, _), _| !matches!(target, ComposerTarget::Thread { .. }));
+    }
+
+    fn reconcile_snapshot(&mut self, snapshot: &koushi_state::AppState) {
+        if let SessionAccountObservation::Stable(account_user_id) =
+            session_account_observation(&snapshot.session)
+        {
+            let account_user_id = account_user_id.map(str::to_owned);
+            if account_user_id != self.account_user_id {
+                self.variants.clear();
+                self.selected.clear();
+                self.sources.clear();
+                self.account_user_id = account_user_id;
+            }
+        }
+        self.variants.retain(|(target, staged_id, _), _| {
+            snapshot
+                .upload_staging
+                .items
+                .contains_key(&(target.clone(), staged_id.clone()))
+        });
+        self.selected.retain(|(target, staged_id), _| {
+            snapshot
+                .upload_staging
+                .items
+                .contains_key(&(target.clone(), staged_id.clone()))
+        });
+        self.sources.retain(|(target, staged_id), _| {
+            snapshot
+                .upload_staging
+                .items
+                .contains_key(&(target.clone(), staged_id.clone()))
+        });
     }
 
     pub fn retry_item(
@@ -336,6 +482,32 @@ impl MediaPreparationRegistry {
                 selected_variant_id: "original".to_owned(),
             },
         }
+    }
+}
+
+enum SessionAccountObservation<'a> {
+    Stable(Option<&'a str>),
+    Transitional,
+}
+
+fn session_account_observation(
+    session: &koushi_state::SessionState,
+) -> SessionAccountObservation<'_> {
+    match session {
+        koushi_state::SessionState::Ready(info) | koushi_state::SessionState::Locked(info) => {
+            SessionAccountObservation::Stable(Some(info.user_id.as_str()))
+        }
+        koushi_state::SessionState::SignedOut | koushi_state::SessionState::LoggingOut => {
+            SessionAccountObservation::Stable(None)
+        }
+        koushi_state::SessionState::Restoring
+        | koushi_state::SessionState::SwitchingAccount { .. }
+        | koushi_state::SessionState::Authenticating { .. }
+        | koushi_state::SessionState::Provisional { .. }
+        | koushi_state::SessionState::AwaitingVerification { .. }
+        | koushi_state::SessionState::Verifying { .. }
+        | koushi_state::SessionState::AwaitingBootstrapConfirmation { .. }
+        | koushi_state::SessionState::Rejecting { .. } => SessionAccountObservation::Transitional,
     }
 }
 
@@ -533,6 +705,120 @@ mod tests {
         assert_eq!(
             registry.selected_upload(&target, "failed").unwrap().bytes,
             b"captured source"
+        );
+    }
+
+    #[test]
+    fn snapshot_reconcile_retains_only_items_backed_by_staging_state() {
+        let mut registry = MediaPreparationRegistry::default();
+        let main = target(None);
+        let thread = target(Some("$root"));
+        let stale_thread = target(Some("$stale"));
+        let policy = ImageUploadCompressionPolicy::default();
+        let mut staged = Vec::new();
+        for (target, id) in [
+            (&main, "main"),
+            (&thread, "thread"),
+            (&stale_thread, "stale"),
+        ] {
+            let items = registry.prepare_target(
+                target,
+                vec![file(id, id.as_bytes())],
+                ImageUploadCompressionMode::Never,
+                policy,
+            );
+            staged.push(((*target).clone(), items[0].clone()));
+        }
+        let mut snapshot = koushi_state::AppState::default();
+        for (target, item) in staged.into_iter().take(2) {
+            snapshot
+                .upload_staging
+                .items
+                .insert((target, item.staged_id.clone()), item);
+        }
+
+        registry.reconcile_snapshot(&snapshot);
+
+        assert!(registry.selected_upload(&main, "main").is_some());
+        assert!(registry.selected_upload(&thread, "thread").is_some());
+        assert!(registry.selected_upload(&stale_thread, "stale").is_none());
+        registry.clear_thread_targets();
+        assert!(registry.selected_upload(&thread, "thread").is_none());
+        assert!(registry.selected_upload(&main, "main").is_some());
+    }
+
+    #[test]
+    fn account_change_clears_bytes_even_when_room_ids_match() {
+        let mut registry = MediaPreparationRegistry::default();
+        let target = target(None);
+        let mut snapshot = koushi_state::AppState::default();
+        snapshot.timeline.room_id = Some("!room:example.invalid".to_owned());
+        snapshot.session = koushi_state::SessionState::Ready(koushi_state::SessionInfo {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: "@first:example.invalid".to_owned(),
+            device_id: "FIRST".to_owned(),
+        });
+        registry.reconcile_snapshot(&snapshot);
+        let items = registry.prepare_target(
+            &target,
+            vec![file("private", b"first account")],
+            ImageUploadCompressionMode::Never,
+            ImageUploadCompressionPolicy::default(),
+        );
+        snapshot
+            .upload_staging
+            .items
+            .insert((target.clone(), "private".to_owned()), items[0].clone());
+        assert!(registry.selected_upload(&target, "private").is_some());
+
+        snapshot.session = koushi_state::SessionState::SwitchingAccount {
+            info: koushi_state::SessionInfo {
+                homeserver: "https://example.invalid".to_owned(),
+                user_id: "@second:example.invalid".to_owned(),
+                device_id: "SECOND".to_owned(),
+            },
+        };
+        registry.reconcile_snapshot(&snapshot);
+        assert!(registry.selected_upload(&target, "private").is_some());
+
+        snapshot.session = koushi_state::SessionState::Ready(koushi_state::SessionInfo {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: "@second:example.invalid".to_owned(),
+            device_id: "SECOND".to_owned(),
+        });
+        registry.reconcile_snapshot(&snapshot);
+
+        assert!(registry.selected_upload(&target, "private").is_none());
+    }
+
+    #[test]
+    fn detached_batch_merge_preserves_an_overlapping_stage_result() {
+        let target = target(None);
+        let policy = ImageUploadCompressionPolicy::default();
+        let mut committed = MediaPreparationRegistry::default();
+        committed.prepare_items(
+            &target,
+            vec![file("first", b"first")],
+            ImageUploadCompressionMode::Never,
+            policy,
+        );
+        let mut later = MediaPreparationRegistry::default();
+        later.prepare_items(
+            &target,
+            vec![file("second", b"second")],
+            ImageUploadCompressionMode::Never,
+            policy,
+        );
+
+        committed.merge_prepared(later);
+
+        assert_eq!(
+            committed.selected_upload(&target, "first").unwrap().bytes,
+            b"first"
+        );
+        assert_eq!(
+            committed.selected_upload(&target, "second").unwrap().bytes,
+            b"second"
         );
     }
 }

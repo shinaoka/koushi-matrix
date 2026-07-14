@@ -6921,9 +6921,14 @@ impl TimelineActor {
                     &handle,
                     TimelineSendState::Sending,
                 );
-                if let Some((client_txn_id, _submission_id, request_id, event_id)) = self
-                    .send_completion
-                    .remember_pending_send(sdk_txn_id, client_txn_id, None, request_id, false)
+                if let Some((client_txn_id, _submission_id, request_id, event_id)) =
+                    self.send_completion.remember_pending_send(
+                        sdk_txn_id,
+                        client_txn_id.clone(),
+                        None,
+                        request_id,
+                        false,
+                    )
                 {
                     self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
                         request_id,
@@ -6932,6 +6937,11 @@ impl TimelineActor {
                         event_id,
                     }));
                 }
+                self.emit(CoreEvent::Timeline(TimelineEvent::MediaSendQueued {
+                    request_id,
+                    key: self.key.clone(),
+                    transaction_id: client_txn_id,
+                }));
             }
             Err(err) => {
                 self.emit_failure(

@@ -10,3 +10,4 @@ thiserror = "2"
 
 [dev-dependencies]
 image.workspace = true
+png = "0.18"

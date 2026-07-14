@@ -370,6 +370,13 @@ export type TimelineEvent =
       };
     }
   | {
+      MediaSendQueued: {
+        request_id: RequestId;
+        key: TimelineKey;
+        transaction_id: string;
+      };
+    }
+  | {
       SubmissionAccepted: {
         request_id: RequestId;
         key: TimelineKey;

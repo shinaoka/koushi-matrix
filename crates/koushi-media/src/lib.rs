@@ -1,8 +1,14 @@
+use std::io::Cursor;
+
 use image::{
-    DynamicImage, ExtendedColorType, GenericImageView, ImageEncoder, ImageFormat,
+    DynamicImage, ExtendedColorType, GenericImageView, ImageEncoder, ImageFormat, ImageReader,
+    Limits,
     codecs::{jpeg::JpegEncoder, png::PngEncoder, webp::WebPEncoder},
     imageops::FilterType,
 };
+
+const MAX_DECODED_DIMENSION: u32 = 16_384;
+const MAX_DECODED_ALLOCATION: u64 = 256 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ImagePreparationPolicy {
@@ -61,12 +67,13 @@ pub fn prepare_image_variants(
 
     let guessed = image::guess_format(source).ok();
     let format = prepared_format(guessed);
-    let mime_type = actual_mime(format, declared_mime);
+    let _ = declared_mime;
+    let mime_type = actual_mime(format);
     let decoded = match format {
         PreparedImageFormat::Png | PreparedImageFormat::Jpeg | PreparedImageFormat::WebP
-            if !animated_webp(source) =>
+            if !animated_webp(source) && !animated_png(source) =>
         {
-            image::load_from_memory(source).ok()
+            decode_with_limits(source, guessed.expect("recognized image format")).ok()
         }
         _ => None,
     };
@@ -181,7 +188,7 @@ fn encoded_variant(
     Ok(PreparedImageVariant {
         id: id.to_owned(),
         filename: normalized_filename(source_filename, extension(format)),
-        mime_type: actual_mime(format, "application/octet-stream").to_owned(),
+        mime_type: actual_mime(format).to_owned(),
         format,
         bytes,
         dimensions: (width, height),
@@ -213,20 +220,13 @@ fn prepared_format(format: Option<ImageFormat>) -> PreparedImageFormat {
     }
 }
 
-fn actual_mime<'a>(format: PreparedImageFormat, fallback: &'a str) -> &'a str {
+fn actual_mime(format: PreparedImageFormat) -> &'static str {
     match format {
         PreparedImageFormat::Png => "image/png",
         PreparedImageFormat::Jpeg => "image/jpeg",
         PreparedImageFormat::WebP => "image/webp",
         PreparedImageFormat::Gif => "image/gif",
-        PreparedImageFormat::Other => {
-            let fallback = fallback.trim();
-            if fallback.is_empty() {
-                "application/octet-stream"
-            } else {
-                fallback
-            }
-        }
+        PreparedImageFormat::Other => "application/octet-stream",
     }
 }
 
@@ -253,4 +253,42 @@ fn normalized_filename(filename: &str, extension: &str) -> String {
 
 fn animated_webp(source: &[u8]) -> bool {
     source.windows(4).any(|window| window == b"ANIM")
+}
+
+fn animated_png(source: &[u8]) -> bool {
+    const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if !source.starts_with(PNG_SIGNATURE) {
+        return false;
+    }
+    let mut offset = PNG_SIGNATURE.len();
+    while let Some(header) = source.get(offset..offset.saturating_add(8)) {
+        let length = u32::from_be_bytes(header[..4].try_into().expect("four-byte chunk length"));
+        if &header[4..8] == b"acTL" {
+            return true;
+        }
+        let Some(next) = offset
+            .checked_add(12)
+            .and_then(|value| value.checked_add(length as usize))
+        else {
+            return false;
+        };
+        if next > source.len() {
+            return false;
+        }
+        offset = next;
+    }
+    false
+}
+
+fn decode_with_limits(
+    source: &[u8],
+    format: ImageFormat,
+) -> Result<DynamicImage, image::ImageError> {
+    let mut reader = ImageReader::with_format(Cursor::new(source), format);
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_DECODED_DIMENSION);
+    limits.max_image_height = Some(MAX_DECODED_DIMENSION);
+    limits.max_alloc = Some(MAX_DECODED_ALLOCATION);
+    reader.limits(limits);
+    reader.decode()
 }

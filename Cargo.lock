@@ -3179,6 +3179,7 @@ name = "koushi-media"
 version = "0.1.0"
 dependencies = [
  "image",
+ "png 0.18.1",
  "thiserror 2.0.18",
 ]
 

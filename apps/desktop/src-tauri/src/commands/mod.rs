@@ -2761,6 +2761,10 @@ pub(crate) fn build_submit_thread_reply_command(
 /// session will be rejected by `AppActor::requires_ready_session`).
 async fn account_key_from_snapshot(state: &CoreRuntimeState) -> AccountKey {
     let snapshot = state.connection.lock().await.snapshot();
+    account_key_from_app_state(&snapshot)
+}
+
+fn account_key_from_app_state(snapshot: &koushi_state::AppState) -> AccountKey {
     match &snapshot.session {
         koushi_state::SessionState::Ready(info)
         | koushi_state::SessionState::Provisional { info, .. }
@@ -7313,7 +7317,6 @@ mod tests {
                 runtime,
                 connection: tokio::sync::Mutex::new(connection),
                 timeline_items_count: std::sync::atomic::AtomicUsize::new(0),
-                media_preparation: tokio::sync::Mutex::new(Default::default()),
             };
             super::search::submit_search_production_path(
                 SYNTHETIC_QUERY.to_owned(),

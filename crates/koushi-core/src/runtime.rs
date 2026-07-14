@@ -10,7 +10,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
@@ -156,6 +159,11 @@ pub struct CoreRuntime {
     // the reducer with this in later phases; tests inject through it today.
     #[cfg_attr(not(any(test, feature = "test-hooks")), allow(dead_code))]
     action_tx: mpsc::Sender<Vec<AppAction>>,
+    /// Account-runtime-owned source and prepared variant bytes. The WebView
+    /// receives descriptors only; adapters may operate on this cache through
+    /// the typed runtime boundary.
+    media_preparation: Arc<crate::media_preparation::MediaPreparationService>,
+    media_lifecycle: executor::JoinHandle<()>,
     #[cfg(test)]
     account_actor_test_handle: AccountActorHandle,
     actor: executor::JoinHandle<()>,
@@ -293,6 +301,21 @@ impl CoreRuntime {
             pending_date_navigation_request_id: None,
         };
         let actor = executor::spawn(actor.run());
+        let media_preparation =
+            Arc::new(crate::media_preparation::MediaPreparationService::default());
+        let media_preparation_for_lifecycle = Arc::clone(&media_preparation);
+        let mut media_snapshot_rx = snapshot_rx.clone();
+        let media_lifecycle = executor::spawn(async move {
+            loop {
+                let snapshot = media_snapshot_rx.borrow().state.clone();
+                media_preparation_for_lifecycle
+                    .reconcile_snapshot(&snapshot)
+                    .await;
+                if media_snapshot_rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
 
         Self {
             command_tx,
@@ -300,6 +323,8 @@ impl CoreRuntime {
             snapshot_rx,
             next_connection_id: AtomicU64::new(1),
             action_tx,
+            media_preparation,
+            media_lifecycle,
             #[cfg(test)]
             account_actor_test_handle,
             actor,
@@ -318,6 +343,10 @@ impl CoreRuntime {
             snapshot_rx: self.snapshot_rx.clone(),
             next_sequence: AtomicU64::new(1),
         }
+    }
+
+    pub fn media_preparation(&self) -> &crate::media_preparation::MediaPreparationService {
+        &self.media_preparation
     }
 
     /// Test hook: inject reducer actions as if an actor side effect produced
@@ -340,12 +369,15 @@ impl CoreRuntime {
             snapshot_rx: _,
             next_connection_id: _,
             action_tx: _,
+            media_preparation: _,
+            media_lifecycle,
             #[cfg(test)]
                 account_actor_test_handle: _,
             actor,
         } = self;
         drop(command_tx);
         let _ = actor.await;
+        let _ = media_lifecycle.await;
     }
 }
 
