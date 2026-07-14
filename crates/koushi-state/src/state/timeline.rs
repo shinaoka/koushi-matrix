@@ -6,7 +6,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::composer_shortcuts::FormattedMessageDraft;
-use crate::submission::{ComposerSubmissionTarget, SubmissionId};
+use crate::submission::{ComposerSubmissionTarget, ComposerTarget, SubmissionId};
 
 use super::media_download::TimelineMediaDownloadState;
 use super::settings::ImageUploadCompressionMode;
@@ -107,6 +107,8 @@ pub struct StagedUploadItem {
     pub kind: StagedUploadKind,
     pub caption: Option<FormattedMessageDraft>,
     pub compression_choice: StagedUploadCompressionChoice,
+    #[serde(default)]
+    pub preparation: StagedUploadPreparation,
 }
 
 impl fmt::Debug for StagedUploadItem {
@@ -125,6 +127,7 @@ impl fmt::Debug for StagedUploadItem {
                 &self.caption.as_ref().map(|_| "MediaCaption(..)"),
             )
             .field("compression_choice", &self.compression_choice)
+            .field("preparation", &self.preparation)
             .finish()
     }
 }
@@ -148,18 +151,84 @@ pub enum StagedUploadCompressionChoice {
     Compressed { mode: ImageUploadCompressionMode },
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum StagedUploadPreparation {
+    #[default]
+    Preparing,
+    Ready {
+        variants: Vec<PreparedUploadVariant>,
+        selected_variant_id: String,
+    },
+    Failed {
+        failure_kind: MediaPreparationFailureKind,
+        can_use_original: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MediaPreparationFailureKind {
+    Empty,
+    Unsupported,
+    Decode,
+    Encode,
+    MissingPreparedBytes,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PreparedUploadFormat {
+    Original,
+    Png,
+    Jpeg,
+    Webp,
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PreparedUploadVariant {
+    pub variant_id: String,
+    pub filename: String,
+    pub mime_type: String,
+    pub byte_count: u64,
+    pub width: Option<u64>,
+    pub height: Option<u64>,
+    pub format: PreparedUploadFormat,
+    pub savings_percent: i64,
+    pub metadata_stripped: bool,
+    pub thumbnail_refreshed: bool,
+}
+
+impl fmt::Debug for PreparedUploadVariant {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedUploadVariant")
+            .field("variant_id", &"PreparedVariantId(..)")
+            .field("filename", &"MediaFilename(..)")
+            .field("mime_type", &self.mime_type)
+            .field("byte_count", &self.byte_count)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("format", &self.format)
+            .field("savings_percent", &self.savings_percent)
+            .field("metadata_stripped", &self.metadata_stripped)
+            .field("thumbnail_refreshed", &self.thumbnail_refreshed)
+            .finish()
+    }
+}
+
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct UploadStagingStore {
-    pub items: std::collections::BTreeMap<String, StagedUploadItem>,
+    pub items: std::collections::BTreeMap<(ComposerTarget, String), StagedUploadItem>,
 }
 
 impl UploadStagingStore {
-    pub fn items_for_room(&self, room_id: &str) -> Vec<StagedUploadItem> {
+    pub fn items_for_target(&self, target: &ComposerTarget) -> Vec<StagedUploadItem> {
         let mut items = self
             .items
-            .values()
-            .filter(|item| item.room_id == room_id)
-            .cloned()
+            .iter()
+            .filter(|((item_target, _), _)| item_target == target)
+            .map(|(_, item)| item.clone())
             .collect::<Vec<_>>();
         items.sort_by(|left, right| {
             left.position
@@ -169,42 +238,121 @@ impl UploadStagingStore {
         items
     }
 
-    pub fn replace_room_items(&mut self, room_id: &str, items: Vec<StagedUploadItem>) {
-        self.items.retain(|_, item| item.room_id != room_id);
-        for item in items.into_iter().filter(|item| item.room_id == room_id) {
-            self.items.insert(item.staged_id.clone(), item);
+    pub fn items_for_room(&self, room_id: &str) -> Vec<StagedUploadItem> {
+        self.items_for_target(&ComposerTarget::Main {
+            room_id: room_id.to_owned(),
+        })
+    }
+
+    pub fn replace_target_items(&mut self, target: ComposerTarget, items: Vec<StagedUploadItem>) {
+        self.items
+            .retain(|(item_target, _), _| item_target != &target);
+        let target_room_id = target.room_id();
+        for item in items
+            .into_iter()
+            .filter(|item| item.room_id == target_room_id)
+        {
+            self.items
+                .insert((target.clone(), item.staged_id.clone()), item);
         }
+    }
+
+    pub fn replace_room_items(&mut self, room_id: &str, items: Vec<StagedUploadItem>) {
+        self.replace_target_items(
+            ComposerTarget::Main {
+                room_id: room_id.to_owned(),
+            },
+            items,
+        );
     }
 
     pub fn update_caption(
         &mut self,
+        target: &ComposerTarget,
         staged_id: &str,
         caption: Option<FormattedMessageDraft>,
     ) -> Option<StagedUploadItem> {
-        let item = self.items.get_mut(staged_id)?;
+        let item = self
+            .items
+            .get_mut(&(target.clone(), staged_id.to_owned()))?;
         item.caption = caption;
         Some(item.clone())
     }
 
     pub fn update_compression_choice(
         &mut self,
+        target: &ComposerTarget,
         staged_id: &str,
         compression_choice: StagedUploadCompressionChoice,
     ) -> Option<StagedUploadItem> {
-        let item = self.items.get_mut(staged_id)?;
+        let item = self
+            .items
+            .get_mut(&(target.clone(), staged_id.to_owned()))?;
         item.compression_choice = compression_choice;
         Some(item.clone())
     }
 
-    pub fn clear_room(&mut self, room_id: &str) -> bool {
+    pub fn select_variant(
+        &mut self,
+        target: &ComposerTarget,
+        staged_id: &str,
+        variant_id: &str,
+    ) -> Option<StagedUploadItem> {
+        let item = self
+            .items
+            .get_mut(&(target.clone(), staged_id.to_owned()))?;
+        let StagedUploadPreparation::Ready {
+            variants,
+            selected_variant_id,
+        } = &mut item.preparation
+        else {
+            return None;
+        };
+        let selected = variants
+            .iter()
+            .find(|variant| variant.variant_id == variant_id)?
+            .clone();
+        *selected_variant_id = selected.variant_id;
+        item.filename = selected.filename;
+        item.mime_type = selected.mime_type;
+        item.byte_count = selected.byte_count;
+        item.kind = StagedUploadKind::Image {
+            width: selected.width,
+            height: selected.height,
+        };
+        Some(item.clone())
+    }
+
+    pub fn clear_target(&mut self, target: &ComposerTarget) -> bool {
         let before = self.items.len();
-        self.items.retain(|_, item| item.room_id != room_id);
+        self.items
+            .retain(|(item_target, _), _| item_target != target);
+        self.items.len() != before
+    }
+
+    pub fn clear_room(&mut self, room_id: &str) -> bool {
+        self.clear_target(&ComposerTarget::Main {
+            room_id: room_id.to_owned(),
+        })
+    }
+
+    pub fn clear_thread_targets_for_room(&mut self, room_id: &str) -> bool {
+        let before = self.items.len();
+        self.items.retain(|(target, _), _| {
+            !matches!(
+                target,
+                ComposerTarget::Thread {
+                    room_id: target_room_id,
+                    ..
+                } if target_room_id == room_id
+            )
+        });
         self.items.len() != before
     }
 
     pub fn retain_rooms(&mut self, room_ids: &BTreeSet<String>) {
         self.items
-            .retain(|_, item| room_ids.contains(item.room_id.as_str()));
+            .retain(|(target, _), _| room_ids.contains(target.room_id()));
     }
 }
 
@@ -366,6 +514,8 @@ impl fmt::Debug for MediaGalleryStore {
 pub struct ScheduledSendItem {
     pub scheduled_id: String,
     pub room_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_root_event_id: Option<String>,
     pub body: String,
     pub send_at_ms: u64,
     pub handle: ScheduledSendHandle,
@@ -379,6 +529,10 @@ impl fmt::Debug for ScheduledSendItem {
             .debug_struct("ScheduledSendItem")
             .field("scheduled_id", &self.scheduled_id)
             .field("room_id", &"RoomId(..)")
+            .field(
+                "thread_root_event_id",
+                &self.thread_root_event_id.as_ref().map(|_| "EventId(..)"),
+            )
             .field("body", &"MessageBody(..)")
             .field("send_at_ms", &"Timestamp(..)")
             .field("handle", &self.handle)

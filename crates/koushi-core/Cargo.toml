@@ -18,6 +18,7 @@ required-features = ["qa-bin"]
 koushi-diagnostics = { path = "../koushi-diagnostics" }
 koushi-sdk = { path = "../koushi-sdk" }
 koushi-key = { path = "../koushi-key" }
+koushi-media = { path = "../koushi-media" }
 koushi-search = { path = "../koushi-search" }
 koushi-state = { path = "../koushi-state" }
 base64 = "0.22"

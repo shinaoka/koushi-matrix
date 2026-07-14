@@ -132,12 +132,33 @@ pub(crate) fn handle_scheduled_send_created(
     }
 
     let room_id = item.room_id.clone();
+    let thread_root_event_id = item.thread_root_event_id.clone();
     state.scheduled_sends.insert(item);
-    state.composer_drafts.clear_room_draft(&room_id);
-    if state.timeline.room_id.as_deref() == Some(room_id.as_str()) {
+    if let Some(root_event_id) = thread_root_event_id.as_deref() {
+        state
+            .composer_drafts
+            .clear_thread_draft(&room_id, root_event_id);
+    } else {
+        state.composer_drafts.clear_room_draft(&room_id);
+    }
+    if thread_root_event_id.is_none() && state.timeline.room_id.as_deref() == Some(room_id.as_str())
+    {
         state.timeline.composer = Default::default();
         refresh_timeline_scheduled_sends(state);
         return vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })];
+    }
+    if let Some(root_event_id) = thread_root_event_id
+        && let crate::state::ThreadPaneState::Open {
+            room_id: open_room_id,
+            root_event_id: open_root_event_id,
+            composer,
+            ..
+        } = &mut state.thread
+        && open_room_id == &room_id
+        && open_root_event_id == &root_event_id
+    {
+        *composer = Default::default();
+        return vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)];
     }
     Vec::new()
 }
@@ -222,81 +243,101 @@ pub(crate) fn handle_scheduled_send_cancelled_or_dispatched(
 
 pub(crate) fn handle_upload_staging_changed(
     state: &mut AppState,
-    room_id: String,
+    target: crate::ComposerTarget,
     items: Vec<crate::state::StagedUploadItem>,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) || !room_exists(state, &room_id) {
+    if !is_session_ready(state)
+        || !room_exists(state, target.room_id())
+        || !composer_target_is_active(state, &target)
+    {
         return Vec::new();
     }
 
-    state.upload_staging.replace_room_items(&room_id, items);
-    if state.timeline.room_id.as_deref() == Some(room_id.as_str()) {
-        refresh_timeline_upload_staging(state);
-        return vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })];
-    }
-    Vec::new()
+    state
+        .upload_staging
+        .replace_target_items(target.clone(), items);
+    refresh_and_emit_upload_target(state, &target)
 }
 
 pub(crate) fn handle_upload_staging_caption_changed(
     state: &mut AppState,
+    target: crate::ComposerTarget,
     staged_id: String,
     caption: Option<crate::FormattedMessageDraft>,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) {
+    if !is_session_ready(state) || !composer_target_is_active(state, &target) {
         return Vec::new();
     }
 
-    let Some(item) = state.upload_staging.update_caption(&staged_id, caption) else {
+    let Some(_) = state
+        .upload_staging
+        .update_caption(&target, &staged_id, caption)
+    else {
         return Vec::new();
     };
-    let room_id = item.room_id;
-    if state.timeline.room_id.as_deref() == Some(room_id.as_str()) {
-        refresh_timeline_upload_staging(state);
-        return vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })];
-    }
-    Vec::new()
+    refresh_and_emit_upload_target(state, &target)
 }
 
 pub(crate) fn handle_upload_staging_compression_changed(
     state: &mut AppState,
+    target: crate::ComposerTarget,
     staged_id: String,
     compression_choice: StagedUploadCompressionChoice,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state)
+        || !composer_target_is_active(state, &target)
         || !staged_compression_choice_is_valid_for_item(
-            state.upload_staging.items.get(&staged_id),
+            state
+                .upload_staging
+                .items
+                .get(&(target.clone(), staged_id.clone())),
             compression_choice,
         )
     {
         return Vec::new();
     }
 
-    let Some(item) = state
-        .upload_staging
-        .update_compression_choice(&staged_id, compression_choice)
+    let Some(item) =
+        state
+            .upload_staging
+            .update_compression_choice(&target, &staged_id, compression_choice)
     else {
         return Vec::new();
     };
-    let room_id = item.room_id;
-    if state.timeline.room_id.as_deref() == Some(room_id.as_str()) {
-        refresh_timeline_upload_staging(state);
-        return vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })];
-    }
-    Vec::new()
+    let _ = item;
+    refresh_and_emit_upload_target(state, &target)
 }
 
 pub(crate) fn handle_upload_staging_cleared(
     state: &mut AppState,
-    room_id: String,
+    target: crate::ComposerTarget,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) || !state.upload_staging.clear_room(&room_id) {
+    if !is_session_ready(state)
+        || !composer_target_is_active(state, &target)
+        || !state.upload_staging.clear_target(&target)
+    {
         return Vec::new();
     }
-    if state.timeline.room_id.as_deref() == Some(room_id.as_str()) {
-        refresh_timeline_upload_staging(state);
-        return vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })];
+    refresh_and_emit_upload_target(state, &target)
+}
+
+pub(crate) fn handle_upload_staging_variant_selected(
+    state: &mut AppState,
+    target: crate::ComposerTarget,
+    staged_id: String,
+    variant_id: String,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) || !composer_target_is_active(state, &target) {
+        return Vec::new();
     }
-    Vec::new()
+    if state
+        .upload_staging
+        .select_variant(&target, &staged_id, &variant_id)
+        .is_none()
+    {
+        return Vec::new();
+    }
+    refresh_and_emit_upload_target(state, &target)
 }
 
 pub(crate) fn handle_media_gallery_updated(
@@ -564,6 +605,45 @@ pub(crate) fn handle_composer_reply_cancelled(state: &mut AppState) -> Vec<AppEf
 }
 
 // --- Private helpers ---
+
+fn composer_target_is_active(state: &AppState, target: &crate::ComposerTarget) -> bool {
+    match target {
+        crate::ComposerTarget::Main { room_id } => {
+            state.timeline.room_id.as_deref() == Some(room_id.as_str())
+        }
+        crate::ComposerTarget::Thread {
+            room_id,
+            root_event_id,
+        } => matches!(
+            &state.thread,
+            ThreadPaneState::Open {
+                room_id: open_room_id,
+                root_event_id: open_root_event_id,
+                ..
+            } if open_room_id == room_id && open_root_event_id == root_event_id
+        ),
+    }
+}
+
+fn refresh_and_emit_upload_target(
+    state: &mut AppState,
+    target: &crate::ComposerTarget,
+) -> Vec<AppEffect> {
+    match target {
+        crate::ComposerTarget::Main { room_id } => {
+            refresh_timeline_upload_staging(state);
+            vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: room_id.clone(),
+            })]
+        }
+        crate::ComposerTarget::Thread { .. } => {
+            if let ThreadPaneState::Open { staged_uploads, .. } = &mut state.thread {
+                *staged_uploads = state.upload_staging.items_for_target(target);
+            }
+            vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+        }
+    }
+}
 
 fn staged_compression_choice_is_valid_for_item(
     item: Option<&crate::state::StagedUploadItem>,

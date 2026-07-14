@@ -27,7 +27,8 @@ fn room(room_id: &str) -> RoomSummary {
         notification_count: 0,
         highlight_count: 0,
         marked_unread: false,
-        last_activity_ms: 0,
+        recency_stamp: None,
+        conversation_activity: None,
         latest_event: None,
         parent_space_ids: Vec::new(),
         dm_space_ids: Vec::new(),
@@ -968,6 +969,7 @@ fn opening_thread_requests_thread_timeline_and_subscription_success_opens_pane()
             root_event_id: "$root".to_owned(),
             is_subscribed: true,
             composer: ComposerState::default(),
+            staged_uploads: Vec::new(),
         }
     );
     assert_eq!(
@@ -1280,6 +1282,7 @@ fn thread_reply_submit_is_ignored_unless_ready_matching_open_and_idle() {
             root_event_id: "$root".to_owned(),
             is_subscribed: true,
             composer: ComposerState::default(),
+            staged_uploads: Vec::new(),
         },
         ..AppState::default()
     };

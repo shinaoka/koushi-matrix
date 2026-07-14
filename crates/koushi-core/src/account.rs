@@ -105,6 +105,27 @@ fn scheduled_dispatch_targets_active_session(
     active_session_key == Some(origin_session_key)
 }
 
+fn build_scheduled_message_content(
+    body: &str,
+    thread_root_event_id: Option<&str>,
+) -> Result<matrix_sdk::ruma::events::room::message::RoomMessageEventContent, TimelineFailureKind> {
+    use matrix_sdk::ruma::events::{relation::Thread, room::message::Relation};
+
+    let mut content = build_room_message_content_from_composer_body(
+        body,
+        koushi_state::MentionIntent::default(),
+    )?;
+    if let Some(root_event_id) = thread_root_event_id {
+        let root_event_id = matrix_sdk::ruma::EventId::parse(root_event_id)
+            .map_err(|_| TimelineFailureKind::Sdk)?;
+        content.relates_to = Some(Relation::Thread(Thread::plain(
+            root_event_id.clone(),
+            root_event_id,
+        )));
+    }
+    Ok(content)
+}
+
 fn state_search_scope(scope: &crate::command::SearchScope) -> koushi_state::SearchScope {
     match scope {
         crate::command::SearchScope::AllRooms => koushi_state::SearchScope::AllRooms,
@@ -205,6 +226,7 @@ pub enum AccountMessage {
         request_id: RequestId,
         scheduled_id: String,
         room_id: String,
+        thread_root_event_id: Option<String>,
         body: String,
         send_at_ms: u64,
     },
@@ -213,6 +235,7 @@ pub enum AccountMessage {
         origin_session_key: SessionKeyId,
         scheduled_id: String,
         room_id: String,
+        thread_root_event_id: Option<String>,
         body: String,
     },
     CancelServerDelayedSend {
@@ -224,6 +247,7 @@ pub enum AccountMessage {
         request_id: RequestId,
         scheduled_id: String,
         room_id: String,
+        thread_root_event_id: Option<String>,
         body: String,
         delay_id: String,
         send_at_ms: u64,
@@ -1027,6 +1051,7 @@ impl AccountActor {
                     request_id,
                     scheduled_id,
                     room_id,
+                    thread_root_event_id,
                     body,
                     send_at_ms,
                 } => {
@@ -1034,6 +1059,7 @@ impl AccountActor {
                         request_id,
                         scheduled_id,
                         room_id,
+                        thread_root_event_id,
                         body,
                         send_at_ms,
                     )
@@ -1044,6 +1070,7 @@ impl AccountActor {
                     origin_session_key,
                     scheduled_id,
                     room_id,
+                    thread_root_event_id,
                     body,
                 } => {
                     self.handle_dispatch_local_scheduled_send(
@@ -1051,6 +1078,7 @@ impl AccountActor {
                         origin_session_key,
                         scheduled_id,
                         room_id,
+                        thread_root_event_id,
                         body,
                     )
                     .await;
@@ -1067,6 +1095,7 @@ impl AccountActor {
                     request_id,
                     scheduled_id,
                     room_id,
+                    thread_root_event_id,
                     body,
                     delay_id,
                     send_at_ms,
@@ -1075,6 +1104,7 @@ impl AccountActor {
                         request_id,
                         scheduled_id,
                         room_id,
+                        thread_root_event_id,
                         body,
                         delay_id,
                         send_at_ms,
@@ -1698,6 +1728,7 @@ impl AccountActor {
         request_id: RequestId,
         scheduled_id: String,
         room_id: String,
+        thread_root_event_id: Option<String>,
         body: String,
         send_at_ms: u64,
     ) {
@@ -1709,7 +1740,13 @@ impl AccountActor {
         let capability = crate::scheduled_send::detect_capability(&session.client()).await;
         if capability == ScheduledSendCapability::ServerDelayedEvents {
             match self
-                .send_server_delayed_message(session, &room_id, &body, send_at_ms)
+                .send_server_delayed_message(
+                    session,
+                    &room_id,
+                    thread_root_event_id.as_deref(),
+                    &body,
+                    send_at_ms,
+                )
                 .await
             {
                 Ok(delay_id) => {
@@ -1721,6 +1758,7 @@ impl AccountActor {
                             item: ScheduledSendItem {
                                 scheduled_id,
                                 room_id,
+                                thread_root_event_id,
                                 body,
                                 send_at_ms,
                                 handle: ScheduledSendHandle::Server { delay_id },
@@ -1743,6 +1781,7 @@ impl AccountActor {
                 item: ScheduledSendItem {
                     scheduled_id,
                     room_id,
+                    thread_root_event_id,
                     body,
                     send_at_ms,
                     handle: ScheduledSendHandle::Local,
@@ -1759,6 +1798,7 @@ impl AccountActor {
         origin_session_key: SessionKeyId,
         scheduled_id: String,
         room_id: String,
+        thread_root_event_id: Option<String>,
         body: String,
     ) {
         let retry_at_ms = crate::scheduled_send::local_scheduled_send_retry_at_ms();
@@ -1801,10 +1841,8 @@ impl AccountActor {
                 .await;
             return;
         };
-        let content = match build_room_message_content_from_composer_body(
-            &body,
-            koushi_state::MentionIntent::default(),
-        ) {
+        let content = match build_scheduled_message_content(&body, thread_root_event_id.as_deref())
+        {
             Ok(content) => content,
             Err(kind) => {
                 self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
@@ -1813,7 +1851,6 @@ impl AccountActor {
                 return;
             }
         };
-
         let transaction_id = matrix_sdk::ruma::OwnedTransactionId::from(
             crate::scheduled_send::scheduled_send_transaction_id(&scheduled_id),
         );
@@ -1880,6 +1917,7 @@ impl AccountActor {
         request_id: RequestId,
         scheduled_id: String,
         room_id: String,
+        thread_root_event_id: Option<String>,
         body: String,
         delay_id: String,
         send_at_ms: u64,
@@ -1908,7 +1946,13 @@ impl AccountActor {
         }
 
         match self
-            .send_server_delayed_message(session, &room_id, &body, send_at_ms)
+            .send_server_delayed_message(
+                session,
+                &room_id,
+                thread_root_event_id.as_deref(),
+                &body,
+                send_at_ms,
+            )
             .await
         {
             Ok(delay_id) => {
@@ -1939,6 +1983,7 @@ impl AccountActor {
         &self,
         session: &MatrixClientSession,
         room_id: &str,
+        thread_root_event_id: Option<&str>,
         body: &str,
         send_at_ms: u64,
     ) -> Result<String, ()> {
@@ -1946,10 +1991,10 @@ impl AccountActor {
         use matrix_sdk::ruma::api::client::delayed_events::{
             DelayParameters, delayed_message_event,
         };
-        use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
 
         let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| ())?;
-        let content = RoomMessageEventContent::text_plain(body.to_owned());
+        let content =
+            build_scheduled_message_content(body, thread_root_event_id).map_err(|_| ())?;
         let request = delayed_message_event::unstable::Request::new(
             room_id,
             TransactionId::new(),
@@ -8036,6 +8081,22 @@ mod tests {
 
     use super::*;
     use crate::store::CredentialStoreBackend;
+
+    #[test]
+    fn scheduled_thread_message_content_preserves_the_thread_relation() {
+        let content = build_scheduled_message_content(
+            "scheduled thread body",
+            Some("$thread-root:example.invalid"),
+        )
+        .expect("thread content should build");
+        let value = serde_json::to_value(content).expect("content should serialize");
+
+        assert_eq!(value["m.relates_to"]["rel_type"], "m.thread");
+        assert_eq!(
+            value["m.relates_to"]["event_id"],
+            "$thread-root:example.invalid"
+        );
+    }
 
     #[test]
     fn own_user_sas_projects_gate_action_while_peer_sas_keeps_peer_projection() {

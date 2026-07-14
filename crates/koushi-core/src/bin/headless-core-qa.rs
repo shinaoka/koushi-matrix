@@ -2766,6 +2766,7 @@ async fn run_scheduled_send_stage(
     conn.command(CoreCommand::App(AppCommand::ScheduleSend {
         request_id: create_id,
         room_id: room_id.to_owned(),
+        thread_root_event_id: None,
         body: SCHEDULED_CREATE_BODY.to_owned(),
         send_at_ms: scheduled_qa_epoch_ms(Duration::from_secs(300)),
     }))
@@ -2820,6 +2821,7 @@ async fn run_scheduled_send_stage(
     conn.command(CoreCommand::App(AppCommand::ScheduleSend {
         request_id: fire_id,
         room_id: room_id.to_owned(),
+        thread_root_event_id: None,
         body: SCHEDULED_FIRE_BODY.to_owned(),
         send_at_ms: scheduled_qa_epoch_ms(Duration::from_millis(250)),
     }))
@@ -8254,7 +8256,8 @@ fn native_attention_room(
         notification_count,
         highlight_count,
         marked_unread: false,
-        last_activity_ms: 0,
+        recency_stamp: None,
+        conversation_activity: None,
         latest_event: None,
         parent_space_ids: Vec::new(),
         dm_space_ids: Vec::new(),
@@ -12006,7 +12009,9 @@ fn assert_upload_ux_state_contract(room_id: &str) -> Result<(), String> {
     reduce(
         &mut state,
         AppAction::UploadStagingChanged {
-            room_id: room_id.to_owned(),
+            target: koushi_state::ComposerTarget::Main {
+                room_id: room_id.to_owned(),
+            },
             items: vec![
                 StagedUploadItem {
                     staged_id: "stage-2".to_owned(),
@@ -12021,6 +12026,7 @@ fn assert_upload_ux_state_contract(room_id: &str) -> Result<(), String> {
                         MentionIntent::default(),
                     )),
                     compression_choice: StagedUploadCompressionChoice::NotApplicable,
+                    preparation: Default::default(),
                 },
                 StagedUploadItem {
                     staged_id: "stage-1".to_owned(),
@@ -12035,6 +12041,7 @@ fn assert_upload_ux_state_contract(room_id: &str) -> Result<(), String> {
                     },
                     caption: None,
                     compression_choice: StagedUploadCompressionChoice::Original,
+                    preparation: Default::default(),
                 },
             ],
         },
@@ -12048,6 +12055,9 @@ fn assert_upload_ux_state_contract(room_id: &str) -> Result<(), String> {
     reduce(
         &mut state,
         AppAction::UploadStagingCompressionChanged {
+            target: koushi_state::ComposerTarget::Main {
+                room_id: room_id.to_owned(),
+            },
             staged_id: "stage-1".to_owned(),
             compression_choice: StagedUploadCompressionChoice::Compressed {
                 mode: ImageUploadCompressionMode::Ask,

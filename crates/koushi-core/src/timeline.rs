@@ -6905,7 +6905,8 @@ impl TimelineActor {
                     .as_ref()
                     .map(media_caption_content_from_draft),
             )
-            .mentions(caption_mentions);
+            .mentions(caption_mentions)
+            .reply(attachment_reply_for_key(&self.key));
 
         match room
             .send_queue()
@@ -6920,9 +6921,14 @@ impl TimelineActor {
                     &handle,
                     TimelineSendState::Sending,
                 );
-                if let Some((client_txn_id, _submission_id, request_id, event_id)) = self
-                    .send_completion
-                    .remember_pending_send(sdk_txn_id, client_txn_id, None, request_id, false)
+                if let Some((client_txn_id, _submission_id, request_id, event_id)) =
+                    self.send_completion.remember_pending_send(
+                        sdk_txn_id,
+                        client_txn_id.clone(),
+                        None,
+                        request_id,
+                        false,
+                    )
                 {
                     self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
                         request_id,
@@ -6931,6 +6937,11 @@ impl TimelineActor {
                         event_id,
                     }));
                 }
+                self.emit(CoreEvent::Timeline(TimelineEvent::MediaSendQueued {
+                    request_id,
+                    key: self.key.clone(),
+                    transaction_id: client_txn_id,
+                }));
             }
             Err(err) => {
                 self.emit_failure(
@@ -10392,6 +10403,17 @@ fn reply_enforce_thread_for_key(key: &TimelineKey) -> EnforceThread {
         TimelineKind::Thread { .. } => EnforceThread::Threaded(ReplyWithinThread::No),
         TimelineKind::Room { .. } | TimelineKind::Focused { .. } => EnforceThread::MaybeThreaded,
     }
+}
+
+fn attachment_reply_for_key(key: &TimelineKey) -> Option<Reply> {
+    let TimelineKind::Thread { root_event_id, .. } = &key.kind else {
+        return None;
+    };
+    Some(Reply {
+        event_id: matrix_sdk::ruma::EventId::parse(root_event_id).ok()?,
+        enforce_thread: EnforceThread::Threaded(ReplyWithinThread::No),
+        add_mentions: AddMentions::No,
+    })
 }
 
 fn thread_root_from_original_json(original_json: &serde_json::Value) -> Option<String> {
@@ -19015,6 +19037,17 @@ mod tests {
             reply_enforce_thread_for_key(&thread_key()),
             EnforceThread::Threaded(ReplyWithinThread::No)
         );
+    }
+
+    #[test]
+    fn thread_media_uses_the_same_regular_thread_relation() {
+        let reply = attachment_reply_for_key(&thread_key()).expect("thread media relation");
+        assert_eq!(
+            reply.enforce_thread,
+            EnforceThread::Threaded(ReplyWithinThread::No)
+        );
+        assert_eq!(reply.event_id.as_str(), "$root:test");
+        assert!(attachment_reply_for_key(&room_key()).is_none());
     }
 
     #[tokio::test]

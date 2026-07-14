@@ -919,6 +919,11 @@ pub enum TimelineEvent {
         transaction_id: String,
         event_id: String,
     },
+    MediaSendQueued {
+        request_id: RequestId,
+        key: TimelineKey,
+        transaction_id: String,
+    },
     SubmissionAccepted {
         request_id: RequestId,
         key: TimelineKey,
@@ -1053,6 +1058,12 @@ impl fmt::Debug for TimelineEvent {
                 .field("key", &"TimelineKey(..)")
                 .field("transaction_id", transaction_id)
                 .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::MediaSendQueued { request_id, .. } => formatter
+                .debug_struct("MediaSendQueued")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("transaction_id", &"TransactionId(..)")
                 .finish(),
             Self::SubmissionAccepted {
                 request_id,
@@ -1897,6 +1908,7 @@ pub fn project_timeline_event_display_labels(event: &mut TimelineEvent, state: &
         TimelineEvent::PaginationStateChanged { .. }
         | TimelineEvent::AnchorRestoreFinished { .. }
         | TimelineEvent::SendCompleted { .. }
+        | TimelineEvent::MediaSendQueued { .. }
         | TimelineEvent::SubmissionAccepted { .. }
         | TimelineEvent::SubmissionRejected { .. }
         | TimelineEvent::MessageSourceLoaded { .. }

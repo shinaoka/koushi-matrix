@@ -23,6 +23,7 @@ import type {
   ComposerResolvedAction,
   ComposerResolverOptions,
   ComposerSurface,
+  ComposerTarget,
   DirectoryQuery,
   RoomListFilter,
   RoomListProjection,
@@ -32,6 +33,7 @@ import type {
   InviteTargetCandidate,
   InviteScopeSelection,
   InviteWorkflowState,
+  ImageUploadCompressionMode,
   InvitePreview,
   RoomPermissionFacts,
   RoomSummary,
@@ -44,6 +46,7 @@ import type {
   SearchScopeKind,
   SettingsPatch,
   PresenceKind,
+  PreparedUploadVariant,
   LocaleSettings,
   LocaleDisplayProfile,
   LiveEventReceiptSummary,
@@ -53,6 +56,8 @@ import type {
   SpaceSummary,
   SubmissionResponse,
   StagedUploadCompressionChoice,
+  StagedUploadItem,
+  StageUploadBytesRequestItem,
   TimelineMessage,
   ThreadsListItem,
   UploadStagingRequestItem,
@@ -147,14 +152,35 @@ export interface DesktopApi {
     body: string,
     mentions?: MentionIntent
   ): Promise<SubmissionResponse>;
-  scheduleSend(roomId: string, body: string, sendAtMs: number): Promise<DesktopSnapshot>;
+  scheduleSend(target: ComposerTarget, body: string, sendAtMs: number): Promise<DesktopSnapshot>;
   stageUploads(roomId: string, items: UploadStagingRequestItem[]): Promise<DesktopSnapshot>;
-  updateStagedUploadCaption(stagedId: string, caption: string | null): Promise<DesktopSnapshot>;
+  stageUploadBytes(
+    target: ComposerTarget,
+    items: StageUploadBytesRequestItem[]
+  ): Promise<DesktopSnapshot>;
+  selectStagedUploadVariant(
+    target: ComposerTarget,
+    stagedId: string,
+    variantId: string
+  ): Promise<DesktopSnapshot>;
+  retryStagedUploadPreparation(target: ComposerTarget, stagedId: string): Promise<DesktopSnapshot>;
+  useOriginalStagedUpload(target: ComposerTarget, stagedId: string): Promise<DesktopSnapshot>;
+  preparedUploadPreview(
+    target: ComposerTarget,
+    stagedId: string,
+    variantId: string
+  ): Promise<number[]>;
+  sendPreparedUploads(target: ComposerTarget): Promise<DesktopSnapshot>;
+  updateStagedUploadCaption(
+    target: ComposerTarget,
+    stagedId: string,
+    caption: string | null
+  ): Promise<DesktopSnapshot>;
   updateStagedUploadCompression(
     stagedId: string,
     compressionChoice: StagedUploadCompressionChoice
   ): Promise<DesktopSnapshot>;
-  clearUploadStaging(roomId: string): Promise<DesktopSnapshot>;
+  clearUploadStaging(target: ComposerTarget): Promise<DesktopSnapshot>;
   cancelScheduledSend(scheduledId: string): Promise<DesktopSnapshot>;
   rescheduleScheduledSend(scheduledId: string, sendAtMs: number): Promise<DesktopSnapshot>;
   retrySend(roomId: string, transactionId: string): Promise<DesktopSnapshot>;
@@ -214,7 +240,8 @@ export interface DesktopApi {
     submissionId: string,
     roomId: string,
     rootEventId: string,
-    body: string
+    body: string,
+    mentions?: MentionIntent
   ): Promise<SubmissionResponse>;
   submitSearch(query: string, scope: SearchScopeKind): Promise<DesktopSnapshot>;
   queryDirectory(query: DirectoryQuery): Promise<DesktopSnapshot>;
@@ -278,6 +305,7 @@ class BrowserFakeApi implements DesktopApi {
   private snapshot: DesktopSnapshot;
   private requestSequence = 1_000;
   private composerDrafts = new Map<string, string>();
+  private preparedUploadBytes = new Map<string, number[]>();
   private submissionLedger = new Map<string, string>();
 
   private replaySubmission(submissionId: string): SubmissionResponse | null {
@@ -682,7 +710,7 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   private refreshSidebar(): void {
-    this.snapshot.sidebar = composeSidebar(
+    this.snapshot.sidebar = composeBrowserFakeSidebar(
       this.snapshot.state.ui.navigation.active_space_id,
       this.snapshot.state.domain.spaces,
       this.snapshot.state.domain.rooms,
@@ -1225,14 +1253,14 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async scheduleSend(
-    roomId: string,
+    target: ComposerTarget,
     body: string,
     sendAtMs: number
   ): Promise<DesktopSnapshot> {
     const session = this.snapshot.state.domain.session;
     if (
       session.kind !== "ready" ||
-      this.snapshot.state.ui.timeline.room_id !== roomId ||
+      !browserComposerTargetIsActive(this.snapshot, target) ||
       body.trim().length === 0 ||
       !Number.isFinite(sendAtMs)
     ) {
@@ -1244,14 +1272,22 @@ class BrowserFakeApi implements DesktopApi {
       ...this.snapshot.state.ui.timeline.scheduled_sends,
       {
         scheduled_id: `browser-scheduled-${this.snapshot.state.ui.timeline.scheduled_sends.length + 1}`,
-        room_id: roomId,
+        room_id: target.room_id,
+        thread_root_event_id: target.kind === "thread" ? target.root_event_id : null,
         body,
         send_at_ms: sendAtMs,
         handle: { kind: "local" }
       }
     ];
-    this.snapshot.state.ui.timeline.composer.draft = "";
-    this.composerDrafts.delete(roomId);
+    if (target.kind === "main") {
+      this.snapshot.state.ui.timeline.composer.draft = "";
+      this.composerDrafts.delete(target.room_id);
+    } else if (
+      this.snapshot.state.ui.thread.kind === "open" &&
+      this.snapshot.state.ui.thread.composer
+    ) {
+      this.snapshot.state.ui.thread.composer.draft = "";
+    }
     return this.getSnapshot();
   }
 
@@ -1271,20 +1307,134 @@ class BrowserFakeApi implements DesktopApi {
       byte_count: Math.max(0, Math.floor(item.byteCount)),
       kind: item.kind,
       caption: null,
-      compression_choice: item.compressionChoice
+      compression_choice: item.compressionChoice,
+      preparation: { kind: "preparing" }
     }));
     return this.getSnapshot();
   }
 
+  async stageUploadBytes(
+    target: ComposerTarget,
+    items: StageUploadBytesRequestItem[]
+  ): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || !browserComposerTargetIsActive(this.snapshot, target)) {
+      return this.getSnapshot();
+    }
+    const staged = items.map((item, index) => {
+      const prepared = browserPreparedUploadItem(
+        target,
+        item,
+        index,
+        this.snapshot.state.domain.settings.values.media.image_upload_compression
+      );
+      if (prepared.preparation.kind === "ready") {
+        prepared.preparation.variants.forEach((variant) => {
+          this.preparedUploadBytes.set(
+            browserPreparedUploadKey(target, item.stagedId, variant.variant_id),
+            item.bytes
+          );
+        });
+      }
+      return prepared;
+    });
+    if (target.kind === "main") {
+      this.snapshot.state.ui.timeline.staged_uploads = staged;
+    } else if (this.snapshot.state.ui.thread.kind === "open") {
+      this.snapshot.state.ui.thread.staged_uploads = staged;
+    }
+    return this.getSnapshot();
+  }
+
+  async selectStagedUploadVariant(
+    target: ComposerTarget,
+    stagedId: string,
+    variantId: string
+  ): Promise<DesktopSnapshot> {
+    const items = browserStagedUploadsForTarget(this.snapshot, target);
+    const next = items.map((item) => {
+      if (item.staged_id !== stagedId || item.preparation.kind !== "ready") {
+        return item;
+      }
+      const selected = item.preparation.variants.find((variant) => variant.variant_id === variantId);
+      return selected
+        ? {
+            ...item,
+            filename: selected.filename,
+            mime_type: selected.mime_type,
+            byte_count: selected.byte_count,
+            kind: {
+              kind: "image" as const,
+              width: selected.width,
+              height: selected.height
+            },
+            preparation: { ...item.preparation, selected_variant_id: variantId }
+          }
+        : item;
+    });
+    setBrowserStagedUploadsForTarget(this.snapshot, target, next);
+    return this.getSnapshot();
+  }
+
+  async preparedUploadPreview(
+    target: ComposerTarget,
+    stagedId: string,
+    variantId: string
+  ): Promise<number[]> {
+    return this.preparedUploadBytes.get(browserPreparedUploadKey(target, stagedId, variantId)) ?? [];
+  }
+
+  async retryStagedUploadPreparation(
+    target: ComposerTarget,
+    _stagedId: string
+  ): Promise<DesktopSnapshot> {
+    if (!browserComposerTargetIsActive(this.snapshot, target)) return this.getSnapshot();
+    return this.getSnapshot();
+  }
+
+  async useOriginalStagedUpload(
+    target: ComposerTarget,
+    stagedId: string
+  ): Promise<DesktopSnapshot> {
+    const items = browserStagedUploadsForTarget(this.snapshot, target).map((item) => {
+      if (item.staged_id !== stagedId || item.preparation.kind !== "failed") return item;
+      const variant = {
+        variant_id: "original",
+        filename: item.filename,
+        mime_type: item.mime_type,
+        byte_count: item.byte_count,
+        width: item.kind.kind === "image" ? item.kind.width : null,
+        height: item.kind.kind === "image" ? item.kind.height : null,
+        format: "original" as const,
+        savings_percent: 0,
+        metadata_stripped: false,
+        thumbnail_refreshed: false
+      };
+      return { ...item, preparation: { kind: "ready" as const, variants: [variant], selected_variant_id: "original" } };
+    });
+    setBrowserStagedUploadsForTarget(this.snapshot, target, items);
+    return this.getSnapshot();
+  }
+
+  async sendPreparedUploads(target: ComposerTarget): Promise<DesktopSnapshot> {
+    setBrowserStagedUploadsForTarget(this.snapshot, target, []);
+    for (const key of this.preparedUploadBytes.keys()) {
+      if (key.startsWith(`${target.kind}:${target.room_id}:`)) {
+        this.preparedUploadBytes.delete(key);
+      }
+    }
+    return this.getSnapshot();
+  }
+
   async updateStagedUploadCaption(
+    target: ComposerTarget,
     stagedId: string,
     caption: string | null
   ): Promise<DesktopSnapshot> {
-    if (!this.canUseSyncedViews()) {
+    if (!this.canUseSyncedViews() || !browserComposerTargetIsActive(this.snapshot, target)) {
       return this.getSnapshot();
     }
     const normalized = caption?.trim() ? caption : null;
-    this.snapshot.state.ui.timeline.staged_uploads = this.snapshot.state.ui.timeline.staged_uploads.map(
+    setBrowserStagedUploadsForTarget(this.snapshot, target, browserStagedUploadsForTarget(this.snapshot, target).map(
       (item) =>
         item.staged_id === stagedId
           ? {
@@ -1294,7 +1444,7 @@ class BrowserFakeApi implements DesktopApi {
                 : null
             }
           : item
-    );
+    ));
     return this.getSnapshot();
   }
 
@@ -1314,11 +1464,16 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
-  async clearUploadStaging(roomId: string): Promise<DesktopSnapshot> {
-    if (!this.canUseSyncedViews() || this.snapshot.state.ui.timeline.room_id !== roomId) {
+  async clearUploadStaging(target: ComposerTarget): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || !browserComposerTargetIsActive(this.snapshot, target)) {
       return this.getSnapshot();
     }
-    this.snapshot.state.ui.timeline.staged_uploads = [];
+    setBrowserStagedUploadsForTarget(this.snapshot, target, []);
+    for (const key of this.preparedUploadBytes.keys()) {
+      if (key.startsWith(`${target.kind}:${target.room_id}:`)) {
+        this.preparedUploadBytes.delete(key);
+      }
+    }
     return this.getSnapshot();
   }
 
@@ -1776,7 +1931,8 @@ class BrowserFakeApi implements DesktopApi {
     submissionId: string,
     roomId: string,
     rootEventId: string,
-    body: string
+    body: string,
+    _mentions?: MentionIntent
   ): Promise<SubmissionResponse> {
     const replay = this.replaySubmission(submissionId);
     if (replay) return replay;
@@ -3179,6 +3335,134 @@ class BrowserFakeApi implements DesktopApi {
   }
 }
 
+function browserComposerTargetIsActive(snapshot: DesktopSnapshot, target: ComposerTarget): boolean {
+  return target.kind === "main"
+    ? snapshot.state.ui.timeline.room_id === target.room_id
+    : snapshot.state.ui.thread.kind === "open" &&
+        snapshot.state.ui.thread.room_id === target.room_id &&
+        snapshot.state.ui.thread.root_event_id === target.root_event_id;
+}
+
+function browserStagedUploadsForTarget(
+  snapshot: DesktopSnapshot,
+  target: ComposerTarget
+): StagedUploadItem[] {
+  if (!browserComposerTargetIsActive(snapshot, target)) {
+    return [];
+  }
+  return target.kind === "main"
+    ? snapshot.state.ui.timeline.staged_uploads
+    : snapshot.state.ui.thread.staged_uploads ?? [];
+}
+
+function setBrowserStagedUploadsForTarget(
+  snapshot: DesktopSnapshot,
+  target: ComposerTarget,
+  items: StagedUploadItem[]
+): void {
+  if (!browserComposerTargetIsActive(snapshot, target)) {
+    return;
+  }
+  if (target.kind === "main") {
+    snapshot.state.ui.timeline.staged_uploads = items;
+  } else {
+    snapshot.state.ui.thread.staged_uploads = items;
+  }
+}
+
+function browserPreparedUploadKey(
+  target: ComposerTarget,
+  stagedId: string,
+  variantId: string
+): string {
+  return `${target.kind}:${target.room_id}:${target.kind === "thread" ? target.root_event_id : ""}:${stagedId}:${variantId}`;
+}
+
+function browserPreparedUploadItem(
+  target: ComposerTarget,
+  item: StageUploadBytesRequestItem,
+  index: number,
+  mode: ImageUploadCompressionMode
+): StagedUploadItem {
+  const mime = item.mimeType.trim() || "application/octet-stream";
+  const imageFormat = browserImageFormat(mime);
+  const original: PreparedUploadVariant = {
+    variant_id: "original",
+    filename: item.filename || "attachment",
+    mime_type: mime,
+    byte_count: item.bytes.length,
+    width: imageFormat ? 64 : null,
+    height: imageFormat ? 48 : null,
+    format: imageFormat ?? "original",
+    savings_percent: 0,
+    metadata_stripped: false,
+    thumbnail_refreshed: false
+  };
+  const variants = [original];
+  if (imageFormat === "png") {
+    variants.push(
+      browserSyntheticVariant(item, "resized-png", "png", "image/png", 25),
+      browserSyntheticVariant(item, "webp", "webp", "image/webp", 35)
+    );
+  } else if (imageFormat === "jpeg") {
+    variants.push(
+      browserSyntheticVariant(item, "resized-jpeg", "jpeg", "image/jpeg", 25),
+      browserSyntheticVariant(item, "webp", "webp", "image/webp", 35)
+    );
+  } else if (imageFormat === "webp") {
+    variants.push(browserSyntheticVariant(item, "resized-webp", "webp", "image/webp", 25));
+  }
+  const selected = mode === "never" ? original : variants[variants.length - 1] ?? original;
+  return {
+    staged_id: item.stagedId,
+    room_id: target.room_id,
+    position: item.position || index + 1,
+    filename: selected.filename,
+    mime_type: selected.mime_type,
+    byte_count: selected.byte_count,
+    kind: imageFormat
+      ? { kind: "image", width: selected.width, height: selected.height }
+      : { kind: "file" },
+    caption: null,
+    compression_choice: imageFormat ? { kind: "original" } : { kind: "notApplicable" },
+    preparation: {
+      kind: "ready",
+      variants,
+      selected_variant_id: selected.variant_id
+    }
+  };
+}
+
+function browserSyntheticVariant(
+  item: StageUploadBytesRequestItem,
+  variantId: string,
+  format: "png" | "jpeg" | "webp",
+  mimeType: string,
+  savingsPercent: number
+): PreparedUploadVariant {
+  const extension = format === "jpeg" ? "jpg" : format;
+  const stem = item.filename.replace(/\.[^.]*$/, "") || "attachment";
+  return {
+    variant_id: variantId,
+    filename: `${stem}.${extension}`,
+    mime_type: mimeType,
+    byte_count: Math.max(1, Math.floor(item.bytes.length * (1 - savingsPercent / 100))),
+    width: 48,
+    height: 36,
+    format,
+    savings_percent: savingsPercent,
+    metadata_stripped: true,
+    thumbnail_refreshed: true
+  };
+}
+
+function browserImageFormat(mime: string): "png" | "jpeg" | "webp" | null {
+  if (mime === "image/png") return "png";
+  if (mime === "image/jpeg") return "jpeg";
+  if (mime === "image/webp") return "webp";
+  return null;
+}
+
 function syntheticLinkPreviewImage(): LinkPreviewImage {
   const source: TimelineMediaSource = {
     mxc_uri: "mxc://example.invalid/synthetic-preview",
@@ -3225,7 +3509,7 @@ function createInitialSnapshot(session: BrowserFakeApiOptions["session"]): Deskt
 function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): DesktopSnapshot {
   const active_space_id = "!space-alpha:example.invalid";
   const active_room_id = "!room-alpha:example.invalid";
-  const sidebar = composeSidebar(active_space_id, spaces, rooms);
+  const sidebar = composeBrowserFakeSidebar(active_space_id, spaces, rooms);
     const snapshot: DesktopSnapshot = {
     state: {
       schema_version: 2,
@@ -4194,7 +4478,8 @@ function createActivityStreams(
       sender_label: null,
       sender_avatar: null,
       preview: null,
-      timestamp_ms: room.last_activity_ms ?? 0,
+      timestamp_ms:
+        room.latest_event?.timestamp_ms ?? room.conversation_activity?.timestamp_ms ?? 0,
       unread: true,
       highlight: (room.highlight_count ?? 0) > 0,
       context_label: activityRowContextLabel(room, spacesById)
@@ -4354,6 +4639,8 @@ const rooms: RoomSummary[] = [
     dm_user_ids: [],
     tags: emptyRoomTags(),
     unread_count: 8,
+    recency_stamp: 100,
+    conversation_activity: { timestamp_ms: 100, source: "message" },
     parent_space_ids: ["!space-alpha:example.invalid"],
     dm_space_ids: [],
     is_encrypted: false
@@ -4368,6 +4655,8 @@ const rooms: RoomSummary[] = [
     dm_user_ids: [],
     tags: emptyRoomTags(),
     unread_count: 2,
+    recency_stamp: 90,
+    conversation_activity: { timestamp_ms: 90, source: "message" },
     parent_space_ids: ["!space-alpha:example.invalid"],
     dm_space_ids: [],
     is_encrypted: false
@@ -4382,6 +4671,8 @@ const rooms: RoomSummary[] = [
     dm_user_ids: [],
     tags: emptyRoomTags(),
     unread_count: 1,
+    recency_stamp: 80,
+    conversation_activity: { timestamp_ms: 80, source: "message" },
     parent_space_ids: ["!space-beta:example.invalid"],
     dm_space_ids: [],
     is_encrypted: false
@@ -4396,6 +4687,8 @@ const rooms: RoomSummary[] = [
     dm_user_ids: ["@member-1:example.invalid"],
     tags: emptyRoomTags(),
     unread_count: 1,
+    recency_stamp: 70,
+    conversation_activity: { timestamp_ms: 70, source: "message" },
     parent_space_ids: [],
     dm_space_ids: [],
     is_encrypted: false
@@ -4410,11 +4703,44 @@ const rooms: RoomSummary[] = [
     dm_user_ids: ["@member-2:example.invalid"],
     tags: emptyRoomTags(),
     unread_count: 0,
+    recency_stamp: 60,
+    conversation_activity: null,
     parent_space_ids: [],
     dm_space_ids: [],
     is_encrypted: false
   }
 ];
+
+function composeBrowserFakeSidebar(
+  activeSpaceId: string | null,
+  sourceSpaces: SpaceSummary[],
+  sourceRooms: RoomSummary[],
+  roomNotificationSettings: Record<string, RoomNotificationSettings> = {}
+) {
+  const sidebar = composeSidebar(
+    activeSpaceId,
+    sourceSpaces,
+    sourceRooms,
+    roomNotificationSettings
+  );
+  const projection = computeBrowserRoomListProjection(
+    { kind: "people" },
+    { kind: "activity" },
+    activeSpaceId,
+    sourceSpaces,
+    sourceRooms,
+    []
+  );
+  const positionByRoomId = new Map(
+    (projection.items ?? []).map((item, index) => [item.room_id, index])
+  );
+  sidebar.global_dms.sort(
+    (left, right) =>
+      (positionByRoomId.get(left.room_id) ?? Number.MAX_SAFE_INTEGER) -
+      (positionByRoomId.get(right.room_id) ?? Number.MAX_SAFE_INTEGER)
+  );
+  return sidebar;
+}
 
 const invites: InvitePreview[] = [
   {

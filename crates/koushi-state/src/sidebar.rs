@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::{
     AvatarImage, RoomNotificationMode, RoomNotificationSettings, RoomSummary, RoomTags,
-    SpaceSummary, room_activity_unread_count,
+    SpaceSummary, compare_conversation_activity, room_activity_unread_count,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -117,7 +117,7 @@ pub fn compose_sidebar_with_room_notification_settings(
 
     let not_joined_space_rooms = Vec::new();
 
-    let global_dms: Vec<_> = rooms
+    let mut global_dm_rooms: Vec<_> = rooms
         .iter()
         .filter(|room| {
             room.is_dm
@@ -127,8 +127,9 @@ pub fn compose_sidebar_with_room_notification_settings(
                         .iter()
                         .any(|space_id| Some(space_id.as_str()) == active_space_id))
         })
-        .map(room_list_item)
         .collect();
+    global_dm_rooms.sort_by(|left, right| compare_conversation_activity(Some(*left), Some(*right)));
+    let global_dms: Vec<_> = global_dm_rooms.into_iter().map(room_list_item).collect();
 
     SidebarModel {
         active_space_id: active_space_id.map(str::to_owned),

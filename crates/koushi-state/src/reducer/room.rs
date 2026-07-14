@@ -215,7 +215,8 @@ fn room_has_unread_metrics(room: &RoomSummary) -> bool {
 }
 
 fn same_room_activity(left: &RoomSummary, right: &RoomSummary) -> bool {
-    left.last_activity_ms == right.last_activity_ms
+    left.recency_stamp == right.recency_stamp
+        && left.conversation_activity == right.conversation_activity
         && latest_event_id(left) == latest_event_id(right)
 }
 

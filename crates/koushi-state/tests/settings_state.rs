@@ -628,7 +628,7 @@ fn settings_load_and_persist_failures_are_private_data_free() {
     );
 }
 
-fn test_room(room_id: &str, display_name: &str, last_activity_ms: u64) -> RoomSummary {
+fn test_room(room_id: &str, display_name: &str, activity_timestamp_ms: u64) -> RoomSummary {
     RoomSummary {
         room_id: room_id.to_owned(),
         display_name: display_name.to_owned(),
@@ -642,7 +642,11 @@ fn test_room(room_id: &str, display_name: &str, last_activity_ms: u64) -> RoomSu
         notification_count: 0,
         highlight_count: 0,
         marked_unread: false,
-        last_activity_ms,
+        recency_stamp: Some(activity_timestamp_ms),
+        conversation_activity: Some(koushi_state::ConversationActivity {
+            timestamp_ms: activity_timestamp_ms,
+            source: koushi_state::ConversationActivitySource::Message,
+        }),
         latest_event: None,
         parent_space_ids: Vec::new(),
         dm_space_ids: Vec::new(),

@@ -33,7 +33,9 @@ pub struct RoomSummary {
     #[serde(default)]
     pub marked_unread: bool,
     #[serde(default)]
-    pub last_activity_ms: u64,
+    pub recency_stamp: Option<u64>,
+    #[serde(default)]
+    pub conversation_activity: Option<ConversationActivity>,
     #[serde(default)]
     pub latest_event: Option<RoomLatestEventSummary>,
     pub parent_space_ids: Vec<String>,
@@ -61,7 +63,8 @@ impl fmt::Debug for RoomSummary {
             .field("notification_count", &self.notification_count)
             .field("highlight_count", &self.highlight_count)
             .field("marked_unread", &self.marked_unread)
-            .field("last_activity_ms", &self.last_activity_ms)
+            .field("has_recency_stamp", &self.recency_stamp.is_some())
+            .field("conversation_activity", &self.conversation_activity)
             .field(
                 "latest_event",
                 &self.latest_event.as_ref().map(|_| "LatestEvent(..)"),
@@ -72,6 +75,59 @@ impl fmt::Debug for RoomSummary {
             .field("joined_members", &self.joined_members)
             .finish()
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConversationActivitySource {
+    Message,
+    EncryptedMessage,
+    ThreadReply,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ConversationActivity {
+    pub timestamp_ms: u64,
+    pub source: ConversationActivitySource,
+}
+
+impl fmt::Debug for ConversationActivity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ConversationActivity")
+            .field("source", &self.source)
+            .finish_non_exhaustive()
+    }
+}
+
+pub(crate) fn compare_conversation_activity(
+    left: Option<&RoomSummary>,
+    right: Option<&RoomSummary>,
+) -> std::cmp::Ordering {
+    let left_activity = left.and_then(|room| room.conversation_activity);
+    let right_activity = right.and_then(|room| room.conversation_activity);
+    right_activity
+        .is_some()
+        .cmp(&left_activity.is_some())
+        .then_with(|| {
+            right_activity
+                .map(|activity| activity.timestamp_ms)
+                .cmp(&left_activity.map(|activity| activity.timestamp_ms))
+        })
+        .then_with(|| {
+            let left_label = left
+                .map(|room| room.display_label.to_lowercase())
+                .unwrap_or_default();
+            let right_label = right
+                .map(|room| room.display_label.to_lowercase())
+                .unwrap_or_default();
+            left_label.cmp(&right_label)
+        })
+        .then_with(|| {
+            left.map(|room| room.room_id.as_str())
+                .unwrap_or_default()
+                .cmp(right.map(|room| room.room_id.as_str()).unwrap_or_default())
+        })
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]

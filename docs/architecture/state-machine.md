@@ -222,6 +222,18 @@ stateDiagram-v2
   current `active_filter`. They are applied only for the current Ready session;
   updates delivered after provisional entry, trust loss, logout, or account
   switching are stale and must not repopulate cleared normal projections.
+- Activity and Recent-first ordering consume only the Rust-owned
+  `RoomSummary.conversation_activity` projection. The projection records an
+  actual message, undecryptable encrypted message, or thread reply timestamp;
+  it is independent from preview-oriented `latest_event` and the SDK's opaque
+  `recency_stamp`. Membership/state events, reactions, edits/replacements,
+  redactions, receipts, typing, and presence never create conversation
+  activity.
+- Rooms with conversation activity sort before rooms without it, then by
+  descending conversation timestamp. Equal or absent timestamps fall back to
+  case-folded `display_label` and finally `room_id`, so a newly joined DM cannot
+  outrank an existing conversation merely because its SDK recency stamp is
+  newer. React renders this order and must not re-sort room projections.
 - `RoomMarkedAsReadSucceeded` clears `marked_unread`, `unread_count`,
   `notification_count`, and `highlight_count` for the room and recomputes the
   projection. Success/failure settles may normalize matching in-flight request
@@ -546,16 +558,19 @@ stateDiagram-v2
   rooms. `TimelinePaneState.scheduled_sends` is the selected-room projection
   only, and `TimelinePaneState.scheduled_send_capability` advertises whether
   server delayed events or the local fallback is active.
-- `ScheduledSendCreated` inserts a queued item, clears the selected room's
-  composer draft through the Rust draft store, and refreshes the selected-room
-  projection. `ScheduledSendRescheduled` updates the due timestamp and handle;
+- Each scheduled item carries its room plus an optional thread root. A room
+  item clears only the captured room draft; a thread item clears only the
+  captured `(room_id, root_event_id)` draft and open thread composer. Both the
+  local fallback and MSC4140 delayed-event paths build `m.thread` relation
+  content when that root is present, including after reschedule/restart.
+- `ScheduledSendCreated` inserts a queued item and updates the matching composer
+  through the Rust draft store. `ScheduledSendRescheduled` updates the due timestamp and handle;
   `ScheduledSendCancelled` and `ScheduledSendDispatched` remove the item. Room
   pruning, logout, lock, and account switch clear or retain the backing store by
   joined-room account context.
 - `AppActor` owns the local fallback timer. When an item is due, it dispatches
-  `ScheduledSendDispatched` only for `ScheduledSendHandle::Local` items and
-  routes a normal `TimelineCommand::SendText` so the outbound send queue (#33)
-  remains the local-fallback send/failure/retry source of truth. Server
+  only `ScheduledSendHandle::Local` items through the account actor with the
+  captured room/thread target and deterministic transaction id. Server
   `ScheduledSendHandle::Server` items are never fired by the local timer.
 - `AccountActor` owns MSC4140 side effects because it owns the SDK session.
   It detects `org.matrix.msc4140` through the SDK `/versions` unstable feature
@@ -608,6 +623,12 @@ stateDiagram-v2
   `(room_id, root_event_id)`: `ThreadComposerDraftChanged` writes through,
   `ThreadSubscribed` hydrates the open thread composer, and
   `ThreadReplySubmitted` clears the matching stored thread draft.
+- The thread composer renders the shared full composer surface with thread key
+  resolution, mention/emoji handling, target-scoped upload staging, and
+  scheduled-send target capture. Presentation context is explicit: a thread
+  timeline suppresses only the conversation-start marker and root reply-summary
+  chip; the room timeline retains that chip and formats its Rust-projected
+  latest-reply timestamp.
 - Pane-level thread attention is Rust-owned `AppState.thread_attention`. It is
   initialized when a thread is opened, receives counts only for the currently
   open room/root event pair, and is cleared when the thread closes or navigation
@@ -885,22 +906,21 @@ stateDiagram-v2
   `formatted_body`) on the same `m.image`, `m.file`, `m.video`, or `m.audio`
   event. Incoming media captions are projected back through
   `TimelineItem.body` / `TimelineItem.formatted` beside `TimelineItem.media`.
-- Image upload compression policy is Rust-owned.
-  `SettingsValues.media.image_upload_compression` carries `always` / `ask` /
-  `never`; Tauri reads that snapshot value before building
-  `UploadMediaRequest.compression`.
-  `ImageUploadCompressionState` carries the threshold/target/quality contract,
-  original and selected variant metadata, skip-small decision, EXIF/geolocation
-  strip assertion for re-encoded images, and thumbnail-refresh assertion. The
-  GUI/effect layer may perform the pixel transform, but it must report the
-  selected bytes/dimensions/thumbnail through this Rust command contract.
+- Image preparation policy is Rust-owned. `SettingsValues.media` supplies the
+  initial selection policy, while `koushi-media` deterministically decodes,
+  resizes, and encodes PNG/JPEG/WebP candidates during staging. Re-encoded
+  candidates report actual MIME, dimensions, byte count, metadata stripping,
+  and thumbnail refresh; animated/unsupported sources remain original-only.
 - Upload staging is Rust-owned. `AppState.upload_staging` is the reducer backing
-  store and is not serialized directly; the selected-room projection is
-  `TimelinePaneState.staged_uploads`. It supports multiple staged files,
-  stable per-file positions, optional per-file captions, and per-image
-  compression choices. React may dispatch typed staging/caption/compression
-  commands and render the projection, but it must not keep a parallel staging
-  map or emulate multi-file sends as one media event plus separate text events.
+  store and is not serialized directly. Projections are target-scoped:
+  `TimelinePaneState.staged_uploads` for the active room composer and
+  `ThreadPaneState::Open.staged_uploads` for the exact open thread. Equal staged
+  ids in different targets remain isolated. Each item has preparing/ready/failed
+  state, selected prepared variant metadata, stable position, and caption.
+  Prepared source/candidate bytes live in a bounded ephemeral Rust registry
+  keyed by `(ComposerTarget, staged_id, variant_id)` and are cleared on remove,
+  close, navigation, logout, send, or stale-target settlement. React renders
+  the projection and requests previews; it owns no attachment state machine.
 - Room media gallery state is Rust-owned. `AppState.media_gallery` is the
   reducer backing store and is not serialized directly; the selected-room
   projection is `TimelinePaneState.media_gallery`, ordered by Rust from media
@@ -918,10 +938,14 @@ stateDiagram-v2
   `MediaDownloadCompleted` with `byte_count` only. A future GUI save/open flow
   must use a Rust-owned platform port or Tauri command that does not put bytes
   into React state.
-- Phase B GUI wiring is a transport client only: the Composer file input,
-  paste, and drop paths dispatch `stage_uploads`; caption/compression edits
-  dispatch typed staging commands; Send resolves the browser `File` handles and
-  invokes `upload_media` with the Rust-owned staged metadata. `TimelineView`
+- Phase B GUI wiring is a transport client only: picker, paste, and full-surface
+  HTML5 drop all enter one ingestion adapter that captures the current
+  `ComposerTarget` and bytes before asynchronous staging. Tauri disables native
+  drag/drop so packaged WebViews use the same `DataTransfer.files` route.
+  Candidate selection, retry, Use original, caption edits, and preview reads are
+  typed target-scoped commands. Send reads the already-selected Rust bytes and
+  performs no decode/resize/encode or Ask prompt. Thread sends use a thread
+  `TimelineKey`, including the media relation. `TimelineView`
   renders `TimelineItem.media` plus `MediaUploadProgress` keyed by the
   transaction id; event-backed media rows invoke `download_media`. React does
   not parse Matrix event content, infer encryption details, render MXC URIs, or

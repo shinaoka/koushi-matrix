@@ -58,15 +58,10 @@ const ROOM_SECTION_COLLAPSE_KEY = "koushi.roomSectionCollapsed.v1";
 
 function sortedSidebarRooms(
   rooms: RoomListItem[],
-  sort: SidebarRoomSort,
-  roomById: Map<string, RoomSummary>
+  sort: SidebarRoomSort
 ): RoomListItem[] {
   if (sort === "active") {
-    return [...rooms].sort((left, right) => {
-      const leftTs = roomActiveSortTimestamp(roomById.get(left.room_id));
-      const rightTs = roomActiveSortTimestamp(roomById.get(right.room_id));
-      return rightTs - leftTs || left.room_id.localeCompare(right.room_id);
-    });
+    return rooms;
   }
   return [...rooms].sort((left, right) => {
     const nameOrder = left.display_name.localeCompare(right.display_name, undefined, {
@@ -75,10 +70,6 @@ function sortedSidebarRooms(
     });
     return nameOrder || left.room_id.localeCompare(right.room_id);
   });
-}
-
-function roomActiveSortTimestamp(room: RoomSummary | undefined): number {
-  return room?.latest_event?.timestamp_ms ?? room?.last_activity_ms ?? 0;
 }
 
 function shouldStartTitlebarDrag(event: MouseEvent<HTMLElement>): boolean {
@@ -441,12 +432,12 @@ export function Sidebar({
   const presence = snapshot.state.domain.live_signals.presence;
   const [roomCategory, setRoomCategory] = useState<SidebarRoomCategory>(readSidebarRoomCategory);
   const [roomSort, setRoomSort] = useState<SidebarRoomSort>(readSidebarRoomSort);
-  const roomCategoryRooms = roomCategory === "dms" ? sections.people : sections.rooms;
-  const visibleCategoryRooms = sortedSidebarRooms(roomCategoryRooms, roomSort, roomById);
+  const roomCategoryRooms = roomCategory === "dms" ? snapshot.sidebar.global_dms : sections.rooms;
+  const visibleCategoryRooms = sortedSidebarRooms(roomCategoryRooms, roomSort);
   const visibleNotJoinedRooms =
     accountHomeActive || roomCategory !== "rooms"
       ? []
-      : sortedSidebarRooms(sections.notJoined, roomSort, roomById);
+      : sortedSidebarRooms(sections.notJoined, roomSort);
   const visibleCategoryLabel =
     roomCategory === "dms" ? t("workspace.people") : t("workspace.rooms");
   const visibleCategoryKind = roomCategory === "dms" ? "dm" : "room";

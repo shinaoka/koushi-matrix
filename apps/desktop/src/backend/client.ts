@@ -9,6 +9,7 @@ import type {
   ComposerResolvedAction,
   ComposerResolverOptions,
   ComposerSurface,
+  ComposerTarget,
   DirectoryQuery,
   MentionIntent,
   OidcAuthorization,
@@ -23,6 +24,7 @@ import type {
   SearchScopeKind,
   SettingsPatch,
   StagedUploadCompressionChoice,
+  StageUploadBytesRequestItem,
   UploadStagingRequestItem,
   AttachmentFilter,
   AttachmentSort,
@@ -291,11 +293,11 @@ class TauriDesktopApi implements DesktopApi {
   }
 
   async scheduleSend(
-    roomId: string,
+    target: ComposerTarget,
     body: string,
     sendAtMs: number
   ): Promise<DesktopSnapshot> {
-    return invoke<DesktopSnapshot>("schedule_send", { roomId, body, sendAtMs });
+    return invoke<DesktopSnapshot>("schedule_send", { target, body, sendAtMs });
   }
 
   async stageUploads(
@@ -305,11 +307,57 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("stage_uploads", { roomId, items });
   }
 
+  async stageUploadBytes(
+    target: ComposerTarget,
+    items: StageUploadBytesRequestItem[]
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("stage_upload_bytes", { target, items });
+  }
+
+  async selectStagedUploadVariant(
+    target: ComposerTarget,
+    stagedId: string,
+    variantId: string
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("select_staged_upload_variant", {
+      target,
+      stagedId,
+      variantId
+    });
+  }
+
+  async preparedUploadPreview(
+    target: ComposerTarget,
+    stagedId: string,
+    variantId: string
+  ): Promise<number[]> {
+    return invoke<number[]>("prepared_upload_preview", { target, stagedId, variantId });
+  }
+
+  async retryStagedUploadPreparation(
+    target: ComposerTarget,
+    stagedId: string
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("retry_staged_upload_preparation", { target, stagedId });
+  }
+
+  async useOriginalStagedUpload(
+    target: ComposerTarget,
+    stagedId: string
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("use_original_staged_upload", { target, stagedId });
+  }
+
+  async sendPreparedUploads(target: ComposerTarget): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("send_prepared_uploads", { target });
+  }
+
   async updateStagedUploadCaption(
+    target: ComposerTarget,
     stagedId: string,
     caption: string | null
   ): Promise<DesktopSnapshot> {
-    return invoke<DesktopSnapshot>("update_staged_upload_caption", { stagedId, caption });
+    return invoke<DesktopSnapshot>("update_staged_upload_caption", { target, stagedId, caption });
   }
 
   async updateStagedUploadCompression(
@@ -322,8 +370,8 @@ class TauriDesktopApi implements DesktopApi {
     });
   }
 
-  async clearUploadStaging(roomId: string): Promise<DesktopSnapshot> {
-    return invoke<DesktopSnapshot>("clear_upload_staging", { roomId });
+  async clearUploadStaging(target: ComposerTarget): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("clear_upload_staging", { target });
   }
 
   async cancelScheduledSend(scheduledId: string): Promise<DesktopSnapshot> {
@@ -603,13 +651,15 @@ class TauriDesktopApi implements DesktopApi {
     submissionId: string,
     roomId: string,
     rootEventId: string,
-    body: string
+    body: string,
+    mentions?: MentionIntent
   ): Promise<SubmissionResponse> {
     return invoke<SubmissionResponse>("send_thread_reply", {
       submissionId,
       roomId,
       rootEventId,
-      body
+      body,
+      mentions
     });
   }
 

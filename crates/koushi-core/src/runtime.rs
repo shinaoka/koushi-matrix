@@ -10,7 +10,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
@@ -156,6 +159,11 @@ pub struct CoreRuntime {
     // the reducer with this in later phases; tests inject through it today.
     #[cfg_attr(not(any(test, feature = "test-hooks")), allow(dead_code))]
     action_tx: mpsc::Sender<Vec<AppAction>>,
+    /// Account-runtime-owned source and prepared variant bytes. The WebView
+    /// receives descriptors only; adapters may operate on this cache through
+    /// the typed runtime boundary.
+    media_preparation: Arc<crate::media_preparation::MediaPreparationService>,
+    media_lifecycle: executor::JoinHandle<()>,
     #[cfg(test)]
     account_actor_test_handle: AccountActorHandle,
     actor: executor::JoinHandle<()>,
@@ -293,6 +301,21 @@ impl CoreRuntime {
             pending_date_navigation_request_id: None,
         };
         let actor = executor::spawn(actor.run());
+        let media_preparation =
+            Arc::new(crate::media_preparation::MediaPreparationService::default());
+        let media_preparation_for_lifecycle = Arc::clone(&media_preparation);
+        let mut media_snapshot_rx = snapshot_rx.clone();
+        let media_lifecycle = executor::spawn(async move {
+            loop {
+                let snapshot = media_snapshot_rx.borrow().state.clone();
+                media_preparation_for_lifecycle
+                    .reconcile_snapshot(&snapshot)
+                    .await;
+                if media_snapshot_rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
 
         Self {
             command_tx,
@@ -300,6 +323,8 @@ impl CoreRuntime {
             snapshot_rx,
             next_connection_id: AtomicU64::new(1),
             action_tx,
+            media_preparation,
+            media_lifecycle,
             #[cfg(test)]
             account_actor_test_handle,
             actor,
@@ -318,6 +343,10 @@ impl CoreRuntime {
             snapshot_rx: self.snapshot_rx.clone(),
             next_sequence: AtomicU64::new(1),
         }
+    }
+
+    pub fn media_preparation(&self) -> &crate::media_preparation::MediaPreparationService {
+        &self.media_preparation
     }
 
     /// Test hook: inject reducer actions as if an actor side effect produced
@@ -340,12 +369,15 @@ impl CoreRuntime {
             snapshot_rx: _,
             next_connection_id: _,
             action_tx: _,
+            media_preparation: _,
+            media_lifecycle,
             #[cfg(test)]
                 account_actor_test_handle: _,
             actor,
         } = self;
         drop(command_tx);
         let _ = actor.await;
+        let _ = media_lifecycle.await;
     }
 }
 
@@ -936,7 +968,15 @@ impl ActivityProjection {
                 continue;
             }
             let highlight = room.highlight_count > 0;
-            let timestamp_ms = room.last_activity_ms;
+            let timestamp_ms = room
+                .latest_event
+                .as_ref()
+                .map(|event| event.timestamp_ms)
+                .or_else(|| {
+                    room.conversation_activity
+                        .map(|activity| activity.timestamp_ms)
+                })
+                .unwrap_or_default();
             let context_label = activity_row_context_label(room, &state.spaces);
             let placeholder = ActivityRow::room_unread_placeholder(
                 room.room_id.clone(),
@@ -1561,6 +1601,7 @@ impl AppActor {
                 origin_session_key,
                 scheduled_id: scheduled_id.clone(),
                 room_id: item.room_id,
+                thread_root_event_id: item.thread_root_event_id,
                 body: item.body,
             })
             .await
@@ -1724,22 +1765,24 @@ impl AppActor {
                 }
                 AppCommand::SetUploadStaging {
                     request_id,
-                    room_id,
+                    target,
                     items,
                 } => {
                     let effects = self
-                        .reduce_app_action(AppAction::UploadStagingChanged { room_id, items })
+                        .reduce_app_action(AppAction::UploadStagingChanged { target, items })
                         .await;
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
                 AppCommand::UpdateStagedUploadCaption {
                     request_id,
+                    target,
                     staged_id,
                     caption,
                 } => {
                     let effects = self
                         .reduce_app_action(AppAction::UploadStagingCaptionChanged {
+                            target,
                             staged_id,
                             caption,
                         })
@@ -1749,11 +1792,13 @@ impl AppActor {
                 }
                 AppCommand::UpdateStagedUploadCompression {
                     request_id,
+                    target,
                     staged_id,
                     compression_choice,
                 } => {
                     let effects = self
                         .reduce_app_action(AppAction::UploadStagingCompressionChanged {
+                            target,
                             staged_id,
                             compression_choice,
                         })
@@ -1761,12 +1806,25 @@ impl AppActor {
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
-                AppCommand::ClearUploadStaging {
+                AppCommand::SelectStagedUploadVariant {
                     request_id,
-                    room_id,
+                    target,
+                    staged_id,
+                    variant_id,
                 } => {
                     let effects = self
-                        .reduce_app_action(AppAction::UploadStagingCleared { room_id })
+                        .reduce_app_action(AppAction::UploadStagingVariantSelected {
+                            target,
+                            staged_id,
+                            variant_id,
+                        })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::ClearUploadStaging { request_id, target } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::UploadStagingCleared { target })
                         .await;
                     self.handle_app_effects(request_id, effects).await;
                     true
@@ -1774,6 +1832,7 @@ impl AppActor {
                 AppCommand::ScheduleSend {
                     request_id,
                     room_id,
+                    thread_root_event_id,
                     body,
                     send_at_ms,
                 } => {
@@ -1787,6 +1846,7 @@ impl AppActor {
                                 request_id,
                                 scheduled_id,
                                 room_id,
+                                thread_root_event_id,
                                 body,
                                 send_at_ms,
                             })
@@ -1811,6 +1871,7 @@ impl AppActor {
                     let item = ScheduledSendItem {
                         scheduled_id: scheduled_send_id(),
                         room_id,
+                        thread_root_event_id,
                         body,
                         send_at_ms,
                         handle: ScheduledSendHandle::Local,
@@ -1871,6 +1932,7 @@ impl AppActor {
                                 request_id,
                                 scheduled_id,
                                 room_id: item.room_id,
+                                thread_root_event_id: item.thread_root_event_id,
                                 body: item.body,
                                 delay_id,
                                 send_at_ms,
@@ -3814,7 +3876,8 @@ mod tests {
             notification_count: 2,
             highlight_count: 1,
             marked_unread: true,
-            last_activity_ms: 42,
+            recency_stamp: Some(42),
+            conversation_activity: None,
             latest_event: None,
             parent_space_ids: Vec::new(),
             dm_space_ids: Vec::new(),
@@ -4077,7 +4140,8 @@ mod tests {
             notification_count: 0,
             highlight_count: 0,
             marked_unread: false,
-            last_activity_ms: 42,
+            recency_stamp: Some(42),
+            conversation_activity: None,
             latest_event: Some(RoomLatestEventSummary {
                 event_id: "$latest:example.invalid".to_owned(),
                 sender_id: Some("@sender:example.invalid".to_owned()),
@@ -4122,7 +4186,8 @@ mod tests {
             notification_count: 0,
             highlight_count: 0,
             marked_unread: false,
-            last_activity_ms: 42,
+            recency_stamp: Some(42),
+            conversation_activity: None,
             latest_event: None,
             parent_space_ids: Vec::new(),
             dm_space_ids: Vec::new(),
@@ -4168,7 +4233,8 @@ mod tests {
             notification_count: 1,
             highlight_count: 0,
             marked_unread: false,
-            last_activity_ms: 42,
+            recency_stamp: Some(42),
+            conversation_activity: None,
             latest_event: Some(RoomLatestEventSummary {
                 event_id: "$latest:example.invalid".to_owned(),
                 sender_id: Some("@sender:example.invalid".to_owned()),
@@ -4230,7 +4296,8 @@ mod tests {
             notification_count: 0,
             highlight_count: 0,
             marked_unread: false,
-            last_activity_ms: 42,
+            recency_stamp: Some(42),
+            conversation_activity: None,
             latest_event: Some(RoomLatestEventSummary {
                 event_id: "$latest:example.invalid".to_owned(),
                 sender_id: Some("@sender:example.invalid".to_owned()),

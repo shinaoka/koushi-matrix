@@ -7,6 +7,7 @@ import type {
   AttachmentSort,
   DesktopSnapshot,
   FilesViewScope,
+  MentionIntent,
   ResolveComposerKeyAction,
   RoomModerationAction,
   RoomNotificationMode,
@@ -24,6 +25,7 @@ import {
   forwardDestinationsFromSnapshot,
   ICON_SIZE,
   ignoreComposerKeyAction,
+  mentionCandidatesFromSnapshot,
   pinnedEventsForRoom,
   shortcutLabelProfileFromLocaleProfile,
   threadReplyToTimelineMessage
@@ -50,6 +52,7 @@ import { UserSettingsPanel } from "./UserSettingsPanel";
 import { PeoplePanel, ProfilePanel } from "./PeoplePanel";
 import { MessageArticle, SearchResults } from "./mediaLists";
 import { ThreadComposer } from "./composer";
+import { UploadStagingDialog } from "./dialogs";
 
 export function ContextualRightPanel({
   activeRoom,
@@ -136,7 +139,17 @@ export function ContextualRightPanel({
   spaceLocalOverrides = {},
   onTimelineDiagnosticLogEntry,
   onThreadComposerDraftChange,
+  onThreadAttachFiles = () => undefined,
+  onThreadClearUploadStaging = () => undefined,
+  onThreadLoadStagedUploadPreview = async () => [],
+  onThreadMentionIntentChange = () => undefined,
+  onThreadRetryStagedUploadPreparation = () => undefined,
   onThreadReplySend,
+  onThreadScheduleSend,
+  onThreadSelectStagedUploadVariant = () => undefined,
+  onThreadUseOriginalStagedUpload = () => undefined,
+  onThreadUpdateStagedUploadCaption = () => undefined,
+  threadComposerMentionIntents = {},
   threadComposerDraftOverrides = {}
 }: {
   activeRoom: DesktopSnapshot["state"]["domain"]["rooms"][number] | null;
@@ -244,7 +257,54 @@ export function ContextualRightPanel({
   onUnignoreUser?: (userId: string) => void;
   onReportUser?: (userId: string) => void;
   onThreadComposerDraftChange: (roomId: string, rootEventId: string, draft: string) => void;
-  onThreadReplySend: (roomId: string, rootEventId: string, body: string) => void;
+  onThreadAttachFiles?: (roomId: string, rootEventId: string, files: File[]) => void;
+  onThreadClearUploadStaging?: (roomId: string, rootEventId: string) => void;
+  onThreadLoadStagedUploadPreview?: (
+    roomId: string,
+    rootEventId: string,
+    stagedId: string,
+    variantId: string
+  ) => Promise<number[]>;
+  onThreadMentionIntentChange?: (
+    roomId: string,
+    rootEventId: string,
+    mentions: MentionIntent
+  ) => void;
+  onThreadRetryStagedUploadPreparation?: (
+    roomId: string,
+    rootEventId: string,
+    stagedId: string
+  ) => void;
+  onThreadReplySend: (
+    roomId: string,
+    rootEventId: string,
+    body: string,
+    mentions: MentionIntent
+  ) => void;
+  onThreadScheduleSend?: (
+    roomId: string,
+    rootEventId: string,
+    sendAtMs: number,
+    body: string
+  ) => void;
+  onThreadSelectStagedUploadVariant?: (
+    roomId: string,
+    rootEventId: string,
+    stagedId: string,
+    variantId: string
+  ) => void;
+  onThreadUseOriginalStagedUpload?: (
+    roomId: string,
+    rootEventId: string,
+    stagedId: string
+  ) => void;
+  onThreadUpdateStagedUploadCaption?: (
+    roomId: string,
+    rootEventId: string,
+    stagedId: string,
+    caption: string
+  ) => void;
+  threadComposerMentionIntents?: Record<string, MentionIntent>;
   threadComposerDraftOverrides?: Record<string, string>;
 }) {
   const mediaDownloads = snapshot.state.ui.timeline.media_downloads ?? {};
@@ -592,6 +652,14 @@ export function ContextualRightPanel({
       ? threadComposerDraftOverrides[threadDraftKeyValue] ?? ""
       : threadComposer?.draft ?? "";
   const threadSendPending = Boolean(threadComposer?.pending_transaction_id);
+  const threadStagedUploads = threadState.kind === "open" ? threadState.staged_uploads ?? [] : [];
+  const threadUploadsReady = threadStagedUploads.every(
+    (item) => item.preparation.kind === "ready"
+  );
+  const threadMentionIntent =
+    (threadDraftKeyValue ? threadComposerMentionIntents[threadDraftKeyValue] : undefined) ?? {
+      targets: []
+    };
   const threadTimelineKeyValue =
     currentUserId && timelineTransport && threadRoomId && rootEventId
       ? threadTimelineKey(currentUserId, threadRoomId, rootEventId)
@@ -615,6 +683,7 @@ export function ContextualRightPanel({
         {threadTimelineKeyValue && threadRoomId && timelineTransport ? (
           <TimelineView
             key={`${threadRoomId}:${rootEventId}`}
+            presentationContext="thread"
             roomId={threadRoomId}
             timelineKey={threadTimelineKeyValue}
             transport={timelineTransport}
@@ -652,10 +721,50 @@ export function ContextualRightPanel({
           <div className="thread-root-placeholder">{t("timeline.openingThread")}</div>
         )}
       </section>
+      {threadStagedUploads.length > 0 && threadRoomId && rootEventId ? (
+        <UploadStagingDialog
+          items={threadStagedUploads}
+          onClear={() => onThreadClearUploadStaging(threadRoomId, rootEventId)}
+          onUpdateCaption={(stagedId, caption) =>
+            onThreadUpdateStagedUploadCaption(
+              threadRoomId,
+              rootEventId,
+              stagedId,
+              caption
+            )
+          }
+          onSelectVariant={(stagedId, variantId) =>
+            onThreadSelectStagedUploadVariant(
+              threadRoomId,
+              rootEventId,
+              stagedId,
+              variantId
+            )
+          }
+          onRetryPreparation={(stagedId) =>
+            onThreadRetryStagedUploadPreparation(threadRoomId, rootEventId, stagedId)
+          }
+          onUseOriginal={(stagedId) =>
+            onThreadUseOriginalStagedUpload(threadRoomId, rootEventId, stagedId)
+          }
+          loadPreview={(stagedId, variantId) =>
+            onThreadLoadStagedUploadPreview(
+              threadRoomId,
+              rootEventId,
+              stagedId,
+              variantId
+            )
+          }
+        />
+      ) : null}
       <ThreadComposer
         draft={threadDraft}
         draftKey={threadDraftKeyValue ?? `${threadRoomId}:${rootEventId}`}
         isSending={threadSendPending}
+        hasStagedUploads={threadStagedUploads.length > 0}
+        stagedUploadsReady={threadUploadsReady}
+        mentionCandidates={mentionCandidatesFromSnapshot(snapshot)}
+        mentionIntent={threadMentionIntent}
         resolveComposerKeyAction={onResolveComposerKeyAction}
         canEdit={threadState.kind === "open" && Boolean(threadRoomId && rootEventId && threadComposer)}
         onDraftChange={(draft) => {
@@ -663,9 +772,25 @@ export function ContextualRightPanel({
             onThreadComposerDraftChange(threadRoomId, rootEventId, draft);
           }
         }}
+        onAttachFiles={(files) => {
+          if (threadRoomId && rootEventId) {
+            onThreadAttachFiles(threadRoomId, rootEventId, files);
+          }
+        }}
+        onMentionIntentChange={(mentions) => {
+          if (threadRoomId && rootEventId) {
+            onThreadMentionIntentChange(threadRoomId, rootEventId, mentions);
+          }
+        }}
+        onScheduleSend={
+          onThreadScheduleSend && threadRoomId && rootEventId
+            ? (sendAtMs, body) =>
+                onThreadScheduleSend(threadRoomId, rootEventId, sendAtMs, body)
+            : undefined
+        }
         onSend={(value) => {
           if (threadRoomId && rootEventId) {
-            onThreadReplySend(threadRoomId, rootEventId, value);
+            onThreadReplySend(threadRoomId, rootEventId, value, threadMentionIntent);
           }
         }}
       />

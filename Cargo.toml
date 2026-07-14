@@ -7,6 +7,7 @@ members = [
     "crates/koushi-backend",
     "crates/koushi-core",
     "crates/koushi-diagnostics",
+    "crates/koushi-media",
     "apps/desktop/src-tauri",
     "spikes/sidebar-composition",
     "spikes/key-management",
@@ -32,6 +33,7 @@ matrix-sdk-base = { git = "https://github.com/shinaoka/matrix-rust-sdk-work.git"
 matrix-sdk-search = { git = "https://github.com/shinaoka/matrix-rust-sdk-work.git", rev = "18cdc0ceab8aacce1a57953f897d7f7a3e88834e" }
 matrix-sdk-test = { git = "https://github.com/shinaoka/matrix-rust-sdk-work.git", rev = "18cdc0ceab8aacce1a57953f897d7f7a3e88834e" }
 matrix-sdk-ui = { git = "https://github.com/shinaoka/matrix-rust-sdk-work.git", rev = "18cdc0ceab8aacce1a57953f897d7f7a3e88834e", default-features = false }
+image = { version = "0.25.9", default-features = false, features = ["jpeg", "png", "webp"] }
 
 [profile.dev.package."*"]
 debug = false

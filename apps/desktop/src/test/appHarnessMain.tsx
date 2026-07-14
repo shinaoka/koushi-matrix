@@ -27,6 +27,7 @@ import type { CoreEventPayload, TimelineItem } from "../domain/coreEvents";
 import { roomTimelineKey } from "../domain/coreEvents";
 import type {
   ActivityTab,
+  ComposerTarget,
   ComposerKeyEvent,
   ComposerResolverOptions,
   ComposerResolvedAction,
@@ -38,7 +39,9 @@ import type {
   LocaleSettings,
   RoomNotificationMode,
   RoomNotificationSettings,
+  StageUploadBytesRequestItem,
   SettingsPatch,
+  StagedUploadItem,
   StagedUploadCompressionChoice,
   UploadStagingRequestItem
 } from "../domain/types";
@@ -566,6 +569,141 @@ function afterCreateSpaceSnapshot(): DesktopSnapshot {
 const mock = new TauriIpcMock();
 let currentSnapshot = readySnapshot();
 let nextGateFlowId = 80;
+const preparedUploadBytes = new Map<string, number[]>();
+
+function composerTargetKey(target: ComposerTarget): string {
+  return target.kind === "main"
+    ? `main:${target.room_id}`
+    : `thread:${target.room_id}:${target.root_event_id}`;
+}
+
+function preparedUploadKey(
+  target: ComposerTarget,
+  stagedId: string,
+  variantId: string
+): string {
+  return `${composerTargetKey(target)}:${stagedId}:${variantId}`;
+}
+
+function stagedUploadsForTarget(
+  snapshot: DesktopSnapshot,
+  target: ComposerTarget
+): StagedUploadItem[] | null {
+  if (target.kind === "main") {
+    return snapshot.state.ui.timeline.room_id === target.room_id
+      ? snapshot.state.ui.timeline.staged_uploads
+      : null;
+  }
+  const thread = snapshot.state.ui.thread;
+  return thread.kind === "open" &&
+    thread.room_id === target.room_id &&
+    thread.root_event_id === target.root_event_id
+    ? thread.staged_uploads ?? []
+    : null;
+}
+
+function replaceStagedUploadsForTarget(
+  snapshot: DesktopSnapshot,
+  target: ComposerTarget,
+  items: StagedUploadItem[]
+): DesktopSnapshot {
+  if (target.kind === "main") {
+    if (snapshot.state.ui.timeline.room_id !== target.room_id) return snapshot;
+    return {
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        ui: {
+          ...snapshot.state.ui,
+          timeline: { ...snapshot.state.ui.timeline, staged_uploads: items }
+        }
+      }
+    };
+  }
+  const thread = snapshot.state.ui.thread;
+  if (
+    thread.kind !== "open" ||
+    thread.room_id !== target.room_id ||
+    thread.root_event_id !== target.root_event_id
+  ) {
+    return snapshot;
+  }
+  return {
+    ...snapshot,
+    state: {
+      ...snapshot.state,
+      ui: {
+        ...snapshot.state.ui,
+        thread: { ...thread, staged_uploads: items }
+      }
+    }
+  };
+}
+
+function preparedHarnessItem(
+  target: ComposerTarget,
+  item: StageUploadBytesRequestItem
+): StagedUploadItem {
+  const originalMime = item.mimeType.trim() || "application/octet-stream";
+  const image = originalMime.startsWith("image/");
+  const original = {
+    variant_id: "original",
+    filename: item.filename,
+    mime_type: originalMime,
+    byte_count: item.bytes.length,
+    width: image ? 4 : null,
+    height: image ? 2 : null,
+    format: "original" as const,
+    savings_percent: 0,
+    metadata_stripped: false,
+    thumbnail_refreshed: false
+  };
+  const variants = image
+    ? [
+        original,
+        {
+          variant_id: "webp-2048",
+          filename: item.filename.replace(/\.[^.]+$/, "") + ".webp",
+          mime_type: "image/webp",
+          byte_count: Math.max(1, Math.floor(item.bytes.length / 2)),
+          width: 2,
+          height: 1,
+          format: "webp" as const,
+          savings_percent: 50,
+          metadata_stripped: true,
+          thumbnail_refreshed: true
+        }
+      ]
+    : [original];
+  for (const variant of variants) {
+    preparedUploadBytes.set(
+      preparedUploadKey(target, item.stagedId, variant.variant_id),
+      variant.variant_id === "original"
+        ? [...item.bytes]
+        : item.bytes.slice(0, variant.byte_count)
+    );
+  }
+  const mode = currentSnapshot.state.domain.settings.values.media.image_upload_compression;
+  const selected = image && mode !== "never" ? variants[1] : original;
+  return {
+    staged_id: item.stagedId,
+    room_id: target.room_id,
+    position: item.position,
+    filename: selected.filename,
+    mime_type: selected.mime_type,
+    byte_count: selected.byte_count,
+    kind: image
+      ? { kind: "image", width: selected.width, height: selected.height }
+      : { kind: "file" },
+    caption: null,
+    compression_choice: image ? { kind: "original" } : { kind: "notApplicable" },
+    preparation: {
+      kind: "ready",
+      variants,
+      selected_variant_id: selected.variant_id
+    }
+  };
+}
 
 function setCurrentSnapshot(next: DesktopSnapshot): DesktopSnapshot {
   const rooms = next.state.domain.rooms.map(normalizeHarnessRoomSummary);
@@ -1639,6 +1777,7 @@ mock.setCommandResponse(
             room_id: roomId,
             root_event_id: rootEventId,
             is_subscribed: true,
+            staged_uploads: [],
           composer: {
             accepted_submission_ids: [],
             pending_transaction_id: null,
@@ -1697,7 +1836,12 @@ mock.setCommandResponse(
 );
 mock.setCommandResponse(
   "send_thread_reply",
-  ({ roomId, rootEventId, body }: { roomId: string; rootEventId: string; body: string }) => {
+  ({ submissionId, roomId, rootEventId, body }: {
+    submissionId: string;
+    roomId: string;
+    rootEventId: string;
+    body: string;
+  }) => {
     const thread = currentSnapshot.state.ui.thread;
     if (
       thread.kind !== "open" ||
@@ -1707,7 +1851,7 @@ mock.setCommandResponse(
       thread.composer.pending_transaction_id ||
       body.trim().length === 0
     ) {
-      return currentSnapshot;
+      return { submissionId, outcome: "rejected", snapshot: currentSnapshot };
     }
     const next: DesktopSnapshot = {
       ...currentSnapshot,
@@ -1726,7 +1870,11 @@ mock.setCommandResponse(
         },
       }
     };
-    return setCurrentSnapshot(next);
+    return {
+      submissionId,
+      outcome: "accepted",
+      snapshot: setCurrentSnapshot(next)
+    };
   }
 );
 mock.setCommandResponse("close_thread", () => {
@@ -1994,7 +2142,8 @@ mock.setCommandResponse(
     byte_count: item.byteCount,
     kind: item.kind,
     caption: null,
-    compression_choice: item.compressionChoice
+    compression_choice: item.compressionChoice,
+    preparation: { kind: "preparing" as const }
   }));
   return setCurrentSnapshot({
     ...currentSnapshot,
@@ -2010,33 +2159,95 @@ mock.setCommandResponse(
     }
   });
 });
-mock.setCommandResponse("update_staged_upload_caption", ({ stagedId, caption }: {
+mock.setCommandResponse("stage_upload_bytes", ({ target, items }: {
+  target: ComposerTarget;
+  items: StageUploadBytesRequestItem[];
+}) => {
+  const existing = stagedUploadsForTarget(currentSnapshot, target);
+  if (existing === null) return currentSnapshot;
+  const next = replaceStagedUploadsForTarget(currentSnapshot, target, [
+    ...existing,
+    ...items.map((item) => preparedHarnessItem(target, item))
+  ]);
+  return setCurrentSnapshot(next);
+});
+mock.setCommandResponse("select_staged_upload_variant", ({ target, stagedId, variantId }: {
+  target: ComposerTarget;
+  stagedId: string;
+  variantId: string;
+}) => {
+  const items = stagedUploadsForTarget(currentSnapshot, target);
+  if (items === null) return currentSnapshot;
+  const nextItems = items.map((item) => {
+    if (item.staged_id !== stagedId || item.preparation.kind !== "ready") return item;
+    const selected = item.preparation.variants.find((variant) => variant.variant_id === variantId);
+    if (!selected) return item;
+    return {
+      ...item,
+      filename: selected.filename,
+      mime_type: selected.mime_type,
+      byte_count: selected.byte_count,
+      kind:
+        item.kind.kind === "image"
+          ? { kind: "image" as const, width: selected.width, height: selected.height }
+          : item.kind,
+      preparation: { ...item.preparation, selected_variant_id: variantId }
+    };
+  });
+  return setCurrentSnapshot(replaceStagedUploadsForTarget(currentSnapshot, target, nextItems));
+});
+mock.setCommandResponse("prepared_upload_preview", ({ target, stagedId, variantId }: {
+  target: ComposerTarget;
+  stagedId: string;
+  variantId: string;
+}) => preparedUploadBytes.get(preparedUploadKey(target, stagedId, variantId)) ?? []);
+mock.setCommandResponse("retry_staged_upload_preparation", () => currentSnapshot);
+mock.setCommandResponse("use_original_staged_upload", ({ target, stagedId }: {
+  target: ComposerTarget;
+  stagedId: string;
+}) => {
+  const items = stagedUploadsForTarget(currentSnapshot, target);
+  if (items === null) return currentSnapshot;
+  const nextItems = items.map((item) => {
+    if (item.staged_id !== stagedId || item.preparation.kind !== "ready") return item;
+    const original = item.preparation.variants.find((variant) => variant.variant_id === "original");
+    return original
+      ? {
+          ...item,
+          filename: original.filename,
+          mime_type: original.mime_type,
+          byte_count: original.byte_count,
+          preparation: { ...item.preparation, selected_variant_id: "original" }
+        }
+      : item;
+  });
+  return setCurrentSnapshot(replaceStagedUploadsForTarget(currentSnapshot, target, nextItems));
+});
+mock.setCommandResponse("send_prepared_uploads", ({ target }: { target: ComposerTarget }) => {
+  for (const key of preparedUploadBytes.keys()) {
+    if (key.startsWith(`${composerTargetKey(target)}:`)) preparedUploadBytes.delete(key);
+  }
+  return setCurrentSnapshot(replaceStagedUploadsForTarget(currentSnapshot, target, []));
+});
+mock.setCommandResponse("update_staged_upload_caption", ({ target, stagedId, caption }: {
+  target: ComposerTarget;
   stagedId: string;
   caption: string | null;
 }) => {
   const normalized = typeof caption === "string" && caption.trim() ? caption : null;
-  return setCurrentSnapshot({
-    ...currentSnapshot,
-    state: {
-      ...currentSnapshot.state,
-      ui: {
-        ...currentSnapshot.state.ui,
-      timeline: {
-        ...currentSnapshot.state.ui.timeline,
-        staged_uploads: currentSnapshot.state.ui.timeline.staged_uploads.map((item) =>
-          item.staged_id === stagedId
-            ? {
-                ...item,
-                caption: normalized
-                  ? { plain_body: normalized, formatted_body: null, mentions: { targets: [] } }
-                  : null
-              }
-            : item
-        )
-      }
-      },
-    }
-  });
+  const items = stagedUploadsForTarget(currentSnapshot, target);
+  if (items === null) return currentSnapshot;
+  const nextItems = items.map((item) =>
+    item.staged_id === stagedId
+      ? {
+          ...item,
+          caption: normalized
+            ? { plain_body: normalized, formatted_body: null, mentions: { targets: [] } }
+            : null
+        }
+      : item
+  );
+  return setCurrentSnapshot(replaceStagedUploadsForTarget(currentSnapshot, target, nextItems));
 });
 mock.setCommandResponse("update_staged_upload_compression", ({ stagedId, compressionChoice }: {
   stagedId: string;
@@ -2058,20 +2269,8 @@ mock.setCommandResponse("update_staged_upload_compression", ({ stagedId, compres
     }
   })
 );
-mock.setCommandResponse("clear_upload_staging", () =>
-  setCurrentSnapshot({
-    ...currentSnapshot,
-    state: {
-      ...currentSnapshot.state,
-      ui: {
-        ...currentSnapshot.state.ui,
-      timeline: {
-        ...currentSnapshot.state.ui.timeline,
-        staged_uploads: []
-      }
-      },
-    }
-  })
+mock.setCommandResponse("clear_upload_staging", ({ target }: { target: ComposerTarget }) =>
+  setCurrentSnapshot(replaceStagedUploadsForTarget(currentSnapshot, target, []))
 );
 mock.setCommandResponse("upload_media", () => currentSnapshot);
 mock.setCommandResponse("download_media", () => currentSnapshot);

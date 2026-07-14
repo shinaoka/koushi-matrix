@@ -22,10 +22,10 @@ use koushi_state::{
     RoomInteractionState, RoomListProjection, RoomManagementState, RoomNotificationSettings,
     RoomPreferencesState, RoomSummary, SearchCrawlerState, SearchMatchField, SearchMatchKind,
     SearchResult, SearchScope, SearchState, SessionState, SettingsState, SidebarModel,
-    SoftLogoutReauthState, SpaceSummary, SyncMode, SyncState, ThreadAttentionState,
-    ThreadPaneState, ThreadsListState, TimelinePaneState, TypographyDisplayProfile,
-    VerificationGateRejectReason, VerificationGateState, VerificationMethod,
-    native_attention_capabilities_for_platform, resolve_locale_display_profile,
+    SoftLogoutReauthState, SpaceSummary, StagedUploadItem, SyncMode, SyncState,
+    ThreadAttentionState, ThreadPaneState, ThreadsListState, TimelinePaneState,
+    TypographyDisplayProfile, VerificationGateRejectReason, VerificationGateState,
+    VerificationMethod, native_attention_capabilities_for_platform, resolve_locale_display_profile,
     resolve_typography_display_profile,
 };
 use serde::{Deserialize, Serialize};
@@ -655,6 +655,7 @@ pub enum FrontendThreadPaneState {
         root_event_id: String,
         is_subscribed: bool,
         composer: ComposerState,
+        staged_uploads: Vec<StagedUploadItem>,
     },
 }
 
@@ -674,11 +675,13 @@ impl From<ThreadPaneState> for FrontendThreadPaneState {
                 root_event_id,
                 is_subscribed,
                 composer,
+                staged_uploads,
             } => Self::Open {
                 room_id,
                 root_event_id,
                 is_subscribed,
                 composer,
+                staged_uploads,
             },
         }
     }
@@ -1261,7 +1264,8 @@ mod tests {
             notification_count: 2,
             highlight_count: 1,
             marked_unread: false,
-            last_activity_ms: 0,
+            recency_stamp: None,
+            conversation_activity: None,
             latest_event: None,
             parent_space_ids: vec![],
             dm_space_ids: vec![],
@@ -1615,7 +1619,8 @@ mod tests {
             notification_count: 2,
             highlight_count: 1,
             marked_unread: false,
-            last_activity_ms: 1_000_000,
+            recency_stamp: Some(1_000_000),
+            conversation_activity: None,
             latest_event: None,
             parent_space_ids: vec!["!space:example.invalid".to_owned()],
             dm_space_ids: vec![],

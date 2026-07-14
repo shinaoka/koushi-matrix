@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::errors::OperationFailureKind;
 use super::settings::ThreadListOrder;
-use super::timeline::ComposerState;
+use super::timeline::{ComposerState, StagedUploadItem};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ThreadPaneState {
@@ -18,6 +18,7 @@ pub enum ThreadPaneState {
         root_event_id: String,
         is_subscribed: bool,
         composer: ComposerState,
+        staged_uploads: Vec<StagedUploadItem>,
     },
 }
 

@@ -792,22 +792,31 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         | AppAction::ScheduledSendDispatched { scheduled_id } => {
             timeline::handle_scheduled_send_cancelled_or_dispatched(state, scheduled_id)
         }
-        AppAction::UploadStagingChanged { room_id, items } => {
-            timeline::handle_upload_staging_changed(state, room_id, items)
+        AppAction::UploadStagingChanged { target, items } => {
+            timeline::handle_upload_staging_changed(state, target, items)
         }
-        AppAction::UploadStagingCaptionChanged { staged_id, caption } => {
-            timeline::handle_upload_staging_caption_changed(state, staged_id, caption)
-        }
+        AppAction::UploadStagingCaptionChanged {
+            target,
+            staged_id,
+            caption,
+        } => timeline::handle_upload_staging_caption_changed(state, target, staged_id, caption),
         AppAction::UploadStagingCompressionChanged {
+            target,
             staged_id,
             compression_choice,
         } => timeline::handle_upload_staging_compression_changed(
             state,
+            target,
             staged_id,
             compression_choice,
         ),
-        AppAction::UploadStagingCleared { room_id } => {
-            timeline::handle_upload_staging_cleared(state, room_id)
+        AppAction::UploadStagingVariantSelected {
+            target,
+            staged_id,
+            variant_id,
+        } => timeline::handle_upload_staging_variant_selected(state, target, staged_id, variant_id),
+        AppAction::UploadStagingCleared { target } => {
+            timeline::handle_upload_staging_cleared(state, target)
         }
         AppAction::MediaGalleryUpdated { room_id, items } => {
             timeline::handle_media_gallery_updated(state, room_id, items)
@@ -1838,7 +1847,8 @@ mod tests {
             notification_count: 0,
             highlight_count: 0,
             marked_unread: false,
-            last_activity_ms: 0,
+            recency_stamp: None,
+            conversation_activity: None,
             latest_event: None,
             parent_space_ids: Vec::new(),
             dm_space_ids: Vec::new(),
@@ -2198,7 +2208,7 @@ mod tests {
         let latest_event = latest_event("$latest:example.invalid", 42);
         let mut room = test_room("!room:example.invalid", None);
         room.latest_event = Some(latest_event.clone());
-        room.last_activity_ms = 42;
+        room.recency_stamp = Some(42);
         state.rooms = vec![room];
 
         reduce(
@@ -2222,7 +2232,7 @@ mod tests {
         stale_room.highlight_count = 1;
         stale_room.marked_unread = true;
         stale_room.latest_event = Some(latest_event);
-        stale_room.last_activity_ms = 42;
+        stale_room.recency_stamp = Some(42);
         reduce(
             &mut state,
             AppAction::RoomListUpdated {
@@ -2248,7 +2258,7 @@ mod tests {
         let latest_event = latest_event("$room-summary-latest:example.invalid", 42);
         let mut room = test_room("!room:example.invalid", None);
         room.latest_event = Some(latest_event.clone());
-        room.last_activity_ms = 42;
+        room.recency_stamp = Some(42);
         state.rooms = vec![room];
 
         reduce(
@@ -2270,7 +2280,7 @@ mod tests {
         stale_room.unread_count = 1;
         stale_room.notification_count = 1;
         stale_room.latest_event = Some(latest_event);
-        stale_room.last_activity_ms = 42;
+        stale_room.recency_stamp = Some(42);
         reduce(
             &mut state,
             AppAction::RoomListUpdated {
@@ -2293,7 +2303,7 @@ mod tests {
         let mut state = ready_state();
         let mut room = test_room("!room:example.invalid", None);
         room.latest_event = Some(latest_event("$old-latest:example.invalid", 42));
-        room.last_activity_ms = 42;
+        room.recency_stamp = Some(42);
         state.rooms = vec![room];
 
         reduce(
@@ -2315,7 +2325,7 @@ mod tests {
         new_unread_room.unread_count = 1;
         new_unread_room.notification_count = 1;
         new_unread_room.latest_event = Some(latest_event("$new-latest:example.invalid", 43));
-        new_unread_room.last_activity_ms = 43;
+        new_unread_room.recency_stamp = Some(43);
         reduce(
             &mut state,
             AppAction::RoomListUpdated {

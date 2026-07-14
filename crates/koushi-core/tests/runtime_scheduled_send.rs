@@ -45,6 +45,7 @@ async fn app_command_schedules_cancel_and_reschedules_local_fallback_send() {
     conn.command(CoreCommand::App(AppCommand::ScheduleSend {
         request_id: conn.next_request_id(),
         room_id: "!room:example.test".to_owned(),
+        thread_root_event_id: None,
         body: "scheduled body".to_owned(),
         send_at_ms: future_epoch_ms(Duration::from_secs(60)),
     }))
@@ -106,6 +107,7 @@ async fn local_fallback_scheduled_send_ids_do_not_reuse_fresh_runtime_request_id
         conn.command(CoreCommand::App(AppCommand::ScheduleSend {
             request_id: conn.next_request_id(),
             room_id: "!room:example.test".to_owned(),
+            thread_root_event_id: None,
             body: "unique scheduled message".to_owned(),
             send_at_ms: future_epoch_ms(Duration::from_secs(60)),
         }))
@@ -153,6 +155,7 @@ async fn local_fallback_scheduled_send_is_retained_when_delivery_cannot_start() 
     conn.command(CoreCommand::App(AppCommand::ScheduleSend {
         request_id: conn.next_request_id(),
         room_id: "!room:example.test".to_owned(),
+        thread_root_event_id: None,
         body: "retry instead of drop".to_owned(),
         send_at_ms,
     }))
@@ -194,6 +197,7 @@ async fn server_scheduled_send_items_are_not_dispatched_by_local_fallback_timer(
                 item: ScheduledSendItem {
                     scheduled_id: "server-scheduled".to_owned(),
                     room_id: "!room:example.test".to_owned(),
+                    thread_root_event_id: None,
                     body: "server delayed body".to_owned(),
                     send_at_ms: future_epoch_ms(Duration::from_millis(20)),
                     handle: ScheduledSendHandle::Server {
@@ -241,6 +245,7 @@ async fn local_fallback_scheduled_sends_persist_and_load_on_restart() {
         conn.command(CoreCommand::App(AppCommand::ScheduleSend {
             request_id: conn.next_request_id(),
             room_id: "!room:example.test".to_owned(),
+            thread_root_event_id: None,
             body: "survives restart".to_owned(),
             send_at_ms,
         }))
@@ -290,6 +295,7 @@ async fn local_fallback_scheduled_sends_survive_a_session_lock() {
         conn.command(CoreCommand::App(AppCommand::ScheduleSend {
             request_id: conn.next_request_id(),
             room_id: "!room:example.test".to_owned(),
+            thread_root_event_id: None,
             body: "survives lock".to_owned(),
             send_at_ms,
         }))
@@ -347,6 +353,7 @@ async fn due_local_fallback_scheduled_send_is_retained_for_retry_after_restart()
         conn.command(CoreCommand::App(AppCommand::ScheduleSend {
             request_id: conn.next_request_id(),
             room_id: "!room:example.test".to_owned(),
+            thread_root_event_id: None,
             body: "retry after restart".to_owned(),
             send_at_ms,
         }))
@@ -406,6 +413,7 @@ async fn cancelled_local_fallback_scheduled_send_does_not_resurrect_on_restart()
         conn.command(CoreCommand::App(AppCommand::ScheduleSend {
             request_id: conn.next_request_id(),
             room_id: "!room:example.test".to_owned(),
+            thread_root_event_id: None,
             body: "cancel before restart".to_owned(),
             send_at_ms: future_epoch_ms(Duration::from_secs(120)),
         }))

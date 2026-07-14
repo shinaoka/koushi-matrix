@@ -77,10 +77,11 @@ pub use profile::{
 };
 
 // ── Re-exports: room ────────────────────────────────────────────────────────
+pub(crate) use room::compare_conversation_activity;
 pub use room::{
-    InvitePreview, RoomAttentionKind, RoomAttentionSummary, RoomLatestEventSummary, RoomSummary,
-    RoomTagInfo, RoomTagKind, RoomTags, SpaceSummary, room_activity_unread_count,
-    room_attention_kind, room_attention_summary,
+    ConversationActivity, ConversationActivitySource, InvitePreview, RoomAttentionKind,
+    RoomAttentionSummary, RoomLatestEventSummary, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
+    SpaceSummary, room_activity_unread_count, room_attention_kind, room_attention_summary,
 };
 
 // ── Re-exports: invite_workflow ─────────────────────────────────────────────
@@ -155,9 +156,10 @@ pub use timeline::{
     ComposerDraftStore, ComposerMode, ComposerState, ComposerSubmissionRecord,
     ComposerSubmissionRegistry, MAX_PERSISTED_COMPOSER_DRAFT_BYTES,
     MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT, MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT,
-    MediaGalleryStore, PendingComposerSendKind, ScheduledSendCapability, ScheduledSendHandle,
-    ScheduledSendItem, ScheduledSendStore, StagedUploadCompressionChoice, StagedUploadItem,
-    StagedUploadKind, TimelineMediaGalleryItem, TimelineMediaGalleryMedia,
+    MediaGalleryStore, MediaPreparationFailureKind, PendingComposerSendKind, PreparedUploadFormat,
+    PreparedUploadVariant, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem,
+    ScheduledSendStore, StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind,
+    StagedUploadPreparation, TimelineMediaGalleryItem, TimelineMediaGalleryMedia,
     TimelineMediaGallerySource, TimelineMediaGalleryThumbnail, TimelineMediaKind,
     TimelinePaneState, UploadStagingStore,
 };

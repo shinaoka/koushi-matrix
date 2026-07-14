@@ -2097,6 +2097,7 @@ export type TimelineDiagnosticLogEntry = DiagnosticLogEntry;
 export const TimelineView = memo(function TimelineView({
   timelineKey,
   roomId,
+  presentationContext = "room",
   transport,
   onReply,
   onOpenThread = () => undefined,
@@ -2130,6 +2131,7 @@ export const TimelineView = memo(function TimelineView({
 }: {
   timelineKey: TimelineKey;
   roomId: string;
+  presentationContext?: "room" | "thread" | "focused";
   transport: TimelineTransport;
   onReply: TimelineRowActionHandlers["onReply"];
   onOpenThread?: TimelineRowActionHandlers["onOpenThread"];
@@ -2806,6 +2808,8 @@ export const TimelineView = memo(function TimelineView({
                 ? event.AnchorRestoreFinished.key
                 : "SendCompleted" in event
                   ? event.SendCompleted.key
+                  : "MediaSendQueued" in event
+                    ? event.MediaSendQueued.key
                   : "SubmissionAccepted" in event
                     ? event.SubmissionAccepted.key
                     : "SubmissionRejected" in event
@@ -4567,7 +4571,7 @@ export const TimelineView = memo(function TimelineView({
           {t("timeline.loading")}
         </div>
       ) : null}
-      {!suppressPaginationUi && endReached ? (
+      {presentationContext !== "thread" && !suppressPaginationUi && endReached ? (
         <div className="timeline-start" data-testid="timeline-start">
           {t("timeline.conversationStart")}
         </div>
@@ -4639,6 +4643,7 @@ export const TimelineView = memo(function TimelineView({
                 <ThreadRootProjectionPlaceholder
                   row={row}
                   state={row.kind === "threadRootPending" ? "pending" : "failed"}
+                  showThreadSummary={presentationContext !== "thread"}
                 />
               ) : (
                 <TimelineItemRow
@@ -4686,6 +4691,7 @@ export const TimelineView = memo(function TimelineView({
                 onOpenContextMenu={onOpenContextMenu}
                 mentionProfileUsers={profileUsers}
                 threadAttention={threadAttention}
+                showThreadSummary={presentationContext !== "thread"}
                 mediaDownload={contentEventId ? mediaDownloads[contentEventId] : undefined}
                 receipts={
                   contentEventId
@@ -4784,10 +4790,12 @@ export const TimelineView = memo(function TimelineView({
  */
 function ThreadRootProjectionPlaceholder({
   row,
-  state
+  state,
+  showThreadSummary = true
 }: {
   row: TimelineDisplayRow;
   state: "pending" | "failed";
+  showThreadSummary?: boolean;
 }) {
   const summary = row.item.thread_summary;
   const replyCount = summary?.reply_count ?? 0;
@@ -4806,9 +4814,11 @@ function ThreadRootProjectionPlaceholder({
           ? t("timeline.threadRootLoading")
           : t("timeline.threadRootUnavailable")}
       </p>
-      <span className="thread-reply-count">
-        {replyCount === 1 ? "1 reply" : `${replyCount} replies`}
-      </span>
+      {showThreadSummary ? (
+        <span className="thread-reply-count">
+          {replyCount === 1 ? "1 reply" : `${replyCount} replies`}
+        </span>
+      ) : null}
     </article>
   );
 }
@@ -4821,6 +4831,7 @@ export function TimelineItemRow({
   contentTimestampMs,
   roomId,
   codeBlockWrap = true,
+  showThreadSummary = true,
   searchQuery = "",
   onReply,
   onOpenThread = () => undefined,
@@ -4871,6 +4882,7 @@ export function TimelineItemRow({
   contentTimestampMs?: number | null;
   roomId: string;
   codeBlockWrap?: boolean;
+  showThreadSummary?: boolean;
   searchQuery?: string;
   onReply: TimelineRowActionHandlers["onReply"];
   onOpenThread?: TimelineRowActionHandlers["onOpenThread"];
@@ -5346,7 +5358,7 @@ export function TimelineItemRow({
     canCopyPermalink ||
     canViewSource ||
     canForward;
-  const canShowThreadSummary = Boolean(eventId && item.thread_summary);
+  const canShowThreadSummary = Boolean(showThreadSummary && eventId && item.thread_summary);
   const canShowReactions = !isRedacted && !isEditing && item.reactions.length > 0;
   const senderAvatar = item.sender_avatar ?? profile?.avatar ?? null;
   const avatarUrl =
@@ -5373,7 +5385,8 @@ export function TimelineItemRow({
     ? formatThreadSummary(
         item.thread_summary.reply_count,
         item.thread_summary.latest_sender_label?.trim() || item.thread_summary.latest_sender,
-        item.thread_summary.latest_body_preview
+        item.thread_summary.latest_body_preview,
+        item.thread_summary.latest_timestamp_ms
       )
     : "";
   const newThreadReplyCount =
@@ -7217,30 +7230,33 @@ function timelineEditImeShouldHandleKeyEvent(
 function formatThreadSummary(
   replyCount: number,
   latestSender: string | null,
-  latestPreview: string | null
+  latestPreview: string | null,
+  latestTimestampMs: number | null
 ): string {
   const countText = t(
     replyCount === 1 ? "timeline.threadReplyCountOne" : "timeline.threadReplyCountMany",
     { count: replyCount }
   );
+  let summary: string;
   if (latestSender && latestPreview) {
-    return t("timeline.threadSummaryWithPreview", {
+    summary = t("timeline.threadSummaryWithPreview", {
       count: countText,
       sender: latestSender,
       preview: latestPreview
     });
-  }
-  if (latestPreview) {
-    return t("timeline.threadSummaryWithBody", {
+  } else if (latestPreview) {
+    summary = t("timeline.threadSummaryWithBody", {
       count: countText,
       preview: latestPreview
     });
-  }
-  if (latestSender) {
-    return t("timeline.threadSummaryWithSender", {
+  } else if (latestSender) {
+    summary = t("timeline.threadSummaryWithSender", {
       count: countText,
       sender: latestSender
     });
+  } else {
+    summary = countText;
   }
-  return countText;
+  const timestamp = formatMessageTimestamp(latestTimestampMs);
+  return timestamp ? `${summary} · ${timestamp}` : summary;
 }

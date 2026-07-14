@@ -119,7 +119,7 @@ describe("EntityAvatar", () => {
 });
 
 describe("Sidebar", () => {
-  it("renders Home as Activity, Explore, Invites, unspaced Rooms, and Direct Messages", async () => {
+  it("renders Home as Activity, Explore, Invites, all Rooms, and Direct Messages", async () => {
     const api = createBrowserFakeApi();
     const snapshot = await api.selectSpace(null);
     const unspacedRoom: RoomSummary = {
@@ -172,7 +172,7 @@ describe("Sidebar", () => {
     expect(screen.getByRole("button", { name: /DMs/ })).toBeTruthy();
     expect(screen.getByRole("region", { name: "Rooms" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "unspaced-room" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "synthetic-room" })).toBeNull();
+    expect(screen.getByRole("button", { name: "synthetic-room" })).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Direct Messages" })).toBeNull();
   });
 
@@ -297,7 +297,7 @@ describe("Sidebar", () => {
     expect(persistedOrder).toEqual(["planning-room", "synthetic-room"]);
   });
 
-  it("sorts Direct Messages by latest message timestamp for Active sort", async () => {
+  it("renders Direct Messages in the Rust sidebar order for Active sort", async () => {
     const api = createBrowserFakeApi();
     const snapshot = await api.selectSpace(null);
     const dmRooms = snapshot.state.domain.rooms.filter((room) => room.is_dm).slice(0, 2);
@@ -305,16 +305,21 @@ describe("Sidebar", () => {
       throw new Error("expected at least two fake direct messages");
     }
     const [statusNewer, messageNewer] = dmRooms;
-    statusNewer.last_activity_ms = 300;
+    statusNewer.recency_stamp = 300;
+    statusNewer.conversation_activity = null;
     statusNewer.latest_event = {
       event_id: "$status-newer:example.invalid",
       sender_id: "@sender:example.invalid",
       sender_label: "Sender",
       sender_avatar: null,
-      preview: "older latest message",
-      timestamp_ms: 100
+      preview: null,
+      timestamp_ms: 300
     };
-    messageNewer.last_activity_ms = 200;
+    messageNewer.recency_stamp = 200;
+    messageNewer.conversation_activity = {
+      timestamp_ms: 250,
+      source: "message"
+    };
     messageNewer.latest_event = {
       event_id: "$message-newer:example.invalid",
       sender_id: "@sender:example.invalid",
@@ -323,7 +328,7 @@ describe("Sidebar", () => {
       preview: "newer latest message",
       timestamp_ms: 250
     };
-    snapshot.sidebar.global_dms = snapshot.state.domain.rooms
+    const projectedDms = snapshot.state.domain.rooms
       .filter((room) => room.is_dm)
       .map((room) => ({
         room_id: room.room_id,
@@ -333,6 +338,7 @@ describe("Sidebar", () => {
         unread_count: room.notification_count ?? room.unread_count,
         highlight_count: room.highlight_count ?? 0
       }));
+    snapshot.sidebar.global_dms = [projectedDms[1], projectedDms[0], ...projectedDms.slice(2)];
 
     render(
       <Sidebar

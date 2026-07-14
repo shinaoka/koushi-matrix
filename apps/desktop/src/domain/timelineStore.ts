@@ -415,6 +415,9 @@ function timelineEventKeyId(event: TimelineEvent): string | null {
   if ("SendCompleted" in event) {
     return keyStr(event.SendCompleted.key);
   }
+  if ("MediaSendQueued" in event) {
+    return keyStr(event.MediaSendQueued.key);
+  }
   if ("MessageForwarded" in event) {
     return keyStr(event.MessageForwarded.key);
   }

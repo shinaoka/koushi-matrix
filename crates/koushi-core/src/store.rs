@@ -1433,6 +1433,7 @@ mod tests {
         scheduled_sends.insert(koushi_state::ScheduledSendItem {
             scheduled_id: "sched-1".to_owned(),
             room_id: "!room:test.example.com".to_owned(),
+            thread_root_event_id: None,
             body: plaintext.to_owned(),
             send_at_ms: 1_900_000_000_000,
             handle: koushi_state::ScheduledSendHandle::Local,
@@ -1507,6 +1508,7 @@ mod tests {
         scheduled_sends.insert(koushi_state::ScheduledSendItem {
             scheduled_id: "sched-1".to_owned(),
             room_id: "!room:test.example.com".to_owned(),
+            thread_root_event_id: None,
             body: "scheduled body".to_owned(),
             send_at_ms: 1_900_000_000_000,
             handle: koushi_state::ScheduledSendHandle::Local,

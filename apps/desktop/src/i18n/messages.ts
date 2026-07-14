@@ -75,6 +75,7 @@ export type MessageId =
   | "composer.attachFileInput"
   | "composer.bold"
   | "composer.code"
+  | "composer.dropFiles"
   | "composer.emoji"
   | "composer.emojiSearch"
   | "composer.emojiRecent"
@@ -103,6 +104,12 @@ export type MessageId =
   | "upload.compressed"
   | "upload.dialogTitle"
   | "upload.original"
+  | "upload.preparing"
+  | "upload.preparationFailed"
+  | "upload.retryPreparation"
+  | "upload.useOriginal"
+  | "upload.previewAlt"
+  | "upload.savings"
   | "upload.sizeChoice"
   | "window.title"
   | "context.editMessage"
@@ -1060,6 +1067,7 @@ const en: Catalog = {
   "composer.attachFileInput": "Attach file input",
   "composer.bold": "Bold",
   "composer.code": "Code",
+  "composer.dropFiles": "Drop files to attach",
   "composer.emoji": "Emoji",
   "composer.emojiSearch": "Search emoji",
   "composer.emojiRecent": "Frequently used",
@@ -1088,6 +1096,12 @@ const en: Catalog = {
   "upload.compressed": "Compressed",
   "upload.dialogTitle": "Upload attachments",
   "upload.original": "Original",
+  "upload.preparing": "Preparing attachment…",
+  "upload.preparationFailed": "Attachment preparation failed",
+  "upload.retryPreparation": "Retry preparation",
+  "upload.useOriginal": "Use original",
+  "upload.previewAlt": "Prepared attachment preview",
+  "upload.savings": "{percent}% smaller",
   "upload.sizeChoice": "Upload size",
   "window.title": "Koushi",
   "context.editMessage": "Edit",
@@ -1948,6 +1962,7 @@ const ja: Catalog = {
   "composer.attachFileInput": "ファイル添付入力",
   "composer.bold": "太字",
   "composer.code": "コード",
+  "composer.dropFiles": "ファイルをドロップして添付",
   "composer.emoji": "絵文字",
   "composer.emojiSearch": "絵文字を検索",
   "composer.emojiRecent": "よく使う",
@@ -1976,6 +1991,12 @@ const ja: Catalog = {
   "upload.compressed": "圧縮",
   "upload.dialogTitle": "添付をアップロード",
   "upload.original": "オリジナル",
+  "upload.preparing": "添付を準備中…",
+  "upload.preparationFailed": "添付の準備に失敗しました",
+  "upload.retryPreparation": "準備を再試行",
+  "upload.useOriginal": "オリジナルを使用",
+  "upload.previewAlt": "準備済み添付のプレビュー",
+  "upload.savings": "{percent}% 削減",
   "upload.sizeChoice": "アップロードサイズ",
   "window.title": "Koushi（光子・格子）",
   "context.editMessage": "編集",

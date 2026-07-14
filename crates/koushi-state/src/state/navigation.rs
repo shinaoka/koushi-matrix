@@ -146,41 +146,27 @@ pub fn compute_room_list_projection(
 
     match sort {
         RoomListSort::Activity => {
-            let activity_by_id: std::collections::HashMap<&str, u64> = rooms
+            let room_by_id: std::collections::HashMap<&str, &super::room::RoomSummary> = rooms
                 .iter()
-                .map(|room| (room.room_id.as_str(), room_active_sort_timestamp(room)))
+                .map(|room| (room.room_id.as_str(), room))
                 .collect();
             items.sort_by(|left, right| {
-                let left_ts = activity_by_id
-                    .get(left.room_id.as_str())
-                    .copied()
-                    .unwrap_or_default();
-                let right_ts = activity_by_id
-                    .get(right.room_id.as_str())
-                    .copied()
-                    .unwrap_or_default();
-                right_ts
-                    .cmp(&left_ts)
-                    .then_with(|| left.room_id.cmp(&right.room_id))
+                super::room::compare_conversation_activity(
+                    room_by_id.get(left.room_id.as_str()).copied(),
+                    room_by_id.get(right.room_id.as_str()).copied(),
+                )
             });
         }
         RoomListSort::RecentFirst => {
-            let activity_by_id: std::collections::HashMap<&str, u64> = rooms
+            let room_by_id: std::collections::HashMap<&str, &super::room::RoomSummary> = rooms
                 .iter()
-                .map(|room| (room.room_id.as_str(), room_active_sort_timestamp(room)))
+                .map(|room| (room.room_id.as_str(), room))
                 .collect();
             items.sort_by(|left, right| {
-                let left_ts = activity_by_id
-                    .get(left.room_id.as_str())
-                    .copied()
-                    .unwrap_or_default();
-                let right_ts = activity_by_id
-                    .get(right.room_id.as_str())
-                    .copied()
-                    .unwrap_or_default();
-                right_ts
-                    .cmp(&left_ts)
-                    .then_with(|| left.room_id.cmp(&right.room_id))
+                super::room::compare_conversation_activity(
+                    room_by_id.get(left.room_id.as_str()).copied(),
+                    room_by_id.get(right.room_id.as_str()).copied(),
+                )
             });
         }
         RoomListSort::NormalLocale => {
@@ -211,13 +197,6 @@ pub fn compute_room_list_projection(
         sort,
         items,
     }
-}
-
-fn room_active_sort_timestamp(room: &super::room::RoomSummary) -> u64 {
-    room.latest_event
-        .as_ref()
-        .map(|event| event.timestamp_ms)
-        .unwrap_or(room.last_activity_ms)
 }
 
 fn room_visible_in_active_space(

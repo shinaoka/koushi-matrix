@@ -33,17 +33,15 @@ export function computeBrowserRoomListProjection(
             kind: "room" as const
           }));
 
-  const activityByRoomId = new Map(
-    rooms.map((room) => [room.room_id, roomActiveSortTimestamp(room)])
-  );
+  const roomById = new Map(rooms.map((room) => [room.room_id, room]));
   items.sort((left, right) => {
     switch (sort.kind) {
       case "activity":
       case "recentFirst": {
-        const activityDelta =
-          (activityByRoomId.get(right.room_id) ?? 0) -
-          (activityByRoomId.get(left.room_id) ?? 0);
-        return activityDelta || left.room_id.localeCompare(right.room_id);
+        return compareConversationActivity(
+          roomById.get(left.room_id),
+          roomById.get(right.room_id)
+        );
       }
       case "normalLocale": {
         const leftRoom = rooms.find((room) => room.room_id === left.room_id);
@@ -62,8 +60,25 @@ export function computeBrowserRoomListProjection(
   };
 }
 
-function roomActiveSortTimestamp(room: RoomSummary): number {
-  return room.latest_event?.timestamp_ms ?? room.last_activity_ms ?? 0;
+function compareConversationActivity(
+  left: RoomSummary | undefined,
+  right: RoomSummary | undefined
+): number {
+  const leftActivity = left?.conversation_activity ?? null;
+  const rightActivity = right?.conversation_activity ?? null;
+  if (leftActivity === null && rightActivity !== null) return 1;
+  if (leftActivity !== null && rightActivity === null) return -1;
+  if (leftActivity !== null && rightActivity !== null) {
+    const timestampOrder = rightActivity.timestamp_ms - leftActivity.timestamp_ms;
+    if (timestampOrder !== 0) return timestampOrder;
+  }
+  const leftLabel = (left?.display_label ?? "").toLowerCase();
+  const rightLabel = (right?.display_label ?? "").toLowerCase();
+  if (leftLabel < rightLabel) return -1;
+  if (leftLabel > rightLabel) return 1;
+  const leftId = left?.room_id ?? "";
+  const rightId = right?.room_id ?? "";
+  return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
 }
 
 function roomVisibleInActiveSpace(
@@ -72,7 +87,7 @@ function roomVisibleInActiveSpace(
   activeSpaceChildRoomIds: string[] | null
 ): boolean {
   if (activeSpaceId === null) {
-    return room.is_dm || room.parent_space_ids.length === 0;
+    return true;
   }
   if (room.is_dm) {
     return room.dm_space_ids.includes(activeSpaceId);

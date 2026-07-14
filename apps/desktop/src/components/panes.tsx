@@ -30,8 +30,7 @@ import type {
   DirectoryRoomSummary,
   MentionIntent,
   ResolveComposerKeyAction,
-  SearchResult,
-  StagedUploadCompressionChoice
+  SearchResult
 } from "../domain/types";
 import { focusedTimelineKey, roomTimelineKey } from "../domain/coreEvents";
 import {
@@ -587,7 +586,10 @@ export function TimelinePane({
   onAttachFiles,
   onClearUploadStaging,
   onUpdateStagedUploadCaption,
-  onUpdateStagedUploadCompression,
+  onSelectStagedUploadVariant,
+  onLoadStagedUploadPreview,
+  onRetryStagedUploadPreparation = () => undefined,
+  onUseOriginalStagedUpload = () => undefined,
   onComposerDraftChange,
   onMentionIntentChange,
   onEditMessage,
@@ -623,10 +625,10 @@ export function TimelinePane({
   onAttachFiles: (files: File[]) => void | Promise<void>;
   onClearUploadStaging: () => void | Promise<void>;
   onUpdateStagedUploadCaption: (stagedId: string, caption: string) => void | Promise<void>;
-  onUpdateStagedUploadCompression: (
-    stagedId: string,
-    compressionChoice: StagedUploadCompressionChoice
-  ) => void | Promise<void>;
+  onSelectStagedUploadVariant: (stagedId: string, variantId: string) => void | Promise<void>;
+  onLoadStagedUploadPreview: (stagedId: string, variantId: string) => Promise<number[]>;
+  onRetryStagedUploadPreparation?: (stagedId: string) => void | Promise<void>;
+  onUseOriginalStagedUpload?: (stagedId: string) => void | Promise<void>;
   onComposerDraftChange: (value: string) => void;
   onMentionIntentChange: (intent: MentionIntent) => void;
   onEditMessage: (message: { body: string | null; room_id: string; event_id: string }) => void;
@@ -718,7 +720,10 @@ export function TimelinePane({
   const onAttachFilesStable = useStableEvent(onAttachFiles);
   const onClearUploadStagingStable = useStableEvent(onClearUploadStaging);
   const onUpdateStagedUploadCaptionStable = useStableEvent(onUpdateStagedUploadCaption);
-  const onUpdateStagedUploadCompressionStable = useStableEvent(onUpdateStagedUploadCompression);
+  const onSelectStagedUploadVariantStable = useStableEvent(onSelectStagedUploadVariant);
+  const onLoadStagedUploadPreviewStable = useStableEvent(onLoadStagedUploadPreview);
+  const onRetryStagedUploadPreparationStable = useStableEvent(onRetryStagedUploadPreparation);
+  const onUseOriginalStagedUploadStable = useStableEvent(onUseOriginalStagedUpload);
   const onComposerDraftChangeStable = useStableEvent(onComposerDraftChange);
   const onMentionIntentChangeStable = useStableEvent(onMentionIntentChange);
   const onEditMessageStable = useStableEvent(onEditMessage);
@@ -917,12 +922,16 @@ export function TimelinePane({
           items={stagedUploads}
           onClear={onClearUploadStagingStable}
           onUpdateCaption={onUpdateStagedUploadCaptionStable}
-          onUpdateCompression={onUpdateStagedUploadCompressionStable}
+          onSelectVariant={onSelectStagedUploadVariantStable}
+          onRetryPreparation={onRetryStagedUploadPreparationStable}
+          onUseOriginal={onUseOriginalStagedUploadStable}
+          loadPreview={onLoadStagedUploadPreviewStable}
         />
       ) : null}
       <Composer
         composerMode={composerModeForComposer}
         hasStagedUploads={stagedUploads.length > 0}
+        stagedUploadsReady={stagedUploads.every((item) => item.preparation.kind === "ready")}
         isSending={Boolean(snapshot.state.ui.timeline.composer.pending_transaction_id)}
         mentionCandidates={mentionCandidates}
         mentionIntent={mentionIntent}

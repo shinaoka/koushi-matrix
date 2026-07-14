@@ -913,6 +913,29 @@ pub struct StageUploadInputItem {
     compression_choice: StagedUploadCompressionChoice,
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StageUploadBytesInputItem {
+    staged_id: String,
+    position: u64,
+    filename: String,
+    mime_type: String,
+    bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for StageUploadBytesInputItem {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StageUploadBytesInputItem")
+            .field("staged_id", &"StagedUploadId(..)")
+            .field("position", &self.position)
+            .field("filename", &"MediaFilename(..)")
+            .field("mime_type", &self.mime_type)
+            .field("byte_count", &self.bytes.len())
+            .finish()
+    }
+}
+
 const CREATE_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 async fn wait_for_room_created(
@@ -1616,16 +1639,24 @@ pub(crate) fn build_submit_text_command(
 
 pub(crate) fn build_schedule_send_command(
     request_id: koushi_core::RequestId,
-    room_id: String,
+    target: koushi_state::ComposerTarget,
     body: String,
     send_at_ms: u64,
 ) -> Option<CoreCommand> {
     if body.trim().is_empty() {
         return None;
     }
+    let (room_id, thread_root_event_id) = match target {
+        koushi_state::ComposerTarget::Main { room_id } => (room_id, None),
+        koushi_state::ComposerTarget::Thread {
+            room_id,
+            root_event_id,
+        } => (room_id, Some(root_event_id)),
+    };
     Some(CoreCommand::App(AppCommand::ScheduleSend {
         request_id,
         room_id,
+        thread_root_event_id,
         body,
         send_at_ms,
     }))
@@ -1656,11 +1687,12 @@ pub(crate) fn build_set_upload_staging_command(
             kind: item.kind,
             caption: None,
             compression_choice: item.compression_choice,
+            preparation: Default::default(),
         })
         .collect();
     CoreCommand::App(AppCommand::SetUploadStaging {
         request_id,
-        room_id,
+        target: koushi_state::ComposerTarget::Main { room_id },
         items: staged_items,
     })
 }
@@ -2701,6 +2733,7 @@ pub(crate) fn build_submit_thread_reply_command(
     root_event_id: String,
     transaction_id: String,
     body: String,
+    mentions: MentionIntent,
 ) -> Option<CoreCommand> {
     if body.trim().is_empty() {
         return None;
@@ -2718,7 +2751,7 @@ pub(crate) fn build_submit_thread_reply_command(
         transaction_id,
         in_reply_to_event_id: root_event_id,
         body,
-        mentions: MentionIntent::default(),
+        mentions,
     }))
 }
 
@@ -2728,6 +2761,10 @@ pub(crate) fn build_submit_thread_reply_command(
 /// session will be rejected by `AppActor::requires_ready_session`).
 async fn account_key_from_snapshot(state: &CoreRuntimeState) -> AccountKey {
     let snapshot = state.connection.lock().await.snapshot();
+    account_key_from_app_state(&snapshot)
+}
+
+fn account_key_from_app_state(snapshot: &koushi_state::AppState) -> AccountKey {
     match &snapshot.session {
         koushi_state::SessionState::Ready(info)
         | koushi_state::SessionState::Provisional { info, .. }
@@ -3486,7 +3523,8 @@ mod tests {
                 notification_count: 0,
                 highlight_count: 0,
                 marked_unread: false,
-                last_activity_ms: 0,
+                recency_stamp: None,
+                conversation_activity: None,
                 latest_event: None,
                 parent_space_ids: vec![],
                 dm_space_ids: vec![],
@@ -3506,7 +3544,8 @@ mod tests {
                 notification_count: 0,
                 highlight_count: 0,
                 marked_unread: false,
-                last_activity_ms: 0,
+                recency_stamp: None,
+                conversation_activity: None,
                 latest_event: None,
                 parent_space_ids: vec![],
                 dm_space_ids: vec![],
@@ -3864,7 +3903,9 @@ mod tests {
 
         match build_schedule_send_command(
             fake_request_id(33),
-            room_id.clone(),
+            koushi_state::ComposerTarget::Main {
+                room_id: room_id.clone(),
+            },
             "send later body".to_owned(),
             1_900_000_000_000,
         )
@@ -3873,13 +3914,40 @@ mod tests {
             CoreCommand::App(AppCommand::ScheduleSend {
                 request_id,
                 room_id: route_room_id,
+                thread_root_event_id,
                 body,
                 send_at_ms,
             }) => {
                 assert_eq!(request_id, fake_request_id(33));
                 assert_eq!(route_room_id, room_id);
+                assert_eq!(thread_root_event_id, None);
                 assert_eq!(body, "send later body");
                 assert_eq!(send_at_ms, 1_900_000_000_000);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_schedule_send_command(
+            fake_request_id(330),
+            koushi_state::ComposerTarget::Thread {
+                room_id: room_id.clone(),
+                root_event_id: "$thread-root:example.test".to_owned(),
+            },
+            "thread later body".to_owned(),
+            1_900_000_010_000,
+        )
+        .expect("thread schedule_send should build a command")
+        {
+            CoreCommand::App(AppCommand::ScheduleSend {
+                room_id: route_room_id,
+                thread_root_event_id,
+                ..
+            }) => {
+                assert_eq!(route_room_id, room_id);
+                assert_eq!(
+                    thread_root_event_id.as_deref(),
+                    Some("$thread-root:example.test")
+                );
             }
             other => panic!("unexpected command: {other:?}"),
         }

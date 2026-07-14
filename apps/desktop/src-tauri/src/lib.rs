@@ -1092,6 +1092,12 @@ pub fn run() {
             commands::timeline::send_text,
             commands::timeline::schedule_send,
             commands::timeline::stage_uploads,
+            commands::timeline::stage_upload_bytes,
+            commands::timeline::select_staged_upload_variant,
+            commands::timeline::retry_staged_upload_preparation,
+            commands::timeline::use_original_staged_upload,
+            commands::timeline::prepared_upload_preview,
+            commands::timeline::send_prepared_uploads,
             commands::timeline::update_staged_upload_caption,
             commands::timeline::update_staged_upload_compression,
             commands::timeline::clear_upload_staging,
@@ -2293,6 +2299,14 @@ mod tests {
             }))
             .expect("serialize media upload progress");
 
+        let media_send_queued =
+            serialize_core_event(&CoreEvent::Timeline(TimelineEvent::MediaSendQueued {
+                request_id,
+                key: key.clone(),
+                transaction_id: "txn-media".to_owned(),
+            }))
+            .expect("serialize media queue admission");
+
         let media_download_progress =
             serialize_core_event(&CoreEvent::Timeline(TimelineEvent::MediaDownloadProgress {
                 request_id,
@@ -3026,6 +3040,7 @@ mod tests {
             "timelineMediaDownloadProgress": media_download_progress,
             "timelineMediaInitialItems": media_initial,
             "timelineMediaUploadProgress": media_upload_progress,
+            "timelineMediaSendQueued": media_send_queued,
             "timelineMessageForwarded": message_forwarded,
             "timelineMessageSourceLoaded": message_source_loaded,
             "timelineNavigationUpdated": navigation_updated,
@@ -3167,6 +3182,7 @@ mod tests {
             "timelineMediaDownloadProgress",
             "timelineMediaInitialItems",
             "timelineMediaUploadProgress",
+            "timelineMediaSendQueued",
             "timelineMessageForwarded",
             "timelineMessageSourceLoaded",
             "timelineAnchorRestoreFinished",
