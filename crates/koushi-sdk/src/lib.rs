@@ -5219,12 +5219,6 @@ fn restricted_verification_sync_settings() -> matrix_sdk::config::SyncSettings {
         )
 }
 
-fn promotion_full_state_sync_settings() -> matrix_sdk::config::SyncSettings {
-    matrix_sdk::config::SyncSettings::new()
-        .timeout(RESTRICTED_VERIFICATION_SYNC_SERVER_TIMEOUT)
-        .full_state(true)
-}
-
 pub async fn restricted_verification_sync_once(
     session: &MatrixClientSession,
 ) -> Result<(), MatrixSyncError> {
@@ -5246,17 +5240,6 @@ pub async fn restricted_verification_sync_once_with_token(
         .sync_once(settings)
         .await
         .map(|response| response.next_batch)
-        .map_err(|_| MatrixSyncError::Sdk)
-}
-
-pub async fn promotion_full_state_sync_once(
-    session: &MatrixClientSession,
-) -> Result<(), MatrixSyncError> {
-    session
-        .client()
-        .sync_once(promotion_full_state_sync_settings())
-        .await
-        .map(|_| ())
         .map_err(|_| MatrixSyncError::Sdk)
 }
 

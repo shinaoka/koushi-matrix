@@ -554,22 +554,6 @@ pub(crate) fn handle_session_persistence_failed(
     vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
 }
 
-pub(crate) fn handle_verification_admission_preparation_failed(
-    state: &mut AppState,
-    kind: crate::state::VerificationGateFailureKind,
-) -> Vec<AppEffect> {
-    let SessionState::Provisional { info, .. } = &state.session else {
-        return Vec::new();
-    };
-    state.session = SessionState::Provisional {
-        info: info.clone(),
-        phase: crate::state::ProvisionalPhase::RecheckingTrust {
-            failure: Some(kind),
-        },
-    };
-    vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
-}
-
 pub(crate) fn handle_session_locked(state: &mut AppState) -> Vec<AppEffect> {
     if let SessionState::Ready(info) = &state.session {
         let submission_registry = state.timeline.submission_registry.clone();

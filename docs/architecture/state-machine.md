@@ -79,12 +79,12 @@ stateDiagram-v2
     Authenticating --> Provisional: AuthenticatedSessionInstalled
     Authenticating --> SignedOut: LoginFailed
     Provisional --> AwaitingVerification: TrustUnverified / methods discovered
-    Provisional --> Ready: CurrentDeviceTrustChanged(Verified)
+    Provisional --> Ready: AuthoritativeDeviceTrustChanged(Verified)
     Provisional --> Rejecting: ExistingIdentityWithoutProof
     AwaitingVerification --> Verifying: VerificationMethodSubmitted / clear prior failure
     AwaitingVerification --> Rejecting: RejectSession / no proof
     Verifying --> AwaitingVerification: Cancelled / failed / timeout
-    Verifying --> Ready: CurrentDeviceTrustChanged(Verified)
+    Verifying --> Ready: AuthoritativeDeviceTrustChanged(Verified)
     Verifying --> Rejecting: RejectSession
     Rejecting --> SignedOut: ProvisionalSessionDiscarded
     Ready --> Locked: CurrentDeviceTrustChanged(non-Verified) / SessionLocked
@@ -106,7 +106,15 @@ stateDiagram-v2
   `VerificationMethodSubmitted` clears it while preserving the gate's methods
   and account kind before entering the new `Verifying` flow.
 - Restricted crypto sync is AccountActor-internal and cannot publish normal
-  projections or active saved-session state. Unknown trust remains fail closed.
+  projections or active saved-session state. Initial authoritative Verified
+  skips that lane; later Verified cancels and joins it before the Ready
+  projection. Normal SyncActor ownership begins only after the Ready projection
+  acknowledgement, so restricted and normal classic-sync token owners never
+  overlap. Unknown and Unverified trust remain fail closed.
+- Ready is a trust/admission state, not a successful-sync state. Starting,
+  reconnecting, failed, and offline normal sync remain in the Ready shell and
+  use its normal status/restart affordances; they do not reopen or flash the
+  verification gate.
 - A genuine missing cross-signing identity may enter mandatory bootstrap. An
   existing identity without a verified other device or usable recovery method
   enters `Rejecting`; identity reset, skip, and verify-later are not gate exits.
@@ -1054,6 +1062,13 @@ sanitizes it before exposing it through `TimelineItem.formatted`.
   Rust-provided code-block body, and highlight search terms over rendered text.
   It must not decide Matrix HTML safety or render server `formatted_body`
   directly.
+- The presentation adapter follows HTML whitespace semantics: source newlines
+  collapse as ordinary whitespace and never synthesize `br`; only an explicit
+  sanitized `br` renders a line break. Whitespace-only list children are
+  omitted, inline sibling spacing and code/pre content are preserved, and
+  pretty-printed and minified equivalent markup must produce equivalent compact
+  layout. This normalization happens after Rust-owned UTF-16 link/spoiler range
+  projection and must not shift those range inputs.
 
 ## Profiles And Avatars
 

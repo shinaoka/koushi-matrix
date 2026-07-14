@@ -391,6 +391,13 @@ Rules:
    accounts; the runtime and reducer are exonerated for a scale bug only by such
    a test, and a transient room-list projection that drops a known-joined room
    is caught here, not in CI.
+16. Verified-session admission has one classic-sync owner at a time. An
+   optional restricted provisional lane must be cancelled and joined before
+   Ready is projected, and normal SyncActor ownership begins only after the
+   projection acknowledgement. Do not add an admission-only full-state sync,
+   share an incompatible restricted token with normal sync, or retain a
+   restricted lane beside normal sync. Network catch-up failure does not revoke
+   authoritative Verified trust; it is normal Ready-shell sync state.
 
 ## GUI Automation
 
@@ -458,7 +465,11 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    plain text/code-block metadata. React must never render unsanitized server
    HTML or own sanitizer policy. TimelineView's formatted renderer is a
    presentation adapter only: it maps the Rust-owned DTO into React nodes,
-   code-copy controls, search highlights, and `code_block_wrap` CSS.
+   code-copy controls, search highlights, and `code_block_wrap` CSS. Ordinary
+   HTML source whitespace must collapse without synthetic `br` nodes; explicit
+   sanitized `br` remains a break, direct list element children remain `li`,
+   inline spacing and pre/code text remain intact, and pretty/minified markup
+   must have equivalent browser layout.
    Composer mention GUI tests must use Rust-shaped `ProfileState.users` member
    profiles for autocomplete candidates. React may render the popover/pills and
    pass a typed `MentionIntent`, but it must not synthesize Matrix

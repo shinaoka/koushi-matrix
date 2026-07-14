@@ -325,7 +325,15 @@ the SDK current-device verification stream before reading its current value and
 promotes only an authoritative `Verified` observation. While provisional, only
 a restricted crypto synchronization loop may process the account data,
 device-list, key-query, recovery, and to-device traffic required for trust
-discovery and SAS. It must not start normal Sync/Room/Timeline/Search actors,
+discovery and SAS when the initial authoritative value is not Verified. An
+initial Verified value skips restricted sync. A later Verified value cancels
+and joins the restricted loop before the Ready projection is dispatched; the
+normal SyncActor starts only after that projection is acknowledged. These are
+exclusive classic-sync owners and do not share or overlap sync-token lanes.
+Admission never performs an unconditional full-state catch-up: trust decides
+Ready, while normal sync health and offline/reconnect behavior belong to the
+Ready shell. The provisional runtime must not start normal
+Sync/Room/Timeline/Search actors,
 publish room or attention projections, restore drafts/navigation/scheduled
 sends, or authorize ordinary commands. Provisional credentials are not
 persisted; a process restart returns to `SignedOut`. Rejection performs
