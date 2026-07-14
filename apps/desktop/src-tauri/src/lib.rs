@@ -350,6 +350,10 @@ fn clamp_physical_position(value: i32, minimum: i32, maximum: i64) -> i32 {
     i64::from(value).clamp(i64::from(minimum), maximum.min(i64::from(i32::MAX))) as i32
 }
 
+fn window_work_area_is_usable(area: &WindowWorkArea) -> bool {
+    area.width >= MIN_RESTORABLE_WINDOW_WIDTH && area.height >= MIN_RESTORABLE_WINDOW_HEIGHT
+}
+
 fn restored_window_geometry(
     state: &PersistedWindowState,
     work_areas: &[WindowWorkArea],
@@ -360,19 +364,22 @@ fn restored_window_geometry(
 
     let intersecting = work_areas
         .iter()
+        .filter(|area| window_work_area_is_usable(area))
         .map(|area| (area, rectangle_intersection_area(state, area)))
         .filter(|(_, intersection)| *intersection > 0)
         .max_by_key(|(_, intersection)| *intersection)
         .map(|(area, _)| area);
     let selected = intersecting
-        .or_else(|| work_areas.iter().find(|area| area.primary))
-        .or_else(|| work_areas.first())?;
-
-    if selected.width < MIN_RESTORABLE_WINDOW_WIDTH
-        || selected.height < MIN_RESTORABLE_WINDOW_HEIGHT
-    {
-        return None;
-    }
+        .or_else(|| {
+            work_areas
+                .iter()
+                .find(|area| area.primary && window_work_area_is_usable(area))
+        })
+        .or_else(|| {
+            work_areas
+                .iter()
+                .find(|area| window_work_area_is_usable(area))
+        })?;
 
     let width = state.width.min(selected.width);
     let height = state.height.min(selected.height);
@@ -1879,6 +1886,32 @@ mod tests {
         assert_eq!(
             restored_window_geometry(&state, &[work_area(0, 0, 700, 600, true)]),
             None
+        );
+    }
+
+    #[test]
+    fn restored_window_geometry_skips_intersecting_unusable_work_area() {
+        let state = PersistedWindowState {
+            x: 2050,
+            y: 50,
+            width: 1280,
+            height: 820,
+            maximized: false,
+        };
+
+        assert_eq!(
+            restored_window_geometry(
+                &state,
+                &[
+                    work_area(0, 0, 1920, 1040, true),
+                    work_area(2000, 0, 700, 600, false),
+                ],
+            ),
+            Some(PersistedWindowState {
+                x: 640,
+                y: 50,
+                ..state
+            })
         );
     }
 
