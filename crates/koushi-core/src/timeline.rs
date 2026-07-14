@@ -2690,14 +2690,16 @@ fn newest_provable_receipt_event_id(
         }
     }
 
-    if candidates
+    let newest_visible = candidates
         .iter()
-        .all(|candidate| positions.contains_key(candidate.as_str()))
-    {
-        return candidates
-            .into_iter()
-            .max_by_key(|candidate| positions[candidate.as_str()])
-            .unwrap_or_else(|| requested_event_id.to_owned());
+        .filter(|candidate| positions.contains_key(candidate.as_str()))
+        .max_by_key(|candidate| positions[candidate.as_str()])
+        .cloned();
+    if positions.contains_key(requested_event_id) {
+        return newest_visible.unwrap_or_else(|| requested_event_id.to_owned());
+    }
+    if let Some(newest_visible) = newest_visible {
+        return newest_visible;
     }
 
     current_event_id
@@ -5337,7 +5339,9 @@ impl ThreadAttentionTracker {
             };
             let is_authoritatively_unread =
                 receipt_position.is_some_and(|receipt_position| position > receipt_position);
-            if observation != ThreadAttentionObservation::Live && !is_authoritatively_unread {
+            let may_add_attention = observation == ThreadAttentionObservation::Live
+                || (observation == ThreadAttentionObservation::Replay && is_authoritatively_unread);
+            if !may_add_attention {
                 self.observed_reply_event_ids
                     .insert(stable_event_id.to_owned());
                 continue;
@@ -19325,6 +19329,26 @@ mod tests {
             None
         );
         assert_eq!(tracker.counts, ThreadAttentionCounters::default());
+
+        let receipt = thread_reply_item("$visible-read:test", own_user_id, "$root:test");
+        let after_receipt = thread_reply_item("$historical-after:test", "@bob:test", "$root:test");
+        let mut tracker = ThreadAttentionTracker::hydrate(
+            &key,
+            std::slice::from_ref(&receipt),
+            Some(own_user_id),
+            Some("$visible-read:test".to_owned()),
+        );
+        assert_eq!(
+            tracker.reconcile(
+                &key,
+                &[receipt, after_receipt],
+                Some(own_user_id),
+                ThreadAttentionObservation::Backfill,
+            ),
+            None,
+            "ordinary pagination never manufactures attention"
+        );
+        assert_eq!(tracker.counts, ThreadAttentionCounters::default());
     }
 
     #[test]
@@ -19616,6 +19640,17 @@ mod tests {
             ),
             "$newer-device-read:test",
             "a stale request must not regress a newer multi-device boundary"
+        );
+
+        assert_eq!(
+            newest_provable_receipt_event_id(
+                &items[1..2],
+                "$requested-read:test",
+                Some("$queried-outside-window:test".to_owned()),
+                Some("$current-outside-window:test"),
+            ),
+            "$requested-read:test",
+            "unknown out-of-window IDs cannot override a visible successful request"
         );
     }
 
