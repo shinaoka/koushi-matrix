@@ -6485,7 +6485,8 @@ function replyQuoteBody(quote: NonNullable<TimelineItem["reply_quote"]>): string
 }
 
 function localizedTimelineItemBody(item: TimelineItem): string {
-  switch (item.notice_i18n_key) {
+  const notice = item.notice_i18n;
+  switch (notice?.key) {
     case "timeline.notice.roomCreate":
       return t("timeline.notice.roomCreate");
     case "timeline.notice.roomPowerLevels":
@@ -6502,6 +6503,19 @@ function localizedTimelineItemBody(item: TimelineItem): string {
       return t("timeline.notice.roomHistoryVisibility");
     case "timeline.notice.roomPinnedEvents":
       return t("timeline.notice.roomPinnedEvents");
+    case "timeline.notice.roomNameSet":
+      return t("timeline.notice.roomNameSet", {
+        newName: notice.new_name ?? ""
+      });
+    case "timeline.notice.roomNameChanged":
+      return t("timeline.notice.roomNameChanged", {
+        oldName: notice.old_name ?? "",
+        newName: notice.new_name ?? ""
+      });
+    case "timeline.notice.roomNameRemoved":
+      return t("timeline.notice.roomNameRemoved");
+    case "timeline.notice.roomNameChangedGeneric":
+      return t("timeline.notice.roomNameChangedGeneric");
     default:
       return item.body ?? "";
   }

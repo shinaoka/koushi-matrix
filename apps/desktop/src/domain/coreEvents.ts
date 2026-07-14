@@ -183,13 +183,33 @@ export interface TimelineLinkRange {
   end_utf16: number;
 }
 
+export type TimelineNoticeI18nKey =
+  | "timeline.notice.roomCreate"
+  | "timeline.notice.roomPowerLevels"
+  | "timeline.notice.roomGuestAccess"
+  | "timeline.notice.roomEncryption"
+  | "timeline.notice.spaceParent"
+  | "timeline.notice.roomJoinRules"
+  | "timeline.notice.roomHistoryVisibility"
+  | "timeline.notice.roomPinnedEvents"
+  | "timeline.notice.roomNameSet"
+  | "timeline.notice.roomNameChanged"
+  | "timeline.notice.roomNameRemoved"
+  | "timeline.notice.roomNameChangedGeneric";
+
+export interface TimelineNoticeI18n {
+  key: TimelineNoticeI18nKey;
+  old_name?: string | null;
+  new_name?: string | null;
+}
+
 export interface TimelineItem {
   id: TimelineItemId;
   sender: string | null;
   sender_label?: string | null;
   sender_avatar?: AvatarImage | null;
   body: string | null;
-  notice_i18n_key?: string | null;
+  notice_i18n?: TimelineNoticeI18n | null;
   message_kind?: TimelineMessageKind;
   spoiler_spans?: TimelineSpoilerSpan[];
   timestamp_ms: number | null;
