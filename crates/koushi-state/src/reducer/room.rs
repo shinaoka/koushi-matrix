@@ -164,6 +164,7 @@ pub(crate) fn handle_room_list_updated(
                 staged_uploads: state.upload_staging.items_for_room(&room_id),
                 media_gallery: state.media_gallery.items_for_room(&room_id),
                 media_downloads: Default::default(),
+                continuity: Default::default(),
             };
             effects.push(AppEffect::SubscribeTimeline {
                 room_id: room_id.clone(),

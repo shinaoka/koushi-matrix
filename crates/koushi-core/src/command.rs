@@ -53,7 +53,7 @@ impl CoreCommand {
                 | AppCommand::AcknowledgeTimelineProjection { request_id, .. }
                 | AppCommand::EnterAnchoredTimeline { request_id, .. }
                 | AppCommand::OpenTimelineAtTimestamp { request_id, .. }
-                | AppCommand::ResetRoomTimelineCache { request_id, .. }
+                | AppCommand::RepairRoomTimeline { request_id, .. }
                 | AppCommand::TimelineScrollAnchorUpdated { request_id, .. }
                 | AppCommand::CloseFocusedContext { request_id }
                 | AppCommand::CloseSearch { request_id }
@@ -181,6 +181,7 @@ impl CoreCommand {
                 | TimelineCommand::CancelLinkPreviews { request_id, .. }
                 | TimelineCommand::RestoreTimelineAnchor { request_id, .. }
                 | TimelineCommand::ObserveViewport { request_id, .. }
+                | TimelineCommand::RepairGaps { request_id, .. }
                 | TimelineCommand::SendText { request_id, .. }
                 | TimelineCommand::SubmitText { request_id, .. }
                 | TimelineCommand::SendReply { request_id, .. }
@@ -230,7 +231,7 @@ impl CoreCommand {
             self,
             Self::App(
                 AppCommand::OpenTimelineAtTimestamp { .. }
-                    | AppCommand::ResetRoomTimelineCache { .. }
+                    | AppCommand::RepairRoomTimeline { .. }
                     | AppCommand::EnterAnchoredTimeline { .. }
                     | AppCommand::ScheduleSend { .. }
                     | AppCommand::CancelScheduledSend { .. }
@@ -357,7 +358,7 @@ pub enum AppCommand {
         room_id: String,
         timestamp_ms: u64,
     },
-    ResetRoomTimelineCache {
+    RepairRoomTimeline {
         request_id: RequestId,
         room_id: String,
     },
@@ -636,8 +637,8 @@ impl fmt::Debug for AppCommand {
                 .field("room_id", &"RoomId(..)")
                 .field("timestamp_ms", &"Timestamp(..)")
                 .finish(),
-            Self::ResetRoomTimelineCache { request_id, .. } => formatter
-                .debug_struct("ResetRoomTimelineCache")
+            Self::RepairRoomTimeline { request_id, .. } => formatter
+                .debug_struct("RepairRoomTimeline")
                 .field("request_id", request_id)
                 .field("room_id", &"RoomId(..)")
                 .finish(),
@@ -2201,6 +2202,10 @@ pub enum TimelineCommand {
         key: TimelineKey,
         observation: TimelineViewportObservation,
     },
+    RepairGaps {
+        request_id: RequestId,
+        key: TimelineKey,
+    },
     SendText {
         request_id: RequestId,
         key: TimelineKey,
@@ -2406,6 +2411,11 @@ impl fmt::Debug for TimelineCommand {
                 .field("first_visible_event_id", &"EventId(..)")
                 .field("last_visible_event_id", &"EventId(..)")
                 .field("at_bottom", &"ViewportFact(..)")
+                .finish(),
+            Self::RepairGaps { request_id, .. } => formatter
+                .debug_struct("RepairGaps")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
                 .finish(),
             Self::SendText {
                 request_id,

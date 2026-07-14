@@ -335,6 +335,11 @@ export type TimelineAnchorRestoreStatus =
   | "Superseded"
   | { Failed: { kind: TimelineFailureKind } };
 
+export interface TimelineGapPosition {
+  ordinal: number;
+  before_item_index: number;
+}
+
 // ---------------------------------------------------------------------------
 // Timeline events (externally tagged on the wire)
 // ---------------------------------------------------------------------------
@@ -379,6 +384,13 @@ export type TimelineEvent =
       NavigationUpdated: {
         key: TimelineKey;
         snapshot: TimelineNavigationSnapshot;
+      };
+    }
+  | {
+      GapPositionsUpdated: {
+        key: TimelineKey;
+        generation: number;
+        positions: TimelineGapPosition[];
       };
     }
   | {

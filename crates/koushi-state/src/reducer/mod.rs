@@ -758,6 +758,46 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
             message: _,
         } => timeline::handle_timeline_subscription_failed(state, room_id),
+        AppAction::TimelineContinuityInspectionStarted {
+            room_id,
+            generation,
+        } => timeline::handle_timeline_continuity_inspection_started(state, room_id, generation),
+        AppAction::TimelineContinuityInspected {
+            room_id,
+            generation,
+            inspection,
+        } => timeline::handle_timeline_continuity_inspected(state, room_id, generation, inspection),
+        AppAction::TimelineGapRepairStarted {
+            room_id,
+            generation,
+            gap_count,
+        } => timeline::handle_timeline_gap_repair_started(state, room_id, generation, gap_count),
+        AppAction::TimelineGapRepairProgressed {
+            room_id,
+            generation,
+            gap_count,
+            batches_processed,
+        } => timeline::handle_timeline_gap_repair_progressed(
+            state,
+            room_id,
+            generation,
+            gap_count,
+            batches_processed,
+        ),
+        AppAction::TimelineGapRepairFailed {
+            room_id,
+            generation,
+            gap_count,
+            batches_processed,
+            kind,
+        } => timeline::handle_timeline_gap_repair_failed(
+            state,
+            room_id,
+            generation,
+            gap_count,
+            batches_processed,
+            kind,
+        ),
         AppAction::TimelineBackPaginationRequested { room_id } => {
             timeline::handle_timeline_back_pagination_requested(state, room_id)
         }
@@ -1537,6 +1577,7 @@ pub(crate) fn select_active_room_after_room_list_update(
         staged_uploads: state.upload_staging.items_for_room(&room_id),
         media_gallery: state.media_gallery.items_for_room(&room_id),
         media_downloads: Default::default(),
+        continuity: Default::default(),
     };
     state.thread = ThreadPaneState::Closed;
     state.thread_attention = ThreadAttentionState::Closed;
@@ -1571,6 +1612,7 @@ pub(crate) fn select_active_room_for_navigation(
         staged_uploads: state.upload_staging.items_for_room(&room_id),
         media_gallery: state.media_gallery.items_for_room(&room_id),
         media_downloads: Default::default(),
+        continuity: Default::default(),
     };
     state.thread = ThreadPaneState::Closed;
     state.thread_attention = ThreadAttentionState::Closed;

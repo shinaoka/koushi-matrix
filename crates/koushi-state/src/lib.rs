@@ -82,6 +82,7 @@ pub use state::{
     SyncModeFailureKind, SyncState, TextDirectionPreference, TextRange, ThemePreference,
     ThreadAttentionState, ThreadListOrder, ThreadPaneState, ThreadRootProjectionActivity,
     ThreadRootProjectionState, ThreadRootProjectionStatus, ThreadsListItem, ThreadsListState,
+    TimelineContinuityInspection, TimelineContinuityState, TimelineGapRepairFailureKind,
     TimelineMediaDownloadState, TimelineMediaGalleryItem, TimelineMediaGalleryMedia,
     TimelineMediaGallerySource, TimelineMediaGalleryThumbnail, TimelineMediaKind,
     TimelinePaneState, TimelineScrollAnchor, TimelineScrollAnchorEdge, TimelineSettings,

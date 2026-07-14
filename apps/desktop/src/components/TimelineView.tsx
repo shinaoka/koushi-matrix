@@ -153,12 +153,14 @@ import type {
   ResolveComposerKeyAction,
   TimelineScrollAnchor,
   TimelineMediaDownloadState,
+  TimelineContinuityState,
   TimelineThreadRootOrder,
   UserProfile
 } from "../domain/types";
 import type { TimelineLinkRange } from "../domain/coreEvents";
 import type { TimelineForwardDestination } from "../domain/projectionTypes";
 import {
+  insertTimelineGapRows,
   projectTimelineDisplayRows,
   type TimelineDisplayRow
 } from "../domain/timelineDisplayProjection";
@@ -176,6 +178,7 @@ export interface TimelineTransport {
   ensureSubscribed?(timelineKey: TimelineKey): Promise<void>;
   /** Invoke a backward-pagination command for this timeline key. */
   paginateBackwards(timelineKey: TimelineKey): Promise<void>;
+  repairTimeline?(roomId: string): Promise<void>;
   /** Send a reaction command for a timeline event. */
   sendReaction(roomId: string, eventId: string, reactionKey: string): Promise<void>;
   /** Retry a failed outbound send queue item. */
@@ -2113,6 +2116,7 @@ export const TimelineView = memo(function TimelineView({
   codeBlockWrap = true,
   searchQuery = "",
   mediaDownloads = {},
+  continuity = { kind: "unknown" },
   roomScrollAnchor: _persistedRoomScrollAnchor = null,
   enableAvatarThumbnailDownloads = AVATAR_THUMBNAIL_DOWNLOADS_ENABLED,
   onDiagnosticsChange,
@@ -2157,6 +2161,7 @@ export const TimelineView = memo(function TimelineView({
   codeBlockWrap?: boolean;
   searchQuery?: string;
   mediaDownloads?: Record<string, TimelineMediaDownloadState>;
+  continuity?: TimelineContinuityState;
   roomScrollAnchor?: TimelineScrollAnchor | null;
   /**
    * Temporary #116 perf gate. Defaults to AVATAR_THUMBNAIL_DOWNLOADS_ENABLED
@@ -2825,7 +2830,9 @@ export const TimelineView = memo(function TimelineView({
                                 ? event.NavigationUpdated.key
                                 : "ThreadRootProjection" in event
                                   ? event.ThreadRootProjection.key
-                                  : event.ResyncRequired.key;
+                                  : "GapPositionsUpdated" in event
+                                    ? event.GapPositionsUpdated.key
+                                    : event.ResyncRequired.key;
       if (!timelineKeyEquals(eventKey, timelineKeyRef.current)) {
         recordTimelineKeyMismatch();
         return;
@@ -3074,13 +3081,19 @@ export const TimelineView = memo(function TimelineView({
   const visibleItems = useMemo(() => items.filter((item) => !item.is_hidden), [items]);
   // The SDK-owned store stays canonical. Only these presentation rows feed
   // rendering, measuring, and virtualization for an opt-in Room projection.
-  const visibleRows = useMemo(
-    () =>
-      projectTimelineDisplayRows(items, timelineKey, threadRootOrder, threadRootProjections).filter(
-        (row) => !row.item.is_hidden
-      ),
-    [items, threadRootOrder, threadRootProjections, timelineKey]
-  );
+  const visibleRows = useMemo(() => {
+    const projected = projectTimelineDisplayRows(
+      items,
+      timelineKey,
+      threadRootOrder,
+      threadRootProjections
+    ).filter((row) => !row.item.is_hidden);
+    return insertTimelineGapRows(
+      projected,
+      timelineKeyState?.gapPositions ?? [],
+      timelineKeyState?.gapGeneration ?? 0
+    );
+  }, [items, threadRootOrder, threadRootProjections, timelineKey, timelineKeyState]);
   const projectionSnapshot = useMemo<TimelineProjectionSnapshot>(
     () => ({
       timelineKeyHash,
@@ -3379,7 +3392,10 @@ export const TimelineView = memo(function TimelineView({
   });
   const backwardState = getPaginationState(store, timelineKey, "Backward");
   const isPaginating = backwardState === "Paginating";
-  const endReached = backwardState === "EndReached";
+  const endReached =
+    backwardState === "EndReached" &&
+    continuity.kind === "healthy" &&
+    continuity.authoritative_start;
   const roomSignals = liveSignals?.rooms[roomId] ?? null;
   // Read receipts and fully-read state remain canonical timeline facts. A
   // moved root only changes presentation; it must not cause the root id to be
@@ -4634,7 +4650,24 @@ export const TimelineView = memo(function TimelineView({
                   <span>{t("timeline.unreadMarker")}</span>
                 </div>
               ) : null}
-              {row.kind === "threadRootPending" || row.kind === "threadRootFailed" ? (
+              {row.kind === "timelineGap" ? (
+                <div
+                  className={`timeline-gap-row${continuity.kind === "failedIncomplete" ? " failed" : ""}`}
+                  role="status"
+                  data-testid="timeline-gap-row"
+                >
+                  <span>
+                    {continuity.kind === "failedIncomplete"
+                      ? t("timeline.gapRepairFailed")
+                      : t("timeline.gapRepairing")}
+                  </span>
+                  {continuity.kind === "failedIncomplete" && transport.repairTimeline ? (
+                    <button type="button" onClick={() => void transport.repairTimeline?.(roomId)}>
+                      {t("gate.retry")}
+                    </button>
+                  ) : null}
+                </div>
+              ) : row.kind === "threadRootPending" || row.kind === "threadRootFailed" ? (
                 <ThreadRootProjectionPlaceholder
                   row={row}
                   state={row.kind === "threadRootPending" ? "pending" : "failed"}

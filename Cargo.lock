@@ -2058,8 +2058,8 @@ dependencies = [
  "libc",
  "log",
  "rustversion",
- "windows-link 0.2.1",
- "windows-result 0.4.1",
+ "windows-link 0.1.3",
+ "windows-result",
 ]
 
 [[package]]
@@ -2555,7 +2555,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core",
 ]
 
 [[package]]
@@ -3506,7 +3506,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk"
 version = "0.18.0"
-source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=18cdc0ceab8aacce1a57953f897d7f7a3e88834e#18cdc0ceab8aacce1a57953f897d7f7a3e88834e"
+source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=10b7cf7fad24e4ac5590e112c46d35428ef0cebf#10b7cf7fad24e4ac5590e112c46d35428ef0cebf"
 dependencies = [
  "anymap2",
  "aquamarine",
@@ -3569,7 +3569,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-base"
 version = "0.18.0"
-source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=18cdc0ceab8aacce1a57953f897d7f7a3e88834e#18cdc0ceab8aacce1a57953f897d7f7a3e88834e"
+source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=10b7cf7fad24e4ac5590e112c46d35428ef0cebf#10b7cf7fad24e4ac5590e112c46d35428ef0cebf"
 dependencies = [
  "as_variant",
  "assert_matches",
@@ -3599,7 +3599,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-common"
 version = "0.18.0"
-source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=18cdc0ceab8aacce1a57953f897d7f7a3e88834e#18cdc0ceab8aacce1a57953f897d7f7a3e88834e"
+source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=10b7cf7fad24e4ac5590e112c46d35428ef0cebf#10b7cf7fad24e4ac5590e112c46d35428ef0cebf"
 dependencies = [
  "eyeball-im",
  "futures-core",
@@ -3622,7 +3622,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-crypto"
 version = "0.18.0"
-source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=18cdc0ceab8aacce1a57953f897d7f7a3e88834e#18cdc0ceab8aacce1a57953f897d7f7a3e88834e"
+source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=10b7cf7fad24e4ac5590e112c46d35428ef0cebf#10b7cf7fad24e4ac5590e112c46d35428ef0cebf"
 dependencies = [
  "aes",
  "aquamarine",
@@ -3663,7 +3663,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-indexeddb"
 version = "0.18.0"
-source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=18cdc0ceab8aacce1a57953f897d7f7a3e88834e#18cdc0ceab8aacce1a57953f897d7f7a3e88834e"
+source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=10b7cf7fad24e4ac5590e112c46d35428ef0cebf#10b7cf7fad24e4ac5590e112c46d35428ef0cebf"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3694,7 +3694,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-search"
 version = "0.18.0"
-source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=18cdc0ceab8aacce1a57953f897d7f7a3e88834e#18cdc0ceab8aacce1a57953f897d7f7a3e88834e"
+source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=10b7cf7fad24e4ac5590e112c46d35428ef0cebf#10b7cf7fad24e4ac5590e112c46d35428ef0cebf"
 dependencies = [
  "aes",
  "byteorder",
@@ -3715,7 +3715,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-sqlite"
 version = "0.18.0"
-source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=18cdc0ceab8aacce1a57953f897d7f7a3e88834e#18cdc0ceab8aacce1a57953f897d7f7a3e88834e"
+source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=10b7cf7fad24e4ac5590e112c46d35428ef0cebf#10b7cf7fad24e4ac5590e112c46d35428ef0cebf"
 dependencies = [
  "as_variant",
  "async-trait",
@@ -3742,7 +3742,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-store-encryption"
 version = "0.18.0"
-source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=18cdc0ceab8aacce1a57953f897d7f7a3e88834e#18cdc0ceab8aacce1a57953f897d7f7a3e88834e"
+source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=10b7cf7fad24e4ac5590e112c46d35428ef0cebf#10b7cf7fad24e4ac5590e112c46d35428ef0cebf"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -3763,7 +3763,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-test"
 version = "0.18.0"
-source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=18cdc0ceab8aacce1a57953f897d7f7a3e88834e#18cdc0ceab8aacce1a57953f897d7f7a3e88834e"
+source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=10b7cf7fad24e4ac5590e112c46d35428ef0cebf#10b7cf7fad24e4ac5590e112c46d35428ef0cebf"
 dependencies = [
  "as_variant",
  "ctor 0.2.9",
@@ -3786,7 +3786,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-test-macros"
 version = "0.18.0"
-source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=18cdc0ceab8aacce1a57953f897d7f7a3e88834e#18cdc0ceab8aacce1a57953f897d7f7a3e88834e"
+source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=10b7cf7fad24e4ac5590e112c46d35428ef0cebf#10b7cf7fad24e4ac5590e112c46d35428ef0cebf"
 dependencies = [
  "quote",
  "syn 2.0.118",
@@ -3795,7 +3795,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-ui"
 version = "0.18.0"
-source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=18cdc0ceab8aacce1a57953f897d7f7a3e88834e#18cdc0ceab8aacce1a57953f897d7f7a3e88834e"
+source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=10b7cf7fad24e4ac5590e112c46d35428ef0cebf#10b7cf7fad24e4ac5590e112c46d35428ef0cebf"
 dependencies = [
  "as_variant",
  "async-rx",
@@ -4093,7 +4093,7 @@ version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
 dependencies = [
- "proc-macro-crate 3.5.0",
+ "proc-macro-crate 1.3.1",
  "proc-macro2",
  "quote",
  "syn 2.0.118",
@@ -4105,7 +4105,7 @@ version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51e219e79014df21a225b1860a479e2dcd7cbd9130f4defd4bd0e191ea31d67d"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.21.7",
  "chrono",
  "getrandom 0.2.17",
  "http",
@@ -6337,7 +6337,7 @@ dependencies = [
  "unicode-segmentation",
  "url",
  "windows",
- "windows-core 0.61.2",
+ "windows-core",
  "windows-version",
  "x11-dl",
 ]
@@ -6507,7 +6507,7 @@ dependencies = [
  "tracing",
  "url",
  "windows-registry",
- "windows-result 0.3.4",
+ "windows-result",
 ]
 
 [[package]]
@@ -6691,7 +6691,7 @@ dependencies = [
  "serde_with",
  "swift-rs",
  "thiserror 2.0.18",
- "toml 1.1.2+spec-1.1.0",
+ "toml 0.9.12+spec-1.1.0",
  "url",
  "urlpattern",
  "uuid",
@@ -7727,7 +7727,7 @@ dependencies = [
  "webview2-com-macros",
  "webview2-com-sys",
  "windows",
- "windows-core 0.61.2",
+ "windows-core",
  "windows-implement",
  "windows-interface",
 ]
@@ -7751,7 +7751,7 @@ checksum = "381336cfffd772377d291702245447a5251a2ffa5bad679c99e61bc48bacbf9c"
 dependencies = [
  "thiserror 2.0.18",
  "windows",
- "windows-core 0.61.2",
+ "windows-core",
 ]
 
 [[package]]
@@ -7813,7 +7813,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9babd3a767a4c1aef6900409f85f5d53ce2544ccdfaa86dad48c91782c6d6893"
 dependencies = [
  "windows-collections",
- "windows-core 0.61.2",
+ "windows-core",
  "windows-future",
  "windows-link 0.1.3",
  "windows-numerics",
@@ -7825,7 +7825,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3beeceb5e5cfd9eb1d76b381630e82c4241ccd0d27f1a39ed41b2760b255c5e8"
 dependencies = [
- "windows-core 0.61.2",
+ "windows-core",
 ]
 
 [[package]]
@@ -7837,21 +7837,8 @@ dependencies = [
  "windows-implement",
  "windows-interface",
  "windows-link 0.1.3",
- "windows-result 0.3.4",
- "windows-strings 0.4.2",
-]
-
-[[package]]
-name = "windows-core"
-version = "0.62.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8e83a14d34d0623b51dce9581199302a221863196a1dde71a7663a4c2be9deb"
-dependencies = [
- "windows-implement",
- "windows-interface",
- "windows-link 0.2.1",
- "windows-result 0.4.1",
- "windows-strings 0.5.1",
+ "windows-result",
+ "windows-strings",
 ]
 
 [[package]]
@@ -7860,7 +7847,7 @@ version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc6a41e98427b19fe4b73c550f060b59fa592d7d686537eebf9385621bfbad8e"
 dependencies = [
- "windows-core 0.61.2",
+ "windows-core",
  "windows-link 0.1.3",
  "windows-threading",
 ]
@@ -7905,7 +7892,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9150af68066c4c5c07ddc0ce30421554771e528bde427614c61038bc2c92c2b1"
 dependencies = [
- "windows-core 0.61.2",
+ "windows-core",
  "windows-link 0.1.3",
 ]
 
@@ -7916,8 +7903,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b8a9ed28765efc97bbc954883f4e6796c33a06546ebafacbabee9696967499e"
 dependencies = [
  "windows-link 0.1.3",
- "windows-result 0.3.4",
- "windows-strings 0.4.2",
+ "windows-result",
+ "windows-strings",
 ]
 
 [[package]]
@@ -7930,30 +7917,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "windows-result"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7781fa89eaf60850ac3d2da7af8e5242a5ea78d1a11c49bf2910bb5a73853eb5"
-dependencies = [
- "windows-link 0.2.1",
-]
-
-[[package]]
 name = "windows-strings"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56e6c93f3a0c3b36176cb1327a4958a0353d5d166c2a35cb268ace15e91d3b57"
 dependencies = [
  "windows-link 0.1.3",
-]
-
-[[package]]
-name = "windows-strings"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7837d08f69c77cf6b07689544538e017c1bfcf57e34b4c0ff58e6c2cd3b37091"
-dependencies = [
- "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -8313,7 +8282,7 @@ dependencies = [
  "webkit2gtk-sys",
  "webview2-com",
  "windows",
- "windows-core 0.61.2",
+ "windows-core",
  "windows-version",
  "x11-dl",
 ]

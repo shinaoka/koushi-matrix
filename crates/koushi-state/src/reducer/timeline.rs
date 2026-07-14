@@ -3,7 +3,8 @@ use crate::{
     effect::{AppEffect, UiEvent},
     state::{
         AppError, AppState, ComposerMode, PendingComposerSendKind, StagedUploadCompressionChoice,
-        ThreadPaneState,
+        ThreadPaneState, TimelineContinuityInspection, TimelineContinuityState,
+        TimelineGapRepairFailureKind,
     },
 };
 
@@ -20,6 +21,7 @@ pub(crate) fn handle_timeline_subscribed(state: &mut AppState, room_id: String) 
     }
 
     state.timeline.is_subscribed = true;
+    state.timeline.continuity = TimelineContinuityState::Unknown;
     vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
 }
 
@@ -40,6 +42,146 @@ pub(crate) fn handle_timeline_subscription_failed(
         AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }),
         AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
     ]
+}
+
+fn continuity_gap_count(state: &TimelineContinuityState) -> u32 {
+    match state {
+        TimelineContinuityState::Inspecting {
+            known_gap_count, ..
+        } => *known_gap_count,
+        TimelineContinuityState::Incomplete { gap_count, .. }
+        | TimelineContinuityState::Repairing { gap_count, .. }
+        | TimelineContinuityState::FailedIncomplete { gap_count, .. } => *gap_count,
+        TimelineContinuityState::Unknown | TimelineContinuityState::Healthy { .. } => 0,
+    }
+}
+
+fn continuity_generation(state: &TimelineContinuityState) -> u64 {
+    match state {
+        TimelineContinuityState::Unknown => 0,
+        TimelineContinuityState::Inspecting { generation, .. }
+        | TimelineContinuityState::Healthy { generation, .. }
+        | TimelineContinuityState::Incomplete { generation, .. }
+        | TimelineContinuityState::Repairing { generation, .. }
+        | TimelineContinuityState::FailedIncomplete { generation, .. } => *generation,
+    }
+}
+
+fn active_room_matches(state: &AppState, room_id: &str) -> bool {
+    is_session_ready(state) && state.timeline.room_id.as_deref() == Some(room_id)
+}
+
+pub(crate) fn handle_timeline_continuity_inspection_started(
+    state: &mut AppState,
+    room_id: String,
+    generation: u64,
+) -> Vec<AppEffect> {
+    if !active_room_matches(state, &room_id)
+        || generation <= continuity_generation(&state.timeline.continuity)
+    {
+        return Vec::new();
+    }
+    let known_gap_count = continuity_gap_count(&state.timeline.continuity);
+    state.timeline.continuity = TimelineContinuityState::Inspecting {
+        generation,
+        known_gap_count,
+    };
+    vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
+}
+
+pub(crate) fn handle_timeline_continuity_inspected(
+    state: &mut AppState,
+    room_id: String,
+    generation: u64,
+    inspection: TimelineContinuityInspection,
+) -> Vec<AppEffect> {
+    if !active_room_matches(state, &room_id)
+        || !matches!(
+            state.timeline.continuity,
+            TimelineContinuityState::Inspecting { generation: active, .. } if active == generation
+        )
+    {
+        return Vec::new();
+    }
+    state.timeline.continuity = match inspection {
+        TimelineContinuityInspection::Unknown => TimelineContinuityState::Unknown,
+        TimelineContinuityInspection::Gapped { gap_count } => TimelineContinuityState::Incomplete {
+            generation,
+            gap_count,
+        },
+        TimelineContinuityInspection::Complete => TimelineContinuityState::Healthy {
+            generation,
+            authoritative_start: true,
+        },
+    };
+    vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
+}
+
+pub(crate) fn handle_timeline_gap_repair_started(
+    state: &mut AppState,
+    room_id: String,
+    generation: u64,
+    gap_count: u32,
+) -> Vec<AppEffect> {
+    if !active_room_matches(state, &room_id)
+        || generation <= continuity_generation(&state.timeline.continuity)
+    {
+        return Vec::new();
+    }
+    state.timeline.continuity = TimelineContinuityState::Repairing {
+        generation,
+        gap_count,
+        batches_processed: 0,
+    };
+    vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
+}
+
+pub(crate) fn handle_timeline_gap_repair_progressed(
+    state: &mut AppState,
+    room_id: String,
+    generation: u64,
+    gap_count: u32,
+    batches_processed: u32,
+) -> Vec<AppEffect> {
+    if !active_room_matches(state, &room_id)
+        || !matches!(
+            state.timeline.continuity,
+            TimelineContinuityState::Repairing { generation: active, .. } if active == generation
+        )
+    {
+        return Vec::new();
+    }
+    state.timeline.continuity = TimelineContinuityState::Repairing {
+        generation,
+        gap_count,
+        batches_processed,
+    };
+    vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
+}
+
+pub(crate) fn handle_timeline_gap_repair_failed(
+    state: &mut AppState,
+    room_id: String,
+    generation: u64,
+    gap_count: u32,
+    batches_processed: u32,
+    failure_kind: TimelineGapRepairFailureKind,
+) -> Vec<AppEffect> {
+    if !active_room_matches(state, &room_id)
+        || !matches!(
+            state.timeline.continuity,
+            TimelineContinuityState::Repairing { generation: active, .. } if active == generation
+        )
+    {
+        return Vec::new();
+    }
+    state.timeline.continuity = TimelineContinuityState::FailedIncomplete {
+        generation,
+        gap_count,
+        batches_processed,
+        failure_kind,
+    };
+    vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
 }
 
 pub(crate) fn handle_timeline_back_pagination_requested(

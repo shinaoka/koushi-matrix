@@ -120,7 +120,7 @@ export function ContextualRightPanel({
   onUpdateSettings = () => undefined,
   onRebuildSearchIndex = () => undefined,
   onSetRoomUrlPreviewOverride = () => undefined,
-  onResetRoomTimelineCache = () => undefined,
+  onRepairRoomTimeline = () => undefined,
   onUpdateRoomSetting = () => undefined,
   onIgnoreUser = () => undefined,
   onUnignoreUser = () => undefined,
@@ -235,7 +235,7 @@ export function ContextualRightPanel({
   onUpdateSettings?: (patch: SettingsPatch) => void;
   onRebuildSearchIndex?: () => void;
   onSetRoomUrlPreviewOverride?: (roomId: string, enabled: boolean) => void;
-  onResetRoomTimelineCache?: (roomId: string) => void | Promise<void>;
+  onRepairRoomTimeline?: (roomId: string) => void | Promise<void>;
   onQueryDevices?: () => void;
   onRenameDevice?: (deviceOrdinal: number, displayName: string) => void;
   onDeleteDevices?: (deviceOrdinals: number[]) => void;
@@ -436,7 +436,7 @@ export function ContextualRightPanel({
           onSetRoomUrlPreviewOverride={(roomId, enabled) => {
             void onSetRoomUrlPreviewOverride(roomId, enabled);
           }}
-          onResetRoomTimelineCache={onResetRoomTimelineCache}
+          onRepairRoomTimeline={onRepairRoomTimeline}
           onOpenPeople={() => {
             void _onOpenPeople?.();
           }}

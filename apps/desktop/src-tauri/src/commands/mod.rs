@@ -2326,11 +2326,11 @@ pub(crate) fn build_load_room_settings_command(
     })
 }
 
-pub(crate) fn build_reset_room_timeline_cache_command(
+pub(crate) fn build_repair_room_timeline_command(
     request_id: koushi_core::RequestId,
     room_id: String,
 ) -> CoreCommand {
-    CoreCommand::App(AppCommand::ResetRoomTimelineCache {
+    CoreCommand::App(AppCommand::RepairRoomTimeline {
         request_id,
         room_id,
     })

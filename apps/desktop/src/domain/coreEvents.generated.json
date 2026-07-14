@@ -1237,6 +1237,28 @@
     },
     "kind": "Timeline"
   },
+  "timelineGapPositionsUpdated": {
+    "event": {
+      "GapPositionsUpdated": {
+        "generation": 4,
+        "key": {
+          "account_key": "@u:example.test",
+          "kind": {
+            "Room": {
+              "room_id": "!r:example.test"
+            }
+          }
+        },
+        "positions": [
+          {
+            "before_item_index": 2,
+            "ordinal": 0
+          }
+        ]
+      }
+    },
+    "kind": "Timeline"
+  },
   "timelinePaginationEndReached": {
     "event": {
       "PaginationStateChanged": {

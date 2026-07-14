@@ -42,7 +42,7 @@ export function RoomInfoPanel({
   onUpdateRoomSetting,
   onSetRoomUrlPreviewOverride,
   onOpenPeople,
-  onResetRoomTimelineCache
+  onRepairRoomTimeline
 }: {
   room: RoomSummary | null;
   roomManagement?: RoomManagementState;
@@ -57,7 +57,7 @@ export function RoomInfoPanel({
   onUpdateRoomSetting?: (roomId: string, change: RoomSettingChange) => void;
   onSetRoomUrlPreviewOverride?: (roomId: string, enabled: boolean) => void;
   onOpenPeople?: () => void;
-  onResetRoomTimelineCache?: (roomId: string) => void | Promise<void>;
+  onRepairRoomTimeline?: (roomId: string) => void | Promise<void>;
 }) {
   const roomId = room?.room_id ?? "";
   const roomName = room?.display_label ?? "";
@@ -112,14 +112,11 @@ export function RoomInfoPanel({
     }
   }
 
-  function resetRoomTimelineCache() {
-    if (!onResetRoomTimelineCache) {
+  function repairRoomTimeline() {
+    if (!onRepairRoomTimeline) {
       return;
     }
-    if (!window.confirm(t("room.resetTimelineCacheConfirm"))) {
-      return;
-    }
-    void onResetRoomTimelineCache(roomId);
+    void onRepairRoomTimeline(roomId);
   }
 
   const canEditSettings =
@@ -232,19 +229,19 @@ export function RoomInfoPanel({
         ) : null}
       </section>
 
-      {onResetRoomTimelineCache ? (
+      {onRepairRoomTimeline ? (
         <section className="settings-section" aria-label={t("room.repair")}>
           <h3>{t("room.repair")}</h3>
           <div className="room-key-actions">
             <button
               className="profile-settings-action"
               type="button"
-              onClick={resetRoomTimelineCache}
+              onClick={repairRoomTimeline}
             >
               <History size={16} aria-hidden="true" />
-              <span>{t("room.resetTimelineCache")}</span>
+              <span>{t("room.repairTimeline")}</span>
             </button>
-            <p className="profile-settings-hint">{t("room.resetTimelineCacheHint")}</p>
+            <p className="profile-settings-hint">{t("room.repairTimelineHint")}</p>
           </div>
         </section>
       ) : null}

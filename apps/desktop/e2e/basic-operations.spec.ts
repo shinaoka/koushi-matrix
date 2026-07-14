@@ -205,7 +205,8 @@ async function gotoSignedOutAuth(page: Page): Promise<void> {
             scheduled_sends: [],
             staged_uploads: [],
             media_gallery: [],
-            media_downloads: {}
+            media_downloads: {},
+            continuity: { kind: "unknown" }
           }
         }
       },

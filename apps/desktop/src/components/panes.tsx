@@ -880,6 +880,7 @@ export function TimelinePane({
               codeBlockWrap={snapshot.state.domain.settings.values.display.code_block_wrap}
               searchQuery={searchQuery}
               mediaDownloads={mediaDownloads}
+              continuity={snapshot.state.ui.timeline.continuity ?? { kind: "unknown" }}
               roomScrollAnchor={
                 mainTimelineAnchorEventId
                   ? null

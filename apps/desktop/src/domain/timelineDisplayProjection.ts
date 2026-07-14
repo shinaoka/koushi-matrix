@@ -6,7 +6,12 @@
  * rendering; it must never be used as a VectorDiff target.
  */
 
-import type { ThreadRootProjectionDto, TimelineItem, TimelineKey } from "./coreEvents";
+import type {
+  ThreadRootProjectionDto,
+  TimelineGapPosition,
+  TimelineItem,
+  TimelineKey
+} from "./coreEvents";
 import { timelineItemDomId } from "./coreEvents";
 import type { TimelineThreadRootOrder } from "./types";
 
@@ -23,8 +28,57 @@ export type TimelineDisplayRow = {
   content_timestamp_ms: number | null;
   /** Timestamp used for presentation placement and date grouping. */
   display_timestamp_ms: number | null;
-  kind: "event" | "threadRoot" | "threadRootPending" | "threadRootFailed" | "dateDivider";
+  kind:
+    | "event"
+    | "threadRoot"
+    | "threadRootPending"
+    | "threadRootFailed"
+    | "dateDivider"
+    | "timelineGap";
 };
+
+export function insertTimelineGapRows(
+  rows: readonly TimelineDisplayRow[],
+  positions: readonly TimelineGapPosition[],
+  generation: number
+): TimelineDisplayRow[] {
+  if (positions.length === 0) {
+    return [...rows];
+  }
+  const result = [...rows];
+  for (const gap of [...positions].sort((left, right) => right.before_item_index - left.before_item_index)) {
+    const insertionIndex = Math.min(gap.before_item_index, result.length);
+    result.splice(insertionIndex, 0, {
+      row_id: `timeline-gap-${generation}-${gap.ordinal}`,
+      item: timelineGapPlaceholderItem(generation, gap.ordinal),
+      content_event_id: null,
+      activity_event_id: null,
+      content_timestamp_ms: null,
+      display_timestamp_ms: null,
+      kind: "timelineGap"
+    });
+  }
+  return result;
+}
+
+function timelineGapPlaceholderItem(generation: number, ordinal: number): TimelineItem {
+  return {
+    id: { Synthetic: { synthetic_id: `timeline-gap-${generation}-${ordinal}` } },
+    sender: null,
+    body: null,
+    timestamp_ms: null,
+    in_reply_to_event_id: null,
+    thread_root: null,
+    thread_summary: null,
+    reactions: [],
+    can_react: false,
+    is_redacted: false,
+    is_hidden: false,
+    can_redact: false,
+    is_edited: false,
+    can_edit: false
+  };
+}
 
 type CanonicalEntry = {
   index: number;

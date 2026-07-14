@@ -648,6 +648,13 @@
           "mode": "Plain",
           "pending_transaction_id": null
         },
+        "continuity": {
+          "batches_processed": 3,
+          "failure_kind": "sdk",
+          "gap_count": 2,
+          "generation": 7,
+          "kind": "failedIncomplete"
+        },
         "is_paginating_backwards": false,
         "is_subscribed": true,
         "media_downloads": {

@@ -16,10 +16,10 @@ use crate::state::{
     RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SasEmoji,
     ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult, SearchScope,
     SessionInfo, SettingsPatch, SettingsValues, SpaceSummary, StagedUploadCompressionChoice,
-    StagedUploadItem, SyncLifecycleStatus, SyncMode, TimelineMediaDownloadState,
-    TimelineMediaGalleryItem, TimelineScrollAnchor, TrustOperationFailureKind, UserProfile,
-    VerificationCancelReason, VerificationGateFailureKind, VerificationGateState,
-    VerificationMethod, VerificationTarget,
+    StagedUploadItem, SyncLifecycleStatus, SyncMode, TimelineContinuityInspection,
+    TimelineGapRepairFailureKind, TimelineMediaDownloadState, TimelineMediaGalleryItem,
+    TimelineScrollAnchor, TrustOperationFailureKind, UserProfile, VerificationCancelReason,
+    VerificationGateFailureKind, VerificationGateState, VerificationMethod, VerificationTarget,
 };
 
 #[derive(Clone, Eq, PartialEq)]
@@ -730,6 +730,33 @@ pub enum AppAction {
     TimelineSubscriptionFailed {
         room_id: String,
         message: String,
+    },
+    TimelineContinuityInspectionStarted {
+        room_id: String,
+        generation: u64,
+    },
+    TimelineContinuityInspected {
+        room_id: String,
+        generation: u64,
+        inspection: TimelineContinuityInspection,
+    },
+    TimelineGapRepairStarted {
+        room_id: String,
+        generation: u64,
+        gap_count: u32,
+    },
+    TimelineGapRepairProgressed {
+        room_id: String,
+        generation: u64,
+        gap_count: u32,
+        batches_processed: u32,
+    },
+    TimelineGapRepairFailed {
+        room_id: String,
+        generation: u64,
+        gap_count: u32,
+        batches_processed: u32,
+        kind: TimelineGapRepairFailureKind,
     },
     TimelineBackPaginationRequested {
         room_id: String,
