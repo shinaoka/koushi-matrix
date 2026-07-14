@@ -6529,10 +6529,20 @@ impl AccountActor {
             .await;
     }
 
-    fn start_restricted_sync(&mut self, session: Arc<MatrixClientSession>, generation: u64) {
+    fn start_restricted_sync(
+        &mut self,
+        session: Arc<MatrixClientSession>,
+        generation: u64,
+        transition_id: u64,
+    ) {
         if self.restricted_sync.is_some() {
             return;
         }
+        record_verification_admission_event(verification_admission_event(
+            "restricted_catch_up_started",
+            generation,
+            transition_id,
+        ));
         #[cfg(test)]
         if self.trust_observation_is_synthetic {
             let _ = session;
@@ -6693,7 +6703,7 @@ impl AccountActor {
                 if self.restricted_sync.is_none()
                     && let Some(session) = self.session.clone()
                 {
-                    self.start_restricted_sync(session, generation);
+                    self.start_restricted_sync(session, generation, transition_id);
                 }
                 return;
             }
@@ -9697,7 +9707,17 @@ mod tests {
 
     #[tokio::test]
     async fn verification_to_normal_sync_handoff_has_one_owner() {
+        let diagnostic_start = koushi_diagnostics::snapshot().records.len();
         let (handle, mut action_rx) = login_gated_actor().await;
+        assert!(
+            koushi_diagnostics::snapshot().records[diagnostic_start..]
+                .iter()
+                .any(|record| {
+                    record.event.source == "core.verification_admission"
+                        && record.event.stage == "restricted_catch_up_started"
+                }),
+            "gated admission must diagnose restricted sync ownership start"
+        );
         let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
         handle
             .send(AccountMessage::AttachLifecycleProbe { probe_tx })
