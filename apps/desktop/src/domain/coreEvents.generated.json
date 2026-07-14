@@ -1240,6 +1240,7 @@
   "timelineGapPositionsUpdated": {
     "event": {
       "GapPositionsUpdated": {
+        "actor_generation": 3,
         "generation": 4,
         "key": {
           "account_key": "@u:example.test",

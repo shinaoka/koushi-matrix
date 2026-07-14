@@ -2693,6 +2693,7 @@ mod tests {
         let gap_positions_updated =
             serialize_core_event(&CoreEvent::Timeline(TimelineEvent::GapPositionsUpdated {
                 key: key.clone(),
+                actor_generation: 3,
                 generation: 4,
                 positions: vec![TimelineGapPosition {
                     ordinal: 0,

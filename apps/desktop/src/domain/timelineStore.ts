@@ -628,7 +628,10 @@ function applyGapPositionsUpdated(
 ): TimelineStoreState {
   const k = keyStr(payload.key);
   const existing = store.keys.get(k) ?? emptyKeyState();
-  if (payload.generation < existing.gapGeneration) {
+  if (
+    (existing.actorGeneration !== 0 && payload.actor_generation !== existing.actorGeneration) ||
+    payload.generation < existing.gapGeneration
+  ) {
     return store;
   }
   const next = new Map(store.keys);

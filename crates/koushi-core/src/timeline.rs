@@ -5102,11 +5102,15 @@ impl TimelineGapRepairTracker {
     }
 
     fn record_batch(&mut self) -> Option<u32> {
-        if self.batches_processed >= MAX_TIMELINE_GAP_REPAIR_BATCHES {
+        if !self.can_start_batch() {
             return None;
         }
         self.batches_processed += 1;
         Some(self.batches_processed)
+    }
+
+    fn can_start_batch(&self) -> bool {
+        self.batches_processed < MAX_TIMELINE_GAP_REPAIR_BATCHES
     }
 }
 
@@ -5132,8 +5136,10 @@ mod timeline_gap_repair_tracker_tests {
     fn timeline_gap_repair_tracker_bounds_batches() {
         let mut tracker = TimelineGapRepairTracker::default();
         for expected in 1..=MAX_TIMELINE_GAP_REPAIR_BATCHES {
+            assert!(tracker.can_start_batch());
             assert_eq!(tracker.record_batch(), Some(expected));
         }
+        assert!(!tracker.can_start_batch());
         assert_eq!(tracker.record_batch(), None);
     }
 }
@@ -6469,6 +6475,7 @@ impl TimelineActor {
             .collect();
         self.emit(CoreEvent::Timeline(TimelineEvent::GapPositionsUpdated {
             key: self.key.clone(),
+            actor_generation: self.actor_generation,
             generation,
             positions,
         }));
@@ -6491,13 +6498,26 @@ impl TimelineActor {
         let room_id = self.key.room_id().to_owned();
         if !self
             .emit_action_reliable(AppAction::TimelineGapRepairStarted {
-                room_id,
+                room_id: room_id.clone(),
                 generation: serial,
                 gap_count,
             })
             .await
         {
             self.gap_repair.finish_work(serial);
+            return;
+        }
+        if !self.gap_repair.can_start_batch() {
+            self.gap_repair.finish_work(serial);
+            let _ = self
+                .emit_action_reliable(AppAction::TimelineGapRepairFailed {
+                    room_id,
+                    generation: serial,
+                    gap_count,
+                    batches_processed: self.gap_repair.batches_processed,
+                    kind: TimelineGapRepairFailureKind::Timeout,
+                })
+                .await;
             return;
         }
         let session = self.session.clone();

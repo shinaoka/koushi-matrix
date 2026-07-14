@@ -185,6 +185,7 @@ describe("timeline store — diff application", () => {
     let store = applyTimelineEvent(createTimelineStore(), {
       GapPositionsUpdated: {
         key: KEY,
+        actor_generation: 1,
         generation: 99,
         positions: [{ ordinal: 0, before_item_index: 1 }]
       }
@@ -203,6 +204,29 @@ describe("timeline store — diff application", () => {
 
     expect(getKeyState(store, KEY)?.gapGeneration).toBe(0);
     expect(getKeyState(store, KEY)?.gapPositions).toEqual([]);
+  });
+
+  test("rejects gap positions published by a replaced timeline actor", () => {
+    let store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        actor_generation: 2,
+        generation: 1,
+        items: [makeMsg("$current", "current")]
+      }
+    });
+    store = applyTimelineEvent(store, {
+      GapPositionsUpdated: {
+        key: KEY,
+        actor_generation: 1,
+        generation: 100,
+        positions: [{ ordinal: 0, before_item_index: 0 }]
+      }
+    });
+
+    expect(getKeyState(store, KEY)?.gapPositions).toEqual([]);
+    expect(getKeyState(store, KEY)?.gapGeneration).toBe(0);
   });
 
   test("preserves an unchanged thread-root projection map identity across canonical-only updates", () => {

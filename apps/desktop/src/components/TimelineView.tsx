@@ -160,7 +160,7 @@ import type {
 import type { TimelineLinkRange } from "../domain/coreEvents";
 import type { TimelineForwardDestination } from "../domain/projectionTypes";
 import {
-  insertTimelineGapRows,
+  insertTimelineGapItems,
   projectTimelineDisplayRows,
   type TimelineDisplayRow
 } from "../domain/timelineDisplayProjection";
@@ -3082,17 +3082,17 @@ export const TimelineView = memo(function TimelineView({
   // The SDK-owned store stays canonical. Only these presentation rows feed
   // rendering, measuring, and virtualization for an opt-in Room projection.
   const visibleRows = useMemo(() => {
-    const projected = projectTimelineDisplayRows(
+    const itemsWithGaps = insertTimelineGapItems(
       items,
+      timelineKeyState?.gapPositions ?? [],
+      timelineKeyState?.gapGeneration ?? 0
+    );
+    return projectTimelineDisplayRows(
+      itemsWithGaps,
       timelineKey,
       threadRootOrder,
       threadRootProjections
     ).filter((row) => !row.item.is_hidden);
-    return insertTimelineGapRows(
-      projected,
-      timelineKeyState?.gapPositions ?? [],
-      timelineKeyState?.gapGeneration ?? 0
-    );
   }, [items, threadRootOrder, threadRootProjections, timelineKey, timelineKeyState]);
   const projectionSnapshot = useMemo<TimelineProjectionSnapshot>(
     () => ({

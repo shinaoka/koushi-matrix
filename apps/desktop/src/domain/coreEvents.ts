@@ -389,6 +389,7 @@ export type TimelineEvent =
   | {
       GapPositionsUpdated: {
         key: TimelineKey;
+        actor_generation: number;
         generation: number;
         positions: TimelineGapPosition[];
       };

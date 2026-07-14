@@ -37,26 +37,18 @@ export type TimelineDisplayRow = {
     | "timelineGap";
 };
 
-export function insertTimelineGapRows(
-  rows: readonly TimelineDisplayRow[],
+export function insertTimelineGapItems(
+  items: readonly TimelineItem[],
   positions: readonly TimelineGapPosition[],
   generation: number
-): TimelineDisplayRow[] {
+): TimelineItem[] {
   if (positions.length === 0) {
-    return [...rows];
+    return [...items];
   }
-  const result = [...rows];
+  const result = [...items];
   for (const gap of [...positions].sort((left, right) => right.before_item_index - left.before_item_index)) {
     const insertionIndex = Math.min(gap.before_item_index, result.length);
-    result.splice(insertionIndex, 0, {
-      row_id: `timeline-gap-${generation}-${gap.ordinal}`,
-      item: timelineGapPlaceholderItem(generation, gap.ordinal),
-      content_event_id: null,
-      activity_event_id: null,
-      content_timestamp_ms: null,
-      display_timestamp_ms: null,
-      kind: "timelineGap"
-    });
+    result.splice(insertionIndex, 0, timelineGapPlaceholderItem(generation, gap.ordinal));
   }
   return result;
 }
@@ -414,6 +406,17 @@ function compareMoveCandidates(left: MoveCandidate, right: MoveCandidate): numbe
 }
 
 function canonicalRow(item: TimelineItem): TimelineDisplayRow {
+  if (isTimelineGapPlaceholder(item)) {
+    return {
+      row_id: timelineItemDomId(item.id),
+      item,
+      kind: "timelineGap",
+      content_event_id: null,
+      activity_event_id: null,
+      content_timestamp_ms: null,
+      display_timestamp_ms: null
+    };
+  }
   if (isCanonicalDateDivider(item)) {
     return {
       row_id: timelineItemDomId(item.id),
@@ -656,6 +659,10 @@ function isThreadReply(item: TimelineItem): boolean {
 
 function isCanonicalDateDivider(item: TimelineItem): boolean {
   return "Synthetic" in item.id && item.id.Synthetic.synthetic_id.startsWith("date-divider-");
+}
+
+function isTimelineGapPlaceholder(item: TimelineItem): boolean {
+  return "Synthetic" in item.id && item.id.Synthetic.synthetic_id.startsWith("timeline-gap-");
 }
 
 function eventIdFor(item: TimelineItem): string | null {

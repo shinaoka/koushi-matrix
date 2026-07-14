@@ -915,6 +915,8 @@ pub enum TimelineEvent {
     },
     GapPositionsUpdated {
         key: TimelineKey,
+        /// Monotonic owner generation for actor replacement fencing.
+        actor_generation: u64,
         generation: u64,
         positions: Vec<TimelineGapPosition>,
     },
@@ -1054,12 +1056,14 @@ impl fmt::Debug for TimelineEvent {
                 .field("snapshot", snapshot)
                 .finish(),
             Self::GapPositionsUpdated {
+                actor_generation,
                 generation,
                 positions,
                 ..
             } => formatter
                 .debug_struct("GapPositionsUpdated")
                 .field("key", &"TimelineKey(..)")
+                .field("actor_generation", actor_generation)
                 .field("generation", generation)
                 .field("gap_count", &positions.len())
                 .finish(),
