@@ -1479,9 +1479,14 @@ function renderFormattedNodes(
   onCopyText: TimelineRowActionHandlers["onCopyText"],
   searchQuery: string,
   spoilerState: SpoilerRevealState,
-  keyPrefix = ""
+  keyPrefix = "",
+  parentTagName: string | null = null
 ): ReactNode {
-  return nodes.map((node, index) =>
+  const renderedNodes =
+    parentTagName === "ul" || parentTagName === "ol"
+      ? nodes.filter((node) => node.kind !== "text" || node.value.trim().length > 0)
+      : nodes;
+  return renderedNodes.map((node, index) =>
     renderFormattedNode(
       node,
       keyPrefix ? `${keyPrefix}.${index}` : `${index}`,
@@ -1506,19 +1511,8 @@ function renderFormattedNode(
   spoilerState: SpoilerRevealState
 ): ReactNode {
   if (node.kind === "text") {
-    const lines = node.value.split("\n");
-    if (lines.length === 1) {
-      return <Fragment key={key}>{renderQueryHighlight(node.value, searchQuery)}</Fragment>;
-    }
     return (
-      <Fragment key={key}>
-        {lines.map((line, lineIndex) => (
-          <Fragment key={lineIndex}>
-            {lineIndex > 0 ? <br /> : null}
-            {renderQueryHighlight(line, searchQuery)}
-          </Fragment>
-        ))}
-      </Fragment>
+      <Fragment key={key}>{renderQueryHighlight(node.value, searchQuery)}</Fragment>
     );
   }
   const children = renderFormattedNodes(
@@ -1529,7 +1523,8 @@ function renderFormattedNode(
     onCopyText,
     searchQuery,
     spoilerState,
-    key
+    key,
+    node.tagName
   );
   const renderer = formattedTagRenderers[node.tagName as keyof typeof formattedTagRenderers];
   if (!renderer) {

@@ -296,9 +296,6 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::SessionPersistenceFailed { message } => {
             session::handle_session_persistence_failed(state, message)
         }
-        AppAction::VerificationAdmissionPreparationFailed { kind, .. } => {
-            session::handle_verification_admission_preparation_failed(state, kind)
-        }
         AppAction::SessionLocked => session::handle_session_locked(state),
         AppAction::LogoutRequested => session::handle_logout_requested(state),
         AppAction::LogoutFinished => session::handle_logout_finished(state),

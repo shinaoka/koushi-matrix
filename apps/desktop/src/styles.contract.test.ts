@@ -331,12 +331,16 @@ describe("styles.css token system", () => {
   });
 
   test("formatted message lists use compact chat-message spacing", () => {
+    const formattedBodyBlock = selectorBlock(".message-body.message-formatted-body");
     const listBlock = groupedSelectorBlock(
       /\.message-body\.message-formatted-body > ul,\s*\.message-body\.message-formatted-body > ol/,
       "formatted list block"
     );
     const listItemBlock = selectorBlock(".message-body.message-formatted-body li");
 
+    expect(formattedBodyBlock).toContain("display: block;");
+    expect(formattedBodyBlock).not.toContain("display: grid;");
+    expect(formattedBodyBlock).not.toContain("gap:");
     expect(listBlock).toContain("margin-block: 2px;");
     expect(listBlock).toContain("padding-inline-start: 18px;");
     expect(listItemBlock).toContain("margin-block: 1px;");

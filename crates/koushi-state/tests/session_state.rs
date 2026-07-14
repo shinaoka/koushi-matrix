@@ -2543,32 +2543,3 @@ fn sync_stopped_is_a_completion_signal() {
         vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
     );
 }
-
-#[test]
-fn admission_preparation_failure_remains_gated_and_retryable() {
-    let info = session_info();
-    let mut state = AppState {
-        session: SessionState::Provisional {
-            info: info.clone(),
-            phase: ProvisionalPhase::RecheckingTrust { failure: None },
-        },
-        ..AppState::default()
-    };
-    reduce(
-        &mut state,
-        AppAction::VerificationAdmissionPreparationFailed {
-            generation: 3,
-            kind: VerificationGateFailureKind::Sdk,
-        },
-    );
-    assert_eq!(
-        state.session,
-        SessionState::Provisional {
-            info,
-            phase: ProvisionalPhase::RecheckingTrust {
-                failure: Some(VerificationGateFailureKind::Sdk),
-            },
-        }
-    );
-    assert_eq!(state.sync, SyncState::Stopped);
-}

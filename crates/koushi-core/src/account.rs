@@ -175,6 +175,14 @@ fn verification_admission_event(
         .field(DiagnosticField::count("transition_id", transition_id))
 }
 
+fn current_device_trust_token(trust: koushi_state::CurrentDeviceTrustState) -> &'static str {
+    match trust {
+        koushi_state::CurrentDeviceTrustState::Unknown => "unknown",
+        koushi_state::CurrentDeviceTrustState::Unverified => "unverified",
+        koushi_state::CurrentDeviceTrustState::Verified => "verified",
+    }
+}
+
 fn record_verification_method_discovery_event(event: DiagnosticEvent) {
     koushi_diagnostics::record_and_stderr(event);
 }
@@ -307,11 +315,6 @@ pub enum AccountMessage {
         ready: bool,
         locked: bool,
     },
-    PromotionFullStateSyncFinished {
-        generation: u64,
-        transition_id: u64,
-        succeeded: bool,
-    },
     RejectProvisionalSession {
         request_id: RequestId,
     },
@@ -327,12 +330,12 @@ pub enum AccountMessage {
         observation: koushi_sdk::CurrentDeviceTrustObservation,
     },
     #[cfg(test)]
-    ConfigurePromotionFullState {
-        completion: oneshot::Receiver<bool>,
-    },
-    #[cfg(test)]
     InspectSessionRuntime {
         response: oneshot::Sender<(bool, bool, bool, bool)>,
+    },
+    #[cfg(test)]
+    InspectSyncOwners {
+        response: oneshot::Sender<(bool, bool, bool)>,
     },
     #[cfg(test)]
     ConfigureSyntheticRecoveryTask {
@@ -558,12 +561,6 @@ struct PendingTrustTransition {
     decision: TrustLifecycleDecision,
 }
 
-struct OwnedPromotionTask {
-    generation: u64,
-    transition_id: u64,
-    task: crate::executor::JoinHandle<()>,
-}
-
 struct OwnedVerificationMethodDiscoveryTask {
     generation: u64,
     serial: u64,
@@ -778,7 +775,6 @@ pub struct AccountActor {
     pending_ready_events: Vec<CoreEvent>,
     pending_trust_transition: Option<PendingTrustTransition>,
     next_trust_transition_id: u64,
-    promotion_full_state_task: Option<OwnedPromotionTask>,
     pending_session_teardown: Option<PendingSessionTeardown>,
     next_teardown_generation: u64,
     teardown_retry_task: Option<crate::executor::JoinHandle<()>>,
@@ -787,7 +783,7 @@ pub struct AccountActor {
     #[cfg(test)]
     trust_observation_override: std::sync::Mutex<Option<koushi_sdk::CurrentDeviceTrustObservation>>,
     #[cfg(test)]
-    promotion_full_state_override: std::sync::Mutex<Option<oneshot::Receiver<bool>>>,
+    trust_observation_is_synthetic: bool,
     #[cfg(test)]
     recovery_download_override: std::sync::Mutex<Option<oneshot::Receiver<bool>>>,
     #[cfg(test)]
@@ -944,7 +940,6 @@ impl AccountActor {
             pending_ready_events: Vec::new(),
             pending_trust_transition: None,
             next_trust_transition_id: 0,
-            promotion_full_state_task: None,
             pending_session_teardown: None,
             next_teardown_generation: 0,
             teardown_retry_task: None,
@@ -953,7 +948,7 @@ impl AccountActor {
             #[cfg(test)]
             trust_observation_override: std::sync::Mutex::new(None),
             #[cfg(test)]
-            promotion_full_state_override: std::sync::Mutex::new(None),
+            trust_observation_is_synthetic: false,
             #[cfg(test)]
             recovery_download_override: std::sync::Mutex::new(None),
             #[cfg(test)]
@@ -1195,15 +1190,6 @@ impl AccountActor {
                             flow_id,
                         ));
                     }
-                    if promoted_trust_refresh_is_current(
-                        generation,
-                        self.trust_generation,
-                        self.session.is_some(),
-                        self.session_promoted,
-                    ) {
-                        self.request_authoritative_trust_recheck().await;
-                        continue;
-                    }
                     let eligible = own_user_sas_recheck_is_current(
                         generation,
                         self.trust_generation,
@@ -1328,18 +1314,6 @@ impl AccountActor {
                     self.handle_trust_projection_applied(generation, transition_id, ready, locked)
                         .await;
                 }
-                AccountMessage::PromotionFullStateSyncFinished {
-                    generation,
-                    transition_id,
-                    succeeded,
-                } => {
-                    self.handle_promotion_full_state_sync_finished(
-                        generation,
-                        transition_id,
-                        succeeded,
-                    )
-                    .await;
-                }
                 AccountMessage::RejectProvisionalSession { request_id } => {
                     self.perform_logout(request_id, true).await;
                 }
@@ -1358,19 +1332,20 @@ impl AccountActor {
                         .expect("trust observation override lock") = Some(observation);
                 }
                 #[cfg(test)]
-                AccountMessage::ConfigurePromotionFullState { completion } => {
-                    *self
-                        .promotion_full_state_override
-                        .lock()
-                        .expect("promotion override lock") = Some(completion);
-                }
-                #[cfg(test)]
                 AccountMessage::InspectSessionRuntime { response } => {
                     let _ = response.send((
                         self.session.is_some(),
                         self.session_promoted,
                         self.sync_actor.is_some(),
                         self.trust_observer.is_some(),
+                    ));
+                }
+                #[cfg(test)]
+                AccountMessage::InspectSyncOwners { response } => {
+                    let _ = response.send((
+                        self.restricted_sync.is_some(),
+                        false,
+                        self.sync_actor.is_some(),
                     ));
                 }
                 #[cfg(test)]
@@ -6505,6 +6480,7 @@ impl AccountActor {
     async fn start_provisional_runtime(&mut self, session: Arc<MatrixClientSession>) {
         self.trust_generation = self.trust_generation.wrapping_add(1);
         let generation = self.trust_generation;
+        let trust_read_started_at = Instant::now();
         #[cfg(test)]
         let (observation, synthetic_trust_observation) = {
             let override_observation = self
@@ -6520,13 +6496,22 @@ impl AccountActor {
         };
         #[cfg(not(test))]
         let observation = session.observe_current_device_trust();
-        let _ = self
-            .self_tx
-            .send(AccountMessage::CurrentDeviceTrustChanged {
-                generation,
-                trust: observation.current,
-            })
-            .await;
+        let current_trust = observation.current;
+        #[cfg(test)]
+        {
+            self.trust_observation_is_synthetic = synthetic_trust_observation;
+        }
+        record_verification_admission_event(
+            verification_admission_event("trust_read_finished", generation, 0)
+                .field(DiagnosticField::token(
+                    "trust",
+                    current_device_trust_token(current_trust),
+                ))
+                .field(DiagnosticField::milliseconds(
+                    "elapsed_ms",
+                    trust_read_started_at.elapsed().as_millis(),
+                )),
+        );
         let tx = self.self_tx.clone();
         let mut updates = observation.updates;
         self.trust_observer = Some(executor::spawn(async move {
@@ -6540,8 +6525,27 @@ impl AccountActor {
                 }
             }
         }));
+        self.handle_current_device_trust(generation, current_trust)
+            .await;
+    }
+
+    fn start_restricted_sync(
+        &mut self,
+        session: Arc<MatrixClientSession>,
+        generation: u64,
+        transition_id: u64,
+    ) {
+        if self.restricted_sync.is_some() {
+            return;
+        }
+        record_verification_admission_event(verification_admission_event(
+            "restricted_catch_up_started",
+            generation,
+            transition_id,
+        ));
         #[cfg(test)]
-        if synthetic_trust_observation {
+        if self.trust_observation_is_synthetic {
+            let _ = session;
             self.restricted_sync = Some(executor::spawn(std::future::pending()));
             return;
         }
@@ -6623,6 +6627,10 @@ impl AccountActor {
         }
         self.verification_method_discovery_failed = false;
         self.stop_restricted_sync().await;
+        #[cfg(test)]
+        {
+            self.trust_observation_is_synthetic = false;
+        }
     }
 
     async fn stop_restricted_sync(&mut self) {
@@ -6692,6 +6700,11 @@ impl AccountActor {
                     trust,
                 }])
                 .await;
+                if self.restricted_sync.is_none()
+                    && let Some(session) = self.session.clone()
+                {
+                    self.start_restricted_sync(session, generation, transition_id);
+                }
                 return;
             }
             TrustLifecycleDecision::Lock => {
@@ -6716,6 +6729,10 @@ impl AccountActor {
                 .await;
             return;
         }
+        if matches!(self.pending_trust_transition, Some(PendingTrustTransition { generation: pending_generation, decision: TrustLifecycleDecision::Promote, .. }) if pending_generation == generation)
+        {
+            return;
+        }
         let (Some(session), Some(key_id)) = (self.session.clone(), self.session_key_id.clone())
         else {
             return;
@@ -6728,73 +6745,34 @@ impl AccountActor {
             return;
         }
         self.provisional_persistable = None;
-        // Restricted crypto sync deliberately omits rooms while gated but
-        // runs on a separate classic-sync token lane from Sliding Sync. Keep
-        // it alive after promotion for event-driven current-device trust
-        // refreshes; it never projects rooms/presence into normal consumers.
-        // Before exposing Ready, catch up full room state once.
-        if matches!(self.pending_trust_transition, Some(PendingTrustTransition { generation: pending_generation, decision: TrustLifecycleDecision::Promote, .. }) if pending_generation == generation)
-        {
-            return;
-        }
         let transition_id = self.next_trust_transition_id();
         self.pending_trust_transition = Some(PendingTrustTransition {
             generation,
             transition_id,
             decision: TrustLifecycleDecision::Promote,
         });
+        let restricted_was_active = self.restricted_sync.is_some();
+        self.stop_restricted_sync().await;
         record_verification_admission_event(verification_admission_event(
-            "preparation_started",
+            if restricted_was_active {
+                "restricted_catch_up_stopped"
+            } else {
+                "restricted_catch_up_skipped"
+            },
             generation,
             transition_id,
         ));
-        let tx = self.self_tx.clone();
-        #[cfg(test)]
-        let preparation_override = self
-            .promotion_full_state_override
-            .lock()
-            .expect("promotion override lock")
-            .take();
-        let task = executor::spawn(async move {
-            record_verification_admission_event(verification_admission_event(
-                "full_state_sync_started",
-                generation,
-                transition_id,
-            ));
-            let started_at = Instant::now();
-            #[cfg(test)]
-            let succeeded = if let Some(completion) = preparation_override {
-                completion.await.unwrap_or(false)
-            } else {
-                koushi_sdk::promotion_full_state_sync_once(&session)
-                    .await
-                    .is_ok()
-            };
-            #[cfg(not(test))]
-            let succeeded = koushi_sdk::promotion_full_state_sync_once(&session)
-                .await
-                .is_ok();
-            record_verification_admission_event(
-                verification_admission_event("full_state_sync_finished", generation, transition_id)
-                    .field(DiagnosticField::boolean("success", succeeded))
-                    .field(DiagnosticField::milliseconds(
-                        "elapsed_ms",
-                        started_at.elapsed().as_millis(),
-                    )),
-            );
-            let _ = tx
-                .send(AccountMessage::PromotionFullStateSyncFinished {
-                    generation,
-                    transition_id,
-                    succeeded,
-                })
-                .await;
-        });
-        self.promotion_full_state_task = Some(OwnedPromotionTask {
+        record_verification_admission_event(verification_admission_event(
+            "ready_projection_dispatched",
             generation,
             transition_id,
-            task,
-        });
+        ));
+        self.send_actions(vec![AppAction::AuthoritativeDeviceTrustChanged {
+            generation,
+            transition_id,
+            trust: koushi_state::CurrentDeviceTrustState::Verified,
+        }])
+        .await;
     }
 
     async fn cancel_pending_trust_promotion(&mut self) {
@@ -6807,94 +6785,11 @@ impl AccountActor {
         ) {
             self.pending_trust_transition = None;
         }
-        if let Some(owned) = self.promotion_full_state_task.take() {
-            record_verification_admission_event(verification_admission_event(
-                "preparation_cancelled",
-                owned.generation,
-                owned.transition_id,
-            ));
-            owned.task.abort();
-            let _ = owned.task.await;
-            self.record_lifecycle_probe("promotion_full_state_terminated");
-        }
     }
 
     fn next_trust_transition_id(&mut self) -> u64 {
         self.next_trust_transition_id = self.next_trust_transition_id.wrapping_add(1);
         self.next_trust_transition_id
-    }
-
-    async fn handle_promotion_full_state_sync_finished(
-        &mut self,
-        generation: u64,
-        transition_id: u64,
-        succeeded: bool,
-    ) {
-        record_verification_admission_event(
-            verification_admission_event("completion_received", generation, transition_id)
-                .field(DiagnosticField::boolean("success", succeeded)),
-        );
-        let Some(pending) = self.pending_trust_transition.as_ref() else {
-            record_verification_admission_event(verification_admission_event(
-                "completion_ignored",
-                generation,
-                transition_id,
-            ));
-            return;
-        };
-        if pending.generation != generation
-            || pending.transition_id != transition_id
-            || pending.decision != TrustLifecycleDecision::Promote
-            || generation != self.trust_generation
-        {
-            record_verification_admission_event(verification_admission_event(
-                "completion_ignored",
-                generation,
-                transition_id,
-            ));
-            return;
-        }
-        let Some(owned) = self.promotion_full_state_task.as_ref() else {
-            record_verification_admission_event(verification_admission_event(
-                "completion_ignored",
-                generation,
-                transition_id,
-            ));
-            return;
-        };
-        if owned.generation != generation || owned.transition_id != transition_id {
-            record_verification_admission_event(verification_admission_event(
-                "completion_ignored",
-                generation,
-                transition_id,
-            ));
-            return;
-        }
-        let owned = self
-            .promotion_full_state_task
-            .take()
-            .expect("correlated promotion task");
-        let _ = owned.task.await;
-        if !succeeded {
-            self.pending_trust_transition = None;
-            self.send_actions(vec![AppAction::VerificationAdmissionPreparationFailed {
-                generation,
-                kind: koushi_state::VerificationGateFailureKind::Sdk,
-            }])
-            .await;
-            return;
-        }
-        record_verification_admission_event(verification_admission_event(
-            "ready_projection_dispatched",
-            generation,
-            transition_id,
-        ));
-        self.send_actions(vec![AppAction::AuthoritativeDeviceTrustChanged {
-            generation,
-            transition_id,
-            trust: koushi_state::CurrentDeviceTrustState::Verified,
-        }])
-        .await;
     }
 
     async fn discover_verification_methods(&mut self, generation: u64) {
@@ -6980,10 +6875,16 @@ impl AccountActor {
         let Some(session) = self.session.clone() else {
             return;
         };
-        if self.restricted_sync.is_none() {
-            self.start_promoted_crypto_trust_lane(session.clone(), generation);
-        }
+        debug_assert!(
+            self.restricted_sync.is_none(),
+            "normal sync cannot start before restricted sync ownership is released"
+        );
         self.spawn_sync_actor(session.clone()).await;
+        record_verification_admission_event(verification_admission_event(
+            "normal_sync_started",
+            generation,
+            transition_id,
+        ));
         self.spawn_account_hydration(session.clone());
         self.start_recovery_observer(session.clone());
         self.start_incoming_verification_observer(session.clone());
@@ -6991,46 +6892,6 @@ impl AccountActor {
         self.session_promoted = true;
         for event in std::mem::take(&mut self.pending_ready_events) {
             self.emit(event);
-        }
-    }
-
-    fn start_promoted_crypto_trust_lane(
-        &mut self,
-        session: Arc<MatrixClientSession>,
-        generation: u64,
-    ) {
-        #[cfg(test)]
-        {
-            let _ = (session, generation);
-            self.restricted_sync = Some(executor::spawn(std::future::pending()));
-            return;
-        }
-        #[cfg(not(test))]
-        {
-            let tx = self.self_tx.clone();
-            self.restricted_sync = Some(executor::spawn(async move {
-                let mut token = None;
-                loop {
-                    match koushi_sdk::restricted_verification_sync_once_with_token(
-                        &session,
-                        token.clone(),
-                    )
-                    .await
-                    {
-                        Ok(next_token) => {
-                            token = Some(next_token);
-                            if tx
-                                .send(AccountMessage::RestrictedSyncSucceeded { generation })
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                        Err(_) => executor::sleep(Duration::from_millis(250)).await,
-                    }
-                }
-            }));
         }
     }
 
@@ -7369,15 +7230,6 @@ fn active_own_user_sas_flow_for_restricted_sync(
     (generation == current_generation && has_session && !session_promoted)
         .then_some(own_flow_id)
         .flatten()
-}
-
-fn promoted_trust_refresh_is_current(
-    generation: u64,
-    current_generation: u64,
-    has_session: bool,
-    session_promoted: bool,
-) -> bool {
-    generation == current_generation && has_session && session_promoted
 }
 
 fn unknown_verification_gate() -> koushi_state::VerificationGateState {
@@ -8235,14 +8087,6 @@ mod tests {
     }
 
     #[test]
-    fn promoted_crypto_trust_refresh_requires_current_live_promoted_session() {
-        assert!(promoted_trust_refresh_is_current(7, 7, true, true));
-        assert!(!promoted_trust_refresh_is_current(6, 7, true, true));
-        assert!(!promoted_trust_refresh_is_current(7, 7, false, true));
-        assert!(!promoted_trust_refresh_is_current(7, 7, true, false));
-    }
-
-    #[test]
     fn first_restricted_sync_ack_rejects_stale_torn_down_and_promoted_sessions() {
         assert!(first_restricted_sync_is_current(4, 4, true, false));
         assert!(!first_restricted_sync_is_current(3, 4, true, false));
@@ -8569,8 +8413,10 @@ mod tests {
 
         let stderr = String::from_utf8(output.stderr).expect("child stderr should be utf8");
         assert!(stderr.contains(
-            "[koushi] core.verification_admission stage=full_state_sync_finished generation=7 transition_id=11 success=false elapsed_ms=42"
+            "[koushi] core.verification_admission stage=trust_read_finished generation=7 transition_id=0 trust=verified elapsed_ms=42"
         ));
+        assert!(!stderr.contains('@'));
+        assert!(!stderr.contains("access_token"));
 
         let stdout = String::from_utf8(output.stdout).expect("child stdout should be utf8");
         let snapshot: serde_json::Value = serde_json::from_str(
@@ -8583,7 +8429,7 @@ mod tests {
         assert!(snapshot["records"].as_array().is_some_and(|records| {
             records.iter().any(|record| {
                 record["event"]["source"] == "core.verification_admission"
-                    && record["event"]["stage"] == "full_state_sync_finished"
+                    && record["event"]["stage"] == "trust_read_finished"
             })
         }));
     }
@@ -8595,11 +8441,11 @@ mod tests {
             DiagnosticEvent::new(
                 DiagnosticLevel::Info,
                 "core.verification_admission",
-                "full_state_sync_finished",
+                "trust_read_finished",
             )
             .field(DiagnosticField::count("generation", 7))
-            .field(DiagnosticField::count("transition_id", 11))
-            .field(DiagnosticField::boolean("success", false))
+            .field(DiagnosticField::count("transition_id", 0))
+            .field(DiagnosticField::token("trust", "verified"))
             .field(DiagnosticField::milliseconds("elapsed_ms", 42)),
         );
         println!(
@@ -9602,7 +9448,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn promotion_preparation_keeps_mailbox_live_and_stale_ack_cannot_consume_promotion() {
+    async fn verified_warm_restore_skips_restricted_and_full_state_preparation() {
         let diagnostic_start = koushi_diagnostics::snapshot().records.len();
         let homeserver = spawn_quarantine_password_server();
         let cred_dir = tempdir().expect("tempdir");
@@ -9610,10 +9456,6 @@ mod tests {
         let (handle, mut action_rx, _event_rx) =
             spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
         configure_verified_trust(&handle).await;
-        let (release, completion) = oneshot::channel();
-        handle
-            .send(AccountMessage::ConfigurePromotionFullState { completion })
-            .await;
         handle
             .send(AccountMessage::Command(AccountCommand::LoginPassword {
                 request_id: test_request_id(),
@@ -9630,24 +9472,17 @@ mod tests {
             Some([AppAction::LoginSucceeded { .. }])
         ) {}
 
-        handle
-            .send(AccountMessage::TrustProjectionApplied {
-                generation: 2,
-                transition_id: 0,
-                ready: false,
-                locked: false,
-            })
-            .await;
         assert_eq!(
-            inspect_session_runtime(&handle).await,
-            (true, false, false, true)
+            inspect_sync_owners(&handle).await,
+            (false, false, false),
+            "authoritative Verified restore must not start restricted or promotion sync"
         );
 
-        release.send(true).expect("release preparation");
         acknowledge_next_verified_projection(&handle, &mut action_rx).await;
         assert_eq!(
-            inspect_session_runtime(&handle).await,
-            (true, true, true, true)
+            inspect_sync_owners(&handle).await,
+            (false, false, true),
+            "normal sync must be the sole owner after Ready projection acknowledgement"
         );
         let snapshot = koushi_diagnostics::snapshot();
         let stages = snapshot.records[diagnostic_start..]
@@ -9655,16 +9490,81 @@ mod tests {
             .filter(|record| record.event.source == "core.verification_admission")
             .map(|record| record.event.stage)
             .collect::<Vec<_>>();
-        assert!(stages.windows(5).any(|window| {
-            window
-                == [
-                    "preparation_started",
-                    "full_state_sync_started",
-                    "full_state_sync_finished",
-                    "completion_received",
-                    "ready_projection_dispatched",
-                ]
-        }));
+        let mut remaining = stages.as_slice();
+        for expected in [
+            "restricted_catch_up_skipped",
+            "ready_projection_dispatched",
+            "normal_sync_started",
+        ] {
+            let index = remaining
+                .iter()
+                .position(|stage| *stage == expected)
+                .unwrap_or_else(|| {
+                    panic!("missing ordered admission stage {expected}: {stages:?}")
+                });
+            remaining = &remaining[index + 1..];
+        }
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn verified_offline_warm_restore_reaches_ready_without_network_catch_up() {
+        let (homeserver, offline) = spawn_controllable_quarantine_password_server();
+        let login = koushi_sdk::login_with_password_with_store(
+            &LoginRequest {
+                homeserver,
+                username: "fixture-user".to_owned(),
+                password: koushi_state::AuthSecret::new("synthetic-password"),
+                device_display_name: Some("Offline Restore Test".to_owned()),
+            },
+            None,
+        )
+        .await
+        .expect("fixture login");
+        let key_id = session_key_id_from_info(&login.info);
+        let stored = StoredMatrixSession::new(
+            login
+                .persistable_session()
+                .expect("persistable")
+                .to_json()
+                .expect("json"),
+        );
+        drop(login);
+
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let backend = CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+            cred_dir.path(),
+        ));
+        backend
+            .save_matrix_session(&key_id, &stored)
+            .expect("session seed");
+        backend.remember_saved_session(&key_id).expect("index seed");
+        backend.save_last_session(&key_id).expect("pointer seed");
+
+        let (handle, mut action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        configure_verified_trust(&handle).await;
+        handle
+            .send(AccountMessage::Command(
+                AccountCommand::RestoreLastSession {
+                    request_id: test_request_id(),
+                },
+            ))
+            .await;
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::RestoreSessionSucceeded(_)])
+        ) {}
+        offline.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        executor::timeout(
+            Duration::from_secs(1),
+            acknowledge_next_verified_projection(&handle, &mut action_rx),
+        )
+        .await
+        .expect("offline verified restore must reach Ready without network catch-up");
+        assert_eq!(inspect_sync_owners(&handle).await, (false, false, true));
         let _ = handle.send(AccountMessage::Shutdown).await;
     }
 
@@ -9730,19 +9630,12 @@ mod tests {
             .await;
         let _ = inspect_session_runtime(&handle).await;
         let _ = inspect_session_runtime(&handle).await;
-        let (preparation_release, preparation) = oneshot::channel();
-        handle
-            .send(AccountMessage::ConfigurePromotionFullState {
-                completion: preparation,
-            })
-            .await;
         handle
             .send(AccountMessage::CurrentDeviceTrustChanged {
                 generation: 2,
                 trust: koushi_state::CurrentDeviceTrustState::Verified,
             })
             .await;
-        preparation_release.send(true).expect("release preparation");
         acknowledge_next_verified_projection(&handle, &mut action_rx).await;
         assert_eq!(
             inspect_session_runtime(&handle).await,
@@ -9798,19 +9691,12 @@ mod tests {
             .await;
         let _ = inspect_session_runtime(&handle).await;
         let _ = inspect_session_runtime(&handle).await;
-        let (release, preparation) = oneshot::channel();
-        handle
-            .send(AccountMessage::ConfigurePromotionFullState {
-                completion: preparation,
-            })
-            .await;
         handle
             .send(AccountMessage::CurrentDeviceTrustChanged {
                 generation: 2,
                 trust: koushi_state::CurrentDeviceTrustState::Verified,
             })
             .await;
-        release.send(true).expect("release preparation");
         acknowledge_next_verified_projection(&handle, &mut action_rx).await;
         assert_eq!(
             inspect_session_runtime(&handle).await,
@@ -9820,140 +9706,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trust_regression_cancels_preparation_and_late_result_is_ignored() {
-        let (handle, _action_rx) = login_gated_actor().await;
-        let (release, preparation) = oneshot::channel();
-        handle
-            .send(AccountMessage::ConfigurePromotionFullState {
-                completion: preparation,
-            })
-            .await;
-        handle
-            .send(AccountMessage::CurrentDeviceTrustChanged {
-                generation: 2,
-                trust: koushi_state::CurrentDeviceTrustState::Verified,
-            })
-            .await;
-        let _ = inspect_session_runtime(&handle).await;
-        handle
-            .send(AccountMessage::CurrentDeviceTrustChanged {
-                generation: 2,
-                trust: koushi_state::CurrentDeviceTrustState::Unverified,
-            })
-            .await;
-        let _ = inspect_session_runtime(&handle).await;
-        assert!(
-            release.send(true).is_err(),
-            "regression must abort and join preparation"
-        );
-        handle
-            .send(AccountMessage::PromotionFullStateSyncFinished {
-                generation: 2,
-                transition_id: 2,
-                succeeded: true,
-            })
-            .await;
-        assert_eq!(
-            inspect_session_runtime(&handle).await,
-            (true, false, false, true)
-        );
-        let _ = handle.send(AccountMessage::Shutdown).await;
-    }
-
-    #[tokio::test]
-    async fn stale_completion_cannot_take_or_block_new_owned_promotion_task() {
+    async fn verification_to_normal_sync_handoff_has_one_owner() {
+        let diagnostic_start = koushi_diagnostics::snapshot().records.len();
         let (handle, mut action_rx) = login_gated_actor().await;
-        let (_old_release, old_preparation) = oneshot::channel();
+        assert!(
+            koushi_diagnostics::snapshot().records[diagnostic_start..]
+                .iter()
+                .any(|record| {
+                    record.event.source == "core.verification_admission"
+                        && record.event.stage == "restricted_catch_up_started"
+                }),
+            "gated admission must diagnose restricted sync ownership start"
+        );
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
         handle
-            .send(AccountMessage::ConfigurePromotionFullState {
-                completion: old_preparation,
-            })
+            .send(AccountMessage::AttachLifecycleProbe { probe_tx })
             .await;
+        assert_eq!(inspect_sync_owners(&handle).await, (true, false, false));
         handle
             .send(AccountMessage::CurrentDeviceTrustChanged {
                 generation: 2,
                 trust: koushi_state::CurrentDeviceTrustState::Verified,
-            })
-            .await;
-        let _ = inspect_session_runtime(&handle).await;
-        handle
-            .send(AccountMessage::CurrentDeviceTrustChanged {
-                generation: 2,
-                trust: koushi_state::CurrentDeviceTrustState::Unverified,
-            })
-            .await;
-        let _ = inspect_session_runtime(&handle).await;
-
-        let (new_release, new_preparation) = oneshot::channel();
-        handle
-            .send(AccountMessage::ConfigurePromotionFullState {
-                completion: new_preparation,
-            })
-            .await;
-        handle
-            .send(AccountMessage::CurrentDeviceTrustChanged {
-                generation: 2,
-                trust: koushi_state::CurrentDeviceTrustState::Verified,
-            })
-            .await;
-        let _ = inspect_session_runtime(&handle).await;
-        handle
-            .send(AccountMessage::PromotionFullStateSyncFinished {
-                generation: 2,
-                transition_id: 2,
-                succeeded: true,
             })
             .await;
         assert_eq!(
-            inspect_session_runtime(&handle).await,
-            (true, false, false, true)
+            inspect_sync_owners(&handle).await,
+            (false, false, false),
+            "restricted owner must stop before Ready projection acknowledgement"
         );
-
-        new_release.send(true).expect("new task must remain owned");
+        assert_eq!(probe_rx.try_recv(), Ok("restricted_sync_terminated"));
         acknowledge_next_verified_projection(&handle, &mut action_rx).await;
         assert_eq!(
-            inspect_session_runtime(&handle).await,
-            (true, true, true, true)
-        );
-        let _ = handle.send(AccountMessage::Shutdown).await;
-    }
-
-    #[tokio::test]
-    async fn logout_cancels_preparation_and_late_result_cannot_activate_runtime() {
-        let (handle, _action_rx) = login_gated_actor().await;
-        let (release, preparation) = oneshot::channel();
-        handle
-            .send(AccountMessage::ConfigurePromotionFullState {
-                completion: preparation,
-            })
-            .await;
-        handle
-            .send(AccountMessage::CurrentDeviceTrustChanged {
-                generation: 2,
-                trust: koushi_state::CurrentDeviceTrustState::Verified,
-            })
-            .await;
-        let _ = inspect_session_runtime(&handle).await;
-        handle
-            .send(AccountMessage::Command(AccountCommand::Logout {
-                request_id: test_request_id(),
-            }))
-            .await;
-        let _ = inspect_session_runtime(&handle).await;
-        assert!(
-            release.send(true).is_err(),
-            "logout must abort and join preparation"
-        );
-        handle
-            .send(AccountMessage::PromotionFullStateSyncFinished {
-                generation: 2,
-                transition_id: 2,
-                succeeded: true,
-            })
-            .await;
-        assert_eq!(
-            inspect_session_runtime(&handle).await,
-            (false, false, false, false)
+            inspect_sync_owners(&handle).await,
+            (false, false, true),
+            "normal sync must be the only owner after Ready acknowledgement"
         );
         let _ = handle.send(AccountMessage::Shutdown).await;
     }
@@ -10475,6 +10261,16 @@ mod tests {
         result.await.expect("runtime inspection")
     }
 
+    async fn inspect_sync_owners(handle: &AccountActorHandle) -> (bool, bool, bool) {
+        let (response, result) = oneshot::channel();
+        assert!(
+            handle
+                .send(AccountMessage::InspectSyncOwners { response })
+                .await
+        );
+        result.await.expect("sync owner inspection")
+    }
+
     async fn shutdown_and_ack(handle: &AccountActorHandle) {
         let (acknowledged, ack) = oneshot::channel();
         assert!(
@@ -10641,9 +10437,28 @@ mod tests {
         spawn_named_quarantine_password_server("@fixture-user:example.invalid", "FIXTUREDEVICE")
     }
 
+    fn spawn_controllable_quarantine_password_server()
+    -> (String, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        let offline = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let homeserver = spawn_named_quarantine_password_server_with_offline(
+            "@fixture-user:example.invalid",
+            "FIXTUREDEVICE",
+            Some(std::sync::Arc::clone(&offline)),
+        );
+        (homeserver, offline)
+    }
+
     fn spawn_named_quarantine_password_server(
         user_id: &'static str,
         device_id: &'static str,
+    ) -> String {
+        spawn_named_quarantine_password_server_with_offline(user_id, device_id, None)
+    }
+
+    fn spawn_named_quarantine_password_server_with_offline(
+        user_id: &'static str,
+        device_id: &'static str,
+        offline: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     ) -> String {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -10672,6 +10487,12 @@ mod tests {
                     }
                 }
                 let text = String::from_utf8_lossy(&request);
+                if offline
+                    .as_ref()
+                    .is_some_and(|offline| offline.load(std::sync::atomic::Ordering::SeqCst))
+                {
+                    continue;
+                }
                 let body = if text.starts_with("GET /_matrix/client/versions ") {
                     r#"{"versions":["v1.7"]}"#.to_owned()
                 } else if text.contains("/_matrix/client/") && text.contains("login") {
@@ -10793,27 +10614,6 @@ mod tests {
         };
         assert!(!trust_projection_ack_matches(&pending, 7, 41, false, false));
         assert!(trust_projection_ack_matches(&pending, 7, 42, true, false));
-    }
-
-    #[test]
-    fn promotion_full_state_sync_runs_outside_account_mailbox() {
-        let source = include_str!("account.rs");
-        let handler = source
-            .split("async fn handle_current_device_trust")
-            .nth(1)
-            .and_then(|body| body.split("async fn discover_verification_methods").next())
-            .expect("trust handler");
-        let spawn = handler
-            .find("executor::spawn(async move")
-            .expect("background task");
-        let full_state = handler
-            .find("promotion_full_state_sync_once(&session)")
-            .expect("full-state sync");
-        assert!(
-            spawn < full_state,
-            "full-state sync must run in a spawned task"
-        );
-        assert!(handler.contains("PromotionFullStateSyncFinished"));
     }
 
     #[test]
@@ -11337,13 +11137,12 @@ mod tests {
             pending_ready_events: Vec::new(),
             pending_trust_transition: None,
             next_trust_transition_id: 0,
-            promotion_full_state_task: None,
             pending_session_teardown: None,
             next_teardown_generation: 0,
             teardown_retry_task: None,
             lifecycle_probe: None,
             trust_observation_override: std::sync::Mutex::new(None),
-            promotion_full_state_override: std::sync::Mutex::new(None),
+            trust_observation_is_synthetic: false,
             recovery_download_override: std::sync::Mutex::new(None),
             close_store_results: std::collections::VecDeque::new(),
             store,

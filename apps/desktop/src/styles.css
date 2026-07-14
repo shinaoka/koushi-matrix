@@ -2878,8 +2878,7 @@ button:disabled {
 }
 
 .message-body.message-formatted-body {
-  display: grid;
-  gap: 8px;
+  display: block;
 }
 
 .message-body.message-emote {

@@ -7447,15 +7447,25 @@ describe("TimelineView", () => {
       }
     });
     const item: TimelineItem = {
-      ...message("$formatted-list:example.invalid", "Paper\nEvent and announcement\nAI"),
+      ...message("$formatted-list:example.invalid", "Paper\nEvent and announcement\nAI\nNested"),
       formatted: {
-        html: "<ul><li>Paper</li><li>Event and announcement</li><li>AI</li></ul>",
-        plain_text: "Paper\nEvent and announcement\nAI",
+        html: `
+          <ul>
+            <li>Paper</li>
+            <li>Event and announcement</li>
+            <li>AI
+              <ol>
+                <li>Nested</li>
+              </ol>
+            </li>
+          </ul>
+        `,
+        plain_text: "Paper\nEvent and announcement\nAI\nNested",
         code_blocks: []
       }
     };
 
-    render(
+    const { container } = render(
       <TimelineView
         timelineKey={KEY}
         roomId="!room:example.invalid"
@@ -7476,13 +7486,70 @@ describe("TimelineView", () => {
       }
     });
 
-    const list = await screen.findByRole("list");
+    const list = await waitFor(() => {
+      const next = container.querySelector("ul");
+      expect(next).not.toBeNull();
+      return next!;
+    });
     const items = within(list).getAllByRole("listitem");
-    expect(items.map((listItem) => listItem.textContent)).toEqual([
+    expect(items.map((listItem) => listItem.textContent?.replace(/\s+/g, " ").trim())).toEqual([
       "Paper",
       "Event and announcement",
-      "AI"
+      "AI Nested",
+      "Nested"
     ]);
+    expect(container.querySelectorAll(".message-formatted-body br")).toHaveLength(0);
+    for (const renderedList of container.querySelectorAll("ul, ol")) {
+      expect(Array.from(renderedList.children).every((child) => child.tagName === "LI")).toBe(true);
+    }
+  });
+
+  it("collapses source whitespace while preserving inline space and explicit breaks", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const item: TimelineItem = {
+      ...message("$formatted-whitespace:example.invalid", "Hello world\nnext"),
+      formatted: {
+        html: `
+          <p><strong>Hello</strong> <em>world</em><br>next</p>
+        `,
+        plain_text: "Hello world\nnext",
+        code_blocks: []
+      }
+    };
+
+    const { container } = render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [item]
+        }
+      }
+    });
+
+    const body = await waitFor(() => {
+      const next = container.querySelector(".message-formatted-body");
+      expect(next).not.toBeNull();
+      return next!;
+    });
+    expect(body.querySelector("p")?.textContent).toBe("Hello worldnext");
+    expect(body.querySelectorAll("br")).toHaveLength(1);
   });
 
   it("renders link preview cards as clickable anchors", async () => {

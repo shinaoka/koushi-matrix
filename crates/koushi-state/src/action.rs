@@ -410,10 +410,6 @@ pub enum AppAction {
     SessionPersistenceFailed {
         message: String,
     },
-    VerificationAdmissionPreparationFailed {
-        generation: u64,
-        kind: VerificationGateFailureKind,
-    },
     SessionLocked,
     LogoutRequested,
     LogoutFinished,

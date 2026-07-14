@@ -5770,6 +5770,73 @@ test("rich formatted timeline rows render Rust-owned DTOs and code-wrap setting"
   );
 });
 
+test("pretty and minified formatted lists have equivalent compact layout", async ({ page }) => {
+  await gotoReadyShell(page);
+  const common = {
+    sender: "@harness-user:example.invalid",
+    body: "Hello world\nnext\n項目一\n項目二\n内側",
+    timestamp_ms: 1_800_000_000_950,
+    in_reply_to_event_id: null,
+    thread_root: null,
+    thread_summary: null,
+    reactions: [],
+    can_react: false,
+    is_redacted: false,
+    is_hidden: false,
+    can_redact: false,
+    is_edited: false,
+    can_edit: false
+  };
+  const plainText = "Hello world\nnext\n項目一\n項目二\n内側";
+  await seedTimelineItems(page, [
+    {
+      ...common,
+      id: { Event: { event_id: "$formatted-minified:example.invalid" } },
+      formatted: {
+        html: "<p><strong>Hello</strong> <em>world</em><br>next</p><ul><li>項目一</li><li>項目二<ol><li>内側</li></ol></li></ul>",
+        plain_text: plainText,
+        code_blocks: []
+      }
+    },
+    {
+      ...common,
+      id: { Event: { event_id: "$formatted-pretty:example.invalid" } },
+      formatted: {
+        html: `
+          <p><strong>Hello</strong> <em>world</em><br>next</p>
+          <ul>
+            <li>項目一</li>
+            <li>項目二
+              <ol>
+                <li>内側</li>
+              </ol>
+            </li>
+          </ul>
+        `,
+        plain_text: plainText,
+        code_blocks: []
+      }
+    }
+  ]);
+
+  const minified = page.locator('[data-event-id="$formatted-minified:example.invalid"] .message-formatted-body');
+  const pretty = page.locator('[data-event-id="$formatted-pretty:example.invalid"] .message-formatted-body');
+  await expect(minified.locator("br")).toHaveCount(1);
+  await expect(pretty.locator("br")).toHaveCount(1);
+  await expect(minified.locator("ul > br, ol > br")).toHaveCount(0);
+  await expect(pretty.locator("ul > br, ol > br")).toHaveCount(0);
+  expect(
+    await pretty.locator("ul, ol").evaluateAll((lists) =>
+      lists.every((list) => Array.from(list.children).every((child) => child.tagName === "LI"))
+    )
+  ).toBe(true);
+  const heights = await Promise.all([
+    minified.evaluate((element) => element.getBoundingClientRect().height),
+    pretty.evaluate((element) => element.getBoundingClientRect().height)
+  ]);
+  expect(Math.abs(heights[0] - heights[1])).toBeLessThanOrEqual(2);
+});
+
 test("hide deleted messages setting hides only Rust-marked redacted timeline rows", async ({
   page
 }) => {

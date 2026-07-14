@@ -107,6 +107,7 @@ const DEVICE_B: &str = "Koushi Core QA B";
 
 /// Maximum time to wait for a single event.
 const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
+const GATE_RESTORE_READY_BUDGET: Duration = Duration::from_secs(10);
 const LOGIN_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
 const ROOM_LIST_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
 const E2EE_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
@@ -1004,6 +1005,7 @@ async fn run_gate_restore_stage(
     wait_for_saved_session_presence(&mut conn, query_id, &account_key).await?;
     println!("gate_restore_query_result=ok");
 
+    let restore_started_at = std::time::Instant::now();
     let restore_id = conn.next_request_id();
     tokio::time::timeout(
         EVENT_TIMEOUT,
@@ -1019,6 +1021,9 @@ async fn run_gate_restore_stage(
     wait_for_session_restored(&mut conn, restore_id, &account_key, "gate restore").await?;
     println!("gate_restore_restore_result=ok");
     wait_for_ready_snapshot(&mut conn, "gate restore Ready").await?;
+    if restore_started_at.elapsed() > GATE_RESTORE_READY_BUDGET {
+        return Err("gate restore exceeded bounded Ready budget".to_owned());
+    }
     println!("gate_restore_ready=ok");
     println!("gate_verified_restore=ok");
     drop(conn);
@@ -13363,6 +13368,7 @@ fn assert_hide_redacted_projection() -> Result<(), String> {
     let mut event = TimelineEvent::InitialItems {
         request_id: None,
         key,
+        actor_generation: 0,
         generation: koushi_core::ids::TimelineGeneration(0),
         items: vec![
             projection_timeline_item("$redacted:example.invalid", true),

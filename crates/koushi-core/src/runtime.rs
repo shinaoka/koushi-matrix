@@ -5637,7 +5637,7 @@ mod tests {
         assert_eq!(
             probe_rx.try_recv(),
             Err(mpsc::error::TryRecvError::Empty),
-            "crypto trust lane must remain active in Ready"
+            "trust observer must remain active in Ready without another lifecycle token"
         );
 
         trust_tx
@@ -5652,11 +5652,11 @@ mod tests {
             (true, false, false, true)
         );
         let mut tokens = Vec::new();
-        while tokens.len() < 12 {
+        while tokens.len() < 11 {
             tokens.push(probe_rx.recv().await.expect("stop token"));
         }
         assert_eq!(tokens[0], "lock_projection_ack");
-        assert!(tokens.contains(&"restricted_sync_terminated"));
+        assert!(!tokens.contains(&"restricted_sync_terminated"));
         assert!(tokens.contains(&"stop_sync_actor"));
         assert!(tokens.contains(&"stop_timeline_manager"));
         assert!(tokens.contains(&"clear_room_session"));

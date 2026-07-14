@@ -891,33 +891,6 @@ fn restricted_verification_sync_sends_the_restricted_filter_and_processes_top_le
 }
 
 #[test]
-fn promotion_sync_requests_unfiltered_full_state_with_bounded_server_wait() {
-    let promotion_sync_seen = Arc::new(AtomicBool::new(false));
-    let homeserver =
-        spawn_password_login_server_with_promotion_sync(Arc::clone(&promotion_sync_seen));
-    let request = LoginRequest {
-        homeserver,
-        username: "fixture-user".to_owned(),
-        password: AuthSecret::new("synthetic-password"),
-        device_display_name: Some("Matrix Desktop Test".to_owned()),
-    };
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("test runtime should build");
-
-    runtime.block_on(async {
-        let session = koushi_sdk::login_with_password(&request)
-            .await
-            .expect("password login should succeed");
-        koushi_sdk::promotion_full_state_sync_once(&session)
-            .await
-            .expect("promotion sync should succeed");
-    });
-    assert!(promotion_sync_seen.load(Ordering::SeqCst));
-}
-
-#[test]
 fn sdk_e2ee_recovery_failure_does_not_include_secret() {
     let homeserver = spawn_password_login_server(200);
     let request = LoginRequest {
@@ -1119,63 +1092,6 @@ fn spawn_password_login_server_with_restricted_sync(sync_seen: Arc<AtomicBool>) 
                 &mut stream,
                 404,
                 r#"{"errcode":"M_NOT_FOUND","error":"Unexpected test request"}"#,
-            );
-        }
-    });
-    format!("http://{addr}")
-}
-
-fn spawn_password_login_server_with_promotion_sync(sync_seen: Arc<AtomicBool>) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
-    let addr = listener
-        .local_addr()
-        .expect("test server should have an address");
-    thread::spawn(move || {
-        for _ in 0..16 {
-            let (mut stream, _) = listener
-                .accept()
-                .expect("test server should accept a request");
-            let request = read_http_request(&mut stream);
-            if request.starts_with("GET /_matrix/client/versions ") {
-                write_json(&mut stream, 200, MATRIX_VERSIONS_RESPONSE);
-                continue;
-            }
-            if write_common_sdk_bootstrap_response(&mut stream, &request) {
-                continue;
-            }
-            if request.starts_with("GET /_matrix/client/") && request.contains("/sync") {
-                assert!(
-                    request.contains("timeout=3000"),
-                    "promotion timeout missing: {request}"
-                );
-                assert!(
-                    request.contains("full_state=true"),
-                    "promotion full_state missing: {request}"
-                );
-                assert!(
-                    !request.contains("filter="),
-                    "promotion retained restricted filter: {request}"
-                );
-                sync_seen.store(true, Ordering::SeqCst);
-                write_json(
-                    &mut stream,
-                    200,
-                    r#"{"device_one_time_keys_count":{},"next_batch":"promotion-batch","device_lists":{"changed":[],"left":[]},"rooms":{"invite":{},"join":{},"leave":{},"knock":{}},"to_device":{"events":[]},"presence":{"events":[]},"account_data":{"events":[]}}"#,
-                );
-                return;
-            }
-            if request.starts_with("POST /_matrix/client/") && request.contains("/login") {
-                write_json(
-                    &mut stream,
-                    200,
-                    r#"{"access_token":"fixture-access-token","device_id":"FIXTUREDEVICE","user_id":"@fixture-user:example.invalid"}"#,
-                );
-                continue;
-            }
-            write_json(
-                &mut stream,
-                404,
-                r#"{"errcode":"M_NOT_FOUND","error":"not found"}"#,
             );
         }
     });

@@ -37,6 +37,30 @@ describe("SessionVerificationGate interactions", () => {
     expect(Boolean(retry)).toBe(retryVisible);
   });
 
+  test("uses checking-trust copy for both the landmark and heading", async () => {
+    const snapshot = await createBrowserFakeApi({ session: "needsRecovery" }).getSnapshot();
+    snapshot.state.domain.session = {
+      kind: "provisional",
+      user_id: "@u:example.invalid",
+      homeserver: "https://example.invalid",
+      device_id: "D",
+      phase: "checkingTrust",
+    };
+    render(
+      <SessionVerificationGate
+        snapshot={snapshot}
+        onSnapshot={() => undefined}
+        onSignOut={() => undefined}
+      />
+    );
+
+    expect(screen.getByRole("main", { name: "Checking device trust…" })).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Checking device trust…" })
+    ).toBeTruthy();
+    expect(screen.queryByText("Verify this session")).toBeNull();
+  });
+
   test("blocks duplicate retry promise construction while discovery is pending", async () => {
     const snapshot = await createBrowserFakeApi({ session: "needsRecovery" }).getSnapshot();
     snapshot.state.domain.session = {
