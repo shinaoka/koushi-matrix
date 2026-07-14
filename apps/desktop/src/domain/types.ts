@@ -1014,6 +1014,7 @@ export type ScheduledSendCapability = "unknown" | "serverDelayedEvents" | "local
 export interface ScheduledSendItem {
   scheduled_id: string;
   room_id: string;
+  thread_root_event_id?: string | null;
   body: string;
   send_at_ms: number;
   handle: ScheduledSendHandle;
@@ -1033,6 +1034,34 @@ export type StagedUploadCompressionChoice =
   | { kind: "original" }
   | { kind: "compressed"; mode: ImageUploadCompressionMode };
 
+export type ComposerTarget =
+  | { kind: "main"; room_id: string }
+  | { kind: "thread"; room_id: string; root_event_id: string };
+
+export type PreparedUploadFormat = "original" | "png" | "jpeg" | "webp";
+
+export interface PreparedUploadVariant {
+  variant_id: string;
+  filename: string;
+  mime_type: string;
+  byte_count: number;
+  width: number | null;
+  height: number | null;
+  format: PreparedUploadFormat;
+  savings_percent: number;
+  metadata_stripped: boolean;
+  thumbnail_refreshed: boolean;
+}
+
+export type StagedUploadPreparation =
+  | { kind: "preparing" }
+  | { kind: "ready"; variants: PreparedUploadVariant[]; selected_variant_id: string }
+  | {
+      kind: "failed";
+      failure_kind: "empty" | "unsupported" | "decode" | "encode" | "missingPreparedBytes";
+      can_use_original: boolean;
+    };
+
 export interface StagedUploadItem {
   staged_id: string;
   room_id: string;
@@ -1043,6 +1072,7 @@ export interface StagedUploadItem {
   kind: StagedUploadKind;
   caption: FormattedMessageDraft | null;
   compression_choice: StagedUploadCompressionChoice;
+  preparation: StagedUploadPreparation;
 }
 
 export interface UploadStagingRequestItem {
@@ -1053,6 +1083,14 @@ export interface UploadStagingRequestItem {
   byteCount: number;
   kind: StagedUploadKind;
   compressionChoice: StagedUploadCompressionChoice;
+}
+
+export interface StageUploadBytesRequestItem {
+  stagedId: string;
+  position: number;
+  filename: string;
+  mimeType: string;
+  bytes: number[];
 }
 
 export type TimelineMediaKind = "Image" | "File" | "Audio" | "Video";
@@ -1382,6 +1420,7 @@ export interface ThreadPaneState {
   root_event_id?: string;
   is_subscribed?: boolean;
   composer?: ComposerState;
+  staged_uploads?: StagedUploadItem[];
 }
 
 export type ThreadAttentionState =

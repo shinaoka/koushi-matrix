@@ -119,7 +119,7 @@ describe("EntityAvatar", () => {
 });
 
 describe("Sidebar", () => {
-  it("renders Home as Activity, Explore, Invites, unspaced Rooms, and Direct Messages", async () => {
+  it("renders Home as Activity, Explore, Invites, all Rooms, and Direct Messages", async () => {
     const api = createBrowserFakeApi();
     const snapshot = await api.selectSpace(null);
     const unspacedRoom: RoomSummary = {
@@ -172,7 +172,7 @@ describe("Sidebar", () => {
     expect(screen.getByRole("button", { name: /DMs/ })).toBeTruthy();
     expect(screen.getByRole("region", { name: "Rooms" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "unspaced-room" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "synthetic-room" })).toBeNull();
+    expect(screen.getByRole("button", { name: "synthetic-room" })).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Direct Messages" })).toBeNull();
   });
 

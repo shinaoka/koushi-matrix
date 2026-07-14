@@ -769,19 +769,26 @@ pub enum AppAction {
         scheduled_id: String,
     },
     UploadStagingChanged {
-        room_id: String,
+        target: crate::ComposerTarget,
         items: Vec<StagedUploadItem>,
     },
     UploadStagingCaptionChanged {
+        target: crate::ComposerTarget,
         staged_id: String,
         caption: Option<crate::FormattedMessageDraft>,
     },
     UploadStagingCompressionChanged {
+        target: crate::ComposerTarget,
         staged_id: String,
         compression_choice: StagedUploadCompressionChoice,
     },
+    UploadStagingVariantSelected {
+        target: crate::ComposerTarget,
+        staged_id: String,
+        variant_id: String,
+    },
     UploadStagingCleared {
-        room_id: String,
+        target: crate::ComposerTarget,
     },
     MediaGalleryUpdated {
         room_id: String,

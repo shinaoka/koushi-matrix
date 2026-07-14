@@ -1569,6 +1569,7 @@ impl AppActor {
                 origin_session_key,
                 scheduled_id: scheduled_id.clone(),
                 room_id: item.room_id,
+                thread_root_event_id: item.thread_root_event_id,
                 body: item.body,
             })
             .await
@@ -1732,22 +1733,24 @@ impl AppActor {
                 }
                 AppCommand::SetUploadStaging {
                     request_id,
-                    room_id,
+                    target,
                     items,
                 } => {
                     let effects = self
-                        .reduce_app_action(AppAction::UploadStagingChanged { room_id, items })
+                        .reduce_app_action(AppAction::UploadStagingChanged { target, items })
                         .await;
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
                 AppCommand::UpdateStagedUploadCaption {
                     request_id,
+                    target,
                     staged_id,
                     caption,
                 } => {
                     let effects = self
                         .reduce_app_action(AppAction::UploadStagingCaptionChanged {
+                            target,
                             staged_id,
                             caption,
                         })
@@ -1757,11 +1760,13 @@ impl AppActor {
                 }
                 AppCommand::UpdateStagedUploadCompression {
                     request_id,
+                    target,
                     staged_id,
                     compression_choice,
                 } => {
                     let effects = self
                         .reduce_app_action(AppAction::UploadStagingCompressionChanged {
+                            target,
                             staged_id,
                             compression_choice,
                         })
@@ -1769,12 +1774,25 @@ impl AppActor {
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
-                AppCommand::ClearUploadStaging {
+                AppCommand::SelectStagedUploadVariant {
                     request_id,
-                    room_id,
+                    target,
+                    staged_id,
+                    variant_id,
                 } => {
                     let effects = self
-                        .reduce_app_action(AppAction::UploadStagingCleared { room_id })
+                        .reduce_app_action(AppAction::UploadStagingVariantSelected {
+                            target,
+                            staged_id,
+                            variant_id,
+                        })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::ClearUploadStaging { request_id, target } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::UploadStagingCleared { target })
                         .await;
                     self.handle_app_effects(request_id, effects).await;
                     true
@@ -1782,6 +1800,7 @@ impl AppActor {
                 AppCommand::ScheduleSend {
                     request_id,
                     room_id,
+                    thread_root_event_id,
                     body,
                     send_at_ms,
                 } => {
@@ -1795,6 +1814,7 @@ impl AppActor {
                                 request_id,
                                 scheduled_id,
                                 room_id,
+                                thread_root_event_id,
                                 body,
                                 send_at_ms,
                             })
@@ -1819,6 +1839,7 @@ impl AppActor {
                     let item = ScheduledSendItem {
                         scheduled_id: scheduled_send_id(),
                         room_id,
+                        thread_root_event_id,
                         body,
                         send_at_ms,
                         handle: ScheduledSendHandle::Local,
@@ -1879,6 +1900,7 @@ impl AppActor {
                                 request_id,
                                 scheduled_id,
                                 room_id: item.room_id,
+                                thread_root_event_id: item.thread_root_event_id,
                                 body: item.body,
                                 delay_id,
                                 send_at_ms,

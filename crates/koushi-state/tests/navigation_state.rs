@@ -535,6 +535,7 @@ fn room_list_update_clears_missing_active_space_and_room() {
             root_event_id: "$root".to_owned(),
             is_subscribed: true,
             composer: Default::default(),
+            staged_uploads: Vec::new(),
         },
         ..AppState::default()
     };
@@ -663,6 +664,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
             root_event_id: "$root".to_owned(),
             is_subscribed: true,
             composer: Default::default(),
+            staged_uploads: Vec::new(),
         },
         ..AppState::default()
     };
@@ -1604,6 +1606,7 @@ fn selecting_room_subscribes_timeline_and_clears_thread() {
             root_event_id: "$root".to_owned(),
             is_subscribed: true,
             composer: Default::default(),
+            staged_uploads: Vec::new(),
         },
         ..AppState::default()
     };

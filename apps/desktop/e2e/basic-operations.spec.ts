@@ -191,11 +191,21 @@ async function gotoSignedOutAuth(page: Page): Promise<void> {
             room_id: null,
             is_subscribed: false,
             is_paginating_backwards: false,
-            composer: { pending_transaction_id: null, draft: "", mode: "Plain" },
+            composer: {
+              accepted_submission_ids: [],
+              pending_transaction_id: null,
+              draft: "",
+              mode: "Plain"
+            },
+            submission_registry: {
+              accepted_submission_ids: [],
+              settled_submission_ids: []
+            },
             scheduled_send_capability: "unknown",
             scheduled_sends: [],
             staged_uploads: [],
-            media_gallery: []
+            media_gallery: [],
+            media_downloads: {}
           }
         }
       },
@@ -3248,6 +3258,12 @@ test("thread and edit composers composing Enter never send through GUI", async (
   await page.getByRole("button", { name: /2 replies/ }).click();
   const threadComposer = page.getByRole("textbox", { name: t("timeline.threadComposer") });
   await expect(threadComposer).toBeVisible();
+  const contextPanel = page.locator('aside[aria-label="Context panel"]');
+  await expect(contextPanel.getByRole("button", { name: "Bold" })).toBeVisible();
+  await expect(contextPanel.getByRole("button", { name: "Italic" })).toBeVisible();
+  await expect(
+    contextPanel.getByRole("button", { name: "Attach file", exact: true })
+  ).toBeVisible();
   await threadComposer.fill("スレッド変換中");
   await page.evaluate(() => window.__harness.clearInvocations());
 
@@ -4074,172 +4090,95 @@ test("attach control stages media caption and renders Rust-owned media progress"
     });
 });
 
-test("paste/drop upload UX stages through Rust snapshot and sends dialog captions", async ({
+test("paste/drop upload UX stages ordinary files for the captured main composer target", async ({
   page
 }) => {
   await gotoReadyShell(page);
-  await page.evaluate(() => {
-    window.__harness.setCommandResponse("stage_uploads", ({ roomId, items }) => {
-      const snapshot = window.__harness.currentSnapshot();
-      const stagedUploads = items.map((item: any, index: number) => ({
-        staged_id: item.stagedId,
-        room_id: roomId,
-        position: index + 1,
-        filename: item.filename,
-        mime_type: item.mimeType,
-        byte_count: item.byteCount,
-        kind: item.kind,
-        caption: null,
-        compression_choice: item.compressionChoice
-      }));
-      const nextSnapshot = {
-        ...snapshot,
-        state: {
-          ...snapshot.state,
-          ui: {
-            ...snapshot.state.ui,
-            timeline: {
-              ...snapshot.state.ui.timeline,
-              staged_uploads: stagedUploads
-            }
-          }
-        }
-      };
-      window.__harness.setSnapshot(nextSnapshot);
-      return nextSnapshot;
-    });
-    window.__harness.setCommandResponse(
-      "update_staged_upload_caption",
-      ({ stagedId, caption }) => {
-        const snapshot = window.__harness.currentSnapshot();
-        const nextSnapshot = {
-          ...snapshot,
-          state: {
-            ...snapshot.state,
-            ui: {
-              ...snapshot.state.ui,
-              timeline: {
-                ...snapshot.state.ui.timeline,
-                staged_uploads: snapshot.state.ui.timeline.staged_uploads.map((item: any) =>
-                  item.staged_id === stagedId
-                    ? {
-                        ...item,
-                        caption: caption
-                          ? { plain_body: caption, formatted_body: null, mentions: { targets: [] } }
-                          : null
-                      }
-                    : item
-                )
-              }
-            }
-          }
-        };
-        window.__harness.setSnapshot(nextSnapshot);
-        return nextSnapshot;
-      }
-    );
-    window.__harness.setCommandResponse(
-      "update_staged_upload_compression",
-      ({ stagedId, compressionChoice }) => {
-        const snapshot = window.__harness.currentSnapshot();
-        const nextSnapshot = {
-          ...snapshot,
-          state: {
-            ...snapshot.state,
-            ui: {
-              ...snapshot.state.ui,
-              timeline: {
-                ...snapshot.state.ui.timeline,
-                staged_uploads: snapshot.state.ui.timeline.staged_uploads.map((item: any) =>
-                  item.staged_id === stagedId
-                    ? { ...item, compression_choice: compressionChoice }
-                    : item
-                )
-              }
-            }
-          }
-        };
-        window.__harness.setSnapshot(nextSnapshot);
-        return nextSnapshot;
-      }
-    );
-    window.__harness.setCommandResponse("clear_upload_staging", () => {
-      const snapshot = window.__harness.currentSnapshot();
-      const nextSnapshot = {
-        ...snapshot,
-        state: {
-          ...snapshot.state,
-          ui: {
-            ...snapshot.state.ui,
-            timeline: {
-              ...snapshot.state.ui.timeline,
-              staged_uploads: []
-            }
-          }
-        }
-      };
-      window.__harness.setSnapshot(nextSnapshot);
-      return nextSnapshot;
-    });
-    window.__harness.setCommandResponse("upload_media", () => window.__harness.currentSnapshot());
-    window.__harness.clearInvocations();
-  });
+  await page.evaluate(() => window.__harness.clearInvocations());
 
   await page.evaluate(() => {
-    const file = new File(["paste fixture bytes"], "pasted-fixture.txt", {
-      type: "text/plain"
+    const file = new File(["pdf fixture bytes"], "dropped-fixture.pdf", {
+      type: "application/pdf"
     });
     const data = new DataTransfer();
     data.items.add(file);
-    const composer = document.querySelector(
-      'textarea[aria-label="Message composer"]'
-    );
+    const composer = document.querySelector("section.composer");
     if (!composer) {
       throw new Error("composer not found");
     }
     composer.dispatchEvent(
-      new ClipboardEvent("paste", {
+      new DragEvent("drop", {
         bubbles: true,
         cancelable: true,
-        clipboardData: data
+        dataTransfer: data
       })
     );
   });
 
-  await expect.poll(() => invocationCount(page, "stage_uploads")).toBe(1);
-  await expect.poll(() => invocationCount(page, "upload_media")).toBe(0);
-  await expect(page.getByRole("dialog", { name: "Upload attachments" })).toBeVisible();
-  await expect(page.getByText("pasted-fixture.txt", { exact: true })).toBeVisible();
+  await page.evaluate(() => {
+    const file = new File(["zip fixture bytes"], "pasted-fixture.zip", {
+      type: "application/zip"
+    });
+    const data = new DataTransfer();
+    data.items.add(file);
+    const textarea = document.querySelector('textarea[aria-label="Message composer"]');
+    if (!textarea) throw new Error("composer textarea not found");
+    textarea.dispatchEvent(
+      new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: data })
+    );
+  });
 
-  await page.getByRole("textbox", { name: "Caption for pasted-fixture.txt" }).fill("caption from staging");
+  await expect.poll(() => invocationCount(page, "stage_upload_bytes")).toBe(2);
+  await expect.poll(() => invocationCount(page, "send_prepared_uploads")).toBe(0);
+  await expect
+    .poll(async () =>
+      page.evaluate(() =>
+        window.__harness.invocationsOf("stage_upload_bytes").map((invocation) => ({
+          target: invocation.args.target,
+          filename: invocation.args.items?.[0]?.filename,
+          mimeType: invocation.args.items?.[0]?.mimeType,
+          byteCount: invocation.args.items?.[0]?.bytes?.length
+        }))
+      )
+    )
+    .toEqual([
+      {
+        target: { kind: "main", room_id: "!harness-room:example.invalid" },
+        filename: "dropped-fixture.pdf",
+        mimeType: "application/pdf",
+        byteCount: "pdf fixture bytes".length
+      },
+      {
+        target: { kind: "main", room_id: "!harness-room:example.invalid" },
+        filename: "pasted-fixture.zip",
+        mimeType: "application/zip",
+        byteCount: "zip fixture bytes".length
+      }
+    ]);
+  await expect(page.getByRole("dialog", { name: "Upload attachments" })).toBeVisible();
+  await expect(page.getByText("dropped-fixture.pdf", { exact: true })).toBeVisible();
+  await expect(page.getByText("pasted-fixture.zip", { exact: true })).toBeVisible();
+
+  await page.getByRole("textbox", { name: "Caption for dropped-fixture.pdf" }).fill("caption from staging");
   await expect.poll(() => invocationCount(page, "update_staged_upload_caption")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("update_staged_upload_caption").at(-1)?.args)
+    )
+    .toMatchObject({
+      target: { kind: "main", room_id: "!harness-room:example.invalid" },
+      caption: "caption from staging"
+    });
 
   await page.getByRole("button", { name: "Send", exact: true }).click();
-  await expect.poll(() => invocationCount(page, "upload_media")).toBeGreaterThanOrEqual(1);
+  await expect.poll(() => invocationCount(page, "send_prepared_uploads")).toBe(1);
   await expect.poll(() => invocationCount(page, "send_text")).toBe(0);
   await expect
     .poll(async () =>
-      page.evaluate(() => {
-        const args = window.__harness.invocationsOf("upload_media")[0]?.args;
-        return args
-          ? {
-              roomId: args.roomId,
-              filename: args.filename,
-              mimeType: args.mimeType,
-              caption: args.caption,
-              byteCount: Array.isArray(args.bytes) ? args.bytes.length : -1
-            }
-          : null;
-      })
+      page.evaluate(() => window.__harness.invocationsOf("send_prepared_uploads")[0]?.args)
     )
-    .toEqual({
-      roomId: "!harness-room:example.invalid",
-      filename: "pasted-fixture.txt",
-      mimeType: "text/plain",
-      caption: "caption from staging",
-      byteCount: "paste fixture bytes".length
-    });
-  await expect.poll(() => invocationCount(page, "clear_upload_staging")).toBeGreaterThanOrEqual(1);
+    .toEqual({ target: { kind: "main", room_id: "!harness-room:example.invalid" } });
+  await expect(page.getByRole("dialog", { name: "Upload attachments" })).toHaveCount(0);
 });
 
 test("room media gallery opens a viewer from Rust-owned gallery projection", async ({
@@ -4324,87 +4263,9 @@ test("room media gallery opens a viewer from Rust-owned gallery projection", asy
   await expect(viewer).toHaveCount(0);
 });
 
-test("image compression setting and dialog send selected Rust-owned variant metadata", async ({
-  page
-}) => {
+test("image variants are prepared and selected before the send action", async ({ page }) => {
   await gotoReadyShell(page);
-  await page.evaluate(() => {
-    window.__harness.setCommandResponse("upload_media", () => window.__harness.currentSnapshot());
-    const snapshot = window.__harness.currentSnapshot();
-    window.__harness.setSnapshot({
-      ...snapshot,
-      state: {
-        ...snapshot.state,
-        domain: {
-          ...snapshot.state.domain,
-          settings: {
-            ...snapshot.state.domain.settings,
-            values: {
-              ...snapshot.state.domain.settings.values,
-              media: {
-                ...snapshot.state.domain.settings.values.media,
-                image_upload_compression: "never"
-              }
-            }
-          }
-        }
-      }
-    });
-    window.__harness.pushStateChanged();
-    window.__harness.clearInvocations();
-  });
-
-  await page.getByRole("button", { name: "User settings" }).click();
-  await page.getByRole("group", { name: "Compress images" }).getByRole("button", { name: "Ask" }).click();
-  await expect.poll(() => invocationCount(page, "update_settings")).toBeGreaterThanOrEqual(1);
-  await expect
-    .poll(async () =>
-      page.evaluate(() => window.__harness.invocationsOf("update_settings")[0]?.args)
-    )
-    .toEqual({
-      patch: {
-        media: {
-          image_upload_compression: "ask",
-          image_upload_compression_policy: {
-            threshold_bytes: 1048576,
-            threshold_long_edge: 2560,
-            target_long_edge: 2048,
-            quality_percent: 82
-          }
-        }
-      }
-    });
-
-  await page.evaluate(() => {
-    const snapshot = window.__harness.currentSnapshot();
-    window.__harness.setSnapshot({
-      ...snapshot,
-      state: {
-        ...snapshot.state,
-        domain: {
-          ...snapshot.state.domain,
-          settings: {
-            ...snapshot.state.domain.settings,
-            values: {
-              ...snapshot.state.domain.settings.values,
-              media: {
-                ...snapshot.state.domain.settings.values.media,
-                image_upload_compression: "ask",
-                image_upload_compression_policy: {
-                  threshold_bytes: 1,
-                  threshold_long_edge: 1,
-                  target_long_edge: 1,
-                  quality_percent: 82
-                }
-              }
-            }
-          }
-        }
-      }
-    });
-    window.__harness.pushStateChanged();
-    window.__harness.clearInvocations();
-  });
+  await page.evaluate(() => window.__harness.clearInvocations());
 
   const fixture = await canvasPngBuffer(page, 4, 2);
   await attachFile(page, {
@@ -4412,191 +4273,38 @@ test("image compression setting and dialog send selected Rust-owned variant meta
     mimeType: "image/png",
     buffer: fixture
   });
-  await expect(page.getByRole("dialog", { name: "Upload attachments" })).toBeVisible();
-  await page.getByRole("button", { name: "Compressed" }).click();
-  await expect
-    .poll(() => invocationCount(page, "update_staged_upload_compression"))
-    .toBeGreaterThanOrEqual(1);
-  await expect(page.getByRole("button", { name: "Compressed" })).toHaveAttribute(
-    "aria-pressed",
-    "true"
-  );
-  await clickComposerSend(page);
-  await expect(page.getByRole("dialog", { name: "Compress image" })).toHaveCount(0);
 
-  await expect.poll(() => invocationCount(page, "upload_media")).toBeGreaterThanOrEqual(1);
+  const dialog = page.getByRole("dialog", { name: "Upload attachments" });
+  await expect(dialog).toBeVisible();
+  await expect.poll(() => invocationCount(page, "stage_upload_bytes")).toBe(1);
+  await expect(dialog.getByRole("button", { name: /Original/ })).toBeVisible();
+  const webpVariant = dialog.getByRole("button", { name: /WEBP/ });
+  await expect(webpVariant).toContainText("image/webp");
+  await expect(webpVariant).toContainText("50% smaller");
+  await expect.poll(() => invocationCount(page, "prepared_upload_preview")).toBeGreaterThanOrEqual(1);
+
+  await dialog.getByRole("button", { name: /Original/ }).click();
+  await expect.poll(() => invocationCount(page, "select_staged_upload_variant")).toBe(1);
+  await webpVariant.click();
+  await expect.poll(() => invocationCount(page, "select_staged_upload_variant")).toBe(2);
+  await expect(webpVariant).toHaveAttribute("aria-pressed", "true");
   await expect
     .poll(async () =>
-      page.evaluate(() => {
-        const args = window.__harness.invocationsOf("upload_media")[0]?.args;
-        return args
-          ? {
-              filename: args.filename,
-              mimeType: args.mimeType,
-              byteCount: Array.isArray(args.bytes) ? args.bytes.length : -1,
-              imageDimensions: args.imageDimensions,
-              selectedVariant: args.imageCompression?.selected_variant,
-              selected: args.imageCompression?.selected,
-              metadataStripped: args.imageCompression?.metadata_stripped,
-              thumbnailRefreshed: args.imageCompression?.thumbnail_refreshed,
-              thumbnail: args.thumbnail
-                ? {
-                    width: args.thumbnail.width,
-                    height: args.thumbnail.height,
-                    mimeType: args.thumbnail.mime_type,
-                    byteCount: Array.isArray(args.thumbnail.bytes)
-                      ? args.thumbnail.bytes.length
-                      : -1
-                  }
-                : null
-            }
-          : null;
-      })
+      page.evaluate(() => window.__harness.invocationsOf("select_staged_upload_variant").at(-1)?.args)
     )
     .toMatchObject({
-      filename: "screen.jpg",
-      mimeType: "image/jpeg",
-      imageDimensions: { width: 1, height: 1 },
-      selectedVariant: "Compressed",
-      selected: {
-        mime_type: "image/jpeg",
-        dimensions: { width: 1, height: 1 }
-      },
-      metadataStripped: true,
-      thumbnailRefreshed: true,
-      thumbnail: {
-        width: 1,
-        height: 1,
-        mimeType: "image/jpeg"
-      }
+      target: { kind: "main", room_id: "!harness-room:example.invalid" },
+      variantId: "webp-2048"
     });
-  await expect
-    .poll(async () =>
-      page.evaluate(() => {
-        const args = window.__harness.invocationsOf("upload_media")[0]?.args;
-        return args?.imageCompression?.selected?.byte_count === args?.bytes?.length;
-      })
-    )
-    .toBe(true);
-  await expect.poll(() => invocationCount(page, "clear_upload_staging")).toBeGreaterThanOrEqual(1);
-  await expect(page.getByRole("dialog", { name: "Upload attachments" })).toHaveCount(0);
 
-  await page.evaluate(() => {
-    const snapshot = window.__harness.currentSnapshot();
-    window.__harness.setSnapshot({
-      ...snapshot,
-      state: {
-        ...snapshot.state,
-        domain: {
-          ...snapshot.state.domain,
-          settings: {
-            ...snapshot.state.domain.settings,
-            values: {
-              ...snapshot.state.domain.settings.values,
-              media: {
-                ...snapshot.state.domain.settings.values.media,
-                image_upload_compression: "always",
-                image_upload_compression_policy: {
-                  threshold_bytes: 1,
-                  threshold_long_edge: 1,
-                  target_long_edge: 1,
-                  quality_percent: 82
-                }
-              }
-            }
-          }
-        }
-      }
-    });
-    window.__harness.pushStateChanged();
-    window.__harness.clearInvocations();
-  });
-  await expect(
-    page
-      .getByRole("group", { name: t("settings.compressImages") })
-      .getByRole("button", { name: t("settings.compressImagesAlways") })
-  ).toHaveAttribute("aria-pressed", "true");
-  await attachFile(page, {
-    name: "auto.png",
-    mimeType: "image/png",
-    buffer: fixture
-  });
-  await clickComposerSend(page);
-  await expect(page.getByRole("dialog", { name: "Compress image" })).toHaveCount(0);
-  await expect.poll(() => invocationCount(page, "upload_media")).toBeGreaterThanOrEqual(1);
-  await expect
-    .poll(async () =>
-      page.evaluate(
-        () => window.__harness.invocationsOf("upload_media")[0]?.args?.imageCompression?.selected_variant
-      )
-    )
-    .toBe("Compressed");
-  await expect.poll(() => invocationCount(page, "clear_upload_staging")).toBeGreaterThanOrEqual(1);
-  await expect(page.getByRole("dialog", { name: "Upload attachments" })).toHaveCount(0);
-
-  await page.evaluate(() => {
-    const snapshot = window.__harness.currentSnapshot();
-    window.__harness.setSnapshot({
-      ...snapshot,
-      state: {
-        ...snapshot.state,
-        domain: {
-          ...snapshot.state.domain,
-          settings: {
-            ...snapshot.state.domain.settings,
-            values: {
-              ...snapshot.state.domain.settings.values,
-              media: {
-                ...snapshot.state.domain.settings.values.media,
-                image_upload_compression: "ask",
-                image_upload_compression_policy: {
-                  threshold_bytes: 10_000_000,
-                  threshold_long_edge: 5000,
-                  target_long_edge: 2048,
-                  quality_percent: 82
-                }
-              }
-            }
-          }
-        }
-      }
-    });
-    window.__harness.pushStateChanged();
-    window.__harness.clearInvocations();
-  });
-  await expect(
-    page
-      .getByRole("group", { name: t("settings.compressImages") })
-      .getByRole("button", { name: t("settings.compressImagesAsk") })
-  ).toHaveAttribute("aria-pressed", "true");
-  await attachFile(page, {
-    name: "small.png",
-    mimeType: "image/png",
-    buffer: fixture
-  });
-  await clickComposerSend(page);
-  await expect(page.getByRole("dialog", { name: "Compress image" })).toHaveCount(0);
-  await expect.poll(() => invocationCount(page, "upload_media")).toBeGreaterThanOrEqual(1);
-  await expect
-    .poll(async () =>
-      page.evaluate(() => {
-        const args = window.__harness.invocationsOf("upload_media")[0]?.args;
-        return args
-          ? {
-              selectedVariant: args.imageCompression?.selected_variant,
-              skippedSmallImage: args.imageCompression?.skipped_small_image,
-              metadataStripped: args.imageCompression?.metadata_stripped,
-              imageDimensions: args.imageDimensions
-            }
-          : null;
-      })
-    )
-    .toEqual({
-      selectedVariant: "Original",
-      skippedSmallImage: true,
-      metadataStripped: false,
-      imageDimensions: { width: 4, height: 2 }
-    });
+  const selectionCountBeforeSend = await invocationCount(page, "select_staged_upload_variant");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect.poll(() => invocationCount(page, "send_prepared_uploads")).toBe(1);
+  await expect.poll(() => invocationCount(page, "select_staged_upload_variant")).toBe(
+    selectionCountBeforeSend
+  );
+  expect(await invocationCount(page, "upload_media")).toBe(0);
+  await expect(dialog).toHaveCount(0);
 });
 
 test("live signals render from Rust state and dispatch read/typing commands", async ({
@@ -5239,6 +4947,7 @@ test("thread composer drafts and sends through thread reply commands only", asyn
   await page.evaluate(() => window.__harness.clearInvocations());
 
   const threadComposer = page.getByRole("textbox", { name: t("timeline.threadComposer") });
+  const contextPanel = page.locator('aside[aria-label="Context panel"]');
   await expect(threadComposer).toBeVisible();
   const threadReplyBody = "Thread composer reply body";
   await threadComposer.fill(threadReplyBody);
@@ -5274,13 +4983,56 @@ test("thread composer drafts and sends through thread reply commands only", asyn
     .poll(async () =>
       page.evaluate(() => window.__harness.invocationsOf("send_thread_reply")[0]?.args)
     )
-    .toEqual({
+    .toMatchObject({
       roomId: "!harness-room:example.invalid",
       rootEventId: "$seed-event:example.invalid",
-      body: threadReplyBody
+      body: threadReplyBody,
+      mentions: { targets: [] }
     });
   expect(await invocationCount(page, "send_text")).toBe(0);
   expect(await invocationCount(page, "send_reply")).toBe(0);
+
+  await page.evaluate(() => window.__harness.clearInvocations());
+  await page.evaluate(() => {
+    const file = new File(["thread pdf bytes"], "thread-fixture.pdf", {
+      type: "application/pdf"
+    });
+    const data = new DataTransfer();
+    data.items.add(file);
+    const composer = document.querySelector('aside[aria-label="Context panel"] section.composer');
+    if (!composer) throw new Error("thread composer not found");
+    composer.dispatchEvent(
+      new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: data })
+    );
+  });
+
+  await expect.poll(() => invocationCount(page, "stage_upload_bytes")).toBe(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("stage_upload_bytes")[0]?.args)
+    )
+    .toMatchObject({
+      target: {
+        kind: "thread",
+        room_id: "!harness-room:example.invalid",
+        root_event_id: "$seed-event:example.invalid"
+      },
+      items: [{ filename: "thread-fixture.pdf", mimeType: "application/pdf" }]
+    });
+  await expect(page.getByText("thread-fixture.pdf", { exact: true })).toBeVisible();
+  await contextPanel.getByRole("button", { name: "Send", exact: true }).click();
+  await expect.poll(() => invocationCount(page, "send_prepared_uploads")).toBe(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("send_prepared_uploads")[0]?.args)
+    )
+    .toEqual({
+      target: {
+        kind: "thread",
+        room_id: "!harness-room:example.invalid",
+        root_event_id: "$seed-event:example.invalid"
+      }
+    });
 });
 
 test("submitting the composer in reply mode invokes send_reply, not send_text", async ({

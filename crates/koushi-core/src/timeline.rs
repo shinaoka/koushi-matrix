@@ -6905,7 +6905,8 @@ impl TimelineActor {
                     .as_ref()
                     .map(media_caption_content_from_draft),
             )
-            .mentions(caption_mentions);
+            .mentions(caption_mentions)
+            .reply(attachment_reply_for_key(&self.key));
 
         match room
             .send_queue()
@@ -10392,6 +10393,17 @@ fn reply_enforce_thread_for_key(key: &TimelineKey) -> EnforceThread {
         TimelineKind::Thread { .. } => EnforceThread::Threaded(ReplyWithinThread::No),
         TimelineKind::Room { .. } | TimelineKind::Focused { .. } => EnforceThread::MaybeThreaded,
     }
+}
+
+fn attachment_reply_for_key(key: &TimelineKey) -> Option<Reply> {
+    let TimelineKind::Thread { root_event_id, .. } = &key.kind else {
+        return None;
+    };
+    Some(Reply {
+        event_id: matrix_sdk::ruma::EventId::parse(root_event_id).ok()?,
+        enforce_thread: EnforceThread::Threaded(ReplyWithinThread::No),
+        add_mentions: AddMentions::No,
+    })
 }
 
 fn thread_root_from_original_json(original_json: &serde_json::Value) -> Option<String> {
@@ -19015,6 +19027,17 @@ mod tests {
             reply_enforce_thread_for_key(&thread_key()),
             EnforceThread::Threaded(ReplyWithinThread::No)
         );
+    }
+
+    #[test]
+    fn thread_media_uses_the_same_regular_thread_relation() {
+        let reply = attachment_reply_for_key(&thread_key()).expect("thread media relation");
+        assert_eq!(
+            reply.enforce_thread,
+            EnforceThread::Threaded(ReplyWithinThread::No)
+        );
+        assert_eq!(reply.event_id.as_str(), "$root:test");
+        assert!(attachment_reply_for_key(&room_key()).is_none());
     }
 
     #[tokio::test]

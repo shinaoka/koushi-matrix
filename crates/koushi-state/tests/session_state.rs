@@ -1643,6 +1643,7 @@ fn account_switch_request_enters_switching_state_and_clears_views() {
             root_event_id: "$root".to_owned(),
             is_subscribed: true,
             composer: Default::default(),
+            staged_uploads: Vec::new(),
         },
         thread_attention: ThreadAttentionState::Tracking {
             room_id: "room-a".to_owned(),
@@ -2141,6 +2142,7 @@ fn logout_clears_session_views_and_notifies_ui() {
             root_event_id: "$root".to_owned(),
             is_subscribed: true,
             composer: Default::default(),
+            staged_uploads: Vec::new(),
         },
         thread_attention: ThreadAttentionState::Tracking {
             room_id: "room-a".to_owned(),

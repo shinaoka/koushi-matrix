@@ -156,9 +156,10 @@ pub use timeline::{
     ComposerDraftStore, ComposerMode, ComposerState, ComposerSubmissionRecord,
     ComposerSubmissionRegistry, MAX_PERSISTED_COMPOSER_DRAFT_BYTES,
     MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT, MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT,
-    MediaGalleryStore, PendingComposerSendKind, ScheduledSendCapability, ScheduledSendHandle,
-    ScheduledSendItem, ScheduledSendStore, StagedUploadCompressionChoice, StagedUploadItem,
-    StagedUploadKind, TimelineMediaGalleryItem, TimelineMediaGalleryMedia,
+    MediaGalleryStore, MediaPreparationFailureKind, PendingComposerSendKind, PreparedUploadFormat,
+    PreparedUploadVariant, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem,
+    ScheduledSendStore, StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind,
+    StagedUploadPreparation, TimelineMediaGalleryItem, TimelineMediaGalleryMedia,
     TimelineMediaGallerySource, TimelineMediaGalleryThumbnail, TimelineMediaKind,
     TimelinePaneState, UploadStagingStore,
 };

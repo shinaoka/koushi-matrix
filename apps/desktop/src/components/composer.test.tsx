@@ -44,6 +44,74 @@ describe("Composer", () => {
     }
   ];
 
+  it("stages ordinary files dropped on every composer region in deterministic order", async () => {
+    const onAttachFiles = vi.fn(async (_files: File[]) => undefined);
+    const { container } = render(
+      <Composer
+        composerMode={{ kind: "plain" }}
+        isSending={false}
+        roomName="Direct room"
+        value=""
+        onAttachFiles={onAttachFiles}
+        onCancelReply={() => undefined}
+        onSend={() => undefined}
+        onValueChange={() => undefined}
+      />
+    );
+    const pdf = new File(["pdf"], "document.pdf", { type: "application/pdf" });
+    const archive = new File(["zip"], "archive.zip", { type: "application/zip" });
+    const dataTransfer = {
+      files: [pdf, archive],
+      items: [
+        { kind: "file", type: pdf.type },
+        { kind: "file", type: archive.type }
+      ],
+      types: ["Files"]
+    };
+    const targets = [
+      container.querySelector("textarea"),
+      container.querySelector(".composer-tools"),
+      container.querySelector(".composer-footer"),
+      container.querySelector(".composer")
+    ];
+
+    for (const target of targets) {
+      expect(target).not.toBeNull();
+      fireEvent.drop(target!, { dataTransfer });
+    }
+
+    await waitFor(() => expect(onAttachFiles).toHaveBeenCalledTimes(4));
+    for (const [files] of onAttachFiles.mock.calls) {
+      expect(files.map((file) => file.name)).toEqual(["document.pdf", "archive.zip"]);
+    }
+  });
+
+  it("ignores non-file drops on the composer surface", () => {
+    const onAttachFiles = vi.fn();
+    const { container } = render(
+      <Composer
+        composerMode={{ kind: "plain" }}
+        isSending={false}
+        roomName="Direct room"
+        value=""
+        onAttachFiles={onAttachFiles}
+        onCancelReply={() => undefined}
+        onSend={() => undefined}
+        onValueChange={() => undefined}
+      />
+    );
+
+    fireEvent.drop(container.querySelector(".composer")!, {
+      dataTransfer: {
+        files: [],
+        items: [{ kind: "string", type: "text/plain" }],
+        types: ["text/plain"]
+      }
+    });
+
+    expect(onAttachFiles).not.toHaveBeenCalled();
+  });
+
   it("keeps the live conversion DOM value and selection across parent rerenders", () => {
     const props = {
       composerMode: { kind: "plain" as const },
@@ -86,6 +154,52 @@ describe("Composer", () => {
 
     expect(textarea.value).toBe("日本語変換中");
     expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([3, 5]);
+  });
+
+  it("reuses the full composer surface for thread formatting, attachments, and key resolution", async () => {
+    const onAttachFiles = vi.fn(async (_files: File[]) => undefined);
+    const resolveComposerKeyAction = vi.fn(async () => "noop" as const);
+    const { container } = render(
+      <ThreadComposer
+        canEdit
+        draft="thread body"
+        draftKey="!room-a:$root-a"
+        isSending={false}
+        resolveComposerKeyAction={resolveComposerKeyAction}
+        onAttachFiles={onAttachFiles}
+        onDraftChange={vi.fn()}
+        onSend={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: /bold/i })).not.toBeNull();
+    expect(screen.getByRole("button", { name: /italic/i })).not.toBeNull();
+    expect(screen.getByRole("button", { name: /link/i })).not.toBeNull();
+    expect(screen.getByRole("button", { name: /list/i })).not.toBeNull();
+    expect(screen.getByRole("button", { name: /code/i })).not.toBeNull();
+
+    const file = new File(["pdf"], "thread.pdf", { type: "application/pdf" });
+    fireEvent.drop(container.querySelector(".composer")!, {
+      dataTransfer: {
+        files: [file],
+        items: [{ kind: "file", type: file.type }],
+        types: ["Files"]
+      }
+    });
+    await waitFor(() => expect(onAttachFiles).toHaveBeenCalledWith([file]));
+
+    fireEvent.keyDown(container.querySelector("textarea")!, {
+      key: "Enter",
+      code: "Enter",
+      keyCode: 13
+    });
+    await waitFor(() =>
+      expect(resolveComposerKeyAction).toHaveBeenCalledWith(
+        "thread",
+        expect.anything(),
+        expect.anything()
+      )
+    );
   });
 
   it("releases the old thread DOM when the room/root draft key switches", () => {

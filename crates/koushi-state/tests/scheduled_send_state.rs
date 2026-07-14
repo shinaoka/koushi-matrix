@@ -36,6 +36,57 @@ fn room(room_id: &str) -> RoomSummary {
     }
 }
 
+#[test]
+fn scheduled_thread_send_clears_only_the_captured_thread_draft() {
+    let mut state = selected_room_state("room-a");
+    state
+        .composer_drafts
+        .set_room_draft("room-a".to_owned(), "room draft".to_owned());
+    state.composer_drafts.set_thread_draft(
+        "room-a".to_owned(),
+        "$root-a".to_owned(),
+        "thread draft".to_owned(),
+    );
+    state.composer_drafts.set_thread_draft(
+        "room-a".to_owned(),
+        "$root-b".to_owned(),
+        "other thread draft".to_owned(),
+    );
+
+    let mut item = scheduled_item("sched-thread", "room-a", 1_900_000_000_000);
+    item.thread_root_event_id = Some("$root-a".to_owned());
+    reduce(&mut state, AppAction::ScheduledSendCreated { item });
+
+    assert_eq!(
+        state
+            .composer_drafts
+            .rooms
+            .get("room-a")
+            .map(String::as_str),
+        Some("room draft")
+    );
+    assert!(
+        state
+            .composer_drafts
+            .composer_for_thread("room-a", "$root-a")
+            .draft
+            .is_empty()
+    );
+    assert_eq!(
+        state
+            .composer_drafts
+            .composer_for_thread("room-a", "$root-b")
+            .draft,
+        "other thread draft"
+    );
+    assert_eq!(
+        state.scheduled_sends.items["sched-thread"]
+            .thread_root_event_id
+            .as_deref(),
+        Some("$root-a")
+    );
+}
+
 fn selected_room_state(room_id: &str) -> AppState {
     let mut state = AppState {
         session: SessionState::Ready(session_info()),
@@ -56,6 +107,7 @@ fn scheduled_item(id: &str, room_id: &str, send_at_ms: u64) -> ScheduledSendItem
     ScheduledSendItem {
         scheduled_id: id.to_owned(),
         room_id: room_id.to_owned(),
+        thread_root_event_id: None,
         body: "scheduled body".to_owned(),
         send_at_ms,
         handle: ScheduledSendHandle::Local,
@@ -237,6 +289,7 @@ fn scheduled_send_debug_redacts_body_room_and_server_handle() {
     let item = ScheduledSendItem {
         scheduled_id: "sched-1".to_owned(),
         room_id: "!private-room:example.test".to_owned(),
+        thread_root_event_id: None,
         body: "private future message".to_owned(),
         send_at_ms: 1_900_000_000_000,
         handle: ScheduledSendHandle::Server {

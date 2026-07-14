@@ -792,22 +792,31 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         | AppAction::ScheduledSendDispatched { scheduled_id } => {
             timeline::handle_scheduled_send_cancelled_or_dispatched(state, scheduled_id)
         }
-        AppAction::UploadStagingChanged { room_id, items } => {
-            timeline::handle_upload_staging_changed(state, room_id, items)
+        AppAction::UploadStagingChanged { target, items } => {
+            timeline::handle_upload_staging_changed(state, target, items)
         }
-        AppAction::UploadStagingCaptionChanged { staged_id, caption } => {
-            timeline::handle_upload_staging_caption_changed(state, staged_id, caption)
-        }
+        AppAction::UploadStagingCaptionChanged {
+            target,
+            staged_id,
+            caption,
+        } => timeline::handle_upload_staging_caption_changed(state, target, staged_id, caption),
         AppAction::UploadStagingCompressionChanged {
+            target,
             staged_id,
             compression_choice,
         } => timeline::handle_upload_staging_compression_changed(
             state,
+            target,
             staged_id,
             compression_choice,
         ),
-        AppAction::UploadStagingCleared { room_id } => {
-            timeline::handle_upload_staging_cleared(state, room_id)
+        AppAction::UploadStagingVariantSelected {
+            target,
+            staged_id,
+            variant_id,
+        } => timeline::handle_upload_staging_variant_selected(state, target, staged_id, variant_id),
+        AppAction::UploadStagingCleared { target } => {
+            timeline::handle_upload_staging_cleared(state, target)
         }
         AppAction::MediaGalleryUpdated { room_id, items } => {
             timeline::handle_media_gallery_updated(state, room_id, items)

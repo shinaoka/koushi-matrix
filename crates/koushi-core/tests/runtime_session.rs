@@ -304,11 +304,14 @@ async fn assert_upload_staging_command_routes_for_recovery_session(target: Recov
         kind: StagedUploadKind::File,
         caption: None,
         compression_choice: StagedUploadCompressionChoice::NotApplicable,
+        preparation: Default::default(),
     };
     connection
         .command(CoreCommand::App(AppCommand::SetUploadStaging {
             request_id,
-            room_id: room_id.to_owned(),
+            target: koushi_state::ComposerTarget::Main {
+                room_id: room_id.to_owned(),
+            },
             items: vec![staged_item],
         }))
         .await

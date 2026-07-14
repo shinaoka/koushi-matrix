@@ -211,6 +211,7 @@ pub async fn logout(
 ) -> Result<FrontendDesktopSnapshot, String> {
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(state.inner(), build_logout_command(request_id)).await?;
+    state.media_preparation.lock().await.clear();
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
 }

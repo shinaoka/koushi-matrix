@@ -1,5 +1,6 @@
 import {
   type ChangeEvent,
+  type DragEvent,
   type FormEvent,
   type KeyboardEvent,
   type MouseEvent,
@@ -24,6 +25,7 @@ import {
 } from "lucide-react";
 import { t } from "../i18n/messages";
 import type {
+  ComposerSurface,
   MentionIntent,
   ResolveComposerKeyAction
 } from "../domain/types";
@@ -59,31 +61,46 @@ import {
   type ComposerModeProp
 } from "../app/uiShared";
 import { EntityAvatar } from "./Shell";
+import {
+  attachmentTransferHasFiles,
+  filesFromAttachmentTransfer,
+  ingestAttachmentFiles
+} from "../domain/attachmentIngestion";
 
 export const Composer = memo(function Composer({
+  surface = "main",
+  canEdit = true,
   composerMode,
   hasStagedUploads = false,
+  stagedUploadsReady = true,
   isSending,
   mentionCandidates = [],
   mentionIntent = EMPTY_MENTION_INTENT,
   resolveComposerKeyAction = ignoreComposerKeyAction,
   draftKey = "default",
+  ariaLabel = t("composer.messageComposer"),
+  placeholder,
   roomName,
   value,
   onCancelReply,
   onAttachFiles = async () => undefined,
   onMentionIntentChange = () => undefined,
-  onScheduleSend = async () => undefined,
+  onScheduleSend,
   onSend,
   onValueChange
 }: {
+  surface?: ComposerSurface;
+  canEdit?: boolean;
   composerMode: ComposerModeProp;
   hasStagedUploads?: boolean;
+  stagedUploadsReady?: boolean;
   isSending: boolean;
   mentionCandidates?: MentionCandidate[];
   mentionIntent?: MentionIntent;
   resolveComposerKeyAction?: ResolveComposerKeyAction;
   draftKey?: string;
+  ariaLabel?: string;
+  placeholder?: string;
   roomName: string;
   value: string;
   onCancelReply: () => void;
@@ -102,6 +119,7 @@ export const Composer = memo(function Composer({
   const [localValue, setLocalValue] = useState(value);
   const [activeMentionIndex, setActiveMentionIndex] = useState(0);
   const [dismissedMentionKey, setDismissedMentionKey] = useState<string | null>(null);
+  const [fileDragActive, setFileDragActive] = useState(false);
   const {
     textareaRef,
     lifecycle: imeComposition,
@@ -255,25 +273,53 @@ export const Composer = memo(function Composer({
   async function onAttachFileChange(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.currentTarget.files ?? []);
     event.currentTarget.value = "";
-    if (files.length === 0) {
-      return;
-    }
     try {
-      await onAttachFiles(files);
+      await ingestAttachmentFiles(files, onAttachFiles);
     } catch {
       // Upload failure is reported through the Rust-owned operation/event path.
     }
   }
 
   async function attachDroppedOrPastedFiles(files: File[]) {
-    if (files.length === 0) {
+    if (!canEdit) {
       return;
     }
     try {
-      await onAttachFiles(files);
+      await ingestAttachmentFiles(files, onAttachFiles);
     } catch {
       // Upload failure is reported through the Rust-owned operation/event path.
     }
+  }
+
+  function onAttachmentDragEnter(event: DragEvent<HTMLElement>) {
+    if (!canEdit || !attachmentTransferHasFiles(event.dataTransfer)) {
+      return;
+    }
+    event.preventDefault();
+    setFileDragActive(true);
+  }
+
+  function onAttachmentDragOver(event: DragEvent<HTMLElement>) {
+    if (!canEdit || !attachmentTransferHasFiles(event.dataTransfer)) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setFileDragActive(true);
+  }
+
+  function onAttachmentDragLeave(event: DragEvent<HTMLElement>) {
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) {
+      return;
+    }
+    setFileDragActive(false);
+  }
+
+  function onAttachmentDrop(event: DragEvent<HTMLElement>) {
+    event.preventDefault();
+    setFileDragActive(false);
+    void attachDroppedOrPastedFiles(filesFromAttachmentTransfer(event.dataTransfer));
   }
 
   function openScheduleForm() {
@@ -287,7 +333,7 @@ export const Composer = memo(function Composer({
     if (sendAtMs === null || !localValue.trim() || hasStagedUploads || isSending) {
       return;
     }
-    await onScheduleSend(sendAtMs, localValue);
+    await onScheduleSend?.(sendAtMs, localValue);
     setScheduleOpen(false);
   }
 
@@ -353,17 +399,21 @@ export const Composer = memo(function Composer({
     });
     const resolverOptions = {
       autocomplete_open: autocompleteOpen,
-      send_enabled: !isSending && (intent.value.trim().length > 0 || hasStagedUploads)
+      send_enabled:
+        canEdit &&
+        !isSending &&
+        (intent.value.trim().length > 0 || hasStagedUploads) &&
+        (!hasStagedUploads || stagedUploadsReady)
     };
     if (shouldLetNativeImeHandleComposerKeyEvent(keyEvent)) {
-      void resolveComposerKeyAction("main", keyEvent, resolverOptions)
+      void resolveComposerKeyAction(surface, keyEvent, resolverOptions)
         .catch(() => undefined)
         .finally(intent.releaseResolution);
       return;
     }
     event.preventDefault();
 
-    void resolveComposerKeyAction("main", keyEvent, resolverOptions)
+    void resolveComposerKeyAction(surface, keyEvent, resolverOptions)
       .then((action) => {
         if (!canApplyResolvedComposerAction(intent, action)) {
           return;
@@ -402,7 +452,18 @@ export const Composer = memo(function Composer({
   }
 
   return (
-    <section className="composer" aria-label={t("composer.messageComposer")}>
+    <section
+      className={`composer${fileDragActive ? " is-file-drag-over" : ""}`}
+      aria-label={ariaLabel}
+      data-file-drag-over={fileDragActive ? "true" : "false"}
+      onDragEnter={onAttachmentDragEnter}
+      onDragOver={onAttachmentDragOver}
+      onDragLeave={onAttachmentDragLeave}
+      onDrop={onAttachmentDrop}
+    >
+      <div className="composer-drop-overlay" aria-hidden={!fileDragActive}>
+        {t("composer.dropFiles")}
+      </div>
       {composerMode.kind === "reply" ? (
         <div className="composer-reply-banner">
           <span className="composer-reply-label">{t("composer.replying")}</span>
@@ -499,14 +560,15 @@ export const Composer = memo(function Composer({
       ) : null}
       <textarea
         ref={textareaRef}
-        aria-label={t("composer.messageComposer")}
+        aria-label={ariaLabel}
+        disabled={!canEdit}
         defaultValue={localValue}
-        placeholder={t("composer.placeholder", { roomName })}
+        placeholder={placeholder ?? t("composer.placeholder", { roomName })}
         onKeyDown={onComposerKeyDown}
         onCompositionStart={onCompositionStart}
         onCompositionEnd={onCompositionEnd}
         onPaste={(event) => {
-          const files = Array.from(event.clipboardData.files);
+          const files = filesFromAttachmentTransfer(event.clipboardData);
           if (files.length > 0) {
             event.preventDefault();
             void attachDroppedOrPastedFiles(files);
@@ -514,19 +576,7 @@ export const Composer = memo(function Composer({
         }}
         onChange={(event) => updateLocalValue(event.target.value)}
       />
-      <div
-        className="composer-footer"
-        onDragOver={(event) => {
-          event.preventDefault();
-        }}
-        onDrop={(event) => {
-          const files = Array.from(event.dataTransfer.files);
-          if (files.length > 0) {
-            event.preventDefault();
-            void attachDroppedOrPastedFiles(files);
-          }
-        }}
-      >
+      <div className="composer-footer">
         <div>
           <input
             ref={fileInputRef}
@@ -542,6 +592,7 @@ export const Composer = memo(function Composer({
             className="icon-button"
             type="button"
             aria-label={t("composer.attachFile")}
+            disabled={!canEdit}
             onClick={() => fileInputRef.current?.click()}
           >
             <Paperclip size={ICON_SIZE.control} />
@@ -575,27 +626,34 @@ export const Composer = memo(function Composer({
               />
             ) : null}
           </span>
-          <button
-            className="icon-button"
-            type="button"
-            aria-label={t("scheduled.sendLater")}
-            disabled={isSending || !localValue.trim() || hasStagedUploads}
-            onClick={openScheduleForm}
-          >
-            <Clock3 size={ICON_SIZE.control} />
-          </button>
+          {onScheduleSend ? (
+            <button
+              className="icon-button"
+              type="button"
+              aria-label={t("scheduled.sendLater")}
+              disabled={!canEdit || isSending || !localValue.trim() || hasStagedUploads}
+              onClick={openScheduleForm}
+            >
+              <Clock3 size={ICON_SIZE.control} />
+            </button>
+          ) : null}
         </div>
         <button
-          className={`send-button ${(localValue.trim() || hasStagedUploads) && !isSending ? "ready" : ""} ${isSending ? "is-sending" : ""}`}
+          className={`send-button ${(localValue.trim() || hasStagedUploads) && (!hasStagedUploads || stagedUploadsReady) && !isSending ? "ready" : ""} ${isSending ? "is-sending" : ""}`}
           type="button"
           aria-label={isSending ? t("action.sending") : t("action.send")}
-          disabled={isSending || (!localValue.trim() && !hasStagedUploads)}
+          disabled={
+            !canEdit ||
+            isSending ||
+            (!localValue.trim() && !hasStagedUploads) ||
+            (hasStagedUploads && !stagedUploadsReady)
+          }
           onClick={() => onSend(localValue)}
         >
           <Send size={ICON_SIZE.input} />
         </button>
       </div>
-      {scheduleOpen ? (
+      {scheduleOpen && onScheduleSend ? (
         <form className="scheduled-send-form" onSubmit={submitSchedule}>
           <label className="scheduled-send-field">
             <span>{t("scheduled.timeInput")}</span>
@@ -721,152 +779,58 @@ function ThreadComposer({
   canEdit,
   draft,
   draftKey,
+  hasStagedUploads = false,
+  stagedUploadsReady = true,
   isSending,
+  mentionCandidates = [],
+  mentionIntent = EMPTY_MENTION_INTENT,
+  roomName = t("panel.thread"),
   resolveComposerKeyAction,
+  onAttachFiles,
   onDraftChange,
+  onMentionIntentChange,
+  onScheduleSend,
   onSend
 }: {
   canEdit: boolean;
   draft: string;
   draftKey: string;
+  hasStagedUploads?: boolean;
+  stagedUploadsReady?: boolean;
   isSending: boolean;
+  mentionCandidates?: MentionCandidate[];
+  mentionIntent?: MentionIntent;
+  roomName?: string;
   resolveComposerKeyAction: ResolveComposerKeyAction;
+  onAttachFiles?: (files: File[]) => void | Promise<void>;
   onDraftChange: (draft: string) => void;
+  onMentionIntentChange?: (intent: MentionIntent) => void;
+  onScheduleSend?: (sendAtMs: number, body: string) => void | Promise<void>;
   onSend: (value: string) => void | Promise<void>;
 }) {
-  const [visibleDraft, setVisibleDraft] = useState(draft);
-  const canSend = canEdit && !isSending && visibleDraft.trim().length > 0;
-  const macKillRingRef = useRef<string>("");
-  const {
-    textareaRef,
-    lifecycle: imeComposition,
-    onCompositionStart,
-    onCompositionEnd
-  } = useCompositionOwnedTextarea(draft, draftKey);
-  const captureKeyIntent = useComposerKeyIntentSnapshot(imeComposition);
-
-  useEffect(() => {
-    if (!imeComposition.active()) {
-      setVisibleDraft(draft);
-    }
-  }, [draft, draftKey, imeComposition]);
-
-  function updateVisibleDraft(value: string) {
-    setVisibleDraft(value);
-    onDraftChange(value);
-  }
-
-  function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (composerImeShouldHandleKeyEvent(event, imeComposition.active())) {
-      return;
-    }
-    // macOS native Emacs text-editing bindings (Ctrl+F/B/P/N/K/Y).
-    // Must not fire during IME composition.
-    if (IS_MAC_PLATFORM && !event.nativeEvent.isComposing && !imeComposition.active()) {
-      const emacsAction = macEmacsActionFromEvent(event);
-      if (emacsAction !== null) {
-        event.preventDefault();
-        const ta = event.currentTarget;
-        const effect = applyMacEmacsAction(
-          emacsAction,
-          event.currentTarget.value,
-          ta.selectionStart,
-          ta.selectionEnd,
-          macKillRingRef.current
-        );
-        if (effect !== null) {
-          if (effect.newKillRing !== undefined) {
-            macKillRingRef.current = effect.newKillRing;
-          }
-          if (effect.newValue !== undefined) {
-            updateVisibleDraft(effect.newValue);
-          }
-          const pos = effect.newSelectionPos;
-          requestAnimationFrame(() => ta.setSelectionRange(pos, pos));
-        }
-        return;
-      }
-    }
-    if (!shouldResolveComposerKeyEvent(event)) {
-      return;
-    }
-
-    const textarea = event.currentTarget;
-    const intent = captureKeyIntent(textarea);
-    if (intent === null) {
-      event.preventDefault();
-      return;
-    }
-    const keyEvent = composerKeyEventFromDom(event, {
-      start: intent.selectionStart,
-      end: intent.selectionEnd
-    });
-    const resolverOptions = {
-      autocomplete_open: false,
-      send_enabled: canEdit && !isSending && intent.value.trim().length > 0
-    };
-    if (shouldLetNativeImeHandleComposerKeyEvent(keyEvent)) {
-      void resolveComposerKeyAction("thread", keyEvent, resolverOptions)
-        .catch(() => undefined)
-        .finally(intent.releaseResolution);
-      return;
-    }
-    event.preventDefault();
-
-    void resolveComposerKeyAction("thread", keyEvent, resolverOptions)
-      .then((action) => {
-        if (!canApplyResolvedComposerAction(intent, action)) {
-          return;
-        }
-        if (action === "send") {
-          void onSend(intent.value);
-          return;
-        }
-        if (action === "insertNewline") {
-          const nextDraft = insertNewlineAtSelection(
-            intent.value,
-            intent.selectionStart,
-            intent.selectionEnd
-          );
-          updateVisibleDraft(nextDraft.value);
-          requestAnimationFrame(() => {
-            textarea.selectionStart = nextDraft.cursor;
-            textarea.selectionEnd = nextDraft.cursor;
-          });
-        }
-      })
-      .catch(() => undefined)
-      .finally(intent.releaseResolution);
-  }
-
   return (
-    <section className="thread-composer" aria-label={t("timeline.threadComposer")}>
-      <textarea
-        aria-label={t("timeline.threadComposer")}
-        disabled={!canEdit}
-        placeholder={t("timeline.threadPlaceholder")}
-        ref={textareaRef}
-        defaultValue={draft}
-        onChange={(event) => updateVisibleDraft(event.target.value)}
-        onKeyDown={onComposerKeyDown}
-        onCompositionStart={onCompositionStart}
-        onCompositionEnd={onCompositionEnd}
-      />
-      <div className="thread-composer-footer">
-        <button
-          className={`send-button ${canSend ? "ready" : ""} ${isSending ? "is-sending" : ""}`}
-          type="button"
-          aria-label={isSending ? t("action.sending") : t("action.send")}
-          disabled={!canSend}
-          onClick={() => {
-            const value = textareaRef.current?.value ?? visibleDraft;
-            void onSend(value);
-          }}
-        >
-          <Send size={ICON_SIZE.input} />
-        </button>
-      </div>
-    </section>
+    <Composer
+      surface="thread"
+      canEdit={canEdit}
+      composerMode={{ kind: "plain" }}
+      hasStagedUploads={hasStagedUploads}
+      stagedUploadsReady={stagedUploadsReady}
+      isSending={isSending}
+      mentionCandidates={mentionCandidates}
+      mentionIntent={mentionIntent}
+      resolveComposerKeyAction={resolveComposerKeyAction}
+      draftKey={draftKey}
+      ariaLabel={t("timeline.threadComposer")}
+      placeholder={t("timeline.threadPlaceholder")}
+      roomName={roomName}
+      value={draft}
+      onAttachFiles={onAttachFiles}
+      onCancelReply={() => undefined}
+      onMentionIntentChange={onMentionIntentChange}
+      onScheduleSend={onScheduleSend}
+      onSend={onSend}
+      onValueChange={onDraftChange}
+    />
   );
 }
 

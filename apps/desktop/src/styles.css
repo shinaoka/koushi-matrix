@@ -3958,10 +3958,35 @@ mark {
 }
 
 .composer {
+  position: relative;
   margin: 0 20px 18px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
+}
+
+.composer-drop-overlay {
+  position: absolute;
+  z-index: 4;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border: 2px dashed transparent;
+  border-radius: 8px;
+  color: transparent;
+  background: transparent;
+  font-weight: 600;
+  pointer-events: none;
+  transition:
+    color 120ms ease,
+    background 120ms ease,
+    border-color 120ms ease;
+}
+
+.composer.is-file-drag-over .composer-drop-overlay {
+  border-color: var(--brand);
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 88%, var(--brand));
 }
 
 .composer-tools {
@@ -4437,6 +4462,43 @@ mark {
   color: var(--brand-contrast);
   border-color: var(--brand);
   background: var(--brand);
+}
+
+.upload-staging-preview,
+.upload-staging-preview-placeholder {
+  width: 100%;
+  max-height: 240px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  object-fit: contain;
+}
+
+.upload-staging-preview-placeholder {
+  min-height: 96px;
+}
+
+.upload-variant-button {
+  display: grid;
+  gap: 2px;
+  min-width: 150px;
+  height: auto;
+  padding-block: 7px;
+  text-align: start;
+}
+
+.upload-variant-button span,
+.upload-staging-status {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.upload-staging-status {
+  margin: 0;
+}
+
+.upload-staging-status.is-error {
+  color: var(--danger);
 }
 
 .room-media-gallery {

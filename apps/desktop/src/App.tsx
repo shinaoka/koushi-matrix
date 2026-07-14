@@ -135,12 +135,11 @@ import type {
   AttachmentFilter,
   AttachmentScope,
   AttachmentSort,
+  ComposerTarget,
   CreateRoomRequest,
   DesktopSnapshot,
   DirectoryRoomSummary,
   FilesViewScope,
-  ImageUploadCompressionMode,
-  ImageUploadCompressionPolicy,
   InviteScopeSelection,
   InviteWorkflowState,
   MentionIntent,
@@ -151,11 +150,9 @@ import type {
   SavedSessionInfo,
   SearchScopeKind,
   SettingsPatch,
-  StagedUploadCompressionChoice,
-  StagedUploadItem,
-  TimelineScrollAnchor,
-  UploadStagingRequestItem
+  TimelineScrollAnchor
 } from "./domain/types";
+import { stageAttachmentFiles } from "./domain/attachmentIngestion";
 import { SNAPSHOT_SCHEMA_VERSION } from "./domain/types";
 import {
   type DisplayDensity,
@@ -180,22 +177,13 @@ import { openExternalHttpUrl } from "./domain/externalLinks";
 
 import {
   EMPTY_MENTION_INTENT,
-  captionBody,
   composerModeProp,
   pruneMentionIntentForDraft,
   serverNameFromAlias,
   serverNameFromRoomId,
   type ActiveContextMenu,
   type ContextMenuTarget,
-  type ImageCompressionDialogState,
-  type ImageCompressionPlan,
-  type ImageCompressionVariant,
-  type ImageUploadDimensionsPayload,
-  type ImageUploadVariantInfoPayload,
-  type ImageUploadVariantKindPayload,
-  type PreparedMediaUpload,
   type PrimaryView,
-  type UploadMediaThumbnailPayload
 } from "./app/uiShared";
 import {
   ActivityPane,
@@ -208,7 +196,6 @@ import {
   CreateEntityDialog,
   type CreateRoomDialogOptions,
   DiagnosticDialog,
-  ImageCompressionDialog,
   InviteTargetsDialog,
   ReportReasonDialog,
   UserIdDialog
@@ -551,132 +538,6 @@ function inviteScopeFromWorkflow(workflow: InviteWorkflowState): InviteScopeSele
   return workflow.scope_plan?.default_scope ?? DEFAULT_INVITE_SCOPE;
 }
 
-async function prepareMediaUpload(
-  file: File,
-  mode: ImageUploadCompressionMode,
-  policy: ImageUploadCompressionPolicy,
-  chooseImageVariant: (
-    plan: ImageCompressionPlan
-  ) => Promise<ImageUploadVariantKindPayload | "cancel">
-): Promise<PreparedMediaUpload | null> {
-  const originalBytes = await bytesFromFile(file);
-  if (originalBytes.length === 0) {
-    return null;
-  }
-
-  if (!isImageCompressionCandidate(file)) {
-    return {
-      filename: file.name || "attachment",
-      mimeType: file.type || "application/octet-stream",
-      bytes: originalBytes
-    };
-  }
-
-  const loaded = await loadImageElement(file).catch(() => null);
-  if (!loaded) {
-    return {
-      filename: file.name || "attachment",
-      mimeType: file.type || "application/octet-stream",
-      bytes: originalBytes
-    };
-  }
-
-  const originalDimensions = loaded.dimensions;
-  const originalThumbnail = await thumbnailForImageElement(loaded.image, originalDimensions);
-  const originalVariant: ImageCompressionVariant = {
-    filename: file.name || "attachment",
-    mimeType: file.type || "image/png",
-    bytes: originalBytes,
-    byteCount: originalBytes.length,
-    dimensions: originalDimensions,
-    previewUrl: loaded.objectUrl,
-    thumbnail: originalThumbnail
-  };
-  const skippedSmallImage = imageCompressionShouldSkip(originalVariant, policy);
-  let plan: ImageCompressionPlan | null = null;
-
-  try {
-    if (mode === "never" || skippedSmallImage) {
-      return preparedImageUploadFromChoice(
-        {
-          mode,
-          policy,
-          original: originalVariant,
-          compressed: originalVariant,
-          skippedSmallImage
-        },
-        "Original"
-      );
-    }
-
-    const compressed = await compressedImageVariantForElement(
-      loaded.image,
-      originalDimensions,
-      file.name || "attachment",
-      policy
-    );
-    plan = {
-      mode,
-      policy,
-      original: originalVariant,
-      compressed,
-      skippedSmallImage: false
-    };
-
-    const choice = mode === "always" ? "Compressed" : await chooseImageVariant(plan);
-    if (choice === "cancel") {
-      return null;
-    }
-    return preparedImageUploadFromChoice(plan, choice);
-  } finally {
-    if (!plan || mode !== "ask") {
-      releaseImageCompressionPlan(plan ?? {
-        mode,
-        policy,
-        original: originalVariant,
-        compressed: originalVariant,
-        skippedSmallImage
-      });
-    }
-  }
-}
-
-function preparedImageUploadFromChoice(
-  plan: ImageCompressionPlan,
-  choice: ImageUploadVariantKindPayload
-): PreparedMediaUpload {
-  const selected = choice === "Compressed" ? plan.compressed : plan.original;
-  return {
-    filename: selected.filename,
-    mimeType: selected.mimeType,
-    bytes: selected.bytes,
-    imageDimensions: selected.dimensions,
-    imageCompression: {
-      mode: plan.mode,
-      policy: plan.policy,
-      original: variantInfoForUpload(plan.original),
-      selected: variantInfoForUpload(selected),
-      selected_variant: choice,
-      skipped_small_image: plan.skippedSmallImage,
-      metadata_stripped: choice === "Compressed",
-      thumbnail_refreshed: true
-    },
-    thumbnail: selected.thumbnail
-  };
-}
-
-function variantInfoForUpload(variant: ImageCompressionVariant): ImageUploadVariantInfoPayload {
-  return {
-    mime_type: variant.mimeType,
-    byte_count: variant.byteCount,
-    dimensions: variant.dimensions
-  };
-}
-
-async function bytesFromFile(file: File): Promise<number[]> {
-  return Array.from(new Uint8Array(await file.arrayBuffer()));
-}
-
 function safeDownloadFilename(filename: string): string {
   const trimmed = filename.trim();
   return (trimmed || "download").replace(/[\\/:*?"<>|]+/g, "_");
@@ -703,192 +564,12 @@ async function saveReadyMediaFile(sourceUrl: string, filename: string): Promise<
   });
 }
 
-function isImageCompressionCandidate(file: File): boolean {
-  return ["image/jpeg", "image/png", "image/webp"].includes(file.type.toLowerCase());
-}
-
-async function loadImageElement(
-  file: File
-): Promise<{ image: HTMLImageElement; objectUrl: string; dimensions: ImageUploadDimensionsPayload }> {
-  const objectUrl = URL.createObjectURL(file);
-  const image = new globalThis.Image();
-  image.decoding = "async";
-  image.src = objectUrl;
-  try {
-    await image.decode();
-  } catch (error) {
-    URL.revokeObjectURL(objectUrl);
-    throw error;
-  }
-  return {
-    image,
-    objectUrl,
-    dimensions: {
-      width: image.naturalWidth,
-      height: image.naturalHeight
-    }
-  };
-}
-
-function imageCompressionShouldSkip(
-  variant: ImageCompressionVariant,
-  policy: ImageUploadCompressionPolicy
-): boolean {
-  return (
-    variant.byteCount <= policy.threshold_bytes &&
-    Math.max(variant.dimensions.width, variant.dimensions.height) <= policy.threshold_long_edge
-  );
-}
-
-async function compressedImageVariantForElement(
-  image: HTMLImageElement,
-  originalDimensions: ImageUploadDimensionsPayload,
-  originalFilename: string,
-  policy: ImageUploadCompressionPolicy
-): Promise<ImageCompressionVariant> {
-  const dimensions = targetImageDimensions(originalDimensions, policy.target_long_edge);
-  const mimeType = "image/jpeg";
-  const blob = await imageBlobForElement(
-    image,
-    dimensions,
-    mimeType,
-    policy.quality_percent / 100
-  );
-  const bytes = Array.from(new Uint8Array(await blob.arrayBuffer()));
-  return {
-    filename: imageFilenameWithExtension(originalFilename, "jpg"),
-    mimeType,
-    bytes,
-    byteCount: bytes.length,
-    dimensions,
-    previewUrl: URL.createObjectURL(blob),
-    thumbnail: await thumbnailForImageElement(image, dimensions)
-  };
-}
-
-async function thumbnailForImageElement(
-  image: HTMLImageElement,
-  sourceDimensions: ImageUploadDimensionsPayload
-): Promise<UploadMediaThumbnailPayload> {
-  const dimensions = targetImageDimensions(sourceDimensions, 320);
-  const blob = await imageBlobForElement(image, dimensions, "image/jpeg", 0.78);
-  return {
-    mime_type: "image/jpeg",
-    bytes: Array.from(new Uint8Array(await blob.arrayBuffer())),
-    width: dimensions.width,
-    height: dimensions.height
-  };
-}
-
-async function imageBlobForElement(
-  image: HTMLImageElement,
-  dimensions: ImageUploadDimensionsPayload,
-  mimeType: string,
-  quality: number
-): Promise<Blob> {
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, dimensions.width);
-  canvas.height = Math.max(1, dimensions.height);
-  const context = canvas.getContext("2d");
-  if (!context) {
-    throw new Error("2d canvas unavailable");
-  }
-  context.fillStyle = "#ffffff";
-  context.fillRect(0, 0, canvas.width, canvas.height);
-  context.drawImage(image, 0, 0, canvas.width, canvas.height);
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (blob) => {
-        if (blob) {
-          resolve(blob);
-        } else {
-          reject(new Error("image encode failed"));
-        }
-      },
-      mimeType,
-      quality
-    );
-  });
-}
-
-function targetImageDimensions(
-  dimensions: ImageUploadDimensionsPayload,
-  targetLongEdge: number
-): ImageUploadDimensionsPayload {
-  const longEdge = Math.max(dimensions.width, dimensions.height);
-  if (longEdge <= 0 || longEdge <= targetLongEdge) {
-    return dimensions;
-  }
-  const scale = targetLongEdge / longEdge;
-  return {
-    width: Math.max(1, Math.round(dimensions.width * scale)),
-    height: Math.max(1, Math.round(dimensions.height * scale))
-  };
-}
-
-function imageFilenameWithExtension(filename: string, extension: string): string {
-  const fallback = `attachment.${extension}`;
-  if (!filename.trim()) {
-    return fallback;
-  }
-  const dot = filename.lastIndexOf(".");
-  if (dot <= 0) {
-    return `${filename}.${extension}`;
-  }
-  return `${filename.slice(0, dot)}.${extension}`;
-}
-
-function releaseImageCompressionPlan(plan: ImageCompressionPlan) {
-  URL.revokeObjectURL(plan.original.previewUrl);
-  if (plan.compressed.previewUrl !== plan.original.previewUrl) {
-    URL.revokeObjectURL(plan.compressed.previewUrl);
-  }
-}
-
 function createStagedUploadId(index: number): string {
   const random =
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   return `staged-upload-${index}-${random}`;
-}
-
-function stagedUploadKindForFile(file: File): StagedUploadItem["kind"] {
-  return file.type.toLowerCase().startsWith("image/")
-    ? { kind: "image", width: null, height: null }
-    : { kind: "file" };
-}
-
-function initialStagedCompressionChoice(
-  file: File,
-  mode: ImageUploadCompressionMode
-): StagedUploadCompressionChoice {
-  if (!isImageCompressionCandidate(file)) {
-    return { kind: "notApplicable" };
-  }
-  if (mode === "always") {
-    return { kind: "compressed", mode };
-  }
-  if (mode === "ask") {
-    return { kind: "ask" };
-  }
-  return { kind: "original" };
-}
-
-function forcedUploadMode(
-  choice: StagedUploadCompressionChoice | undefined,
-  fallback: ImageUploadCompressionMode
-): ImageUploadCompressionMode {
-  if (choice?.kind === "compressed") {
-    return "always";
-  }
-  if (choice?.kind === "ask") {
-    return "ask";
-  }
-  if (choice?.kind === "original") {
-    return "never";
-  }
-  return fallback;
 }
 
 function rightPanelTargetFromContextMenuTarget(
@@ -1222,8 +903,8 @@ export function App() {
   const [searchQuery, setSearchQuery] = useState(() => initialSearchQuery());
   const [searchScope, setSearchScope] = useState<SearchScopeKind>("allRooms");
   const [composerMentions, setComposerMentions] = useState<MentionIntent>(EMPTY_MENTION_INTENT);
+  const [threadComposerMentions, setThreadComposerMentions] = useState<Record<string, MentionIntent>>({});
   const [localThreadComposerDrafts, setLocalThreadComposerDrafts] = useState<Record<string, string>>({});
-  const stagedUploadFilesRef = useRef<Map<string, File>>(new Map());
   const submissionRegistryRef = useRef<ComposerSubmissionControllerRegistry | null>(null);
   const submissionAccountOwnerRef = useRef<string | null>(null);
   if (submissionRegistryRef.current === null) {
@@ -1236,8 +917,6 @@ export function App() {
     }
     submissionAccountOwnerRef.current = owner;
   }, [snapshot?.state.domain.session.user_id, snapshot?.state.domain.session.kind]);
-  const [imageCompressionDialog, setImageCompressionDialog] =
-    useState<ImageCompressionDialogState | null>(null);
   const [loginHomeserver, setLoginHomeserver] = useState(DEFAULT_HOMESERVER);
   const [loginUsername, setLoginUsername] = useState("");
   const [loginDeviceName, setLoginDeviceName] = useState("Koushi");
@@ -1409,7 +1088,6 @@ export function App() {
       ? localComposerDraftsRef.current[timelineRoomId] ?? ""
       : snapshotComposerDraft;
   const stagedUploads = snapshot?.state.ui.timeline.staged_uploads ?? [];
-  const stagedUploadIdKey = stagedUploads.map((item) => item.staged_id).join("\n");
   const retainedTimelineKeyIds = useMemo(
     () => retainedTimelineStoreKeyIds(snapshot),
     [snapshot]
@@ -1481,18 +1159,6 @@ export function App() {
         : INITIAL_TIMELINE_DIAGNOSTICS
     );
   }, [snapshot?.state.ui.timeline.room_id]);
-
-  useEffect(() => {
-    const activeIds = new Set(stagedUploads.map((item) => item.staged_id));
-    const next = new Map(
-      [...stagedUploadFilesRef.current.entries()].filter(([stagedId]) =>
-        activeIds.has(stagedId)
-      )
-    );
-    if (next.size !== stagedUploadFilesRef.current.size) {
-      stagedUploadFilesRef.current = next;
-    }
-  }, [stagedUploadIdKey]);
 
   useEffect(() => {
     if (!snapshot || !tauriTimelineTransport?.downloadAvatarThumbnail) {
@@ -2869,20 +2535,17 @@ export function App() {
       return;
     }
     if (uploads.length > 0) {
-      for (const item of uploads) {
-        const file = stagedUploadFilesRef.current.get(item.staged_id);
-        if (!file) {
-          return;
-        }
-        const uploaded = await uploadMediaFile(file, captionBody(item), item.compression_choice);
-        if (!uploaded) {
-          return;
-        }
+      if (uploads.some((item) => item.preparation.kind !== "ready")) {
+        return;
       }
-      stagedUploadFilesRef.current = new Map();
       cancelComposerDraftPersist();
       clearLocalComposerDraft(roomId);
-      setSnapshot(await api.clearUploadStaging(roomId));
+      setSnapshot(
+        await api.sendPreparedUploads({
+          kind: "main",
+          room_id: roomId
+        })
+      );
       setSnapshot(await api.setComposerDraft(roomId, ""));
       setComposerMentions(EMPTY_MENTION_INTENT);
       updateComposerTypingSignal(roomId, "");
@@ -2986,7 +2649,7 @@ export function App() {
     try {
       cancelComposerDraftPersist();
       clearLocalComposerDraft(roomId);
-      setSnapshot(await api.scheduleSend(roomId, body, sendAtMs));
+      setSnapshot(await api.scheduleSend({ kind: "main", room_id: roomId }, body, sendAtMs));
       setComposerMentions(EMPTY_MENTION_INTENT);
       updateComposerTypingSignal(roomId, "");
     } catch {
@@ -3063,50 +2726,71 @@ export function App() {
     if (!roomId || files.length === 0) {
       return;
     }
-    const startPosition = stagedUploads.length;
-    const mediaSettings = snapshot.state.domain.settings.values.media;
-    const existingItems: UploadStagingRequestItem[] = stagedUploads.map((item) => ({
-      stagedId: item.staged_id,
-      position: item.position,
-      filename: item.filename,
-      mimeType: item.mime_type,
-      byteCount: item.byte_count,
-      kind: item.kind,
-      compressionChoice: item.compression_choice
-    }));
-    const newItems: UploadStagingRequestItem[] = files.map((file, index) => {
-      const stagedId = createStagedUploadId(startPosition + index);
-      return {
-        stagedId,
-        position: startPosition + index + 1,
-        filename: file.name || "attachment",
-        mimeType: file.type || "application/octet-stream",
-        byteCount: file.size,
-        kind: stagedUploadKindForFile(file),
-        compressionChoice: initialStagedCompressionChoice(
-          file,
-          mediaSettings.image_upload_compression
-        )
-      };
-    });
-    const items = [...existingItems, ...newItems];
-    const nextFiles = new Map(stagedUploadFilesRef.current);
-    newItems.forEach((item, index) => {
-      nextFiles.set(item.stagedId, files[index]);
-    });
-    stagedUploadFilesRef.current = nextFiles;
-    setSnapshot(await api.stageUploads(roomId, items));
+    const target: ComposerTarget = { kind: "main", room_id: roomId };
+    let nextSnapshot: DesktopSnapshot | null = null;
+    await stageAttachmentFiles(
+      target,
+      files,
+      stagedUploads.length,
+      createStagedUploadId,
+      async (capturedTarget, items) => {
+        nextSnapshot = await api.stageUploadBytes(capturedTarget, items);
+      }
+    );
+    if (nextSnapshot) {
+      setSnapshot(nextSnapshot);
+    }
   }
 
   async function updateStagedUploadCaption(stagedId: string, caption: string): Promise<void> {
-    setSnapshot(await api.updateStagedUploadCaption(stagedId, caption));
+    const roomId = snapshot?.state.ui.timeline.room_id;
+    if (!roomId) return;
+    setSnapshot(
+      await api.updateStagedUploadCaption(
+        { kind: "main", room_id: roomId },
+        stagedId,
+        caption
+      )
+    );
   }
 
-  async function updateStagedUploadCompression(
+  async function selectStagedUploadVariant(stagedId: string, variantId: string): Promise<void> {
+    const roomId = snapshot?.state.ui.timeline.room_id;
+    if (!roomId) return;
+    setSnapshot(
+      await api.selectStagedUploadVariant(
+        { kind: "main", room_id: roomId },
+        stagedId,
+        variantId
+      )
+    );
+  }
+
+  async function loadStagedUploadPreview(
     stagedId: string,
-    compressionChoice: StagedUploadCompressionChoice
-  ): Promise<void> {
-    setSnapshot(await api.updateStagedUploadCompression(stagedId, compressionChoice));
+    variantId: string
+  ): Promise<number[]> {
+    const roomId = snapshot?.state.ui.timeline.room_id;
+    if (!roomId) return [];
+    return api.preparedUploadPreview(
+      { kind: "main", room_id: roomId },
+      stagedId,
+      variantId
+    );
+  }
+
+  async function retryStagedUploadPreparation(stagedId: string) {
+    const roomId = snapshot?.state.ui.timeline.room_id;
+    if (!roomId) return;
+    setSnapshot(
+      await api.retryStagedUploadPreparation({ kind: "main", room_id: roomId }, stagedId)
+    );
+  }
+
+  async function useOriginalStagedUpload(stagedId: string) {
+    const roomId = snapshot?.state.ui.timeline.room_id;
+    if (!roomId) return;
+    setSnapshot(await api.useOriginalStagedUpload({ kind: "main", room_id: roomId }, stagedId));
   }
 
   async function clearUploadStaging(): Promise<void> {
@@ -3114,73 +2798,7 @@ export function App() {
     if (!roomId) {
       return;
     }
-    stagedUploadFilesRef.current = new Map();
-    setSnapshot(await api.clearUploadStaging(roomId));
-  }
-
-  async function uploadMediaFile(
-    file: File,
-    caption = "",
-    compressionChoice?: StagedUploadCompressionChoice
-  ): Promise<boolean> {
-    const roomId = snapshot?.state.ui.timeline.room_id;
-    if (!roomId || !isTauriRuntime()) {
-      return false;
-    }
-
-    const mediaSettings = snapshot.state.domain.settings.values.media;
-    const prepared = await prepareMediaUpload(
-      file,
-      forcedUploadMode(compressionChoice, mediaSettings.image_upload_compression),
-      mediaSettings.image_upload_compression_policy,
-      requestImageCompressionChoice
-    );
-    if (!prepared) {
-      return false;
-    }
-    await invoke("upload_media", {
-      roomId,
-      filename: prepared.filename,
-      mimeType: prepared.mimeType,
-      bytes: prepared.bytes,
-      caption,
-      imageDimensions: prepared.imageDimensions,
-      imageCompression: prepared.imageCompression,
-      thumbnail: prepared.thumbnail
-    });
-    return true;
-  }
-
-  function requestImageCompressionChoice(
-    plan: ImageCompressionPlan
-  ): Promise<ImageUploadVariantKindPayload | "cancel"> {
-    return new Promise((resolve) => {
-      setImageCompressionDialog({ plan, resolve });
-    });
-  }
-
-  async function settleImageCompressionDialog(
-    choice: ImageUploadVariantKindPayload | "cancel",
-    saveDefault = false
-  ) {
-    const dialog = imageCompressionDialog;
-    if (!dialog) {
-      return;
-    }
-    setImageCompressionDialog(null);
-    try {
-      if (choice !== "cancel" && saveDefault && snapshot) {
-        await updateSettings({
-          media: {
-            ...snapshot.state.domain.settings.values.media,
-            image_upload_compression: choice === "Compressed" ? "always" : "never"
-          }
-        });
-      }
-    } finally {
-      dialog.resolve(choice);
-      releaseImageCompressionPlan(dialog.plan);
-    }
+    setSnapshot(await api.clearUploadStaging({ kind: "main", room_id: roomId }));
   }
 
   async function editMessage(message: { body: string | null; room_id: string; event_id: string }) {
@@ -3280,7 +2898,57 @@ export function App() {
     queueThreadComposerDraftPersist(roomId, rootEventId, draft);
   }
 
-  async function sendThreadReply(roomId: string, rootEventId: string, body: string) {
+  async function stageThreadUploadFiles(
+    roomId: string,
+    rootEventId: string,
+    files: File[]
+  ): Promise<void> {
+    const thread = snapshot?.state.ui.thread;
+    if (
+      files.length === 0 ||
+      thread?.kind !== "open" ||
+      thread.room_id !== roomId ||
+      thread.root_event_id !== rootEventId
+    ) {
+      return;
+    }
+    const target: ComposerTarget = { kind: "thread", room_id: roomId, root_event_id: rootEventId };
+    let nextSnapshot: DesktopSnapshot | null = null;
+    await stageAttachmentFiles(
+      target,
+      files,
+      thread.staged_uploads?.length ?? 0,
+      createStagedUploadId,
+      async (capturedTarget, items) => {
+        nextSnapshot = await api.stageUploadBytes(capturedTarget, items);
+      }
+    );
+    if (nextSnapshot) setSnapshot(nextSnapshot);
+  }
+
+  async function sendThreadReply(
+    roomId: string,
+    rootEventId: string,
+    body: string,
+    mentionIntent: MentionIntent
+  ) {
+    const thread = snapshot?.state.ui.thread;
+    const target: ComposerTarget = { kind: "thread", room_id: roomId, root_event_id: rootEventId };
+    const uploads =
+      thread?.kind === "open" &&
+      thread.room_id === roomId &&
+      thread.root_event_id === rootEventId
+        ? thread.staged_uploads ?? []
+        : [];
+    if (uploads.length > 0) {
+      if (uploads.some((item) => item.preparation.kind !== "ready")) return;
+      cancelThreadComposerDraftPersist(roomId, rootEventId);
+      clearLocalThreadComposerDraft(roomId, rootEventId);
+      setSnapshot(await api.sendPreparedUploads(target));
+      setSnapshot(await api.setThreadComposerDraft(roomId, rootEventId, ""));
+      clearThreadComposerMentions(roomId, rootEventId);
+      return;
+    }
     const submissionController = submissionRegistryRef.current!.forTarget(
       threadSubmissionTarget(roomId, rootEventId)
     );
@@ -3288,11 +2956,13 @@ export function App() {
     if (submissionId === null) {
       return;
     }
-    submissionController.capture(submissionId, { roomId, rootEventId, body });
+    const mentions = pruneMentionIntentForDraft(mentionIntent, body);
+    submissionController.capture(submissionId, { roomId, rootEventId, body, mentions });
     const captured = submissionController.payload<{
       roomId: string;
       rootEventId: string;
       body: string;
+      mentions: MentionIntent;
     }>(submissionId)!;
     let response;
     try {
@@ -3300,7 +2970,8 @@ export function App() {
         submissionId,
         captured.roomId,
         captured.rootEventId,
-        captured.body
+        captured.body,
+        captured.mentions
       );
     } catch (error) {
       const disposition = classifySubmissionFailure(error);
@@ -3319,7 +2990,134 @@ export function App() {
     submissionController.accept(submissionId);
     cancelThreadComposerDraftPersist(roomId, rootEventId);
     clearLocalThreadComposerDraft(roomId, rootEventId);
+    clearThreadComposerMentions(roomId, rootEventId);
     setSnapshot(response.snapshot);
+  }
+
+  function updateThreadComposerMentions(
+    roomId: string,
+    rootEventId: string,
+    mentions: MentionIntent
+  ) {
+    const key = threadComposerDraftKey(roomId, rootEventId);
+    setThreadComposerMentions((current) => ({ ...current, [key]: mentions }));
+  }
+
+  function clearThreadComposerMentions(roomId: string, rootEventId: string) {
+    const key = threadComposerDraftKey(roomId, rootEventId);
+    setThreadComposerMentions((current) => {
+      if (!(key in current)) return current;
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+  }
+
+  async function clearThreadUploadStaging(roomId: string, rootEventId: string) {
+    setSnapshot(
+      await api.clearUploadStaging({
+        kind: "thread",
+        room_id: roomId,
+        root_event_id: rootEventId
+      })
+    );
+  }
+
+  async function updateThreadStagedUploadCaption(
+    roomId: string,
+    rootEventId: string,
+    stagedId: string,
+    caption: string
+  ) {
+    setSnapshot(
+      await api.updateStagedUploadCaption(
+        { kind: "thread", room_id: roomId, root_event_id: rootEventId },
+        stagedId,
+        caption
+      )
+    );
+  }
+
+  async function selectThreadStagedUploadVariant(
+    roomId: string,
+    rootEventId: string,
+    stagedId: string,
+    variantId: string
+  ) {
+    setSnapshot(
+      await api.selectStagedUploadVariant(
+        { kind: "thread", room_id: roomId, root_event_id: rootEventId },
+        stagedId,
+        variantId
+      )
+    );
+  }
+
+  async function loadThreadStagedUploadPreview(
+    roomId: string,
+    rootEventId: string,
+    stagedId: string,
+    variantId: string
+  ): Promise<number[]> {
+    return api.preparedUploadPreview(
+      { kind: "thread", room_id: roomId, root_event_id: rootEventId },
+      stagedId,
+      variantId
+    );
+  }
+
+  async function retryThreadStagedUploadPreparation(
+    roomId: string,
+    rootEventId: string,
+    stagedId: string
+  ) {
+    setSnapshot(
+      await api.retryStagedUploadPreparation(
+        { kind: "thread", room_id: roomId, root_event_id: rootEventId },
+        stagedId
+      )
+    );
+  }
+
+  async function useOriginalThreadStagedUpload(
+    roomId: string,
+    rootEventId: string,
+    stagedId: string
+  ) {
+    setSnapshot(
+      await api.useOriginalStagedUpload(
+        { kind: "thread", room_id: roomId, root_event_id: rootEventId },
+        stagedId
+      )
+    );
+  }
+
+  async function scheduleThreadSend(
+    roomId: string,
+    rootEventId: string,
+    sendAtMs: number,
+    body: string
+  ) {
+    const thread = snapshot?.state.ui.thread;
+    if (
+      !body.trim() ||
+      thread?.kind !== "open" ||
+      thread.room_id !== roomId ||
+      thread.root_event_id !== rootEventId ||
+      (thread.staged_uploads?.length ?? 0) > 0
+    ) {
+      return;
+    }
+    cancelThreadComposerDraftPersist(roomId, rootEventId);
+    clearLocalThreadComposerDraft(roomId, rootEventId);
+    setSnapshot(
+      await api.scheduleSend(
+        { kind: "thread", room_id: roomId, root_event_id: rootEventId },
+        body,
+        sendAtMs
+      )
+    );
+    clearThreadComposerMentions(roomId, rootEventId);
   }
 
   function queueThreadComposerDraftPersist(roomId: string, rootEventId: string, draft: string) {
@@ -3928,8 +3726,15 @@ export function App() {
             onUpdateStagedUploadCaption={(stagedId, caption) => {
               void updateStagedUploadCaption(stagedId, caption);
             }}
-            onUpdateStagedUploadCompression={(stagedId, compressionChoice) => {
-              void updateStagedUploadCompression(stagedId, compressionChoice);
+            onSelectStagedUploadVariant={(stagedId, variantId) => {
+              void selectStagedUploadVariant(stagedId, variantId);
+            }}
+            onLoadStagedUploadPreview={loadStagedUploadPreview}
+            onRetryStagedUploadPreparation={(stagedId) => {
+              void retryStagedUploadPreparation(stagedId);
+            }}
+            onUseOriginalStagedUpload={(stagedId) => {
+              void useOriginalStagedUpload(stagedId);
             }}
             onComposerDraftChange={(value) => {
               void updateComposerDraft(value);
@@ -4111,8 +3916,34 @@ export function App() {
             updateThreadComposerDraft(roomId, rootEventId, draft);
           }}
           threadComposerDraftOverrides={localThreadComposerDrafts}
-          onThreadReplySend={(roomId, rootEventId, body) => {
-            void sendThreadReply(roomId, rootEventId, body);
+          threadComposerMentionIntents={threadComposerMentions}
+          onThreadMentionIntentChange={(roomId, rootEventId, mentions) => {
+            updateThreadComposerMentions(roomId, rootEventId, mentions);
+          }}
+          onThreadAttachFiles={(roomId, rootEventId, files) => {
+            void stageThreadUploadFiles(roomId, rootEventId, files);
+          }}
+          onThreadClearUploadStaging={(roomId, rootEventId) => {
+            void clearThreadUploadStaging(roomId, rootEventId);
+          }}
+          onThreadUpdateStagedUploadCaption={(roomId, rootEventId, stagedId, caption) => {
+            void updateThreadStagedUploadCaption(roomId, rootEventId, stagedId, caption);
+          }}
+          onThreadSelectStagedUploadVariant={(roomId, rootEventId, stagedId, variantId) => {
+            void selectThreadStagedUploadVariant(roomId, rootEventId, stagedId, variantId);
+          }}
+          onThreadLoadStagedUploadPreview={loadThreadStagedUploadPreview}
+          onThreadRetryStagedUploadPreparation={(roomId, rootEventId, stagedId) => {
+            void retryThreadStagedUploadPreparation(roomId, rootEventId, stagedId);
+          }}
+          onThreadUseOriginalStagedUpload={(roomId, rootEventId, stagedId) => {
+            void useOriginalThreadStagedUpload(roomId, rootEventId, stagedId);
+          }}
+          onThreadScheduleSend={(roomId, rootEventId, sendAtMs, body) => {
+            void scheduleThreadSend(roomId, rootEventId, sendAtMs, body);
+          }}
+          onThreadReplySend={(roomId, rootEventId, body, mentions) => {
+            void sendThreadReply(roomId, rootEventId, body, mentions);
           }}
           onTimelineDiagnosticLogEntry={appendDiagnosticLog}
           onResolveComposerKeyAction={resolveComposerKeyAction}
@@ -4294,13 +4125,6 @@ export function App() {
           onCancel={closeReportDialog}
           onReasonChange={setReportReasonDraft}
           onSubmit={submitReportDialog}
-        />
-      ) : null}
-      {imageCompressionDialog ? (
-        <ImageCompressionDialog
-          plan={imageCompressionDialog.plan}
-          onCancel={() => settleImageCompressionDialog("cancel")}
-          onChoose={(choice, saveDefault) => settleImageCompressionDialog(choice, saveDefault)}
         />
       ) : null}
       {diagnosticsOpen ? (

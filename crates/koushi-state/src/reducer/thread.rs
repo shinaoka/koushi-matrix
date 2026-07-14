@@ -187,6 +187,7 @@ pub(crate) fn handle_open_thread(
         return Vec::new();
     }
 
+    state.upload_staging.clear_thread_targets_for_room(&room_id);
     state.thread = ThreadPaneState::Opening {
         room_id: room_id.clone(),
         root_event_id: root_event_id.clone(),
@@ -224,6 +225,12 @@ pub(crate) fn handle_thread_subscribed(
         return Vec::new();
     }
 
+    let staged_uploads = state
+        .upload_staging
+        .items_for_target(&crate::ComposerTarget::Thread {
+            room_id: room_id.clone(),
+            root_event_id: root_event_id.clone(),
+        });
     state.thread = ThreadPaneState::Open {
         composer: state
             .composer_drafts
@@ -231,6 +238,7 @@ pub(crate) fn handle_thread_subscribed(
         room_id,
         root_event_id,
         is_subscribed: true,
+        staged_uploads,
     };
     vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
 }
@@ -308,6 +316,11 @@ pub(crate) fn handle_close_thread(state: &mut AppState) -> Vec<AppEffect> {
         return Vec::new();
     }
 
+    if let ThreadPaneState::Open { room_id, .. } | ThreadPaneState::Opening { room_id, .. } =
+        &state.thread
+    {
+        state.upload_staging.clear_thread_targets_for_room(room_id);
+    }
     state.thread = ThreadPaneState::Closed;
     state.thread_attention = ThreadAttentionState::Closed;
     vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]

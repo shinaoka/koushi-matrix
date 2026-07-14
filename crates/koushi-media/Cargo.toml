@@ -1,0 +1,12 @@
+[package]
+name = "koushi-media"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+image.workspace = true
+thiserror = "2"
+
+[dev-dependencies]
+image.workspace = true

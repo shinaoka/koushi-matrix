@@ -5524,7 +5524,12 @@ describe("TimelineView", () => {
     );
     expect(rootRow?.getAttribute("data-content-event-id")).toBe("$default-thread-root:example.invalid");
     expect(rootRow?.getAttribute("data-activity-event-id")).toBe("$default-thread-root:example.invalid");
-    expect(rootRow?.textContent).toContain("1 reply · Bob: Default latest reply preview");
+    const latestReplyTime = new Intl.DateTimeFormat("en", { timeStyle: "short" }).format(
+      new Date(latestReplyTimestampMs)
+    );
+    expect(rootRow?.textContent).toContain(
+      `1 reply · Bob: Default latest reply preview · ${latestReplyTime}`
+    );
     expect(screen.queryByText("Default standalone reply")).toBeNull();
     expect(
       Array.from(document.querySelectorAll("article[data-row-id]")).map((row) =>
@@ -5532,6 +5537,65 @@ describe("TimelineView", () => {
       )
     ).toEqual(["$default-thread-root:example.invalid", "$default-between:example.invalid"]);
     expect(paginateBackwards).not.toHaveBeenCalled();
+  });
+
+  it("keeps the root but hides conversation-start chrome and its summary in thread presentation", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const threadKey = threadTimelineKey(
+      "@alice:example.invalid",
+      "!room:example.invalid",
+      "$thread-root:example.invalid"
+    );
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const root = {
+      ...message("$thread-root:example.invalid", "Thread root remains visible"),
+      thread_summary: {
+        reply_count: 2,
+        latest_event_id: "$thread-latest:example.invalid",
+        latest_sender: "@bob:example.invalid",
+        latest_sender_label: "Bob",
+        latest_body_preview: "latest reply",
+        latest_timestamp_ms: 1_800_000_010_000
+      }
+    };
+
+    render(
+      <TimelineView
+        presentationContext="thread"
+        timelineKey={threadKey}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: { request_id: null, key: threadKey, generation: 1, items: [root] }
+        }
+      });
+      emit({
+        kind: "Timeline",
+        event: {
+          PaginationStateChanged: {
+            request_id: null,
+            key: threadKey,
+            direction: "Backward",
+            state: "EndReached"
+          }
+        }
+      });
+    });
+
+    expect(await screen.findByText("Thread root remains visible")).not.toBeNull();
+    expect(screen.queryByText("Start of conversation")).toBeNull();
+    expect(screen.queryByRole("button", { name: /2 replies/i })).toBeNull();
   });
 
   it("moves one Room thread root and its summary to its latest reply while keeping root actions and timestamps", async () => {

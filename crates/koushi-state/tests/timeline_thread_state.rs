@@ -969,6 +969,7 @@ fn opening_thread_requests_thread_timeline_and_subscription_success_opens_pane()
             root_event_id: "$root".to_owned(),
             is_subscribed: true,
             composer: ComposerState::default(),
+            staged_uploads: Vec::new(),
         }
     );
     assert_eq!(
@@ -1281,6 +1282,7 @@ fn thread_reply_submit_is_ignored_unless_ready_matching_open_and_idle() {
             root_event_id: "$root".to_owned(),
             is_subscribed: true,
             composer: ComposerState::default(),
+            staged_uploads: Vec::new(),
         },
         ..AppState::default()
     };

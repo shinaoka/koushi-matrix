@@ -166,6 +166,8 @@ pub struct CoreRuntimeState {
     pub(crate) connection: TokioMutex<CoreConnection>,
     /// Tauri-side timeline item count (updated by event loop; QA title only).
     pub(crate) timeline_items_count: AtomicUsize,
+    pub(crate) media_preparation:
+        TokioMutex<koushi_core::media_preparation::MediaPreparationRegistry>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -954,6 +956,7 @@ pub fn run() {
                 runtime,
                 connection: TokioMutex::new(command_conn),
                 timeline_items_count: AtomicUsize::new(0),
+                media_preparation: TokioMutex::new(Default::default()),
             };
             app.manage(core_state);
             install_oidc_deep_link_handler(app)?;
@@ -1092,6 +1095,12 @@ pub fn run() {
             commands::timeline::send_text,
             commands::timeline::schedule_send,
             commands::timeline::stage_uploads,
+            commands::timeline::stage_upload_bytes,
+            commands::timeline::select_staged_upload_variant,
+            commands::timeline::retry_staged_upload_preparation,
+            commands::timeline::use_original_staged_upload,
+            commands::timeline::prepared_upload_preview,
+            commands::timeline::send_prepared_uploads,
             commands::timeline::update_staged_upload_caption,
             commands::timeline::update_staged_upload_compression,
             commands::timeline::clear_upload_staging,

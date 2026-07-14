@@ -102,6 +102,7 @@ fn secret_bearing_commands_redact_debug() {
     let scheduled_send = CoreCommand::App(AppCommand::ScheduleSend {
         request_id: fake_request_id(),
         room_id: "!room:example.test".to_owned(),
+        thread_root_event_id: None,
         body: BODY.to_owned(),
         send_at_ms: 1_900_000_000_000,
     });

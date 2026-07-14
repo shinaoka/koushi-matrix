@@ -3,6 +3,7 @@
 
 import {
   type KeyboardEvent,
+  useEffect,
   useState
 } from "react";
 import {
@@ -16,7 +17,6 @@ import type {
   CreateRoomVisibility,
   InviteScopeSelection,
   InviteWorkflowState,
-  StagedUploadCompressionChoice,
   StagedUploadItem
 } from "../domain/types";
 import {
@@ -674,15 +674,18 @@ export function UploadStagingDialog({
   items,
   onClear,
   onUpdateCaption,
-  onUpdateCompression
+  onSelectVariant,
+  onRetryPreparation,
+  onUseOriginal,
+  loadPreview
 }: {
   items: StagedUploadItem[];
   onClear: () => void | Promise<void>;
   onUpdateCaption: (stagedId: string, caption: string) => void | Promise<void>;
-  onUpdateCompression: (
-    stagedId: string,
-    compressionChoice: StagedUploadCompressionChoice
-  ) => void | Promise<void>;
+  onSelectVariant: (stagedId: string, variantId: string) => void | Promise<void>;
+  onRetryPreparation: (stagedId: string) => void | Promise<void>;
+  onUseOriginal: (stagedId: string) => void | Promise<void>;
+  loadPreview: (stagedId: string, variantId: string) => Promise<number[]>;
 }) {
   return (
     <section
@@ -712,6 +715,9 @@ export function UploadStagingDialog({
                 {formatUploadBytes(item.byte_count)}
               </span>
             </div>
+            {item.kind.kind === "image" && item.preparation.kind === "ready" ? (
+              <PreparedUploadPreview item={item} loadPreview={loadPreview} />
+            ) : null}
             <label className="upload-staging-caption">
               <span>{t("upload.captionForFile", { filename: item.filename })}</span>
               <input
@@ -722,46 +728,88 @@ export function UploadStagingDialog({
                 }}
               />
             </label>
-            {item.kind.kind === "image" ? (
+            {item.preparation.kind === "preparing" ? (
+              <p className="upload-staging-status">{t("upload.preparing")}</p>
+            ) : item.preparation.kind === "failed" ? (
+              <div className="upload-staging-failure">
+                <p className="upload-staging-status is-error">{t("upload.preparationFailed")}</p>
+                <div className="upload-staging-failure-actions">
+                  <button className="dialog-button" type="button" onClick={() => void onRetryPreparation(item.staged_id)}>
+                    {t("upload.retryPreparation")}
+                  </button>
+                  {item.preparation.can_use_original ? (
+                    <button className="dialog-button" type="button" onClick={() => void onUseOriginal(item.staged_id)}>
+                      {t("upload.useOriginal")}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            ) : item.kind.kind === "image" ? (
               <div className="upload-staging-choice" role="group" aria-label={t("upload.sizeChoice")}>
-                <button
-                  className="dialog-button"
-                  type="button"
-                  aria-pressed={item.compression_choice.kind === "original"}
-                  onClick={() => {
-                    void onUpdateCompression(item.staged_id, { kind: "original" });
-                  }}
-                >
-                  {t("upload.original")}
-                </button>
-                <button
-                  className="dialog-button"
-                  type="button"
-                  aria-pressed={item.compression_choice.kind === "ask"}
-                  onClick={() => {
-                    void onUpdateCompression(item.staged_id, { kind: "ask" });
-                  }}
-                >
-                  {t("upload.ask")}
-                </button>
-                <button
-                  className="dialog-button"
-                  type="button"
-                  aria-pressed={item.compression_choice.kind === "compressed"}
-                  onClick={() => {
-                    void onUpdateCompression(item.staged_id, {
-                      kind: "compressed",
-                      mode: "always"
-                    });
-                  }}
-                >
-                  {t("upload.compressed")}
-                </button>
+                {item.preparation.variants.map((variant) => (
+                  <button
+                    className="dialog-button upload-variant-button"
+                    type="button"
+                    key={variant.variant_id}
+                    aria-pressed={item.preparation.kind === "ready" && item.preparation.selected_variant_id === variant.variant_id}
+                    onClick={() => void onSelectVariant(item.staged_id, variant.variant_id)}
+                  >
+                    <strong>{variant.format === "original" ? t("upload.original") : variant.format.toUpperCase()}</strong>
+                    <span>
+                      {formatUploadBytes(variant.byte_count)} · {formatPreparedDimensions(variant.width, variant.height)} · {variant.mime_type}
+                      {variant.savings_percent > 0 ? ` · ${t("upload.savings", { percent: variant.savings_percent })}` : ""}
+                    </span>
+                  </button>
+                ))}
               </div>
             ) : null}
           </article>
         ))}
       </div>
     </section>
+  );
+}
+
+function formatPreparedDimensions(width: number | null, height: number | null): string {
+  return width === null || height === null
+    ? "—"
+    : formatUploadDimensions({ width, height });
+}
+
+function PreparedUploadPreview({
+  item,
+  loadPreview
+}: {
+  item: StagedUploadItem;
+  loadPreview: (stagedId: string, variantId: string) => Promise<number[]>;
+}) {
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const selectedVariantId =
+    item.preparation.kind === "ready" ? item.preparation.selected_variant_id : null;
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    setPreviewUrl(null);
+    if (!selectedVariantId) {
+      return;
+    }
+    void loadPreview(item.staged_id, selectedVariantId)
+      .then((bytes) => {
+        if (cancelled || bytes.length === 0) return;
+        objectUrl = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: item.mime_type }));
+        setPreviewUrl(objectUrl);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [item.mime_type, item.staged_id, loadPreview, selectedVariantId]);
+
+  return previewUrl ? (
+    <img className="upload-staging-preview" src={previewUrl} alt={t("upload.previewAlt")} />
+  ) : (
+    <div className="upload-staging-preview-placeholder" aria-label={t("upload.previewAlt")} />
   );
 }

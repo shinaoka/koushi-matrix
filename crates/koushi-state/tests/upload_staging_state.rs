@@ -1,6 +1,6 @@
 use koushi_state::{
-    AppAction, AppState, FormattedMessageDraft, ImageUploadCompressionMode, MentionIntent,
-    RoomSummary, RoomTags, SessionInfo, SessionState, StagedUploadCompressionChoice,
+    AppAction, AppState, ComposerTarget, FormattedMessageDraft, ImageUploadCompressionMode,
+    MentionIntent, RoomSummary, RoomTags, SessionInfo, SessionState, StagedUploadCompressionChoice,
     StagedUploadItem, StagedUploadKind, TimelineMediaGalleryItem, TimelineMediaGalleryMedia,
     TimelineMediaGallerySource, TimelineMediaGalleryThumbnail, TimelineMediaKind, UiEvent,
     UploadStagingStore, reduce,
@@ -73,6 +73,7 @@ fn staged_file(id: &str, room_id: &str, position: u64) -> StagedUploadItem {
         kind: StagedUploadKind::File,
         caption: Some(caption("private caption")),
         compression_choice: StagedUploadCompressionChoice::NotApplicable,
+        preparation: Default::default(),
     }
 }
 
@@ -117,17 +118,32 @@ fn upload_staging_tracks_multiple_files_for_selected_room_only() {
     let effects = reduce(
         &mut state,
         AppAction::UploadStagingChanged {
-            room_id: "room-a".to_owned(),
+            target: ComposerTarget::Main {
+                room_id: "room-a".to_owned(),
+            },
             items: vec![
                 staged_file("stage-2", "room-a", 2),
                 staged_file("stage-1", "room-a", 1),
             ],
         },
     );
+
+    assert_eq!(state.timeline.staged_uploads.len(), 2);
+    assert_eq!(state.timeline.staged_uploads[0].staged_id, "stage-1");
+    assert_eq!(state.timeline.staged_uploads[1].staged_id, "stage-2");
+
+    reduce(
+        &mut state,
+        AppAction::SelectRoom {
+            room_id: "room-b".to_owned(),
+        },
+    );
     reduce(
         &mut state,
         AppAction::UploadStagingChanged {
-            room_id: "room-b".to_owned(),
+            target: ComposerTarget::Main {
+                room_id: "room-b".to_owned(),
+            },
             items: vec![staged_file("stage-b", "room-b", 1)],
         },
     );
@@ -140,16 +156,6 @@ fn upload_staging_tracks_multiple_files_for_selected_room_only() {
             }
         )]
     );
-    assert_eq!(state.timeline.staged_uploads.len(), 2);
-    assert_eq!(state.timeline.staged_uploads[0].staged_id, "stage-1");
-    assert_eq!(state.timeline.staged_uploads[1].staged_id, "stage-2");
-
-    reduce(
-        &mut state,
-        AppAction::SelectRoom {
-            room_id: "room-b".to_owned(),
-        },
-    );
     assert_eq!(state.timeline.staged_uploads.len(), 1);
     assert_eq!(state.timeline.staged_uploads[0].staged_id, "stage-b");
 }
@@ -160,7 +166,9 @@ fn upload_staging_updates_caption_and_compression_choice() {
     reduce(
         &mut state,
         AppAction::UploadStagingChanged {
-            room_id: "room-a".to_owned(),
+            target: ComposerTarget::Main {
+                room_id: "room-a".to_owned(),
+            },
             items: vec![StagedUploadItem {
                 kind: StagedUploadKind::Image {
                     width: Some(4000),
@@ -175,6 +183,9 @@ fn upload_staging_updates_caption_and_compression_choice() {
     reduce(
         &mut state,
         AppAction::UploadStagingCaptionChanged {
+            target: ComposerTarget::Main {
+                room_id: "room-a".to_owned(),
+            },
             staged_id: "stage-1".to_owned(),
             caption: Some(caption("updated caption")),
         },
@@ -182,6 +193,9 @@ fn upload_staging_updates_caption_and_compression_choice() {
     reduce(
         &mut state,
         AppAction::UploadStagingCompressionChanged {
+            target: ComposerTarget::Main {
+                room_id: "room-a".to_owned(),
+            },
             staged_id: "stage-1".to_owned(),
             compression_choice: StagedUploadCompressionChoice::Ask,
         },
@@ -200,6 +214,9 @@ fn upload_staging_updates_caption_and_compression_choice() {
     reduce(
         &mut state,
         AppAction::UploadStagingCompressionChanged {
+            target: ComposerTarget::Main {
+                room_id: "room-a".to_owned(),
+            },
             staged_id: "stage-1".to_owned(),
             compression_choice: StagedUploadCompressionChoice::Compressed {
                 mode: ImageUploadCompressionMode::Always,
@@ -256,7 +273,9 @@ fn upload_staging_store_is_not_serialized_but_selected_projection_is() {
     reduce(
         &mut state,
         AppAction::UploadStagingChanged {
-            room_id: "room-a".to_owned(),
+            target: ComposerTarget::Main {
+                room_id: "room-a".to_owned(),
+            },
             items: vec![staged_file("stage-1", "room-a", 1)],
         },
     );
@@ -312,4 +331,103 @@ fn upload_staging_store_retain_rooms_drops_orphaned_private_staging() {
 
     assert_eq!(store.items_for_room("room-a").len(), 1);
     assert!(store.items_for_room("room-b").is_empty());
+}
+
+#[test]
+fn upload_staging_isolated_by_main_and_thread_composer_target() {
+    let main = ComposerTarget::Main {
+        room_id: "room-a".to_owned(),
+    };
+    let thread = ComposerTarget::Thread {
+        room_id: "room-a".to_owned(),
+        root_event_id: "$root".to_owned(),
+    };
+    let mut store = UploadStagingStore::default();
+
+    store.replace_target_items(main.clone(), vec![staged_file("shared", "room-a", 1)]);
+    store.replace_target_items(thread.clone(), vec![staged_file("shared", "room-a", 1)]);
+
+    assert_eq!(store.items_for_target(&main).len(), 1);
+    assert_eq!(store.items_for_target(&thread).len(), 1);
+    assert!(store.clear_target(&thread));
+    assert_eq!(store.items_for_target(&main).len(), 1);
+    assert!(store.items_for_target(&thread).is_empty());
+}
+
+#[test]
+fn stale_target_cannot_change_another_composer_staged_item() {
+    let mut state = selected_room_state("room-a");
+    let main = ComposerTarget::Main {
+        room_id: "room-a".to_owned(),
+    };
+    let stale_thread = ComposerTarget::Thread {
+        room_id: "room-a".to_owned(),
+        root_event_id: "$closed".to_owned(),
+    };
+    reduce(
+        &mut state,
+        AppAction::UploadStagingChanged {
+            target: main,
+            items: vec![staged_file("stage-1", "room-a", 1)],
+        },
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::UploadStagingCaptionChanged {
+            target: stale_thread,
+            staged_id: "stage-1".to_owned(),
+            caption: Some(caption("must not cross targets")),
+        },
+    );
+
+    assert!(effects.is_empty());
+    assert_eq!(
+        state.timeline.staged_uploads[0]
+            .caption
+            .as_ref()
+            .expect("caption")
+            .plain_body,
+        "private caption"
+    );
+}
+
+#[test]
+fn open_thread_projects_only_its_staging_and_close_clears_it() {
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::OpenThread {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ThreadSubscribed {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+        },
+    );
+    let target = ComposerTarget::Thread {
+        room_id: "room-a".to_owned(),
+        root_event_id: "$root".to_owned(),
+    };
+
+    reduce(
+        &mut state,
+        AppAction::UploadStagingChanged {
+            target: target.clone(),
+            items: vec![staged_file("thread-stage", "room-a", 1)],
+        },
+    );
+
+    let koushi_state::ThreadPaneState::Open { staged_uploads, .. } = &state.thread else {
+        panic!("thread should be open");
+    };
+    assert_eq!(staged_uploads[0].staged_id, "thread-stage");
+    assert!(state.timeline.staged_uploads.is_empty());
+
+    reduce(&mut state, AppAction::CloseThread);
+    assert!(state.upload_staging.items_for_target(&target).is_empty());
 }

@@ -245,7 +245,7 @@ describe("desktop model", () => {
     );
   });
 
-  test("account home lists only non-DM rooms that are not in any space while DMs stay global", () => {
+  test("account home lists all non-DM rooms while DMs stay global", () => {
     const spaces: SpaceSummary[] = [
       {
         space_id: "!space-a:example.invalid",
@@ -307,6 +307,7 @@ describe("desktop model", () => {
       is_active: true
     });
     expect(sidebar.space_rooms.map((room) => room.room_id)).toEqual([
+      "!room-a:example.invalid",
       "!global-room:example.invalid"
     ]);
     expect(sidebar.global_dms.map((room) => room.room_id)).toEqual([

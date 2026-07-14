@@ -87,7 +87,7 @@ function roomVisibleInActiveSpace(
   activeSpaceChildRoomIds: string[] | null
 ): boolean {
   if (activeSpaceId === null) {
-    return room.is_dm || room.parent_space_ids.length === 0;
+    return true;
   }
   if (room.is_dm) {
     return room.dm_space_ids.includes(activeSpaceId);
