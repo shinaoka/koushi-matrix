@@ -7910,10 +7910,20 @@ impl TimelineActor {
         match result {
             Ok(_) => {
                 if matches!(self.key.kind, TimelineKind::Thread { .. }) {
+                    let authoritative_event_id = match self.own_user_id.as_deref() {
+                        Some(own_user_id) => self
+                            .timeline
+                            .latest_user_read_receipt_timeline_event_id(own_user_id)
+                            .await
+                            .map(|event_id| event_id.to_string()),
+                        None => None,
+                    }
+                    .or_else(|| self.thread_attention.receipt_event_id.clone())
+                    .unwrap_or_else(|| event_id.clone());
                     if let Some(action) = self.thread_attention.acknowledge(
                         &self.key,
                         &self.navigation_items,
-                        event_id.clone(),
+                        authoritative_event_id,
                     ) {
                         let _ = self.emit_action_reliable(action).await;
                     }
@@ -19508,6 +19518,23 @@ mod tests {
         assert!(
             subscribe < query,
             "subscribe-before-query closes the startup receipt race"
+        );
+
+        let send_success = source
+            .split("match result {")
+            .filter(|section| section.contains("LiveSignalsEvent::ReadReceiptSent"))
+            .next()
+            .and_then(|section| section.split("Err(_) =>").next())
+            .expect("read-receipt success handler must exist");
+        let authoritative_query = send_success
+            .find("latest_user_read_receipt_timeline_event_id")
+            .expect("successful threaded send must re-query the authoritative receipt");
+        let acknowledge = send_success
+            .find("thread_attention.acknowledge")
+            .expect("successful threaded send must acknowledge the tracker");
+        assert!(
+            authoritative_query < acknowledge,
+            "a stale requested event ID must not regress the authoritative baseline"
         );
     }
 

@@ -70,8 +70,10 @@ cannot yet be proven. If later pagination/recovery makes the receipt and counted
 events correlatable, reconciliation prunes counted IDs at or before the receipt.
 
 A successful `SendReadReceipt` on a thread timeline acknowledges through the
-same tracker before the success event is emitted. The tracker clears counted
-events through the acknowledged event in canonical order and emits a reliable
+same tracker before the success event is emitted. It re-queries the SDK's latest
+own receipt after send success so a stale viewport request cannot regress a
+newer multi-device boundary. The tracker clears counted events through the
+authoritative acknowledged event in canonical order and emits a reliable
 `ThreadAttentionUpdated` action. Opening a thread or sending a reply does not
 change attention by itself; only receipt state does.
 
