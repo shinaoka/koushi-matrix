@@ -1637,6 +1637,7 @@ fn account_switch_request_enters_switching_state_and_clears_views() {
             staged_uploads: Vec::new(),
             media_gallery: Vec::new(),
             media_downloads: Default::default(),
+            continuity: Default::default(),
         },
         thread: ThreadPaneState::Open {
             room_id: "room-a".to_owned(),
@@ -2001,6 +2002,7 @@ fn ready_session_ignores_recovery_availability_as_an_admission_signal() {
             staged_uploads: Vec::new(),
             media_gallery: Vec::new(),
             media_downloads: Default::default(),
+            continuity: Default::default(),
         },
         ..AppState::default()
     };
@@ -2136,6 +2138,7 @@ fn logout_clears_session_views_and_notifies_ui() {
             staged_uploads: Vec::new(),
             media_gallery: Vec::new(),
             media_downloads: Default::default(),
+            continuity: Default::default(),
         },
         thread: ThreadPaneState::Open {
             room_id: "room-a".to_owned(),
