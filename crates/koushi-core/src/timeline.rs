@@ -5192,11 +5192,8 @@ impl ThreadAttentionBatchProvenance {
             .or_insert(observation);
     }
 
-    fn observation_for(&self, event_id: &str) -> ThreadAttentionObservation {
-        self.event_observations
-            .get(event_id)
-            .copied()
-            .unwrap_or(ThreadAttentionObservation::Replay)
+    fn observation_for(&self, event_id: &str) -> Option<ThreadAttentionObservation> {
+        self.event_observations.get(event_id).copied()
     }
 }
 
@@ -5266,23 +5263,34 @@ impl ThreadAttentionTracker {
             return None;
         };
         let previous = self.counts;
+        let event_positions = items
+            .iter()
+            .enumerate()
+            .filter_map(|(position, item)| match &item.id {
+                TimelineItemId::Event { event_id } => Some((event_id.as_str(), position)),
+                TimelineItemId::Transaction { .. } | TimelineItemId::Synthetic { .. } => None,
+            })
+            .collect::<HashMap<_, _>>();
         let receipt_position = self
             .receipt_event_id
             .as_deref()
-            .and_then(|receipt_event_id| {
-                items.iter().position(|item| {
-                    matches!(
-                        &item.id,
-                        TimelineItemId::Event { event_id } if event_id == receipt_event_id
-                    )
-                })
+            .and_then(|receipt_event_id| event_positions.get(receipt_event_id).copied());
+        if let Some(receipt_position) = receipt_position {
+            self.attention_event_ids.retain(|event_id| {
+                event_positions
+                    .get(event_id.as_str())
+                    .is_none_or(|position| *position > receipt_position)
             });
+        }
 
         for (position, item) in items.iter().enumerate() {
             let Some(stable_event_id) = matching_thread_reply_event_id(item, root_event_id) else {
                 continue;
             };
-            if provenance.observation_for(stable_event_id) != ThreadAttentionObservation::Live {
+            let Some(observation) = provenance.observation_for(stable_event_id) else {
+                continue;
+            };
+            if observation != ThreadAttentionObservation::Live {
                 self.observed_reply_event_ids
                     .insert(stable_event_id.to_owned());
                 continue;
@@ -19170,23 +19178,47 @@ mod tests {
         unavailable.media = None;
         let mut tracker = ThreadAttentionTracker::hydrate(&key, &[], Some(own_user_id), None);
 
+        let unavailable_provenance = ThreadAttentionBatchProvenance::from_timeline_items(
+            std::slice::from_ref(&unavailable),
+            ThreadAttentionObservation::Live,
+        );
         assert_eq!(
-            tracker.reconcile(
+            tracker.reconcile_batch(
                 &key,
                 std::slice::from_ref(&unavailable),
                 Some(own_user_id),
-                ThreadAttentionObservation::Live,
+                &unavailable_provenance,
             ),
             None
         );
 
-        let renderable = thread_reply_item("$encrypted-live:test", "@bob:test", "$root:test");
+        let unrelated = thread_reply_item("$unrelated:test", "@alice:test", "$other-root:test");
+        let unrelated_provenance = ThreadAttentionBatchProvenance::from_timeline_items(
+            std::slice::from_ref(&unrelated),
+            ThreadAttentionObservation::Live,
+        );
         assert_eq!(
-            tracker.reconcile(
+            tracker.reconcile_batch(
+                &key,
+                &[unavailable, unrelated],
+                Some(own_user_id),
+                &unrelated_provenance,
+            ),
+            None,
+            "an unrelated batch must not absorb the pending live encrypted event"
+        );
+
+        let renderable = thread_reply_item("$encrypted-live:test", "@bob:test", "$root:test");
+        let renderable_provenance = ThreadAttentionBatchProvenance::from_timeline_items(
+            std::slice::from_ref(&renderable),
+            ThreadAttentionObservation::Live,
+        );
+        assert_eq!(
+            tracker.reconcile_batch(
                 &key,
                 &[renderable],
                 Some(own_user_id),
-                ThreadAttentionObservation::Live,
+                &renderable_provenance,
             ),
             Some(AppAction::ThreadAttentionUpdated {
                 room_id: "!r:test".to_owned(),
@@ -19368,6 +19400,45 @@ mod tests {
             })
         );
         assert_eq!(items[0].thread_summary.as_ref().unwrap().reply_count, 2);
+    }
+
+    #[test]
+    fn visible_receipt_prunes_attention_preserved_while_it_was_outside_the_window() {
+        let key = thread_key();
+        let own_user_id = "@me:test";
+        let live = thread_reply_item("$live-before-receipt:test", "@bob:test", "$root:test");
+        let mut tracker = ThreadAttentionTracker::hydrate(&key, &[], Some(own_user_id), None);
+        let _ = tracker.reconcile(
+            &key,
+            std::slice::from_ref(&live),
+            Some(own_user_id),
+            ThreadAttentionObservation::Live,
+        );
+        assert_eq!(tracker.counts.notification_count, 1);
+        let _ = tracker.acknowledge(
+            &key,
+            std::slice::from_ref(&live),
+            "$later-receipt:test".to_owned(),
+        );
+        assert_eq!(tracker.counts.notification_count, 1);
+
+        let receipt = thread_reply_item("$later-receipt:test", own_user_id, "$root:test");
+        let expanded = vec![live, receipt];
+        assert_eq!(
+            tracker.reconcile(
+                &key,
+                &expanded,
+                Some(own_user_id),
+                ThreadAttentionObservation::Backfill,
+            ),
+            Some(AppAction::ThreadAttentionUpdated {
+                room_id: "!r:test".to_owned(),
+                root_event_id: "$root:test".to_owned(),
+                notification_count: 0,
+                highlight_count: 0,
+                live_event_marker_count: 0,
+            })
+        );
     }
 
     #[test]

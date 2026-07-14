@@ -671,7 +671,9 @@ stateDiagram-v2
   whose sender is not the current user. The root, transaction local echoes,
   later own remote echoes, other roots, and duplicate stable event IDs never
   count. A live encrypted reply that is not renderable yet remains eligible for
-  its later decrypted `Set`; backfill/replay IDs are absorbed immediately.
+  its later decrypted `Set`, including across unrelated batches; only event IDs
+  explicitly carried by a batch consume that batch's provenance. Backfill/replay
+  IDs are absorbed immediately.
 - `PushBack`, insertion position, and other vector-diff shapes are transport
   facts, not evidence that a reply is new. The relay attaches the SDK event
   origin to each stable event before actor scheduling, so lifecycle provenance
@@ -685,7 +687,8 @@ stateDiagram-v2
   when its canonical position is known and reliably emits the next
   `ThreadAttentionUpdated` projection. An out-of-window receipt advances the
   fallback baseline but conservatively retains counts whose ordering cannot be
-  proven yet.
+  proven yet; later reconciliation prunes those counts once the receipt and
+  counted event positions become visible together.
 - `TimelineItem.thread_summary.reply_count` remains the total reply projection.
   It is never copied into or reconstructed as pane-level new/unread attention.
 

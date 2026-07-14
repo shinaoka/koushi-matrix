@@ -48,7 +48,9 @@ are candidates. Transaction local echoes, root events, replies for other roots,
 and events sent by the current user are never candidates. A later remote echo
 of an own send remains excluded by sender identity. A live encrypted reply is
 not deduplicated until it becomes renderable, so a later decrypted `Set` can
-count it; backfill and replay identities are absorbed immediately.
+count it even across unrelated intervening batches. Only identities explicitly
+carried by a batch consume that batch's provenance; backfill and replay
+identities are absorbed immediately.
 
 When the receipt baseline is present in the canonical thread window, only
 remote matching replies after it are unread candidates. When it is outside the
@@ -62,7 +64,8 @@ At actor startup, the tracker reads the SDK timeline's latest own threaded
 receipt. The actor also observes own-receipt changes so another device can
 advance the baseline. A receipt outside the retained canonical window updates
 the fallback baseline but conservatively preserves counts whose relative order
-cannot yet be proven.
+cannot yet be proven. If later pagination/recovery makes the receipt and counted
+events correlatable, reconciliation prunes counted IDs at or before the receipt.
 
 A successful `SendReadReceipt` on a thread timeline acknowledges through the
 same tracker before the success event is emitted. The tracker clears counted
