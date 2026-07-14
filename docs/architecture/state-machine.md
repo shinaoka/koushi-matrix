@@ -692,8 +692,10 @@ stateDiagram-v2
   proven yet; later reconciliation prunes those counts once the receipt and
   counted event positions become visible together.
 - After a successful local threaded receipt send, the actor re-queries the SDK's
-  latest own receipt before acknowledging the tracker. The requested viewport
-  event ID cannot regress a newer multi-device read boundary.
+  latest own receipt before acknowledging the tracker. It selects the newest
+  canonically provable position among the queried, current, and requested IDs,
+  so a stale SDK cache cannot delay the successful acknowledgement and the
+  requested viewport ID cannot regress a newer multi-device boundary.
 - `TimelineItem.thread_summary.reply_count` remains the total reply projection.
   It is never copied into or reconstructed as pane-level new/unread attention.
 

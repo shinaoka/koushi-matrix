@@ -2661,6 +2661,51 @@ fn matching_thread_reply_event_id<'a>(
     Some(event_id)
 }
 
+fn newest_provable_receipt_event_id(
+    items: &[TimelineItem],
+    requested_event_id: &str,
+    queried_event_id: Option<String>,
+    current_event_id: Option<&str>,
+) -> String {
+    let positions = items
+        .iter()
+        .enumerate()
+        .filter_map(|(position, item)| match &item.id {
+            TimelineItemId::Event { event_id } => Some((event_id.as_str(), position)),
+            TimelineItemId::Transaction { .. } | TimelineItemId::Synthetic { .. } => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let mut candidates = vec![requested_event_id.to_owned()];
+    if let Some(queried_event_id) = queried_event_id {
+        if !candidates.contains(&queried_event_id) {
+            candidates.push(queried_event_id);
+        }
+    }
+    if let Some(current_event_id) = current_event_id {
+        if !candidates
+            .iter()
+            .any(|candidate| candidate == current_event_id)
+        {
+            candidates.push(current_event_id.to_owned());
+        }
+    }
+
+    if candidates
+        .iter()
+        .all(|candidate| positions.contains_key(candidate.as_str()))
+    {
+        return candidates
+            .into_iter()
+            .max_by_key(|candidate| positions[candidate.as_str()])
+            .unwrap_or_else(|| requested_event_id.to_owned());
+    }
+
+    current_event_id
+        .map(str::to_owned)
+        .or_else(|| candidates.get(1).cloned())
+        .unwrap_or_else(|| requested_event_id.to_owned())
+}
+
 fn validate_composer_body_for_timeline_send(body: &str) -> Result<(), TimelineFailureKind> {
     match resolve_composer_send_intent(body, MentionIntent::default()) {
         ComposerSendIntent::LocalFailure { .. }
@@ -7910,16 +7955,20 @@ impl TimelineActor {
         match result {
             Ok(_) => {
                 if matches!(self.key.kind, TimelineKind::Thread { .. }) {
-                    let authoritative_event_id = match self.own_user_id.as_deref() {
+                    let queried_event_id = match self.own_user_id.as_deref() {
                         Some(own_user_id) => self
                             .timeline
                             .latest_user_read_receipt_timeline_event_id(own_user_id)
                             .await
                             .map(|event_id| event_id.to_string()),
                         None => None,
-                    }
-                    .or_else(|| self.thread_attention.receipt_event_id.clone())
-                    .unwrap_or_else(|| event_id.clone());
+                    };
+                    let authoritative_event_id = newest_provable_receipt_event_id(
+                        &self.navigation_items,
+                        &event_id,
+                        queried_event_id,
+                        self.thread_attention.receipt_event_id.as_deref(),
+                    );
                     if let Some(action) = self.thread_attention.acknowledge(
                         &self.key,
                         &self.navigation_items,
@@ -19535,6 +19584,38 @@ mod tests {
         assert!(
             authoritative_query < acknowledge,
             "a stale requested event ID must not regress the authoritative baseline"
+        );
+    }
+
+    #[test]
+    fn successful_receipt_uses_newest_provable_canonical_boundary() {
+        let items = vec![
+            thread_reply_item("$old-read:test", "@me:test", "$root:test"),
+            thread_reply_item("$requested-read:test", "@me:test", "$root:test"),
+            thread_reply_item("$newer-device-read:test", "@me:test", "$root:test"),
+        ];
+
+        let requested = "$requested-read:test";
+        let selected = newest_provable_receipt_event_id(
+            &items,
+            requested,
+            Some("$old-read:test".to_owned()),
+            Some("$old-read:test"),
+        );
+        assert_eq!(
+            selected, requested,
+            "a stale SDK query must not delay the successful newer request"
+        );
+
+        assert_eq!(
+            newest_provable_receipt_event_id(
+                &items,
+                "$requested-read:test",
+                Some("$old-read:test".to_owned()),
+                Some("$newer-device-read:test"),
+            ),
+            "$newer-device-read:test",
+            "a stale request must not regress a newer multi-device boundary"
         );
     }
 
