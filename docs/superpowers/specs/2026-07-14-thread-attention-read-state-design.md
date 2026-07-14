@@ -46,7 +46,9 @@ The tracker records:
 Only event-backed, renderable items whose `thread_root` equals the actor's root
 are candidates. Transaction local echoes, root events, replies for other roots,
 and events sent by the current user are never candidates. A later remote echo
-of an own send remains excluded by sender identity.
+of an own send remains excluded by sender identity. A live encrypted reply is
+not deduplicated until it becomes renderable, so a later decrypted `Set` can
+count it; backfill and replay identities are absorbed immediately.
 
 When the receipt baseline is present in the canonical thread window, only
 remote matching replies after it are unread candidates. When it is outside the

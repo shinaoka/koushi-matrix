@@ -5282,23 +5282,32 @@ impl ThreadAttentionTracker {
             let Some(stable_event_id) = matching_thread_reply_event_id(item, root_event_id) else {
                 continue;
             };
-            let first_observation = self
-                .observed_reply_event_ids
-                .insert(stable_event_id.to_owned());
-            if provenance.observation_for(stable_event_id) != ThreadAttentionObservation::Live
-                || !first_observation
-            {
+            if provenance.observation_for(stable_event_id) != ThreadAttentionObservation::Live {
+                self.observed_reply_event_ids
+                    .insert(stable_event_id.to_owned());
                 continue;
             }
-            let Some(event_id) =
-                matching_remote_thread_reply_event_id(item, root_event_id, own_user_id)
-            else {
+            if self.observed_reply_event_ids.contains(stable_event_id) {
                 continue;
-            };
+            }
+            if own_user_id.is_some_and(|own_user_id| item.sender.as_deref() == Some(own_user_id)) {
+                self.observed_reply_event_ids
+                    .insert(stable_event_id.to_owned());
+                continue;
+            }
             if receipt_position.is_some_and(|receipt_position| position <= receipt_position) {
+                self.observed_reply_event_ids
+                    .insert(stable_event_id.to_owned());
                 continue;
             }
-            self.attention_event_ids.insert(event_id.to_owned());
+            if item.body.is_none() && item.media.is_none() {
+                // A live encrypted reply can first arrive without renderable
+                // content. Keep it eligible for the SDK's later decrypted Set.
+                continue;
+            }
+            self.observed_reply_event_ids
+                .insert(stable_event_id.to_owned());
+            self.attention_event_ids.insert(stable_event_id.to_owned());
         }
 
         self.refresh_counts();
@@ -19150,6 +19159,43 @@ mod tests {
             "the same stable event must not increment after reconnect/replay"
         );
         assert_eq!(tracker.counts.notification_count, 1);
+    }
+
+    #[test]
+    fn live_encrypted_reply_counts_when_a_later_set_becomes_renderable() {
+        let key = thread_key();
+        let own_user_id = "@me:test";
+        let mut unavailable = thread_reply_item("$encrypted-live:test", "@bob:test", "$root:test");
+        unavailable.body = None;
+        unavailable.media = None;
+        let mut tracker = ThreadAttentionTracker::hydrate(&key, &[], Some(own_user_id), None);
+
+        assert_eq!(
+            tracker.reconcile(
+                &key,
+                std::slice::from_ref(&unavailable),
+                Some(own_user_id),
+                ThreadAttentionObservation::Live,
+            ),
+            None
+        );
+
+        let renderable = thread_reply_item("$encrypted-live:test", "@bob:test", "$root:test");
+        assert_eq!(
+            tracker.reconcile(
+                &key,
+                &[renderable],
+                Some(own_user_id),
+                ThreadAttentionObservation::Live,
+            ),
+            Some(AppAction::ThreadAttentionUpdated {
+                room_id: "!r:test".to_owned(),
+                root_event_id: "$root:test".to_owned(),
+                notification_count: 1,
+                highlight_count: 0,
+                live_event_marker_count: 1,
+            })
+        );
     }
 
     #[test]

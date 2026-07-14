@@ -670,7 +670,8 @@ stateDiagram-v2
   renderable `m.thread` replies whose relation matches the tracked root and
   whose sender is not the current user. The root, transaction local echoes,
   later own remote echoes, other roots, and duplicate stable event IDs never
-  count.
+  count. A live encrypted reply that is not renderable yet remains eligible for
+  its later decrypted `Set`; backfill/replay IDs are absorbed immediately.
 - `PushBack`, insertion position, and other vector-diff shapes are transport
   facts, not evidence that a reply is new. The relay attaches the SDK event
   origin to each stable event before actor scheduling, so lifecycle provenance
