@@ -663,11 +663,41 @@ stateDiagram-v2
   three fields directly from `AppState.thread_attention`. They must not be
   derived from room-list unread totals, timeline row `thread_summary` chips, or
   visible thread rows.
-- The current producer increments `notification_count` and
-  `live_event_marker_count` from remote live `PushBack` message diffs in the
-  open thread timeline. Backfill/prepend diffs and the current user's own
-  messages are ignored. Future richer SDK thread notification counts must enter
-  through the same Rust-owned action/state path.
+- The producer is an actor-owned semantic tracker seeded from the SDK
+  timeline's latest own threaded receipt. Hydration, backfill, replay, reset,
+  and reconnect/resubscription observations normally extend its stable event-ID
+  frontier without incrementing attention. A recovery/reset snapshot may add a
+  first-seen event only when its canonical position after the visible
+  authoritative receipt proves it unread. Live reconciliation counts only event-backed,
+  renderable `m.thread` replies whose relation matches the tracked root and
+  whose sender is not the current user. The root, transaction local echoes,
+  later own remote echoes, other roots, and duplicate stable event IDs never
+  count. A live encrypted reply that is not renderable yet remains eligible for
+  its later decrypted `Set`, including across unrelated batches; only event IDs
+  explicitly carried by a batch consume that batch's provenance. Backfill/replay
+  IDs are absorbed immediately.
+- `PushBack`, insertion position, and other vector-diff shapes are transport
+  facts, not evidence that a reply is new. The relay attaches the SDK event
+  origin to each stable event before actor scheduling, so lifecycle provenance
+  cannot race pagination completion or other ambient actor state. Sync origin
+  is live; pagination is backfill; cache, reset, append, and unknown origin are
+  conservative replay. When the receipt is visible in the
+  canonical thread window, it is the unread baseline; when it is outside the
+  retained window, the explicit lifecycle frontier is the conservative
+  fallback. A successful threaded read receipt, including an observed receipt
+  advance from another device, acknowledges counted events through that event
+  when its canonical position is known and reliably emits the next
+  `ThreadAttentionUpdated` projection. An out-of-window receipt advances the
+  fallback baseline but conservatively retains counts whose ordering cannot be
+  proven yet; later reconciliation prunes those counts once the receipt and
+  counted event positions become visible together.
+- After a successful local threaded receipt send, the actor re-queries the SDK's
+  latest own receipt before acknowledging the tracker. It selects the newest
+  canonically provable position among the queried, current, and requested IDs,
+  so a stale SDK cache cannot delay the successful acknowledgement and the
+  requested viewport ID cannot regress a newer multi-device boundary.
+- `TimelineItem.thread_summary.reply_count` remains the total reply projection.
+  It is never copied into or reconstructed as pane-level new/unread attention.
 
 ## Main Timeline Anchor (Jump To Date)
 

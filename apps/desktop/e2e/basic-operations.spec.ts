@@ -7211,6 +7211,113 @@ test("timeline header Threads button opens the threads list and row opens a thre
     });
 });
 
+test("thread attention renders one Rust count in the root and header and clears on acknowledgement snapshot", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  const rootEventId = "$attention-root:example.invalid";
+  const rootItem = {
+      id: { Event: { event_id: rootEventId } },
+      sender: "@root-sender:example.invalid",
+      body: "Thread root",
+      timestamp_ms: 1_800_000_003_000,
+      in_reply_to_event_id: null,
+      thread_root: null,
+      thread_summary: {
+        reply_count: 4,
+        latest_event_id: "$latest-reply:example.invalid",
+        latest_sender: "@reply-sender:example.invalid",
+        latest_sender_label: "Reply sender",
+        latest_body_preview: "Latest reply",
+        latest_timestamp_ms: 1_800_000_003_100
+      },
+      reactions: [],
+      can_react: true,
+      is_redacted: false,
+      is_hidden: false,
+      can_redact: false,
+      is_edited: false,
+      can_edit: false
+  };
+  await page.evaluate(
+    async ({ key, item }) => {
+      await window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key,
+            generation: 2,
+            items: [item]
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    { key: HARNESS_ROOM_KEY, item: rootItem }
+  );
+  await expect(page.getByText("Thread root", { exact: true })).toBeVisible();
+
+  await page.evaluate(
+    ({ roomId, rootEventId }) => {
+      const snapshot = window.__harness.currentSnapshot();
+      window.__harness.setSnapshot({
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          domain: {
+            ...snapshot.state.domain,
+            thread_attention: {
+              kind: "tracking",
+              room_id: roomId,
+              root_event_id: rootEventId,
+              notification_count: 2,
+              highlight_count: 0,
+              live_event_marker_count: 2
+            }
+          }
+        }
+      });
+      window.__harness.pushStateChanged();
+    },
+    { roomId: HARNESS_ROOM_ID, rootEventId }
+  );
+
+  const threadsButton = page
+    .locator(".channel-actions")
+    .getByRole("button", { name: t("threads.title") });
+  await expect(threadsButton).toHaveAttribute("data-count", "2");
+  await expect(page.getByRole("button", { name: /View new replies · 2/ })).toBeVisible();
+
+  // A successful threaded read receipt is projected by Rust as the next
+  // snapshot. React must not keep or repair either count locally.
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    if (snapshot.state.domain.thread_attention.kind !== "tracking") {
+      throw new Error("thread attention fixture is not tracking");
+    }
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          thread_attention: {
+            ...snapshot.state.domain.thread_attention,
+            notification_count: 0,
+            highlight_count: 0,
+            live_event_marker_count: 0
+          }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+
+  await expect(page.getByRole("button", { name: /View new replies/ })).toHaveCount(0);
+  await expect(threadsButton).toHaveCount(0);
+});
+
 test("sidebar Home and Threads navigation buttons dispatch Rust-owned commands", async ({
   page
 }) => {
