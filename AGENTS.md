@@ -477,7 +477,9 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   the Tauri/TypeScript DTO but must not scan visible thread rows or row chips to
   derive indicator counts. The core producer uses the authoritative own
   threaded receipt plus explicit hydration/live/backfill/replay lifecycle and
-  stable event-ID deduplication. It counts only matching remote `m.thread`
+  stable event-ID deduplication. Relay batches carry the SDK event origin so a
+  delayed pagination/cache batch cannot become live after ambient task state
+  changes. It counts only matching remote `m.thread`
   replies; roots, own local/remote echoes, history, reset/replay, and reconnect
   duplicates are ignored. SDK vector mutation shapes such as `PushBack` are not
   unread evidence.

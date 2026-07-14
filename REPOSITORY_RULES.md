@@ -142,8 +142,10 @@ conflict is being resolved.
 - Pane-level thread attention is a Rust-owned read-state projection, not a
   timeline-vector projection. It uses the authoritative threaded receipt when
   available, explicit hydration/live/backfill/replay lifecycle, matching
-  `m.thread` relations, and stable event-ID deduplication. A vector mutation
-  such as `PushBack` is never sufficient evidence that a reply is new. Thread
+  `m.thread` relations, and stable event-ID deduplication. Relay batches carry
+  SDK event-origin provenance; consumers must not reconstruct lifecycle from
+  ambient pagination/task state. A vector mutation such as `PushBack` is never
+  sufficient evidence that a reply is new. Thread
   summary total reply counts remain separate from new/unread attention, and a
   successful threaded read acknowledgement clears attention through the Rust
   actor/reducer path.

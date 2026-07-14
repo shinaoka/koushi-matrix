@@ -672,7 +672,11 @@ stateDiagram-v2
   later own remote echoes, other roots, and duplicate stable event IDs never
   count.
 - `PushBack`, insertion position, and other vector-diff shapes are transport
-  facts, not evidence that a reply is new. When the receipt is visible in the
+  facts, not evidence that a reply is new. The relay attaches the SDK event
+  origin to each stable event before actor scheduling, so lifecycle provenance
+  cannot race pagination completion or other ambient actor state. Sync origin
+  is live; pagination is backfill; cache, reset, append, and unknown origin are
+  conservative replay. When the receipt is visible in the
   canonical thread window, it is the unread baseline; when it is outside the
   retained window, the explicit lifecycle frontier is the conservative
   fallback. A successful threaded read receipt, including an observed receipt

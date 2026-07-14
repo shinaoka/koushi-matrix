@@ -89,10 +89,11 @@ use matrix_sdk::ruma::events::sticker::StickerEventContent;
 use matrix_sdk::ruma::html::{Html, SanitizerConfig};
 use matrix_sdk::send_queue::{LocalEcho, LocalEchoContent, RoomSendQueueUpdate, SendHandle};
 use matrix_sdk_ui::timeline::{
-    EmbeddedEvent, EncryptedMessage, EventSendState as SdkEventSendState, EventTimelineItem,
-    InReplyToDetails, MembershipChange, Profile, ReactionStatus, ReactionsByKeyBySender, Timeline,
-    TimelineDetails, TimelineEventItemId, TimelineFocus, TimelineItem as SdkTimelineItem,
-    TimelineItemContent, TimelineItemKind, TimelineReadReceiptTracking,
+    EmbeddedEvent, EncryptedMessage, EventItemOrigin, EventSendState as SdkEventSendState,
+    EventTimelineItem, InReplyToDetails, MembershipChange, Profile, ReactionStatus,
+    ReactionsByKeyBySender, Timeline, TimelineDetails, TimelineEventItemId, TimelineFocus,
+    TimelineItem as SdkTimelineItem, TimelineItemContent, TimelineItemKind,
+    TimelineReadReceiptTracking,
 };
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
@@ -3037,6 +3038,7 @@ fn spawn_relay_restart_timer(
 struct TimelineRelayBatch {
     generation: TimelineGeneration,
     diffs: Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>,
+    thread_attention_provenance: ThreadAttentionBatchProvenance,
 }
 
 fn timeline_key_trace_kind(key: &TimelineKey) -> &'static str {
@@ -5105,6 +5107,99 @@ enum ThreadAttentionObservation {
     Replay,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct ThreadAttentionBatchProvenance {
+    event_observations: HashMap<String, ThreadAttentionObservation>,
+}
+
+fn thread_attention_observation_from_event_origin(
+    origin: Option<EventItemOrigin>,
+) -> ThreadAttentionObservation {
+    match origin {
+        Some(EventItemOrigin::Sync) => ThreadAttentionObservation::Live,
+        Some(EventItemOrigin::Pagination) => ThreadAttentionObservation::Backfill,
+        Some(EventItemOrigin::Cache) | Some(EventItemOrigin::Local) | None => {
+            ThreadAttentionObservation::Replay
+        }
+    }
+}
+
+impl ThreadAttentionBatchProvenance {
+    fn from_sdk_diffs(diffs: &[eyeball_im::VectorDiff<Arc<SdkTimelineItem>>]) -> Self {
+        let mut provenance = Self::default();
+        for diff in diffs {
+            match diff {
+                eyeball_im::VectorDiff::PushFront { value }
+                | eyeball_im::VectorDiff::PushBack { value }
+                | eyeball_im::VectorDiff::Insert { value, .. }
+                | eyeball_im::VectorDiff::Set { value, .. } => {
+                    provenance.observe_sdk_item(value, None);
+                }
+                // Reset and Append are replay/full-window shapes. Even if an
+                // individual SDK item retains Sync origin, this delivery is
+                // not evidence that it first arrived live in this actor.
+                eyeball_im::VectorDiff::Reset { values }
+                | eyeball_im::VectorDiff::Append { values } => {
+                    for value in values {
+                        provenance
+                            .observe_sdk_item(value, Some(ThreadAttentionObservation::Replay));
+                    }
+                }
+                eyeball_im::VectorDiff::Remove { .. }
+                | eyeball_im::VectorDiff::Truncate { .. }
+                | eyeball_im::VectorDiff::Clear
+                | eyeball_im::VectorDiff::PopFront
+                | eyeball_im::VectorDiff::PopBack => {}
+            }
+        }
+        provenance
+    }
+
+    fn from_timeline_items(
+        items: &[TimelineItem],
+        observation: ThreadAttentionObservation,
+    ) -> Self {
+        let event_observations = items
+            .iter()
+            .filter_map(|item| match &item.id {
+                TimelineItemId::Event { event_id } => Some((event_id.clone(), observation)),
+                TimelineItemId::Transaction { .. } | TimelineItemId::Synthetic { .. } => None,
+            })
+            .collect();
+        Self { event_observations }
+    }
+
+    fn observe_sdk_item(
+        &mut self,
+        item: &Arc<SdkTimelineItem>,
+        forced: Option<ThreadAttentionObservation>,
+    ) {
+        let Some(event) = item.as_event() else {
+            return;
+        };
+        let Some(event_id) = event.event_id() else {
+            return;
+        };
+        let observation = forced
+            .unwrap_or_else(|| thread_attention_observation_from_event_origin(event.origin()));
+        self.event_observations
+            .entry(event_id.to_string())
+            .and_modify(|existing| {
+                if *existing != observation {
+                    *existing = ThreadAttentionObservation::Replay;
+                }
+            })
+            .or_insert(observation);
+    }
+
+    fn observation_for(&self, event_id: &str) -> ThreadAttentionObservation {
+        self.event_observations
+            .get(event_id)
+            .copied()
+            .unwrap_or(ThreadAttentionObservation::Replay)
+    }
+}
+
 #[derive(Debug, Default)]
 struct ThreadAttentionTracker {
     receipt_event_id: Option<String>,
@@ -5156,6 +5251,17 @@ impl ThreadAttentionTracker {
         own_user_id: Option<&str>,
         observation: ThreadAttentionObservation,
     ) -> Option<AppAction> {
+        let provenance = ThreadAttentionBatchProvenance::from_timeline_items(items, observation);
+        self.reconcile_batch(key, items, own_user_id, &provenance)
+    }
+
+    fn reconcile_batch(
+        &mut self,
+        key: &TimelineKey,
+        items: &[TimelineItem],
+        own_user_id: Option<&str>,
+        provenance: &ThreadAttentionBatchProvenance,
+    ) -> Option<AppAction> {
         let TimelineKind::Thread { root_event_id, .. } = &key.kind else {
             return None;
         };
@@ -5179,7 +5285,9 @@ impl ThreadAttentionTracker {
             let first_observation = self
                 .observed_reply_event_ids
                 .insert(stable_event_id.to_owned());
-            if observation != ThreadAttentionObservation::Live || !first_observation {
+            if provenance.observation_for(stable_event_id) != ThreadAttentionObservation::Live
+                || !first_observation
+            {
                 continue;
             }
             let Some(event_id) =
@@ -5650,10 +5758,14 @@ impl TimelineActor {
                         None => futures_util::future::pending().await,
                     }
                 } => {
-                    if let Some(TimelineRelayBatch { generation, diffs }) = batch {
+                    if let Some(TimelineRelayBatch {
+                        generation,
+                        diffs,
+                        thread_attention_provenance,
+                    }) = batch {
                         if let Some(diffs) = accepted_relay_batch(self.generation, generation, diffs) {
                             self.relay_restart_backoff.reset_after_live_batch();
-                            self.handle_diff_batch(diffs).await;
+                            self.handle_diff_batch(diffs, thread_attention_provenance).await;
                         }
                     }
                 }
@@ -8080,6 +8192,7 @@ impl TimelineActor {
     async fn handle_diff_batch(
         &mut self,
         diffs: Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>,
+        thread_attention_provenance: ThreadAttentionBatchProvenance,
     ) {
         if diffs.is_empty() {
             return;
@@ -8144,17 +8257,6 @@ impl TimelineActor {
             }
         }
         trace_timeline_diffs("diff_batch", &self.key, &core_diffs);
-        let attention_observation =
-            if self.pagination_task.is_some() || self.restore_anchor.is_some() {
-                ThreadAttentionObservation::Backfill
-            } else if core_diffs
-                .iter()
-                .any(|diff| matches!(diff, TimelineDiff::Reset { .. } | TimelineDiff::Clear))
-            {
-                ThreadAttentionObservation::Replay
-            } else {
-                ThreadAttentionObservation::Live
-            };
         let activity_rows = activity_rows_from_timeline_diffs(&self.key, &core_diffs);
         if !activity_rows.is_empty() {
             let _ = self
@@ -8164,11 +8266,11 @@ impl TimelineActor {
                 }]);
         }
         apply_timeline_diffs_to_items(&mut self.navigation_items, &core_diffs);
-        if let Some(action) = self.thread_attention.reconcile(
+        if let Some(action) = self.thread_attention.reconcile_batch(
             &self.key,
             &self.navigation_items,
             self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
-            attention_observation,
+            &thread_attention_provenance,
         ) {
             let _ = self.emit_action_reliable(action).await;
         }
@@ -9923,7 +10025,12 @@ async fn run_diff_relay(
             break;
         };
 
-        match actor_tx.try_send(TimelineRelayBatch { generation, diffs }) {
+        let thread_attention_provenance = ThreadAttentionBatchProvenance::from_sdk_diffs(&diffs);
+        match actor_tx.try_send(TimelineRelayBatch {
+            generation,
+            diffs,
+            thread_attention_provenance,
+        }) {
             Ok(_) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
                 // Overflow control must not compete for capacity with data.
@@ -19075,6 +19182,55 @@ mod tests {
     }
 
     #[test]
+    fn delayed_pagination_batch_does_not_become_live_after_task_completion() {
+        let key = thread_key();
+        let own_user_id = "@me:test";
+        let historical = thread_reply_item("$old-delayed:test", "@bob:test", "$root:test");
+        let mut tracker = ThreadAttentionTracker::hydrate(&key, &[], Some(own_user_id), None);
+
+        // Reproduce the actor race reported by independent review: the SDK
+        // pagination call has completed and cleared ambient task state before
+        // its separately relayed PushBack batch reaches the actor.
+        let delayed_pagination_provenance = ThreadAttentionBatchProvenance::from_timeline_items(
+            std::slice::from_ref(&historical),
+            ThreadAttentionObservation::Backfill,
+        );
+
+        assert_eq!(
+            tracker.reconcile_batch(
+                &key,
+                std::slice::from_ref(&historical),
+                Some(own_user_id),
+                &delayed_pagination_provenance,
+            ),
+            None,
+            "pagination provenance must travel with the delayed batch"
+        );
+        assert_eq!(tracker.counts, ThreadAttentionCounters::default());
+    }
+
+    #[test]
+    fn sdk_event_origin_is_the_relay_batch_attention_provenance() {
+        assert_eq!(
+            thread_attention_observation_from_event_origin(Some(EventItemOrigin::Sync)),
+            ThreadAttentionObservation::Live
+        );
+        assert_eq!(
+            thread_attention_observation_from_event_origin(Some(EventItemOrigin::Pagination)),
+            ThreadAttentionObservation::Backfill
+        );
+        assert_eq!(
+            thread_attention_observation_from_event_origin(Some(EventItemOrigin::Cache)),
+            ThreadAttentionObservation::Replay
+        );
+        assert_eq!(
+            thread_attention_observation_from_event_origin(None),
+            ThreadAttentionObservation::Replay,
+            "unknown and delayed hydration must be conservative"
+        );
+    }
+
+    #[test]
     fn thread_attention_trackers_do_not_contaminate_different_threads() {
         let first_key = thread_key();
         let second_key = TimelineKey {
@@ -19706,6 +19862,7 @@ mod tests {
             .try_send(TimelineRelayBatch {
                 generation: TimelineGeneration(7),
                 diffs: Vec::new(),
+                thread_attention_provenance: ThreadAttentionBatchProvenance::default(),
             })
             .expect("test must fill the data inbox");
 
@@ -19745,7 +19902,8 @@ mod tests {
             actor_rx.recv().await,
             Some(TimelineRelayBatch {
                 generation: TimelineGeneration(8),
-                diffs
+                diffs,
+                ..
             }) if diffs.is_empty()
         ));
         assert!(matches!(
@@ -19923,6 +20081,7 @@ mod tests {
         let Some(TimelineRelayBatch {
             generation: batch_generation,
             diffs,
+            ..
         }) = actor_rx.recv().await
         else {
             panic!("replacement stream must produce a generation-tagged batch");

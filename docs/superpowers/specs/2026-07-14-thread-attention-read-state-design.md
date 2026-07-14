@@ -71,10 +71,11 @@ change attention by itself; only receipt state does.
 ## Integration and recovery
 
 Normal diff batches first update the actor's canonical `navigation_items`, then
-the tracker reconciles that semantic window. Pagination and anchor restoration
-are explicitly marked as backfill. `Reset`, replayed initial items, and relay
-overflow recovery are explicitly marked as replay. Stable event IDs survive
-those recovery boundaries for the actor lifetime.
+the tracker reconciles that semantic window. The relay records each event's SDK
+origin before scheduling the batch: sync is live, pagination is backfill, and
+cache/unknown/reset/append are replay. This provenance travels with the batch,
+so pagination completion cannot race a delayed historical `PushBack` into the
+live state. Stable event IDs survive recovery boundaries for the actor lifetime.
 
 React and wire DTOs do not change. The root affordance and header badge continue
 to render `AppState.thread_attention`; a later Rust snapshot with zero counters
