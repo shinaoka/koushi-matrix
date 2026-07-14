@@ -25,6 +25,55 @@ pub struct TimelinePaneState {
     pub media_gallery: Vec<TimelineMediaGalleryItem>,
     #[serde(default)]
     pub media_downloads: std::collections::BTreeMap<String, TimelineMediaDownloadState>,
+    #[serde(default)]
+    pub continuity: TimelineContinuityState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TimelineGapRepairFailureKind {
+    Network,
+    Timeout,
+    Sdk,
+    Cancelled,
+    UnsupportedAnchor,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TimelineContinuityInspection {
+    Unknown,
+    Gapped { gap_count: u32 },
+    Complete,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TimelineContinuityState {
+    #[default]
+    Unknown,
+    Inspecting {
+        generation: u64,
+        known_gap_count: u32,
+    },
+    Healthy {
+        generation: u64,
+        authoritative_start: bool,
+    },
+    Incomplete {
+        generation: u64,
+        gap_count: u32,
+    },
+    Repairing {
+        generation: u64,
+        gap_count: u32,
+        batches_processed: u32,
+    },
+    FailedIncomplete {
+        generation: u64,
+        gap_count: u32,
+        batches_processed: u32,
+        failure_kind: TimelineGapRepairFailureKind,
+    },
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

@@ -543,8 +543,8 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("load_room_settings", { roomId });
   }
 
-  async resetRoomTimelineCache(roomId: string): Promise<DesktopSnapshot> {
-    return invoke<DesktopSnapshot>("reset_room_timeline_cache", { roomId });
+  async repairRoomTimeline(roomId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("repair_room_timeline", { roomId });
   }
 
   async updateRoomSetting(

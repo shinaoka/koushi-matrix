@@ -1002,7 +1002,34 @@ export interface TimelinePaneState {
   staged_uploads: StagedUploadItem[];
   media_gallery: TimelineMediaGalleryItem[];
   media_downloads: Record<string, TimelineMediaDownloadState>;
+  continuity: TimelineContinuityState;
 }
+
+export type TimelineGapRepairFailureKind =
+  | "network"
+  | "timeout"
+  | "sdk"
+  | "cancelled"
+  | "unsupportedAnchor";
+
+export type TimelineContinuityState =
+  | { kind: "unknown" }
+  | { kind: "inspecting"; generation: number; known_gap_count: number }
+  | { kind: "healthy"; generation: number; authoritative_start: boolean }
+  | { kind: "incomplete"; generation: number; gap_count: number }
+  | {
+      kind: "repairing";
+      generation: number;
+      gap_count: number;
+      batches_processed: number;
+    }
+  | {
+      kind: "failedIncomplete";
+      generation: number;
+      gap_count: number;
+      batches_processed: number;
+      failure_kind: TimelineGapRepairFailureKind;
+    };
 
 export interface ComposerSubmissionRegistry {
   accepted_submission_ids: string[];

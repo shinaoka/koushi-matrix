@@ -6,7 +6,12 @@
  * rendering; it must never be used as a VectorDiff target.
  */
 
-import type { ThreadRootProjectionDto, TimelineItem, TimelineKey } from "./coreEvents";
+import type {
+  ThreadRootProjectionDto,
+  TimelineGapPosition,
+  TimelineItem,
+  TimelineKey
+} from "./coreEvents";
 import { timelineItemDomId } from "./coreEvents";
 import type { TimelineThreadRootOrder } from "./types";
 
@@ -23,8 +28,49 @@ export type TimelineDisplayRow = {
   content_timestamp_ms: number | null;
   /** Timestamp used for presentation placement and date grouping. */
   display_timestamp_ms: number | null;
-  kind: "event" | "threadRoot" | "threadRootPending" | "threadRootFailed" | "dateDivider";
+  kind:
+    | "event"
+    | "threadRoot"
+    | "threadRootPending"
+    | "threadRootFailed"
+    | "dateDivider"
+    | "timelineGap";
 };
+
+export function insertTimelineGapItems(
+  items: readonly TimelineItem[],
+  positions: readonly TimelineGapPosition[],
+  generation: number
+): TimelineItem[] {
+  if (positions.length === 0) {
+    return [...items];
+  }
+  const result = [...items];
+  for (const gap of [...positions].sort((left, right) => right.before_item_index - left.before_item_index)) {
+    const insertionIndex = Math.min(gap.before_item_index, result.length);
+    result.splice(insertionIndex, 0, timelineGapPlaceholderItem(generation, gap.ordinal));
+  }
+  return result;
+}
+
+function timelineGapPlaceholderItem(generation: number, ordinal: number): TimelineItem {
+  return {
+    id: { Synthetic: { synthetic_id: `timeline-gap-${generation}-${ordinal}` } },
+    sender: null,
+    body: null,
+    timestamp_ms: null,
+    in_reply_to_event_id: null,
+    thread_root: null,
+    thread_summary: null,
+    reactions: [],
+    can_react: false,
+    is_redacted: false,
+    is_hidden: false,
+    can_redact: false,
+    is_edited: false,
+    can_edit: false
+  };
+}
 
 type CanonicalEntry = {
   index: number;
@@ -360,6 +406,17 @@ function compareMoveCandidates(left: MoveCandidate, right: MoveCandidate): numbe
 }
 
 function canonicalRow(item: TimelineItem): TimelineDisplayRow {
+  if (isTimelineGapPlaceholder(item)) {
+    return {
+      row_id: timelineItemDomId(item.id),
+      item,
+      kind: "timelineGap",
+      content_event_id: null,
+      activity_event_id: null,
+      content_timestamp_ms: null,
+      display_timestamp_ms: null
+    };
+  }
   if (isCanonicalDateDivider(item)) {
     return {
       row_id: timelineItemDomId(item.id),
@@ -602,6 +659,10 @@ function isThreadReply(item: TimelineItem): boolean {
 
 function isCanonicalDateDivider(item: TimelineItem): boolean {
   return "Synthetic" in item.id && item.id.Synthetic.synthetic_id.startsWith("date-divider-");
+}
+
+function isTimelineGapPlaceholder(item: TimelineItem): boolean {
+  return "Synthetic" in item.id && item.id.Synthetic.synthetic_id.startsWith("timeline-gap-");
 }
 
 function eventIdFor(item: TimelineItem): string | null {

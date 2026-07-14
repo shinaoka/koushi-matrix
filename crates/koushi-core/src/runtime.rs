@@ -2117,7 +2117,7 @@ impl AppActor {
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
-                AppCommand::ResetRoomTimelineCache {
+                AppCommand::RepairRoomTimeline {
                     request_id,
                     room_id,
                 } => {
@@ -2128,15 +2128,12 @@ impl AppActor {
                         });
                         return true;
                     };
-                    let resubscribe =
-                        self.state.navigation.active_room_id.as_deref() == Some(room_id.as_str());
                     let _ = self
                         .account_actor
-                        .send(AccountMessage::ResetRoomTimelineCache {
+                        .send(AccountMessage::RepairRoomTimeline {
                             request_id,
                             account_key,
                             room_id,
-                            resubscribe,
                         })
                         .await;
                     true

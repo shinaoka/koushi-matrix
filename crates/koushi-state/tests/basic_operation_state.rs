@@ -42,6 +42,7 @@ fn ready_state() -> AppState {
             staged_uploads: Vec::new(),
             media_gallery: Vec::new(),
             media_downloads: Default::default(),
+            continuity: Default::default(),
         },
         ..AppState::default()
     }

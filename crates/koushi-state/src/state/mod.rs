@@ -159,7 +159,8 @@ pub use timeline::{
     MediaGalleryStore, MediaPreparationFailureKind, PendingComposerSendKind, PreparedUploadFormat,
     PreparedUploadVariant, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem,
     ScheduledSendStore, StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind,
-    StagedUploadPreparation, TimelineMediaGalleryItem, TimelineMediaGalleryMedia,
+    StagedUploadPreparation, TimelineContinuityInspection, TimelineContinuityState,
+    TimelineGapRepairFailureKind, TimelineMediaGalleryItem, TimelineMediaGalleryMedia,
     TimelineMediaGallerySource, TimelineMediaGalleryThumbnail, TimelineMediaKind,
     TimelinePaneState, UploadStagingStore,
 };

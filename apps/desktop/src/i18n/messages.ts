@@ -328,9 +328,8 @@ export type MessageId =
   | "room.roomScoped"
   | "room.roomSettings"
   | "room.repair"
-  | "room.resetTimelineCache"
-  | "room.resetTimelineCacheConfirm"
-  | "room.resetTimelineCacheHint"
+  | "room.repairTimeline"
+  | "room.repairTimelineHint"
   | "room.status"
   | "room.statusEncrypted"
   | "room.statusHistoryLimited"
@@ -734,6 +733,8 @@ export type MessageId =
   | "timeline.editMessage"
   | "timeline.editBody"
   | "timeline.loading"
+  | "timeline.gapRepairing"
+  | "timeline.gapRepairFailed"
   | "timeline.threadRootLoading"
   | "timeline.threadRootUnavailable"
   | "timeline.messagesTab"
@@ -1329,9 +1330,8 @@ const en: Catalog = {
   "room.roomScoped": "Room scoped",
   "room.roomSettings": "Room settings",
   "room.repair": "Repair",
-  "room.resetTimelineCache": "Reset room timeline cache",
-  "room.resetTimelineCacheConfirm": "Reset this room's local timeline cache? Messages, keys, drafts, and room settings will not be deleted.",
-  "room.resetTimelineCacheHint": "Last-resort repair for a local timeline cache gap. This only clears this room's local timeline event cache.",
+  "room.repairTimeline": "Repair room timeline",
+  "room.repairTimelineHint": "Detect and repair missing timeline ranges without deleting existing messages.",
   "room.status": "Room status",
   "room.statusEncrypted": "Encrypted",
   "room.statusHistoryLimited": "New members do not see history",
@@ -1747,6 +1747,8 @@ const en: Catalog = {
   "timeline.editMessage": "Edit message",
   "timeline.editBody": "Edit message body",
   "timeline.loading": "Loading",
+  "timeline.gapRepairing": "Repairing missing messages…",
+  "timeline.gapRepairFailed": "Some messages are still missing.",
   "timeline.threadRootLoading": "Loading thread message…",
   "timeline.threadRootUnavailable": "Thread message is unavailable.",
   "timeline.messagesTab": "Messages",
@@ -2228,9 +2230,8 @@ const ja: Catalog = {
   "room.roomScoped": "ルーム内",
   "room.roomSettings": "ルーム設定",
   "room.repair": "修復",
-  "room.resetTimelineCache": "ルームのタイムラインキャッシュをリセット",
-  "room.resetTimelineCacheConfirm": "このルームのローカルタイムラインキャッシュをリセットしますか？メッセージ、鍵、下書き、ルーム設定は削除されません。",
-  "room.resetTimelineCacheHint": "ローカルのタイムラインキャッシュに穴がある場合の最後の手動修復です。このルームのローカルタイムラインイベントキャッシュだけを消します。",
+  "room.repairTimeline": "ルームのタイムラインを修復",
+  "room.repairTimelineHint": "既存のメッセージを削除せず、欠けている範囲を検出して修復します。",
   "room.status": "ルーム状態",
   "room.statusEncrypted": "暗号化済み",
   "room.statusHistoryLimited": "新規メンバーは履歴を閲覧不可",
@@ -2646,6 +2647,8 @@ const ja: Catalog = {
   "timeline.editMessage": "メッセージを編集",
   "timeline.editBody": "メッセージ本文を編集",
   "timeline.loading": "読み込み中",
+  "timeline.gapRepairing": "欠けているメッセージを修復中…",
+  "timeline.gapRepairFailed": "一部のメッセージを取得できませんでした。",
   "timeline.threadRootLoading": "スレッドのメッセージを読み込んでいます…",
   "timeline.threadRootUnavailable": "スレッドのメッセージを利用できません。",
   "timeline.messagesTab": "メッセージ",

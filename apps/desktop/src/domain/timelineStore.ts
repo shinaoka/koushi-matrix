@@ -38,6 +38,7 @@ import type {
   TimelineDiff,
   TimelineEvent,
   TimelineItem,
+  TimelineGapPosition,
   TimelineKey,
   RequestId,
   ThreadRootProjectionDto
@@ -68,6 +69,8 @@ export interface TimelineKeyState {
   paginationBackward: PaginationState;
   paginationForward: PaginationState;
   mediaUploadProgress: Map<string, MediaTransferProgress>;
+  gapPositions: TimelineGapPosition[];
+  gapGeneration: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -107,7 +110,9 @@ function emptyKeyState(): TimelineKeyState {
     awaitingResync: true,
     paginationBackward: "Idle",
     paginationForward: "Idle",
-    mediaUploadProgress: new Map()
+    mediaUploadProgress: new Map(),
+    gapPositions: [],
+    gapGeneration: 0
   };
 }
 
@@ -249,6 +254,9 @@ export function applyTimelineEvent(
   }
   if ("PaginationStateChanged" in event) {
     return applyPaginationStateChanged(store, event.PaginationStateChanged);
+  }
+  if ("GapPositionsUpdated" in event) {
+    return applyGapPositionsUpdated(store, event.GapPositionsUpdated);
   }
   if ("ResyncRequired" in event) {
     return applyResyncRequired(store, event.ResyncRequired.key);
@@ -412,6 +420,9 @@ function timelineEventKeyId(event: TimelineEvent): string | null {
   if ("NavigationUpdated" in event) {
     return keyStr(event.NavigationUpdated.key);
   }
+  if ("GapPositionsUpdated" in event) {
+    return keyStr(event.GapPositionsUpdated.key);
+  }
   if ("SendCompleted" in event) {
     return keyStr(event.SendCompleted.key);
   }
@@ -497,7 +508,9 @@ function applyInitialItems(
     itemIndexById: indexed.itemIndexById,
     itemIdsByTimestamp: indexed.itemIdsByTimestamp,
     lastAppliedBatchId: null,
-    awaitingResync: false
+    awaitingResync: false,
+    gapGeneration: 0,
+    gapPositions: []
   });
   return withKeys(store, next);
 }
@@ -609,6 +622,27 @@ function applyPaginationStateChanged(
   return withKeys(store, next);
 }
 
+function applyGapPositionsUpdated(
+  store: TimelineStoreState,
+  payload: Extract<TimelineEvent, { GapPositionsUpdated: unknown }>["GapPositionsUpdated"]
+): TimelineStoreState {
+  const k = keyStr(payload.key);
+  const existing = store.keys.get(k) ?? emptyKeyState();
+  if (
+    (existing.actorGeneration !== 0 && payload.actor_generation !== existing.actorGeneration) ||
+    payload.generation < existing.gapGeneration
+  ) {
+    return store;
+  }
+  const next = new Map(store.keys);
+  next.set(k, {
+    ...existing,
+    gapGeneration: payload.generation,
+    gapPositions: payload.positions
+  });
+  return withKeys(store, next);
+}
+
 function applyResyncRequired(
   store: TimelineStoreState,
   key: TimelineKey
@@ -625,7 +659,8 @@ function applyResyncRequired(
     itemIndexById: new Map(),
     itemIdsByTimestamp: new Map(),
     awaitingResync: true,
-    mediaUploadProgress: new Map()
+    mediaUploadProgress: new Map(),
+    gapPositions: []
   });
   return withKeys(store, next);
 }

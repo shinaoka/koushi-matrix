@@ -350,6 +350,7 @@ fn timeline_pane_snapshot_contains_only_selected_room_scheduled_sends() {
         staged_uploads: Vec::new(),
         media_gallery: Vec::new(),
         media_downloads: Default::default(),
+        continuity: Default::default(),
     };
     assert_eq!(timeline.scheduled_sends.len(), 1);
 }

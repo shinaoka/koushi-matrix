@@ -2111,7 +2111,11 @@ describe("TimelineView", () => {
     });
 
     const timeline = await screen.findByTestId("timeline-view");
-    Object.defineProperty(timeline, "scrollTop", { value: 0, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
     fireEvent.scroll(timeline);
 
     await waitFor(() => {
@@ -5553,6 +5557,161 @@ describe("TimelineView", () => {
       )
     ).toEqual(["$default-thread-root:example.invalid", "$default-between:example.invalid"]);
     expect(paginateBackwards).not.toHaveBeenCalled();
+  });
+
+  it("renders a Rust-positioned failed gap between known rows and retries non-destructively", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const repairTimeline = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      repairTimeline
+    });
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        continuity={{
+          kind: "failedIncomplete",
+          generation: 3,
+          gap_count: 1,
+          batches_processed: 2,
+          failure_kind: "sdk"
+        }}
+      />
+    );
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [message("$older:example.invalid", "Older"), message("$newer:example.invalid", "Newer")]
+          }
+        }
+      });
+      emit({
+        kind: "Timeline",
+        event: {
+          GapPositionsUpdated: {
+            key: KEY,
+            actor_generation: 0,
+            generation: 3,
+            positions: [{ ordinal: 0, before_item_index: 1 }]
+          }
+        }
+      });
+    });
+
+    const frames = await screen.findAllByRole("article");
+    const gap = await screen.findByTestId("timeline-gap-row");
+    expect(frames[0]?.textContent).toContain("Older");
+    expect(frames[1]?.textContent).toContain("Newer");
+    expect(gap.parentElement?.previousElementSibling?.textContent).toContain("Older");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(repairTimeline).toHaveBeenCalledWith("!room:example.invalid");
+  });
+
+  it("keeps a canonical gap before its newer event when an earlier row is hidden", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        continuity={{ kind: "repairing", generation: 3, gap_count: 1, batches_processed: 0 }}
+      />
+    );
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            actor_generation: 1,
+            generation: 1,
+            items: [
+              message("$older:example.invalid", "Older"),
+              { ...message("$hidden:example.invalid", "Hidden"), is_hidden: true },
+              message("$newer:example.invalid", "Newer")
+            ]
+          }
+        }
+      });
+      emit({
+        kind: "Timeline",
+        event: {
+          GapPositionsUpdated: {
+            key: KEY,
+            actor_generation: 1,
+            generation: 3,
+            positions: [{ ordinal: 0, before_item_index: 2 }]
+          }
+        }
+      });
+    });
+
+    const gap = await screen.findByTestId("timeline-gap-row");
+    expect(gap.parentElement?.previousElementSibling?.textContent).toContain("Older");
+    expect(gap.parentElement?.nextElementSibling?.textContent).toContain("Newer");
+  });
+
+  it("shows conversation start only with Rust-owned authoritative continuity", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const { rerender } = render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        continuity={{ kind: "unknown" }}
+      />
+    );
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          PaginationStateChanged: {
+            request_id: null,
+            key: KEY,
+            direction: "Backward",
+            state: "EndReached"
+          }
+        }
+      });
+    });
+    expect(screen.queryByText("Start of conversation")).toBeNull();
+
+    rerender(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        continuity={{ kind: "healthy", generation: 2, authoritative_start: true }}
+      />
+    );
+    expect(await screen.findByText("Start of conversation")).not.toBeNull();
   });
 
   it("keeps the root but hides conversation-start chrome and its summary in thread presentation", async () => {

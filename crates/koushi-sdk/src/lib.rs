@@ -2480,9 +2480,167 @@ pub struct MatrixClientSession {
     pub info: SessionInfo,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixTimelineContinuity {
+    Unknown,
+    Gapped,
+    Complete,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixTimelineGapError {
+    InvalidRoom,
+    RoomUnavailable,
+    Sdk,
+}
+
+#[derive(Clone)]
+pub struct MatrixTimelineGapHandle {
+    room_id: matrix_sdk::ruma::OwnedRoomId,
+    descriptor: matrix_sdk::event_cache::RoomTimelineGapDescriptor,
+}
+
+impl std::fmt::Debug for MatrixTimelineGapHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MatrixTimelineGapHandle")
+            .finish_non_exhaustive()
+    }
+}
+
+impl MatrixTimelineGapHandle {
+    pub fn older_boundary_event_id(&self) -> Option<&str> {
+        self.descriptor
+            .older_event_id
+            .as_deref()
+            .map(|event_id| event_id.as_str())
+    }
+
+    pub fn newer_boundary_event_id(&self) -> Option<&str> {
+        self.descriptor
+            .newer_event_id
+            .as_deref()
+            .map(|event_id| event_id.as_str())
+    }
+}
+
+#[derive(Clone)]
+pub struct MatrixTimelineGapInspection {
+    pub continuity: MatrixTimelineContinuity,
+    pub gaps: Vec<MatrixTimelineGapHandle>,
+}
+
+impl std::fmt::Debug for MatrixTimelineGapInspection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MatrixTimelineGapInspection")
+            .field("continuity", &self.continuity)
+            .field("gap_count", &self.gaps.len())
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MatrixTimelineGapRepairBudget {
+    pub event_limit: u16,
+    pub cached_chunk_limit: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixTimelineGapRepairOutcome {
+    Stale,
+    Deferred { cached_chunks_loaded: usize },
+    Failed,
+    Progress { events: usize },
+    BoundariesJoined { events: usize },
+    StartReached { events: usize },
+}
+
 impl MatrixClientSession {
     pub fn client(&self) -> matrix_sdk::Client {
         self.client.clone()
+    }
+
+    pub async fn inspect_room_timeline_gaps(
+        &self,
+        room_id: &str,
+    ) -> Result<MatrixTimelineGapInspection, MatrixTimelineGapError> {
+        use matrix_sdk::event_cache::RoomTimelineContinuity;
+
+        let room_id = matrix_sdk::ruma::RoomId::parse(room_id)
+            .map_err(|_| MatrixTimelineGapError::InvalidRoom)?;
+        let room = self
+            .client
+            .get_room(&room_id)
+            .ok_or(MatrixTimelineGapError::RoomUnavailable)?;
+        let (cache, _drop_handles) = room
+            .event_cache()
+            .await
+            .map_err(|_| MatrixTimelineGapError::Sdk)?;
+        let inspection = cache
+            .inspect_timeline_gaps()
+            .await
+            .map_err(|_| MatrixTimelineGapError::Sdk)?;
+        let continuity = match inspection.continuity {
+            RoomTimelineContinuity::Unknown => MatrixTimelineContinuity::Unknown,
+            RoomTimelineContinuity::Gapped => MatrixTimelineContinuity::Gapped,
+            RoomTimelineContinuity::Complete => MatrixTimelineContinuity::Complete,
+        };
+        let gaps = inspection
+            .gaps
+            .into_iter()
+            .map(|descriptor| MatrixTimelineGapHandle {
+                room_id: room_id.clone(),
+                descriptor,
+            })
+            .collect();
+        Ok(MatrixTimelineGapInspection { continuity, gaps })
+    }
+
+    pub async fn repair_room_timeline_gap(
+        &self,
+        gap: &MatrixTimelineGapHandle,
+        budget: MatrixTimelineGapRepairBudget,
+    ) -> Result<MatrixTimelineGapRepairOutcome, MatrixTimelineGapError> {
+        use matrix_sdk::event_cache::{RoomTimelineGapRepairBudget, RoomTimelineGapRepairOutcome};
+
+        let room = self
+            .client
+            .get_room(&gap.room_id)
+            .ok_or(MatrixTimelineGapError::RoomUnavailable)?;
+        let (cache, _drop_handles) = room
+            .event_cache()
+            .await
+            .map_err(|_| MatrixTimelineGapError::Sdk)?;
+        let outcome = cache
+            .pagination()
+            .repair_timeline_gap(
+                &gap.descriptor,
+                RoomTimelineGapRepairBudget {
+                    event_limit: budget.event_limit,
+                    cached_chunk_limit: budget.cached_chunk_limit,
+                },
+            )
+            .await
+            .map_err(|_| MatrixTimelineGapError::Sdk)?;
+        Ok(match outcome {
+            RoomTimelineGapRepairOutcome::Stale => MatrixTimelineGapRepairOutcome::Stale,
+            RoomTimelineGapRepairOutcome::Deferred {
+                cached_chunks_loaded,
+            } => MatrixTimelineGapRepairOutcome::Deferred {
+                cached_chunks_loaded,
+            },
+            RoomTimelineGapRepairOutcome::Failed => MatrixTimelineGapRepairOutcome::Failed,
+            RoomTimelineGapRepairOutcome::Progress { events } => {
+                MatrixTimelineGapRepairOutcome::Progress { events }
+            }
+            RoomTimelineGapRepairOutcome::BoundariesJoined { events } => {
+                MatrixTimelineGapRepairOutcome::BoundariesJoined { events }
+            }
+            RoomTimelineGapRepairOutcome::StartReached { events } => {
+                MatrixTimelineGapRepairOutcome::StartReached { events }
+            }
+        })
     }
 
     pub fn persistable_session(&self) -> Result<PersistableMatrixSession, PasswordLoginError> {

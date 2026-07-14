@@ -293,6 +293,9 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
           });
         }
       },
+      async repairTimeline(roomId: string) {
+        await invoke("repair_room_timeline", { roomId });
+      },
       async sendReaction(roomId: string, eventId: string, reactionKey: string) {
         await invoke("send_reaction", { roomId, eventId, reactionKey });
       },
@@ -1911,8 +1914,8 @@ export function App() {
     setSnapshot(await api.setRoomUrlPreviewOverride(roomId, enabled));
   }
 
-  async function resetRoomTimelineCache(roomId: string) {
-    setSnapshot(await api.resetRoomTimelineCache(roomId));
+  async function repairRoomTimeline(roomId: string) {
+    setSnapshot(await api.repairRoomTimeline(roomId));
   }
 
   async function queryDevices() {
@@ -3890,8 +3893,8 @@ export function App() {
           onSetRoomNotificationMode={(roomId, mode) => {
             void setRoomNotificationMode(roomId, mode);
           }}
-          onResetRoomTimelineCache={(roomId) => {
-            void resetRoomTimelineCache(roomId);
+          onRepairRoomTimeline={(roomId) => {
+            void repairRoomTimeline(roomId);
           }}
           onStartDirectMessage={(userId) => {
             void startDirectMessage(userId);

@@ -57,13 +57,17 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel};
-use koushi_sdk::MatrixClientSession;
+use koushi_sdk::{
+    MatrixClientSession, MatrixTimelineContinuity, MatrixTimelineGapError, MatrixTimelineGapHandle,
+    MatrixTimelineGapInspection, MatrixTimelineGapRepairBudget, MatrixTimelineGapRepairOutcome,
+};
 use koushi_search::{AttachmentDocument, SensitiveString};
 use koushi_state::{
     ActivityRow, AppAction, AttachmentKind, AvatarImage, AvatarThumbnailState, ComposerSendIntent,
     FormattedMessageDraft, LiveEventReceipts, LiveReadReceipt, MediaTransferProgress,
     MentionIntent, OperationFailureKind, ReplyQuote, ReplyQuoteState, SlashCommandIntent,
-    ThreadRootProjectionActivity as ThreadRootProjectionActivityState, TimelineMediaDownloadState,
+    ThreadRootProjectionActivity as ThreadRootProjectionActivityState,
+    TimelineContinuityInspection, TimelineGapRepairFailureKind, TimelineMediaDownloadState,
     TimelineMediaGalleryItem, TimelineMediaGalleryMedia, TimelineMediaGallerySource,
     TimelineMediaGalleryThumbnail, TimelineMediaKind as GalleryTimelineMediaKind,
     resolve_composer_send_intent,
@@ -106,12 +110,12 @@ use crate::event::{
     CoreEvent, LinkPreview, LinkPreviewState, LiveSignalsEvent, PaginationDirection,
     PaginationState, ReactionGroup, ThreadRootProjectionDto, ThreadRootProjectionSourceDto,
     ThreadRootProjectionStateDto, ThreadSummaryDto, TimelineAnchorRestoreStatus, TimelineDiff,
-    TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind,
-    TimelineMediaSource, TimelineMediaThumbnail, TimelineMessageActions, TimelineMessageKind,
-    TimelineMessageSource, TimelineNavigationSnapshot, TimelineNoticeI18n, TimelineNoticeI18nKey,
-    TimelineResyncReason, TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
-    TimelineUnableToDecrypt, TimelineUnableToDecryptReason, TimelineUnreadPosition,
-    TimelineViewportObservation, message_actions_for_timeline_item,
+    TimelineEvent, TimelineGapPosition, TimelineItem, TimelineItemId, TimelineMedia,
+    TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineMessageActions,
+    TimelineMessageKind, TimelineMessageSource, TimelineNavigationSnapshot, TimelineNoticeI18n,
+    TimelineNoticeI18nKey, TimelineResyncReason, TimelineSendFailureReason, TimelineSendState,
+    TimelineSpoilerSpan, TimelineUnableToDecrypt, TimelineUnableToDecryptReason,
+    TimelineUnreadPosition, TimelineViewportObservation, message_actions_for_timeline_item,
     message_source_for_timeline_item,
 };
 use crate::executor;
@@ -1603,6 +1607,15 @@ impl TimelineManagerActor {
                 )
                 .await;
             }
+            TimelineCommand::RepairGaps { request_id, key } => {
+                record_timeline_gap_repair("requested", "manual", 0, 0, 0, "queued");
+                self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::InspectTimelineGaps,
+                )
+                .await;
+            }
             TimelineCommand::SendText {
                 request_id,
                 key,
@@ -2812,6 +2825,15 @@ fn ruma_mentions_from_intent(intent: &MentionIntent) -> Option<Mentions> {
 // ---------------------------------------------------------------------------
 
 enum TimelineActorMessage {
+    InspectTimelineGaps,
+    TimelineGapInspectionFinished {
+        serial: u64,
+        result: Result<MatrixTimelineGapInspection, MatrixTimelineGapError>,
+    },
+    TimelineGapRepairFinished {
+        serial: u64,
+        result: Result<MatrixTimelineGapRepairOutcome, MatrixTimelineGapError>,
+    },
     Paginate {
         request_id: RequestId,
         direction: PaginationDirection,
@@ -3231,6 +3253,27 @@ fn record_subscribe_stage(stage: &str, count: Option<usize>) {
         fields.push(DiagnosticField::count("count", count as u64));
     }
     record_timeline_event(stage, "subscribe", fields);
+}
+
+fn record_timeline_gap_repair(
+    stage: &'static str,
+    trigger: &'static str,
+    generation: u64,
+    gap_count: u32,
+    batches_processed: u32,
+    outcome: &'static str,
+) {
+    koushi_diagnostics::record_and_stderr(
+        DiagnosticEvent::new(DiagnosticLevel::Info, "core.timeline_gap_repair", stage)
+            .field(DiagnosticField::token("trigger", trigger))
+            .field(DiagnosticField::count("generation", generation))
+            .field(DiagnosticField::count("gap_count", gap_count.into()))
+            .field(DiagnosticField::count(
+                "batches_processed",
+                batches_processed.into(),
+            ))
+            .field(DiagnosticField::token("outcome", outcome)),
+    );
 }
 
 fn trace_timeline_actor_operation(
@@ -5016,6 +5059,91 @@ struct ActivePaginationTask {
     task: executor::JoinHandle<()>,
 }
 
+const MAX_TIMELINE_GAP_REPAIR_BATCHES: u32 = 32;
+const TIMELINE_GAP_REPAIR_BUDGET: MatrixTimelineGapRepairBudget = MatrixTimelineGapRepairBudget {
+    event_limit: 64,
+    cached_chunk_limit: 32,
+};
+
+#[derive(Debug, Default)]
+struct TimelineGapRepairTracker {
+    next_serial: u64,
+    active_serial: Option<u64>,
+    gap_count: u32,
+    batches_processed: u32,
+}
+
+impl TimelineGapRepairTracker {
+    fn begin_inspection(&mut self) -> Option<u64> {
+        self.begin_work()
+    }
+
+    fn begin_repair(&mut self, gap_count: u32) -> Option<u64> {
+        let serial = self.begin_work()?;
+        self.gap_count = gap_count;
+        Some(serial)
+    }
+
+    fn begin_work(&mut self) -> Option<u64> {
+        if self.active_serial.is_some() {
+            return None;
+        }
+        self.next_serial = self.next_serial.wrapping_add(1);
+        self.active_serial = Some(self.next_serial);
+        Some(self.next_serial)
+    }
+
+    fn finish_work(&mut self, serial: u64) -> bool {
+        if self.active_serial != Some(serial) {
+            return false;
+        }
+        self.active_serial = None;
+        true
+    }
+
+    fn record_batch(&mut self) -> Option<u32> {
+        if !self.can_start_batch() {
+            return None;
+        }
+        self.batches_processed += 1;
+        Some(self.batches_processed)
+    }
+
+    fn can_start_batch(&self) -> bool {
+        self.batches_processed < MAX_TIMELINE_GAP_REPAIR_BATCHES
+    }
+}
+
+#[cfg(test)]
+mod timeline_gap_repair_tracker_tests {
+    use super::*;
+
+    #[test]
+    fn timeline_gap_repair_tracker_coalesces_and_rejects_stale_completions() {
+        let mut tracker = TimelineGapRepairTracker::default();
+        let first = tracker.begin_inspection().expect("first inspection");
+        assert!(tracker.begin_inspection().is_none());
+        assert!(!tracker.finish_work(first.wrapping_add(1)));
+        assert!(tracker.finish_work(first));
+
+        let repair = tracker.begin_repair(2).expect("repair starts");
+        assert_eq!(tracker.gap_count, 2);
+        assert!(tracker.begin_repair(2).is_none());
+        assert!(tracker.finish_work(repair));
+    }
+
+    #[test]
+    fn timeline_gap_repair_tracker_bounds_batches() {
+        let mut tracker = TimelineGapRepairTracker::default();
+        for expected in 1..=MAX_TIMELINE_GAP_REPAIR_BATCHES {
+            assert!(tracker.can_start_batch());
+            assert_eq!(tracker.record_batch(), Some(expected));
+        }
+        assert!(!tracker.can_start_batch());
+        assert_eq!(tracker.record_batch(), None);
+    }
+}
+
 struct TimelineActor {
     key: TimelineKey,
     timeline: Arc<Timeline>,
@@ -5121,6 +5249,9 @@ struct TimelineActor {
     /// Monotonically increasing counter, incremented at the start of every
     /// `handle_diff_batch` call (restore or not).
     diff_batch_seq: u64,
+    gap_repair: TimelineGapRepairTracker,
+    gap_descriptors: Vec<MatrixTimelineGapHandle>,
+    gap_work_task: Option<executor::JoinHandle<()>>,
 }
 
 #[derive(Clone, Debug)]
@@ -5449,6 +5580,9 @@ impl Drop for TimelineActor {
         }
         if let Some(active) = self.pagination_task.take() {
             active.task.abort();
+        }
+        if let Some(task) = self.gap_work_task.take() {
+            task.abort();
         }
     }
 }
@@ -5804,6 +5938,9 @@ impl TimelineActor {
             restore_emit_buffer: Vec::new(),
             hydrate_after_restore_flush: false,
             diff_batch_seq: 0,
+            gap_repair: TimelineGapRepairTracker::default(),
+            gap_descriptors: Vec::new(),
+            gap_work_task: None,
         };
 
         actor
@@ -5820,6 +5957,7 @@ impl TimelineActor {
     }
 
     async fn run(mut self) {
+        self.request_timeline_gap_inspection().await;
         loop {
             tokio::select! {
                 biased;
@@ -5898,6 +6036,17 @@ impl TimelineActor {
 
     async fn handle_msg(&mut self, msg: TimelineActorMessage) {
         match msg {
+            TimelineActorMessage::InspectTimelineGaps => {
+                self.request_timeline_gap_inspection().await;
+            }
+            TimelineActorMessage::TimelineGapInspectionFinished { serial, result } => {
+                self.handle_timeline_gap_inspection_finished(serial, result)
+                    .await;
+            }
+            TimelineActorMessage::TimelineGapRepairFinished { serial, result } => {
+                self.handle_timeline_gap_repair_finished(serial, result)
+                    .await;
+            }
             TimelineActorMessage::Paginate {
                 request_id,
                 direction,
@@ -6170,6 +6319,264 @@ impl TimelineActor {
             self.hydrate_after_restore_flush = false;
             self.maybe_hydrate_missing_thread_roots().await;
         }
+    }
+
+    async fn request_timeline_gap_inspection(&mut self) {
+        if !matches!(self.key.kind, TimelineKind::Room { .. }) {
+            return;
+        }
+        let Some(serial) = self.gap_repair.begin_inspection() else {
+            return;
+        };
+        let room_id = self.key.room_id().to_owned();
+        record_timeline_gap_repair(
+            "inspection",
+            "cache_gap",
+            serial,
+            self.gap_repair.gap_count,
+            self.gap_repair.batches_processed,
+            "started",
+        );
+        if !self
+            .emit_action_reliable(AppAction::TimelineContinuityInspectionStarted {
+                room_id: room_id.clone(),
+                generation: serial,
+            })
+            .await
+        {
+            self.gap_repair.finish_work(serial);
+            return;
+        }
+        let session = self.session.clone();
+        let actor_tx = self.msg_tx.clone();
+        self.gap_work_task = Some(executor::spawn(async move {
+            let result = session.inspect_room_timeline_gaps(&room_id).await;
+            let _ = actor_tx
+                .send(TimelineActorMessage::TimelineGapInspectionFinished { serial, result })
+                .await;
+        }));
+    }
+
+    async fn handle_timeline_gap_inspection_finished(
+        &mut self,
+        serial: u64,
+        result: Result<MatrixTimelineGapInspection, MatrixTimelineGapError>,
+    ) {
+        if !self.gap_repair.finish_work(serial) {
+            return;
+        }
+        self.gap_work_task = None;
+        let room_id = self.key.room_id().to_owned();
+        match result {
+            Ok(inspection) => {
+                record_timeline_gap_repair(
+                    "inspection",
+                    "cache_gap",
+                    serial,
+                    inspection.gaps.len().try_into().unwrap_or(u32::MAX),
+                    self.gap_repair.batches_processed,
+                    match inspection.continuity {
+                        MatrixTimelineContinuity::Unknown => "unknown",
+                        MatrixTimelineContinuity::Gapped => "incomplete",
+                        MatrixTimelineContinuity::Complete => "healthy",
+                    },
+                );
+                self.emit_gap_positions(serial, &inspection.gaps);
+                let state_inspection = match inspection.continuity {
+                    MatrixTimelineContinuity::Unknown => TimelineContinuityInspection::Unknown,
+                    MatrixTimelineContinuity::Gapped => TimelineContinuityInspection::Gapped {
+                        gap_count: inspection.gaps.len().try_into().unwrap_or(u32::MAX),
+                    },
+                    MatrixTimelineContinuity::Complete => TimelineContinuityInspection::Complete,
+                };
+                let _ = self
+                    .emit_action_reliable(AppAction::TimelineContinuityInspected {
+                        room_id,
+                        generation: serial,
+                        inspection: state_inspection,
+                    })
+                    .await;
+                match inspection.continuity {
+                    MatrixTimelineContinuity::Gapped => {
+                        self.gap_descriptors = inspection.gaps;
+                        self.start_timeline_gap_repair().await;
+                    }
+                    MatrixTimelineContinuity::Unknown | MatrixTimelineContinuity::Complete => {
+                        self.gap_descriptors.clear();
+                        self.gap_repair.gap_count = 0;
+                        self.gap_repair.batches_processed = 0;
+                    }
+                }
+            }
+            Err(_) => {
+                record_timeline_gap_repair(
+                    "inspection",
+                    "cache_gap",
+                    serial,
+                    self.gap_repair.gap_count,
+                    self.gap_repair.batches_processed,
+                    "failed",
+                );
+                let known_gap_count = self.gap_repair.gap_count;
+                if known_gap_count == 0 {
+                    let _ = self
+                        .emit_action_reliable(AppAction::TimelineContinuityInspected {
+                            room_id,
+                            generation: serial,
+                            inspection: TimelineContinuityInspection::Unknown,
+                        })
+                        .await;
+                } else {
+                    let repair_serial = self
+                        .gap_repair
+                        .begin_repair(known_gap_count)
+                        .expect("completed inspection leaves scheduler idle");
+                    let _ = self
+                        .emit_action_reliable(AppAction::TimelineGapRepairStarted {
+                            room_id: room_id.clone(),
+                            generation: repair_serial,
+                            gap_count: known_gap_count,
+                        })
+                        .await;
+                    self.gap_repair.finish_work(repair_serial);
+                    let _ = self
+                        .emit_action_reliable(AppAction::TimelineGapRepairFailed {
+                            room_id,
+                            generation: repair_serial,
+                            gap_count: known_gap_count,
+                            batches_processed: self.gap_repair.batches_processed,
+                            kind: TimelineGapRepairFailureKind::Sdk,
+                        })
+                        .await;
+                }
+            }
+        }
+    }
+
+    fn emit_gap_positions(&self, generation: u64, gaps: &[MatrixTimelineGapHandle]) {
+        let positions = gaps
+            .iter()
+            .enumerate()
+            .map(|(ordinal, gap)| {
+                let before_item_index = gap
+                    .newer_boundary_event_id()
+                    .and_then(|event_id| self.timeline_event_position(event_id))
+                    .or_else(|| {
+                        gap.older_boundary_event_id()
+                            .and_then(|event_id| self.timeline_event_position(event_id))
+                            .map(|index| index.saturating_add(1))
+                    })
+                    .unwrap_or(0);
+                TimelineGapPosition {
+                    ordinal: ordinal.try_into().unwrap_or(u32::MAX),
+                    before_item_index,
+                }
+            })
+            .collect();
+        self.emit(CoreEvent::Timeline(TimelineEvent::GapPositionsUpdated {
+            key: self.key.clone(),
+            actor_generation: self.actor_generation,
+            generation,
+            positions,
+        }));
+    }
+
+    fn timeline_event_position(&self, event_id: &str) -> Option<usize> {
+        self.navigation_items.iter().position(|item| {
+            matches!(&item.id, TimelineItemId::Event { event_id: candidate } if candidate == event_id)
+        })
+    }
+
+    async fn start_timeline_gap_repair(&mut self) {
+        let Some(descriptor) = self.gap_descriptors.last().cloned() else {
+            return;
+        };
+        let gap_count = self.gap_descriptors.len().try_into().unwrap_or(u32::MAX);
+        let Some(serial) = self.gap_repair.begin_repair(gap_count) else {
+            return;
+        };
+        let room_id = self.key.room_id().to_owned();
+        if !self
+            .emit_action_reliable(AppAction::TimelineGapRepairStarted {
+                room_id: room_id.clone(),
+                generation: serial,
+                gap_count,
+            })
+            .await
+        {
+            self.gap_repair.finish_work(serial);
+            return;
+        }
+        if !self.gap_repair.can_start_batch() {
+            self.gap_repair.finish_work(serial);
+            let _ = self
+                .emit_action_reliable(AppAction::TimelineGapRepairFailed {
+                    room_id,
+                    generation: serial,
+                    gap_count,
+                    batches_processed: self.gap_repair.batches_processed,
+                    kind: TimelineGapRepairFailureKind::Timeout,
+                })
+                .await;
+            return;
+        }
+        let session = self.session.clone();
+        let actor_tx = self.msg_tx.clone();
+        self.gap_work_task = Some(executor::spawn(async move {
+            let result = session
+                .repair_room_timeline_gap(&descriptor, TIMELINE_GAP_REPAIR_BUDGET)
+                .await;
+            let _ = actor_tx
+                .send(TimelineActorMessage::TimelineGapRepairFinished { serial, result })
+                .await;
+        }));
+    }
+
+    async fn handle_timeline_gap_repair_finished(
+        &mut self,
+        serial: u64,
+        result: Result<MatrixTimelineGapRepairOutcome, MatrixTimelineGapError>,
+    ) {
+        if !self.gap_repair.finish_work(serial) {
+            return;
+        }
+        self.gap_work_task = None;
+        let room_id = self.key.room_id().to_owned();
+        let gap_count = self.gap_repair.gap_count;
+        let failure = matches!(result, Err(_) | Ok(MatrixTimelineGapRepairOutcome::Failed));
+        if failure {
+            let _ = self
+                .emit_action_reliable(AppAction::TimelineGapRepairFailed {
+                    room_id,
+                    generation: serial,
+                    gap_count,
+                    batches_processed: self.gap_repair.batches_processed,
+                    kind: TimelineGapRepairFailureKind::Sdk,
+                })
+                .await;
+            return;
+        }
+        let Some(batches_processed) = self.gap_repair.record_batch() else {
+            let _ = self
+                .emit_action_reliable(AppAction::TimelineGapRepairFailed {
+                    room_id,
+                    generation: serial,
+                    gap_count,
+                    batches_processed: self.gap_repair.batches_processed,
+                    kind: TimelineGapRepairFailureKind::Timeout,
+                })
+                .await;
+            return;
+        };
+        let _ = self
+            .emit_action_reliable(AppAction::TimelineGapRepairProgressed {
+                room_id,
+                generation: serial,
+                gap_count,
+                batches_processed,
+            })
+            .await;
+        self.request_timeline_gap_inspection().await;
     }
 
     async fn handle_paginate(
@@ -8407,6 +8814,7 @@ impl TimelineActor {
                 self.maybe_hydrate_missing_thread_roots().await;
             }
         }
+        self.request_timeline_gap_inspection().await;
     }
 
     /// Detect Room thread replies whose root is not present in the canonical

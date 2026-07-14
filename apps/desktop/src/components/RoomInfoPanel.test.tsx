@@ -273,25 +273,21 @@ describe("RoomInfoPanel", () => {
     expect(screen.getByText("Mute")).toBeTruthy();
   });
 
-  test("requires confirmation before resetting the room timeline cache", () => {
-    const onResetRoomTimelineCache = vi.fn();
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  test("requests non-destructive room timeline repair", () => {
+    const onRepairRoomTimeline = vi.fn();
 
     render(
       <RoomInfoPanel
         room={baseRoom}
         roomNotificationSettings={idleSettings}
         spaces={[]}
-        onResetRoomTimelineCache={onResetRoomTimelineCache}
+        onRepairRoomTimeline={onRepairRoomTimeline}
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Reset room timeline cache" }));
+    fireEvent.click(screen.getByRole("button", { name: "Repair room timeline" }));
 
-    expect(confirm).toHaveBeenCalledWith(
-      "Reset this room's local timeline cache? Messages, keys, drafts, and room settings will not be deleted."
-    );
-    expect(onResetRoomTimelineCache).toHaveBeenCalledWith("!room-alpha:example.invalid");
+    expect(onRepairRoomTimeline).toHaveBeenCalledWith("!room-alpha:example.invalid");
   });
 
   test("selects the current notification mode", () => {

@@ -7144,3 +7144,20 @@ kbd {
   cursor: pointer;
   color: var(--text-muted, var(--color-text-secondary, #5b6b82));
 }
+
+.timeline-gap-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-block: 0.5rem;
+  padding: 0.65rem 0.9rem;
+  border: 1px dashed var(--color-border, #c6ccd7);
+  border-radius: 0.5rem;
+  color: var(--text-muted, var(--color-text-secondary, #5b6b82));
+  background: var(--color-surface-subtle, rgba(127, 127, 127, 0.06));
+}
+
+.timeline-gap-row.failed {
+  border-color: var(--color-danger, #b42318);
+}

@@ -1774,6 +1774,12 @@ mod tests {
                 );
                 m
             },
+            continuity: koushi_state::TimelineContinuityState::FailedIncomplete {
+                generation: 7,
+                gap_count: 2,
+                batches_processed: 3,
+                failure_kind: koushi_state::TimelineGapRepairFailureKind::Sdk,
+            },
         };
 
         // live_signals — one room entry

@@ -248,7 +248,7 @@ export interface DesktopApi {
   joinDirectoryRoom(alias: string, viaServer?: string | null): Promise<DesktopSnapshot>;
   joinRoom(roomId: string): Promise<DesktopSnapshot>;
   loadRoomSettings(roomId: string): Promise<DesktopSnapshot>;
-  resetRoomTimelineCache(roomId: string): Promise<DesktopSnapshot>;
+  repairRoomTimeline(roomId: string): Promise<DesktopSnapshot>;
   updateRoomSetting(roomId: string, change: RoomSettingChange): Promise<DesktopSnapshot>;
   moderateRoomMember(
     roomId: string,
@@ -2128,7 +2128,7 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
-  async resetRoomTimelineCache(_roomId: string): Promise<DesktopSnapshot> {
+  async repairRoomTimeline(_roomId: string): Promise<DesktopSnapshot> {
     return this.getSnapshot();
   }
 
@@ -3186,7 +3186,8 @@ class BrowserFakeApi implements DesktopApi {
       scheduled_sends: [],
       staged_uploads: [],
       media_gallery: [],
-      media_downloads: {}
+      media_downloads: {},
+      continuity: { kind: "unknown" }
     };
     this.snapshot.state.ui.thread = { kind: "closed" };
     this.snapshot.state.domain.thread_attention = { kind: "closed" };
@@ -3270,7 +3271,8 @@ class BrowserFakeApi implements DesktopApi {
       scheduled_sends: [],
         staged_uploads: [],
         media_gallery: [],
-      media_downloads: {}
+      media_downloads: {},
+      continuity: { kind: "unknown" }
     };
     this.snapshot.state.ui.thread = { kind: "closed" };
     this.snapshot.state.ui.focused_context = { kind: "closed" };
@@ -3582,7 +3584,8 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
           scheduled_sends: [],
           staged_uploads: [],
           media_gallery: [],
-          media_downloads: {}
+          media_downloads: {},
+          continuity: { kind: "unknown" }
         },
         thread: { kind: "closed" },
         focused_context: { kind: "closed" },
@@ -3705,7 +3708,8 @@ function createSignedOutSnapshot(): DesktopSnapshot {
           scheduled_sends: [],
           staged_uploads: [],
           media_gallery: [],
-          media_downloads: {}
+          media_downloads: {},
+          continuity: { kind: "unknown" }
         },
         thread: { kind: "closed" },
         threads_list: { kind: "closed" },

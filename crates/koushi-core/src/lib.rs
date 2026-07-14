@@ -45,10 +45,10 @@ pub use event::{
     IntentNoOpReason, IntentOutcome, LinkPreview, LinkPreviewImage, LinkPreviewState,
     LocalEncryptionEvent, NativeAttentionEvent, PaginationDirection, PaginationState,
     ReactionGroup, RoomEvent, SearchEvent, SearchResultItem, SyncBackendKind, SyncEvent,
-    TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind,
-    TimelineMediaSource, TimelineMediaThumbnail, TimelineMessageKind, TimelineNavigationSnapshot,
-    TimelineResyncReason, TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
-    TimelineUnreadPosition, TimelineViewportObservation,
+    TimelineDiff, TimelineEvent, TimelineGapPosition, TimelineItem, TimelineItemId, TimelineMedia,
+    TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineMessageKind,
+    TimelineNavigationSnapshot, TimelineResyncReason, TimelineSendFailureReason, TimelineSendState,
+    TimelineSpoilerSpan, TimelineUnreadPosition, TimelineViewportObservation,
 };
 pub use failure::{
     CoreFailure, LoginFailureKind, ProfileFailureKind, RecoveryFailureKind, RoomFailureKind,

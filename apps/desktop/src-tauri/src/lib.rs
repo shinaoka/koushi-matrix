@@ -1239,7 +1239,7 @@ pub fn run() {
             commands::room::pin_event,
             commands::room::unpin_event,
             commands::room::load_room_settings,
-            commands::room::reset_room_timeline_cache,
+            commands::room::repair_room_timeline,
             commands::room::reshare_room_key,
             commands::room::update_room_setting,
             commands::room::moderate_room_member,
@@ -2029,11 +2029,12 @@ mod tests {
                 ReactionGroup, RoomEvent, SearchEvent, SyncEvent, ThreadRootProjectionDto,
                 ThreadRootProjectionStateDto, ThreadSummaryDto, ThreadsListEvent,
                 TimelineAnchorRestoreStatus, TimelineCodeBlock, TimelineDisplayLabelUpdate,
-                TimelineEvent, TimelineFormattedBody, TimelineItem, TimelineItemId, TimelineMedia,
-                TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
-                TimelineMessageActions, TimelineMessageKind, TimelineMessageSource,
-                TimelineNavigationSnapshot, TimelineResyncReason, TimelineSendFailureReason,
-                TimelineSendState, TimelineSpoilerSpan, TimelineUnreadPosition,
+                TimelineEvent, TimelineFormattedBody, TimelineGapPosition, TimelineItem,
+                TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource,
+                TimelineMediaThumbnail, TimelineMessageActions, TimelineMessageKind,
+                TimelineMessageSource, TimelineNavigationSnapshot, TimelineResyncReason,
+                TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
+                TimelineUnreadPosition,
             },
             failure::{CoreFailure, TimelineFailureKind},
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
@@ -2689,6 +2690,18 @@ mod tests {
             json!("belowViewport")
         );
 
+        let gap_positions_updated =
+            serialize_core_event(&CoreEvent::Timeline(TimelineEvent::GapPositionsUpdated {
+                key: key.clone(),
+                actor_generation: 3,
+                generation: 4,
+                positions: vec![TimelineGapPosition {
+                    ordinal: 0,
+                    before_item_index: 2,
+                }],
+            }))
+            .expect("serialize gap positions update event");
+
         let display_labels_updated =
             serialize_core_event(&CoreEvent::Timeline(TimelineEvent::DisplayLabelsUpdated {
                 labels: vec![TimelineDisplayLabelUpdate {
@@ -3306,6 +3319,7 @@ mod tests {
             "timelineMessageForwarded": message_forwarded,
             "timelineMessageSourceLoaded": message_source_loaded,
             "timelineNavigationUpdated": navigation_updated,
+            "timelineGapPositionsUpdated": gap_positions_updated,
             "timelineAnchorRestoreFinished": anchor_restore_finished,
             "timelinePaginationEndReached": serialize_core_event(&CoreEvent::Timeline(
                 TimelineEvent::PaginationStateChanged {
@@ -3449,6 +3463,7 @@ mod tests {
             "timelineMessageSourceLoaded",
             "timelineAnchorRestoreFinished",
             "timelineNavigationUpdated",
+            "timelineGapPositionsUpdated",
             "timelinePaginationEndReached",
             "timelineReplyQuoteInitialItems",
             "timelineResyncRequired",

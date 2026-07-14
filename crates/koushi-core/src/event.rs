@@ -913,6 +913,13 @@ pub enum TimelineEvent {
         key: TimelineKey,
         snapshot: TimelineNavigationSnapshot,
     },
+    GapPositionsUpdated {
+        key: TimelineKey,
+        /// Monotonic owner generation for actor replacement fencing.
+        actor_generation: u64,
+        generation: u64,
+        positions: Vec<TimelineGapPosition>,
+    },
     SendCompleted {
         request_id: RequestId,
         key: TimelineKey,
@@ -1047,6 +1054,18 @@ impl fmt::Debug for TimelineEvent {
                 .debug_struct("NavigationUpdated")
                 .field("key", &"TimelineKey(..)")
                 .field("snapshot", snapshot)
+                .finish(),
+            Self::GapPositionsUpdated {
+                actor_generation,
+                generation,
+                positions,
+                ..
+            } => formatter
+                .debug_struct("GapPositionsUpdated")
+                .field("key", &"TimelineKey(..)")
+                .field("actor_generation", actor_generation)
+                .field("generation", generation)
+                .field("gap_count", &positions.len())
                 .finish(),
             Self::SendCompleted {
                 request_id,
@@ -1209,6 +1228,12 @@ pub struct TimelineViewportObservation {
     pub first_visible_event_id: Option<String>,
     pub last_visible_event_id: Option<String>,
     pub at_bottom: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TimelineGapPosition {
+    pub ordinal: u32,
+    pub before_item_index: usize,
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -1970,6 +1995,7 @@ pub fn project_timeline_event_display_labels(event: &mut TimelineEvent, state: &
         | TimelineEvent::MediaDownloadFailed { .. }
         | TimelineEvent::ResyncRequired { .. }
         | TimelineEvent::NavigationUpdated { .. }
+        | TimelineEvent::GapPositionsUpdated { .. }
         | TimelineEvent::DisplayPolicyUpdated { .. }
         | TimelineEvent::DisplayLabelsUpdated { .. } => {}
     }
