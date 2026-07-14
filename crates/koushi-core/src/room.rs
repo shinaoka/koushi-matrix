@@ -2295,7 +2295,23 @@ fn normalize_rooms(snapshot: &koushi_sdk::MatrixRoomListSnapshot) -> Vec<RoomSum
                 notification_count: room.notification_count,
                 highlight_count: room.highlight_count,
                 marked_unread: room.marked_unread,
-                last_activity_ms: room.last_activity_ms,
+                recency_stamp: room.recency_stamp,
+                conversation_activity: room.conversation_activity.map(|activity| {
+                    koushi_state::ConversationActivity {
+                        timestamp_ms: activity.timestamp_ms,
+                        source: match activity.source {
+                            koushi_sdk::MatrixConversationActivitySource::Message => {
+                                koushi_state::ConversationActivitySource::Message
+                            }
+                            koushi_sdk::MatrixConversationActivitySource::EncryptedMessage => {
+                                koushi_state::ConversationActivitySource::EncryptedMessage
+                            }
+                            koushi_sdk::MatrixConversationActivitySource::ThreadReply => {
+                                koushi_state::ConversationActivitySource::ThreadReply
+                            }
+                        },
+                    }
+                }),
                 latest_event: room.latest_event.as_ref().map(|event| {
                     koushi_state::RoomLatestEventSummary {
                         event_id: event.event_id.clone(),
@@ -2751,9 +2767,9 @@ fn trace_room_operation(kind: &'static str, stage: &'static str, request_id: Req
 #[cfg(test)]
 pub mod tests {
     use koushi_sdk::{
-        MatrixInvitePreview, MatrixRoomListRoom, MatrixRoomListSnapshot, MatrixRoomListSpace,
-        MatrixRoomMemberRole, MatrixRoomPermissionFacts, MatrixRoomSettingsSnapshot,
-        MatrixRoomTagInfo, MatrixRoomTags,
+        MatrixConversationActivity, MatrixConversationActivitySource, MatrixInvitePreview,
+        MatrixRoomListRoom, MatrixRoomListSnapshot, MatrixRoomListSpace, MatrixRoomMemberRole,
+        MatrixRoomPermissionFacts, MatrixRoomSettingsSnapshot, MatrixRoomTagInfo, MatrixRoomTags,
     };
     use koushi_state::{RoomMemberRole, RoomTagInfo, RoomTagKind};
     use tokio::sync::{broadcast, mpsc};
@@ -2901,6 +2917,46 @@ pub mod tests {
     // --- Room list normalization: spaces ---
 
     #[test]
+    fn normalize_rooms_preserves_typed_conversation_activity_and_opaque_recency() {
+        let snapshot = MatrixRoomListSnapshot {
+            rooms: vec![MatrixRoomListRoom {
+                room_id: "!dm:example.test".to_owned(),
+                display_name: "Synthetic DM".to_owned(),
+                avatar_mxc_uri: None,
+                is_dm: true,
+                dm_user_ids: vec!["@member:example.test".to_owned()],
+                tags: MatrixRoomTags::default(),
+                unread_count: 0,
+                notification_count: 0,
+                highlight_count: 0,
+                marked_unread: false,
+                recency_stamp: Some(9),
+                conversation_activity: Some(MatrixConversationActivity {
+                    timestamp_ms: 42,
+                    source: MatrixConversationActivitySource::EncryptedMessage,
+                }),
+                latest_event: None,
+                parent_space_ids: Vec::new(),
+                is_encrypted: true,
+                joined_members: 2,
+            }],
+            ..MatrixRoomListSnapshot::default()
+        };
+
+        let rooms = normalize_rooms(&snapshot);
+        let room = rooms.first().expect("normalized room");
+
+        assert_eq!(room.recency_stamp, Some(9));
+        assert_eq!(
+            room.conversation_activity,
+            Some(koushi_state::ConversationActivity {
+                timestamp_ms: 42,
+                source: koushi_state::ConversationActivitySource::EncryptedMessage,
+            })
+        );
+    }
+
+    #[test]
     fn normalize_spaces_with_child_rooms() {
         let snapshot = MatrixRoomListSnapshot {
             spaces: vec![MatrixRoomListSpace {
@@ -2922,7 +2978,8 @@ pub mod tests {
                     notification_count: 0,
                     highlight_count: 0,
                     marked_unread: false,
-                    last_activity_ms: 0,
+                    recency_stamp: None,
+                    conversation_activity: None,
                     latest_event: None,
                     parent_space_ids: vec!["!space1:example.test".to_owned()],
                     is_encrypted: false,
@@ -2939,7 +2996,8 @@ pub mod tests {
                     notification_count: 0,
                     highlight_count: 0,
                     marked_unread: false,
-                    last_activity_ms: 0,
+                    recency_stamp: None,
+                    conversation_activity: None,
                     latest_event: None,
                     parent_space_ids: vec![],
                     is_encrypted: false,
@@ -2975,7 +3033,8 @@ pub mod tests {
                 notification_count: 0,
                 highlight_count: 0,
                 marked_unread: false,
-                last_activity_ms: 0,
+                recency_stamp: None,
+                conversation_activity: None,
                 latest_event: None,
                 parent_space_ids: vec!["!space:example.test".to_owned()],
                 is_encrypted: true,
@@ -3015,7 +3074,8 @@ pub mod tests {
                 notification_count: 0,
                 highlight_count: 0,
                 marked_unread: false,
-                last_activity_ms: 0,
+                recency_stamp: None,
+                conversation_activity: None,
                 latest_event: None,
                 parent_space_ids: vec!["!space:example.test".to_owned()],
                 is_encrypted: true,
@@ -3048,7 +3108,8 @@ pub mod tests {
                 notification_count: 0,
                 highlight_count: 0,
                 marked_unread: false,
-                last_activity_ms: 0,
+                recency_stamp: None,
+                conversation_activity: None,
                 latest_event: None,
                 parent_space_ids: Vec::new(),
                 is_encrypted: false,
@@ -3117,7 +3178,8 @@ pub mod tests {
                 notification_count: 3,
                 highlight_count: 1,
                 marked_unread: false,
-                last_activity_ms: 0,
+                recency_stamp: None,
+                conversation_activity: None,
                 latest_event: None,
                 parent_space_ids: vec![],
                 is_encrypted: false,
@@ -3149,7 +3211,8 @@ pub mod tests {
                 notification_count: 0,
                 highlight_count: 0,
                 marked_unread: false,
-                last_activity_ms: 0,
+                recency_stamp: None,
+                conversation_activity: None,
                 latest_event: None,
                 parent_space_ids: vec!["!space:example.test".to_owned()],
                 is_encrypted: false,
@@ -3186,7 +3249,8 @@ pub mod tests {
                 notification_count: 0,
                 highlight_count: 0,
                 marked_unread: false,
-                last_activity_ms: 0,
+                recency_stamp: None,
+                conversation_activity: None,
                 latest_event: None,
                 parent_space_ids: Vec::new(),
                 is_encrypted: false,
@@ -3223,7 +3287,8 @@ pub mod tests {
                     notification_count: 0,
                     highlight_count: 0,
                     marked_unread: false,
-                    last_activity_ms: 0,
+                    recency_stamp: None,
+                    conversation_activity: None,
                     latest_event: None,
                     parent_space_ids: Vec::new(),
                     is_encrypted: false,
@@ -3240,7 +3305,8 @@ pub mod tests {
                     notification_count: 0,
                     highlight_count: 0,
                     marked_unread: false,
-                    last_activity_ms: 0,
+                    recency_stamp: None,
+                    conversation_activity: None,
                     latest_event: None,
                     parent_space_ids: Vec::new(),
                     is_encrypted: false,
@@ -3270,7 +3336,8 @@ pub mod tests {
                 notification_count: 0,
                 highlight_count: 0,
                 marked_unread: false,
-                last_activity_ms: 0,
+                recency_stamp: None,
+                conversation_activity: None,
                 latest_event: None,
                 parent_space_ids: vec![],
                 is_encrypted: false,
@@ -3417,7 +3484,8 @@ pub mod tests {
                 notification_count: 0,
                 highlight_count: 0,
                 marked_unread: false,
-                last_activity_ms: 0,
+                recency_stamp: None,
+                conversation_activity: None,
                 latest_event: None,
                 parent_space_ids: Vec::new(),
                 is_encrypted: false,
@@ -3511,7 +3579,8 @@ pub mod tests {
                 notification_count: 0,
                 highlight_count: 0,
                 marked_unread: false,
-                last_activity_ms: 0,
+                recency_stamp: None,
+                conversation_activity: None,
                 latest_event: None,
                 parent_space_ids: vec![],
                 is_encrypted: false,

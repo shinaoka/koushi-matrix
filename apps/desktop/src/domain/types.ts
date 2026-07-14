@@ -601,12 +601,20 @@ export interface RoomSummary {
   notification_count?: number;
   highlight_count?: number;
   marked_unread?: boolean;
-  last_activity_ms?: number;
+  recency_stamp?: number | null;
+  conversation_activity?: ConversationActivity | null;
   latest_event?: RoomLatestEventSummary | null;
   parent_space_ids: string[];
   dm_space_ids: string[];
   is_encrypted: boolean;
   joined_members?: number;
+}
+
+export type ConversationActivitySource = "message" | "encryptedMessage" | "threadReply";
+
+export interface ConversationActivity {
+  timestamp_ms: number;
+  source: ConversationActivitySource;
 }
 
 export interface RoomLatestEventSummary {

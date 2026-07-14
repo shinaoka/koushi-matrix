@@ -682,7 +682,7 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   private refreshSidebar(): void {
-    this.snapshot.sidebar = composeSidebar(
+    this.snapshot.sidebar = composeBrowserFakeSidebar(
       this.snapshot.state.ui.navigation.active_space_id,
       this.snapshot.state.domain.spaces,
       this.snapshot.state.domain.rooms,
@@ -3225,7 +3225,7 @@ function createInitialSnapshot(session: BrowserFakeApiOptions["session"]): Deskt
 function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): DesktopSnapshot {
   const active_space_id = "!space-alpha:example.invalid";
   const active_room_id = "!room-alpha:example.invalid";
-  const sidebar = composeSidebar(active_space_id, spaces, rooms);
+  const sidebar = composeBrowserFakeSidebar(active_space_id, spaces, rooms);
     const snapshot: DesktopSnapshot = {
     state: {
       schema_version: 2,
@@ -4194,7 +4194,8 @@ function createActivityStreams(
       sender_label: null,
       sender_avatar: null,
       preview: null,
-      timestamp_ms: room.last_activity_ms ?? 0,
+      timestamp_ms:
+        room.latest_event?.timestamp_ms ?? room.conversation_activity?.timestamp_ms ?? 0,
       unread: true,
       highlight: (room.highlight_count ?? 0) > 0,
       context_label: activityRowContextLabel(room, spacesById)
@@ -4354,6 +4355,8 @@ const rooms: RoomSummary[] = [
     dm_user_ids: [],
     tags: emptyRoomTags(),
     unread_count: 8,
+    recency_stamp: 100,
+    conversation_activity: { timestamp_ms: 100, source: "message" },
     parent_space_ids: ["!space-alpha:example.invalid"],
     dm_space_ids: [],
     is_encrypted: false
@@ -4368,6 +4371,8 @@ const rooms: RoomSummary[] = [
     dm_user_ids: [],
     tags: emptyRoomTags(),
     unread_count: 2,
+    recency_stamp: 90,
+    conversation_activity: { timestamp_ms: 90, source: "message" },
     parent_space_ids: ["!space-alpha:example.invalid"],
     dm_space_ids: [],
     is_encrypted: false
@@ -4382,6 +4387,8 @@ const rooms: RoomSummary[] = [
     dm_user_ids: [],
     tags: emptyRoomTags(),
     unread_count: 1,
+    recency_stamp: 80,
+    conversation_activity: { timestamp_ms: 80, source: "message" },
     parent_space_ids: ["!space-beta:example.invalid"],
     dm_space_ids: [],
     is_encrypted: false
@@ -4396,6 +4403,8 @@ const rooms: RoomSummary[] = [
     dm_user_ids: ["@member-1:example.invalid"],
     tags: emptyRoomTags(),
     unread_count: 1,
+    recency_stamp: 70,
+    conversation_activity: { timestamp_ms: 70, source: "message" },
     parent_space_ids: [],
     dm_space_ids: [],
     is_encrypted: false
@@ -4410,11 +4419,44 @@ const rooms: RoomSummary[] = [
     dm_user_ids: ["@member-2:example.invalid"],
     tags: emptyRoomTags(),
     unread_count: 0,
+    recency_stamp: 60,
+    conversation_activity: null,
     parent_space_ids: [],
     dm_space_ids: [],
     is_encrypted: false
   }
 ];
+
+function composeBrowserFakeSidebar(
+  activeSpaceId: string | null,
+  sourceSpaces: SpaceSummary[],
+  sourceRooms: RoomSummary[],
+  roomNotificationSettings: Record<string, RoomNotificationSettings> = {}
+) {
+  const sidebar = composeSidebar(
+    activeSpaceId,
+    sourceSpaces,
+    sourceRooms,
+    roomNotificationSettings
+  );
+  const projection = computeBrowserRoomListProjection(
+    { kind: "people" },
+    { kind: "activity" },
+    activeSpaceId,
+    sourceSpaces,
+    sourceRooms,
+    []
+  );
+  const positionByRoomId = new Map(
+    (projection.items ?? []).map((item, index) => [item.room_id, index])
+  );
+  sidebar.global_dms.sort(
+    (left, right) =>
+      (positionByRoomId.get(left.room_id) ?? Number.MAX_SAFE_INTEGER) -
+      (positionByRoomId.get(right.room_id) ?? Number.MAX_SAFE_INTEGER)
+  );
+  return sidebar;
+}
 
 const invites: InvitePreview[] = [
   {

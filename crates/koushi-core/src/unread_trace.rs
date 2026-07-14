@@ -152,7 +152,8 @@ mod tests {
             notification_count: 2,
             highlight_count: 1,
             marked_unread: true,
-            last_activity_ms: 42,
+            recency_stamp: Some(42),
+            conversation_activity: None,
             latest_event: Some(RoomLatestEventSummary {
                 event_id: "$private-event:example.invalid".to_owned(),
                 sender_id: Some("@private-sender:example.invalid".to_owned()),

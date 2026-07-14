@@ -936,7 +936,15 @@ impl ActivityProjection {
                 continue;
             }
             let highlight = room.highlight_count > 0;
-            let timestamp_ms = room.last_activity_ms;
+            let timestamp_ms = room
+                .latest_event
+                .as_ref()
+                .map(|event| event.timestamp_ms)
+                .or_else(|| {
+                    room.conversation_activity
+                        .map(|activity| activity.timestamp_ms)
+                })
+                .unwrap_or_default();
             let context_label = activity_row_context_label(room, &state.spaces);
             let placeholder = ActivityRow::room_unread_placeholder(
                 room.room_id.clone(),
@@ -3814,7 +3822,8 @@ mod tests {
             notification_count: 2,
             highlight_count: 1,
             marked_unread: true,
-            last_activity_ms: 42,
+            recency_stamp: Some(42),
+            conversation_activity: None,
             latest_event: None,
             parent_space_ids: Vec::new(),
             dm_space_ids: Vec::new(),
@@ -4077,7 +4086,8 @@ mod tests {
             notification_count: 0,
             highlight_count: 0,
             marked_unread: false,
-            last_activity_ms: 42,
+            recency_stamp: Some(42),
+            conversation_activity: None,
             latest_event: Some(RoomLatestEventSummary {
                 event_id: "$latest:example.invalid".to_owned(),
                 sender_id: Some("@sender:example.invalid".to_owned()),
@@ -4122,7 +4132,8 @@ mod tests {
             notification_count: 0,
             highlight_count: 0,
             marked_unread: false,
-            last_activity_ms: 42,
+            recency_stamp: Some(42),
+            conversation_activity: None,
             latest_event: None,
             parent_space_ids: Vec::new(),
             dm_space_ids: Vec::new(),
@@ -4168,7 +4179,8 @@ mod tests {
             notification_count: 1,
             highlight_count: 0,
             marked_unread: false,
-            last_activity_ms: 42,
+            recency_stamp: Some(42),
+            conversation_activity: None,
             latest_event: Some(RoomLatestEventSummary {
                 event_id: "$latest:example.invalid".to_owned(),
                 sender_id: Some("@sender:example.invalid".to_owned()),
@@ -4230,7 +4242,8 @@ mod tests {
             notification_count: 0,
             highlight_count: 0,
             marked_unread: false,
-            last_activity_ms: 42,
+            recency_stamp: Some(42),
+            conversation_activity: None,
             latest_event: Some(RoomLatestEventSummary {
                 event_id: "$latest:example.invalid".to_owned(),
                 sender_id: Some("@sender:example.invalid".to_owned()),

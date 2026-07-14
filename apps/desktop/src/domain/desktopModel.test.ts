@@ -6,6 +6,14 @@ import { composeSidebar, projectRoomSummaries, roomListSections, visibleRooms } 
 import type { DesktopSnapshot, RoomSummary, RoomTags, SpaceSummary } from "./types";
 
 describe("desktop model", () => {
+  test("production Shell does not own an activity timestamp comparator", () => {
+    const shellSource = readFileSync(new URL("../components/Shell.tsx", import.meta.url), "utf8");
+
+    expect(shellSource).not.toContain("computeBrowserRoomListProjection");
+    expect(shellSource).not.toContain("roomActiveSortTimestamp");
+    expect(shellSource).not.toContain("last_activity_ms");
+  });
+
   test("Home (null space) global_dms includes all DMs regardless of dm_space_ids", () => {
     const spaces: SpaceSummary[] = [
       {
@@ -442,15 +450,17 @@ describe("desktop model", () => {
     ]);
   });
 
-  test("room list projection sorts active rooms by latest message timestamp before status activity", () => {
+  test("browser room list projection ignores join-only latest events for Active sort", () => {
     const rooms: RoomSummary[] = [
       roomSummaryWithLatestMessage("!status-newer:example.invalid", "Status newer", false, {
-        lastActivityMs: 300,
-        latestMessageTimestampMs: 100
+        recencyStamp: 300,
+        latestEventTimestampMs: 300,
+        conversationTimestampMs: null
       }),
       roomSummaryWithLatestMessage("!message-newer:example.invalid", "Message newer", false, {
-        lastActivityMs: 200,
-        latestMessageTimestampMs: 250
+        recencyStamp: 200,
+        latestEventTimestampMs: 250,
+        conversationTimestampMs: 250
       })
     ];
 
@@ -1017,7 +1027,7 @@ function roomSummary(
   isDm: boolean,
   tags: RoomTags = { favourite: null, low_priority: null },
   parentSpaceIds: string[] = [],
-  lastActivityMs?: number
+  conversationTimestampMs?: number
 ): RoomSummary {
   return {
     room_id: roomId,
@@ -1032,7 +1042,11 @@ function roomSummary(
     dm_space_ids: [],
     is_encrypted: false,
     unread_count: 0,
-    last_activity_ms: lastActivityMs
+    recency_stamp: conversationTimestampMs,
+    conversation_activity:
+      conversationTimestampMs === undefined
+        ? null
+        : { timestamp_ms: conversationTimestampMs, source: "message" }
   };
 }
 
@@ -1050,19 +1064,29 @@ function roomSummaryWithLatestMessage(
   displayName: string,
   isDm: boolean,
   {
-    lastActivityMs,
-    latestMessageTimestampMs
-  }: { lastActivityMs: number; latestMessageTimestampMs: number }
+    recencyStamp,
+    latestEventTimestampMs,
+    conversationTimestampMs
+  }: {
+    recencyStamp: number;
+    latestEventTimestampMs: number;
+    conversationTimestampMs: number | null;
+  }
 ): RoomSummary {
   return {
-    ...roomSummary(roomId, displayName, isDm, undefined, undefined, lastActivityMs),
+    ...roomSummary(roomId, displayName, isDm),
+    recency_stamp: recencyStamp,
+    conversation_activity:
+      conversationTimestampMs === null
+        ? null
+        : { timestamp_ms: conversationTimestampMs, source: "message" },
     latest_event: {
       event_id: `$${roomId.replace(/^!/, "")}`,
       sender_id: "@sender:example.invalid",
       sender_label: "Sender",
       sender_avatar: null,
       preview: "latest message",
-      timestamp_ms: latestMessageTimestampMs
+      timestamp_ms: latestEventTimestampMs
     }
   };
 }
@@ -1087,3 +1111,4 @@ function roomSummaryWithDmSpaces(
     unread_count: 0
   };
 }
+import { readFileSync } from "node:fs";

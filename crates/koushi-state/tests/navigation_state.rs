@@ -1,9 +1,10 @@
 use koushi_state::{
-    AppAction, AppEffect, AppState, AvatarImage, AvatarThumbnailState, MainTimelineAnchor,
-    NativeAttentionObservationKind, NativeAttentionProjectionInput, RoomLatestEventSummary,
-    RoomListFilter, RoomListSort, RoomNotificationMode, RoomNotificationSettings, RoomSummary,
-    RoomTags, SearchCrawlerSettings, SessionInfo, SessionState, SpaceSummary, ThreadPaneState,
-    TimelinePaneState, TimelineScrollAnchorEdge, UiEvent, UserProfile, compose_sidebar,
+    AppAction, AppEffect, AppState, AvatarImage, AvatarThumbnailState, ConversationActivity,
+    ConversationActivitySource, MainTimelineAnchor, NativeAttentionObservationKind,
+    NativeAttentionProjectionInput, RoomLatestEventSummary, RoomListFilter, RoomListSort,
+    RoomNotificationMode, RoomNotificationSettings, RoomSummary, RoomTags, SearchCrawlerSettings,
+    SessionInfo, SessionState, SpaceSummary, ThreadPaneState, TimelinePaneState,
+    TimelineScrollAnchorEdge, UiEvent, UserProfile, compose_sidebar,
     compose_sidebar_with_room_notification_settings, compute_room_list_projection,
     native_attention_state_from_rooms, reduce,
 };
@@ -69,7 +70,8 @@ fn rooms() -> Vec<RoomSummary> {
             notification_count: 5,
             highlight_count: 1,
             marked_unread: false,
-            last_activity_ms: 0,
+            recency_stamp: None,
+            conversation_activity: None,
             latest_event: None,
             parent_space_ids: vec!["space-a".to_owned()],
             dm_space_ids: Vec::new(),
@@ -89,7 +91,8 @@ fn rooms() -> Vec<RoomSummary> {
             notification_count: 3,
             highlight_count: 0,
             marked_unread: false,
-            last_activity_ms: 0,
+            recency_stamp: None,
+            conversation_activity: None,
             latest_event: None,
             parent_space_ids: vec!["space-a".to_owned()],
             dm_space_ids: vec!["space-a".to_owned()],
@@ -109,7 +112,8 @@ fn rooms() -> Vec<RoomSummary> {
             notification_count: 2,
             highlight_count: 0,
             marked_unread: false,
-            last_activity_ms: 0,
+            recency_stamp: None,
+            conversation_activity: None,
             latest_event: None,
             parent_space_ids: vec![],
             dm_space_ids: vec![],
@@ -134,7 +138,8 @@ fn room_summary_serializes_projected_label_and_dm_identity_contract() {
         notification_count: 3,
         highlight_count: 0,
         marked_unread: false,
-        last_activity_ms: 0,
+        recency_stamp: None,
+        conversation_activity: None,
         latest_event: None,
         parent_space_ids: Vec::new(),
         dm_space_ids: Vec::new(),
@@ -147,6 +152,27 @@ fn room_summary_serializes_projected_label_and_dm_identity_contract() {
     assert_eq!(value["display_label"], json!("Alice Upstream"));
     assert_eq!(value["original_display_label"], json!("Alice Upstream"));
     assert_eq!(value["dm_user_ids"], json!([]));
+}
+
+#[test]
+fn room_summary_legacy_json_defaults_activity_fields_to_none() {
+    let value = json!({
+        "room_id": "dm-a",
+        "display_name": "Alice",
+        "display_label": "Alice",
+        "is_dm": true,
+        "tags": { "favourite": null, "low_priority": null },
+        "unread_count": 0,
+        "notification_count": 0,
+        "highlight_count": 0,
+        "parent_space_ids": [],
+        "is_encrypted": false
+    });
+
+    let room: RoomSummary = serde_json::from_value(value).expect("deserialize legacy room");
+
+    assert_eq!(room.recency_stamp, None);
+    assert_eq!(room.conversation_activity, None);
 }
 
 #[test]
@@ -179,7 +205,8 @@ fn room_list_update_projects_dm_room_display_labels_from_aliases() {
                 notification_count: 3,
                 highlight_count: 0,
                 marked_unread: false,
-                last_activity_ms: 0,
+                recency_stamp: None,
+                conversation_activity: None,
                 latest_event: None,
                 parent_space_ids: Vec::new(),
                 dm_space_ids: Vec::new(),
@@ -232,7 +259,8 @@ fn room_list_update_projects_dm_room_avatar_from_counterpart_profile() {
                 notification_count: 3,
                 highlight_count: 0,
                 marked_unread: false,
-                last_activity_ms: 0,
+                recency_stamp: None,
+                conversation_activity: None,
                 latest_event: None,
                 parent_space_ids: Vec::new(),
                 dm_space_ids: Vec::new(),
@@ -280,7 +308,8 @@ fn avatar_thumbnail_update_refreshes_people_filter_room_avatar_surface() {
         notification_count: 3,
         highlight_count: 0,
         marked_unread: false,
-        last_activity_ms: 0,
+        recency_stamp: None,
+        conversation_activity: None,
         latest_event: None,
         parent_space_ids: vec!["space-a".to_owned()],
         dm_space_ids: vec!["space-a".to_owned()],
@@ -340,7 +369,8 @@ fn local_alias_update_refreshes_open_dm_room_labels_and_notification_candidate()
         notification_count: 3,
         highlight_count: 0,
         marked_unread: false,
-        last_activity_ms: 0,
+        recency_stamp: None,
+        conversation_activity: None,
         latest_event: None,
         parent_space_ids: Vec::new(),
         dm_space_ids: Vec::new(),
@@ -526,7 +556,8 @@ fn room_list_update_clears_missing_active_space_and_room() {
                 notification_count: 0,
                 highlight_count: 0,
                 marked_unread: false,
-                last_activity_ms: 0,
+                recency_stamp: None,
+                conversation_activity: None,
                 latest_event: None,
                 parent_space_ids: vec![],
                 dm_space_ids: vec![],
@@ -580,7 +611,8 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                 notification_count: 5,
                 highlight_count: 0,
                 marked_unread: false,
-                last_activity_ms: 0,
+                recency_stamp: None,
+                conversation_activity: None,
                 latest_event: None,
                 parent_space_ids: vec!["space-a".to_owned()],
                 dm_space_ids: Vec::new(),
@@ -600,7 +632,8 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                 notification_count: 2,
                 highlight_count: 0,
                 marked_unread: false,
-                last_activity_ms: 0,
+                recency_stamp: None,
+                conversation_activity: None,
                 latest_event: None,
                 parent_space_ids: Vec::new(),
                 dm_space_ids: Vec::new(),
@@ -657,7 +690,8 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                     notification_count: 5,
                     highlight_count: 0,
                     marked_unread: false,
-                    last_activity_ms: 0,
+                    recency_stamp: None,
+                    conversation_activity: None,
                     latest_event: None,
                     parent_space_ids: Vec::new(),
                     dm_space_ids: Vec::new(),
@@ -677,7 +711,8 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                     notification_count: 2,
                     highlight_count: 0,
                     marked_unread: false,
-                    last_activity_ms: 0,
+                    recency_stamp: None,
+                    conversation_activity: None,
                     latest_event: None,
                     parent_space_ids: vec!["space-a".to_owned()],
                     dm_space_ids: Vec::new(),
@@ -735,7 +770,8 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
             notification_count: 5,
             highlight_count: 0,
             marked_unread: false,
-            last_activity_ms: 0,
+            recency_stamp: None,
+            conversation_activity: None,
             latest_event: None,
             parent_space_ids: vec!["space-a".to_owned()],
             dm_space_ids: Vec::new(),
@@ -784,7 +820,8 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
                 notification_count: 2,
                 highlight_count: 0,
                 marked_unread: false,
-                last_activity_ms: 0,
+                recency_stamp: None,
+                conversation_activity: None,
                 latest_event: None,
                 parent_space_ids: vec!["space-a".to_owned()],
                 dm_space_ids: Vec::new(),
@@ -1070,7 +1107,8 @@ fn selecting_space_restores_last_non_dm_room_for_that_space() {
         notification_count: 0,
         highlight_count: 0,
         marked_unread: false,
-        last_activity_ms: 0,
+        recency_stamp: None,
+        conversation_activity: None,
         latest_event: None,
         parent_space_ids: vec!["space-a".to_owned()],
         dm_space_ids: Vec::new(),
@@ -1250,7 +1288,8 @@ fn sidebar_badges_ignore_plain_unread_counts_absent_from_activity_unread() {
             notification_count: 0,
             highlight_count: 0,
             marked_unread: false,
-            last_activity_ms: 0,
+            recency_stamp: None,
+            conversation_activity: None,
             latest_event: None,
             parent_space_ids: vec!["space-a".to_owned()],
             dm_space_ids: Vec::new(),
@@ -1270,7 +1309,8 @@ fn sidebar_badges_ignore_plain_unread_counts_absent_from_activity_unread() {
             notification_count: 2,
             highlight_count: 0,
             marked_unread: false,
-            last_activity_ms: 0,
+            recency_stamp: None,
+            conversation_activity: None,
             latest_event: None,
             parent_space_ids: vec!["space-a".to_owned()],
             dm_space_ids: Vec::new(),
@@ -1290,7 +1330,8 @@ fn sidebar_badges_ignore_plain_unread_counts_absent_from_activity_unread() {
             notification_count: 0,
             highlight_count: 0,
             marked_unread: true,
-            last_activity_ms: 0,
+            recency_stamp: None,
+            conversation_activity: None,
             latest_event: None,
             parent_space_ids: vec!["space-a".to_owned()],
             dm_space_ids: vec!["space-a".to_owned()],
@@ -1346,7 +1387,8 @@ fn active_space_lists_only_dms_belonging_to_that_space() {
         notification_count: 9,
         highlight_count: 0,
         marked_unread: false,
-        last_activity_ms: 0,
+        recency_stamp: None,
+        conversation_activity: None,
         latest_event: None,
         parent_space_ids: Vec::new(),
         dm_space_ids: vec![],
@@ -1397,7 +1439,8 @@ fn dm_in_multiple_spaces_appears_under_each() {
             notification_count: 5,
             highlight_count: 1,
             marked_unread: false,
-            last_activity_ms: 0,
+            recency_stamp: None,
+            conversation_activity: None,
             latest_event: None,
             parent_space_ids: vec!["space-a".to_owned()],
             dm_space_ids: Vec::new(),
@@ -1417,7 +1460,8 @@ fn dm_in_multiple_spaces_appears_under_each() {
             notification_count: 2,
             highlight_count: 0,
             marked_unread: false,
-            last_activity_ms: 0,
+            recency_stamp: None,
+            conversation_activity: None,
             latest_event: None,
             parent_space_ids: Vec::new(),
             dm_space_ids: vec!["space-a".to_owned(), "space-b".to_owned()],
@@ -1488,7 +1532,8 @@ fn sidebar_items_carry_rust_owned_room_and_space_avatars() {
             notification_count: 5,
             highlight_count: 1,
             marked_unread: false,
-            last_activity_ms: 0,
+            recency_stamp: None,
+            conversation_activity: None,
             latest_event: None,
             parent_space_ids: vec!["space-a".to_owned()],
             dm_space_ids: Vec::new(),
@@ -1508,7 +1553,8 @@ fn sidebar_items_carry_rust_owned_room_and_space_avatars() {
             notification_count: 3,
             highlight_count: 0,
             marked_unread: false,
-            last_activity_ms: 0,
+            recency_stamp: None,
+            conversation_activity: None,
             latest_event: None,
             parent_space_ids: vec!["space-a".to_owned()],
             dm_space_ids: vec!["space-a".to_owned()],
@@ -1822,7 +1868,11 @@ fn room_list_sort_supports_recent_and_locale_modes() {
                 notification_count: 0,
                 highlight_count: 0,
                 marked_unread: false,
-                last_activity_ms: 2000,
+                recency_stamp: Some(2000),
+                conversation_activity: Some(ConversationActivity {
+                    timestamp_ms: 2000,
+                    source: ConversationActivitySource::Message,
+                }),
                 latest_event: None,
                 parent_space_ids: Vec::new(),
                 dm_space_ids: Vec::new(),
@@ -1842,7 +1892,11 @@ fn room_list_sort_supports_recent_and_locale_modes() {
                 notification_count: 0,
                 highlight_count: 0,
                 marked_unread: false,
-                last_activity_ms: 1000,
+                recency_stamp: Some(1000),
+                conversation_activity: Some(ConversationActivity {
+                    timestamp_ms: 1000,
+                    source: ConversationActivitySource::Message,
+                }),
                 latest_event: None,
                 parent_space_ids: Vec::new(),
                 dm_space_ids: Vec::new(),
@@ -1959,7 +2013,11 @@ fn room_list_activity_sort_uses_latest_message_timestamp_before_status_activity(
             notification_count: 0,
             highlight_count: 0,
             marked_unread: false,
-            last_activity_ms: 300,
+            recency_stamp: Some(300),
+            conversation_activity: Some(ConversationActivity {
+                timestamp_ms: 100,
+                source: ConversationActivitySource::Message,
+            }),
             latest_event: Some(latest_message("$status-newer", 100)),
             parent_space_ids: Vec::new(),
             dm_space_ids: Vec::new(),
@@ -1979,7 +2037,11 @@ fn room_list_activity_sort_uses_latest_message_timestamp_before_status_activity(
             notification_count: 0,
             highlight_count: 0,
             marked_unread: false,
-            last_activity_ms: 200,
+            recency_stamp: Some(200),
+            conversation_activity: Some(ConversationActivity {
+                timestamp_ms: 250,
+                source: ConversationActivitySource::Message,
+            }),
             latest_event: Some(latest_message("$message-newer", 250)),
             parent_space_ids: Vec::new(),
             dm_space_ids: Vec::new(),
@@ -2004,6 +2066,172 @@ fn room_list_activity_sort_uses_latest_message_timestamp_before_status_activity(
             .collect::<Vec<_>>(),
         vec!["message-newer", "status-newer"]
     );
+}
+
+#[test]
+fn room_list_activity_sort_keeps_a_messaged_dm_ahead_of_a_newer_join_only_dm() {
+    let rooms = vec![
+        RoomSummary {
+            room_id: "join-only".to_owned(),
+            display_name: "New Contact".to_owned(),
+            display_label: "New Contact".to_owned(),
+            original_display_label: "New Contact".to_owned(),
+            avatar: None,
+            is_dm: true,
+            dm_user_ids: Vec::new(),
+            tags: RoomTags::default(),
+            unread_count: 0,
+            notification_count: 0,
+            highlight_count: 0,
+            marked_unread: false,
+            recency_stamp: Some(300),
+            conversation_activity: None,
+            latest_event: None,
+            parent_space_ids: Vec::new(),
+            dm_space_ids: Vec::new(),
+            is_encrypted: false,
+            joined_members: 0,
+        },
+        RoomSummary {
+            room_id: "messaged".to_owned(),
+            display_name: "Existing Contact".to_owned(),
+            display_label: "Existing Contact".to_owned(),
+            original_display_label: "Existing Contact".to_owned(),
+            avatar: None,
+            is_dm: true,
+            dm_user_ids: Vec::new(),
+            tags: RoomTags::default(),
+            unread_count: 0,
+            notification_count: 0,
+            highlight_count: 0,
+            marked_unread: false,
+            recency_stamp: Some(200),
+            conversation_activity: Some(ConversationActivity {
+                timestamp_ms: 200,
+                source: ConversationActivitySource::Message,
+            }),
+            latest_event: Some(latest_message("$message", 200)),
+            parent_space_ids: Vec::new(),
+            dm_space_ids: Vec::new(),
+            is_encrypted: false,
+            joined_members: 0,
+        },
+    ];
+
+    let projection = compute_room_list_projection(
+        RoomListFilter::People,
+        RoomListSort::Activity,
+        None,
+        &[],
+        &rooms,
+        &[],
+    );
+
+    assert_eq!(
+        projection
+            .items
+            .iter()
+            .map(|item| item.room_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["messaged", "join-only"]
+    );
+}
+
+#[test]
+fn room_list_activity_sort_uses_labels_then_room_ids_as_a_stable_fallback() {
+    let rooms = vec![
+        dm_room_for_activity("room-z", "alpha", None),
+        dm_room_for_activity("room-b", "Beta", None),
+        dm_room_for_activity("room-a", "beta", None),
+        dm_room_for_activity(
+            "room-c",
+            "Later Label",
+            Some(ConversationActivity {
+                timestamp_ms: 42,
+                source: ConversationActivitySource::EncryptedMessage,
+            }),
+        ),
+        dm_room_for_activity(
+            "room-d",
+            "Earlier Label",
+            Some(ConversationActivity {
+                timestamp_ms: 42,
+                source: ConversationActivitySource::ThreadReply,
+            }),
+        ),
+    ];
+
+    let projection = compute_room_list_projection(
+        RoomListFilter::People,
+        RoomListSort::Activity,
+        None,
+        &[],
+        &rooms,
+        &[],
+    );
+
+    assert_eq!(
+        projection
+            .items
+            .iter()
+            .map(|item| item.room_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["room-d", "room-c", "room-z", "room-a", "room-b"]
+    );
+}
+
+#[test]
+fn sidebar_global_dms_uses_the_authoritative_conversation_activity_order() {
+    let rooms = vec![
+        dm_room_for_activity("join-only", "New Contact", None),
+        dm_room_for_activity(
+            "messaged",
+            "Existing Contact",
+            Some(ConversationActivity {
+                timestamp_ms: 42,
+                source: ConversationActivitySource::Message,
+            }),
+        ),
+    ];
+
+    let sidebar = compose_sidebar(None, &[], &rooms);
+
+    assert_eq!(
+        sidebar
+            .global_dms
+            .iter()
+            .map(|room| room.room_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["messaged", "join-only"]
+    );
+}
+
+fn dm_room_for_activity(
+    room_id: &str,
+    display_label: &str,
+    conversation_activity: Option<ConversationActivity>,
+) -> RoomSummary {
+    RoomSummary {
+        room_id: room_id.to_owned(),
+        display_name: display_label.to_owned(),
+        display_label: display_label.to_owned(),
+        original_display_label: display_label.to_owned(),
+        avatar: None,
+        is_dm: true,
+        dm_user_ids: Vec::new(),
+        tags: RoomTags::default(),
+        unread_count: 0,
+        notification_count: 0,
+        highlight_count: 0,
+        marked_unread: false,
+        recency_stamp: Some(999),
+        conversation_activity,
+        latest_event: None,
+        parent_space_ids: Vec::new(),
+        dm_space_ids: Vec::new(),
+        is_encrypted: false,
+        joined_members: 0,
+    }
 }
 
 fn latest_message(event_id: &str, timestamp_ms: u64) -> RoomLatestEventSummary {
