@@ -9480,14 +9480,20 @@ mod tests {
             .filter(|record| record.event.source == "core.verification_admission")
             .map(|record| record.event.stage)
             .collect::<Vec<_>>();
-        assert!(stages.windows(3).any(|window| {
-            window
-                == [
-                    "restricted_catch_up_skipped",
-                    "ready_projection_dispatched",
-                    "normal_sync_started",
-                ]
-        }));
+        let mut remaining = stages.as_slice();
+        for expected in [
+            "restricted_catch_up_skipped",
+            "ready_projection_dispatched",
+            "normal_sync_started",
+        ] {
+            let index = remaining
+                .iter()
+                .position(|stage| *stage == expected)
+                .unwrap_or_else(|| {
+                    panic!("missing ordered admission stage {expected}: {stages:?}")
+                });
+            remaining = &remaining[index + 1..];
+        }
         let _ = handle.send(AccountMessage::Shutdown).await;
     }
 

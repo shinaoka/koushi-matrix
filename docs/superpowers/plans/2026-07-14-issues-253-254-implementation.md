@@ -166,7 +166,7 @@ Testing Library, Playwright, CSS contract tests, local Conduit/Tuwunel QA.
 
    ```bash
    cargo fmt --all -- --check
-   npm --prefix apps/desktop run format:check
+   npm --prefix apps/desktop run lint
    git diff --check origin/main...HEAD
    ```
 
