@@ -1565,6 +1565,54 @@ impl fmt::Debug for TimelineLinkRange {
 
 /// Timeline item DTO. Phase 5 concretizes content kinds from the SDK
 /// projection; the identity contract is stable from Phase 1.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum TimelineNoticeI18nKey {
+    #[serde(rename = "timeline.notice.roomCreate")]
+    RoomCreate,
+    #[serde(rename = "timeline.notice.roomPowerLevels")]
+    RoomPowerLevels,
+    #[serde(rename = "timeline.notice.roomGuestAccess")]
+    RoomGuestAccess,
+    #[serde(rename = "timeline.notice.roomEncryption")]
+    RoomEncryption,
+    #[serde(rename = "timeline.notice.spaceParent")]
+    SpaceParent,
+    #[serde(rename = "timeline.notice.roomJoinRules")]
+    RoomJoinRules,
+    #[serde(rename = "timeline.notice.roomHistoryVisibility")]
+    RoomHistoryVisibility,
+    #[serde(rename = "timeline.notice.roomPinnedEvents")]
+    RoomPinnedEvents,
+    #[serde(rename = "timeline.notice.roomNameSet")]
+    RoomNameSet,
+    #[serde(rename = "timeline.notice.roomNameChanged")]
+    RoomNameChanged,
+    #[serde(rename = "timeline.notice.roomNameRemoved")]
+    RoomNameRemoved,
+    #[serde(rename = "timeline.notice.roomNameChangedGeneric")]
+    RoomNameChangedGeneric,
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TimelineNoticeI18n {
+    pub key: TimelineNoticeI18nKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_name: Option<String>,
+}
+
+impl fmt::Debug for TimelineNoticeI18n {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TimelineNoticeI18n")
+            .field("key", &self.key)
+            .field("has_old_name", &self.old_name.is_some())
+            .field("has_new_name", &self.new_name.is_some())
+            .finish()
+    }
+}
+
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TimelineItem {
     pub id: TimelineItemId,
@@ -1575,7 +1623,7 @@ pub struct TimelineItem {
     pub sender_avatar: Option<AvatarImage>,
     pub body: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notice_i18n_key: Option<String>,
+    pub notice_i18n: Option<TimelineNoticeI18n>,
     #[serde(default)]
     pub message_kind: TimelineMessageKind,
     #[serde(default)]
@@ -1649,7 +1697,10 @@ impl fmt::Debug for TimelineItem {
                 &self.sender_avatar.as_ref().map(|_| "AvatarImage(..)"),
             )
             .field("body", &self.body.as_ref().map(|_| "MessageBody(..)"))
-            .field("notice_i18n_key", &self.notice_i18n_key)
+            .field(
+                "notice_i18n",
+                &self.notice_i18n.as_ref().map(|notice| notice.key),
+            )
             .field("message_kind", &self.message_kind)
             .field("spoiler_spans", &self.spoiler_spans.len())
             .field("timestamp_ms", &self.timestamp_ms)
@@ -2271,7 +2322,7 @@ mod tests {
             sender_label: None,
             sender_avatar: None,
             body: Some("hello".to_owned()),
-            notice_i18n_key: None,
+            notice_i18n: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: Some(1_234),
@@ -2351,7 +2402,7 @@ mod tests {
             sender_label: None,
             sender_avatar: None,
             body: Some("reply body".to_owned()),
-            notice_i18n_key: None,
+            notice_i18n: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: Some(1_234),
@@ -2409,7 +2460,7 @@ mod tests {
             sender_label: None,
             sender_avatar: None,
             body: Some("plain fallback".to_owned()),
-            notice_i18n_key: None,
+            notice_i18n: None,
             message_kind: TimelineMessageKind::Emote,
             spoiler_spans: vec![TimelineSpoilerSpan {
                 start_utf16: 0,
@@ -2490,7 +2541,7 @@ mod tests {
             sender_label: None,
             sender_avatar: None,
             body: Some("copyable body".to_owned()),
-            notice_i18n_key: None,
+            notice_i18n: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: Some(1_234),
@@ -2677,7 +2728,7 @@ mod tests {
             sender_label: None,
             sender_avatar: None,
             body: Some("hello".to_owned()),
-            notice_i18n_key: None,
+            notice_i18n: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: Some(1_234),
@@ -2727,7 +2778,7 @@ mod tests {
             sender_label: None,
             sender_avatar: None,
             body: Some("synthetic caption".to_owned()),
-            notice_i18n_key: None,
+            notice_i18n: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: Some(1_234),
@@ -2965,7 +3016,7 @@ mod tests {
             } else {
                 Some("visible body".to_owned())
             },
-            notice_i18n_key: None,
+            notice_i18n: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: Some(1),

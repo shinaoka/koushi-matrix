@@ -77,7 +77,6 @@ use matrix_sdk::room::edit::EditedContent;
 use matrix_sdk::room::reply::{EnforceThread, Reply};
 use matrix_sdk::ruma::UserId;
 use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType as SendReceiptType;
-use matrix_sdk::ruma::events::Mentions;
 use matrix_sdk::ruma::events::receipt::ReceiptThread;
 use matrix_sdk::ruma::events::room::message::FormattedBody;
 use matrix_sdk::ruma::events::room::message::{
@@ -86,14 +85,17 @@ use matrix_sdk::ruma::events::room::message::{
 };
 use matrix_sdk::ruma::events::room::{MediaSource, ThumbnailInfo};
 use matrix_sdk::ruma::events::sticker::StickerEventContent;
+use matrix_sdk::ruma::events::{
+    Mentions, StateEventContentChange, room::name::RoomNameEventContent,
+};
 use matrix_sdk::ruma::html::{Html, SanitizerConfig};
 use matrix_sdk::send_queue::{LocalEcho, LocalEchoContent, RoomSendQueueUpdate, SendHandle};
 use matrix_sdk_ui::timeline::{
-    EmbeddedEvent, EncryptedMessage, EventItemOrigin, EventSendState as SdkEventSendState,
-    EventTimelineItem, InReplyToDetails, MembershipChange, Profile, ReactionStatus,
-    ReactionsByKeyBySender, Timeline, TimelineDetails, TimelineEventItemId, TimelineFocus,
-    TimelineItem as SdkTimelineItem, TimelineItemContent, TimelineItemKind,
-    TimelineReadReceiptTracking,
+    AnyOtherStateEventContentChange, EmbeddedEvent, EncryptedMessage, EventItemOrigin,
+    EventSendState as SdkEventSendState, EventTimelineItem, InReplyToDetails, MembershipChange,
+    Profile, ReactionStatus, ReactionsByKeyBySender, Timeline, TimelineDetails,
+    TimelineEventItemId, TimelineFocus, TimelineItem as SdkTimelineItem, TimelineItemContent,
+    TimelineItemKind, TimelineReadReceiptTracking,
 };
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
@@ -106,10 +108,11 @@ use crate::event::{
     ThreadRootProjectionStateDto, ThreadSummaryDto, TimelineAnchorRestoreStatus, TimelineDiff,
     TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind,
     TimelineMediaSource, TimelineMediaThumbnail, TimelineMessageActions, TimelineMessageKind,
-    TimelineMessageSource, TimelineNavigationSnapshot, TimelineResyncReason,
-    TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan, TimelineUnableToDecrypt,
-    TimelineUnableToDecryptReason, TimelineUnreadPosition, TimelineViewportObservation,
-    message_actions_for_timeline_item, message_source_for_timeline_item,
+    TimelineMessageSource, TimelineNavigationSnapshot, TimelineNoticeI18n, TimelineNoticeI18nKey,
+    TimelineResyncReason, TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
+    TimelineUnableToDecrypt, TimelineUnableToDecryptReason, TimelineUnreadPosition,
+    TimelineViewportObservation, message_actions_for_timeline_item,
+    message_source_for_timeline_item,
 };
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
@@ -4822,10 +4825,9 @@ fn thread_root_projection_item_from_raw_with_context(
             (raw.get("type").and_then(serde_json::Value::as_str) == Some("m.room.encrypted"))
                 .then(|| "Unable to decrypt message".to_owned())
         });
-    let notice_i18n_key = message_projection
+    let notice_i18n = message_projection
         .as_ref()
-        .and_then(|projection| projection.notice_i18n_key)
-        .map(str::to_owned);
+        .and_then(|projection| projection.notice_i18n.clone());
     let message_kind = message_projection
         .as_ref()
         .map(|projection| projection.message_kind)
@@ -4873,7 +4875,7 @@ fn thread_root_projection_item_from_raw_with_context(
         sender_label: context.sender_label,
         sender_avatar: context.sender_avatar,
         body: body.clone(),
-        notice_i18n_key,
+        notice_i18n,
         message_kind,
         spoiler_spans,
         timestamp_ms,
@@ -11021,10 +11023,9 @@ fn sdk_item_to_timeline_item_with_send_states(
             let body = message_projection
                 .as_ref()
                 .and_then(|projection| projection.body.clone());
-            let notice_i18n_key = message_projection
+            let notice_i18n = message_projection
                 .as_ref()
-                .and_then(|projection| projection.notice_i18n_key)
-                .map(str::to_owned);
+                .and_then(|projection| projection.notice_i18n.clone());
             let actionable_body = message_projection
                 .as_ref()
                 .filter(|projection| projection.body_is_user_content)
@@ -11129,7 +11130,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 sender_label,
                 sender_avatar,
                 body,
-                notice_i18n_key,
+                notice_i18n,
                 message_kind,
                 spoiler_spans,
                 timestamp_ms,
@@ -11167,7 +11168,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 sender_label: None,
                 sender_avatar: None,
                 body: None,
-                notice_i18n_key: None,
+                notice_i18n: None,
                 message_kind: TimelineMessageKind::default(),
                 spoiler_spans: Vec::new(),
                 timestamp_ms,
@@ -11242,7 +11243,7 @@ fn thread_summary_from_sdk(summary: matrix_sdk_ui::timeline::ThreadSummary) -> T
 
 struct MessageProjection {
     body: Option<String>,
-    notice_i18n_key: Option<&'static str>,
+    notice_i18n: Option<TimelineNoticeI18n>,
     body_is_user_content: bool,
     message_kind: TimelineMessageKind,
     spoiler_spans: Vec<TimelineSpoilerSpan>,
@@ -11334,6 +11335,11 @@ fn message_projection_from_timeline_content(content: &TimelineItemContent) -> Me
         TimelineItemContent::ProfileChange(change) => {
             return profile_change_projection(change);
         }
+        TimelineItemContent::OtherState(state) => {
+            if let AnyOtherStateEventContentChange::RoomName(change) = state.content() {
+                return room_name_notice_projection(change);
+            }
+        }
         _ => {}
     }
 
@@ -11352,7 +11358,7 @@ fn message_projection_from_timeline_content(content: &TimelineItemContent) -> Me
     if content.is_redacted() {
         return MessageProjection {
             body: None,
-            notice_i18n_key: None,
+            notice_i18n: None,
             body_is_user_content: false,
             message_kind: TimelineMessageKind::Text,
             spoiler_spans: Vec::new(),
@@ -11371,7 +11377,7 @@ fn sticker_projection_from_body(body: &str) -> MessageProjection {
     let body = body.trim();
     MessageProjection {
         body: (!body.is_empty()).then(|| body.to_owned()),
-        notice_i18n_key: None,
+        notice_i18n: None,
         body_is_user_content: true,
         message_kind: TimelineMessageKind::Text,
         spoiler_spans: Vec::new(),
@@ -11383,7 +11389,11 @@ fn sticker_projection_from_body(body: &str) -> MessageProjection {
 fn state_event_notice_projection(event_type: &str) -> MessageProjection {
     MessageProjection {
         body: Some(state_event_notice_body(event_type).into_owned()),
-        notice_i18n_key: state_event_notice_i18n_key(event_type),
+        notice_i18n: state_event_notice_i18n(event_type).map(|key| TimelineNoticeI18n {
+            key,
+            old_name: None,
+            new_name: None,
+        }),
         body_is_user_content: false,
         message_kind: TimelineMessageKind::Notice,
         spoiler_spans: Vec::new(),
@@ -11406,17 +11416,82 @@ fn state_event_notice_body(event_type: &str) -> Cow<'_, str> {
     }
 }
 
-fn state_event_notice_i18n_key(event_type: &str) -> Option<&'static str> {
+fn state_event_notice_i18n(event_type: &str) -> Option<TimelineNoticeI18nKey> {
     match event_type {
-        "m.room.create" => Some("timeline.notice.roomCreate"),
-        "m.room.power_levels" => Some("timeline.notice.roomPowerLevels"),
-        "m.room.guest_access" => Some("timeline.notice.roomGuestAccess"),
-        "m.room.encryption" => Some("timeline.notice.roomEncryption"),
-        "m.space.parent" => Some("timeline.notice.spaceParent"),
-        "m.room.join_rules" => Some("timeline.notice.roomJoinRules"),
-        "m.room.history_visibility" => Some("timeline.notice.roomHistoryVisibility"),
-        "m.room.pinned_events" => Some("timeline.notice.roomPinnedEvents"),
+        "m.room.create" => Some(TimelineNoticeI18nKey::RoomCreate),
+        "m.room.power_levels" => Some(TimelineNoticeI18nKey::RoomPowerLevels),
+        "m.room.guest_access" => Some(TimelineNoticeI18nKey::RoomGuestAccess),
+        "m.room.encryption" => Some(TimelineNoticeI18nKey::RoomEncryption),
+        "m.space.parent" => Some(TimelineNoticeI18nKey::SpaceParent),
+        "m.room.join_rules" => Some(TimelineNoticeI18nKey::RoomJoinRules),
+        "m.room.history_visibility" => Some(TimelineNoticeI18nKey::RoomHistoryVisibility),
+        "m.room.pinned_events" => Some(TimelineNoticeI18nKey::RoomPinnedEvents),
         _ => None,
+    }
+}
+
+fn room_name_notice_projection(
+    change: &StateEventContentChange<RoomNameEventContent>,
+) -> MessageProjection {
+    let (body, notice_i18n) = match change {
+        StateEventContentChange::Original {
+            content,
+            prev_content,
+        } => {
+            let current_name = content.name.as_str();
+            let previous_name = prev_content
+                .as_ref()
+                .and_then(|content| content.name.as_deref())
+                .filter(|name| !name.trim().is_empty());
+
+            if current_name.trim().is_empty() {
+                (
+                    "removed the room name".to_owned(),
+                    TimelineNoticeI18n {
+                        key: TimelineNoticeI18nKey::RoomNameRemoved,
+                        old_name: None,
+                        new_name: None,
+                    },
+                )
+            } else if previous_name.is_some_and(|previous| previous != current_name) {
+                let previous_name = previous_name.expect("previous name was checked");
+                (
+                    format!("changed the room name from {previous_name} to {current_name}"),
+                    TimelineNoticeI18n {
+                        key: TimelineNoticeI18nKey::RoomNameChanged,
+                        old_name: Some(previous_name.to_owned()),
+                        new_name: Some(current_name.to_owned()),
+                    },
+                )
+            } else {
+                (
+                    format!("set the room name to {current_name}"),
+                    TimelineNoticeI18n {
+                        key: TimelineNoticeI18nKey::RoomNameSet,
+                        old_name: None,
+                        new_name: Some(current_name.to_owned()),
+                    },
+                )
+            }
+        }
+        StateEventContentChange::Redacted(_) => (
+            "changed the room name".to_owned(),
+            TimelineNoticeI18n {
+                key: TimelineNoticeI18nKey::RoomNameChangedGeneric,
+                old_name: None,
+                new_name: None,
+            },
+        ),
+    };
+
+    MessageProjection {
+        body: Some(body),
+        notice_i18n: Some(notice_i18n),
+        body_is_user_content: false,
+        message_kind: TimelineMessageKind::Notice,
+        spoiler_spans: Vec::new(),
+        media: None,
+        formatted: None,
     }
 }
 
@@ -11466,7 +11541,7 @@ fn profile_change_projection(
 fn non_user_content_projection(body: &str) -> MessageProjection {
     MessageProjection {
         body: Some(body.to_owned()),
-        notice_i18n_key: None,
+        notice_i18n: None,
         body_is_user_content: false,
         message_kind: TimelineMessageKind::Notice,
         spoiler_spans: Vec::new(),
@@ -11539,7 +11614,7 @@ fn message_projection_from_msgtype(
         ),
         _ => MessageProjection {
             body: Some(fallback_body.to_owned()),
-            notice_i18n_key: None,
+            notice_i18n: None,
             body_is_user_content: true,
             message_kind: TimelineMessageKind::Text,
             spoiler_spans: Vec::new(),
@@ -11572,7 +11647,7 @@ fn message_projection_from_body_and_formatted(
 
     MessageProjection {
         body,
-        notice_i18n_key: None,
+        notice_i18n: None,
         body_is_user_content: true,
         message_kind,
         spoiler_spans,
@@ -12505,6 +12580,7 @@ mod tests {
     use matrix_sdk::ruma::events::room::message::{
         EmoteMessageEventContent, MessageType, NoticeMessageEventContent, TextMessageEventContent,
     };
+    use matrix_sdk::ruma::events::{StateEventContentChange, room::name::RoomNameEventContent};
     use matrix_sdk::ruma::{OwnedUserId, uint};
     use matrix_sdk_ui::timeline::{
         MembershipChange, ReactionInfo, ReactionStatus, ReactionsByKeyBySender,
@@ -16220,7 +16296,7 @@ mod tests {
             sender_label: None,
             sender_avatar: None,
             body: body.map(ToOwned::to_owned),
-            notice_i18n_key: None,
+            notice_i18n: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: Some(1),
@@ -17210,10 +17286,115 @@ mod tests {
 
         assert_eq!(projection.body.as_deref(), Some("updated room permissions"));
         assert_eq!(
-            projection.notice_i18n_key,
-            Some("timeline.notice.roomPowerLevels")
+            projection.notice_i18n,
+            Some(TimelineNoticeI18n {
+                key: TimelineNoticeI18nKey::RoomPowerLevels,
+                old_name: None,
+                new_name: None,
+            })
         );
         assert_eq!(projection.body_is_user_content, false);
+    }
+
+    fn original_room_name_change(
+        name: &str,
+        previous_name: Option<&str>,
+    ) -> StateEventContentChange<RoomNameEventContent> {
+        StateEventContentChange::Original {
+            content: RoomNameEventContent::new(name.to_owned()),
+            prev_content: previous_name.map(|previous_name| {
+                serde_json::from_value(serde_json::json!({ "name": previous_name }))
+                    .expect("previous room name should deserialize")
+            }),
+        }
+    }
+
+    #[test]
+    fn room_name_notice_projects_initial_name_as_structured_set_notice() {
+        let projection = room_name_notice_projection(&original_room_name_change("研究室 🧪", None));
+
+        assert_eq!(
+            projection.body.as_deref(),
+            Some("set the room name to 研究室 🧪")
+        );
+        assert_eq!(
+            projection.notice_i18n,
+            Some(TimelineNoticeI18n {
+                key: TimelineNoticeI18nKey::RoomNameSet,
+                old_name: None,
+                new_name: Some("研究室 🧪".to_owned()),
+            })
+        );
+        assert_eq!(projection.message_kind, TimelineMessageKind::Notice);
+        assert!(!projection.body_is_user_content);
+    }
+
+    #[test]
+    fn room_name_notice_projects_old_and_new_names_for_change() {
+        let projection = room_name_notice_projection(&original_room_name_change(
+            "<新しい部屋>",
+            Some("Old room"),
+        ));
+
+        assert_eq!(
+            projection.body.as_deref(),
+            Some("changed the room name from Old room to <新しい部屋>")
+        );
+        assert_eq!(
+            projection.notice_i18n,
+            Some(TimelineNoticeI18n {
+                key: TimelineNoticeI18nKey::RoomNameChanged,
+                old_name: Some("Old room".to_owned()),
+                new_name: Some("<新しい部屋>".to_owned()),
+            })
+        );
+    }
+
+    #[test]
+    fn room_name_notice_projects_empty_name_as_removal() {
+        let projection =
+            room_name_notice_projection(&original_room_name_change("   ", Some("Old room")));
+
+        assert_eq!(projection.body.as_deref(), Some("removed the room name"));
+        assert_eq!(
+            projection.notice_i18n,
+            Some(TimelineNoticeI18n {
+                key: TimelineNoticeI18nKey::RoomNameRemoved,
+                old_name: None,
+                new_name: None,
+            })
+        );
+    }
+
+    #[test]
+    fn room_name_notice_uses_set_wording_for_identical_names() {
+        let projection =
+            room_name_notice_projection(&original_room_name_change("Same room", Some("Same room")));
+
+        assert_eq!(
+            projection.notice_i18n.as_ref().map(|notice| notice.key),
+            Some(TimelineNoticeI18nKey::RoomNameSet)
+        );
+    }
+
+    #[test]
+    fn room_name_notice_projects_redacted_content_as_safe_generic_notice() {
+        let redacted = StateEventContentChange::Redacted(
+            serde_json::from_value(serde_json::json!({}))
+                .expect("redacted room name should deserialize"),
+        );
+        let projection = room_name_notice_projection(&redacted);
+
+        assert_eq!(projection.body.as_deref(), Some("changed the room name"));
+        assert_eq!(
+            projection.notice_i18n,
+            Some(TimelineNoticeI18n {
+                key: TimelineNoticeI18nKey::RoomNameChangedGeneric,
+                old_name: None,
+                new_name: None,
+            })
+        );
+        assert!(!projection.body.unwrap_or_default().contains("m.room.name"));
     }
 
     #[test]
@@ -18035,7 +18216,7 @@ mod tests {
             sender_label: None,
             sender_avatar: None,
             body: Some("body".to_owned()),
-            notice_i18n_key: None,
+            notice_i18n: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: Some(1),
