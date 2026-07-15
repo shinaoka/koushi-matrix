@@ -242,31 +242,20 @@ let positions = gaps
     .collect::<Vec<_>>();
 ```
 
-- [ ] **Step 5: Fence successful repair continuation**
+- [x] **Step 5: Fence successful repair continuation**
 
-At repair start, retain `minimum_batch_id = self.next_batch_id`. This field is
-already the ID of the next batch that will be emitted, not the last emitted ID.
-Treat these outcomes as requiring that rendered batch:
+Tag every SDK repair publication with `(actor_generation,
+repair_generation, projection_batch)` and return the final published
+`projection_batch`. Carry the tag through `matrix-sdk-ui` into the Core relay,
+then correlate that final tagged publication with the exact emitted desktop
+`TimelineBatchId`. Live sync, ordinary pagination, and earlier repair
+publications cannot satisfy the fence.
 
-```rust
-fn repair_outcome_expects_timeline_diff(outcome: &MatrixTimelineGapRepairOutcome) -> bool {
-    match outcome {
-        MatrixTimelineGapRepairOutcome::Deferred { cached_chunks_loaded } => *cached_chunks_loaded > 0,
-        MatrixTimelineGapRepairOutcome::Progress { events }
-        | MatrixTimelineGapRepairOutcome::BoundariesJoined { events }
-        | MatrixTimelineGapRepairOutcome::StartReached { events } => *events > 0,
-        MatrixTimelineGapRepairOutcome::Stale | MatrixTimelineGapRepairOutcome::Failed => false,
-    }
-}
-```
-
-For a successful diff-producing outcome, set `AwaitingProjection` before emitting
-`TimelineGapRepairProgressed`; require `minimum_batch_id` (or a newer rendered
-batch). Do not add one: doing so would wait forever when the repair publishes
-exactly one diff batch.
-For a successful no-diff outcome, re-inspect immediately. A relay diff arriving
-after the SDK completion cannot unlock the scheduler until the desktop reports
-the newer batch.
+When the SDK returns no final projection batch, including a one-chunk gap-only
+cache reveal, re-inspect immediately. When the tagged relay arrives after SDK
+completion, retain the pending completion until that exact tag is emitted.
+When it arrives before completion, retain its exact desktop batch ID until the
+SDK reports which projection index was final.
 
 - [ ] **Step 6: Run focused Core tests and verify GREEN**
 

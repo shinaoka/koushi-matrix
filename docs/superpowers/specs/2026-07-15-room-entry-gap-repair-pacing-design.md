@@ -103,20 +103,27 @@ tight repair loop.
 
 ## Render-Settled Repair Loop
 
-Core adds an actor-private `AwaitingProjection` phase after a repair operation
-publishes timeline diffs. The phase records the current actor generation,
-timeline generation, room-local repair generation, and the minimum expected
-timeline batch ID. `TimelineActor::next_batch_id` already names the next batch
-that will be emitted, so the fence captures that value at repair start without
-adding one; adding one would deadlock a repair that publishes exactly one diff
-batch.
+The SDK tags each repair publication with the owning actor generation,
+room-local repair generation, and a one-based publication index. It also
+returns the final publication index, or `None` when the operation published no
+timeline diff. Core carries that tag through the UI timeline relay and enters
+an actor-private `AwaitingProjection` phase only after the final tagged
+publication has been assigned its exact desktop timeline batch ID. An
+unrelated live or pagination batch can therefore never satisfy the fence, and
+a gap-only cached chunk cannot create a render wait for a diff that does not
+exist.
 
 The desktop timeline store applies `ItemsUpdated` normally. After React commits
 the corresponding virtual window and completes anchor or live-edge
 restoration, it sends a typed render acknowledgement containing those four
 fences. Core accepts only a matching repair generation and a matching or newer
-batch acknowledgement owned by the same actor and timeline generation. Stale,
-duplicate, cross-room, and cross-actor acknowledgements are ignored.
+batch acknowledgement owned by the same actor and timeline generation. The
+required batch ID is retained in public `Repairing` state so an `InitialItems`
+replay after consumer lag can acknowledge the repaired snapshot even though
+the desktop store intentionally cleared its last incremental batch ID. Stale,
+duplicate, cross-room, and cross-actor acknowledgements are ignored. Rejected
+transport calls are retried with capped exponential backoff and are recorded
+as confirmed only after the command resolves.
 
 Only after a matching acknowledgement may Core re-inspect and schedule the next
 repair operation. If an SDK outcome produces no timeline diff, Core may

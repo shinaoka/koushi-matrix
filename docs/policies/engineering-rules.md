@@ -321,7 +321,10 @@ Rules:
    pagination loops before the previous diff has rendered and anchor
    restoration has completed. Room gap repair follows the same fence: one
    actor may own at most one unacknowledged repair projection batch, and it may
-   continue only after a matching actor/timeline/repair/batch post-layout ACK.
+   continue only after the SDK's final actor/repair/publication tag is mapped
+   to an exact desktop batch and receives a matching
+   actor/timeline/repair/batch post-layout ACK. A rejected ACK transport call
+   remains retryable; a gap-only cache chunk creates no render fence.
    Underfilled-initial pagination must use the settled height model and virtual
    range; a transient virtual DOM `scrollHeight` is not proof that a timeline
    with canonical overflow needs another page.

@@ -831,6 +831,13 @@ paths must never repair by removing a room event cache. Failure, cancellation,
 stale generations, and unsupported missing-token recovery preserve existing
 events and expose a retryable incomplete state.
 
+Every SDK gap-repair publication is causally tagged through the UI timeline
+relay. Core fences continuation on the exact desktop batch containing the
+final tagged publication, not on whichever live batch happens to arrive next.
+Gap-only cache reveals report that no projection was published. The required
+desktop batch ID remains in `Repairing` state so a lag-triggered
+`InitialItems` replay can still complete the post-layout acknowledgement.
+
 See
 `docs/superpowers/specs/2026-07-03-room-timeline-cache-repair-design.md`.
 
