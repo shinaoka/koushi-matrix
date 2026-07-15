@@ -322,10 +322,12 @@ Rules:
    restoration has completed. Backfill eligibility must come from one pure
    state evaluation over demand and blockers, and every state transition that
    can remove a blocker must explicitly schedule another evaluation. A prepend
-   diff does not end the request epoch; only terminal pagination state or reset
-   does. Programmatic scroll echoes are not genuine top-scroll demand. Do not
-   add polling, fixed-delay retries, or a user-scroll latch to compensate for a
-   missing transition.
+   diff alone does not end the request epoch. Successful terminal and prepend
+   events may arrive in either order, so both must be observed before release;
+   end/failure/reset releases directly. A transport rejection waits for a new
+   state transition instead of retrying itself. Programmatic scroll echoes are
+   not genuine top-scroll demand. Do not add polling, fixed-delay retries, or a
+   user-scroll latch to compensate for a missing transition.
    Room gap repair follows the same fence: one
    actor may own at most one unacknowledged repair projection batch, and it may
    continue only after the SDK's final actor/repair/publication tag is mapped

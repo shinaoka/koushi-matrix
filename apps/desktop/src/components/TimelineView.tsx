@@ -434,6 +434,8 @@ type TimelineBackfillRequestEpoch = {
   id: number;
   timelineKeyHash: string;
   demand: TimelineBackfillDemand;
+  projectionObserved: boolean;
+  terminalReceived: boolean;
 };
 
 type PendingTimelineBackfillEvaluation = {
@@ -2933,13 +2935,21 @@ export const TimelineView = memo(function TimelineView({
       }
       const backfillCompletionReason = timelineBackfillCompletionReason(event);
       if (backfillCompletionReason !== null) {
-        if (backfillRequestEpochRef.current !== null) {
+        const epoch = backfillRequestEpochRef.current;
+        if (epoch !== null) {
           emitDiagnosticLog(
             "timeline.backfill",
             `stage=complete reason=${backfillCompletionReason}`
           );
         }
-        backfillRequestEpochRef.current = null;
+        const terminalCanPrecedeProjection =
+          "PaginationStateChanged" in event &&
+          event.PaginationStateChanged.state === "Idle";
+        if (epoch !== null && terminalCanPrecedeProjection && !epoch.projectionObserved) {
+          epoch.terminalReceived = true;
+        } else {
+          backfillRequestEpochRef.current = null;
+        }
         scheduleBackfillEvaluation(
           "PaginationStateChanged" in event ? "pagination_terminal" : "timeline_reset"
         );
@@ -2948,6 +2958,13 @@ export const TimelineView = memo(function TimelineView({
       // Prepend batches: capture the anchor BEFORE the diff is applied to
       // React state, so the layout effect can restore it after commit.
       if ("ItemsUpdated" in event && batchContainsPrepend(event.ItemsUpdated.diffs)) {
+        const epoch = backfillRequestEpochRef.current;
+        if (epoch !== null) {
+          epoch.projectionObserved = true;
+          if (epoch.terminalReceived) {
+            backfillRequestEpochRef.current = null;
+          }
+        }
         const container = containerRef.current;
         if (container) {
           pendingAnchorRef.current = captureAnchor(container);
@@ -4394,7 +4411,9 @@ export const TimelineView = memo(function TimelineView({
       const epoch: TimelineBackfillRequestEpoch = {
         id: nextBackfillRequestEpochRef.current,
         timelineKeyHash,
-        demand
+        demand,
+        projectionObserved: false,
+        terminalReceived: false
       };
       nextBackfillRequestEpochRef.current += 1;
       backfillRequestEpochRef.current = epoch;
@@ -4420,7 +4439,6 @@ export const TimelineView = memo(function TimelineView({
           "timeline.backfill",
           `stage=failed trigger=${trigger} reason=transport`
         );
-        scheduleBackfillEvaluation("pagination_terminal");
       });
       return true;
     },
@@ -4429,7 +4447,6 @@ export const TimelineView = memo(function TimelineView({
       backwardState,
       emitDiagnosticLog,
       items.length,
-      scheduleBackfillEvaluation,
       timelineKeyHash,
       transport
     ]

@@ -727,9 +727,11 @@ UI responsibilities:
   live-edge scroll echoes are not explicit user demand.
 - Block a request until initialization/resync, projection layout, virtual
   layout, and anchor restoration are settled. Keep one request epoch active
-  through prepend application and clear it only on the matching terminal
-  pagination state or timeline reset. This prevents a diff batch from opening
-  a duplicate-request window before its terminal state arrives.
+  through prepend application. Successful terminal state and its prepend may
+  arrive in either order; release the epoch only after both have been observed
+  and let anchor settlement block the next request. End/failure/reset releases
+  it directly. This prevents either event order from opening a duplicate-request
+  window or losing the next wake-up.
 - Re-evaluate after every transition that can add demand or remove a blocker:
   initial projection, layout/anchor settlement, genuine user scroll,
   pagination terminal state, prepend settlement, resync replay, setting change,
@@ -757,6 +759,7 @@ metrics. Core viewport wakes use source `core.timeline_gap_repair`, stage
 `evaluation`, with viewport trigger, decision, projected gap count,
 candidate-changed boolean, and scheduler phase. Neither source may include room,
 event, transaction, or user identifiers, message content, or raw SDK errors.
+Repeated Core evaluations with the same coarse signature are deduplicated.
 
 ## Security Model
 
