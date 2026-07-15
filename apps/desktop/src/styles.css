@@ -1281,22 +1281,52 @@ button:disabled {
   white-space: nowrap;
 }
 
-.room-list-chip-count {
+.room-list-chip-total,
+.room-list-chip-unread {
   display: inline-grid;
   place-items: center;
   min-inline-size: 18px;
   block-size: 18px;
   padding-inline: 5px;
   border-radius: var(--r-pill);
-  color: var(--text);
-  background: var(--surface-raised);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 
-.room-list-chip.is-selected .room-list-chip-count {
+.room-list-chip-total {
+  color: var(--text);
+  background: var(--surface-raised);
+}
+
+.room-list-chip-unread {
+  color: var(--brand-contrast);
+  background: var(--unread);
+}
+
+.room-list-chip-unread.is-highlight {
+  background: var(--mention);
+}
+
+.room-list-chip.is-selected .room-list-chip-total {
   color: var(--brand);
   background: var(--brand-contrast);
+}
+
+.room-list-chip.is-selected .room-list-chip-unread {
+  color: var(--unread);
+  background: var(--brand-contrast);
+  outline: 1px solid currentColor;
+}
+
+.room-list-chip.is-selected .room-list-chip-unread.is-highlight {
+  color: var(--mention);
+}
+
+@media (forced-colors: active) {
+  .room-list-chip-total,
+  .room-list-chip-unread {
+    border: 1px solid currentColor;
+  }
 }
 
 .nav-label,

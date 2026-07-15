@@ -364,6 +364,8 @@ export type MessageId =
   | "roomList.category"
   | "roomList.categoryDms"
   | "roomList.categoryRooms"
+  | "roomList.categorySummary"
+  | "roomList.categorySummaryWithHighlights"
   | "roomList.filterRooms"
   | "roomList.filterUnread"
   | "roomList.filterPeople"
@@ -1366,6 +1368,9 @@ const en: Catalog = {
   "roomList.category": "Room list category",
   "roomList.categoryDms": "DMs",
   "roomList.categoryRooms": "Rooms",
+  "roomList.categorySummary": "{category}, {unread} unread, {total} total",
+  "roomList.categorySummaryWithHighlights":
+    "{category}, {unread} unread, {total} total, {highlights} mentions",
   "roomList.filterRooms": "Rooms",
   "roomList.filterUnread": "Unread",
   "roomList.filterPeople": "Direct Messages",
@@ -2266,6 +2271,9 @@ const ja: Catalog = {
   "roomList.category": "ルームリストのカテゴリ",
   "roomList.categoryDms": "DM",
   "roomList.categoryRooms": "ルーム",
+  "roomList.categorySummary": "{category}、未読 {unread} 件、合計 {total} 件",
+  "roomList.categorySummaryWithHighlights":
+    "{category}、未読 {unread} 件、合計 {total} 件、メンション {highlights} 件",
   "roomList.filterRooms": "ルーム",
   "roomList.filterUnread": "未読",
   "roomList.filterPeople": "Direct Messages",

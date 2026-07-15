@@ -532,8 +532,12 @@ export function Sidebar({
           onClick={onOpenInvites}
         />
         <RoomListControls
-          dmCount={sections.people.length}
-          roomCount={sections.rooms.length}
+          dmTotal={snapshot.sidebar.global_dms.length}
+          dmUnread={snapshot.sidebar.dm_unread_count}
+          dmHighlights={snapshot.sidebar.dm_highlight_count}
+          roomTotal={snapshot.sidebar.space_rooms.length}
+          roomUnread={snapshot.sidebar.space_unread_count}
+          roomHighlights={snapshot.sidebar.space_highlight_count}
           selectedCategory={roomCategory}
           selectedSort={roomSort}
           onSelectCategory={selectRoomCategory}
@@ -605,15 +609,23 @@ export function Sidebar({
 }
 
 function RoomListControls({
-  dmCount,
-  roomCount,
+  dmTotal,
+  dmUnread,
+  dmHighlights,
+  roomTotal,
+  roomUnread,
+  roomHighlights,
   selectedCategory,
   selectedSort,
   onSelectCategory,
   onSelectSort
 }: {
-  dmCount: number;
-  roomCount: number;
+  dmTotal: number;
+  dmUnread: number;
+  dmHighlights: number;
+  roomTotal: number;
+  roomUnread: number;
+  roomHighlights: number;
   selectedCategory: SidebarRoomCategory;
   selectedSort: SidebarRoomSort;
   onSelectCategory: (category: SidebarRoomCategory) => void;
@@ -625,20 +637,48 @@ function RoomListControls({
         <button
           className={`room-list-chip ${selectedCategory === "dms" ? "is-selected" : ""}`}
           type="button"
+          aria-label={roomListCategoryAccessibleLabel(
+            t("roomList.categoryDms"),
+            dmTotal,
+            dmUnread,
+            dmHighlights
+          )}
           aria-pressed={selectedCategory === "dms"}
           onClick={() => onSelectCategory("dms")}
         >
           <span>{t("roomList.categoryDms")}</span>
-          <span className="room-list-chip-count">{dmCount}</span>
+          <span className="room-list-chip-total" aria-hidden="true">{dmTotal}</span>
+          {dmUnread > 0 ? (
+            <span
+              className={`room-list-chip-unread ${dmHighlights > 0 ? "is-highlight" : ""}`}
+              aria-hidden="true"
+            >
+              {compactAttentionCount(dmUnread)}
+            </span>
+          ) : null}
         </button>
         <button
           className={`room-list-chip ${selectedCategory === "rooms" ? "is-selected" : ""}`}
           type="button"
+          aria-label={roomListCategoryAccessibleLabel(
+            t("roomList.categoryRooms"),
+            roomTotal,
+            roomUnread,
+            roomHighlights
+          )}
           aria-pressed={selectedCategory === "rooms"}
           onClick={() => onSelectCategory("rooms")}
         >
           <span>{t("roomList.categoryRooms")}</span>
-          <span className="room-list-chip-count">{roomCount}</span>
+          <span className="room-list-chip-total" aria-hidden="true">{roomTotal}</span>
+          {roomUnread > 0 ? (
+            <span
+              className={`room-list-chip-unread ${roomHighlights > 0 ? "is-highlight" : ""}`}
+              aria-hidden="true"
+            >
+              {compactAttentionCount(roomUnread)}
+            </span>
+          ) : null}
         </button>
       </div>
       <div className="room-list-sort" role="group" aria-label={t("roomList.sort")}>
@@ -662,6 +702,26 @@ function RoomListControls({
       </div>
     </div>
   );
+}
+
+function compactAttentionCount(count: number): string {
+  return count > 99 ? "99+" : String(count);
+}
+
+function roomListCategoryAccessibleLabel(
+  category: string,
+  total: number,
+  unread: number,
+  highlights: number
+): string {
+  return highlights > 0
+    ? t("roomList.categorySummaryWithHighlights", {
+        category,
+        unread,
+        total,
+        highlights
+      })
+    : t("roomList.categorySummary", { category, unread, total });
 }
 
 function RoomSection({

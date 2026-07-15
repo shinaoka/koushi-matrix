@@ -2082,6 +2082,78 @@ test("room sections follow Element-aligned order and render Rust-owned counts", 
   );
 });
 
+test("category unread badges keep DMs and Rooms attention visible from Rust sidebar counts", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    const roomListItems = (prefix: string, count: number) =>
+      Array.from({ length: count }, (_, index) => ({
+        room_id: `!${prefix}-${index}:example.invalid`,
+        display_name: `${prefix} ${index}`,
+        avatar: null,
+        tags: { favourite: null, low_priority: null },
+        unread_count: 0,
+        highlight_count: 0
+      }));
+    window.__harness.setSnapshot({
+      ...snapshot,
+      sidebar: {
+        ...snapshot.sidebar,
+        global_dms: roomListItems("dm", 58),
+        space_rooms: roomListItems("room", 46),
+        dm_unread_count: 3,
+        space_unread_count: 5,
+        dm_highlight_count: 0,
+        space_highlight_count: 2
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+
+  const dms = page.getByRole("button", { name: "DMs, 3 unread, 58 total" });
+  const rooms = page.getByRole("button", {
+    name: "Rooms, 5 unread, 46 total, 2 mentions"
+  });
+  await expect(dms).toBeVisible();
+  await expect(rooms).toBeVisible();
+  await expect(dms.locator(".room-list-chip-total")).toHaveText("58");
+  await expect(dms.locator(".room-list-chip-unread")).toHaveText("3");
+  await expect(rooms.locator(".room-list-chip-total")).toHaveText("46");
+  await expect(rooms.locator(".room-list-chip-unread")).toHaveText("5");
+  await expect(rooms.locator(".room-list-chip-unread")).toHaveClass(/is-highlight/);
+
+  await dms.click();
+  await expect(dms).toHaveAttribute("aria-pressed", "true");
+  await expect(rooms).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem("koushi.sidebarRoomCategory.v1")))
+    .toBe("dms");
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      sidebar: {
+        ...snapshot.sidebar,
+        dm_unread_count: 0,
+        space_unread_count: 120,
+        dm_highlight_count: 0,
+        space_highlight_count: 0
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+
+  const clearedDms = page.getByRole("button", { name: "DMs, 0 unread, 58 total" });
+  const largeRooms = page.getByRole("button", { name: "Rooms, 120 unread, 46 total" });
+  await expect(clearedDms.locator(".room-list-chip-unread")).toHaveCount(0);
+  await expect(largeRooms.locator(".room-list-chip-unread")).toHaveText("99+");
+  await expect(largeRooms).toBeVisible();
+});
+
 test("notification attention snapshot drives room, space, thread, and click routing headlessly", async ({
   page
 }) => {
