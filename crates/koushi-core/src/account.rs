@@ -65,7 +65,8 @@ use crate::event::{
 use crate::executor;
 use crate::failure::{CoreFailure, LoginFailureKind, ProfileFailureKind, TimelineFailureKind};
 use crate::ids::{
-    AccountKey, RequestId, RuntimeConnectionId, TimelineGeneration, TimelineKey, TimelineKind,
+    AccountKey, RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration, TimelineKey,
+    TimelineKind,
 };
 use crate::link_preview::LinkPreviewContext;
 use crate::renderable_thumbnail::{
@@ -228,6 +229,13 @@ pub enum AccountMessage {
         key: TimelineKey,
         generation: TimelineGeneration,
         response: oneshot::Sender<bool>,
+    },
+    AcknowledgeTimelineBatchRendered {
+        key: TimelineKey,
+        actor_generation: u64,
+        timeline_generation: TimelineGeneration,
+        repair_generation: u64,
+        batch_id: TimelineBatchId,
     },
     ScheduleServerDelayedSend {
         request_id: RequestId,
@@ -1039,6 +1047,24 @@ impl AccountActor {
                     {
                         // Dropping the response sender settles the caller as rejected.
                     }
+                }
+                AccountMessage::AcknowledgeTimelineBatchRendered {
+                    key,
+                    actor_generation,
+                    timeline_generation,
+                    repair_generation,
+                    batch_id,
+                } => {
+                    let _ = self
+                        .timeline_manager
+                        .send(TimelineMessage::AcknowledgeBatchRendered {
+                            key,
+                            actor_generation,
+                            timeline_generation,
+                            repair_generation,
+                            batch_id,
+                        })
+                        .await;
                 }
                 AccountMessage::ScheduleServerDelayedSend {
                     request_id,

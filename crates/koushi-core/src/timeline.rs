@@ -173,6 +173,13 @@ pub enum TimelineMessage {
         generation: TimelineGeneration,
         response: oneshot::Sender<bool>,
     },
+    AcknowledgeBatchRendered {
+        key: TimelineKey,
+        actor_generation: u64,
+        timeline_generation: TimelineGeneration,
+        repair_generation: u64,
+        batch_id: TimelineBatchId,
+    },
     /// Sync started: carries the live `RoomListService` on the SyncService
     /// backend (None on LegacySync). Subscribing a timeline must also
     /// subscribe its room with the live service so the server streams that
@@ -1264,6 +1271,22 @@ impl TimelineManagerActor {
                         .await;
                     let _ = response.send(accepted);
                 }
+                TimelineMessage::AcknowledgeBatchRendered {
+                    key,
+                    actor_generation,
+                    timeline_generation,
+                    repair_generation,
+                    batch_id,
+                } => {
+                    self.acknowledge_batch_rendered(
+                        &key,
+                        actor_generation,
+                        timeline_generation,
+                        repair_generation,
+                        batch_id,
+                    )
+                    .await;
+                }
             }
         }
         let room_keys = self
@@ -2232,6 +2255,27 @@ impl TimelineManagerActor {
         accepted.await.unwrap_or(false)
     }
 
+    async fn acknowledge_batch_rendered(
+        &self,
+        key: &TimelineKey,
+        actor_generation: u64,
+        timeline_generation: TimelineGeneration,
+        repair_generation: u64,
+        batch_id: TimelineBatchId,
+    ) {
+        let Some(handle) = self.timelines.get(key) else {
+            return;
+        };
+        let _ = handle
+            .send(TimelineActorMessage::AcknowledgeBatchRendered {
+                actor_generation,
+                timeline_generation,
+                repair_generation,
+                batch_id,
+            })
+            .await;
+    }
+
     async fn handle_subscribe(
         &mut self,
         request_id: RequestId,
@@ -3003,6 +3047,12 @@ enum TimelineActorMessage {
         projection_request_id: RequestId,
         generation: TimelineGeneration,
         response: oneshot::Sender<bool>,
+    },
+    AcknowledgeBatchRendered {
+        actor_generation: u64,
+        timeline_generation: TimelineGeneration,
+        repair_generation: u64,
+        batch_id: TimelineBatchId,
     },
 }
 
@@ -5129,6 +5179,7 @@ struct TimelineGapRepairTracker {
 }
 
 impl TimelineGapRepairTracker {
+    #[cfg(test)]
     fn begin_inspection(&mut self) -> Option<u64> {
         self.begin_work()
     }
@@ -5162,6 +5213,7 @@ impl TimelineGapRepairTracker {
         Some((serial, trigger))
     }
 
+    #[cfg(test)]
     fn has_pending_inspection(&self) -> bool {
         self.pending_trigger.is_some()
     }
@@ -6504,6 +6556,40 @@ impl TimelineActor {
                 let accepted = self.acknowledge_projection(projection_request_id, generation);
                 let _ = response.send(accepted);
                 if accepted && !was_acknowledged {
+                    self.start_pending_timeline_gap_inspection().await;
+                }
+            }
+            TimelineActorMessage::AcknowledgeBatchRendered {
+                actor_generation,
+                timeline_generation,
+                repair_generation,
+                batch_id,
+            } => {
+                let accepted = self
+                    .gap_repair
+                    .acknowledge_projection(TimelineGapRenderFence {
+                        actor_generation,
+                        timeline_generation,
+                        repair_generation,
+                        minimum_batch_id: batch_id,
+                    });
+                let trigger = self
+                    .gap_repair
+                    .pending_trigger
+                    .unwrap_or(TimelineGapRepairTrigger::Automatic);
+                record_timeline_gap_repair(
+                    if accepted {
+                        "render_acknowledged"
+                    } else {
+                        "stale_render_ack"
+                    },
+                    timeline_gap_repair_trigger_token(trigger),
+                    repair_generation,
+                    self.gap_repair.gap_count,
+                    self.gap_repair.batches_processed,
+                    if accepted { "accepted" } else { "ignored" },
+                );
+                if accepted {
                     self.start_pending_timeline_gap_inspection().await;
                 }
             }

@@ -24,6 +24,9 @@ use std::time::Duration;
 
 use koushi_core::executor;
 use koushi_core::runtime::{CoreConnection, CoreRuntime};
+use koushi_core::{
+    AccountKey, AppCommand, CoreCommand, TimelineBatchId, TimelineGeneration, TimelineKey,
+};
 use koushi_state::{AppAction, AppState, RoomSummary, SessionState, SpaceSummary};
 
 mod support;
@@ -265,5 +268,85 @@ async fn select_room_survives_background_room_list_storm() {
         landed.navigation.active_room_id.as_deref(),
         Some(target.as_str()),
         "click was lost/reverted under a background room-list storm"
+    );
+}
+
+/// Render acknowledgements are state-critical reliable traffic, but a burst of
+/// stale acknowledgements for absent local timeline actors must not starve or
+/// overwrite room-list projection and room-selection intent.
+#[tokio::test]
+async fn rendered_batch_acknowledgements_preserve_selection_and_display_labels() {
+    let runtime = CoreRuntime::start();
+    let mut conn = runtime.attach();
+
+    runtime
+        .inject_actions(restore_ready_actions![room_list_updated(),])
+        .await;
+    wait_for_state(&mut conn, |state| {
+        matches!(state.session, SessionState::Ready(_)) && state.navigation.active_room_id.is_some()
+    })
+    .await;
+
+    let target = room_id(NON_DM_ROOMS - 5);
+    let key = TimelineKey::room(AccountKey("@alice:example.test".to_owned()), target.clone());
+
+    for generation in 0..40_u64 {
+        runtime.inject_actions(vec![room_list_updated()]).await;
+        let request_id = conn.next_request_id();
+        conn.command(CoreCommand::App(
+            AppCommand::AcknowledgeTimelineBatchRendered {
+                request_id,
+                key: key.clone(),
+                actor_generation: 9,
+                timeline_generation: TimelineGeneration(3),
+                repair_generation: generation,
+                batch_id: TimelineBatchId(generation),
+            },
+        ))
+        .await
+        .expect("render acknowledgement should enter the reliable command lane");
+    }
+
+    runtime
+        .inject_actions(vec![AppAction::SelectRoom {
+            room_id: target.clone(),
+        }])
+        .await;
+
+    let mut resolved_rooms = scale_rooms();
+    let resolved = resolved_rooms
+        .iter_mut()
+        .find(|room| room.room_id == target)
+        .expect("target room belongs to the fixture");
+    resolved.display_name = "Resolved target".to_owned();
+    resolved.display_label = "Resolved target".to_owned();
+    resolved.original_display_label = "Resolved target".to_owned();
+    runtime
+        .inject_actions(vec![AppAction::RoomListUpdated {
+            spaces: scale_spaces(),
+            rooms: resolved_rooms,
+        }])
+        .await;
+
+    let landed = wait_for_state(&mut conn, |state| {
+        state.navigation.active_room_id.as_deref() == Some(target.as_str())
+            && state
+                .rooms
+                .iter()
+                .find(|room| room.room_id == target)
+                .is_some_and(|room| room.display_label == "Resolved target")
+    })
+    .await;
+    assert_eq!(
+        landed.navigation.active_room_id.as_deref(),
+        Some(target.as_str())
+    );
+    assert_eq!(
+        landed
+            .rooms
+            .iter()
+            .find(|room| room.room_id == target)
+            .map(|room| room.display_label.as_str()),
+        Some("Resolved target")
     );
 }

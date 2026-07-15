@@ -24,7 +24,7 @@ use koushi_core::{
     IntentOutcome, MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand, RoomEvent,
     RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand, SearchEvent, SearchScope,
     SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SetAvatarRequest, SyncCommand,
-    TimelineCommand, TimelineEvent, TimelineGeneration, TimelineKey, TimelineKind,
+    TimelineBatchId, TimelineCommand, TimelineEvent, TimelineGeneration, TimelineKey, TimelineKind,
     TimelineViewportObservation, UploadMediaKind, UploadMediaRequest, UploadMediaThumbnail,
 };
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
@@ -6640,6 +6640,26 @@ mod tests {
                 && open_offset < wait_anchor_offset,
             "activity event navigation must clear the previous owner, select the room, start one Core-owned focused navigation, then wait for its acknowledged anchor"
         );
+    }
+
+    #[test]
+    fn acknowledge_timeline_batch_rendered_routes_every_generation_fence() {
+        let source = include_str!("navigation.rs");
+        let start = source
+            .find("pub async fn acknowledge_timeline_batch_rendered")
+            .expect("rendered batch acknowledgement command should exist");
+        let command_source = &source[start..];
+
+        for field in [
+            "key: TimelineKey",
+            "actor_generation: u64",
+            "timeline_generation: TimelineGeneration",
+            "repair_generation: u64",
+            "batch_id: TimelineBatchId",
+            "AppCommand::AcknowledgeTimelineBatchRendered",
+        ] {
+            assert!(command_source.contains(field), "missing {field}");
+        }
     }
 
     #[test]
