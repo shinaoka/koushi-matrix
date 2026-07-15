@@ -5161,6 +5161,19 @@ fn repair_outcome_expects_timeline_diff(outcome: &MatrixTimelineGapRepairOutcome
     }
 }
 
+fn automatic_gap_repair_is_offscreen(
+    trigger: TimelineGapRepairTrigger,
+    outcome: &MatrixTimelineGapRepairOutcome,
+) -> bool {
+    matches!(trigger, TimelineGapRepairTrigger::Automatic)
+        && matches!(
+            outcome,
+            MatrixTimelineGapRepairOutcome::Deferred {
+                cached_chunks_loaded: 0
+            }
+        )
+}
+
 fn projected_gap_insertion_index(
     newer_position: Option<usize>,
     older_position: Option<usize>,
@@ -5311,6 +5324,26 @@ mod timeline_gap_repair_tracker_tests {
             &MatrixTimelineGapRepairOutcome::Deferred {
                 cached_chunks_loaded: 1,
             }
+        ));
+    }
+
+    #[test]
+    fn zero_budget_automatic_defer_stops_instead_of_spinning() {
+        assert!(automatic_gap_repair_is_offscreen(
+            TimelineGapRepairTrigger::Automatic,
+            &MatrixTimelineGapRepairOutcome::Deferred {
+                cached_chunks_loaded: 0,
+            }
+        ));
+        assert!(!automatic_gap_repair_is_offscreen(
+            TimelineGapRepairTrigger::Manual,
+            &MatrixTimelineGapRepairOutcome::Deferred {
+                cached_chunks_loaded: 0,
+            }
+        ));
+        assert!(!automatic_gap_repair_is_offscreen(
+            TimelineGapRepairTrigger::Automatic,
+            &MatrixTimelineGapRepairOutcome::Stale
         ));
     }
 
@@ -6884,6 +6917,29 @@ impl TimelineActor {
                 .await;
             return;
         }
+        if result
+            .as_ref()
+            .is_ok_and(|outcome| automatic_gap_repair_is_offscreen(trigger, outcome))
+        {
+            record_timeline_gap_repair(
+                "repair",
+                timeline_gap_repair_trigger_token(trigger),
+                serial,
+                gap_count,
+                self.gap_repair.batches_processed,
+                "offscreen",
+            );
+            let _ = self
+                .emit_action_reliable(AppAction::TimelineGapRepairFailed {
+                    room_id,
+                    generation: serial,
+                    gap_count,
+                    batches_processed: self.gap_repair.batches_processed,
+                    kind: TimelineGapRepairFailureKind::UnsupportedAnchor,
+                })
+                .await;
+            return;
+        }
         let Some(batches_processed) = self.gap_repair.record_batch() else {
             let _ = self
                 .emit_action_reliable(AppAction::TimelineGapRepairFailed {
@@ -6907,6 +6963,14 @@ impl TimelineActor {
                 repair_generation: serial,
                 minimum_batch_id,
             });
+            record_timeline_gap_repair(
+                "awaiting_render",
+                timeline_gap_repair_trigger_token(trigger),
+                serial,
+                gap_count,
+                batches_processed,
+                "pending",
+            );
         }
         let _ = self
             .emit_action_reliable(AppAction::TimelineGapRepairProgressed {
