@@ -166,24 +166,31 @@ The evaluator blocks a demand while any of these facts is true:
 - a backward request is already in flight; or
 - backward pagination is `Paginating` or `EndReached`.
 
-`Paginating` or an observed prepend proves that Core accepted the request. An
-`Idle` terminal without either proof means the command was not accepted by the
-active scheduler. `Failed`, unaccepted `Idle`, and transport rejection clear the
-local in-flight token and re-evaluate only on the next external state transition;
-they do not spin.
+`Paginating` or an observed prepend proves that Core accepted the request. Core
+also compares the observable oldest event before and after the SDK call and
+attaches `prepend_expected` to the accepted terminal after releasing task
+ownership. `prepend_expected=false` settles without waiting for a UI diff, so a
+filtered or aggregation-only page can continue automatically. An `Idle` terminal
+without either acceptance proof means the command was not accepted by the active
+scheduler. `Failed`, unaccepted `Idle`, and transport rejection clear the local
+in-flight token and re-evaluate only on the next external state transition; a
+gap-position projection explicitly supplies that wake after gap-scheduler work.
+They do not spin.
 
 ### Request token and deduplication
 
 The effectful wrapper assigns a local request epoch when it sends a `request`
 decision. `Paginating` or the prepend projection marks that epoch accepted. An
-accepted epoch remains active until the matching backward pagination terminal
-and prepend have both arrived, or until reset. Promise resolution alone does
-not complete the operation because Core projection may still be in transit.
+accepted epoch with `prepend_expected=true` remains active until the matching
+backward pagination terminal and prepend have both arrived, or until reset. A
+confirmed no-prepend terminal settles it directly. Promise resolution alone
+does not complete the operation because Core projection may still be in transit.
 
-After a terminal event, the next evaluation waits for any prepend projection
-and anchor compensation to settle. If the viewport is still underfilled, a new
-epoch may request one additional page. This permits paced filling to
-`EndReached` without concurrent or same-epoch duplicates.
+After a prepend-producing terminal, the next evaluation waits for projection
+and anchor compensation to settle. A no-prepend terminal re-evaluates directly.
+If the viewport is still underfilled, a new epoch may request one additional
+page. This permits paced filling to `EndReached` without concurrent or
+same-epoch duplicates.
 
 The sticky `autoBackfillRequiresUserScrollRef` is removed. Restore-generated
 scroll echoes are already suppressible by programmatic-scroll classification;

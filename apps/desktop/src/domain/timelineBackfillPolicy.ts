@@ -7,6 +7,7 @@ export type TimelineBackfillEvaluationTrigger =
   | "user_scroll"
   | "pagination_terminal"
   | "prepend_settled"
+  | "gap_projection_changed"
   | "resync_replayed"
   | "setting_changed"
   | "timeline_reset"

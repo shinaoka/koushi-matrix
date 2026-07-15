@@ -371,6 +371,8 @@ export type TimelineEvent =
         key: TimelineKey;
         direction: PaginationDirection;
         state: PaginationState;
+        /** Whether an accepted backward page structurally changed the oldest edge. */
+        prepend_expected?: boolean | null;
       };
     }
   | {

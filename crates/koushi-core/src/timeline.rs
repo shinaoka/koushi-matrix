@@ -2898,6 +2898,9 @@ enum TimelineActorMessage {
     },
     PaginationFinished {
         serial: u64,
+        request_id: RequestId,
+        direction: PaginationDirection,
+        completion: PaginationCompletion,
     },
     OwnReadReceiptChanged,
     RestoreTimelineAnchor {
@@ -5144,6 +5147,22 @@ struct ActivePaginationTask {
     task: executor::JoinHandle<()>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PaginationCompletion {
+    state: PaginationState,
+    prepend_expected: Option<bool>,
+}
+
+impl PaginationCompletion {
+    fn into_result(self) -> Result<bool, TimelineFailureKind> {
+        match self.state {
+            PaginationState::EndReached => Ok(true),
+            PaginationState::Idle | PaginationState::Paginating => Ok(false),
+            PaginationState::Failed { kind } => Err(kind),
+        }
+    }
+}
+
 const MAX_TIMELINE_GAP_REPAIR_BATCHES: u32 = 32;
 const TIMELINE_GAP_OBSERVABLE_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -6585,6 +6604,22 @@ impl Drop for TimelineActor {
     }
 }
 
+fn backward_pagination_changed_oldest_edge(
+    oldest_before: Option<&str>,
+    oldest_after: Option<&str>,
+) -> bool {
+    oldest_after.is_some() && oldest_before != oldest_after
+}
+
+async fn oldest_observable_event_id(timeline: &Timeline) -> Option<String> {
+    let (items, _updates) = timeline.subscribe().await;
+    items.iter().find_map(|item| {
+        item.as_event()
+            .and_then(|event| event.event_id())
+            .map(ToString::to_string)
+    })
+}
+
 impl TimelineActor {
     /// Spawn the actor, emit InitialItems, and return the handle.
     async fn spawn(
@@ -7075,13 +7110,19 @@ impl TimelineActor {
             TimelineActorMessage::CancelLinkPreviews { request_id } => {
                 self.handle_cancel_link_previews(request_id);
             }
-            TimelineActorMessage::PaginationFinished { serial } => {
+            TimelineActorMessage::PaginationFinished {
+                serial,
+                request_id,
+                direction,
+                completion,
+            } => {
                 if self
                     .pagination_task
                     .as_ref()
                     .is_some_and(|active| active.serial == serial)
                 {
                     self.pagination_task = None;
+                    self.emit_pagination_completion(request_id, direction, completion);
                     self.start_pending_timeline_gap_inspection().await;
                 }
             }
@@ -7955,6 +7996,7 @@ impl TimelineActor {
                 key: self.key.clone(),
                 direction,
                 state: PaginationState::Idle,
+                prepend_expected: None,
             }));
             return;
         }
@@ -7983,7 +8025,7 @@ impl TimelineActor {
         let actor_tx = self.msg_tx.clone();
         let messages_backpressure = self.messages_backpressure.clone();
         let task = executor::spawn(async move {
-            let _ = Self::paginate_once_for(
+            let completion = Self::paginate_once_for(
                 request_id,
                 key,
                 timeline,
@@ -7996,7 +8038,12 @@ impl TimelineActor {
             )
             .await;
             let _ = actor_tx
-                .send(TimelineActorMessage::PaginationFinished { serial })
+                .send(TimelineActorMessage::PaginationFinished {
+                    serial,
+                    request_id,
+                    direction,
+                    completion,
+                })
                 .await;
         });
         self.pagination_task = Some(ActivePaginationTask {
@@ -8013,7 +8060,7 @@ impl TimelineActor {
         direction: PaginationDirection,
         event_count: u16,
     ) -> Result<bool, TimelineFailureKind> {
-        Self::paginate_once_for(
+        let completion = Self::paginate_once_for(
             request_id,
             self.key.clone(),
             self.timeline.clone(),
@@ -8024,7 +8071,9 @@ impl TimelineActor {
             direction,
             event_count,
         )
-        .await
+        .await;
+        self.emit_pagination_completion(request_id, direction, completion);
+        completion.into_result()
     }
 
     async fn paginate_once_for(
@@ -8037,7 +8086,7 @@ impl TimelineActor {
         messages_backpressure: MessagesBackpressure,
         direction: PaginationDirection,
         event_count: u16,
-    ) -> Result<bool, TimelineFailureKind> {
+    ) -> PaginationCompletion {
         // Emit Paginating.
         let _ = emit_timeline_events_for_generation(
             &event_tx,
@@ -8049,9 +8098,15 @@ impl TimelineActor {
                 key: key.clone(),
                 direction,
                 state: PaginationState::Paginating,
+                prepend_expected: None,
             }],
         );
 
+        let oldest_event_before = if direction == PaginationDirection::Backward {
+            oldest_observable_event_id(&timeline).await
+        } else {
+            None
+        };
         let gate_started = Some(std::time::Instant::now());
         let result = {
             let _permit = messages_backpressure.acquire_timeline().await;
@@ -8091,6 +8146,15 @@ impl TimelineActor {
             startup_trace::trace_paginate(paginate_started, gate_wait, matches!(outcome, Ok(true)));
             outcome
         };
+        let prepend_expected = if direction == PaginationDirection::Backward && result.is_ok() {
+            let oldest_event_after = oldest_observable_event_id(&timeline).await;
+            Some(backward_pagination_changed_oldest_edge(
+                oldest_event_before.as_deref(),
+                oldest_event_after.as_deref(),
+            ))
+        } else {
+            None
+        };
 
         let next_state = match result {
             Ok(true) => PaginationState::EndReached,
@@ -8101,24 +8165,25 @@ impl TimelineActor {
             }
         };
 
-        let end_reached = matches!(next_state, PaginationState::EndReached);
-        let failure_kind = match &next_state {
-            PaginationState::Failed { kind } => Some(*kind),
-            _ => None,
-        };
-        let _ = emit_timeline_events_for_generation(
-            &event_tx,
-            &timeline_actor_generations,
-            &key,
-            actor_generation,
-            vec![TimelineEvent::PaginationStateChanged {
-                request_id: Some(request_id),
-                key: key.clone(),
-                direction,
-                state: next_state,
-            }],
-        );
-        failure_kind.map_or(Ok(end_reached), Err)
+        PaginationCompletion {
+            state: next_state,
+            prepend_expected,
+        }
+    }
+
+    fn emit_pagination_completion(
+        &self,
+        request_id: RequestId,
+        direction: PaginationDirection,
+        completion: PaginationCompletion,
+    ) {
+        self.emit(CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+            request_id: Some(request_id),
+            key: self.key.clone(),
+            direction,
+            state: completion.state,
+            prepend_expected: completion.prepend_expected,
+        }));
     }
 
     fn handle_cancel_pagination(&mut self, request_id: RequestId) {
@@ -8141,6 +8206,7 @@ impl TimelineActor {
             key: self.key.clone(),
             direction: active.direction,
             state: PaginationState::Idle,
+            prepend_expected: None,
         }));
     }
 
@@ -14399,9 +14465,24 @@ mod tests {
         CoreEvent, PaginationDirection, TimelineEvent, TimelineUnreadPosition,
         TimelineViewportObservation,
     };
+
     use crate::failure::{CoreFailure, TimelineFailureKind};
     use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineBatchId};
     use crate::runtime::CoreRuntime;
+
+    #[test]
+    fn backward_pagination_detects_only_a_changed_oldest_edge_as_prepend() {
+        assert!(!backward_pagination_changed_oldest_edge(None, None));
+        assert!(backward_pagination_changed_oldest_edge(None, Some("older")));
+        assert!(!backward_pagination_changed_oldest_edge(
+            Some("current"),
+            Some("current")
+        ));
+        assert!(backward_pagination_changed_oldest_edge(
+            Some("current"),
+            Some("older")
+        ));
+    }
 
     fn fake_rid(seq: u64) -> RequestId {
         RequestId {
@@ -16140,12 +16221,14 @@ mod tests {
                     key: key.clone(),
                     direction: PaginationDirection::Backward,
                     state: PaginationState::Paginating,
+                    prepend_expected: None,
                 },
                 TimelineEvent::PaginationStateChanged {
                     request_id: None,
                     key: key.clone(),
                     direction: PaginationDirection::Backward,
                     state: PaginationState::Idle,
+                    prepend_expected: Some(false),
                 },
             ],
         );
@@ -21040,6 +21123,32 @@ mod tests {
         assert!(
             handle_cancel_source.contains(".abort()"),
             "cancelling pagination must abort only the pagination task, not the timeline actor"
+        );
+    }
+
+    #[test]
+    fn pagination_terminal_is_emitted_after_active_task_release() {
+        let source = include_str!("timeline.rs");
+        let completion_branch = source
+            .split("async fn handle_msg")
+            .nth(1)
+            .expect("TimelineActor message handler should exist")
+            .split("TimelineActorMessage::PaginationFinished {")
+            .nth(1)
+            .expect("pagination completion branch should exist")
+            .split("TimelineActorMessage::OwnReadReceiptChanged")
+            .next()
+            .expect("own-read-receipt branch should follow pagination completion");
+        let release_offset = completion_branch
+            .find("self.pagination_task = None")
+            .expect("pagination completion must release active task ownership");
+        let terminal_offset = completion_branch
+            .find("self.emit_pagination_completion")
+            .expect("pagination completion must emit its terminal state");
+
+        assert!(
+            release_offset < terminal_offset,
+            "the terminal event must not wake React until the actor can accept its next request"
         );
     }
 

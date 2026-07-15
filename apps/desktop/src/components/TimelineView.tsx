@@ -2941,6 +2941,9 @@ export const TimelineView = memo(function TimelineView({
         cancelScrollFollowUpFrames();
         resetActiveMeasurementDeferral({ clearMountedIds: true });
       }
+      if ("GapPositionsUpdated" in event) {
+        scheduleBackfillEvaluation("gap_projection_changed");
+      }
       if (
         "PaginationStateChanged" in event &&
         event.PaginationStateChanged.direction === "Backward" &&
@@ -2966,7 +2969,16 @@ export const TimelineView = memo(function TimelineView({
           epoch !== null &&
           terminalCanPrecedeProjection &&
           (epoch.paginatingReceived || epoch.projectionObserved);
-        if (epoch !== null && acceptedIdle && !epoch.projectionObserved) {
+        const acceptedIdleWithoutPrepend =
+          acceptedIdle &&
+          "PaginationStateChanged" in event &&
+          event.PaginationStateChanged.prepend_expected === false;
+        if (
+          epoch !== null &&
+          acceptedIdle &&
+          !acceptedIdleWithoutPrepend &&
+          !epoch.projectionObserved
+        ) {
           epoch.terminalReceived = true;
         } else {
           backfillRequestEpochRef.current = null;
@@ -2981,7 +2993,9 @@ export const TimelineView = memo(function TimelineView({
         const shouldReevaluate =
           "ResyncRequired" in event ||
           ("PaginationStateChanged" in event &&
-            (acceptedIdle || event.PaginationStateChanged.state === "EndReached"));
+            ((acceptedIdle &&
+              (acceptedIdleWithoutPrepend || epoch?.projectionObserved === true)) ||
+              event.PaginationStateChanged.state === "EndReached"));
         if (shouldReevaluate) {
           scheduleBackfillEvaluation(
             "PaginationStateChanged" in event ? "pagination_terminal" : "timeline_reset"

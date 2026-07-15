@@ -903,6 +903,9 @@ pub enum TimelineEvent {
         key: TimelineKey,
         direction: PaginationDirection,
         state: PaginationState,
+        /// Whether an accepted backward page changed the observable oldest edge.
+        /// `None` is used for admission rejection, start, cancellation, and failure.
+        prepend_expected: Option<bool>,
     },
     AnchorRestoreFinished {
         request_id: RequestId,

@@ -2641,6 +2641,7 @@ mod tests {
                 key: key.clone(),
                 direction: PaginationDirection::Backward,
                 state: PaginationState::EndReached,
+                prepend_expected: Some(false),
             },
         ))
         .expect("serialize");
@@ -2648,6 +2649,7 @@ mod tests {
         assert_eq!(pagination["request_id"], json!(null));
         assert_eq!(pagination["direction"], json!("Backward"));
         assert_eq!(pagination["state"], json!("EndReached"));
+        assert_eq!(pagination["prepend_expected"], json!(false));
 
         let anchor_restore_finished =
             serialize_core_event(&CoreEvent::Timeline(TimelineEvent::AnchorRestoreFinished {
@@ -3328,6 +3330,7 @@ mod tests {
                     key: key.clone(),
                     direction: PaginationDirection::Backward,
                     state: PaginationState::EndReached,
+                    prepend_expected: Some(false),
                 },
             ))
             .expect("serialize"),

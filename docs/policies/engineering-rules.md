@@ -323,13 +323,17 @@ Rules:
    state evaluation over demand and blockers, and every state transition that
    can remove a blocker must explicitly schedule another evaluation. A prepend
    diff alone does not end the request epoch. `Paginating` or the prepend itself
-   is acceptance evidence. An accepted `Idle` terminal and prepend may arrive in
-   either order, so both must be observed before release. An unaccepted `Idle`,
-   failure, or transport rejection releases the epoch but waits for a new
-   external state transition instead of retrying itself; end/reset releases
-   directly. Programmatic scroll echoes are not genuine top-scroll demand. Do
-   not add polling, fixed-delay retries, or a user-scroll latch to compensate for
-   a missing transition.
+   is acceptance evidence. An accepted `Idle` terminal and an expected prepend
+   may arrive in either order, so both must be observed before release. Core must
+   report whether the SDK call changed the observable oldest edge; a confirmed
+   no-prepend page settles on the terminal alone, and the terminal must be emitted
+   only after actor task ownership is released. An unaccepted `Idle`, failure, or
+   transport rejection releases the epoch but waits for a new external state
+   transition instead of retrying itself; a gap-position projection is one such
+   scheduler-release transition. End/reset releases directly. Programmatic
+   scroll echoes are not genuine top-scroll demand. Do not add polling,
+   fixed-delay retries, or a user-scroll latch to compensate for a missing
+   transition.
    Room gap repair follows the same fence: one
    actor may own at most one unacknowledged repair projection batch, and it may
    continue only after the SDK's final actor/repair/publication tag is mapped
