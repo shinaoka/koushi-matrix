@@ -2641,6 +2641,7 @@ mod tests {
                 key: key.clone(),
                 direction: PaginationDirection::Backward,
                 state: PaginationState::EndReached,
+                prepend_expected: Some(false),
             },
         ))
         .expect("serialize");
@@ -2648,6 +2649,7 @@ mod tests {
         assert_eq!(pagination["request_id"], json!(null));
         assert_eq!(pagination["direction"], json!("Backward"));
         assert_eq!(pagination["state"], json!("EndReached"));
+        assert_eq!(pagination["prepend_expected"], json!(false));
 
         let anchor_restore_finished =
             serialize_core_event(&CoreEvent::Timeline(TimelineEvent::AnchorRestoreFinished {
@@ -2702,6 +2704,13 @@ mod tests {
                 }],
             }))
             .expect("serialize gap positions update event");
+        let gap_repair_released =
+            serialize_core_event(&CoreEvent::Timeline(TimelineEvent::GapRepairReleased {
+                key: key.clone(),
+                actor_generation: 3,
+                generation: 5,
+            }))
+            .expect("serialize gap repair release event");
 
         let display_labels_updated =
             serialize_core_event(&CoreEvent::Timeline(TimelineEvent::DisplayLabelsUpdated {
@@ -3321,6 +3330,7 @@ mod tests {
             "timelineMessageSourceLoaded": message_source_loaded,
             "timelineNavigationUpdated": navigation_updated,
             "timelineGapPositionsUpdated": gap_positions_updated,
+            "timelineGapRepairReleased": gap_repair_released,
             "timelineAnchorRestoreFinished": anchor_restore_finished,
             "timelinePaginationEndReached": serialize_core_event(&CoreEvent::Timeline(
                 TimelineEvent::PaginationStateChanged {
@@ -3328,6 +3338,7 @@ mod tests {
                     key: key.clone(),
                     direction: PaginationDirection::Backward,
                     state: PaginationState::EndReached,
+                    prepend_expected: Some(false),
                 },
             ))
             .expect("serialize"),
@@ -3465,6 +3476,7 @@ mod tests {
             "timelineAnchorRestoreFinished",
             "timelineNavigationUpdated",
             "timelineGapPositionsUpdated",
+            "timelineGapRepairReleased",
             "timelinePaginationEndReached",
             "timelineReplyQuoteInitialItems",
             "timelineResyncRequired",

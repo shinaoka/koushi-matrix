@@ -319,7 +319,26 @@ Rules:
 4. Timeline scrollback is a split contract: core emits diffs and pagination
    state; React owns DOM anchoring. Product code must not issue automatic
    pagination loops before the previous diff has rendered and anchor
-   restoration has completed. Room gap repair follows the same fence: one
+   restoration has completed. Backfill eligibility must come from one pure
+   state evaluation over demand and blockers, and every state transition that
+   can remove a blocker must explicitly schedule another evaluation. A prepend
+   diff alone does not end the request epoch. `Paginating`, a front insertion,
+   or a replacement `Reset` is acceptance evidence. An accepted `Idle` terminal and an expected oldest-edge projection
+   may arrive in either order, so both must be observed before release. Core must
+   report whether the SDK call changed the observable oldest edge; a confirmed
+   no-prepend page settles on the terminal alone, and the terminal must be emitted
+   only after actor task ownership is released. An unaccepted `Idle`, failure, or
+   transport rejection releases the epoch but waits for its owning release
+   condition instead of retrying itself. General failures may use a later
+   external transition; an admission-rejected `Idle` is fenced until
+   `GapRepairReleased`. `GapPositionsUpdated` is a projection
+   wake but may be followed immediately by active repair; `GapRepairReleased`
+   is the post-terminal wake that proves no queued or active gap work remains.
+   End/resync releases directly. Programmatic
+   scroll echoes are not genuine top-scroll demand. Do not add polling,
+   fixed-delay retries, or a user-scroll latch to compensate for a missing
+   transition.
+   Room gap repair follows the same fence: one
    actor may own at most one unacknowledged repair projection batch, and it may
    continue only after the SDK's final actor/repair/publication tag is mapped
    to an exact desktop batch and receives a matching
@@ -330,6 +349,11 @@ Rules:
    the matching `InitialItems` replay has rendered. Observable settlement
    waits must be bounded so a lag-dropped SDK update becomes retryable failure,
    never a permanent repair owner.
+   `ObserveViewport` may wake automatic gap inspection only when the selected
+   projected gap candidate changes (viewport-intersecting first, otherwise
+   nearest the live edge). An unchanged candidate is idle; a changed candidate
+   remains queued across active work and projection/render ACK fences.
+   Candidate-driven automatic repair keeps a zero cached-chunk budget.
    Underfilled-initial pagination must use the settled height model and virtual
    range; a transient virtual DOM `scrollHeight` is not proof that a timeline
    with canonical overflow needs another page.

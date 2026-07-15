@@ -903,6 +903,9 @@ pub enum TimelineEvent {
         key: TimelineKey,
         direction: PaginationDirection,
         state: PaginationState,
+        /// Whether an accepted backward page changed the observable oldest edge.
+        /// `None` is used for admission rejection, start, cancellation, and failure.
+        prepend_expected: Option<bool>,
     },
     AnchorRestoreFinished {
         request_id: RequestId,
@@ -919,6 +922,14 @@ pub enum TimelineEvent {
         actor_generation: u64,
         generation: u64,
         positions: Vec<TimelineGapPosition>,
+    },
+    /// Gap work reached an idle scheduler after terminal processing. A UI
+    /// pagination request rejected while repair was active may retry now.
+    GapRepairReleased {
+        key: TimelineKey,
+        /// Monotonic owner generation for actor replacement fencing.
+        actor_generation: u64,
+        generation: u64,
     },
     SendCompleted {
         request_id: RequestId,
@@ -1066,6 +1077,16 @@ impl fmt::Debug for TimelineEvent {
                 .field("actor_generation", actor_generation)
                 .field("generation", generation)
                 .field("gap_count", &positions.len())
+                .finish(),
+            Self::GapRepairReleased {
+                actor_generation,
+                generation,
+                ..
+            } => formatter
+                .debug_struct("GapRepairReleased")
+                .field("key", &"TimelineKey(..)")
+                .field("actor_generation", actor_generation)
+                .field("generation", generation)
                 .finish(),
             Self::SendCompleted {
                 request_id,
@@ -1996,6 +2017,7 @@ pub fn project_timeline_event_display_labels(event: &mut TimelineEvent, state: &
         | TimelineEvent::ResyncRequired { .. }
         | TimelineEvent::NavigationUpdated { .. }
         | TimelineEvent::GapPositionsUpdated { .. }
+        | TimelineEvent::GapRepairReleased { .. }
         | TimelineEvent::DisplayPolicyUpdated { .. }
         | TimelineEvent::DisplayLabelsUpdated { .. } => {}
     }

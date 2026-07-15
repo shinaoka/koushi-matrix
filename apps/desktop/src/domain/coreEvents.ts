@@ -371,6 +371,8 @@ export type TimelineEvent =
         key: TimelineKey;
         direction: PaginationDirection;
         state: PaginationState;
+        /** Whether an accepted backward page structurally changed the oldest edge. */
+        prepend_expected?: boolean | null;
       };
     }
   | {
@@ -392,6 +394,14 @@ export type TimelineEvent =
         actor_generation: number;
         generation: number;
         positions: TimelineGapPosition[];
+      };
+    }
+  | {
+      /** Gap work ended without queued work; a pagination request rejected during repair may retry. */
+      GapRepairReleased: {
+        key: TimelineKey;
+        actor_generation: number;
+        generation: number;
       };
     }
   | {

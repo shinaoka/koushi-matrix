@@ -423,6 +423,9 @@ function timelineEventKeyId(event: TimelineEvent): string | null {
   if ("GapPositionsUpdated" in event) {
     return keyStr(event.GapPositionsUpdated.key);
   }
+  if ("GapRepairReleased" in event) {
+    return keyStr(event.GapRepairReleased.key);
+  }
   if ("SendCompleted" in event) {
     return keyStr(event.SendCompleted.key);
   }

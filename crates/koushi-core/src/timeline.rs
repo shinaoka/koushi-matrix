@@ -2898,6 +2898,9 @@ enum TimelineActorMessage {
     },
     PaginationFinished {
         serial: u64,
+        request_id: RequestId,
+        direction: PaginationDirection,
+        completion: PaginationCompletion,
     },
     OwnReadReceiptChanged,
     RestoreTimelineAnchor {
@@ -3331,6 +3334,32 @@ fn record_timeline_gap_repair(
                 batches_processed.into(),
             ))
             .field(DiagnosticField::token("outcome", outcome)),
+    );
+}
+
+fn record_timeline_gap_repair_evaluation(
+    decision: &'static str,
+    projected_gap_count: usize,
+    candidate_changed: bool,
+    scheduler_phase: &'static str,
+) {
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Debug,
+            "core.timeline_gap_repair",
+            "evaluation",
+        )
+        .field(DiagnosticField::token("trigger", "viewport"))
+        .field(DiagnosticField::token("decision", decision))
+        .field(DiagnosticField::count(
+            "projected_gap_count",
+            projected_gap_count.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::boolean(
+            "candidate_changed",
+            candidate_changed,
+        ))
+        .field(DiagnosticField::token("scheduler_phase", scheduler_phase)),
     );
 }
 
@@ -5118,6 +5147,22 @@ struct ActivePaginationTask {
     task: executor::JoinHandle<()>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PaginationCompletion {
+    state: PaginationState,
+    prepend_expected: Option<bool>,
+}
+
+impl PaginationCompletion {
+    fn into_result(self) -> Result<bool, TimelineFailureKind> {
+        match self.state {
+            PaginationState::EndReached => Ok(true),
+            PaginationState::Idle | PaginationState::Paginating => Ok(false),
+            PaginationState::Failed { kind } => Err(kind),
+        }
+    }
+}
+
 const MAX_TIMELINE_GAP_REPAIR_BATCHES: u32 = 32;
 const TIMELINE_GAP_OBSERVABLE_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -5278,20 +5323,88 @@ fn projected_gap_insertion_index(
     newer_position.or_else(|| older_position.map(|index| index.saturating_add(1)))
 }
 
-fn select_projected_gap_ordinal(
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProjectedGapCandidate {
+    ordinal: usize,
+    relation: ProjectedGapRelation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProjectedGapRelation {
+    IntersectsViewport,
+    NearestLiveEdge,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GapRepairViewportWakeDecision {
+    Wake { candidate: ProjectedGapCandidate },
+    IdleNoCandidate,
+    IdleUnchangedCandidate { candidate: ProjectedGapCandidate },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GapRepairEvaluationDiagnosticSignature {
+    decision: &'static str,
+    projected_gap_count: usize,
+    candidate_changed: bool,
+    scheduler_phase: &'static str,
+}
+
+fn should_record_gap_repair_evaluation(
+    previous: &mut Option<GapRepairEvaluationDiagnosticSignature>,
+    next: GapRepairEvaluationDiagnosticSignature,
+) -> bool {
+    if *previous == Some(next) {
+        return false;
+    }
+    *previous = Some(next);
+    true
+}
+
+fn select_projected_gap_candidate(
     projected: &[(usize, TimelineGapPosition)],
     viewport_range: Option<(usize, usize)>,
-) -> Option<usize> {
+) -> Option<ProjectedGapCandidate> {
     let in_viewport = viewport_range.and_then(|(first, last)| {
         let start = first.min(last);
         let end = first.max(last).saturating_add(1);
         projected
             .iter()
             .filter(|(_, position)| (start..=end).contains(&position.before_item_index))
-            .map(|(ordinal, _)| *ordinal)
-            .last()
+            .map(|(ordinal, _)| ProjectedGapCandidate {
+                ordinal: *ordinal,
+                relation: ProjectedGapRelation::IntersectsViewport,
+            })
+            .next_back()
     });
-    in_viewport.or_else(|| projected.last().map(|(ordinal, _)| *ordinal))
+    in_viewport.or_else(|| {
+        projected.last().map(|(ordinal, _)| ProjectedGapCandidate {
+            ordinal: *ordinal,
+            relation: ProjectedGapRelation::NearestLiveEdge,
+        })
+    })
+}
+
+fn evaluate_gap_repair_viewport_wake(
+    projected: &[(usize, TimelineGapPosition)],
+    viewport_range: Option<(usize, usize)>,
+    previous: Option<ProjectedGapCandidate>,
+) -> GapRepairViewportWakeDecision {
+    let Some(candidate) = select_projected_gap_candidate(projected, viewport_range) else {
+        return GapRepairViewportWakeDecision::IdleNoCandidate;
+    };
+    if previous == Some(candidate) {
+        GapRepairViewportWakeDecision::IdleUnchangedCandidate { candidate }
+    } else {
+        GapRepairViewportWakeDecision::Wake { candidate }
+    }
+}
+
+fn select_projected_gap_ordinal(
+    projected: &[(usize, TimelineGapPosition)],
+    viewport_range: Option<(usize, usize)>,
+) -> Option<usize> {
+    select_projected_gap_candidate(projected, viewport_range).map(|candidate| candidate.ordinal)
 }
 
 #[derive(Debug, Default)]
@@ -5302,6 +5415,8 @@ struct TimelineGapRepairTracker {
     awaiting_projection: Option<TimelineGapRenderFence>,
     gap_count: u32,
     batches_processed: u32,
+    projected_gaps: Vec<(usize, TimelineGapPosition)>,
+    last_projected_candidate: Option<ProjectedGapCandidate>,
 }
 
 impl TimelineGapRepairTracker {
@@ -5321,6 +5436,40 @@ impl TimelineGapRepairTracker {
             self.pending_trigger
                 .map_or(trigger, |pending| pending.max(trigger)),
         );
+    }
+
+    fn replace_projected_gaps(
+        &mut self,
+        projected_gaps: Vec<(usize, TimelineGapPosition)>,
+        viewport_range: Option<(usize, usize)>,
+    ) {
+        self.last_projected_candidate =
+            select_projected_gap_candidate(&projected_gaps, viewport_range);
+        self.projected_gaps = projected_gaps;
+    }
+
+    fn clear_projected_gaps(&mut self) {
+        self.projected_gaps.clear();
+        self.last_projected_candidate = None;
+    }
+
+    fn evaluate_viewport_wake(
+        &mut self,
+        viewport_range: Option<(usize, usize)>,
+    ) -> GapRepairViewportWakeDecision {
+        let decision = evaluate_gap_repair_viewport_wake(
+            &self.projected_gaps,
+            viewport_range,
+            self.last_projected_candidate,
+        );
+        self.last_projected_candidate = match decision {
+            GapRepairViewportWakeDecision::Wake { candidate }
+            | GapRepairViewportWakeDecision::IdleUnchangedCandidate { candidate } => {
+                Some(candidate)
+            }
+            GapRepairViewportWakeDecision::IdleNoCandidate => None,
+        };
+        decision
     }
 
     fn begin_pending_inspection(
@@ -5449,6 +5598,386 @@ mod timeline_gap_repair_tracker_tests {
             select_projected_gap_ordinal(&projected, Some((25, 30))),
             Some(2)
         );
+    }
+
+    #[test]
+    fn viewport_wake_requests_inspection_when_projected_candidate_changes() {
+        let projected = vec![
+            (
+                0,
+                TimelineGapPosition {
+                    ordinal: 0,
+                    before_item_index: 3,
+                },
+            ),
+            (
+                1,
+                TimelineGapPosition {
+                    ordinal: 1,
+                    before_item_index: 18,
+                },
+            ),
+        ];
+
+        assert_eq!(
+            evaluate_gap_repair_viewport_wake(&projected, Some((15, 20)), None),
+            GapRepairViewportWakeDecision::Wake {
+                candidate: ProjectedGapCandidate {
+                    ordinal: 1,
+                    relation: ProjectedGapRelation::IntersectsViewport,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn viewport_wake_ignores_repeated_observation_for_same_candidate() {
+        let projected = vec![(
+            0,
+            TimelineGapPosition {
+                ordinal: 0,
+                before_item_index: 8,
+            },
+        )];
+        let previous = ProjectedGapCandidate {
+            ordinal: 0,
+            relation: ProjectedGapRelation::IntersectsViewport,
+        };
+
+        assert_eq!(
+            evaluate_gap_repair_viewport_wake(&projected, Some((5, 10)), Some(previous)),
+            GapRepairViewportWakeDecision::IdleUnchangedCandidate {
+                candidate: previous,
+            }
+        );
+    }
+
+    #[test]
+    fn viewport_wake_requests_again_when_viewport_selects_another_gap() {
+        let projected = vec![
+            (
+                0,
+                TimelineGapPosition {
+                    ordinal: 0,
+                    before_item_index: 3,
+                },
+            ),
+            (
+                1,
+                TimelineGapPosition {
+                    ordinal: 1,
+                    before_item_index: 18,
+                },
+            ),
+        ];
+        let previous = ProjectedGapCandidate {
+            ordinal: 1,
+            relation: ProjectedGapRelation::IntersectsViewport,
+        };
+
+        assert_eq!(
+            evaluate_gap_repair_viewport_wake(&projected, Some((1, 5)), Some(previous)),
+            GapRepairViewportWakeDecision::Wake {
+                candidate: ProjectedGapCandidate {
+                    ordinal: 0,
+                    relation: ProjectedGapRelation::IntersectsViewport,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn viewport_wake_preserves_pending_trigger_while_render_ack_is_outstanding() {
+        let projected = vec![(
+            0,
+            TimelineGapPosition {
+                ordinal: 0,
+                before_item_index: 8,
+            },
+        )];
+        let mut tracker = TimelineGapRepairTracker::default();
+        tracker.await_projection(TimelineGapRenderFence {
+            actor_generation: 9,
+            timeline_generation: TimelineGeneration(3),
+            repair_generation: 11,
+            minimum_batch_id: TimelineBatchId(5),
+        });
+
+        let decision = evaluate_gap_repair_viewport_wake(&projected, Some((5, 10)), None);
+        assert!(matches!(
+            decision,
+            GapRepairViewportWakeDecision::Wake { .. }
+        ));
+        tracker.queue_inspection(TimelineGapRepairTrigger::Automatic);
+
+        assert_eq!(tracker.begin_pending_inspection(true), None);
+        assert!(tracker.has_pending_inspection());
+    }
+
+    #[test]
+    fn observe_viewport_wakes_only_after_projected_candidate_changes() {
+        let projected = vec![
+            (
+                0,
+                TimelineGapPosition {
+                    ordinal: 0,
+                    before_item_index: 3,
+                },
+            ),
+            (
+                1,
+                TimelineGapPosition {
+                    ordinal: 1,
+                    before_item_index: 18,
+                },
+            ),
+        ];
+        let mut tracker = TimelineGapRepairTracker::default();
+        tracker.replace_projected_gaps(projected, Some((15, 20)));
+
+        assert!(matches!(
+            tracker.evaluate_viewport_wake(Some((15, 20))),
+            GapRepairViewportWakeDecision::IdleUnchangedCandidate { .. }
+        ));
+        assert_eq!(
+            tracker.evaluate_viewport_wake(Some((1, 5))),
+            GapRepairViewportWakeDecision::Wake {
+                candidate: ProjectedGapCandidate {
+                    ordinal: 0,
+                    relation: ProjectedGapRelation::IntersectsViewport,
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn viewport_wake_evaluation_diagnostics_are_private_safe() {
+        record_timeline_gap_repair_evaluation("wake", 2, true, "awaiting_render_ack");
+
+        let record = koushi_diagnostics::snapshot()
+            .records
+            .into_iter()
+            .rev()
+            .find(|record| {
+                record.event.source == "core.timeline_gap_repair"
+                    && record.event.stage == "evaluation"
+            })
+            .expect("viewport wake evaluation diagnostic");
+        let keys = record
+            .event
+            .fields
+            .iter()
+            .map(|field| field.key)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            vec![
+                "trigger",
+                "decision",
+                "projected_gap_count",
+                "candidate_changed",
+                "scheduler_phase",
+            ]
+        );
+        let debug = format!("{:?}", record.event);
+        for forbidden in ["room_id", "event_id", "user_id", "gap_id", "message"] {
+            assert!(!debug.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn gap_repair_wake_is_retained_across_ack_and_inspection_order() {
+        let projected = vec![
+            (
+                0,
+                TimelineGapPosition {
+                    ordinal: 0,
+                    before_item_index: 3,
+                },
+            ),
+            (
+                1,
+                TimelineGapPosition {
+                    ordinal: 1,
+                    before_item_index: 18,
+                },
+            ),
+        ];
+        let mut tracker = TimelineGapRepairTracker::default();
+        tracker.replace_projected_gaps(projected, Some((15, 20)));
+
+        assert!(matches!(
+            tracker.evaluate_viewport_wake(Some((1, 5))),
+            GapRepairViewportWakeDecision::Wake { .. }
+        ));
+        tracker.queue_inspection(TimelineGapRepairTrigger::Automatic);
+        assert_eq!(tracker.begin_pending_inspection(false), None);
+        let (first_serial, _) = tracker
+            .begin_pending_inspection(true)
+            .expect("projection ACK releases the queued viewport wake");
+
+        assert!(matches!(
+            tracker.evaluate_viewport_wake(Some((15, 20))),
+            GapRepairViewportWakeDecision::Wake { .. }
+        ));
+        tracker.queue_inspection(TimelineGapRepairTrigger::Automatic);
+        assert_eq!(tracker.begin_pending_inspection(true), None);
+        assert!(tracker.finish_work(first_serial));
+        let (second_serial, _) = tracker
+            .begin_pending_inspection(true)
+            .expect("active inspection completion releases the changed candidate");
+        assert!(tracker.finish_work(second_serial));
+
+        let fence = TimelineGapRenderFence {
+            actor_generation: 9,
+            timeline_generation: TimelineGeneration(3),
+            repair_generation: 11,
+            minimum_batch_id: TimelineBatchId(5),
+        };
+        tracker.await_projection(fence);
+        assert!(matches!(
+            tracker.evaluate_viewport_wake(Some((1, 5))),
+            GapRepairViewportWakeDecision::Wake { .. }
+        ));
+        tracker.queue_inspection(TimelineGapRepairTrigger::Automatic);
+        assert_eq!(tracker.begin_pending_inspection(true), None);
+        assert!(tracker.acknowledge_projection(fence));
+        assert!(tracker.begin_pending_inspection(true).is_some());
+
+        assert!(matches!(
+            tracker.evaluate_viewport_wake(Some((1, 5))),
+            GapRepairViewportWakeDecision::IdleUnchangedCandidate { .. }
+        ));
+        assert_eq!(
+            timeline_gap_repair_budget(TimelineGapRepairTrigger::Automatic).cached_chunk_limit,
+            0
+        );
+    }
+
+    #[test]
+    fn terminal_gap_repair_failures_resume_queued_candidate_inspection() {
+        let source = include_str!("timeline.rs");
+        let handler = source
+            .rsplit_once("async fn handle_timeline_gap_repair_finished")
+            .map(|(_, handler)| handler)
+            .expect("gap repair completion handler must exist")
+            .split("async fn finish_pending_gap_projection")
+            .next()
+            .expect("pending projection handler must follow repair completion");
+        let helper = source
+            .rsplit_once("async fn emit_gap_repair_failure_and_resume")
+            .map(|(_, helper)| helper)
+            .expect("terminal repair failures must share a scheduler-release helper")
+            .split("async fn finish_pending_gap_projection")
+            .next()
+            .expect("pending projection handler must follow the release helper");
+
+        assert!(
+            handler
+                .matches("emit_gap_repair_failure_and_resume")
+                .count()
+                >= 4,
+            "SDK failure, failed outcome, offscreen deferral, and batch exhaustion must all release queued work"
+        );
+        assert!(
+            helper.contains("start_pending_timeline_gap_inspection().await"),
+            "the common terminal helper must restart a candidate-change inspection queued during repair"
+        );
+        let resume_offset = helper
+            .find("start_pending_timeline_gap_inspection().await")
+            .expect("terminal repair failure must release queued scheduler work");
+        let wake_offset = helper
+            .find("emit_gap_repair_released_if_idle")
+            .expect("an idle scheduler must wake a UI request rejected during gap repair");
+        assert!(
+            resume_offset < wake_offset,
+            "the retry wake must be emitted only after queued scheduler work has had a chance to restart"
+        );
+    }
+
+    #[test]
+    fn terminal_gap_inspection_paths_resume_queued_work_before_release_wake() {
+        let source = include_str!("timeline.rs");
+        let handler = source
+            .rsplit_once("async fn handle_timeline_gap_inspection_finished")
+            .map(|(_, handler)| handler)
+            .expect("gap inspection completion handler must exist")
+            .split("fn emit_gap_positions")
+            .next()
+            .expect("gap-position projection must follow inspection completion");
+        let resume_offset = handler
+            .rfind("start_pending_timeline_gap_inspection().await")
+            .expect("inspection completion must restart candidate work queued during inspection");
+        let wake_offset = handler
+            .rfind("emit_gap_repair_released_if_idle")
+            .expect("inspection completion must wake UI retries when the scheduler becomes idle");
+
+        assert!(
+            resume_offset < wake_offset,
+            "inspection completion must restart queued work before deciding that the scheduler is released"
+        );
+    }
+
+    #[test]
+    fn candidate_wake_queued_during_repair_is_available_after_terminal_release() {
+        let projected = vec![
+            (
+                0,
+                TimelineGapPosition {
+                    ordinal: 0,
+                    before_item_index: 3,
+                },
+            ),
+            (
+                1,
+                TimelineGapPosition {
+                    ordinal: 1,
+                    before_item_index: 18,
+                },
+            ),
+        ];
+        let mut tracker = TimelineGapRepairTracker::default();
+        tracker.replace_projected_gaps(projected, Some((1, 5)));
+        let repair_serial = tracker
+            .begin_repair(2)
+            .expect("the initial repair should own the scheduler");
+
+        assert!(matches!(
+            tracker.evaluate_viewport_wake(Some((15, 20))),
+            GapRepairViewportWakeDecision::Wake { .. }
+        ));
+        tracker.queue_inspection(TimelineGapRepairTrigger::Automatic);
+        assert_eq!(tracker.begin_pending_inspection(true), None);
+
+        assert!(tracker.finish_work(repair_serial));
+        assert!(tracker.begin_pending_inspection(true).is_some());
+    }
+
+    #[test]
+    fn repeated_gap_repair_evaluation_signature_is_deduplicated() {
+        let signature = GapRepairEvaluationDiagnosticSignature {
+            decision: "idle_unchanged",
+            projected_gap_count: 2,
+            candidate_changed: false,
+            scheduler_phase: "idle",
+        };
+        let mut previous = None;
+
+        assert!(should_record_gap_repair_evaluation(
+            &mut previous,
+            signature
+        ));
+        assert!(!should_record_gap_repair_evaluation(
+            &mut previous,
+            signature
+        ));
+        assert!(should_record_gap_repair_evaluation(
+            &mut previous,
+            GapRepairEvaluationDiagnosticSignature {
+                scheduler_phase: "active",
+                ..signature
+            }
+        ));
     }
 
     #[test]
@@ -5738,6 +6267,7 @@ struct TimelineActor {
     gap_projection_correlation: TimelineGapProjectionCorrelation,
     pending_gap_projection: Option<PendingTimelineGapProjection>,
     gap_work_task: Option<executor::JoinHandle<()>>,
+    last_gap_repair_evaluation_diagnostic: Option<GapRepairEvaluationDiagnosticSignature>,
 }
 
 #[derive(Clone, Debug)]
@@ -6107,6 +6637,22 @@ impl Drop for TimelineActor {
     }
 }
 
+fn backward_pagination_changed_oldest_edge(
+    oldest_before: Option<&str>,
+    oldest_after: Option<&str>,
+) -> bool {
+    oldest_after.is_some() && oldest_before != oldest_after
+}
+
+async fn oldest_observable_event_id(timeline: &Timeline) -> Option<String> {
+    let (items, _updates) = timeline.subscribe().await;
+    items.iter().find_map(|item| {
+        item.as_event()
+            .and_then(|event| event.event_id())
+            .map(ToString::to_string)
+    })
+}
+
 impl TimelineActor {
     /// Spawn the actor, emit InitialItems, and return the handle.
     async fn spawn(
@@ -6462,6 +7008,7 @@ impl TimelineActor {
             gap_projection_correlation: TimelineGapProjectionCorrelation::default(),
             pending_gap_projection: None,
             gap_work_task: None,
+            last_gap_repair_evaluation_diagnostic: None,
         };
 
         actor
@@ -6596,13 +7143,19 @@ impl TimelineActor {
             TimelineActorMessage::CancelLinkPreviews { request_id } => {
                 self.handle_cancel_link_previews(request_id);
             }
-            TimelineActorMessage::PaginationFinished { serial } => {
+            TimelineActorMessage::PaginationFinished {
+                serial,
+                request_id,
+                direction,
+                completion,
+            } => {
                 if self
                     .pagination_task
                     .as_ref()
                     .is_some_and(|active| active.serial == serial)
                 {
                     self.pagination_task = None;
+                    self.emit_pagination_completion(request_id, direction, completion);
                     self.start_pending_timeline_gap_inspection().await;
                 }
             }
@@ -6625,6 +7178,38 @@ impl TimelineActor {
                 self.viewport_observation = observation;
                 self.maybe_fetch_visible_reply_details();
                 self.emit_navigation_if_changed();
+                let viewport_range = self.viewport_item_range();
+                let decision = self.gap_repair.evaluate_viewport_wake(viewport_range);
+                let projected_gap_count = self.gap_repair.projected_gaps.len();
+                let scheduler_phase = self.gap_repair_scheduler_phase();
+                let (decision_token, candidate_changed) = match decision {
+                    GapRepairViewportWakeDecision::Wake { .. } => ("wake", true),
+                    GapRepairViewportWakeDecision::IdleNoCandidate => ("idle_no_candidate", false),
+                    GapRepairViewportWakeDecision::IdleUnchangedCandidate { .. } => {
+                        ("idle_unchanged", false)
+                    }
+                };
+                let diagnostic_signature = GapRepairEvaluationDiagnosticSignature {
+                    decision: decision_token,
+                    projected_gap_count,
+                    candidate_changed,
+                    scheduler_phase,
+                };
+                if should_record_gap_repair_evaluation(
+                    &mut self.last_gap_repair_evaluation_diagnostic,
+                    diagnostic_signature,
+                ) {
+                    record_timeline_gap_repair_evaluation(
+                        decision_token,
+                        projected_gap_count,
+                        candidate_changed,
+                        scheduler_phase,
+                    );
+                }
+                if matches!(decision, GapRepairViewportWakeDecision::Wake { .. }) {
+                    self.request_timeline_gap_inspection(TimelineGapRepairTrigger::Automatic)
+                        .await;
+                }
             }
             TimelineActorMessage::SendText {
                 request_id,
@@ -6895,6 +7480,41 @@ impl TimelineActor {
         }
     }
 
+    fn viewport_item_range(&self) -> Option<(usize, usize)> {
+        self.viewport_observation
+            .first_visible_event_id
+            .as_deref()
+            .and_then(|event_id| self.timeline_event_position(event_id))
+            .zip(
+                self.viewport_observation
+                    .last_visible_event_id
+                    .as_deref()
+                    .and_then(|event_id| self.timeline_event_position(event_id)),
+            )
+    }
+
+    fn gap_repair_scheduler_phase(&self) -> &'static str {
+        if !self.projection_acknowledged {
+            "awaiting_projection_ack"
+        } else if self.pagination_task.is_some() {
+            "pagination"
+        } else if self.restore_anchor.is_some() {
+            "anchor_restore"
+        } else if self.gap_projection_correlation.is_pending()
+            || self.pending_gap_projection.is_some()
+        {
+            "awaiting_relay"
+        } else if self.gap_repair.awaiting_projection.is_some() {
+            "awaiting_render_ack"
+        } else if self.gap_repair.active_serial.is_some() {
+            "active"
+        } else if self.gap_repair.pending_trigger.is_some() {
+            "queued"
+        } else {
+            "idle"
+        }
+    }
+
     async fn request_timeline_gap_inspection(&mut self, trigger: TimelineGapRepairTrigger) {
         if !matches!(self.key.kind, TimelineKind::Room { .. }) {
             return;
@@ -6977,6 +7597,9 @@ impl TimelineActor {
                     },
                 );
                 let projected_gaps = self.emit_gap_positions(serial, &inspection.gaps);
+                let viewport_range = self.viewport_item_range();
+                self.gap_repair
+                    .replace_projected_gaps(projected_gaps.clone(), viewport_range);
                 let known_gap_count = inspection.gaps.len().try_into().unwrap_or(u32::MAX);
                 let state_inspection = match inspection.continuity {
                     MatrixTimelineContinuity::Unknown => TimelineContinuityInspection::Unknown,
@@ -6995,17 +7618,6 @@ impl TimelineActor {
                 match inspection.continuity {
                     MatrixTimelineContinuity::Gapped => {
                         self.gap_repair.gap_count = known_gap_count;
-                        let viewport_range = self
-                            .viewport_observation
-                            .first_visible_event_id
-                            .as_deref()
-                            .and_then(|event_id| self.timeline_event_position(event_id))
-                            .zip(
-                                self.viewport_observation
-                                    .last_visible_event_id
-                                    .as_deref()
-                                    .and_then(|event_id| self.timeline_event_position(event_id)),
-                            );
                         let descriptor =
                             select_projected_gap_ordinal(&projected_gaps, viewport_range)
                                 .and_then(|ordinal| inspection.gaps.get(ordinal))
@@ -7078,6 +7690,8 @@ impl TimelineActor {
                 }
             }
         }
+        self.start_pending_timeline_gap_inspection().await;
+        self.emit_gap_repair_released_if_idle(serial);
     }
 
     fn emit_gap_positions(
@@ -7220,29 +7834,25 @@ impl TimelineActor {
         let Ok(result) = result else {
             self.gap_projection_correlation
                 .clear(self.actor_generation, serial);
-            let _ = self
-                .emit_action_reliable(AppAction::TimelineGapRepairFailed {
-                    room_id,
-                    generation: serial,
-                    gap_count,
-                    batches_processed: self.gap_repair.batches_processed,
-                    kind: TimelineGapRepairFailureKind::Sdk,
-                })
-                .await;
+            self.emit_gap_repair_failure_and_resume(
+                room_id,
+                serial,
+                gap_count,
+                TimelineGapRepairFailureKind::Sdk,
+            )
+            .await;
             return;
         };
         if result.outcome == MatrixTimelineGapRepairOutcome::Failed {
             self.gap_projection_correlation
                 .clear(self.actor_generation, serial);
-            let _ = self
-                .emit_action_reliable(AppAction::TimelineGapRepairFailed {
-                    room_id,
-                    generation: serial,
-                    gap_count,
-                    batches_processed: self.gap_repair.batches_processed,
-                    kind: TimelineGapRepairFailureKind::Sdk,
-                })
-                .await;
+            self.emit_gap_repair_failure_and_resume(
+                room_id,
+                serial,
+                gap_count,
+                TimelineGapRepairFailureKind::Sdk,
+            )
+            .await;
             return;
         }
         if automatic_gap_repair_is_offscreen(trigger, &result.outcome) {
@@ -7256,29 +7866,25 @@ impl TimelineActor {
                 self.gap_repair.batches_processed,
                 "offscreen",
             );
-            let _ = self
-                .emit_action_reliable(AppAction::TimelineGapRepairFailed {
-                    room_id,
-                    generation: serial,
-                    gap_count,
-                    batches_processed: self.gap_repair.batches_processed,
-                    kind: TimelineGapRepairFailureKind::UnsupportedAnchor,
-                })
-                .await;
+            self.emit_gap_repair_failure_and_resume(
+                room_id,
+                serial,
+                gap_count,
+                TimelineGapRepairFailureKind::UnsupportedAnchor,
+            )
+            .await;
             return;
         }
         let Some(batches_processed) = self.gap_repair.record_batch() else {
             self.gap_projection_correlation
                 .clear(self.actor_generation, serial);
-            let _ = self
-                .emit_action_reliable(AppAction::TimelineGapRepairFailed {
-                    room_id,
-                    generation: serial,
-                    gap_count,
-                    batches_processed: self.gap_repair.batches_processed,
-                    kind: TimelineGapRepairFailureKind::Timeout,
-                })
-                .await;
+            self.emit_gap_repair_failure_and_resume(
+                room_id,
+                serial,
+                gap_count,
+                TimelineGapRepairFailureKind::Timeout,
+            )
+            .await;
             return;
         };
         match self.gap_projection_correlation.complete(
@@ -7324,6 +7930,42 @@ impl TimelineActor {
                 self.request_timeline_gap_inspection(trigger).await;
             }
         }
+    }
+
+    async fn emit_gap_repair_failure_and_resume(
+        &mut self,
+        room_id: String,
+        serial: u64,
+        gap_count: u32,
+        kind: TimelineGapRepairFailureKind,
+    ) {
+        let _ = self
+            .emit_action_reliable(AppAction::TimelineGapRepairFailed {
+                room_id,
+                generation: serial,
+                gap_count,
+                batches_processed: self.gap_repair.batches_processed,
+                kind,
+            })
+            .await;
+        self.start_pending_timeline_gap_inspection().await;
+        self.emit_gap_repair_released_if_idle(serial);
+    }
+
+    fn emit_gap_repair_released_if_idle(&self, generation: u64) {
+        if self.gap_repair.active_serial.is_some()
+            || self.gap_repair.pending_trigger.is_some()
+            || self.gap_repair.awaiting_projection.is_some()
+            || self.gap_projection_correlation.is_pending()
+            || self.pending_gap_projection.is_some()
+        {
+            return;
+        }
+        self.emit(CoreEvent::Timeline(TimelineEvent::GapRepairReleased {
+            key: self.key.clone(),
+            actor_generation: self.actor_generation,
+            generation,
+        }));
     }
 
     async fn finish_pending_gap_projection(&mut self, batch_id: TimelineBatchId) {
@@ -7406,6 +8048,7 @@ impl TimelineActor {
                 key: self.key.clone(),
                 direction,
                 state: PaginationState::Idle,
+                prepend_expected: None,
             }));
             return;
         }
@@ -7434,7 +8077,7 @@ impl TimelineActor {
         let actor_tx = self.msg_tx.clone();
         let messages_backpressure = self.messages_backpressure.clone();
         let task = executor::spawn(async move {
-            let _ = Self::paginate_once_for(
+            let completion = Self::paginate_once_for(
                 request_id,
                 key,
                 timeline,
@@ -7447,7 +8090,12 @@ impl TimelineActor {
             )
             .await;
             let _ = actor_tx
-                .send(TimelineActorMessage::PaginationFinished { serial })
+                .send(TimelineActorMessage::PaginationFinished {
+                    serial,
+                    request_id,
+                    direction,
+                    completion,
+                })
                 .await;
         });
         self.pagination_task = Some(ActivePaginationTask {
@@ -7464,7 +8112,7 @@ impl TimelineActor {
         direction: PaginationDirection,
         event_count: u16,
     ) -> Result<bool, TimelineFailureKind> {
-        Self::paginate_once_for(
+        let completion = Self::paginate_once_for(
             request_id,
             self.key.clone(),
             self.timeline.clone(),
@@ -7475,7 +8123,9 @@ impl TimelineActor {
             direction,
             event_count,
         )
-        .await
+        .await;
+        self.emit_pagination_completion(request_id, direction, completion);
+        completion.into_result()
     }
 
     async fn paginate_once_for(
@@ -7488,7 +8138,7 @@ impl TimelineActor {
         messages_backpressure: MessagesBackpressure,
         direction: PaginationDirection,
         event_count: u16,
-    ) -> Result<bool, TimelineFailureKind> {
+    ) -> PaginationCompletion {
         // Emit Paginating.
         let _ = emit_timeline_events_for_generation(
             &event_tx,
@@ -7500,9 +8150,15 @@ impl TimelineActor {
                 key: key.clone(),
                 direction,
                 state: PaginationState::Paginating,
+                prepend_expected: None,
             }],
         );
 
+        let oldest_event_before = if direction == PaginationDirection::Backward {
+            oldest_observable_event_id(&timeline).await
+        } else {
+            None
+        };
         let gate_started = Some(std::time::Instant::now());
         let result = {
             let _permit = messages_backpressure.acquire_timeline().await;
@@ -7542,6 +8198,15 @@ impl TimelineActor {
             startup_trace::trace_paginate(paginate_started, gate_wait, matches!(outcome, Ok(true)));
             outcome
         };
+        let prepend_expected = if direction == PaginationDirection::Backward && result.is_ok() {
+            let oldest_event_after = oldest_observable_event_id(&timeline).await;
+            Some(backward_pagination_changed_oldest_edge(
+                oldest_event_before.as_deref(),
+                oldest_event_after.as_deref(),
+            ))
+        } else {
+            None
+        };
 
         let next_state = match result {
             Ok(true) => PaginationState::EndReached,
@@ -7552,24 +8217,25 @@ impl TimelineActor {
             }
         };
 
-        let end_reached = matches!(next_state, PaginationState::EndReached);
-        let failure_kind = match &next_state {
-            PaginationState::Failed { kind } => Some(*kind),
-            _ => None,
-        };
-        let _ = emit_timeline_events_for_generation(
-            &event_tx,
-            &timeline_actor_generations,
-            &key,
-            actor_generation,
-            vec![TimelineEvent::PaginationStateChanged {
-                request_id: Some(request_id),
-                key: key.clone(),
-                direction,
-                state: next_state,
-            }],
-        );
-        failure_kind.map_or(Ok(end_reached), Err)
+        PaginationCompletion {
+            state: next_state,
+            prepend_expected,
+        }
+    }
+
+    fn emit_pagination_completion(
+        &self,
+        request_id: RequestId,
+        direction: PaginationDirection,
+        completion: PaginationCompletion,
+    ) {
+        self.emit(CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+            request_id: Some(request_id),
+            key: self.key.clone(),
+            direction,
+            state: completion.state,
+            prepend_expected: completion.prepend_expected,
+        }));
     }
 
     fn handle_cancel_pagination(&mut self, request_id: RequestId) {
@@ -7592,6 +8258,7 @@ impl TimelineActor {
             key: self.key.clone(),
             direction: active.direction,
             state: PaginationState::Idle,
+            prepend_expected: None,
         }));
     }
 
@@ -10805,6 +11472,7 @@ impl TimelineActor {
         self.generation = prepared.generation;
         // 2. Reset batch_id to 0.
         self.next_batch_id = TimelineBatchId(0);
+        self.gap_repair.clear_projected_gaps();
 
         // 3. Acquire the authoritative snapshot and its matching replacement
         //    stream from one SDK subscription boundary.
@@ -13849,9 +14517,24 @@ mod tests {
         CoreEvent, PaginationDirection, TimelineEvent, TimelineUnreadPosition,
         TimelineViewportObservation,
     };
+
     use crate::failure::{CoreFailure, TimelineFailureKind};
     use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineBatchId};
     use crate::runtime::CoreRuntime;
+
+    #[test]
+    fn backward_pagination_detects_only_a_changed_oldest_edge_as_prepend() {
+        assert!(!backward_pagination_changed_oldest_edge(None, None));
+        assert!(backward_pagination_changed_oldest_edge(None, Some("older")));
+        assert!(!backward_pagination_changed_oldest_edge(
+            Some("current"),
+            Some("current")
+        ));
+        assert!(backward_pagination_changed_oldest_edge(
+            Some("current"),
+            Some("older")
+        ));
+    }
 
     fn fake_rid(seq: u64) -> RequestId {
         RequestId {
@@ -15590,12 +16273,14 @@ mod tests {
                     key: key.clone(),
                     direction: PaginationDirection::Backward,
                     state: PaginationState::Paginating,
+                    prepend_expected: None,
                 },
                 TimelineEvent::PaginationStateChanged {
                     request_id: None,
                     key: key.clone(),
                     direction: PaginationDirection::Backward,
                     state: PaginationState::Idle,
+                    prepend_expected: Some(false),
                 },
             ],
         );
@@ -20490,6 +21175,32 @@ mod tests {
         assert!(
             handle_cancel_source.contains(".abort()"),
             "cancelling pagination must abort only the pagination task, not the timeline actor"
+        );
+    }
+
+    #[test]
+    fn pagination_terminal_is_emitted_after_active_task_release() {
+        let source = include_str!("timeline.rs");
+        let completion_branch = source
+            .split("async fn handle_msg")
+            .nth(1)
+            .expect("TimelineActor message handler should exist")
+            .split("TimelineActorMessage::PaginationFinished {")
+            .nth(1)
+            .expect("pagination completion branch should exist")
+            .split("TimelineActorMessage::OwnReadReceiptChanged")
+            .next()
+            .expect("own-read-receipt branch should follow pagination completion");
+        let release_offset = completion_branch
+            .find("self.pagination_task = None")
+            .expect("pagination completion must release active task ownership");
+        let terminal_offset = completion_branch
+            .find("self.emit_pagination_completion")
+            .expect("pagination completion must emit its terminal state");
+
+        assert!(
+            release_offset < terminal_offset,
+            "the terminal event must not wake React until the actor can accept its next request"
         );
     }
 

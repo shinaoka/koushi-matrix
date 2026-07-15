@@ -122,9 +122,13 @@ import {
   getMediaUploadProgress,
   getKeyState,
   getPaginationState,
-  shouldSuppressAutoBackfill,
   type TimelineStoreState
 } from "../domain/timelineStore";
+import {
+  evaluateTimelineBackfill,
+  type TimelineBackfillDemand,
+  type TimelineBackfillEvaluationTrigger
+} from "../domain/timelineBackfillPolicy";
 import {
   createInitialTimelineScrollDiagnostics,
   recordTimelineScrollCommit,
@@ -425,6 +429,33 @@ type CapturedTimelineScrollAnchor = {
 type TimelineViewportSessionMemory =
   | { mode: "live-edge" }
   | { mode: "anchor"; anchor: TimelineScrollAnchor };
+
+type TimelineBackfillRequestEpoch = {
+  id: number;
+  timelineKeyHash: string;
+  demand: TimelineBackfillDemand;
+  paginatingReceived: boolean;
+  projectionObserved: boolean;
+  terminalReceived: boolean;
+};
+
+type TimelineBackfillRetryFence =
+  | "external_transition"
+  | "gap_repair_release";
+
+type PendingTimelineBackfillEvaluation = {
+  trigger: TimelineBackfillEvaluationTrigger;
+  genuineUserScroll: boolean;
+};
+
+type TimelineBackfillMetrics = {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  projectedContentHeight: number;
+  threshold: number;
+  maxScrollTop: number;
+};
 
 // UI-only memory for this JavaScript session. It intentionally resets on app
 // restart: first entry into a room starts at live edge, while room switches
@@ -2324,8 +2355,6 @@ export const TimelineView = memo(function TimelineView({
   /** Set by wheel/touch/keyboard/scrollbar intent; consumed by the next scroll event. */
   const userScrollInputPendingRef = useRef(false);
   const pendingScrollFrameUserInputRef = useRef(false);
-  /** Session-anchor restores can emit layout scroll events; wait for user intent before backfill. */
-  const autoBackfillRequiresUserScrollRef = useRef(false);
   /** Coalesces ResizeObserver-driven live-edge corrections. */
   const viewportIntentResizeFrameRef = useRef<TimelineScheduledFrame | null>(null);
   /** Coalesces a structural display-projection correction to one frame. */
@@ -2351,9 +2380,17 @@ export const TimelineView = memo(function TimelineView({
   /** Invalidates a queued projection correction when viewport ownership changes. */
   const viewportIntentRevisionRef = useRef(0);
   const scrollFollowUpFramesRef = useRef<Set<TimelineScheduledFrame>>(new Set());
-  /** Pagination request currently in flight (suppresses duplicates). */
-  const backfillInFlightRef = useRef(false);
-  const underfilledInitialBackfillDiagnosticSignatureRef = useRef<string | null>(null);
+  /** Accepted backward-pagination command awaiting a terminal timeline event. */
+  const backfillRequestEpochRef = useRef<TimelineBackfillRequestEpoch | null>(null);
+  /** A rejected request must wait for the transition that releases its owner. */
+  const backfillRetryFenceRef = useRef<TimelineBackfillRetryFence | null>(null);
+  const nextBackfillRequestEpochRef = useRef(1);
+  const pendingBackfillEvaluationRef = useRef<PendingTimelineBackfillEvaluation | null>(null);
+  const previousAutoLoadOlderMessagesRef = useRef(autoLoadOlderMessages);
+  const evaluateAndMaybeRequestBackfillRef = useRef<
+    (trigger: TimelineBackfillEvaluationTrigger, genuineUserScroll?: boolean) => void
+  >(() => undefined);
+  const lastBackfillEvaluationDiagnosticSignatureRef = useRef<string | null>(null);
   const readSignalEventRef = useRef<string | null>(null);
   const lastViewportObservationRef = useRef<string | null>(null);
   const downloadedEventIdsRef = useRef<Set<string>>(new Set());
@@ -2751,6 +2788,24 @@ export const TimelineView = memo(function TimelineView({
     return persistViewportAnchor({ allowSuppressed: true }) || changed;
   }, [persistViewportAnchor, runWithScrollWriteReason]);
 
+  const scheduleBackfillEvaluation = useCallback(
+    (
+      trigger: TimelineBackfillEvaluationTrigger,
+      genuineUserScroll = false
+    ) => {
+      const retryFence = backfillRetryFenceRef.current;
+      if (
+        trigger === "gap_repair_released" ||
+        (retryFence === "external_transition" && trigger !== "pagination_terminal")
+      ) {
+        backfillRetryFenceRef.current = null;
+      }
+      pendingBackfillEvaluationRef.current = { trigger, genuineUserScroll };
+      setProjectionSettlementRevision((current) => current + 1);
+    },
+    []
+  );
+
   useEffect(() => {
     scrollDiagnosticsRef.current = recordTimelineScrollCommit(scrollDiagnosticsRef.current);
   });
@@ -2770,7 +2825,8 @@ export const TimelineView = memo(function TimelineView({
         roomScrollAnchorRestorePendingRef.current = false;
         viewportIntentRef.current = { kind: "free-scroll" };
         userScrollInputPendingRef.current = false;
-        autoBackfillRequiresUserScrollRef.current = false;
+        backfillRequestEpochRef.current = null;
+        backfillRetryFenceRef.current = null;
         resetActiveMeasurementDeferral({ clearMountedIds: true });
         lastPersistedViewportAnchorSignatureRef.current = null;
         restoredRoomScrollAnchorSignatureRef.current = null;
@@ -2786,6 +2842,7 @@ export const TimelineView = memo(function TimelineView({
             return next;
           });
         }
+        scheduleBackfillEvaluation("timeline_reset");
         void transport.ensureSubscribed?.(timelineKeyRef.current).catch(() => undefined);
         return;
       }
@@ -2863,7 +2920,9 @@ export const TimelineView = memo(function TimelineView({
                                   ? event.ThreadRootProjection.key
                                   : "GapPositionsUpdated" in event
                                     ? event.GapPositionsUpdated.key
-                                    : event.ResyncRequired.key;
+                                    : "GapRepairReleased" in event
+                                      ? event.GapRepairReleased.key
+                                      : event.ResyncRequired.key;
       if (!timelineKeyEquals(eventKey, timelineKeyRef.current)) {
         recordTimelineKeyMismatch();
         return;
@@ -2873,6 +2932,8 @@ export const TimelineView = memo(function TimelineView({
         return;
       }
       if ("InitialItems" in event) {
+        backfillRequestEpochRef.current = null;
+        backfillRetryFenceRef.current = null;
         initialItemsSeenForTimelineKeyRef.current = timelineKeyHashRef.current;
         recordTimelineInitialItems(event.InitialItems.items.length);
         cancelScrollFollowUpFrames();
@@ -2881,6 +2942,7 @@ export const TimelineView = memo(function TimelineView({
           event.InitialItems.items,
           profileUsersRef.current
         );
+        scheduleBackfillEvaluation("initial_projection");
       }
       if (
         "ItemsUpdated" in event &&
@@ -2889,25 +2951,97 @@ export const TimelineView = memo(function TimelineView({
         cancelScrollFollowUpFrames();
         resetActiveMeasurementDeferral({ clearMountedIds: true });
       }
+      if ("GapPositionsUpdated" in event) {
+        scheduleBackfillEvaluation("gap_projection_changed");
+      }
+      if ("GapRepairReleased" in event) {
+        scheduleBackfillEvaluation("gap_repair_released");
+      }
+      if (
+        "PaginationStateChanged" in event &&
+        event.PaginationStateChanged.direction === "Backward" &&
+        event.PaginationStateChanged.state === "Paginating" &&
+        backfillRequestEpochRef.current !== null
+      ) {
+        backfillRetryFenceRef.current = null;
+        backfillRequestEpochRef.current.paginatingReceived = true;
+      }
       const backfillCompletionReason = timelineBackfillCompletionReason(event);
       if (backfillCompletionReason !== null) {
-        if (backfillInFlightRef.current) {
+        const epoch = backfillRequestEpochRef.current;
+        if (epoch !== null) {
           emitDiagnosticLog(
             "timeline.backfill",
             `stage=complete reason=${backfillCompletionReason}`
           );
         }
-        backfillInFlightRef.current = false;
+        const terminalCanPrecedeProjection =
+          "PaginationStateChanged" in event &&
+          event.PaginationStateChanged.state === "Idle";
+        const acceptedIdle =
+          epoch !== null &&
+          terminalCanPrecedeProjection &&
+          (epoch.paginatingReceived || epoch.projectionObserved);
+        const acceptedIdleWithoutPrepend =
+          acceptedIdle &&
+          "PaginationStateChanged" in event &&
+          event.PaginationStateChanged.prepend_expected === false;
+        if (
+          epoch !== null &&
+          acceptedIdle &&
+          !acceptedIdleWithoutPrepend &&
+          !epoch.projectionObserved
+        ) {
+          epoch.terminalReceived = true;
+        } else {
+          backfillRequestEpochRef.current = null;
+        }
+        if (
+          "PaginationStateChanged" in event &&
+          event.PaginationStateChanged.state !== "EndReached" &&
+          !acceptedIdle
+        ) {
+          backfillRetryFenceRef.current =
+            event.PaginationStateChanged.state === "Idle" &&
+            event.PaginationStateChanged.prepend_expected == null
+              ? "gap_repair_release"
+              : "external_transition";
+        }
+        const shouldReevaluate =
+          "ResyncRequired" in event ||
+          ("PaginationStateChanged" in event &&
+            ((acceptedIdle &&
+              (acceptedIdleWithoutPrepend || epoch?.projectionObserved === true)) ||
+              event.PaginationStateChanged.state === "EndReached"));
+        if (shouldReevaluate) {
+          scheduleBackfillEvaluation(
+            "PaginationStateChanged" in event ? "pagination_terminal" : "timeline_reset"
+          );
+        }
       }
 
       // Prepend batches: capture the anchor BEFORE the diff is applied to
       // React state, so the layout effect can restore it after commit.
-      if ("ItemsUpdated" in event && batchContainsPrepend(event.ItemsUpdated.diffs)) {
-        const container = containerRef.current;
-        if (container) {
-          pendingAnchorRef.current = captureAnchor(container);
-          anchorRestorePendingRef.current = true;
+      if (
+        "ItemsUpdated" in event &&
+        (batchContainsPrepend(event.ItemsUpdated.diffs) ||
+          timelineDiffsContainReset(event.ItemsUpdated.diffs))
+      ) {
+        const epoch = backfillRequestEpochRef.current;
+        if (epoch !== null) {
+          epoch.projectionObserved = true;
+          if (epoch.terminalReceived) {
+            backfillRequestEpochRef.current = null;
+          }
         }
+        if (batchContainsPrepend(event.ItemsUpdated.diffs)) {
+          const container = containerRef.current;
+          if (container) {
+            pendingAnchorRef.current = captureAnchor(container);
+            anchorRestorePendingRef.current = true;
+          }
+        }
+        scheduleBackfillEvaluation("prepend_settled");
       }
 
       if ("ResyncRequired" in event) {
@@ -2917,7 +3051,6 @@ export const TimelineView = memo(function TimelineView({
         roomScrollAnchorRestorePendingRef.current = false;
         viewportIntentRef.current = { kind: "free-scroll" };
         userScrollInputPendingRef.current = false;
-        autoBackfillRequiresUserScrollRef.current = false;
         resetActiveMeasurementDeferral({ clearMountedIds: true });
         lastPersistedViewportAnchorSignatureRef.current = null;
         setNavigationSnapshot(null);
@@ -2963,6 +3096,7 @@ export const TimelineView = memo(function TimelineView({
     emitDiagnosticLog,
     isAppLevelStore,
     resetActiveMeasurementDeferral,
+    scheduleBackfillEvaluation,
     setViewportIntentToLiveEdge,
     timelineKeyHash,
     transport
@@ -3018,7 +3152,12 @@ export const TimelineView = memo(function TimelineView({
     resetActiveMeasurementDeferral({ clearMountedIds: true });
     userScrollInputPendingRef.current = false;
     pendingScrollFrameUserInputRef.current = false;
-    autoBackfillRequiresUserScrollRef.current = sessionViewport?.mode === "anchor";
+    backfillRequestEpochRef.current = null;
+    backfillRetryFenceRef.current = null;
+    pendingBackfillEvaluationRef.current = {
+      trigger: "timeline_reset",
+      genuineUserScroll: false
+    };
     lastPersistedViewportAnchorSignatureRef.current = null;
     avatarRequestRangeRef.current = EMPTY_TIMELINE_ITEM_INDEX_RANGE;
     setAvatarRequestRange(EMPTY_TIMELINE_ITEM_INDEX_RANGE);
@@ -3061,7 +3200,8 @@ export const TimelineView = memo(function TimelineView({
       sessionViewport?.mode === "anchor" ? { kind: "free-scroll" } : { kind: "live-edge" };
     userScrollInputPendingRef.current = false;
     pendingScrollFrameUserInputRef.current = false;
-    autoBackfillRequiresUserScrollRef.current = sessionViewport?.mode === "anchor";
+    backfillRequestEpochRef.current = null;
+    lastBackfillEvaluationDiagnosticSignatureRef.current = null;
     lastPersistedViewportAnchorSignatureRef.current = null;
     restoredRoomScrollAnchorSignatureRef.current = null;
     if (viewportIntentResizeFrameRef.current !== null) {
@@ -3095,8 +3235,8 @@ export const TimelineView = memo(function TimelineView({
     projectionLayoutRevisionRef.current += 1;
     viewportIntentRevisionRef.current += 1;
     setMeasuredHeightVersion((current) => current + 1);
-    backfillInFlightRef.current = false;
-  }, [resetActiveMeasurementDeferral, timelineKeyHash]);
+    scheduleBackfillEvaluation("timeline_reset");
+  }, [resetActiveMeasurementDeferral, scheduleBackfillEvaluation, timelineKeyHash]);
 
   useEffect(
     () => () => {
@@ -3108,7 +3248,9 @@ export const TimelineView = memo(function TimelineView({
       resetActiveMeasurementDeferral({ clearMountedIds: true });
       userScrollInputPendingRef.current = false;
       pendingScrollFrameUserInputRef.current = false;
-      autoBackfillRequiresUserScrollRef.current = false;
+      backfillRequestEpochRef.current = null;
+      backfillRetryFenceRef.current = null;
+      pendingBackfillEvaluationRef.current = null;
       lastPersistedViewportAnchorSignatureRef.current = null;
       if (viewportIntentResizeFrameRef.current !== null) {
         viewportIntentResizeFrameRef.current.cancel();
@@ -3797,6 +3939,7 @@ export const TimelineView = memo(function TimelineView({
       if (projectionLayoutFrameRef.current !== null) {
         projectionLayoutFrameRef.current = null;
       }
+      scheduleBackfillEvaluation("layout_settled");
       const current = projectionRenderStateRef.current;
       if (
         current === null ||
@@ -3846,12 +3989,12 @@ export const TimelineView = memo(function TimelineView({
       }
       updateViewportMetrics();
       reportViewportObservation();
-      setProjectionSettlementRevision((current) => current + 1);
     });
   }, [
     projectionSnapshot,
     reportViewportObservation,
     runWithScrollWriteReason,
+    scheduleBackfillEvaluation,
     timelineHeightModel,
     updateViewportMetrics,
     virtualWindow.virtualized,
@@ -3887,6 +4030,10 @@ export const TimelineView = memo(function TimelineView({
           roomScrollAnchorRestorePendingRef.current = false;
           initialLiveEdgeScrollAppliedRef.current = initialLiveEdgeScrollKey;
           sessionRoomScrollAnchorRef.current = null;
+          pendingBackfillEvaluationRef.current = {
+            trigger: "room_anchor_settled",
+            genuineUserScroll: false
+          };
         }
         return restored;
       };
@@ -4325,172 +4472,195 @@ export const TimelineView = memo(function TimelineView({
     visibleItems
   ]);
 
-  useLayoutEffect(() => {
-    if (!timelineInitialized || roomTimelineRoomId === null || suppressPaginationUi) {
-      return;
-    }
-    const container = containerRef.current;
-    if (!container) {
-      return;
-    }
-    const clientHeight = Math.round(container.clientHeight);
-    if (clientHeight <= 0) {
-      return;
-    }
-    const scrollHeight = Math.round(container.scrollHeight);
-    const overflowPx = Math.max(0, scrollHeight - clientHeight);
-    if (overflowPx > SCROLL_EDGE_TOLERANCE_PX) {
-      return;
-    }
-    const projectedOverflowPx = Math.max(0, timelineHeightModel.totalHeight - clientHeight);
-    if (projectedOverflowPx > SCROLL_EDGE_TOLERANCE_PX) {
-      return;
-    }
-    const stateLabel = paginationStateDiagnosticLabel(backwardState);
-    const projectionUnsettled =
-      pendingProjectionLayoutRef.current !== null ||
-      projectionLayoutFrameRef.current !== null ||
-      anchorRestorePendingRef.current ||
-      roomScrollAnchorRestorePendingRef.current ||
-      !virtualRangeEquals(virtualRangeRef.current, virtualRange);
-    const skipReasons = [
-      !autoLoadOlderMessages ? "auto_load_disabled" : null,
-      projectionUnsettled ? "projection_settle" : null,
-      anchorRestorePendingRef.current ? "anchor_restore" : null,
-      roomScrollAnchorRestorePendingRef.current ? "room_anchor_restore" : null,
-      autoBackfillRequiresUserScrollRef.current ? "await_user_scroll_after_room_restore" : null,
-      backfillInFlightRef.current ? "in_flight" : null,
-      shouldSuppressAutoBackfill(store, timelineKeyRef.current) ? "pagination_state" : null
-    ].filter((reason): reason is string => reason !== null);
-    // Settlement is transient and owns its own revision-driven recheck. Do not
-    // emit an underfill diagnostic until the committed projection is eligible
-    // for a real request/skip decision.
-    if (skipReasons.includes("projection_settle")) {
-      return;
-    }
-    const stage = skipReasons.length > 0 ? "skip" : "request";
-    const reason = skipReasons.length > 0 ? ` reason=${skipReasons.join("+")}` : "";
-    const signature = [
-      timelineKeyHash,
-      generation,
-      items.length,
-      scrollHeight,
-      clientHeight,
-      Math.round(timelineHeightModel.totalHeight),
-      projectionSettlementRevision,
-      autoLoadOlderMessages ? "auto" : "manual",
-      stateLabel,
-      stage,
-      reason
-    ].join("\u0000");
-    if (underfilledInitialBackfillDiagnosticSignatureRef.current === signature) {
-      return;
-    }
-    underfilledInitialBackfillDiagnosticSignatureRef.current = signature;
-    const message = `${stage === "request" ? "stage=request" : "stage=skip"} trigger=underfilled_initial${reason} items=${items.length} scroll_height_px=${scrollHeight} client_height_px=${clientHeight} overflow_px=${overflowPx} projected_height_px=${Math.round(timelineHeightModel.totalHeight)} auto_load=${autoLoadOlderMessages} state=${stateLabel}`;
-    emitDiagnosticLog(
-      "timeline.backfill",
-      message
-    );
-    if (stage !== "request") {
-      return;
-    }
-    backfillInFlightRef.current = true;
-    void transport
-      .paginateBackwards(timelineKeyRef.current)
-      .catch(() => {
+  const requestTimelineBackfill = useCallback(
+    (
+      demand: TimelineBackfillDemand,
+      trigger: TimelineBackfillEvaluationTrigger,
+      metrics: TimelineBackfillMetrics
+    ): boolean => {
+      if (backfillRequestEpochRef.current !== null) {
+        return false;
+      }
+      const epoch: TimelineBackfillRequestEpoch = {
+        id: nextBackfillRequestEpochRef.current,
+        timelineKeyHash,
+        demand,
+        paginatingReceived: false,
+        projectionObserved: false,
+        terminalReceived: false
+      };
+      nextBackfillRequestEpochRef.current += 1;
+      backfillRequestEpochRef.current = epoch;
+      backfillRetryFenceRef.current = null;
+
+      if (demand === "underfilled") {
         emitDiagnosticLog(
           "timeline.backfill",
-          "stage=failed trigger=underfilled_initial reason=transport"
+          `stage=request trigger=underfilled_initial items=${items.length} scroll_height_px=${metrics.scrollHeight} client_height_px=${metrics.clientHeight} overflow_px=${Math.max(0, metrics.scrollHeight - metrics.clientHeight)} projected_height_px=${metrics.projectedContentHeight} auto_load=${autoLoadOlderMessages} state=${paginationStateDiagnosticLabel(backwardState)}`
         );
-        backfillInFlightRef.current = false;
-      });
-  }, [
-    autoLoadOlderMessages,
-    backwardState,
-    emitDiagnosticLog,
-    generation,
-    items.length,
-    projectionSettlementRevision,
-    roomTimelineRoomId,
-    store,
-    suppressPaginationUi,
-    timelineInitialized,
-    timelineHeightModel.totalHeight,
-    timelineKeyHash,
-    transport,
-    virtualRange
-  ]);
+      } else {
+        emitDiagnosticLog(
+          "timeline.backfill",
+          `stage=request trigger=${trigger === "user_scroll" ? "scroll" : trigger} scroll_top_px=${metrics.scrollTop} threshold_px=${metrics.threshold} max_scroll_top_px=${metrics.maxScrollTop} auto_load=${autoLoadOlderMessages}`
+        );
+      }
 
-  // --- Automatic backfill on scroll near the top ---
-  const maybeAutoBackfill = useCallback(() => {
-    if (suppressPaginationUi) {
-      return;
-    }
-    const container = containerRef.current;
-    if (!container) {
-      return;
-    }
-    const desiredBackfillThreshold = autoLoadOlderMessages
-      ? Math.max(AUTO_BACKFILL_THRESHOLD_PX, virtualItemHeight * AUTO_BACKFILL_PREFETCH_ITEMS)
-      : 0;
-    const maxScrollTop = container.scrollHeight - container.clientHeight;
-    // Only prefetch when the viewport is actually near the top edge. If the
-    // loaded timeline is shorter than the desired prefetch window, fall back
-    // to the near-top threshold so that a small scroll up from the live edge
-    // does not immediately fire a backfill request (and the prepend/anchor
-    // restoration that can follow).
-    const backfillThreshold = autoLoadOlderMessages
-      ? (maxScrollTop > desiredBackfillThreshold
-          ? desiredBackfillThreshold
-          : AUTO_BACKFILL_THRESHOLD_PX)
-      : 0;
-    if (container.scrollTop > backfillThreshold) {
-      return;
-    }
-    // Block while: a previous diff's anchor restoration is pending, a
-    // request is already in flight, or pagination is Paginating/EndReached.
-    const scrollTopPx = Math.round(container.scrollTop);
-    const thresholdPx = Math.round(backfillThreshold);
-    const maxScrollTopPx = Math.round(maxScrollTop);
-    const skipReasons = [
-      anchorRestorePendingRef.current ? "anchor_restore" : null,
-      roomScrollAnchorRestorePendingRef.current ? "room_anchor_restore" : null,
-      autoBackfillRequiresUserScrollRef.current ? "await_user_scroll_after_room_restore" : null,
-      backfillInFlightRef.current ? "in_flight" : null
-    ].filter((reason): reason is string => reason !== null);
-    if (skipReasons.length > 0) {
-      emitDiagnosticLog(
-        "timeline.backfill",
-        `stage=skip trigger=scroll reason=${skipReasons.join("+")} scroll_top_px=${scrollTopPx} threshold_px=${thresholdPx} max_scroll_top_px=${maxScrollTopPx}`
-      );
-      return;
-    }
-    if (shouldSuppressAutoBackfill(store, timelineKeyRef.current)) {
-      emitDiagnosticLog(
-        "timeline.backfill",
-        `stage=skip trigger=scroll reason=pagination_state scroll_top_px=${scrollTopPx} threshold_px=${thresholdPx} max_scroll_top_px=${maxScrollTopPx}`
-      );
-      return;
-    }
-    backfillInFlightRef.current = true;
-    emitDiagnosticLog(
-      "timeline.backfill",
-      `stage=request trigger=scroll scroll_top_px=${scrollTopPx} threshold_px=${thresholdPx} max_scroll_top_px=${maxScrollTopPx} auto_load=${autoLoadOlderMessages}`
-    );
-    void transport
-      .paginateBackwards(timelineKeyRef.current)
-      .catch(() => {
-        emitDiagnosticLog("timeline.backfill", "stage=failed trigger=scroll reason=transport");
-        backfillInFlightRef.current = false;
+      void transport.paginateBackwards(timelineKeyRef.current).catch(() => {
+        if (backfillRequestEpochRef.current?.id !== epoch.id) {
+          return;
+        }
+        backfillRequestEpochRef.current = null;
+        backfillRetryFenceRef.current = "external_transition";
+        emitDiagnosticLog(
+          "timeline.backfill",
+          `stage=failed trigger=${trigger} reason=transport`
+        );
       });
+      return true;
+    },
+    [
+      autoLoadOlderMessages,
+      backwardState,
+      emitDiagnosticLog,
+      items.length,
+      timelineKeyHash,
+      transport
+    ]
+  );
+
+  const evaluateAndMaybeRequestBackfill = useCallback(
+    (
+      trigger: TimelineBackfillEvaluationTrigger,
+      genuineUserScroll = false
+    ) => {
+      const container = containerRef.current;
+      if (!container) {
+        return;
+      }
+      const clientHeight = Math.round(container.clientHeight);
+      const scrollHeight = Math.round(container.scrollHeight);
+      const scrollTop = Math.round(container.scrollTop);
+      const projectedContentHeight = Math.round(timelineHeightModel.totalHeight);
+      const desiredBackfillThreshold = autoLoadOlderMessages
+        ? Math.max(
+            AUTO_BACKFILL_THRESHOLD_PX,
+            virtualItemHeight * AUTO_BACKFILL_PREFETCH_ITEMS
+          )
+        : 0;
+      const maxScrollTop = Math.max(0, scrollHeight - clientHeight);
+      const threshold = autoLoadOlderMessages
+        ? maxScrollTop > desiredBackfillThreshold
+          ? desiredBackfillThreshold
+          : AUTO_BACKFILL_THRESHOLD_PX
+        : 0;
+      const projectionSettled =
+        pendingProjectionLayoutRef.current === null &&
+        projectionLayoutFrameRef.current === null;
+      const physicalVirtualLayoutSettled = !(
+        virtualWindow.virtualized &&
+        projectedContentHeight > clientHeight + SCROLL_EDGE_TOLERANCE_PX &&
+        scrollHeight <= clientHeight + SCROLL_EDGE_TOLERANCE_PX
+      );
+      const evaluation = evaluateTimelineBackfill({
+        trigger,
+        initialized: timelineKeyState !== undefined,
+        awaitingResync: timelineKeyState?.awaitingResync ?? false,
+        suppressPaginationUi,
+        autoLoadEnabled: autoLoadOlderMessages && clientHeight > 0,
+        paginationState: backwardState,
+        requestInFlight: backfillRequestEpochRef.current !== null,
+        retryBlocked: backfillRetryFenceRef.current !== null,
+        projectionSettled,
+        virtualLayoutSettled:
+          physicalVirtualLayoutSettled &&
+          virtualRangeEquals(virtualRangeRef.current, virtualRange),
+        anchorSettled:
+          !anchorRestorePendingRef.current &&
+          !roomScrollAnchorRestorePendingRef.current,
+        itemCount: items.length,
+        projectedContentHeight,
+        clientHeight,
+        scrollHeight,
+        scrollTop,
+        nearTopThreshold: threshold,
+        genuineUserScroll
+      });
+      const demand = evaluation.kind === "idle" ? null : evaluation.demand;
+      const reason = evaluation.kind === "request" ? null : evaluation.reason;
+      const metricBucket = (value: number) => Math.max(0, Math.round(value / 100) * 100);
+      const diagnosticSignature = [
+        trigger,
+        evaluation.kind,
+        demand ?? "none",
+        reason ?? "eligible",
+        paginationStateDiagnosticLabel(backwardState),
+        metricBucket(projectedContentHeight),
+        metricBucket(clientHeight),
+        metricBucket(scrollHeight),
+        metricBucket(scrollTop),
+        backfillRequestEpochRef.current?.id ?? "none"
+      ].join("\u0000");
+      if (lastBackfillEvaluationDiagnosticSignatureRef.current !== diagnosticSignature) {
+        lastBackfillEvaluationDiagnosticSignatureRef.current = diagnosticSignature;
+        emitDiagnosticLog(
+          "timeline.backfill_evaluation",
+          `trigger=${trigger} decision=${evaluation.kind} demand=${demand ?? "none"} reason=${reason ?? "none"} items=${items.length} projected_height_bucket=${metricBucket(projectedContentHeight)} client_height_bucket=${metricBucket(clientHeight)} scroll_height_bucket=${metricBucket(scrollHeight)} scroll_top_bucket=${metricBucket(scrollTop)} state=${paginationStateDiagnosticLabel(backwardState)} request_epoch=${backfillRequestEpochRef.current?.id ?? "none"}`
+        );
+      }
+      if (evaluation.kind !== "request") {
+        return;
+      }
+      requestTimelineBackfill(evaluation.demand, trigger, {
+        scrollTop,
+        scrollHeight,
+        clientHeight,
+        projectedContentHeight,
+        threshold: Math.round(threshold),
+        maxScrollTop: Math.round(maxScrollTop)
+      });
+    },
+    [
+      autoLoadOlderMessages,
+      backwardState,
+      emitDiagnosticLog,
+      items.length,
+      requestTimelineBackfill,
+      suppressPaginationUi,
+      timelineHeightModel.totalHeight,
+      timelineKeyState,
+      virtualItemHeight,
+      virtualRange,
+      virtualWindow.virtualized
+    ]
+  );
+  evaluateAndMaybeRequestBackfillRef.current = evaluateAndMaybeRequestBackfill;
+
+  useLayoutEffect(() => {
+    if (previousAutoLoadOlderMessagesRef.current === autoLoadOlderMessages) {
+      return;
+    }
+    previousAutoLoadOlderMessagesRef.current = autoLoadOlderMessages;
+    if (backfillRetryFenceRef.current === "external_transition") {
+      backfillRetryFenceRef.current = null;
+    }
+    pendingBackfillEvaluationRef.current = {
+      trigger: "setting_changed",
+      genuineUserScroll: false
+    };
+  }, [autoLoadOlderMessages]);
+
+  useLayoutEffect(() => {
+    const pending = pendingBackfillEvaluationRef.current;
+    pendingBackfillEvaluationRef.current = null;
+    evaluateAndMaybeRequestBackfill(
+      pending?.trigger ?? "layout_settled",
+      pending?.genuineUserScroll ?? false
+    );
   }, [
-    store,
-    transport,
-    suppressPaginationUi,
-    autoLoadOlderMessages,
-    virtualItemHeight,
-    emitDiagnosticLog
+    evaluateAndMaybeRequestBackfill,
+    generation,
+    projectionSettlementRevision,
+    timelineInitialized
   ]);
   const onTimelineScroll = useCallback(() => {
     const container = containerRef.current;
@@ -4511,7 +4681,6 @@ export const TimelineView = memo(function TimelineView({
       if (isUserDrivenScroll) {
         // A genuine user scroll takes viewport control back from any jump.
         jumpViewportControlRef.current = false;
-        autoBackfillRequiresUserScrollRef.current = false;
         if (atBottom) {
           setViewportIntentToLiveEdge();
         } else {
@@ -4577,13 +4746,17 @@ export const TimelineView = memo(function TimelineView({
     }
     if (!isProgrammaticEcho) {
       reportViewportObservation();
-      maybeAutoBackfill();
+      if (isUserDrivenScroll) {
+        if (backfillRetryFenceRef.current === "external_transition") {
+          backfillRetryFenceRef.current = null;
+        }
+      }
+      evaluateAndMaybeRequestBackfillRef.current("user_scroll", isUserDrivenScroll);
       persistViewportAnchor();
     }
   }, [
     setViewportIntentToLiveEdge,
     markScrollActivityActive,
-    maybeAutoBackfill,
     persistViewportAnchor,
     readViewportMetrics,
     reportViewportObservation,
@@ -4619,29 +4792,33 @@ export const TimelineView = memo(function TimelineView({
       isPaginating ||
       endReached ||
       emptyThreadBackfillRequestedRef.current ||
-      backfillInFlightRef.current
+      backfillRequestEpochRef.current !== null
     ) {
       return;
     }
     emptyThreadBackfillRequestedRef.current = true;
-    backfillInFlightRef.current = true;
-    emitDiagnosticLog("timeline.backfill", "stage=request trigger=empty_thread");
-    void transport
-      .paginateBackwards(timelineKeyRef.current)
-      .catch(() => {
-        emitDiagnosticLog("timeline.backfill", "stage=failed trigger=empty_thread reason=transport");
-        backfillInFlightRef.current = false;
-      });
+    const container = containerRef.current;
+    requestTimelineBackfill("underfilled", "initial_projection", {
+      scrollTop: Math.round(container?.scrollTop ?? 0),
+      scrollHeight: Math.round(container?.scrollHeight ?? 0),
+      clientHeight: Math.round(container?.clientHeight ?? 0),
+      projectedContentHeight: Math.round(timelineHeightModel.totalHeight),
+      threshold: 0,
+      maxScrollTop: Math.max(
+        0,
+        Math.round((container?.scrollHeight ?? 0) - (container?.clientHeight ?? 0))
+      )
+    });
   }, [
     endReached,
-    emitDiagnosticLog,
     isPaginating,
     items.length,
+    requestTimelineBackfill,
     suppressPaginationUi,
     timelineKey.kind,
     timelineKeyHash,
     timelineInitialized,
-    transport
+    timelineHeightModel.totalHeight
   ]);
   const jumpToEvent = useCallback(
     (eventId: string) => {
@@ -4724,11 +4901,13 @@ export const TimelineView = memo(function TimelineView({
       });
       updateViewportMetrics();
       reportViewportObservation();
+      scheduleBackfillEvaluation("live_edge_settled");
     });
   }, [
     setViewportIntentToLiveEdge,
     reportViewportObservation,
     runWithScrollWriteReason,
+    scheduleBackfillEvaluation,
     scheduleScrollFollowUpFrame,
     updateViewportMetrics
   ]);
@@ -6375,11 +6554,8 @@ function timelineDiffLinkPreviewSummary(diffs: readonly TimelineDiff[]): {
 }
 
 function timelineBackfillCompletionReason(event: TimelineEvent): string | null {
-  if ("InitialItems" in event || "ResyncRequired" in event) {
+  if ("ResyncRequired" in event) {
     return "reset";
-  }
-  if ("ItemsUpdated" in event) {
-    return batchContainsPrepend(event.ItemsUpdated.diffs) ? "prepend" : null;
   }
   if ("PaginationStateChanged" in event) {
     if (
