@@ -105,14 +105,15 @@ tight repair loop.
 
 Core adds an actor-private `AwaitingProjection` phase after a repair operation
 publishes timeline diffs. The phase records the current actor generation,
-timeline generation, and final emitted timeline batch ID.
+timeline generation, room-local repair generation, and final emitted timeline
+batch ID.
 
 The desktop timeline store applies `ItemsUpdated` normally. After React commits
 the corresponding virtual window and completes anchor or live-edge
-restoration, it sends a typed render acknowledgement containing those three
-fences. Core accepts only a matching or newer batch acknowledgement owned by
-the same actor and timeline generation. Stale, duplicate, cross-room, and
-cross-actor acknowledgements are ignored.
+restoration, it sends a typed render acknowledgement containing those four
+fences. Core accepts only a matching repair generation and a matching or newer
+batch acknowledgement owned by the same actor and timeline generation. Stale,
+duplicate, cross-room, and cross-actor acknowledgements are ignored.
 
 Only after a matching acknowledgement may Core re-inspect and schedule the next
 repair operation. If an SDK outcome produces no timeline diff, Core may
@@ -200,7 +201,7 @@ Implementation is test-first and headless-first.
   canonical items while the DOM window is transiently empty.
 - The render acknowledgement is sent only after the relevant commit and anchor
   restoration and carries the current actor generation, timeline generation,
-  and batch ID.
+  repair generation, and batch ID.
 
 ### Scale
 
