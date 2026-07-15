@@ -85,6 +85,7 @@ import type {
   CoreEventPayload,
   MediaTransferProgress,
   PaginationState,
+  RequestId,
   TimelineEvent,
   TimelineDiff,
   TimelineAnchorRestoreStatus,
@@ -176,6 +177,20 @@ export interface TimelineTransport {
   listenCoreEvents(listener: (payload: CoreEventPayload) => void): () => void;
   /** Re/subscribe this key after the listener is active so InitialItems cannot be missed. */
   ensureSubscribed?(timelineKey: TimelineKey): Promise<void>;
+  /** Confirm that one Room InitialItems projection committed through layout. */
+  acknowledgeProjection?(
+    projectionRequestId: RequestId,
+    timelineKey: TimelineKey,
+    generation: number
+  ): Promise<void>;
+  /** Confirm that one repair-produced Room batch committed through layout. */
+  acknowledgeRenderedBatch?(
+    timelineKey: TimelineKey,
+    actorGeneration: number,
+    timelineGeneration: number,
+    repairGeneration: number,
+    batchId: number
+  ): Promise<void>;
   /** Invoke a backward-pagination command for this timeline key. */
   paginateBackwards(timelineKey: TimelineKey): Promise<void>;
   repairTimeline?(roomId: string): Promise<void>;
@@ -2224,6 +2239,7 @@ export const TimelineView = memo(function TimelineView({
   });
   const [virtualRange, setVirtualRange] =
     useState<TimelineVirtualRangeState>(EMPTY_TIMELINE_RANGE);
+  const [projectionSettlementRevision, setProjectionSettlementRevision] = useState(0);
   const virtualRangeRef = useRef<TimelineVirtualRangeState>(EMPTY_TIMELINE_RANGE);
   const [avatarRequestRange, setAvatarRequestRange] = useState<TimelineItemIndexRange>(
     EMPTY_TIMELINE_ITEM_INDEX_RANGE
@@ -2314,9 +2330,12 @@ export const TimelineView = memo(function TimelineView({
   const viewportIntentResizeFrameRef = useRef<TimelineScheduledFrame | null>(null);
   /** Coalesces a structural display-projection correction to one frame. */
   const projectionLayoutFrameRef = useRef<TimelineScheduledFrame | null>(null);
+  const projectionAcknowledgementFrameRef = useRef<TimelineScheduledFrame | null>(null);
   const pendingProjectionLayoutRef = useRef<PendingProjectionLayoutTransaction | null>(null);
   const projectionRenderStateRef = useRef<TimelineProjectionSnapshot | null>(null);
   const projectionLayoutRevisionRef = useRef(0);
+  const lastProjectionAcknowledgementSignatureRef = useRef<string | null>(null);
+  const lastRepairAcknowledgementSignatureRef = useRef<string | null>(null);
   /** Invalidates a queued projection correction when viewport ownership changes. */
   const viewportIntentRevisionRef = useRef(0);
   const scrollFollowUpFramesRef = useRef<Set<TimelineScheduledFrame>>(new Set());
@@ -3041,7 +3060,13 @@ export const TimelineView = memo(function TimelineView({
       projectionLayoutFrameRef.current.cancel();
       projectionLayoutFrameRef.current = null;
     }
+    if (projectionAcknowledgementFrameRef.current !== null) {
+      projectionAcknowledgementFrameRef.current.cancel();
+      projectionAcknowledgementFrameRef.current = null;
+    }
     pendingProjectionLayoutRef.current = null;
+    lastProjectionAcknowledgementSignatureRef.current = null;
+    lastRepairAcknowledgementSignatureRef.current = null;
     projectionLayoutRevisionRef.current += 1;
     viewportIntentRevisionRef.current += 1;
     setMeasuredHeightVersion((current) => current + 1);
@@ -3067,6 +3092,10 @@ export const TimelineView = memo(function TimelineView({
       if (projectionLayoutFrameRef.current !== null) {
         projectionLayoutFrameRef.current.cancel();
         projectionLayoutFrameRef.current = null;
+      }
+      if (projectionAcknowledgementFrameRef.current !== null) {
+        projectionAcknowledgementFrameRef.current.cancel();
+        projectionAcknowledgementFrameRef.current = null;
       }
       pendingProjectionLayoutRef.current = null;
       projectionLayoutRevisionRef.current += 1;
@@ -3781,6 +3810,7 @@ export const TimelineView = memo(function TimelineView({
       }
       updateViewportMetrics();
       reportViewportObservation();
+      setProjectionSettlementRevision((current) => current + 1);
     });
   }, [
     projectionSnapshot,
@@ -3873,6 +3903,7 @@ export const TimelineView = memo(function TimelineView({
               }
               updateViewportMetrics();
               reportViewportObservation();
+              setProjectionSettlementRevision((current) => current + 1);
             });
             return;
           }
@@ -3999,6 +4030,110 @@ export const TimelineView = memo(function TimelineView({
   ]);
 
   useLayoutEffect(() => {
+    if (roomTimelineRoomId === null) {
+      return;
+    }
+    const projectionRequestId = timelineKeyState?.projectionRequestId ?? null;
+    const actorGeneration = timelineKeyState?.actorGeneration ?? 0;
+    const lastAppliedBatchId = timelineKeyState?.lastAppliedBatchId ?? null;
+    const projectionSignature = projectionRequestId
+      ? [
+          timelineKeyHash,
+          actorGeneration,
+          generation,
+          projectionRequestId.connection_id,
+          projectionRequestId.sequence
+        ].join("\u0000")
+      : null;
+    const repairGeneration = continuity.kind === "repairing" ? continuity.generation : -1;
+    const repairBatchesProcessed =
+      continuity.kind === "repairing" ? continuity.batches_processed : -1;
+    const repairSignature = [
+      timelineKeyHash,
+      actorGeneration,
+      generation,
+      repairGeneration,
+      repairBatchesProcessed,
+      lastAppliedBatchId ?? -1
+    ].join("\u0000");
+    const shouldAcknowledgeProjection = Boolean(
+      transport.acknowledgeProjection &&
+        projectionRequestId &&
+        projectionSignature !== lastProjectionAcknowledgementSignatureRef.current
+    );
+    const shouldAcknowledgeRepair = Boolean(
+      transport.acknowledgeRenderedBatch &&
+        continuity.kind === "repairing" &&
+        continuity.batches_processed > 0 &&
+        lastAppliedBatchId !== null &&
+        repairSignature !== lastRepairAcknowledgementSignatureRef.current
+    );
+    if (!shouldAcknowledgeProjection && !shouldAcknowledgeRepair) {
+      return;
+    }
+    if (projectionAcknowledgementFrameRef.current !== null) {
+      projectionAcknowledgementFrameRef.current.cancel();
+    }
+    projectionAcknowledgementFrameRef.current = scheduleTimelineFrame(() => {
+      projectionAcknowledgementFrameRef.current = null;
+      if (
+        timelineKeyHashRef.current !== timelineKeyHash ||
+        pendingProjectionLayoutRef.current !== null ||
+        projectionLayoutFrameRef.current !== null ||
+        anchorRestorePendingRef.current ||
+        roomScrollAnchorRestorePendingRef.current ||
+        !virtualRangeEquals(virtualRangeRef.current, virtualRange)
+      ) {
+        return;
+      }
+      if (
+        shouldAcknowledgeProjection &&
+        projectionRequestId &&
+        projectionSignature &&
+        projectionSignature !== lastProjectionAcknowledgementSignatureRef.current
+      ) {
+        lastProjectionAcknowledgementSignatureRef.current = projectionSignature;
+        void transport
+          .acknowledgeProjection!(projectionRequestId, timelineKeyRef.current, generation)
+          .catch(() => undefined);
+      }
+      if (
+        shouldAcknowledgeRepair &&
+        lastAppliedBatchId !== null &&
+        repairSignature !== lastRepairAcknowledgementSignatureRef.current
+      ) {
+        lastRepairAcknowledgementSignatureRef.current = repairSignature;
+        void transport
+          .acknowledgeRenderedBatch!(
+            timelineKeyRef.current,
+            actorGeneration,
+            generation,
+            repairGeneration,
+            lastAppliedBatchId
+          )
+          .catch(() => undefined);
+      }
+    });
+    return () => {
+      if (projectionAcknowledgementFrameRef.current !== null) {
+        projectionAcknowledgementFrameRef.current.cancel();
+        projectionAcknowledgementFrameRef.current = null;
+      }
+    };
+  }, [
+    continuity,
+    generation,
+    projectionSettlementRevision,
+    roomTimelineRoomId,
+    timelineKeyHash,
+    timelineKeyState?.actorGeneration,
+    timelineKeyState?.lastAppliedBatchId,
+    timelineKeyState?.projectionRequestId,
+    transport,
+    virtualRange
+  ]);
+
+  useLayoutEffect(() => {
     if (!virtualWindow.virtualized) {
       mountedItemDomIdsRef.current = new Set();
       return;
@@ -4112,15 +4247,32 @@ export const TimelineView = memo(function TimelineView({
     if (overflowPx > SCROLL_EDGE_TOLERANCE_PX) {
       return;
     }
+    const projectedOverflowPx = Math.max(0, timelineHeightModel.totalHeight - clientHeight);
+    if (projectedOverflowPx > SCROLL_EDGE_TOLERANCE_PX) {
+      return;
+    }
     const stateLabel = paginationStateDiagnosticLabel(backwardState);
+    const projectionUnsettled =
+      pendingProjectionLayoutRef.current !== null ||
+      projectionLayoutFrameRef.current !== null ||
+      anchorRestorePendingRef.current ||
+      roomScrollAnchorRestorePendingRef.current ||
+      !virtualRangeEquals(virtualRangeRef.current, virtualRange);
     const skipReasons = [
       !autoLoadOlderMessages ? "auto_load_disabled" : null,
+      projectionUnsettled ? "projection_settle" : null,
       anchorRestorePendingRef.current ? "anchor_restore" : null,
       roomScrollAnchorRestorePendingRef.current ? "room_anchor_restore" : null,
       autoBackfillRequiresUserScrollRef.current ? "await_user_scroll_after_room_restore" : null,
       backfillInFlightRef.current ? "in_flight" : null,
       shouldSuppressAutoBackfill(store, timelineKeyRef.current) ? "pagination_state" : null
     ].filter((reason): reason is string => reason !== null);
+    // Settlement is transient and owns its own revision-driven recheck. Do not
+    // emit an underfill diagnostic until the committed projection is eligible
+    // for a real request/skip decision.
+    if (skipReasons.includes("projection_settle")) {
+      return;
+    }
     const stage = skipReasons.length > 0 ? "skip" : "request";
     const reason = skipReasons.length > 0 ? ` reason=${skipReasons.join("+")}` : "";
     const signature = [
@@ -4129,6 +4281,8 @@ export const TimelineView = memo(function TimelineView({
       items.length,
       scrollHeight,
       clientHeight,
+      Math.round(timelineHeightModel.totalHeight),
+      projectionSettlementRevision,
       autoLoadOlderMessages ? "auto" : "manual",
       stateLabel,
       stage,
@@ -4138,7 +4292,7 @@ export const TimelineView = memo(function TimelineView({
       return;
     }
     underfilledInitialBackfillDiagnosticSignatureRef.current = signature;
-    const message = `${stage === "request" ? "stage=request" : "stage=skip"} trigger=underfilled_initial${reason} items=${items.length} scroll_height_px=${scrollHeight} client_height_px=${clientHeight} overflow_px=${overflowPx} auto_load=${autoLoadOlderMessages} state=${stateLabel}`;
+    const message = `${stage === "request" ? "stage=request" : "stage=skip"} trigger=underfilled_initial${reason} items=${items.length} scroll_height_px=${scrollHeight} client_height_px=${clientHeight} overflow_px=${overflowPx} projected_height_px=${Math.round(timelineHeightModel.totalHeight)} auto_load=${autoLoadOlderMessages} state=${stateLabel}`;
     emitDiagnosticLog(
       "timeline.backfill",
       message
@@ -4162,12 +4316,15 @@ export const TimelineView = memo(function TimelineView({
     emitDiagnosticLog,
     generation,
     items.length,
+    projectionSettlementRevision,
     roomTimelineRoomId,
     store,
     suppressPaginationUi,
     timelineInitialized,
+    timelineHeightModel.totalHeight,
     timelineKeyHash,
-    transport
+    transport,
+    virtualRange
   ]);
 
   // --- Automatic backfill on scroll near the top ---

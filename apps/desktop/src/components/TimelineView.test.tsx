@@ -32,7 +32,7 @@ import {
   timelineMediaDisplayBoxForTests,
   type TimelineTransport
 } from "./TimelineView";
-import type { LiveSignalsState } from "../domain/types";
+import type { LiveSignalsState, TimelineContinuityState } from "../domain/types";
 
 afterEach(() => {
   cleanup();
@@ -2207,6 +2207,226 @@ describe("TimelineView", () => {
     });
     expect(paginateBackwards).toHaveBeenCalledWith(KEY);
     expect(paginateBackwards).toHaveBeenCalledTimes(1);
+  });
+
+  it("acknowledges a Room initial projection only after the layout frame", () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const acknowledgeProjection = vi.fn(async () => undefined);
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrameId = 0;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      nextFrameId += 1;
+      frames.set(nextFrameId, callback);
+      return nextFrameId;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation((frameId) => {
+      frames.delete(frameId);
+    });
+    const flushFrames = () => {
+      for (let pass = 0; pass < 10 && frames.size > 0; pass += 1) {
+        const queued = [...frames.values()];
+        frames.clear();
+        for (const callback of queued) {
+          callback(0);
+        }
+      }
+    };
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      acknowledgeProjection
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: { connection_id: 4, sequence: 8 },
+            key: KEY,
+            actor_generation: 9,
+            generation: 1,
+            items: [message("$latest", "Latest")]
+          }
+        }
+      });
+    });
+
+    expect(acknowledgeProjection).not.toHaveBeenCalled();
+    act(() => flushFrames());
+    expect(acknowledgeProjection).toHaveBeenCalledWith(
+      { connection_id: 4, sequence: 8 },
+      KEY,
+      1
+    );
+    expect(acknowledgeProjection).toHaveBeenCalledTimes(1);
+  });
+
+  it("acknowledges each settled Room repair projection signature once", () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const acknowledgeRenderedBatch = vi.fn(async () => undefined);
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrameId = 0;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      nextFrameId += 1;
+      frames.set(nextFrameId, callback);
+      return nextFrameId;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation((frameId) => {
+      frames.delete(frameId);
+    });
+    const flushFrames = () => {
+      for (let pass = 0; pass < 10 && frames.size > 0; pass += 1) {
+        const queued = [...frames.values()];
+        frames.clear();
+        for (const callback of queued) {
+          callback(0);
+        }
+      }
+    };
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      acknowledgeRenderedBatch
+    });
+    const renderView = (continuity: TimelineContinuityState) => (
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        continuity={continuity}
+        onReply={vi.fn()}
+      />
+    );
+    const repairing = {
+      kind: "repairing" as const,
+      generation: 11,
+      gap_count: 1,
+      batches_processed: 1
+    };
+    const { rerender } = render(renderView({ kind: "unknown" }));
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            actor_generation: 9,
+            generation: 3,
+            items: [message("$initial", "Initial")]
+          }
+        }
+      });
+      emit({
+        kind: "Timeline",
+        event: {
+          ItemsUpdated: {
+            key: KEY,
+            generation: 3,
+            batch_id: 5,
+            diffs: [{ PushBack: { item: message("$repair", "Repair") } }]
+          }
+        }
+      });
+      rerender(renderView(repairing));
+    });
+
+    expect(acknowledgeRenderedBatch).not.toHaveBeenCalled();
+    act(() => flushFrames());
+    expect(acknowledgeRenderedBatch).toHaveBeenLastCalledWith(KEY, 9, 3, 11, 5);
+    expect(acknowledgeRenderedBatch).toHaveBeenCalledTimes(1);
+
+    act(() => rerender(renderView(repairing)));
+    act(() => flushFrames());
+    expect(acknowledgeRenderedBatch).toHaveBeenCalledTimes(1);
+
+    act(() => rerender(renderView({ ...repairing, batches_processed: 2 })));
+    act(() => flushFrames());
+    expect(acknowledgeRenderedBatch).toHaveBeenCalledTimes(2);
+    expect(acknowledgeRenderedBatch).toHaveBeenLastCalledWith(KEY, 9, 3, 11, 5);
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          ItemsUpdated: {
+            key: KEY,
+            generation: 3,
+            batch_id: 6,
+            diffs: [{ PushBack: { item: message("$repair-2", "Repair 2") } }]
+          }
+        }
+      });
+    });
+    act(() => flushFrames());
+    expect(acknowledgeRenderedBatch).toHaveBeenCalledTimes(3);
+    expect(acknowledgeRenderedBatch).toHaveBeenLastCalledWith(KEY, 9, 3, 11, 6);
+  });
+
+  it("does not backfill a 3,234-item virtual timeline from transient DOM underfill", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const paginateBackwards = vi.fn(async () => undefined);
+    const onDiagnosticLogEntry = vi.fn();
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      paginateBackwards
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        autoLoadOlderMessages={true}
+        onReply={vi.fn()}
+        onDiagnosticLogEntry={onDiagnosticLogEntry}
+      />
+    );
+    const timeline = screen.getByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollHeight", { value: 367, configurable: true });
+    Object.defineProperty(timeline, "clientHeight", { value: 367, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", { value: 0, writable: true, configurable: true });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: messages(3_234, "$diagnostic")
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("timeline-view").getAttribute("data-virtualized")).toBe("true");
+    });
+    expect(paginateBackwards).not.toHaveBeenCalled();
+    expect(
+      onDiagnosticLogEntry.mock.calls
+        .map(([entry]) => entry.message)
+        .filter((message) => message.includes("trigger=underfilled_initial"))
+    ).toEqual([]);
   });
 
   it("captures the bottom-most visible event as the persisted room scroll anchor", async () => {
