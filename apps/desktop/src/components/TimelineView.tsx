@@ -4097,12 +4097,14 @@ export const TimelineView = memo(function TimelineView({
       renderedRepairBatchId ?? -1
     ].join("\u0000");
     const shouldAcknowledgeProjection = Boolean(
+        timelineInitialized &&
         transport.acknowledgeProjection &&
         projectionRequestId &&
         projectionSignature !== lastProjectionAcknowledgementSignatureRef.current &&
         projectionSignature !== projectionAcknowledgementInFlightRef.current
     );
     const shouldAcknowledgeRepair = Boolean(
+      timelineInitialized &&
       transport.acknowledgeRenderedBatch &&
         continuity.kind === "repairing" &&
         continuity.batches_processed > 0 &&
@@ -4218,6 +4220,7 @@ export const TimelineView = memo(function TimelineView({
     projectionSettlementRevision,
     roomTimelineRoomId,
     timelineKeyHash,
+    timelineInitialized,
     timelineKeyState?.actorGeneration,
     timelineKeyState?.lastAppliedBatchId,
     timelineKeyState?.projectionRequestId,

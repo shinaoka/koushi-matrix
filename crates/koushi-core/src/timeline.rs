@@ -7125,15 +7125,30 @@ impl TimelineActor {
             return;
         }
         let session = self.session.clone();
+        let timeline = self.timeline.clone();
         let actor_tx = self.msg_tx.clone();
         let budget = timeline_gap_repair_budget(trigger);
         let actor_generation = self.actor_generation;
         self.gap_projection_correlation
             .begin(actor_generation, serial);
         self.gap_work_task = Some(executor::spawn(async move {
-            let result = session
+            let mut result = session
                 .repair_room_timeline_gap(&descriptor, budget, actor_generation, serial)
                 .await;
+            if let Ok(result) = &mut result
+                && let Some(projection_batch) = result.last_projection_batch
+            {
+                let observable = timeline
+                    .wait_for_gap_repair_projection(GapRepairProjectionId {
+                        actor_generation,
+                        repair_generation: serial,
+                        projection_batch,
+                    })
+                    .await;
+                if !observable {
+                    result.last_projection_batch = None;
+                }
+            }
             let _ = actor_tx
                 .send(TimelineActorMessage::TimelineGapRepairFinished {
                     serial,

@@ -2429,6 +2429,25 @@ describe("TimelineView", () => {
         }
       });
       emit({ kind: "ResyncMarker" });
+      rerender(
+        renderView({
+          kind: "repairing",
+          generation: 11,
+          gap_count: 1,
+          batches_processed: 1,
+          minimum_batch_id: 5
+        })
+      );
+    });
+
+    act(() => {
+      while (frames.length > 0) {
+        frames.shift()?.(0);
+      }
+    });
+    expect(acknowledgeRenderedBatch).not.toHaveBeenCalled();
+
+    act(() => {
       emit({
         kind: "Timeline",
         event: {
@@ -2441,15 +2460,6 @@ describe("TimelineView", () => {
           }
         }
       });
-      rerender(
-        renderView({
-          kind: "repairing",
-          generation: 11,
-          gap_count: 1,
-          batches_processed: 1,
-          minimum_batch_id: 5
-        })
-      );
     });
 
     act(() => {
