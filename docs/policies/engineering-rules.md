@@ -327,7 +327,9 @@ Rules:
    remains retryable; a gap-only cache chunk or fully filtered publication
    creates no render fence, while aggregation-only work must publish an
    observable tagged barrier. A resync marker suspends acknowledgements until
-   the matching `InitialItems` replay has rendered.
+   the matching `InitialItems` replay has rendered. Observable settlement
+   waits must be bounded so a lag-dropped SDK update becomes retryable failure,
+   never a permanent repair owner.
    Underfilled-initial pagination must use the settled height model and virtual
    range; a transient virtual DOM `scrollHeight` is not proof that a timeline
    with canonical overflow needs another page.

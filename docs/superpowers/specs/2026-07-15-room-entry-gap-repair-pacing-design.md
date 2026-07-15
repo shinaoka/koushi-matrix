@@ -116,6 +116,9 @@ settles it at the observable timeline boundary. If filtering leaves no remote
 item it reports no projection; if aggregation-only processing changes no item
 that carries the repair tag, it re-emits one existing remote item as the tagged
 causal barrier.
+If subscriber lag drops the tagged SDK update before this settlement reaches
+Core, the wait is bounded at five seconds and the repair moves to its retryable
+failure state rather than retaining scheduler ownership forever.
 
 The desktop timeline store applies `ItemsUpdated` normally. After React commits
 the corresponding virtual window and completes anchor or live-edge

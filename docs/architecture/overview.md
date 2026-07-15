@@ -841,6 +841,9 @@ projection was published. The required desktop batch ID remains in
 `Repairing` state so a lag-triggered `InitialItems` replay can still complete
 the post-layout acknowledgement, but no acknowledgement is accepted while the
 consumer is still awaiting that replay.
+If the observable update is lost to a lagged SDK subscriber, Core bounds the
+settlement wait at five seconds and exposes a retryable repair failure instead
+of leaving the timeline permanently `Repairing`.
 
 See
 `docs/superpowers/specs/2026-07-03-room-timeline-cache-repair-design.md`.
