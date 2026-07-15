@@ -25,6 +25,7 @@ export type TimelineBackfillBlocker =
   | "virtual_layout_unsettled"
   | "anchor_unsettled"
   | "request_in_flight"
+  | "retry_waiting_for_transition"
   | "pagination_paginating"
   | "pagination_end_reached";
 
@@ -45,6 +46,7 @@ export interface TimelineBackfillSnapshot {
   autoLoadEnabled: boolean;
   paginationState: PaginationState;
   requestInFlight: boolean;
+  retryBlocked: boolean;
   projectionSettled: boolean;
   virtualLayoutSettled: boolean;
   anchorSettled: boolean;
@@ -90,6 +92,7 @@ function blockerForSnapshot(
   if (!snapshot.virtualLayoutSettled) return "virtual_layout_unsettled";
   if (!snapshot.anchorSettled) return "anchor_unsettled";
   if (snapshot.requestInFlight) return "request_in_flight";
+  if (snapshot.retryBlocked) return "retry_waiting_for_transition";
   if (snapshot.paginationState === "Paginating") return "pagination_paginating";
   if (snapshot.paginationState === "EndReached") return "pagination_end_reached";
   return null;

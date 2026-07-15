@@ -2347,6 +2347,19 @@ describe("TimelineView", () => {
             request_id: null,
             key: KEY,
             direction: "Backward",
+            state: "Paginating"
+          }
+        }
+      });
+    });
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          PaginationStateChanged: {
+            request_id: null,
+            key: KEY,
+            direction: "Backward",
             state: "Idle"
           }
         }
@@ -2369,6 +2382,71 @@ describe("TimelineView", () => {
       });
     });
 
+    await waitFor(() => expect(paginateBackwards).toHaveBeenCalledTimes(2));
+  });
+
+  it("releases an unaccepted Idle terminal without waiting for a prepend", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const paginateBackwards = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      paginateBackwards
+    });
+    const renderView = (autoLoadOlderMessages: boolean) => (
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        autoLoadOlderMessages={autoLoadOlderMessages}
+        onReply={vi.fn()}
+      />
+    );
+    const { rerender } = render(renderView(true));
+
+    const timeline = screen.getByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollHeight", { value: 320, configurable: true });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [message("$latest", "Latest")]
+          }
+        }
+      });
+    });
+    await waitFor(() => expect(paginateBackwards).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          PaginationStateChanged: {
+            request_id: null,
+            key: KEY,
+            direction: "Backward",
+            state: "Idle"
+          }
+        }
+      });
+    });
+    await act(async () => Promise.resolve());
+    expect(paginateBackwards).toHaveBeenCalledTimes(1);
+
+    act(() => rerender(renderView(false)));
+    act(() => rerender(renderView(true)));
     await waitFor(() => expect(paginateBackwards).toHaveBeenCalledTimes(2));
   });
 

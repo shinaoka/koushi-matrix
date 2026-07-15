@@ -727,11 +727,14 @@ UI responsibilities:
   live-edge scroll echoes are not explicit user demand.
 - Block a request until initialization/resync, projection layout, virtual
   layout, and anchor restoration are settled. Keep one request epoch active
-  through prepend application. Successful terminal state and its prepend may
+  through prepend application. `Paginating` or the prepend itself proves that
+  Core accepted the request. An accepted `Idle` terminal and its prepend may
   arrive in either order; release the epoch only after both have been observed
-  and let anchor settlement block the next request. End/failure/reset releases
-  it directly. This prevents either event order from opening a duplicate-request
-  window or losing the next wake-up.
+  and let anchor settlement block the next request. An `Idle` without acceptance
+  evidence, failure, or transport rejection releases the epoch but blocks retry
+  until a new external transition; end/reset releases it directly. This prevents
+  either event order from opening a duplicate-request window or losing the next
+  wake-up, without spinning when Core rejects scheduler ownership.
 - Re-evaluate after every transition that can add demand or remove a blocker:
   initial projection, layout/anchor settlement, genuine user scroll,
   pagination terminal state, prepend settlement, resync replay, setting change,

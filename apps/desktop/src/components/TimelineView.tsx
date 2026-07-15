@@ -434,6 +434,7 @@ type TimelineBackfillRequestEpoch = {
   id: number;
   timelineKeyHash: string;
   demand: TimelineBackfillDemand;
+  paginatingReceived: boolean;
   projectionObserved: boolean;
   terminalReceived: boolean;
 };
@@ -2377,6 +2378,8 @@ export const TimelineView = memo(function TimelineView({
   const scrollFollowUpFramesRef = useRef<Set<TimelineScheduledFrame>>(new Set());
   /** Accepted backward-pagination command awaiting a terminal timeline event. */
   const backfillRequestEpochRef = useRef<TimelineBackfillRequestEpoch | null>(null);
+  /** A rejected request must wait for a new external state transition before retrying. */
+  const backfillRetryBlockedRef = useRef(false);
   const nextBackfillRequestEpochRef = useRef(1);
   const pendingBackfillEvaluationRef = useRef<PendingTimelineBackfillEvaluation | null>(null);
   const previousAutoLoadOlderMessagesRef = useRef(autoLoadOlderMessages);
@@ -2786,6 +2789,9 @@ export const TimelineView = memo(function TimelineView({
       trigger: TimelineBackfillEvaluationTrigger,
       genuineUserScroll = false
     ) => {
+      if (trigger !== "pagination_terminal") {
+        backfillRetryBlockedRef.current = false;
+      }
       pendingBackfillEvaluationRef.current = { trigger, genuineUserScroll };
       setProjectionSettlementRevision((current) => current + 1);
     },
@@ -2812,6 +2818,7 @@ export const TimelineView = memo(function TimelineView({
         viewportIntentRef.current = { kind: "free-scroll" };
         userScrollInputPendingRef.current = false;
         backfillRequestEpochRef.current = null;
+        backfillRetryBlockedRef.current = false;
         resetActiveMeasurementDeferral({ clearMountedIds: true });
         lastPersistedViewportAnchorSignatureRef.current = null;
         restoredRoomScrollAnchorSignatureRef.current = null;
@@ -2916,6 +2923,7 @@ export const TimelineView = memo(function TimelineView({
       }
       if ("InitialItems" in event) {
         backfillRequestEpochRef.current = null;
+        backfillRetryBlockedRef.current = false;
         initialItemsSeenForTimelineKeyRef.current = timelineKeyHashRef.current;
         recordTimelineInitialItems(event.InitialItems.items.length);
         cancelScrollFollowUpFrames();
@@ -2933,6 +2941,15 @@ export const TimelineView = memo(function TimelineView({
         cancelScrollFollowUpFrames();
         resetActiveMeasurementDeferral({ clearMountedIds: true });
       }
+      if (
+        "PaginationStateChanged" in event &&
+        event.PaginationStateChanged.direction === "Backward" &&
+        event.PaginationStateChanged.state === "Paginating" &&
+        backfillRequestEpochRef.current !== null
+      ) {
+        backfillRetryBlockedRef.current = false;
+        backfillRequestEpochRef.current.paginatingReceived = true;
+      }
       const backfillCompletionReason = timelineBackfillCompletionReason(event);
       if (backfillCompletionReason !== null) {
         const epoch = backfillRequestEpochRef.current;
@@ -2945,14 +2962,31 @@ export const TimelineView = memo(function TimelineView({
         const terminalCanPrecedeProjection =
           "PaginationStateChanged" in event &&
           event.PaginationStateChanged.state === "Idle";
-        if (epoch !== null && terminalCanPrecedeProjection && !epoch.projectionObserved) {
+        const acceptedIdle =
+          epoch !== null &&
+          terminalCanPrecedeProjection &&
+          (epoch.paginatingReceived || epoch.projectionObserved);
+        if (epoch !== null && acceptedIdle && !epoch.projectionObserved) {
           epoch.terminalReceived = true;
         } else {
           backfillRequestEpochRef.current = null;
         }
-        scheduleBackfillEvaluation(
-          "PaginationStateChanged" in event ? "pagination_terminal" : "timeline_reset"
-        );
+        if (
+          "PaginationStateChanged" in event &&
+          event.PaginationStateChanged.state !== "EndReached" &&
+          !acceptedIdle
+        ) {
+          backfillRetryBlockedRef.current = true;
+        }
+        const shouldReevaluate =
+          "ResyncRequired" in event ||
+          ("PaginationStateChanged" in event &&
+            (acceptedIdle || event.PaginationStateChanged.state === "EndReached"));
+        if (shouldReevaluate) {
+          scheduleBackfillEvaluation(
+            "PaginationStateChanged" in event ? "pagination_terminal" : "timeline_reset"
+          );
+        }
       }
 
       // Prepend batches: capture the anchor BEFORE the diff is applied to
@@ -3082,6 +3116,7 @@ export const TimelineView = memo(function TimelineView({
     userScrollInputPendingRef.current = false;
     pendingScrollFrameUserInputRef.current = false;
     backfillRequestEpochRef.current = null;
+    backfillRetryBlockedRef.current = false;
     pendingBackfillEvaluationRef.current = {
       trigger: "timeline_reset",
       genuineUserScroll: false
@@ -3177,6 +3212,7 @@ export const TimelineView = memo(function TimelineView({
       userScrollInputPendingRef.current = false;
       pendingScrollFrameUserInputRef.current = false;
       backfillRequestEpochRef.current = null;
+      backfillRetryBlockedRef.current = false;
       pendingBackfillEvaluationRef.current = null;
       lastPersistedViewportAnchorSignatureRef.current = null;
       if (viewportIntentResizeFrameRef.current !== null) {
@@ -4412,11 +4448,13 @@ export const TimelineView = memo(function TimelineView({
         id: nextBackfillRequestEpochRef.current,
         timelineKeyHash,
         demand,
+        paginatingReceived: false,
         projectionObserved: false,
         terminalReceived: false
       };
       nextBackfillRequestEpochRef.current += 1;
       backfillRequestEpochRef.current = epoch;
+      backfillRetryBlockedRef.current = false;
 
       if (demand === "underfilled") {
         emitDiagnosticLog(
@@ -4435,6 +4473,7 @@ export const TimelineView = memo(function TimelineView({
           return;
         }
         backfillRequestEpochRef.current = null;
+        backfillRetryBlockedRef.current = true;
         emitDiagnosticLog(
           "timeline.backfill",
           `stage=failed trigger=${trigger} reason=transport`
@@ -4493,6 +4532,7 @@ export const TimelineView = memo(function TimelineView({
         autoLoadEnabled: autoLoadOlderMessages && clientHeight > 0,
         paginationState: backwardState,
         requestInFlight: backfillRequestEpochRef.current !== null,
+        retryBlocked: backfillRetryBlockedRef.current,
         projectionSettled,
         virtualLayoutSettled:
           physicalVirtualLayoutSettled &&
@@ -4563,6 +4603,7 @@ export const TimelineView = memo(function TimelineView({
       return;
     }
     previousAutoLoadOlderMessagesRef.current = autoLoadOlderMessages;
+    backfillRetryBlockedRef.current = false;
     pendingBackfillEvaluationRef.current = {
       trigger: "setting_changed",
       genuineUserScroll: false
@@ -4666,6 +4707,9 @@ export const TimelineView = memo(function TimelineView({
     }
     if (!isProgrammaticEcho) {
       reportViewportObservation();
+      if (isUserDrivenScroll) {
+        backfillRetryBlockedRef.current = false;
+      }
       evaluateAndMaybeRequestBackfillRef.current("user_scroll", isUserDrivenScroll);
       persistViewportAnchor();
     }

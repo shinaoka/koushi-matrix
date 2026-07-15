@@ -166,14 +166,18 @@ The evaluator blocks a demand while any of these facts is true:
 - a backward request is already in flight; or
 - backward pagination is `Paginating` or `EndReached`.
 
-`Failed` remains retryable. Transport rejection clears the local in-flight
-token and re-evaluates only on the next state transition; it does not spin.
+`Paginating` or an observed prepend proves that Core accepted the request. An
+`Idle` terminal without either proof means the command was not accepted by the
+active scheduler. `Failed`, unaccepted `Idle`, and transport rejection clear the
+local in-flight token and re-evaluate only on the next external state transition;
+they do not spin.
 
 ### Request token and deduplication
 
-The effectful wrapper assigns a local request epoch when a `request` decision
-is accepted. The epoch remains active until a matching backward pagination
-terminal event, reset, or transport rejection. Promise resolution alone does
+The effectful wrapper assigns a local request epoch when it sends a `request`
+decision. `Paginating` or the prepend projection marks that epoch accepted. An
+accepted epoch remains active until the matching backward pagination terminal
+and prepend have both arrived, or until reset. Promise resolution alone does
 not complete the operation because Core projection may still be in transit.
 
 After a terminal event, the next evaluation waits for any prepend projection
@@ -259,8 +263,8 @@ pagination tokens; display names; or raw SDK errors.
 
 ## Failure Handling
 
-- Transport rejection releases only the desktop request epoch and records a
-  retryable failure.
+- Transport rejection releases only the desktop request epoch, records a
+  retryable failure, and blocks another attempt until a new external transition.
 - Core inspection/repair failure follows the existing typed continuity failure
   path and releases actor scheduler ownership.
 - Projection or render timeout remains bounded and retryable.

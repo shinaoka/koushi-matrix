@@ -18,6 +18,7 @@ function snapshot(
     autoLoadEnabled: true,
     paginationState: "Idle",
     requestInFlight: false,
+    retryBlocked: false,
     projectionSettled: true,
     virtualLayoutSettled: true,
     anchorSettled: true,
@@ -48,6 +49,10 @@ describe("evaluateTimelineBackfill", () => {
       },
       { reason: "anchor_unsettled", overrides: { anchorSettled: false } },
       { reason: "request_in_flight", overrides: { requestInFlight: true } },
+      {
+        reason: "retry_waiting_for_transition",
+        overrides: { retryBlocked: true }
+      },
       {
         reason: "pagination_paginating",
         overrides: { paginationState: "Paginating" }
