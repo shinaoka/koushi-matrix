@@ -134,6 +134,7 @@ fn repair_progress_failure_and_retry_preserve_explicit_incomplete_state() {
             generation: 4,
             gap_count: 1,
             batches_processed: 2,
+            minimum_batch_id: Some(8),
         },
     );
     reduce(
@@ -170,6 +171,7 @@ fn repair_progress_failure_and_retry_preserve_explicit_incomplete_state() {
             generation: 5,
             gap_count: 1,
             batches_processed: 0,
+            minimum_batch_id: None,
         }
     );
 }

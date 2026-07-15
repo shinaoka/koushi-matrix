@@ -132,6 +132,7 @@ pub(crate) fn handle_timeline_gap_repair_started(
         generation,
         gap_count,
         batches_processed: 0,
+        minimum_batch_id: None,
     };
     vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
 }
@@ -142,6 +143,7 @@ pub(crate) fn handle_timeline_gap_repair_progressed(
     generation: u64,
     gap_count: u32,
     batches_processed: u32,
+    minimum_batch_id: Option<u64>,
 ) -> Vec<AppEffect> {
     if !active_room_matches(state, &room_id)
         || !matches!(
@@ -155,6 +157,7 @@ pub(crate) fn handle_timeline_gap_repair_progressed(
         generation,
         gap_count,
         batches_processed,
+        minimum_batch_id,
     };
     vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
 }

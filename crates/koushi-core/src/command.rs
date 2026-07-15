@@ -16,7 +16,9 @@ use koushi_state::{
 use serde::{Deserialize, Serialize};
 
 use crate::event::TimelineViewportObservation;
-use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineGeneration, TimelineKey};
+use crate::ids::{
+    AccountKey, RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration, TimelineKey,
+};
 
 #[derive(Debug)]
 pub enum CoreCommand {
@@ -51,6 +53,7 @@ impl CoreCommand {
                 | AppCommand::OpenFocusedContext { request_id, .. }
                 | AppCommand::OpenAnchoredTimeline { request_id, .. }
                 | AppCommand::AcknowledgeTimelineProjection { request_id, .. }
+                | AppCommand::AcknowledgeTimelineBatchRendered { request_id, .. }
                 | AppCommand::EnterAnchoredTimeline { request_id, .. }
                 | AppCommand::OpenTimelineAtTimestamp { request_id, .. }
                 | AppCommand::RepairRoomTimeline { request_id, .. }
@@ -248,6 +251,7 @@ impl CoreCommand {
                     | AppCommand::CloseThreadsList { .. }
                     | AppCommand::PaginateThreadsList { .. }
                     | AppCommand::TimelineScrollAnchorUpdated { .. }
+                    | AppCommand::AcknowledgeTimelineBatchRendered { .. }
             )
         )
     }
@@ -347,6 +351,17 @@ pub enum AppCommand {
         projection_request_id: RequestId,
         key: TimelineKey,
         generation: TimelineGeneration,
+    },
+    /// Confirms that the WebView committed a repair-produced timeline batch
+    /// through layout. Every generation fence is required so a stale actor,
+    /// timeline, repair, or batch cannot advance the repair scheduler.
+    AcknowledgeTimelineBatchRendered {
+        request_id: RequestId,
+        key: TimelineKey,
+        actor_generation: u64,
+        timeline_generation: TimelineGeneration,
+        repair_generation: u64,
+        batch_id: TimelineBatchId,
     },
     EnterAnchoredTimeline {
         request_id: RequestId,
@@ -620,6 +635,22 @@ impl fmt::Debug for AppCommand {
                 .field("projection_request_id", projection_request_id)
                 .field("key", &"TimelineKey(..)")
                 .field("generation", generation)
+                .finish(),
+            Self::AcknowledgeTimelineBatchRendered {
+                request_id,
+                actor_generation,
+                timeline_generation,
+                repair_generation,
+                batch_id,
+                ..
+            } => formatter
+                .debug_struct("AcknowledgeTimelineBatchRendered")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("actor_generation", actor_generation)
+                .field("timeline_generation", timeline_generation)
+                .field("repair_generation", repair_generation)
+                .field("batch_id", batch_id)
                 .finish(),
             Self::EnterAnchoredTimeline {
                 request_id,
@@ -3419,6 +3450,52 @@ mod tests {
         ] {
             assert!(!debug.contains(private), "{debug}");
         }
+    }
+
+    #[test]
+    fn acknowledge_timeline_batch_rendered_preserves_fences_and_redacts_key() {
+        let request_id = fake_rid(30);
+        let command = AppCommand::AcknowledgeTimelineBatchRendered {
+            request_id,
+            key: TimelineKey {
+                account_key: AccountKey("@private:example.invalid".to_owned()),
+                kind: crate::ids::TimelineKind::Room {
+                    room_id: "!private-room:example.invalid".to_owned(),
+                },
+            },
+            actor_generation: 9,
+            timeline_generation: TimelineGeneration(3),
+            repair_generation: 11,
+            batch_id: crate::ids::TimelineBatchId(5),
+        };
+
+        assert_eq!(CoreCommand::App(command).request_id(), request_id);
+        let debug = format!(
+            "{:?}",
+            AppCommand::AcknowledgeTimelineBatchRendered {
+                request_id,
+                key: TimelineKey {
+                    account_key: AccountKey("@private:example.invalid".to_owned()),
+                    kind: crate::ids::TimelineKind::Room {
+                        room_id: "!private-room:example.invalid".to_owned(),
+                    },
+                },
+                actor_generation: 9,
+                timeline_generation: TimelineGeneration(3),
+                repair_generation: 11,
+                batch_id: crate::ids::TimelineBatchId(5),
+            }
+        );
+        for expected in [
+            "actor_generation: 9",
+            "repair_generation: 11",
+            "TimelineBatchId(5)",
+        ] {
+            assert!(debug.contains(expected), "{debug}");
+        }
+        assert!(debug.contains("TimelineKey(..)"), "{debug}");
+        assert!(!debug.contains("@private:example.invalid"), "{debug}");
+        assert!(!debug.contains("!private-room:example.invalid"), "{debug}");
     }
 
     #[test]

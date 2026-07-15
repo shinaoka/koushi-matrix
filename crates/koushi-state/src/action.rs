@@ -750,6 +750,7 @@ pub enum AppAction {
         generation: u64,
         gap_count: u32,
         batches_processed: u32,
+        minimum_batch_id: Option<u64>,
     },
     TimelineGapRepairFailed {
         room_id: String,

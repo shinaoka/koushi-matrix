@@ -1022,6 +1022,7 @@ export type TimelineContinuityState =
       generation: number;
       gap_count: number;
       batches_processed: number;
+      minimum_batch_id: number | null;
     }
   | {
       kind: "failedIncomplete";

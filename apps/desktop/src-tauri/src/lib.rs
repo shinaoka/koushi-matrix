@@ -1184,6 +1184,7 @@ pub fn run() {
             commands::navigation::open_activity_event,
             commands::navigation::select_search_result,
             commands::navigation::acknowledge_timeline_projection,
+            commands::navigation::acknowledge_timeline_batch_rendered,
             commands::navigation::close_focused_context,
             commands::navigation::open_timeline_at_timestamp,
             commands::navigation::update_navigation_scroll_anchor,

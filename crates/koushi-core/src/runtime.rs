@@ -2106,6 +2106,32 @@ impl AppActor {
                     }
                     true
                 }
+                AppCommand::AcknowledgeTimelineBatchRendered {
+                    request_id,
+                    key,
+                    actor_generation,
+                    timeline_generation,
+                    repair_generation,
+                    batch_id,
+                } => {
+                    if !self
+                        .account_actor
+                        .send(AccountMessage::AcknowledgeTimelineBatchRendered {
+                            key,
+                            actor_generation,
+                            timeline_generation,
+                            repair_generation,
+                            batch_id,
+                        })
+                        .await
+                    {
+                        self.emit(CoreEvent::OperationFailed {
+                            request_id,
+                            failure: CoreFailure::ShutdownFailed,
+                        });
+                    }
+                    false
+                }
                 AppCommand::EnterAnchoredTimeline {
                     request_id,
                     room_id,

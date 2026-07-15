@@ -1031,6 +1031,24 @@ export function App() {
     }
     return {
       ...tauriTimelineTransport,
+      async acknowledgeProjection(projectionRequestId, key, generation) {
+        await api.acknowledgeTimelineProjection(projectionRequestId, key, generation);
+      },
+      async acknowledgeRenderedBatch(
+        key,
+        actorGeneration,
+        timelineGeneration,
+        repairGeneration,
+        batchId
+      ) {
+        await api.acknowledgeTimelineBatchRendered(
+          key,
+          actorGeneration,
+          timelineGeneration,
+          repairGeneration,
+          batchId
+        );
+      },
       async pinEvent(roomId: string, eventId: string) {
         setSnapshot(await api.pinEvent(roomId, eventId));
       },

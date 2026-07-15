@@ -777,12 +777,14 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             generation,
             gap_count,
             batches_processed,
+            minimum_batch_id,
         } => timeline::handle_timeline_gap_repair_progressed(
             state,
             room_id,
             generation,
             gap_count,
             batches_processed,
+            minimum_batch_id,
         ),
         AppAction::TimelineGapRepairFailed {
             room_id,

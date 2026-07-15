@@ -143,6 +143,13 @@ export interface DesktopApi {
     key: import("../domain/coreEvents").TimelineKey,
     generation: number
   ): Promise<void>;
+  acknowledgeTimelineBatchRendered(
+    key: import("../domain/coreEvents").TimelineKey,
+    actorGeneration: number,
+    timelineGeneration: number,
+    repairGeneration: number,
+    batchId: number
+  ): Promise<void>;
   openTimelineAtTimestamp(roomId: string, timestampMs: number): Promise<DesktopSnapshot>;
   closeFocusedContext(): Promise<DesktopSnapshot>;
   closeSearch(): Promise<DesktopSnapshot>;
@@ -1168,6 +1175,10 @@ class BrowserFakeApi implements DesktopApi {
 
   async acknowledgeTimelineProjection(): Promise<void> {
     // Browser fakes apply snapshots synchronously and have no Core actor lease.
+  }
+
+  async acknowledgeTimelineBatchRendered(): Promise<void> {
+    // Browser fakes apply timeline batches synchronously and have no Core actor lease.
   }
 
   async openTimelineAtTimestamp(

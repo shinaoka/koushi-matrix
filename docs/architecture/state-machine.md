@@ -794,9 +794,12 @@ stateDiagram-v2
     Inspecting --> Unknown: InspectionFailed [no explicit gap known]
     Incomplete --> Repairing: RepairRequested [coalesced]
     FailedIncomplete --> Repairing: RepairRequested [coalesced]
-    Repairing --> Inspecting: Progress / Deferred / Stale
-    Repairing --> Inspecting: BoundariesJoined / StartReached
+    Repairing --> AwaitingRelay: SDK reports a final tagged repair publication
+    AwaitingRelay --> AwaitingProjection: exact tagged publication assigned a desktop batch ID
+    AwaitingProjection --> Inspecting: matching actor/timeline/repair/batch render ACK
+    Repairing --> Inspecting: successful no-diff outcome
     Repairing --> FailedIncomplete: RepairFailed [matching generation]
+    Repairing --> FailedIncomplete: automatic zero-budget Deferred(0)
     Healthy --> Inspecting: subscription / reconnect / cache update / live event / navigation
     Incomplete --> Inspecting: cache topology changed
     FailedIncomplete --> Inspecting: reconnect / retry inspection
@@ -805,6 +808,8 @@ stateDiagram-v2
     Healthy --> [*]: logout / account replacement
     Incomplete --> [*]: logout / account replacement
     Repairing --> [*]: logout / account replacement
+    AwaitingRelay --> [*]: unsubscribe / logout / actor replacement
+    AwaitingProjection --> [*]: unsubscribe / logout / actor replacement
     FailedIncomplete --> [*]: logout / account replacement
 ```
 
@@ -814,8 +819,19 @@ stateDiagram-v2
 - `Healthy` means the SDK proved the persisted timeline complete. No gap rows,
   an empty local list, a new live event, or edge `EndReached` cannot make this
   transition.
-- `Stale`, `Progress`, `Deferred`, `BoundariesJoined`, and `StartReached`
-  always re-inspect; Core never closes a gap from an unverified local guess.
+- `AwaitingRelay` and `AwaitingProjection` are actor-private and do not enter `AppState`; the
+  public continuity remains `Repairing`. React reports only that the matching
+  presentation work committed through layout and never decides continuity.
+- SDK repair publications carry actor, repair, and repair-publication
+  generations through the UI timeline relay. A diff-producing repair outcome
+  re-inspects only after the final tagged publication receives an exact desktop
+  batch ID and React reports a matching-or-newer rendered batch ACK with the
+  same actor, timeline, and repair generations. A successful no-diff outcome
+  may re-inspect immediately. Core never closes a gap from an unverified local
+  guess.
+- Automatic repair uses no cached-chunk hydration. If the SDK returns
+  `Deferred(0)`, Core stops instead of spinning through the repair ceiling and
+  leaves the projected gap retryable through manual repair.
 - Manual repair coalesces with an active automatic repair. Failures preserve
   the current event projection and leave a visible retryable gap state.
 - **Start of conversation** is enabled only by the matching-generation
