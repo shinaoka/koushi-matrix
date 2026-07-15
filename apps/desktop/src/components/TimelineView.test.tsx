@@ -2357,6 +2357,59 @@ describe("TimelineView", () => {
     expect(paginateBackwards).toHaveBeenCalledTimes(1);
   });
 
+  it("re-evaluates an underfilled timeline when automatic loading is enabled", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const paginateBackwards = vi.fn(async () => undefined);
+    const onDiagnosticLogEntry = vi.fn();
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      paginateBackwards
+    });
+    const renderView = (autoLoadOlderMessages: boolean) => (
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        autoLoadOlderMessages={autoLoadOlderMessages}
+        onReply={vi.fn()}
+        onDiagnosticLogEntry={onDiagnosticLogEntry}
+      />
+    );
+    const { rerender } = render(renderView(false));
+    const timeline = screen.getByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollHeight", { value: 320, configurable: true });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", { value: 0, writable: true, configurable: true });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [message("$latest", "Latest")]
+          }
+        }
+      });
+    });
+    expect(paginateBackwards).not.toHaveBeenCalled();
+
+    act(() => rerender(renderView(true)));
+
+    await waitFor(() => expect(paginateBackwards).toHaveBeenCalledTimes(1));
+    expect(
+      onDiagnosticLogEntry.mock.calls
+        .map(([entry]) => entry)
+        .filter((entry) => entry.source === "timeline.backfill_evaluation")
+        .map((entry) => entry.message)
+    ).toEqual(expect.arrayContaining([expect.stringContaining("trigger=setting_changed")]));
+  });
+
   it("acknowledges a Room initial projection only after the layout frame", () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const acknowledgeProjection = vi.fn(async () => undefined);

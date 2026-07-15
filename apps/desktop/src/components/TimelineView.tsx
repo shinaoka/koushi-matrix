@@ -2377,6 +2377,7 @@ export const TimelineView = memo(function TimelineView({
   const backfillRequestEpochRef = useRef<TimelineBackfillRequestEpoch | null>(null);
   const nextBackfillRequestEpochRef = useRef(1);
   const pendingBackfillEvaluationRef = useRef<PendingTimelineBackfillEvaluation | null>(null);
+  const previousAutoLoadOlderMessagesRef = useRef(autoLoadOlderMessages);
   const evaluateAndMaybeRequestBackfillRef = useRef<
     (trigger: TimelineBackfillEvaluationTrigger, genuineUserScroll?: boolean) => void
   >(() => undefined);
@@ -4539,6 +4540,17 @@ export const TimelineView = memo(function TimelineView({
     ]
   );
   evaluateAndMaybeRequestBackfillRef.current = evaluateAndMaybeRequestBackfill;
+
+  useLayoutEffect(() => {
+    if (previousAutoLoadOlderMessagesRef.current === autoLoadOlderMessages) {
+      return;
+    }
+    previousAutoLoadOlderMessagesRef.current = autoLoadOlderMessages;
+    pendingBackfillEvaluationRef.current = {
+      trigger: "setting_changed",
+      genuineUserScroll: false
+    };
+  }, [autoLoadOlderMessages]);
 
   useLayoutEffect(() => {
     const pending = pendingBackfillEvaluationRef.current;

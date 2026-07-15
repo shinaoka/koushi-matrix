@@ -150,4 +150,41 @@ describe("evaluateTimelineBackfill", () => {
       )
     ).toEqual({ kind: "request", demand: "explicit_top_scroll" });
   });
+
+  test("backfill eligibility is independent of settlement event order", () => {
+    const orders: Array<Array<"projection" | "virtual" | "anchor" | "terminal">> = [
+      ["terminal", "projection", "virtual", "anchor"],
+      ["projection", "terminal", "anchor", "virtual"],
+      ["anchor", "virtual", "terminal", "projection"],
+      ["virtual", "anchor", "projection", "terminal"]
+    ];
+
+    for (const order of orders) {
+      const current = snapshot({
+        projectedContentHeight: 300,
+        scrollHeight: 300,
+        projectionSettled: false,
+        virtualLayoutSettled: false,
+        anchorSettled: false,
+        requestInFlight: true
+      });
+
+      order.forEach((transition, index) => {
+        if (transition === "projection") current.projectionSettled = true;
+        if (transition === "virtual") current.virtualLayoutSettled = true;
+        if (transition === "anchor") current.anchorSettled = true;
+        if (transition === "terminal") current.requestInFlight = false;
+
+        const evaluation = evaluateTimelineBackfill(current);
+        if (index < order.length - 1) {
+          expect(evaluation.kind, order.join(" → ")).toBe("blocked");
+        } else {
+          expect(evaluation, order.join(" → ")).toEqual({
+            kind: "request",
+            demand: "underfilled"
+          });
+        }
+      });
+    }
+  });
 });

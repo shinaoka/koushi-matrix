@@ -5748,6 +5748,75 @@ mod timeline_gap_repair_tracker_tests {
     }
 
     #[test]
+    fn gap_repair_wake_is_retained_across_ack_and_inspection_order() {
+        let projected = vec![
+            (
+                0,
+                TimelineGapPosition {
+                    ordinal: 0,
+                    before_item_index: 3,
+                },
+            ),
+            (
+                1,
+                TimelineGapPosition {
+                    ordinal: 1,
+                    before_item_index: 18,
+                },
+            ),
+        ];
+        let mut tracker = TimelineGapRepairTracker::default();
+        tracker.replace_projected_gaps(projected, Some((15, 20)));
+
+        assert!(matches!(
+            tracker.evaluate_viewport_wake(Some((1, 5))),
+            GapRepairViewportWakeDecision::Wake { .. }
+        ));
+        tracker.queue_inspection(TimelineGapRepairTrigger::Automatic);
+        assert_eq!(tracker.begin_pending_inspection(false), None);
+        let (first_serial, _) = tracker
+            .begin_pending_inspection(true)
+            .expect("projection ACK releases the queued viewport wake");
+
+        assert!(matches!(
+            tracker.evaluate_viewport_wake(Some((15, 20))),
+            GapRepairViewportWakeDecision::Wake { .. }
+        ));
+        tracker.queue_inspection(TimelineGapRepairTrigger::Automatic);
+        assert_eq!(tracker.begin_pending_inspection(true), None);
+        assert!(tracker.finish_work(first_serial));
+        let (second_serial, _) = tracker
+            .begin_pending_inspection(true)
+            .expect("active inspection completion releases the changed candidate");
+        assert!(tracker.finish_work(second_serial));
+
+        let fence = TimelineGapRenderFence {
+            actor_generation: 9,
+            timeline_generation: TimelineGeneration(3),
+            repair_generation: 11,
+            minimum_batch_id: TimelineBatchId(5),
+        };
+        tracker.await_projection(fence);
+        assert!(matches!(
+            tracker.evaluate_viewport_wake(Some((1, 5))),
+            GapRepairViewportWakeDecision::Wake { .. }
+        ));
+        tracker.queue_inspection(TimelineGapRepairTrigger::Automatic);
+        assert_eq!(tracker.begin_pending_inspection(true), None);
+        assert!(tracker.acknowledge_projection(fence));
+        assert!(tracker.begin_pending_inspection(true).is_some());
+
+        assert!(matches!(
+            tracker.evaluate_viewport_wake(Some((1, 5))),
+            GapRepairViewportWakeDecision::IdleUnchangedCandidate { .. }
+        ));
+        assert_eq!(
+            timeline_gap_repair_budget(TimelineGapRepairTrigger::Automatic).cached_chunk_limit,
+            0
+        );
+    }
+
+    #[test]
     fn automatic_and_manual_repair_use_separate_cache_budgets() {
         assert_eq!(
             timeline_gap_repair_budget(TimelineGapRepairTrigger::Automatic),
