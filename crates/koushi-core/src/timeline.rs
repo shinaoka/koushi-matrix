@@ -48,7 +48,7 @@
 //! but never in error messages, log strings, or Debug output of error types.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{
     Arc, Mutex,
@@ -60,6 +60,7 @@ use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel};
 use koushi_sdk::{
     MatrixClientSession, MatrixTimelineContinuity, MatrixTimelineGapError, MatrixTimelineGapHandle,
     MatrixTimelineGapInspection, MatrixTimelineGapRepairBudget, MatrixTimelineGapRepairOutcome,
+    MatrixTimelineGapRepairResult,
 };
 use koushi_search::{AttachmentDocument, SensitiveString};
 use koushi_state::{
@@ -96,10 +97,10 @@ use matrix_sdk::ruma::html::{Html, SanitizerConfig};
 use matrix_sdk::send_queue::{LocalEcho, LocalEchoContent, RoomSendQueueUpdate, SendHandle};
 use matrix_sdk_ui::timeline::{
     AnyOtherStateEventContentChange, EmbeddedEvent, EncryptedMessage, EventItemOrigin,
-    EventSendState as SdkEventSendState, EventTimelineItem, InReplyToDetails, MembershipChange,
-    Profile, ReactionStatus, ReactionsByKeyBySender, Timeline, TimelineDetails,
-    TimelineEventItemId, TimelineFocus, TimelineItem as SdkTimelineItem, TimelineItemContent,
-    TimelineItemKind, TimelineReadReceiptTracking,
+    EventSendState as SdkEventSendState, EventTimelineItem, GapRepairProjectionId,
+    InReplyToDetails, MembershipChange, Profile, ReactionStatus, ReactionsByKeyBySender, Timeline,
+    TimelineDetails, TimelineEventItemId, TimelineFocus, TimelineItem as SdkTimelineItem,
+    TimelineItemContent, TimelineItemKind, TimelineReadReceiptTracking,
 };
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
@@ -2882,8 +2883,7 @@ enum TimelineActorMessage {
     TimelineGapRepairFinished {
         serial: u64,
         trigger: TimelineGapRepairTrigger,
-        minimum_batch_id: TimelineBatchId,
-        result: Result<MatrixTimelineGapRepairOutcome, MatrixTimelineGapError>,
+        result: Result<MatrixTimelineGapRepairResult, MatrixTimelineGapError>,
     },
     Paginate {
         request_id: RequestId,
@@ -3168,6 +3168,7 @@ struct TimelineRelayBatch {
     generation: TimelineGeneration,
     diffs: Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>,
     thread_attention_provenance: ThreadAttentionBatchProvenance,
+    gap_repair_projections: BTreeSet<GapRepairProjectionId>,
 }
 
 fn timeline_key_trace_kind(key: &TimelineKey) -> &'static str {
@@ -3934,6 +3935,7 @@ fn event_cache_origin_trace_token(origin: &matrix_sdk::event_cache::EventsOrigin
         matrix_sdk::event_cache::EventsOrigin::Sync => "sync",
         matrix_sdk::event_cache::EventsOrigin::Pagination => "network",
         matrix_sdk::event_cache::EventsOrigin::Cache => "cache",
+        matrix_sdk::event_cache::EventsOrigin::GapRepair { .. } => "gap_repair",
     }
 }
 
@@ -5132,6 +5134,91 @@ struct TimelineGapRenderFence {
     minimum_batch_id: TimelineBatchId,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TimelineGapProjectionCompletion {
+    NoDiff,
+    Pending,
+    Ready(TimelineBatchId),
+}
+
+#[derive(Debug, Default)]
+struct TimelineGapProjectionCorrelation {
+    operation: Option<(u64, u64)>,
+    observed_batches: BTreeMap<u32, TimelineBatchId>,
+    expected_last_projection_batch: Option<u32>,
+}
+
+impl TimelineGapProjectionCorrelation {
+    fn begin(&mut self, actor_generation: u64, repair_generation: u64) {
+        self.operation = Some((actor_generation, repair_generation));
+        self.observed_batches.clear();
+        self.expected_last_projection_batch = None;
+    }
+
+    fn complete(
+        &mut self,
+        actor_generation: u64,
+        repair_generation: u64,
+        last_projection_batch: Option<u32>,
+    ) -> TimelineGapProjectionCompletion {
+        if self.operation != Some((actor_generation, repair_generation)) {
+            return TimelineGapProjectionCompletion::NoDiff;
+        }
+        let Some(expected) = last_projection_batch else {
+            self.clear(actor_generation, repair_generation);
+            return TimelineGapProjectionCompletion::NoDiff;
+        };
+        self.expected_last_projection_batch = Some(expected);
+        if let Some(batch_id) = self.observed_batches.get(&expected).copied() {
+            self.clear(actor_generation, repair_generation);
+            TimelineGapProjectionCompletion::Ready(batch_id)
+        } else {
+            TimelineGapProjectionCompletion::Pending
+        }
+    }
+
+    fn observe(
+        &mut self,
+        projection: GapRepairProjectionId,
+        batch_id: TimelineBatchId,
+    ) -> Option<TimelineBatchId> {
+        if self.operation != Some((projection.actor_generation, projection.repair_generation)) {
+            return None;
+        }
+        self.observed_batches
+            .insert(projection.projection_batch, batch_id);
+        if self.expected_last_projection_batch != Some(projection.projection_batch) {
+            return None;
+        }
+        self.clear(projection.actor_generation, projection.repair_generation);
+        Some(batch_id)
+    }
+
+    fn clear(&mut self, actor_generation: u64, repair_generation: u64) {
+        if self.operation == Some((actor_generation, repair_generation)) {
+            self.operation = None;
+            self.observed_batches.clear();
+            self.expected_last_projection_batch = None;
+        }
+    }
+
+    fn is_pending(&self) -> bool {
+        self.operation.is_some()
+    }
+
+    fn accepts(&self, projection: GapRepairProjectionId) -> bool {
+        self.operation == Some((projection.actor_generation, projection.repair_generation))
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PendingTimelineGapProjection {
+    trigger: TimelineGapRepairTrigger,
+    repair_generation: u64,
+    gap_count: u32,
+    batches_processed: u32,
+}
+
 fn timeline_gap_repair_budget(trigger: TimelineGapRepairTrigger) -> MatrixTimelineGapRepairBudget {
     MatrixTimelineGapRepairBudget {
         event_limit: 64,
@@ -5146,18 +5233,6 @@ fn timeline_gap_repair_trigger_token(trigger: TimelineGapRepairTrigger) -> &'sta
     match trigger {
         TimelineGapRepairTrigger::Automatic => "cache_gap",
         TimelineGapRepairTrigger::Manual => "manual",
-    }
-}
-
-fn repair_outcome_expects_timeline_diff(outcome: &MatrixTimelineGapRepairOutcome) -> bool {
-    match outcome {
-        MatrixTimelineGapRepairOutcome::Deferred {
-            cached_chunks_loaded,
-        } => *cached_chunks_loaded > 0,
-        MatrixTimelineGapRepairOutcome::Progress { events }
-        | MatrixTimelineGapRepairOutcome::BoundariesJoined { events }
-        | MatrixTimelineGapRepairOutcome::StartReached { events } => *events > 0,
-        MatrixTimelineGapRepairOutcome::Stale | MatrixTimelineGapRepairOutcome::Failed => false,
     }
 }
 
@@ -5179,6 +5254,22 @@ fn projected_gap_insertion_index(
     older_position: Option<usize>,
 ) -> Option<usize> {
     newer_position.or_else(|| older_position.map(|index| index.saturating_add(1)))
+}
+
+fn select_projected_gap_ordinal(
+    projected: &[(usize, TimelineGapPosition)],
+    viewport_range: Option<(usize, usize)>,
+) -> Option<usize> {
+    let in_viewport = viewport_range.and_then(|(first, last)| {
+        let start = first.min(last);
+        let end = first.max(last).saturating_add(1);
+        projected
+            .iter()
+            .filter(|(_, position)| (start..=end).contains(&position.before_item_index))
+            .map(|(ordinal, _)| *ordinal)
+            .last()
+    });
+    in_viewport.or_else(|| projected.last().map(|(ordinal, _)| *ordinal))
 }
 
 #[derive(Debug, Default)]
@@ -5292,6 +5383,41 @@ mod timeline_gap_repair_tracker_tests {
     }
 
     #[test]
+    fn automatic_repair_prefers_a_gap_intersecting_the_viewport() {
+        let projected = vec![
+            (
+                0,
+                TimelineGapPosition {
+                    ordinal: 0,
+                    before_item_index: 3,
+                },
+            ),
+            (
+                1,
+                TimelineGapPosition {
+                    ordinal: 1,
+                    before_item_index: 18,
+                },
+            ),
+            (
+                2,
+                TimelineGapPosition {
+                    ordinal: 2,
+                    before_item_index: 40,
+                },
+            ),
+        ];
+        assert_eq!(
+            select_projected_gap_ordinal(&projected, Some((15, 20))),
+            Some(1)
+        );
+        assert_eq!(
+            select_projected_gap_ordinal(&projected, Some((25, 30))),
+            Some(2)
+        );
+    }
+
+    #[test]
     fn automatic_and_manual_repair_use_separate_cache_budgets() {
         assert_eq!(
             timeline_gap_repair_budget(TimelineGapRepairTrigger::Automatic),
@@ -5307,24 +5433,6 @@ mod timeline_gap_repair_tracker_tests {
                 cached_chunk_limit: 1,
             }
         );
-    }
-
-    #[test]
-    fn only_diff_producing_repair_outcomes_wait_for_render() {
-        assert!(!repair_outcome_expects_timeline_diff(
-            &MatrixTimelineGapRepairOutcome::Stale
-        ));
-        assert!(!repair_outcome_expects_timeline_diff(
-            &MatrixTimelineGapRepairOutcome::Progress { events: 0 }
-        ));
-        assert!(repair_outcome_expects_timeline_diff(
-            &MatrixTimelineGapRepairOutcome::Progress { events: 1 }
-        ));
-        assert!(repair_outcome_expects_timeline_diff(
-            &MatrixTimelineGapRepairOutcome::Deferred {
-                cached_chunks_loaded: 1,
-            }
-        ));
     }
 
     #[test]
@@ -5407,6 +5515,83 @@ mod timeline_gap_repair_tracker_tests {
         }
         assert!(!tracker.can_start_batch());
         assert_eq!(tracker.record_batch(), None);
+    }
+
+    #[test]
+    fn repair_projection_waits_for_the_exact_tagged_batch() {
+        let mut correlation = TimelineGapProjectionCorrelation::default();
+        correlation.begin(9, 11);
+
+        // An unrelated live diff can consume batch 5 without satisfying the repair.
+        assert_eq!(
+            correlation.complete(9, 11, Some(1)),
+            TimelineGapProjectionCompletion::Pending
+        );
+        assert_eq!(
+            correlation.observe(
+                GapRepairProjectionId {
+                    actor_generation: 9,
+                    repair_generation: 10,
+                    projection_batch: 1,
+                },
+                TimelineBatchId(5),
+            ),
+            None
+        );
+        assert_eq!(
+            correlation.observe(
+                GapRepairProjectionId {
+                    actor_generation: 9,
+                    repair_generation: 11,
+                    projection_batch: 1,
+                },
+                TimelineBatchId(6),
+            ),
+            Some(TimelineBatchId(6))
+        );
+    }
+
+    #[test]
+    fn repair_projection_uses_the_last_sdk_projection_batch() {
+        let mut correlation = TimelineGapProjectionCorrelation::default();
+        correlation.begin(4, 7);
+        assert_eq!(
+            correlation.observe(
+                GapRepairProjectionId {
+                    actor_generation: 4,
+                    repair_generation: 7,
+                    projection_batch: 1,
+                },
+                TimelineBatchId(20),
+            ),
+            None
+        );
+        assert_eq!(
+            correlation.complete(4, 7, Some(2)),
+            TimelineGapProjectionCompletion::Pending
+        );
+        assert_eq!(
+            correlation.observe(
+                GapRepairProjectionId {
+                    actor_generation: 4,
+                    repair_generation: 7,
+                    projection_batch: 2,
+                },
+                TimelineBatchId(21),
+            ),
+            Some(TimelineBatchId(21))
+        );
+    }
+
+    #[test]
+    fn gap_only_cache_reveal_requires_no_render_fence() {
+        let mut correlation = TimelineGapProjectionCorrelation::default();
+        correlation.begin(2, 3);
+        assert_eq!(
+            correlation.complete(2, 3, None),
+            TimelineGapProjectionCompletion::NoDiff
+        );
+        assert!(!correlation.is_pending());
     }
 }
 
@@ -5516,6 +5701,8 @@ struct TimelineActor {
     /// `handle_diff_batch` call (restore or not).
     diff_batch_seq: u64,
     gap_repair: TimelineGapRepairTracker,
+    gap_projection_correlation: TimelineGapProjectionCorrelation,
+    pending_gap_projection: Option<PendingTimelineGapProjection>,
     gap_work_task: Option<executor::JoinHandle<()>>,
 }
 
@@ -5555,6 +5742,40 @@ enum ThreadAttentionObservation {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct ThreadAttentionBatchProvenance {
     event_observations: HashMap<String, ThreadAttentionObservation>,
+}
+
+fn gap_repair_projections_from_sdk_diffs(
+    diffs: &[eyeball_im::VectorDiff<Arc<SdkTimelineItem>>],
+) -> BTreeSet<GapRepairProjectionId> {
+    let mut projections = BTreeSet::new();
+    let mut observe = |item: &Arc<SdkTimelineItem>| {
+        if let Some(projection) = item
+            .as_event()
+            .and_then(EventTimelineItem::gap_repair_projection)
+        {
+            projections.insert(projection);
+        }
+    };
+    for diff in diffs {
+        match diff {
+            eyeball_im::VectorDiff::PushFront { value }
+            | eyeball_im::VectorDiff::PushBack { value }
+            | eyeball_im::VectorDiff::Insert { value, .. }
+            | eyeball_im::VectorDiff::Set { value, .. } => observe(value),
+            eyeball_im::VectorDiff::Reset { values }
+            | eyeball_im::VectorDiff::Append { values } => {
+                for value in values {
+                    observe(value);
+                }
+            }
+            eyeball_im::VectorDiff::Remove { .. }
+            | eyeball_im::VectorDiff::Truncate { .. }
+            | eyeball_im::VectorDiff::Clear
+            | eyeball_im::VectorDiff::PopFront
+            | eyeball_im::VectorDiff::PopBack => {}
+        }
+    }
+    projections
 }
 
 fn thread_attention_observation_from_event_origin(
@@ -6204,6 +6425,8 @@ impl TimelineActor {
             hydrate_after_restore_flush: false,
             diff_batch_seq: 0,
             gap_repair: TimelineGapRepairTracker::default(),
+            gap_projection_correlation: TimelineGapProjectionCorrelation::default(),
+            pending_gap_projection: None,
             gap_work_task: None,
         };
 
@@ -6240,10 +6463,15 @@ impl TimelineActor {
                         generation,
                         diffs,
                         thread_attention_provenance,
+                        gap_repair_projections,
                     }) = batch {
                         if let Some(diffs) = accepted_relay_batch(self.generation, generation, diffs) {
                             self.relay_restart_backoff.reset_after_live_batch();
-                            self.handle_diff_batch(diffs, thread_attention_provenance).await;
+                            self.handle_diff_batch(
+                                diffs,
+                                thread_attention_provenance,
+                                gap_repair_projections,
+                            ).await;
                         }
                     }
                 }
@@ -6315,10 +6543,9 @@ impl TimelineActor {
             TimelineActorMessage::TimelineGapRepairFinished {
                 serial,
                 trigger,
-                minimum_batch_id,
                 result,
             } => {
-                self.handle_timeline_gap_repair_finished(serial, trigger, minimum_batch_id, result)
+                self.handle_timeline_gap_repair_finished(serial, trigger, result)
                     .await;
             }
             TimelineActorMessage::Paginate {
@@ -6342,6 +6569,7 @@ impl TimelineActor {
                     .is_some_and(|active| active.serial == serial)
                 {
                     self.pagination_task = None;
+                    self.start_pending_timeline_gap_inspection().await;
                 }
             }
             TimelineActorMessage::OwnReadReceiptChanged => {
@@ -6642,6 +6870,13 @@ impl TimelineActor {
     }
 
     async fn start_pending_timeline_gap_inspection(&mut self) {
+        if self.pagination_task.is_some()
+            || self.restore_anchor.is_some()
+            || self.gap_projection_correlation.is_pending()
+            || self.pending_gap_projection.is_some()
+        {
+            return;
+        }
         let Some((serial, trigger)) = self
             .gap_repair
             .begin_pending_inspection(self.projection_acknowledged)
@@ -6707,7 +6942,7 @@ impl TimelineActor {
                         MatrixTimelineContinuity::Complete => "healthy",
                     },
                 );
-                let projected_ordinals = self.emit_gap_positions(serial, &inspection.gaps);
+                let projected_gaps = self.emit_gap_positions(serial, &inspection.gaps);
                 let known_gap_count = inspection.gaps.len().try_into().unwrap_or(u32::MAX);
                 let state_inspection = match inspection.continuity {
                     MatrixTimelineContinuity::Unknown => TimelineContinuityInspection::Unknown,
@@ -6726,15 +6961,26 @@ impl TimelineActor {
                 match inspection.continuity {
                     MatrixTimelineContinuity::Gapped => {
                         self.gap_repair.gap_count = known_gap_count;
-                        let descriptor = projected_ordinals
-                            .last()
-                            .and_then(|ordinal| inspection.gaps.get(*ordinal))
-                            .cloned()
-                            .or_else(|| {
-                                matches!(trigger, TimelineGapRepairTrigger::Manual)
-                                    .then(|| inspection.gaps.last().cloned())
-                                    .flatten()
-                            });
+                        let viewport_range = self
+                            .viewport_observation
+                            .first_visible_event_id
+                            .as_deref()
+                            .and_then(|event_id| self.timeline_event_position(event_id))
+                            .zip(
+                                self.viewport_observation
+                                    .last_visible_event_id
+                                    .as_deref()
+                                    .and_then(|event_id| self.timeline_event_position(event_id)),
+                            );
+                        let descriptor =
+                            select_projected_gap_ordinal(&projected_gaps, viewport_range)
+                                .and_then(|ordinal| inspection.gaps.get(ordinal))
+                                .cloned()
+                                .or_else(|| {
+                                    matches!(trigger, TimelineGapRepairTrigger::Manual)
+                                        .then(|| inspection.gaps.last().cloned())
+                                        .flatten()
+                                });
                         if let Some(descriptor) = descriptor {
                             self.start_timeline_gap_repair(trigger, descriptor, known_gap_count)
                                 .await;
@@ -6800,7 +7046,11 @@ impl TimelineActor {
         }
     }
 
-    fn emit_gap_positions(&self, generation: u64, gaps: &[MatrixTimelineGapHandle]) -> Vec<usize> {
+    fn emit_gap_positions(
+        &self,
+        generation: u64,
+        gaps: &[MatrixTimelineGapHandle],
+    ) -> Vec<(usize, TimelineGapPosition)> {
         let projected = gaps
             .iter()
             .enumerate()
@@ -6831,7 +7081,7 @@ impl TimelineActor {
             generation,
             positions,
         }));
-        projected.into_iter().map(|(ordinal, _)| ordinal).collect()
+        projected
     }
 
     fn timeline_event_position(&self, event_id: &str) -> Option<usize> {
@@ -6849,7 +7099,6 @@ impl TimelineActor {
         let Some(serial) = self.gap_repair.begin_repair(gap_count) else {
             return;
         };
-        let minimum_batch_id = self.next_batch_id;
         let room_id = self.key.room_id().to_owned();
         if !self
             .emit_action_reliable(AppAction::TimelineGapRepairStarted {
@@ -6878,13 +7127,17 @@ impl TimelineActor {
         let session = self.session.clone();
         let actor_tx = self.msg_tx.clone();
         let budget = timeline_gap_repair_budget(trigger);
+        let actor_generation = self.actor_generation;
+        self.gap_projection_correlation
+            .begin(actor_generation, serial);
         self.gap_work_task = Some(executor::spawn(async move {
-            let result = session.repair_room_timeline_gap(&descriptor, budget).await;
+            let result = session
+                .repair_room_timeline_gap(&descriptor, budget, actor_generation, serial)
+                .await;
             let _ = actor_tx
                 .send(TimelineActorMessage::TimelineGapRepairFinished {
                     serial,
                     trigger,
-                    minimum_batch_id,
                     result,
                 })
                 .await;
@@ -6895,8 +7148,7 @@ impl TimelineActor {
         &mut self,
         serial: u64,
         trigger: TimelineGapRepairTrigger,
-        minimum_batch_id: TimelineBatchId,
-        result: Result<MatrixTimelineGapRepairOutcome, MatrixTimelineGapError>,
+        result: Result<MatrixTimelineGapRepairResult, MatrixTimelineGapError>,
     ) {
         if !self.gap_repair.finish_work(serial) {
             return;
@@ -6904,8 +7156,23 @@ impl TimelineActor {
         self.gap_work_task = None;
         let room_id = self.key.room_id().to_owned();
         let gap_count = self.gap_repair.gap_count;
-        let failure = matches!(result, Err(_) | Ok(MatrixTimelineGapRepairOutcome::Failed));
-        if failure {
+        let Ok(result) = result else {
+            self.gap_projection_correlation
+                .clear(self.actor_generation, serial);
+            let _ = self
+                .emit_action_reliable(AppAction::TimelineGapRepairFailed {
+                    room_id,
+                    generation: serial,
+                    gap_count,
+                    batches_processed: self.gap_repair.batches_processed,
+                    kind: TimelineGapRepairFailureKind::Sdk,
+                })
+                .await;
+            return;
+        };
+        if result.outcome == MatrixTimelineGapRepairOutcome::Failed {
+            self.gap_projection_correlation
+                .clear(self.actor_generation, serial);
             let _ = self
                 .emit_action_reliable(AppAction::TimelineGapRepairFailed {
                     room_id,
@@ -6917,10 +7184,9 @@ impl TimelineActor {
                 .await;
             return;
         }
-        if result
-            .as_ref()
-            .is_ok_and(|outcome| automatic_gap_repair_is_offscreen(trigger, outcome))
-        {
+        if automatic_gap_repair_is_offscreen(trigger, &result.outcome) {
+            self.gap_projection_correlation
+                .clear(self.actor_generation, serial);
             record_timeline_gap_repair(
                 "repair",
                 timeline_gap_repair_trigger_token(trigger),
@@ -6941,6 +7207,8 @@ impl TimelineActor {
             return;
         }
         let Some(batches_processed) = self.gap_repair.record_batch() else {
+            self.gap_projection_correlation
+                .clear(self.actor_generation, serial);
             let _ = self
                 .emit_action_reliable(AppAction::TimelineGapRepairFailed {
                     room_id,
@@ -6952,37 +7220,79 @@ impl TimelineActor {
                 .await;
             return;
         };
-        let expects_timeline_diff = result
-            .as_ref()
-            .is_ok_and(repair_outcome_expects_timeline_diff);
-        if expects_timeline_diff {
-            self.gap_repair.queue_inspection(trigger);
-            self.gap_repair.await_projection(TimelineGapRenderFence {
-                actor_generation: self.actor_generation,
-                timeline_generation: self.generation,
-                repair_generation: serial,
-                minimum_batch_id,
-            });
-            record_timeline_gap_repair(
-                "awaiting_render",
-                timeline_gap_repair_trigger_token(trigger),
-                serial,
-                gap_count,
-                batches_processed,
-                "pending",
-            );
+        match self.gap_projection_correlation.complete(
+            self.actor_generation,
+            serial,
+            result.last_projection_batch,
+        ) {
+            TimelineGapProjectionCompletion::Ready(batch_id) => {
+                self.pending_gap_projection = Some(PendingTimelineGapProjection {
+                    trigger,
+                    repair_generation: serial,
+                    gap_count,
+                    batches_processed,
+                });
+                self.finish_pending_gap_projection(batch_id).await;
+            }
+            TimelineGapProjectionCompletion::Pending => {
+                self.pending_gap_projection = Some(PendingTimelineGapProjection {
+                    trigger,
+                    repair_generation: serial,
+                    gap_count,
+                    batches_processed,
+                });
+                record_timeline_gap_repair(
+                    "awaiting_relay",
+                    timeline_gap_repair_trigger_token(trigger),
+                    serial,
+                    gap_count,
+                    batches_processed,
+                    "pending",
+                );
+            }
+            TimelineGapProjectionCompletion::NoDiff => {
+                let _ = self
+                    .emit_action_reliable(AppAction::TimelineGapRepairProgressed {
+                        room_id,
+                        generation: serial,
+                        gap_count,
+                        batches_processed,
+                        minimum_batch_id: None,
+                    })
+                    .await;
+                self.request_timeline_gap_inspection(trigger).await;
+            }
         }
+    }
+
+    async fn finish_pending_gap_projection(&mut self, batch_id: TimelineBatchId) {
+        let Some(pending) = self.pending_gap_projection.take() else {
+            return;
+        };
+        self.gap_repair.queue_inspection(pending.trigger);
+        self.gap_repair.await_projection(TimelineGapRenderFence {
+            actor_generation: self.actor_generation,
+            timeline_generation: self.generation,
+            repair_generation: pending.repair_generation,
+            minimum_batch_id: batch_id,
+        });
+        record_timeline_gap_repair(
+            "awaiting_render",
+            timeline_gap_repair_trigger_token(pending.trigger),
+            pending.repair_generation,
+            pending.gap_count,
+            pending.batches_processed,
+            "pending",
+        );
         let _ = self
             .emit_action_reliable(AppAction::TimelineGapRepairProgressed {
-                room_id,
-                generation: serial,
-                gap_count,
-                batches_processed,
+                room_id: self.key.room_id().to_owned(),
+                generation: pending.repair_generation,
+                gap_count: pending.gap_count,
+                batches_processed: pending.batches_processed,
+                minimum_batch_id: Some(batch_id.0),
             })
             .await;
-        if !expects_timeline_diff {
-            self.request_timeline_gap_inspection(trigger).await;
-        }
     }
 
     async fn handle_paginate(
@@ -7012,6 +7322,30 @@ impl TimelineActor {
                     kind: TimelineFailureKind::InvalidDirection,
                 },
             );
+            return;
+        }
+
+        if self.gap_repair.active_serial.is_some()
+            || self.gap_repair.awaiting_projection.is_some()
+            || self.gap_projection_correlation.is_pending()
+            || self.pending_gap_projection.is_some()
+        {
+            trace_timeline_paginate(
+                "actor_paginate_skip",
+                request_id,
+                &self.key,
+                direction,
+                event_count,
+                None,
+                None,
+                Some("gap_repair"),
+            );
+            self.emit(CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+                request_id: Some(request_id),
+                key: self.key.clone(),
+                direction,
+                state: PaginationState::Idle,
+            }));
             return;
         }
 
@@ -7209,6 +7543,14 @@ impl TimelineActor {
     ) {
         if !matches!(self.key.kind, TimelineKind::Room { .. }) {
             self.emit_timeline_failure(request_id, TimelineFailureKind::NotSubscribed);
+            return;
+        }
+        if self.gap_repair.active_serial.is_some()
+            || self.gap_repair.awaiting_projection.is_some()
+            || self.gap_projection_correlation.is_pending()
+            || self.pending_gap_projection.is_some()
+        {
+            self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::Superseded);
             return;
         }
         if event_id.trim().is_empty() || max_batches == 0 || event_count == 0 {
@@ -9095,6 +9437,7 @@ impl TimelineActor {
         &mut self,
         diffs: Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>,
         thread_attention_provenance: ThreadAttentionBatchProvenance,
+        gap_repair_projections: BTreeSet<GapRepairProjectionId>,
     ) {
         if diffs.is_empty() {
             return;
@@ -9214,9 +9557,18 @@ impl TimelineActor {
                 }
             }
         } else {
+            let emitted_batch_id = self.next_batch_id;
             let emitted = self.emit_items_updated_and_reconcile_replay_known(core_diffs);
             self.emit_navigation_if_changed();
             if emitted {
+                let ready_projection_batch =
+                    gap_repair_projections.into_iter().find_map(|projection| {
+                        self.gap_projection_correlation
+                            .observe(projection, emitted_batch_id)
+                    });
+                if let Some(batch_id) = ready_projection_batch {
+                    self.finish_pending_gap_projection(batch_id).await;
+                }
                 self.maybe_hydrate_missing_thread_roots().await;
             }
         }
@@ -10396,6 +10748,14 @@ impl TimelineActor {
         // 3. Acquire the authoritative snapshot and its matching replacement
         //    stream from one SDK subscription boundary.
         let current_items = prepared.snapshot;
+        let snapshot_gap_repair_projections = current_items
+            .iter()
+            .filter_map(|item| {
+                item.as_event()
+                    .and_then(EventTimelineItem::gap_repair_projection)
+            })
+            .filter(|projection| self.gap_projection_correlation.accepts(*projection))
+            .collect::<BTreeSet<_>>();
         let diff_stream = prepared.stream;
         let old_window_event_ids = self
             .navigation_items
@@ -10462,6 +10822,21 @@ impl TimelineActor {
             reason,
             items,
         );
+        if !snapshot_gap_repair_projections.is_empty() {
+            let recovery_batch_id = self.next_batch_id;
+            if self.emit_items_updated_and_reconcile_replay_known(Vec::new()) {
+                if let Some(batch_id) =
+                    snapshot_gap_repair_projections
+                        .into_iter()
+                        .find_map(|projection| {
+                            self.gap_projection_correlation
+                                .observe(projection, recovery_batch_id)
+                        })
+                {
+                    self.finish_pending_gap_projection(batch_id).await;
+                }
+            }
+        }
         let (relay_data_tx, relay_data_rx) = mpsc::channel(256);
         self.relay_data_rx = Some(relay_data_rx);
         self.relay_task = Some(executor::spawn(run_diff_relay(
@@ -10932,10 +11307,12 @@ async fn run_diff_relay(
         };
 
         let thread_attention_provenance = ThreadAttentionBatchProvenance::from_sdk_diffs(&diffs);
+        let gap_repair_projections = gap_repair_projections_from_sdk_diffs(&diffs);
         match actor_tx.try_send(TimelineRelayBatch {
             generation,
             diffs,
             thread_attention_provenance,
+            gap_repair_projections,
         }) {
             Ok(_) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
@@ -21189,6 +21566,7 @@ mod tests {
                 generation: TimelineGeneration(7),
                 diffs: Vec::new(),
                 thread_attention_provenance: ThreadAttentionBatchProvenance::default(),
+                gap_repair_projections: BTreeSet::new(),
             })
             .expect("test must fill the data inbox");
 

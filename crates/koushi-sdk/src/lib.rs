@@ -2556,6 +2556,12 @@ pub enum MatrixTimelineGapRepairOutcome {
     StartReached { events: usize },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MatrixTimelineGapRepairResult {
+    pub outcome: MatrixTimelineGapRepairOutcome,
+    pub last_projection_batch: Option<u32>,
+}
+
 impl MatrixClientSession {
     pub fn client(&self) -> matrix_sdk::Client {
         self.client.clone()
@@ -2601,8 +2607,12 @@ impl MatrixClientSession {
         &self,
         gap: &MatrixTimelineGapHandle,
         budget: MatrixTimelineGapRepairBudget,
-    ) -> Result<MatrixTimelineGapRepairOutcome, MatrixTimelineGapError> {
-        use matrix_sdk::event_cache::{RoomTimelineGapRepairBudget, RoomTimelineGapRepairOutcome};
+        actor_generation: u64,
+        repair_generation: u64,
+    ) -> Result<MatrixTimelineGapRepairResult, MatrixTimelineGapError> {
+        use matrix_sdk::event_cache::{
+            RoomTimelineGapProjectionId, RoomTimelineGapRepairBudget, RoomTimelineGapRepairOutcome,
+        };
 
         let room = self
             .client
@@ -2612,18 +2622,22 @@ impl MatrixClientSession {
             .event_cache()
             .await
             .map_err(|_| MatrixTimelineGapError::Sdk)?;
-        let outcome = cache
+        let result = cache
             .pagination()
-            .repair_timeline_gap(
+            .repair_timeline_gap_with_projection(
                 &gap.descriptor,
                 RoomTimelineGapRepairBudget {
                     event_limit: budget.event_limit,
                     cached_chunk_limit: budget.cached_chunk_limit,
                 },
+                RoomTimelineGapProjectionId {
+                    actor_generation,
+                    repair_generation,
+                },
             )
             .await
             .map_err(|_| MatrixTimelineGapError::Sdk)?;
-        Ok(match outcome {
+        let outcome = match result.outcome {
             RoomTimelineGapRepairOutcome::Stale => MatrixTimelineGapRepairOutcome::Stale,
             RoomTimelineGapRepairOutcome::Deferred {
                 cached_chunks_loaded,
@@ -2640,6 +2654,10 @@ impl MatrixClientSession {
             RoomTimelineGapRepairOutcome::StartReached { events } => {
                 MatrixTimelineGapRepairOutcome::StartReached { events }
             }
+        };
+        Ok(MatrixTimelineGapRepairResult {
+            outcome,
+            last_projection_batch: result.last_projection_batch,
         })
     }
 

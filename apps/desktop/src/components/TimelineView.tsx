@@ -2336,6 +2336,18 @@ export const TimelineView = memo(function TimelineView({
   const projectionLayoutRevisionRef = useRef(0);
   const lastProjectionAcknowledgementSignatureRef = useRef<string | null>(null);
   const lastRepairAcknowledgementSignatureRef = useRef<string | null>(null);
+  const projectionAcknowledgementInFlightRef = useRef<string | null>(null);
+  const repairAcknowledgementInFlightRef = useRef<string | null>(null);
+  const projectionAcknowledgementRetryRef = useRef<{
+    signature: string | null;
+    attempts: number;
+    timer: number | null;
+  }>({ signature: null, attempts: 0, timer: null });
+  const repairAcknowledgementRetryRef = useRef<{
+    signature: string | null;
+    attempts: number;
+    timer: number | null;
+  }>({ signature: null, attempts: 0, timer: null });
   /** Invalidates a queued projection correction when viewport ownership changes. */
   const viewportIntentRevisionRef = useRef(0);
   const scrollFollowUpFramesRef = useRef<Set<TimelineScheduledFrame>>(new Set());
@@ -3067,6 +3079,19 @@ export const TimelineView = memo(function TimelineView({
     pendingProjectionLayoutRef.current = null;
     lastProjectionAcknowledgementSignatureRef.current = null;
     lastRepairAcknowledgementSignatureRef.current = null;
+    projectionAcknowledgementInFlightRef.current = null;
+    repairAcknowledgementInFlightRef.current = null;
+    for (const retry of [
+      projectionAcknowledgementRetryRef.current,
+      repairAcknowledgementRetryRef.current
+    ]) {
+      if (retry.timer !== null) {
+        window.clearTimeout(retry.timer);
+      }
+      retry.signature = null;
+      retry.attempts = 0;
+      retry.timer = null;
+    }
     projectionLayoutRevisionRef.current += 1;
     viewportIntentRevisionRef.current += 1;
     setMeasuredHeightVersion((current) => current + 1);
@@ -3096,6 +3121,17 @@ export const TimelineView = memo(function TimelineView({
       if (projectionAcknowledgementFrameRef.current !== null) {
         projectionAcknowledgementFrameRef.current.cancel();
         projectionAcknowledgementFrameRef.current = null;
+      }
+      projectionAcknowledgementInFlightRef.current = null;
+      repairAcknowledgementInFlightRef.current = null;
+      for (const retry of [
+        projectionAcknowledgementRetryRef.current,
+        repairAcknowledgementRetryRef.current
+      ]) {
+        if (retry.timer !== null) {
+          window.clearTimeout(retry.timer);
+          retry.timer = null;
+        }
       }
       pendingProjectionLayoutRef.current = null;
       projectionLayoutRevisionRef.current += 1;
@@ -4048,25 +4084,31 @@ export const TimelineView = memo(function TimelineView({
     const repairGeneration = continuity.kind === "repairing" ? continuity.generation : -1;
     const repairBatchesProcessed =
       continuity.kind === "repairing" ? continuity.batches_processed : -1;
+    const renderedRepairBatchId =
+      continuity.kind === "repairing"
+        ? (lastAppliedBatchId ?? continuity.minimum_batch_id)
+        : null;
     const repairSignature = [
       timelineKeyHash,
       actorGeneration,
       generation,
       repairGeneration,
       repairBatchesProcessed,
-      lastAppliedBatchId ?? -1
+      renderedRepairBatchId ?? -1
     ].join("\u0000");
     const shouldAcknowledgeProjection = Boolean(
-      transport.acknowledgeProjection &&
+        transport.acknowledgeProjection &&
         projectionRequestId &&
-        projectionSignature !== lastProjectionAcknowledgementSignatureRef.current
+        projectionSignature !== lastProjectionAcknowledgementSignatureRef.current &&
+        projectionSignature !== projectionAcknowledgementInFlightRef.current
     );
     const shouldAcknowledgeRepair = Boolean(
       transport.acknowledgeRenderedBatch &&
         continuity.kind === "repairing" &&
         continuity.batches_processed > 0 &&
-        lastAppliedBatchId !== null &&
-        repairSignature !== lastRepairAcknowledgementSignatureRef.current
+        renderedRepairBatchId !== null &&
+        repairSignature !== lastRepairAcknowledgementSignatureRef.current &&
+        repairSignature !== repairAcknowledgementInFlightRef.current
     );
     if (!shouldAcknowledgeProjection && !shouldAcknowledgeRepair) {
       return;
@@ -4090,28 +4132,78 @@ export const TimelineView = memo(function TimelineView({
         shouldAcknowledgeProjection &&
         projectionRequestId &&
         projectionSignature &&
-        projectionSignature !== lastProjectionAcknowledgementSignatureRef.current
+        projectionSignature !== lastProjectionAcknowledgementSignatureRef.current &&
+        projectionSignature !== projectionAcknowledgementInFlightRef.current
       ) {
-        lastProjectionAcknowledgementSignatureRef.current = projectionSignature;
+        projectionAcknowledgementInFlightRef.current = projectionSignature;
         void transport
           .acknowledgeProjection!(projectionRequestId, timelineKeyRef.current, generation)
-          .catch(() => undefined);
+          .then(() => {
+            if (projectionAcknowledgementInFlightRef.current === projectionSignature) {
+              projectionAcknowledgementInFlightRef.current = null;
+              lastProjectionAcknowledgementSignatureRef.current = projectionSignature;
+              projectionAcknowledgementRetryRef.current = {
+                signature: projectionSignature,
+                attempts: 0,
+                timer: null
+              };
+            }
+          })
+          .catch(() => {
+            if (projectionAcknowledgementInFlightRef.current !== projectionSignature) {
+              return;
+            }
+            projectionAcknowledgementInFlightRef.current = null;
+            const retry = projectionAcknowledgementRetryRef.current;
+            retry.attempts =
+              retry.signature === projectionSignature ? Math.min(6, retry.attempts + 1) : 1;
+            retry.signature = projectionSignature;
+            retry.timer = window.setTimeout(() => {
+              retry.timer = null;
+              setProjectionSettlementRevision((current) => current + 1);
+            }, Math.min(1600, 50 * 2 ** (retry.attempts - 1)));
+          });
       }
       if (
         shouldAcknowledgeRepair &&
-        lastAppliedBatchId !== null &&
-        repairSignature !== lastRepairAcknowledgementSignatureRef.current
+        renderedRepairBatchId !== null &&
+        repairSignature !== lastRepairAcknowledgementSignatureRef.current &&
+        repairSignature !== repairAcknowledgementInFlightRef.current
       ) {
-        lastRepairAcknowledgementSignatureRef.current = repairSignature;
+        repairAcknowledgementInFlightRef.current = repairSignature;
         void transport
           .acknowledgeRenderedBatch!(
             timelineKeyRef.current,
             actorGeneration,
             generation,
             repairGeneration,
-            lastAppliedBatchId
+            renderedRepairBatchId
           )
-          .catch(() => undefined);
+          .then(() => {
+            if (repairAcknowledgementInFlightRef.current === repairSignature) {
+              repairAcknowledgementInFlightRef.current = null;
+              lastRepairAcknowledgementSignatureRef.current = repairSignature;
+              repairAcknowledgementRetryRef.current = {
+                signature: repairSignature,
+                attempts: 0,
+                timer: null
+              };
+            }
+          })
+          .catch(() => {
+            if (repairAcknowledgementInFlightRef.current !== repairSignature) {
+              return;
+            }
+            repairAcknowledgementInFlightRef.current = null;
+            const retry = repairAcknowledgementRetryRef.current;
+            retry.attempts =
+              retry.signature === repairSignature ? Math.min(6, retry.attempts + 1) : 1;
+            retry.signature = repairSignature;
+            retry.timer = window.setTimeout(() => {
+              retry.timer = null;
+              setProjectionSettlementRevision((current) => current + 1);
+            }, Math.min(1600, 50 * 2 ** (retry.attempts - 1)));
+          });
       }
     });
     return () => {

@@ -2314,7 +2314,8 @@ describe("TimelineView", () => {
       kind: "repairing" as const,
       generation: 11,
       gap_count: 1,
-      batches_processed: 1
+      batches_processed: 1,
+      minimum_batch_id: 5
     };
     const { rerender } = render(renderView({ kind: "unknown" }));
 
@@ -2375,6 +2376,160 @@ describe("TimelineView", () => {
     act(() => flushFrames());
     expect(acknowledgeRenderedBatch).toHaveBeenCalledTimes(3);
     expect(acknowledgeRenderedBatch).toHaveBeenLastCalledWith(KEY, 9, 3, 11, 6);
+  });
+
+  it("acknowledges the causal repair fence after a resync replay clears the last applied batch", () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const acknowledgeRenderedBatch = vi.fn(async () => undefined);
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      acknowledgeRenderedBatch
+    });
+    const renderView = (continuity: TimelineContinuityState) => (
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        continuity={continuity}
+        onReply={vi.fn()}
+      />
+    );
+    const { rerender } = render(renderView({ kind: "unknown" }));
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            actor_generation: 9,
+            generation: 3,
+            items: [message("$initial", "Initial")]
+          }
+        }
+      });
+      emit({
+        kind: "Timeline",
+        event: {
+          ItemsUpdated: {
+            key: KEY,
+            generation: 3,
+            batch_id: 5,
+            diffs: [{ PushBack: { item: message("$repair", "Repair") } }]
+          }
+        }
+      });
+      emit({ kind: "ResyncMarker" });
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            actor_generation: 9,
+            generation: 3,
+            items: [message("$initial", "Initial"), message("$repair", "Repair")]
+          }
+        }
+      });
+      rerender(
+        renderView({
+          kind: "repairing",
+          generation: 11,
+          gap_count: 1,
+          batches_processed: 1,
+          minimum_batch_id: 5
+        })
+      );
+    });
+
+    act(() => {
+      while (frames.length > 0) {
+        frames.shift()?.(0);
+      }
+    });
+    expect(acknowledgeRenderedBatch).toHaveBeenCalledWith(KEY, 9, 3, 11, 5);
+  });
+
+  it("retries a rejected rendered-batch acknowledgement", async () => {
+    vi.useFakeTimers();
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const acknowledgeRenderedBatch = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error("queue timeout"))
+      .mockResolvedValue(undefined);
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      acknowledgeRenderedBatch
+    });
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        continuity={{
+          kind: "repairing",
+          generation: 11,
+          gap_count: 1,
+          batches_processed: 1,
+          minimum_batch_id: 5
+        }}
+        onReply={vi.fn()}
+      />
+    );
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            actor_generation: 9,
+            generation: 3,
+            items: [message("$repair", "Repair")]
+          }
+        }
+      });
+    });
+    act(() => {
+      while (frames.length > 0) {
+        frames.shift()?.(0);
+      }
+    });
+    await act(async () => Promise.resolve());
+    expect(acknowledgeRenderedBatch).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    act(() => {
+      while (frames.length > 0) {
+        frames.shift()?.(0);
+      }
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(acknowledgeRenderedBatch).toHaveBeenCalledTimes(2);
+    expect(acknowledgeRenderedBatch).toHaveBeenLastCalledWith(KEY, 9, 3, 11, 5);
+    vi.useRealTimers();
   });
 
   it("does not backfill a 3,234-item virtual timeline from transient DOM underfill", async () => {
@@ -5852,7 +6007,13 @@ describe("TimelineView", () => {
         roomId="!room:example.invalid"
         transport={transport}
         onReply={vi.fn()}
-        continuity={{ kind: "repairing", generation: 3, gap_count: 1, batches_processed: 0 }}
+        continuity={{
+          kind: "repairing",
+          generation: 3,
+          gap_count: 1,
+          batches_processed: 0,
+          minimum_batch_id: null
+        }}
       />
     );
     act(() => {
