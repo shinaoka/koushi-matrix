@@ -397,6 +397,14 @@ export type TimelineEvent =
       };
     }
   | {
+      /** Gap work ended without queued work; a pagination request rejected during repair may retry. */
+      GapRepairReleased: {
+        key: TimelineKey;
+        actor_generation: number;
+        generation: number;
+      };
+    }
+  | {
       SendCompleted: {
         request_id: RequestId;
         key: TimelineKey;

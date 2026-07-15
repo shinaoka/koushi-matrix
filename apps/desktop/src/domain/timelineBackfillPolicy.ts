@@ -8,6 +8,7 @@ export type TimelineBackfillEvaluationTrigger =
   | "pagination_terminal"
   | "prepend_settled"
   | "gap_projection_changed"
+  | "gap_repair_released"
   | "resync_replayed"
   | "setting_changed"
   | "timeline_reset"

@@ -838,7 +838,11 @@ stateDiagram-v2
   active inspection and `AwaitingProjection`, so projection ACK and viewport
   event order cannot lose the wake-up.
 - Manual repair coalesces with an active automatic repair. Failures preserve
-  the current event projection and leave a visible retryable gap state.
+  the current event projection and leave a visible retryable gap state. After
+  terminal failure processing first restarts any queued candidate inspection,
+  Core emits `GapRepairReleased` only if no queued or active work remains; React
+  uses that event to retry pagination commands rejected while repair owned the
+  scheduler.
 - **Start of conversation** is enabled only by the matching-generation
   `Complete`/`StartReached` proof.
 

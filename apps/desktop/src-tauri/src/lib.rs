@@ -2704,6 +2704,13 @@ mod tests {
                 }],
             }))
             .expect("serialize gap positions update event");
+        let gap_repair_released =
+            serialize_core_event(&CoreEvent::Timeline(TimelineEvent::GapRepairReleased {
+                key: key.clone(),
+                actor_generation: 3,
+                generation: 5,
+            }))
+            .expect("serialize gap repair release event");
 
         let display_labels_updated =
             serialize_core_event(&CoreEvent::Timeline(TimelineEvent::DisplayLabelsUpdated {
@@ -3323,6 +3330,7 @@ mod tests {
             "timelineMessageSourceLoaded": message_source_loaded,
             "timelineNavigationUpdated": navigation_updated,
             "timelineGapPositionsUpdated": gap_positions_updated,
+            "timelineGapRepairReleased": gap_repair_released,
             "timelineAnchorRestoreFinished": anchor_restore_finished,
             "timelinePaginationEndReached": serialize_core_event(&CoreEvent::Timeline(
                 TimelineEvent::PaginationStateChanged {
@@ -3468,6 +3476,7 @@ mod tests {
             "timelineAnchorRestoreFinished",
             "timelineNavigationUpdated",
             "timelineGapPositionsUpdated",
+            "timelineGapRepairReleased",
             "timelinePaginationEndReached",
             "timelineReplyQuoteInitialItems",
             "timelineResyncRequired",

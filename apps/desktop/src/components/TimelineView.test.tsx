@@ -15,6 +15,7 @@ import {
   roomTimelineKey,
   threadTimelineKey,
   type CoreEventPayload,
+  type TimelineDiff,
   type TimelineItem,
   type TimelineMessageSource
 } from "../domain/coreEvents";
@@ -2198,7 +2199,24 @@ describe("TimelineView", () => {
     expect(paginateBackwards).not.toHaveBeenCalled();
   });
 
-  it("keeps a backfill request active through prepend until pagination reaches a terminal state", async () => {
+  it.each([
+    {
+      projection: "prepend",
+      diffs: [{ PushFront: { item: message("$older", "Older") } }]
+    },
+    {
+      projection: "reset",
+      diffs: [
+        {
+          Reset: {
+            items: [message("$older", "Older"), message("$latest", "Latest")]
+          }
+        }
+      ]
+    }
+  ] satisfies Array<{ projection: string; diffs: TimelineDiff[] }>) (
+    "keeps a backfill request active through $projection until pagination reaches a terminal state",
+    async ({ diffs }) => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const paginateBackwards = vi.fn(async () => undefined);
     const onDiagnosticLogEntry = vi.fn();
@@ -2256,7 +2274,7 @@ describe("TimelineView", () => {
             key: KEY,
             generation: 1,
             batch_id: 2,
-            diffs: [{ PushFront: { item: message("$older", "Older") } }]
+            diffs
           }
         }
       });
@@ -2293,9 +2311,27 @@ describe("TimelineView", () => {
     });
 
     await waitFor(() => expect(paginateBackwards).toHaveBeenCalledTimes(2));
-  });
+    }
+  );
 
-  it("keeps a terminal-first backfill request active until its prepend settles", async () => {
+  it.each([
+    {
+      projection: "prepend",
+      diffs: [{ PushFront: { item: message("$older", "Older") } }]
+    },
+    {
+      projection: "reset",
+      diffs: [
+        {
+          Reset: {
+            items: [message("$older", "Older"), message("$latest", "Latest")]
+          }
+        }
+      ]
+    }
+  ] satisfies Array<{ projection: string; diffs: TimelineDiff[] }>) (
+    "keeps a terminal-first backfill request active until its $projection settles",
+    async ({ diffs }) => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const paginateBackwards = vi.fn(async () => undefined);
     const transport = baseTransport({
@@ -2338,7 +2374,6 @@ describe("TimelineView", () => {
       });
     });
     await waitFor(() => expect(paginateBackwards).toHaveBeenCalledTimes(1));
-
     act(() => {
       emit({
         kind: "Timeline",
@@ -2376,16 +2411,17 @@ describe("TimelineView", () => {
             key: KEY,
             generation: 1,
             batch_id: 2,
-            diffs: [{ PushFront: { item: message("$older", "Older") } }]
+            diffs
           }
         }
       });
     });
 
     await waitFor(() => expect(paginateBackwards).toHaveBeenCalledTimes(2));
-  });
+    }
+  );
 
-  it("releases an unaccepted Idle terminal without waiting for a prepend", async () => {
+  it("keeps an unaccepted Idle fenced through gap projection until repair release", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const paginateBackwards = vi.fn(async () => undefined);
     const transport = baseTransport({
@@ -2458,6 +2494,115 @@ describe("TimelineView", () => {
         }
       });
     });
+    await act(async () => Promise.resolve());
+    expect(paginateBackwards).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          GapRepairReleased: {
+            key: KEY,
+            actor_generation: 1,
+            generation: 3
+          }
+        }
+      });
+    });
+    await waitFor(() => expect(paginateBackwards).toHaveBeenCalledTimes(2));
+  });
+
+  it("retries after gap repair releases an Idle request rejected during repair", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const paginateBackwards = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      paginateBackwards
+    });
+    const renderView = (autoLoadOlderMessages: boolean) => (
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        autoLoadOlderMessages={autoLoadOlderMessages}
+        onReply={vi.fn()}
+      />
+    );
+    const { rerender } = render(renderView(false));
+
+    const timeline = screen.getByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollHeight", { value: 320, configurable: true });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [message("$latest", "Latest")]
+          }
+        }
+      });
+    });
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          GapPositionsUpdated: {
+            key: KEY,
+            actor_generation: 1,
+            generation: 2,
+            positions: []
+          }
+        }
+      });
+    });
+    await act(async () => Promise.resolve());
+    expect(paginateBackwards).not.toHaveBeenCalled();
+
+    rerender(renderView(true));
+    await waitFor(() => expect(paginateBackwards).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          PaginationStateChanged: {
+            request_id: null,
+            key: KEY,
+            direction: "Backward",
+            state: "Idle",
+            prepend_expected: null
+          }
+        }
+      });
+    });
+    await act(async () => Promise.resolve());
+    expect(paginateBackwards).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          GapRepairReleased: {
+            key: KEY,
+            actor_generation: 1,
+            generation: 3
+          }
+        }
+      } as CoreEventPayload);
+    });
+
     await waitFor(() => expect(paginateBackwards).toHaveBeenCalledTimes(2));
   });
 

@@ -5883,6 +5883,39 @@ mod timeline_gap_repair_tracker_tests {
             helper.contains("start_pending_timeline_gap_inspection().await"),
             "the common terminal helper must restart a candidate-change inspection queued during repair"
         );
+        let resume_offset = helper
+            .find("start_pending_timeline_gap_inspection().await")
+            .expect("terminal repair failure must release queued scheduler work");
+        let wake_offset = helper
+            .find("emit_gap_repair_released_if_idle")
+            .expect("an idle scheduler must wake a UI request rejected during gap repair");
+        assert!(
+            resume_offset < wake_offset,
+            "the retry wake must be emitted only after queued scheduler work has had a chance to restart"
+        );
+    }
+
+    #[test]
+    fn terminal_gap_inspection_paths_resume_queued_work_before_release_wake() {
+        let source = include_str!("timeline.rs");
+        let handler = source
+            .rsplit_once("async fn handle_timeline_gap_inspection_finished")
+            .map(|(_, handler)| handler)
+            .expect("gap inspection completion handler must exist")
+            .split("fn emit_gap_positions")
+            .next()
+            .expect("gap-position projection must follow inspection completion");
+        let resume_offset = handler
+            .rfind("start_pending_timeline_gap_inspection().await")
+            .expect("inspection completion must restart candidate work queued during inspection");
+        let wake_offset = handler
+            .rfind("emit_gap_repair_released_if_idle")
+            .expect("inspection completion must wake UI retries when the scheduler becomes idle");
+
+        assert!(
+            resume_offset < wake_offset,
+            "inspection completion must restart queued work before deciding that the scheduler is released"
+        );
     }
 
     #[test]
@@ -7657,6 +7690,8 @@ impl TimelineActor {
                 }
             }
         }
+        self.start_pending_timeline_gap_inspection().await;
+        self.emit_gap_repair_released_if_idle(serial);
     }
 
     fn emit_gap_positions(
@@ -7914,6 +7949,23 @@ impl TimelineActor {
             })
             .await;
         self.start_pending_timeline_gap_inspection().await;
+        self.emit_gap_repair_released_if_idle(serial);
+    }
+
+    fn emit_gap_repair_released_if_idle(&self, generation: u64) {
+        if self.gap_repair.active_serial.is_some()
+            || self.gap_repair.pending_trigger.is_some()
+            || self.gap_repair.awaiting_projection.is_some()
+            || self.gap_projection_correlation.is_pending()
+            || self.pending_gap_projection.is_some()
+        {
+            return;
+        }
+        self.emit(CoreEvent::Timeline(TimelineEvent::GapRepairReleased {
+            key: self.key.clone(),
+            actor_generation: self.actor_generation,
+            generation,
+        }));
     }
 
     async fn finish_pending_gap_projection(&mut self, batch_id: TimelineBatchId) {

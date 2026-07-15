@@ -1260,6 +1260,23 @@
     },
     "kind": "Timeline"
   },
+  "timelineGapRepairReleased": {
+    "event": {
+      "GapRepairReleased": {
+        "actor_generation": 3,
+        "generation": 5,
+        "key": {
+          "account_key": "@u:example.test",
+          "kind": {
+            "Room": {
+              "room_id": "!r:example.test"
+            }
+          }
+        }
+      }
+    },
+    "kind": "Timeline"
+  },
   "timelinePaginationEndReached": {
     "event": {
       "PaginationStateChanged": {

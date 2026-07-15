@@ -439,6 +439,10 @@ type TimelineBackfillRequestEpoch = {
   terminalReceived: boolean;
 };
 
+type TimelineBackfillRetryFence =
+  | "external_transition"
+  | "gap_repair_release";
+
 type PendingTimelineBackfillEvaluation = {
   trigger: TimelineBackfillEvaluationTrigger;
   genuineUserScroll: boolean;
@@ -2378,8 +2382,8 @@ export const TimelineView = memo(function TimelineView({
   const scrollFollowUpFramesRef = useRef<Set<TimelineScheduledFrame>>(new Set());
   /** Accepted backward-pagination command awaiting a terminal timeline event. */
   const backfillRequestEpochRef = useRef<TimelineBackfillRequestEpoch | null>(null);
-  /** A rejected request must wait for a new external state transition before retrying. */
-  const backfillRetryBlockedRef = useRef(false);
+  /** A rejected request must wait for the transition that releases its owner. */
+  const backfillRetryFenceRef = useRef<TimelineBackfillRetryFence | null>(null);
   const nextBackfillRequestEpochRef = useRef(1);
   const pendingBackfillEvaluationRef = useRef<PendingTimelineBackfillEvaluation | null>(null);
   const previousAutoLoadOlderMessagesRef = useRef(autoLoadOlderMessages);
@@ -2789,8 +2793,12 @@ export const TimelineView = memo(function TimelineView({
       trigger: TimelineBackfillEvaluationTrigger,
       genuineUserScroll = false
     ) => {
-      if (trigger !== "pagination_terminal") {
-        backfillRetryBlockedRef.current = false;
+      const retryFence = backfillRetryFenceRef.current;
+      if (
+        trigger === "gap_repair_released" ||
+        (retryFence === "external_transition" && trigger !== "pagination_terminal")
+      ) {
+        backfillRetryFenceRef.current = null;
       }
       pendingBackfillEvaluationRef.current = { trigger, genuineUserScroll };
       setProjectionSettlementRevision((current) => current + 1);
@@ -2818,7 +2826,7 @@ export const TimelineView = memo(function TimelineView({
         viewportIntentRef.current = { kind: "free-scroll" };
         userScrollInputPendingRef.current = false;
         backfillRequestEpochRef.current = null;
-        backfillRetryBlockedRef.current = false;
+        backfillRetryFenceRef.current = null;
         resetActiveMeasurementDeferral({ clearMountedIds: true });
         lastPersistedViewportAnchorSignatureRef.current = null;
         restoredRoomScrollAnchorSignatureRef.current = null;
@@ -2912,7 +2920,9 @@ export const TimelineView = memo(function TimelineView({
                                   ? event.ThreadRootProjection.key
                                   : "GapPositionsUpdated" in event
                                     ? event.GapPositionsUpdated.key
-                                    : event.ResyncRequired.key;
+                                    : "GapRepairReleased" in event
+                                      ? event.GapRepairReleased.key
+                                      : event.ResyncRequired.key;
       if (!timelineKeyEquals(eventKey, timelineKeyRef.current)) {
         recordTimelineKeyMismatch();
         return;
@@ -2923,7 +2933,7 @@ export const TimelineView = memo(function TimelineView({
       }
       if ("InitialItems" in event) {
         backfillRequestEpochRef.current = null;
-        backfillRetryBlockedRef.current = false;
+        backfillRetryFenceRef.current = null;
         initialItemsSeenForTimelineKeyRef.current = timelineKeyHashRef.current;
         recordTimelineInitialItems(event.InitialItems.items.length);
         cancelScrollFollowUpFrames();
@@ -2944,13 +2954,16 @@ export const TimelineView = memo(function TimelineView({
       if ("GapPositionsUpdated" in event) {
         scheduleBackfillEvaluation("gap_projection_changed");
       }
+      if ("GapRepairReleased" in event) {
+        scheduleBackfillEvaluation("gap_repair_released");
+      }
       if (
         "PaginationStateChanged" in event &&
         event.PaginationStateChanged.direction === "Backward" &&
         event.PaginationStateChanged.state === "Paginating" &&
         backfillRequestEpochRef.current !== null
       ) {
-        backfillRetryBlockedRef.current = false;
+        backfillRetryFenceRef.current = null;
         backfillRequestEpochRef.current.paginatingReceived = true;
       }
       const backfillCompletionReason = timelineBackfillCompletionReason(event);
@@ -2988,7 +3001,11 @@ export const TimelineView = memo(function TimelineView({
           event.PaginationStateChanged.state !== "EndReached" &&
           !acceptedIdle
         ) {
-          backfillRetryBlockedRef.current = true;
+          backfillRetryFenceRef.current =
+            event.PaginationStateChanged.state === "Idle" &&
+            event.PaginationStateChanged.prepend_expected == null
+              ? "gap_repair_release"
+              : "external_transition";
         }
         const shouldReevaluate =
           "ResyncRequired" in event ||
@@ -3005,7 +3022,11 @@ export const TimelineView = memo(function TimelineView({
 
       // Prepend batches: capture the anchor BEFORE the diff is applied to
       // React state, so the layout effect can restore it after commit.
-      if ("ItemsUpdated" in event && batchContainsPrepend(event.ItemsUpdated.diffs)) {
+      if (
+        "ItemsUpdated" in event &&
+        (batchContainsPrepend(event.ItemsUpdated.diffs) ||
+          timelineDiffsContainReset(event.ItemsUpdated.diffs))
+      ) {
         const epoch = backfillRequestEpochRef.current;
         if (epoch !== null) {
           epoch.projectionObserved = true;
@@ -3013,10 +3034,12 @@ export const TimelineView = memo(function TimelineView({
             backfillRequestEpochRef.current = null;
           }
         }
-        const container = containerRef.current;
-        if (container) {
-          pendingAnchorRef.current = captureAnchor(container);
-          anchorRestorePendingRef.current = true;
+        if (batchContainsPrepend(event.ItemsUpdated.diffs)) {
+          const container = containerRef.current;
+          if (container) {
+            pendingAnchorRef.current = captureAnchor(container);
+            anchorRestorePendingRef.current = true;
+          }
         }
         scheduleBackfillEvaluation("prepend_settled");
       }
@@ -3130,7 +3153,7 @@ export const TimelineView = memo(function TimelineView({
     userScrollInputPendingRef.current = false;
     pendingScrollFrameUserInputRef.current = false;
     backfillRequestEpochRef.current = null;
-    backfillRetryBlockedRef.current = false;
+    backfillRetryFenceRef.current = null;
     pendingBackfillEvaluationRef.current = {
       trigger: "timeline_reset",
       genuineUserScroll: false
@@ -3226,7 +3249,7 @@ export const TimelineView = memo(function TimelineView({
       userScrollInputPendingRef.current = false;
       pendingScrollFrameUserInputRef.current = false;
       backfillRequestEpochRef.current = null;
-      backfillRetryBlockedRef.current = false;
+      backfillRetryFenceRef.current = null;
       pendingBackfillEvaluationRef.current = null;
       lastPersistedViewportAnchorSignatureRef.current = null;
       if (viewportIntentResizeFrameRef.current !== null) {
@@ -4468,7 +4491,7 @@ export const TimelineView = memo(function TimelineView({
       };
       nextBackfillRequestEpochRef.current += 1;
       backfillRequestEpochRef.current = epoch;
-      backfillRetryBlockedRef.current = false;
+      backfillRetryFenceRef.current = null;
 
       if (demand === "underfilled") {
         emitDiagnosticLog(
@@ -4487,7 +4510,7 @@ export const TimelineView = memo(function TimelineView({
           return;
         }
         backfillRequestEpochRef.current = null;
-        backfillRetryBlockedRef.current = true;
+        backfillRetryFenceRef.current = "external_transition";
         emitDiagnosticLog(
           "timeline.backfill",
           `stage=failed trigger=${trigger} reason=transport`
@@ -4546,7 +4569,7 @@ export const TimelineView = memo(function TimelineView({
         autoLoadEnabled: autoLoadOlderMessages && clientHeight > 0,
         paginationState: backwardState,
         requestInFlight: backfillRequestEpochRef.current !== null,
-        retryBlocked: backfillRetryBlockedRef.current,
+        retryBlocked: backfillRetryFenceRef.current !== null,
         projectionSettled,
         virtualLayoutSettled:
           physicalVirtualLayoutSettled &&
@@ -4617,7 +4640,9 @@ export const TimelineView = memo(function TimelineView({
       return;
     }
     previousAutoLoadOlderMessagesRef.current = autoLoadOlderMessages;
-    backfillRetryBlockedRef.current = false;
+    if (backfillRetryFenceRef.current === "external_transition") {
+      backfillRetryFenceRef.current = null;
+    }
     pendingBackfillEvaluationRef.current = {
       trigger: "setting_changed",
       genuineUserScroll: false
@@ -4722,7 +4747,9 @@ export const TimelineView = memo(function TimelineView({
     if (!isProgrammaticEcho) {
       reportViewportObservation();
       if (isUserDrivenScroll) {
-        backfillRetryBlockedRef.current = false;
+        if (backfillRetryFenceRef.current === "external_transition") {
+          backfillRetryFenceRef.current = null;
+        }
       }
       evaluateAndMaybeRequestBackfillRef.current("user_scroll", isUserDrivenScroll);
       persistViewportAnchor();

@@ -166,23 +166,27 @@ The evaluator blocks a demand while any of these facts is true:
 - a backward request is already in flight; or
 - backward pagination is `Paginating` or `EndReached`.
 
-`Paginating` or an observed prepend proves that Core accepted the request. Core
+`Paginating`, an observed front insertion, or a replacement `Reset` proves that Core accepted the request. Core
 also compares the observable oldest event before and after the SDK call and
 attaches `prepend_expected` to the accepted terminal after releasing task
 ownership. `prepend_expected=false` settles without waiting for a UI diff, so a
 filtered or aggregation-only page can continue automatically. An `Idle` terminal
 without either acceptance proof means the command was not accepted by the active
 scheduler. `Failed`, unaccepted `Idle`, and transport rejection clear the local
-in-flight token and re-evaluate only on the next external state transition; a
-gap-position projection explicitly supplies that wake after gap-scheduler work.
-They do not spin.
+in-flight token and install a typed retry fence. General failure/transport
+fences may clear on a later external transition; the unaccepted-`Idle` fence
+clears only on `GapRepairReleased`, not on layout, scroll, or gap projection.
+`GapPositionsUpdated` may wake evaluation before Core immediately starts repair,
+so it is not release evidence. A terminal repair emits `GapRepairReleased` only
+after queued work has had the chance to restart and the scheduler is truly idle;
+that event supplies the safe retry wake. They do not spin.
 
 ### Request token and deduplication
 
 The effectful wrapper assigns a local request epoch when it sends a `request`
-decision. `Paginating` or the prepend projection marks that epoch accepted. An
+decision. `Paginating`, a front insertion, or a replacement `Reset` marks that epoch accepted. An
 accepted epoch with `prepend_expected=true` remains active until the matching
-backward pagination terminal and prepend have both arrived, or until reset. A
+backward pagination terminal and oldest-edge projection have both arrived, or until resync. A
 confirmed no-prepend terminal settles it directly. Promise resolution alone
 does not complete the operation because Core projection may still be in transit.
 

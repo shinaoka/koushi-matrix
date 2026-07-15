@@ -727,23 +727,29 @@ UI responsibilities:
   live-edge scroll echoes are not explicit user demand.
 - Block a request until initialization/resync, projection layout, virtual
   layout, and anchor restoration are settled. Keep one request epoch active
-  through prepend application. `Paginating` or the prepend itself proves that
-  Core accepted the request. Core snapshots the observable oldest event before
+  through backward-page projection. `Paginating`, a front insertion, or a
+  replacement `Reset` projection proves that Core accepted the request. Core snapshots the observable oldest event before
   and after the SDK call and reports whether a prepend is expected. An accepted
-  `Idle` terminal and an expected prepend may arrive in either order; release the
+  `Idle` terminal and an expected oldest-edge projection may arrive in either order; release the
   epoch only after both have been observed and let anchor settlement block the
   next request. If Core reports that no prepend is expected, the terminal alone
   settles the epoch so filtered/aggregation-only pages cannot wedge scrollback.
   Core emits that terminal only after releasing actor task ownership. An `Idle`
   without acceptance evidence, failure, or transport rejection releases the
-  epoch but blocks retry until a new external transition; end/reset releases it
-  directly. This prevents either event order from opening a duplicate-request
+  epoch but installs an owned retry fence. General failures wait for a new
+  external transition; an admission-rejected `Idle` waits specifically for
+  `GapRepairReleased`, so layout and gap-position projection cannot reopen the
+  request while repair still owns the scheduler. End/reset releases directly.
+  This prevents either event order from opening a duplicate-request
   window or losing the next wake-up, without spinning when Core rejects scheduler
   ownership.
 - Re-evaluate after every transition that can add demand or remove a blocker:
   initial projection, layout/anchor settlement, genuine user scroll,
-  pagination terminal state, prepend settlement, gap-position projection,
-  resync replay, setting change, reset, and live-edge settlement. Each
+  pagination terminal state, prepend/Reset settlement, gap-position projection,
+  post-terminal `GapRepairReleased`, resync replay, setting change, reset, and
+  live-edge settlement. `GapPositionsUpdated` may precede a repair and is not a
+  scheduler-release signal; Core emits `GapRepairReleased` only after terminal
+  processing has left no queued or active gap work. Each
   transition schedules the same evaluator; scrollback does not use polling, a
   watchdog, or event-order assumptions.
 - Treat scroll position, measured heights, overscan windows, and virtual-list
