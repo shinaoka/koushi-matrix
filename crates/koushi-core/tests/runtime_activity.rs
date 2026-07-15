@@ -38,6 +38,52 @@ fn notification_room_summary(room_id: &str, unread_count: u64) -> RoomSummary {
 }
 
 #[tokio::test]
+async fn known_unread_event_is_event_backed() {
+    let runtime = CoreRuntime::start();
+    let mut conn = runtime.attach();
+    runtime
+        .inject_actions(restore_ready_actions![
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![notification_room_summary("!known:example.test", 1)],
+            },
+            AppAction::ActivityRowsObserved {
+                rows: vec![activity_row(
+                    "!known:example.test",
+                    "$known:example.test",
+                    42,
+                )],
+            },
+        ])
+        .await;
+    wait_for_state(&mut conn, |state| {
+        matches!(state.session, SessionState::Ready(_)) && state.rooms.len() == 1
+    })
+    .await;
+
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::OpenActivity { request_id }))
+        .await
+        .expect("open activity command");
+
+    let snapshot = wait_for_state(&mut conn, |state| {
+        matches!(state.activity, ActivityState::Open { .. })
+    })
+    .await;
+    let ActivityState::Open { unread, .. } = snapshot.activity else {
+        panic!("activity should be open");
+    };
+    assert_eq!(unread.rows.len(), 1);
+    let row = &unread.rows[0];
+    assert_eq!(row.kind, ActivityRowKind::Event);
+    assert_eq!(row.event_id.as_deref(), Some("$known:example.test"));
+    assert_eq!(row.sender_label.as_deref(), Some("Private sender"));
+    assert_eq!(row.preview.as_deref(), Some("Private preview"));
+    assert_eq!(row.timestamp_ms, 42);
+    assert!(row.unread);
+}
+
+#[tokio::test]
 async fn app_command_opens_activity_from_observed_rows_and_mark_read_settles() {
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
@@ -97,23 +143,16 @@ async fn app_command_opens_activity_from_observed_rows_and_mark_read_settles() {
             Some("$stale:example.test")
         ]
     );
-    assert!(
-        unread
-            .rows
-            .iter()
-            .all(|row| row.kind == ActivityRowKind::RoomUnread && row.event_id.is_none()),
-        "Activity/Unread is a room list, not a mixed event stream"
-    );
     assert_eq!(
         unread
             .rows
             .iter()
-            .map(|row| row.room_id.as_str())
+            .map(|row| row.event_id.as_deref())
             .collect::<Vec<_>>(),
         [
-            "!marker:example.test",
-            "!recent:example.test",
-            "!stale:example.test"
+            Some("$marker-unread:example.test"),
+            Some("$recent:example.test"),
+            Some("$stale:example.test")
         ]
     );
 
@@ -148,8 +187,8 @@ async fn app_command_opens_activity_from_observed_rows_and_mark_read_settles() {
             .rooms
             .get("!marker:example.test")
             .and_then(|signals| signals.fully_read_event_id.as_deref()),
-        Some("$marker-read:example.test"),
-        "room-list unread entries must not invent a newer fully-read event"
+        Some("$marker-unread:example.test"),
+        "event-backed unread entries advance to the latest cleared event"
     );
     assert_eq!(
         snapshot
@@ -157,8 +196,8 @@ async fn app_command_opens_activity_from_observed_rows_and_mark_read_settles() {
             .rooms
             .get("!stale:example.test")
             .and_then(|signals| signals.fully_read_event_id.as_deref()),
-        None,
-        "room-list unread entries without event ids cannot update fully-read markers"
+        Some("$stale:example.test"),
+        "event-backed unread entries update fully-read markers"
     );
 }
 
@@ -405,8 +444,8 @@ async fn activity_room_mark_read_suppresses_unread_room_entry_only_for_cleared_r
                     && unread.rows.iter().all(|row| row.room_id != "!room-a:example.test")
                     && unread.rows.iter().any(|row| {
                         row.room_id == "!room-b:example.test"
-                            && row.kind == ActivityRowKind::RoomUnread
-                            && row.event_id.is_none()
+                            && row.kind == ActivityRowKind::Event
+                            && row.event_id.as_deref() == Some("$event-b:example.test")
                     })
         )
     })
@@ -455,7 +494,7 @@ async fn activity_room_mark_read_suppresses_unread_room_entry_only_for_cleared_r
 }
 
 #[tokio::test]
-async fn activity_unread_uses_room_summary_rows_and_mark_all_does_not_emit_synthetic_event_id() {
+async fn activity_unread_prefers_event_rows_and_keeps_unresolved_room_placeholders() {
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
     runtime
@@ -518,10 +557,10 @@ async fn activity_unread_uses_room_summary_rows_and_mark_all_does_not_emit_synth
     assert!(
         unread.rows.iter().any(|row| {
             row.room_id == "!with-row:example.test"
-                && row.kind == ActivityRowKind::RoomUnread
-                && row.event_id.is_none()
+                && row.kind == ActivityRowKind::Event
+                && row.event_id.as_deref() == Some("$with-row-event:example.test")
         }),
-        "Activity/Unread must remain a room list even when recent has observed events"
+        "known unread events must render as message rows"
     );
     assert!(
         unread
@@ -530,11 +569,6 @@ async fn activity_unread_uses_room_summary_rows_and_mark_all_does_not_emit_synth
             .all(|row| row.room_id != "!plain-unread:example.test"),
         "plain unread message counts must not create Activity/Unread rows"
     );
-    assert!(
-        unread.rows.iter().all(|row| row.event_id.is_none()),
-        "Activity/Unread must not mix event rows with room rows"
-    );
-
     let mark_request_id = conn.next_request_id();
     conn.command(CoreCommand::App(AppCommand::MarkActivityRead {
         request_id: mark_request_id,
@@ -601,8 +635,8 @@ async fn activity_unread_uses_room_summary_rows_and_mark_all_does_not_emit_synth
     let cleared = cleared_event_ids.expect("MarkedRead event not received");
     assert_eq!(
         cleared,
-        Vec::<String>::new(),
-        "room-list mark-all has no event ids to report"
+        vec!["$with-row-event:example.test".to_owned()],
+        "event-backed mark-all reports the cleared event id"
     );
 }
 
@@ -681,8 +715,8 @@ async fn activity_unread_removes_rooms_when_notification_mode_is_mute() {
     assert!(
         unread.rows.iter().any(|row| {
             row.room_id == "!normal:example.test"
-                && row.kind == ActivityRowKind::RoomUnread
-                && row.event_id.is_none()
+                && row.kind == ActivityRowKind::Event
+                && row.event_id.as_deref() == Some("$normal:example.test")
         }),
         "unmuted unread room rows must remain visible"
     );

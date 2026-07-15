@@ -817,6 +817,7 @@ impl ActivityProjection {
         let mut recent = Vec::new();
         let mut unread = Vec::new();
         let mut recent_event_ids = BTreeSet::new();
+        let mut unread_event_room_ids = BTreeSet::new();
         for row in self.rows_by_event_id.values() {
             if excluded.contains(row.room_id.as_str()) {
                 continue;
@@ -871,6 +872,10 @@ impl ActivityProjection {
             };
             if let Some(event_id) = row.event_id.clone() {
                 recent_event_ids.insert(event_id);
+            }
+            if row.unread {
+                unread_event_room_ids.insert(row.room_id.clone());
+                unread.push(row.clone());
             }
             recent.push(row);
         }
@@ -934,6 +939,10 @@ impl ActivityProjection {
             );
             row.sender_avatar = latest_event.sender_avatar.clone();
             row.context_label = context_label;
+            if row.unread {
+                unread_event_room_ids.insert(row.room_id.clone());
+                unread.push(row.clone());
+            }
             recent.push(row);
         }
 
@@ -965,6 +974,9 @@ impl ActivityProjection {
                     false,
                     "cleared_local",
                 );
+                continue;
+            }
+            if unread_event_room_ids.contains(&room.room_id) {
                 continue;
             }
             let highlight = room.highlight_count > 0;
