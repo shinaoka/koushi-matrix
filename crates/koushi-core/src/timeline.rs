@@ -5119,6 +5119,28 @@ struct ActivePaginationTask {
 }
 
 const MAX_TIMELINE_GAP_REPAIR_BATCHES: u32 = 32;
+const TIMELINE_GAP_OBSERVABLE_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TimelineGapObservableSettlement {
+    Observable,
+    NoProjection,
+    TimedOut,
+}
+
+async fn wait_for_gap_repair_projection_with_timeout<F>(
+    timeout: Duration,
+    projection: F,
+) -> TimelineGapObservableSettlement
+where
+    F: std::future::Future<Output = bool>,
+{
+    match executor::timeout(timeout, projection).await {
+        Ok(true) => TimelineGapObservableSettlement::Observable,
+        Ok(false) => TimelineGapObservableSettlement::NoProjection,
+        Err(_) => TimelineGapObservableSettlement::TimedOut,
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum TimelineGapRepairTrigger {
@@ -5374,6 +5396,18 @@ impl TimelineGapRepairTracker {
 #[cfg(test)]
 mod timeline_gap_repair_tracker_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn lagged_observable_projection_wait_is_bounded() {
+        assert_eq!(
+            wait_for_gap_repair_projection_with_timeout(
+                Duration::from_millis(1),
+                std::future::pending(),
+            )
+            .await,
+            TimelineGapObservableSettlement::TimedOut
+        );
+    }
 
     #[test]
     fn unlocated_gap_has_no_projection_position() {
@@ -7135,18 +7169,30 @@ impl TimelineActor {
             let mut result = session
                 .repair_room_timeline_gap(&descriptor, budget, actor_generation, serial)
                 .await;
-            if let Ok(result) = &mut result
-                && let Some(projection_batch) = result.last_projection_batch
+            if let Some(projection_batch) = result
+                .as_ref()
+                .ok()
+                .and_then(|result| result.last_projection_batch)
             {
-                let observable = timeline
-                    .wait_for_gap_repair_projection(GapRepairProjectionId {
+                match wait_for_gap_repair_projection_with_timeout(
+                    TIMELINE_GAP_OBSERVABLE_SETTLEMENT_TIMEOUT,
+                    timeline.wait_for_gap_repair_projection(GapRepairProjectionId {
                         actor_generation,
                         repair_generation: serial,
                         projection_batch,
-                    })
-                    .await;
-                if !observable {
-                    result.last_projection_batch = None;
+                    }),
+                )
+                .await
+                {
+                    TimelineGapObservableSettlement::Observable => {}
+                    TimelineGapObservableSettlement::NoProjection => {
+                        if let Ok(result) = &mut result {
+                            result.last_projection_batch = None;
+                        }
+                    }
+                    TimelineGapObservableSettlement::TimedOut => {
+                        result = Err(MatrixTimelineGapError::Sdk);
+                    }
                 }
             }
             let _ = actor_tx
