@@ -834,9 +834,13 @@ events and expose a retryable incomplete state.
 Every SDK gap-repair publication is causally tagged through the UI timeline
 relay. Core fences continuation on the exact desktop batch containing the
 final tagged publication, not on whichever live batch happens to arrive next.
-Gap-only cache reveals report that no projection was published. The required
-desktop batch ID remains in `Repairing` state so a lag-triggered
-`InitialItems` replay can still complete the post-layout acknowledgement.
+The SDK UI layer settles each tag at its observable boundary: filtered repairs
+with no remote item report no projection, while aggregation-only repairs emit
+one tagged remote-item barrier. Gap-only cache reveals likewise report that no
+projection was published. The required desktop batch ID remains in
+`Repairing` state so a lag-triggered `InitialItems` replay can still complete
+the post-layout acknowledgement, but no acknowledgement is accepted while the
+consumer is still awaiting that replay.
 
 See
 `docs/superpowers/specs/2026-07-03-room-timeline-cache-repair-design.md`.

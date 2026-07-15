@@ -111,7 +111,11 @@ an actor-private `AwaitingProjection` phase only after the final tagged
 publication has been assigned its exact desktop timeline batch ID. An
 unrelated live or pagination batch can therefore never satisfy the fence, and
 a gap-only cached chunk cannot create a render wait for a diff that does not
-exist.
+exist. Before returning that final publication to Core, `matrix-sdk-ui`
+settles it at the observable timeline boundary. If filtering leaves no remote
+item it reports no projection; if aggregation-only processing changes no item
+that carries the repair tag, it re-emits one existing remote item as the tagged
+causal barrier.
 
 The desktop timeline store applies `ItemsUpdated` normally. After React commits
 the corresponding virtual window and completes anchor or live-edge
@@ -123,7 +127,9 @@ replay after consumer lag can acknowledge the repaired snapshot even though
 the desktop store intentionally cleared its last incremental batch ID. Stale,
 duplicate, cross-room, and cross-actor acknowledgements are ignored. Rejected
 transport calls are retried with capped exponential backoff and are recorded
-as confirmed only after the command resolves.
+as confirmed only after the command resolves. After a resync marker, neither
+initial-projection nor repair acknowledgement is sent until the replayed
+`InitialItems` clears the consumer's awaiting-resync state.
 
 Only after a matching acknowledgement may Core re-inspect and schedule the next
 repair operation. If an SDK outcome produces no timeline diff, Core may

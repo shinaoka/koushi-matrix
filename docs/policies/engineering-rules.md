@@ -324,7 +324,10 @@ Rules:
    continue only after the SDK's final actor/repair/publication tag is mapped
    to an exact desktop batch and receives a matching
    actor/timeline/repair/batch post-layout ACK. A rejected ACK transport call
-   remains retryable; a gap-only cache chunk creates no render fence.
+   remains retryable; a gap-only cache chunk or fully filtered publication
+   creates no render fence, while aggregation-only work must publish an
+   observable tagged barrier. A resync marker suspends acknowledgements until
+   the matching `InitialItems` replay has rendered.
    Underfilled-initial pagination must use the settled height model and virtual
    range; a transient virtual DOM `scrollHeight` is not proof that a timeline
    with canonical overflow needs another page.
