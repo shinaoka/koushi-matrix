@@ -103,3 +103,21 @@ jobs:
           tool: cargo-machete@0.9.2
       - name: cargo-machete (unused deps)
         run: cargo machete
+
+  windows-overlay-acl:
+    name: Windows overlay ACL IPC
+    runs-on: windows-latest
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target-windows-overlay
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Rust toolchain (1.96.0)
+        uses: dtolnay/rust-toolchain@1.96.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          shared-key: koushi-windows-overlay-acl
+      - name: Prove overlay set and clear cross the Tauri ACL
+        run: cargo test -p koushi-desktop windows_overlay_ipc_is_authorized

@@ -370,6 +370,42 @@ describe("desktop notification candidate", () => {
     expect(windowMock.setOverlayIcon).toHaveBeenCalledWith(undefined);
   });
 
+  test("classifies a Tauri overlay ACL denial without exposing the raw rejection", async () => {
+    const windowMock = {
+      setTitle: vi.fn().mockResolvedValue(undefined),
+      setBadgeCount: vi.fn().mockResolvedValue(undefined),
+      setOverlayIcon: vi.fn().mockRejectedValue(
+        new Error("plugin:window|set_overlay_icon not allowed by ACL for private-window")
+      )
+    };
+    const diagnostics = vi.fn();
+
+    await expect(applyDesktopAttentionToWindow(windowMock, "Koushi", 2, {
+      notifications: "available", badge: "available", overlay_icon: "available",
+      sound: "available", tray: "unavailable", activation: "unavailable"
+    }, diagnostics)).resolves.toBeUndefined();
+
+    expect(diagnostics).toHaveBeenCalledWith("attention_overlay_acl_denied");
+    expect(diagnostics).not.toHaveBeenCalledWith("attention_overlay_failed");
+  });
+
+  test("keeps genuine overlay backend failures best-effort", async () => {
+    const windowMock = {
+      setTitle: vi.fn().mockResolvedValue(undefined),
+      setBadgeCount: vi.fn().mockResolvedValue(undefined),
+      setOverlayIcon: vi.fn().mockRejectedValue(new Error("native backend unavailable"))
+    };
+    const diagnostics = vi.fn();
+
+    await expect(applyDesktopAttentionToWindow(windowMock, "Koushi", 2, {
+      notifications: "available", badge: "available", overlay_icon: "available",
+      sound: "available", tray: "unavailable", activation: "unavailable"
+    }, diagnostics)).resolves.toBeUndefined();
+
+    expect(diagnostics).toHaveBeenCalledWith("attention_overlay_failed");
+    expect(diagnostics).not.toHaveBeenCalledWith("attention_overlay_acl_denied");
+  });
+
   test("swallows native title and badge failures without rejecting", async () => {
     const windowMock = {
       setTitle: vi.fn().mockRejectedValue(new Error("title failed")),
