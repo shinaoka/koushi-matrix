@@ -125,6 +125,19 @@ describe("evaluateTimelineBackfill", () => {
     ).toEqual({ kind: "request", demand: "underfilled" });
   });
 
+  test("does not treat a transient virtual DOM window as underfilled", () => {
+    expect(
+      evaluateTimelineBackfill(
+        snapshot({
+          projectedContentHeight: 240_000,
+          scrollHeight: 367,
+          clientHeight: 367,
+          scrollTop: 200
+        })
+      )
+    ).toEqual({ kind: "idle", reason: "no_demand" });
+  });
+
   test("prefers explicit user top-scroll over automatic demand", () => {
     expect(
       evaluateTimelineBackfill(

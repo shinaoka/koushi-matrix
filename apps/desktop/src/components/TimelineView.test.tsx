@@ -2116,6 +2116,7 @@ describe("TimelineView", () => {
       writable: true,
       configurable: true
     });
+    fireEvent.wheel(timeline, { deltaY: -120 });
     fireEvent.scroll(timeline);
 
     await waitFor(() => {
@@ -2145,6 +2146,153 @@ describe("TimelineView", () => {
         expect.arrayContaining([expect.stringContaining("stage=complete reason=pagination_idle")])
       );
     });
+  });
+
+  it("does not treat a programmatic top scroll as explicit demand when prefetch is disabled", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const paginateBackwards = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      paginateBackwards
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        autoLoadOlderMessages={false}
+        onReply={vi.fn()}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [message("$latest", "Latest")]
+          }
+        }
+      });
+    });
+
+    const timeline = await screen.findByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollHeight", { value: 1_200, configurable: true });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    fireEvent.scroll(timeline);
+    await act(async () => Promise.resolve());
+
+    expect(paginateBackwards).not.toHaveBeenCalled();
+  });
+
+  it("keeps a backfill request active through prepend until pagination reaches a terminal state", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const paginateBackwards = vi.fn(async () => undefined);
+    const onDiagnosticLogEntry = vi.fn();
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      paginateBackwards
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        autoLoadOlderMessages
+        onReply={vi.fn()}
+        onDiagnosticLogEntry={onDiagnosticLogEntry}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [message("$latest", "Latest")]
+          }
+        }
+      });
+    });
+
+    const timeline = await screen.findByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollHeight", { value: 2_000, configurable: true });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+    fireEvent.wheel(timeline, { deltaY: -120 });
+    fireEvent.scroll(timeline);
+
+    await waitFor(() => expect(paginateBackwards).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          ItemsUpdated: {
+            key: KEY,
+            generation: 1,
+            batch_id: 2,
+            diffs: [{ PushFront: { item: message("$older", "Older") } }]
+          }
+        }
+      });
+    });
+    timeline.scrollTop = 0;
+    fireEvent.wheel(timeline, { deltaY: -120 });
+    fireEvent.scroll(timeline);
+    await act(async () => Promise.resolve());
+
+    expect(paginateBackwards).toHaveBeenCalledTimes(1);
+    const evaluationMessages = onDiagnosticLogEntry.mock.calls
+      .map(([entry]) => entry)
+      .filter((entry) => entry.source === "timeline.backfill_evaluation")
+      .map((entry) => entry.message);
+    expect(evaluationMessages).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/decision=blocked .*request_epoch=1/)
+      ])
+    );
+    expect(evaluationMessages.join("\n")).not.toMatch(/!room:|\$latest|\$older|@alice|@bob/);
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          PaginationStateChanged: {
+            request_id: null,
+            key: KEY,
+            direction: "Backward",
+            state: "Idle"
+          }
+        }
+      });
+    });
+
+    await waitFor(() => expect(paginateBackwards).toHaveBeenCalledTimes(2));
   });
 
   it("backfills an underfilled room timeline after short initial items arrive", async () => {
@@ -2885,7 +3033,7 @@ describe("TimelineView", () => {
     });
   });
 
-  it("does not auto-backfill after restoring an in-session room anchor until the user scrolls", async () => {
+  it("auto-backfills after an in-session room anchor settles without a user scroll", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const updateScrollAnchor = vi.fn(async () => undefined);
     const paginateBackwards = vi.fn(async () => undefined);
@@ -3010,18 +3158,6 @@ describe("TimelineView", () => {
         requestAnimationFrame(() => resolve());
       });
     });
-
-    fireEvent.scroll(restoredTimeline);
-
-    expect(paginateBackwards).not.toHaveBeenCalled();
-    expect(onDiagnosticLogEntry.mock.calls.map(([entry]) => entry.message)).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("reason=await_user_scroll_after_room_restore")
-      ])
-    );
-
-    fireEvent.wheel(restoredTimeline, { deltaY: -120 });
-    fireEvent.scroll(restoredTimeline);
 
     await waitFor(() => {
       expect(paginateBackwards).toHaveBeenCalledWith(KEY);

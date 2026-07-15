@@ -68,10 +68,10 @@ function demandForSnapshot(
   }
 
   const projectedUnderfilled =
-    snapshot.projectedContentHeight > 0 &&
+    snapshot.projectedContentHeight <= 0 ||
     snapshot.projectedContentHeight <= snapshot.clientHeight;
   const domUnderfilled = snapshot.scrollHeight <= snapshot.clientHeight;
-  if (projectedUnderfilled || domUnderfilled) {
+  if (projectedUnderfilled && domUnderfilled) {
     return "underfilled";
   }
   if (snapshot.scrollTop <= snapshot.nearTopThreshold) {
