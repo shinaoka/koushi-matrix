@@ -319,7 +319,12 @@ Rules:
 4. Timeline scrollback is a split contract: core emits diffs and pagination
    state; React owns DOM anchoring. Product code must not issue automatic
    pagination loops before the previous diff has rendered and anchor
-   restoration has completed.
+   restoration has completed. Room gap repair follows the same fence: one
+   actor may own at most one unacknowledged repair projection batch, and it may
+   continue only after a matching actor/timeline/repair/batch post-layout ACK.
+   Underfilled-initial pagination must use the settled height model and virtual
+   range; a transient virtual DOM `scrollHeight` is not proof that a timeline
+   with canonical overflow needs another page.
 5. In Tauri production, the QA title `timeline_items` token is the legacy
    `AppState.timeline` snapshot length, not the event-driven `TimelineView`
    DOM row count. Local GUI lanes that exercise timeline row controls must wait

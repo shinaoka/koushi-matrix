@@ -244,7 +244,9 @@ let positions = gaps
 
 - [ ] **Step 5: Fence successful repair continuation**
 
-At repair start, retain `batch_id_before = self.next_batch_id`. Treat these outcomes as requiring a newer rendered batch:
+At repair start, retain `minimum_batch_id = self.next_batch_id`. This field is
+already the ID of the next batch that will be emitted, not the last emitted ID.
+Treat these outcomes as requiring that rendered batch:
 
 ```rust
 fn repair_outcome_expects_timeline_diff(outcome: &MatrixTimelineGapRepairOutcome) -> bool {
@@ -259,7 +261,9 @@ fn repair_outcome_expects_timeline_diff(outcome: &MatrixTimelineGapRepairOutcome
 ```
 
 For a successful diff-producing outcome, set `AwaitingProjection` before emitting
-`TimelineGapRepairProgressed`; require `TimelineBatchId(batch_id_before.0 + 1)`.
+`TimelineGapRepairProgressed`; require `minimum_batch_id` (or a newer rendered
+batch). Do not add one: doing so would wait forever when the repair publishes
+exactly one diff batch.
 For a successful no-diff outcome, re-inspect immediately. A relay diff arriving
 after the SDK completion cannot unlock the scheduler until the desktop reports
 the newer batch.

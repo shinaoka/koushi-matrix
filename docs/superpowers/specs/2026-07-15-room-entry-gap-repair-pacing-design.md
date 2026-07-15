@@ -105,8 +105,11 @@ tight repair loop.
 
 Core adds an actor-private `AwaitingProjection` phase after a repair operation
 publishes timeline diffs. The phase records the current actor generation,
-timeline generation, room-local repair generation, and final emitted timeline
-batch ID.
+timeline generation, room-local repair generation, and the minimum expected
+timeline batch ID. `TimelineActor::next_batch_id` already names the next batch
+that will be emitted, so the fence captures that value at repair start without
+adding one; adding one would deadlock a repair that publishes exactly one diff
+batch.
 
 The desktop timeline store applies `ItemsUpdated` normally. After React commits
 the corresponding virtual window and completes anchor or live-edge
@@ -211,6 +214,8 @@ Implementation is test-first and headless-first.
 - Room selection reaches its correlated terminal outcome.
 - No room-list or display-label update is lost or blocked by gap work.
 - Automatic repair never materializes an unprojected cached chunk.
+- A zero-cache-budget automatic `Deferred(0)` stops as a retryable unsupported
+  anchor instead of immediately repeating the same inspection/repair pair.
 - No normal repair path calls `EventCacheStore::remove_room`.
 
 ## Acceptance Criteria
