@@ -832,6 +832,11 @@ stateDiagram-v2
 - Automatic repair uses no cached-chunk hydration. If the SDK returns
   `Deferred(0)`, Core stops instead of spinning through the repair ceiling and
   leaves the projected gap retryable through manual repair.
+- `ObserveViewport` selects a projected gap candidate by viewport intersection,
+  then live-edge proximity. A candidate/relation change queues automatic
+  inspection; repeating the same candidate is idle. The queue survives an
+  active inspection and `AwaitingProjection`, so projection ACK and viewport
+  event order cannot lose the wake-up.
 - Manual repair coalesces with an active automatic repair. Failures preserve
   the current event projection and leave a visible retryable gap state.
 - **Start of conversation** is enabled only by the matching-generation

@@ -319,7 +319,14 @@ Rules:
 4. Timeline scrollback is a split contract: core emits diffs and pagination
    state; React owns DOM anchoring. Product code must not issue automatic
    pagination loops before the previous diff has rendered and anchor
-   restoration has completed. Room gap repair follows the same fence: one
+   restoration has completed. Backfill eligibility must come from one pure
+   state evaluation over demand and blockers, and every state transition that
+   can remove a blocker must explicitly schedule another evaluation. A prepend
+   diff does not end the request epoch; only terminal pagination state or reset
+   does. Programmatic scroll echoes are not genuine top-scroll demand. Do not
+   add polling, fixed-delay retries, or a user-scroll latch to compensate for a
+   missing transition.
+   Room gap repair follows the same fence: one
    actor may own at most one unacknowledged repair projection batch, and it may
    continue only after the SDK's final actor/repair/publication tag is mapped
    to an exact desktop batch and receives a matching
@@ -330,6 +337,11 @@ Rules:
    the matching `InitialItems` replay has rendered. Observable settlement
    waits must be bounded so a lag-dropped SDK update becomes retryable failure,
    never a permanent repair owner.
+   `ObserveViewport` may wake automatic gap inspection only when the selected
+   projected gap candidate changes (viewport-intersecting first, otherwise
+   nearest the live edge). An unchanged candidate is idle; a changed candidate
+   remains queued across active work and projection/render ACK fences.
+   Candidate-driven automatic repair keeps a zero cached-chunk budget.
    Underfilled-initial pagination must use the settled height model and virtual
    range; a transient virtual DOM `scrollHeight` is not proof that a timeline
    with canonical overflow needs another page.

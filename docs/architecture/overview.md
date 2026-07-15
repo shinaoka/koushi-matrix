@@ -720,8 +720,22 @@ UI responsibilities:
   anchor item (first visible stable item ID plus pixel offset, or an equivalent
   bottom-aligned strategy). After applying the diff and after React commits the
   DOM update, restore that anchor in `requestAnimationFrame`/layout effect.
-- Do not issue the next automatic fill request until the previous diff has been
-  applied and anchor restoration for that generation has completed.
+- Decide backward pagination through one state evaluator. Automatic demand is
+  either a settled underfilled viewport (both projected and DOM height models)
+  or near-top prefetch; an explicit top request additionally requires genuine
+  wheel, touch, keyboard, or scrollbar intent. Programmatic restore and
+  live-edge scroll echoes are not explicit user demand.
+- Block a request until initialization/resync, projection layout, virtual
+  layout, and anchor restoration are settled. Keep one request epoch active
+  through prepend application and clear it only on the matching terminal
+  pagination state or timeline reset. This prevents a diff batch from opening
+  a duplicate-request window before its terminal state arrives.
+- Re-evaluate after every transition that can add demand or remove a blocker:
+  initial projection, layout/anchor settlement, genuine user scroll,
+  pagination terminal state, prepend settlement, resync replay, setting change,
+  reset, and live-edge settlement. Each transition schedules the same
+  evaluator; scrollback does not use polling, a watchdog, or event-order
+  assumptions.
 - Treat scroll position, measured heights, overscan windows, and virtual-list
   cache as UI state. These values never cross into core and never affect Matrix
   ordering.
@@ -735,6 +749,14 @@ diff order, generation reset, replacement/redaction/late-decryption handling.
 GUI smoke proves the DOM contract: scrolling back prepends older items without
 jumping, live appends do not steal the viewport while scrolled up, and end-of
 history stops further automatic pagination.
+
+Backfill observability is private-data-free. UI evaluations use diagnostic
+source `timeline.backfill_evaluation` with trigger, decision, demand/blocker,
+pagination state, local request epoch, item count, and 100-pixel-bucketed height
+metrics. Core viewport wakes use source `core.timeline_gap_repair`, stage
+`evaluation`, with viewport trigger, decision, projected gap count,
+candidate-changed boolean, and scheduler phase. Neither source may include room,
+event, transaction, or user identifiers, message content, or raw SDK errors.
 
 ## Security Model
 
@@ -820,6 +842,14 @@ local emptiness, edge pagination completion, and visually adjacent event rows
 are not continuity proofs. Restart and reconnect re-inspect rather than restore
 opaque handles.
 
+Viewport observation is an explicit scheduler wake-up, not a repair decision.
+Core selects the projected gap intersecting the viewport, falling back to the
+gap nearest the live edge, and queues an automatic inspection only when that
+candidate or its relation changes. Repeated observations of the same candidate
+are idle. A wake that arrives during an active inspection or an outstanding
+projection/render acknowledgement remains queued and is released when the
+existing fence settles, independent of ACK/event ordering.
+
 Timeline gaps cross the WebView boundary only as Rust-positioned, content-free
 rows with coarse state. React renders those rows, reports presentation-only
 viewport facts, preserves the viewport anchor while repair diffs apply, and
@@ -829,7 +859,9 @@ tokens, select cache boundaries, or synthesize **Start of conversation**.
 Manual and automatic repair share the same bounded scheduler. Normal product
 paths must never repair by removing a room event cache. Failure, cancellation,
 stale generations, and unsupported missing-token recovery preserve existing
-events and expose a retryable incomplete state.
+events and expose a retryable incomplete state. Candidate-driven automatic
+repair retains the zero cached-chunk budget; viewport motion cannot silently
+turn it into cache hydration or an unbounded background backfill loop.
 
 Every SDK gap-repair publication is causally tagged through the UI timeline
 relay. Core fences continuation on the exact desktop batch containing the
