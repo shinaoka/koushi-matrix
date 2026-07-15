@@ -1107,8 +1107,8 @@ test("Activity renders Rust-owned streams and waits for mark-read snapshots", as
             activity: {
               kind: "open",
               active_tab: activeTab,
-              recent: { rows: recentRows, next_batch: "activity-page-2" },
-              unread: { rows: nextUnreadRows, next_batch: null },
+              recent: { rows: recentRows, next_batch: "activity-page-2", resolution: { kind: "idle" } },
+              unread: { rows: nextUnreadRows, next_batch: null, resolution: { kind: "idle" } },
               mark_read: { kind: "idle" }
             }
           }
@@ -1145,7 +1145,7 @@ test("Activity renders Rust-owned streams and waits for mark-read snapshots", as
     window.__harness.setCommandResponse("mark_activity_read", () =>
       window.__harness.currentSnapshot()
     );
-    window.__harness.setCommandResponse("select_search_result", ({ roomId, eventId }) => {
+    window.__harness.setCommandResponse("open_activity_event", ({ roomId, eventId }) => {
       const snapshot = window.__harness.currentSnapshot();
       const next = {
         ...snapshot,
@@ -1206,16 +1206,16 @@ test("Activity renders Rust-owned streams and waits for mark-read snapshots", as
     });
 
   await page.getByRole("button", { name: "Open activity item Project Beta" }).click();
-  await expect.poll(() => invocationCount(page, "select_search_result")).toBeGreaterThanOrEqual(1);
+  await expect.poll(() => invocationCount(page, "open_activity_event")).toBeGreaterThanOrEqual(1);
   await expect
     .poll(async () =>
-      page.evaluate(() => window.__harness.invocationsOf("select_search_result")[0]?.args)
+      page.evaluate(() => window.__harness.invocationsOf("open_activity_event")[0]?.args)
     )
     .toEqual({
       roomId: "!room-beta:example.invalid",
       eventId: "$activity-beta-newest:example.invalid"
     });
-  await expect(page.getByText("Focused context").first()).toBeVisible();
+  await expect(page.getByRole("main", { name: "Conversation timeline" })).toBeVisible();
 
   await page.getByRole("button", { name: "Activity" }).click();
   await page.getByLabel("Activity views").getByRole("tab", { name: "Unread" }).click();
@@ -1229,6 +1229,7 @@ test("Activity renders Rust-owned streams and waits for mark-read snapshots", as
   const alphaUnreadRow = page.locator(".activity-row").filter({
     hasText: "Stale unread update"
   });
+  await expect(page.locator('[data-kind="roomUnread"]')).toHaveCount(0);
   await expect(alphaUnreadRow).toBeVisible();
   await alphaUnreadRow.getByRole("button", { name: "Mark room read" }).click();
 
@@ -1295,7 +1296,7 @@ test("Activity renders Rust-owned streams and waits for mark-read snapshots", as
           ...snapshot.state.domain,
           activity: {
             ...snapshot.state.domain.activity,
-            unread: { rows: [], next_batch: null }
+            unread: { rows: [], next_batch: null, resolution: { kind: "idle" } }
           }
         }
       }
@@ -1304,6 +1305,75 @@ test("Activity renders Rust-owned streams and waits for mark-read snapshots", as
   });
 
   await expect(page.getByText("No unread activity")).toBeVisible();
+});
+
+test("Activity Unread replaces unresolved room placeholders with retryable status", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const placeholder = {
+      kind: "roomUnread",
+      room_id: "!unresolved:example.invalid",
+      event_id: null,
+      thread_root_event_id: null,
+      sender_id: null,
+      room_label: "Unresolved room",
+      sender_label: null,
+      sender_avatar: null,
+      preview: null,
+      timestamp_ms: 10,
+      unread: true,
+      highlight: false,
+      context_label: "Room"
+    };
+    const withResolution = (kind: "failed" | "resolving") => {
+      const snapshot = window.__harness.currentSnapshot();
+      return {
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          domain: {
+            ...snapshot.state.domain,
+            activity: {
+              kind: "open",
+              active_tab: "unread",
+              recent: { rows: [], next_batch: null, resolution: { kind: "idle" } },
+              unread: {
+                rows: [placeholder],
+                next_batch: null,
+                resolution: kind === "failed"
+                  ? { kind, generation: 1, unresolved_room_count: 1, failure_kind: "network" }
+                  : { kind, generation: 2, unresolved_room_count: 1 }
+              },
+              mark_read: { kind: "idle" }
+            }
+          }
+        }
+      };
+    };
+    window.__harness.setCommandResponse("open_activity", () => {
+      const next = withResolution("failed");
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+    window.__harness.setCommandResponse("retry_activity_resolution", () => {
+      const next = withResolution("resolving");
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+    window.__harness.clearInvocations();
+  });
+
+  await page
+    .getByRole("complementary", { name: t("workspace.rooms") })
+    .getByRole("button", { name: t("workspace.home") })
+    .click();
+  await expect(page.getByRole("alert")).toContainText("Unread messages could not be loaded");
+  await expect(page.locator('[data-kind="roomUnread"]')).toHaveCount(0);
+  await page.getByRole("button", { name: "Retry" }).click();
+  await expect.poll(() => invocationCount(page, "retry_activity_resolution")).toBe(1);
+  await expect(page.getByRole("region", { name: "Unread" }).getByRole("status"))
+    .toContainText("Resolving unread messages");
+  await expect(page.locator('[data-kind="roomUnread"]')).toHaveCount(0);
 });
 
 test("room management panel updates settings, roles, and members from Rust state", async ({

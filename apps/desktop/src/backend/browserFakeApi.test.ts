@@ -1011,11 +1011,25 @@ describe("BrowserFakeApi settings preview", () => {
       throw new Error("activity should stay open");
     }
     expect(switched.state.domain.activity.active_tab).toBe("unread");
+    expect(switched.state.domain.activity.unread.resolution.kind).toBe("resolving");
     expect(
       switched.state.domain.activity.unread.rows.every(
         (row) => row.kind === "roomUnread" && row.event_id === null
       )
     ).toBe(true);
+
+    switched.state.domain.activity.unread.resolution = {
+      kind: "failed",
+      generation: 1,
+      unresolved_room_count: 2,
+      failure_kind: "network"
+    };
+    const retried = await api.retryActivityResolution();
+    expect(retried.state.domain.activity.kind).toBe("open");
+    if (retried.state.domain.activity.kind !== "open") {
+      throw new Error("activity should stay open after retry");
+    }
+    expect(retried.state.domain.activity.unread.resolution.kind).toBe("resolving");
 
     const paged = await api.paginateActivity("recent", switched.state.domain.activity.recent.next_batch);
     expect(paged.state.domain.activity.kind).toBe("open");

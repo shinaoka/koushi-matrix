@@ -1249,6 +1249,7 @@ pub fn run() {
             commands::activity::close_activity,
             commands::activity::set_activity_tab,
             commands::activity::paginate_activity,
+            commands::activity::retry_activity_resolution,
             commands::activity::mark_activity_read,
             commands::views::open_files_view,
             commands::views::close_files_view,
@@ -3075,6 +3076,7 @@ mod tests {
                         ..Default::default()
                     }],
                     next_batch: Some("recent-next".to_owned()),
+                    resolution: Default::default(),
                 },
                 unread: ActivityStream {
                     rows: vec![
@@ -3098,6 +3100,7 @@ mod tests {
                         ),
                     ],
                     next_batch: Some("unread-next".to_owned()),
+                    resolution: Default::default(),
                 },
             }))
             .expect("serialize activity snapshot event");
@@ -3123,6 +3126,12 @@ mod tests {
                 cleared_event_ids: vec!["$activity-unread:example.test".to_owned()],
             }))
             .expect("serialize activity marked-read event");
+        let activity_resolution_retried =
+            serialize_core_event(&CoreEvent::Activity(ActivityEvent::ResolutionRetried {
+                request_id,
+                generation: 4,
+            }))
+            .expect("serialize activity resolution retry event");
         assert_eq!(
             activity_marked_read["event"]["MarkedRead"]["cleared_event_ids"],
             json!(["$activity-unread:example.test"])
@@ -3336,6 +3345,7 @@ mod tests {
         let actual_contract = json!({
             "activityOpened": activity_opened,
             "activityMarkedRead": activity_marked_read,
+            "activityResolutionRetried": activity_resolution_retried,
             "activitySnapshotLoaded": activity_snapshot_loaded,
             "cjkTextPolicyJapaneseCatalogProfileChanged": cjk_text_policy,
             "e2eeTrustIdentityResetChanged": e2ee_identity_reset,
@@ -3482,6 +3492,7 @@ mod tests {
             "accountSavedSessionsListed",
             "activityMarkedRead",
             "activityOpened",
+            "activityResolutionRetried",
             "activitySnapshotLoaded",
             "cjkTextPolicyJapaneseCatalogProfileChanged",
             "e2eeTrustIdentityResetChanged",

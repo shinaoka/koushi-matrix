@@ -86,6 +86,63 @@ pub(crate) fn handle_activity_rows_updated(
     vec![AppEffect::EmitUiEvent(UiEvent::ActivityChanged)]
 }
 
+pub(crate) fn handle_activity_resolution_started(
+    state: &mut AppState,
+    generation: u64,
+    unresolved_room_count: u32,
+) -> Vec<AppEffect> {
+    let ActivityState::Open { unread, .. } = &mut state.activity else {
+        return Vec::new();
+    };
+    unread.resolution = crate::state::ActivityResolutionState::Resolving {
+        generation,
+        unresolved_room_count,
+    };
+    vec![AppEffect::EmitUiEvent(UiEvent::ActivityChanged)]
+}
+
+pub(crate) fn handle_activity_resolution_succeeded(
+    state: &mut AppState,
+    generation: u64,
+) -> Vec<AppEffect> {
+    let ActivityState::Open { unread, .. } = &mut state.activity else {
+        return Vec::new();
+    };
+    if !matches!(
+        unread.resolution,
+        crate::state::ActivityResolutionState::Resolving { generation: current, .. }
+            if current == generation
+    ) {
+        return Vec::new();
+    }
+    unread.resolution = crate::state::ActivityResolutionState::Idle;
+    vec![AppEffect::EmitUiEvent(UiEvent::ActivityChanged)]
+}
+
+pub(crate) fn handle_activity_resolution_failed(
+    state: &mut AppState,
+    generation: u64,
+    unresolved_room_count: u32,
+    kind: crate::state::OperationFailureKind,
+) -> Vec<AppEffect> {
+    let ActivityState::Open { unread, .. } = &mut state.activity else {
+        return Vec::new();
+    };
+    if !matches!(
+        unread.resolution,
+        crate::state::ActivityResolutionState::Resolving { generation: current, .. }
+            if current == generation
+    ) {
+        return Vec::new();
+    }
+    unread.resolution = crate::state::ActivityResolutionState::Failed {
+        generation,
+        unresolved_room_count,
+        failure_kind: kind,
+    };
+    vec![AppEffect::EmitUiEvent(UiEvent::ActivityChanged)]
+}
+
 pub(crate) fn handle_activity_tab_selected(
     state: &mut AppState,
     tab: ActivityTab,

@@ -98,6 +98,7 @@ export function ActivityPane({
   onLoadMore,
   onMarkRead,
   onOpenRow,
+  onRetryResolution,
   onSetTab
 }: {
   activity: ActivityState;
@@ -105,12 +106,17 @@ export function ActivityPane({
   onLoadMore: (tab: ActivityTab, cursor: string | null) => void;
   onMarkRead: (target: ActivityMarkReadTarget) => void;
   onOpenRow: (row: ActivityRow) => void;
+  onRetryResolution: () => void;
   onSetTab: (tab: ActivityTab) => void;
 }) {
   const activeTab =
     activity.kind === "open" ? activity.active_tab : activity.kind === "opening" ? activity.tab : "recent";
   const stream = activity.kind === "open" ? activityStream(activity, activeTab) : null;
   const rows = stream?.rows ?? [];
+  const resolution = activeTab === "unread" ? stream?.resolution : undefined;
+  const visibleRows = activeTab === "unread"
+    ? rows.filter((row) => row.kind === "event")
+    : rows;
   const markReadState = activity.kind === "open" ? activity.mark_read : { kind: "idle" as const };
   const markAllPending =
     markReadState.kind === "pending" && markReadState.target.kind === "all";
@@ -127,7 +133,7 @@ export function ActivityPane({
           <h1 id="activity-title">{t("workspace.activity")}</h1>
         </div>
         <div className="activity-actions">
-          {activity.kind === "open" && activeTab === "unread" && rows.length > 0 ? (
+          {activity.kind === "open" && activeTab === "unread" && visibleRows.length > 0 ? (
             <button
               className="dialog-button secondary"
               type="button"
@@ -174,7 +180,19 @@ export function ActivityPane({
             <Clock3 size={ICON_SIZE.emptyState} />
             <span>{t("activity.loading")}</span>
           </div>
-        ) : rows.length === 0 ? (
+        ) : resolution?.kind === "resolving" && visibleRows.length === 0 ? (
+          <div className="activity-empty" role="status">
+            <Clock3 size={ICON_SIZE.emptyState} />
+            <span>{t("activity.resolvingUnread")}</span>
+          </div>
+        ) : resolution?.kind === "failed" && visibleRows.length === 0 ? (
+          <div className="activity-empty" role="alert">
+            <span>{t("activity.resolveFailed")}</span>
+            <button className="dialog-button secondary" type="button" onClick={onRetryResolution}>
+              {t("activity.retryResolution")}
+            </button>
+          </div>
+        ) : visibleRows.length === 0 ? (
           <div className="activity-empty">
             <Clock3 size={ICON_SIZE.emptyState} />
             <span>
@@ -183,7 +201,7 @@ export function ActivityPane({
           </div>
         ) : (
           <ol className="activity-list">
-            {rows.map((row) => {
+            {visibleRows.map((row) => {
               const isPlaceholder = row.kind === "roomUnread";
               return (
                 <li

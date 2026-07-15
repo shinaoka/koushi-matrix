@@ -657,6 +657,23 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             unread,
             excluded_room_ids,
         } => activity::handle_activity_rows_updated(state, recent, unread, excluded_room_ids),
+        AppAction::ActivityResolutionStarted {
+            generation,
+            unresolved_room_count,
+        } => activity::handle_activity_resolution_started(state, generation, unresolved_room_count),
+        AppAction::ActivityResolutionSucceeded { generation } => {
+            activity::handle_activity_resolution_succeeded(state, generation)
+        }
+        AppAction::ActivityResolutionFailed {
+            generation,
+            unresolved_room_count,
+            kind,
+        } => activity::handle_activity_resolution_failed(
+            state,
+            generation,
+            unresolved_room_count,
+            kind,
+        ),
         AppAction::ActivityTabSelected { tab } => {
             activity::handle_activity_tab_selected(state, tab)
         }

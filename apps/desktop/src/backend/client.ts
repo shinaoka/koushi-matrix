@@ -599,6 +599,10 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("paginate_activity", { tab, cursor });
   }
 
+  async retryActivityResolution(): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("retry_activity_resolution");
+  }
+
   async markActivityRead(target: ActivityMarkReadTarget): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("mark_activity_read", { target });
   }

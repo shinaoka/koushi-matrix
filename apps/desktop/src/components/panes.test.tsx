@@ -11,8 +11,8 @@ function activityState(rows: ActivityRow[]): ActivityState {
   return {
     kind: "open",
     active_tab: "unread",
-    recent: { rows: [], next_batch: null },
-    unread: { rows, next_batch: null },
+    recent: { rows: [], next_batch: null, resolution: { kind: "idle" } },
+    unread: { rows, next_batch: null, resolution: { kind: "idle" } },
     mark_read: { kind: "idle" }
   };
 }
@@ -59,34 +59,24 @@ describe("ActivityPane", () => {
     setActiveLocaleProfile("en", "none");
   });
 
-  it("renders room-unread rows without event details but keeps them openable", () => {
-    const onOpenRow = vi.fn();
+  it("replaces resolving placeholders with status instead of terminal room rows", () => {
+    const resolving = activityState([placeholderRow]);
+    if (resolving.kind === "open") {
+      resolving.unread.resolution = { kind: "resolving", generation: 2, unresolved_room_count: 1 };
+    }
     render(
       <ActivityPane
-        activity={activityState([placeholderRow])}
+        activity={resolving}
         onClose={vi.fn()}
         onLoadMore={vi.fn()}
         onMarkRead={vi.fn()}
-        onOpenRow={onOpenRow}
+        onOpenRow={vi.fn()}
+        onRetryResolution={vi.fn()}
         onSetTab={vi.fn()}
       />
     );
-
-    const listitem = screen.getByRole("listitem");
-    expect(listitem.getAttribute("data-room-id")).toBe("!placeholder:example.invalid");
-    expect(listitem.getAttribute("data-kind")).toBe("roomUnread");
-    expect(listitem.getAttribute("data-event-id")).toBeNull();
-
-    expect(screen.getByText("Placeholder room")).toBeTruthy();
-    expect(screen.queryByText("Preview")).toBeNull();
-    expect(screen.queryByText("Sender")).toBeNull();
-    expect(listitem.querySelector("time")).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: /Open/ }));
-    expect(onOpenRow).toHaveBeenCalledWith(placeholderRow);
-
-    // No row-level mark-read button for placeholders.
-    expect(screen.queryByRole("button", { name: /Mark room read/ })).toBeNull();
+    expect(screen.getByRole("status").textContent).toContain("Resolving");
+    expect(screen.queryByRole("listitem")).toBeNull();
   });
 
   it("keeps event-backed rows clickable and markable", () => {
@@ -99,6 +89,7 @@ describe("ActivityPane", () => {
         onLoadMore={vi.fn()}
         onMarkRead={onMarkRead}
         onOpenRow={onOpenRow}
+        onRetryResolution={vi.fn()}
         onSetTab={vi.fn()}
       />
     );
@@ -131,12 +122,33 @@ describe("ActivityPane", () => {
         onLoadMore={vi.fn()}
         onMarkRead={vi.fn()}
         onOpenRow={vi.fn()}
+        onRetryResolution={vi.fn()}
         onSetTab={vi.fn()}
       />
     );
 
-    // Both rows rendered because the test fixture supplies both; the Rust
-    // projection guarantees only one row per room reaches the UI.
-    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+  });
+
+  it("offers typed retry for failed resolution", () => {
+    const failed = activityState([placeholderRow]);
+    if (failed.kind === "open") {
+      failed.unread.resolution = { kind: "failed", generation: 3, unresolved_room_count: 1, failure_kind: "network" };
+    }
+    const onRetryResolution = vi.fn();
+    render(
+      <ActivityPane
+        activity={failed}
+        onClose={vi.fn()}
+        onLoadMore={vi.fn()}
+        onMarkRead={vi.fn()}
+        onOpenRow={vi.fn()}
+        onRetryResolution={onRetryResolution}
+        onSetTab={vi.fn()}
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Retry/ }));
+    expect(onRetryResolution).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("listitem")).toBeNull();
   });
 });

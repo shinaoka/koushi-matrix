@@ -1725,6 +1725,7 @@ mod tests {
                     ..Default::default()
                 }],
                 next_batch: None,
+                resolution: Default::default(),
             },
             unread: ActivityStream {
                 rows: vec![ActivityRow::room_unread_placeholder(
@@ -1734,6 +1735,7 @@ mod tests {
                     true,
                 )],
                 next_batch: None,
+                resolution: Default::default(),
             },
             mark_read: ActivityMarkReadState::Idle,
         };

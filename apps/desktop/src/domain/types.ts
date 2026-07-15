@@ -810,7 +810,18 @@ export type ActivityTab = "recent" | "unread";
 export interface ActivityStream {
   rows: ActivityRow[];
   next_batch: string | null;
+  resolution: ActivityResolutionState;
 }
+
+export type ActivityResolutionState =
+  | { kind: "idle" }
+  | { kind: "resolving"; generation: number; unresolved_room_count: number }
+  | {
+      kind: "failed";
+      generation: number;
+      unresolved_room_count: number;
+      failure_kind: OperationFailureKind;
+    };
 
 export type ActivityRowKind = "event" | "roomUnread";
 

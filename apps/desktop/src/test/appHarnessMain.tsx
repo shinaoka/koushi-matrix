@@ -928,8 +928,8 @@ mock.setCommandResponse("open_activity", () =>
         activity: {
           kind: "open",
           active_tab: "recent",
-          recent: { rows: [], next_batch: null },
-          unread: { rows: [], next_batch: null },
+          recent: { rows: [], next_batch: null, resolution: { kind: "idle" } },
+          unread: { rows: [], next_batch: null, resolution: { kind: "idle" } },
           mark_read: { kind: "idle" }
         }
       }

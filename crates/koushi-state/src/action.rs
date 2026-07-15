@@ -619,6 +619,18 @@ pub enum AppAction {
         unread: ActivityStream,
         excluded_room_ids: Vec<String>,
     },
+    ActivityResolutionStarted {
+        generation: u64,
+        unresolved_room_count: u32,
+    },
+    ActivityResolutionSucceeded {
+        generation: u64,
+    },
+    ActivityResolutionFailed {
+        generation: u64,
+        unresolved_room_count: u32,
+        kind: OperationFailureKind,
+    },
     ActivityTabSelected {
         tab: ActivityTab,
     },

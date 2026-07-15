@@ -21,6 +21,9 @@ export type MessageId =
   | "activity.highlightBadge"
   | "activity.loadMore"
   | "activity.loading"
+  | "activity.resolvingUnread"
+  | "activity.resolveFailed"
+  | "activity.retryResolution"
   | "activity.markAllRead"
   | "activity.markReadFailed"
   | "activity.markRoomRead"
@@ -1018,6 +1021,9 @@ const en: Catalog = {
   "activity.highlightBadge": "Mention",
   "activity.loadMore": "Load more activity",
   "activity.loading": "Loading activity",
+  "activity.resolvingUnread": "Resolving unread messages…",
+  "activity.resolveFailed": "Unread messages could not be loaded.",
+  "activity.retryResolution": "Retry",
   "activity.markAllRead": "Mark all read",
   "activity.markReadFailed": "Mark read failed",
   "activity.markRoomRead": "Mark room read",
@@ -1930,6 +1936,9 @@ const ja: Catalog = {
   "activity.highlightBadge": "メンション",
   "activity.loadMore": "アクティビティをさらに読み込む",
   "activity.loading": "アクティビティを読み込み中",
+  "activity.resolvingUnread": "未読メッセージを取得中…",
+  "activity.resolveFailed": "未読メッセージを読み込めませんでした。",
+  "activity.retryResolution": "再試行",
   "activity.markAllRead": "すべて既読",
   "activity.markReadFailed": "既読化に失敗しました",
   "activity.markRoomRead": "ルームを既読",
