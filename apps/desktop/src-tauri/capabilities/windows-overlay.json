@@ -1,0 +1,7 @@
+{
+  "identifier": "windows-overlay",
+  "description": "Authorize unread overlay updates for the main Windows taskbar entry.",
+  "platforms": ["windows"],
+  "windows": ["main"],
+  "permissions": ["core:window:allow-set-overlay-icon"]
+}

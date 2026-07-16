@@ -1315,9 +1315,10 @@ mod tests {
     #[test]
     fn main_window_overlay_permission_contract() {
         let capability: serde_json::Value =
-            serde_json::from_str(include_str!("../capabilities/default.json"))
-                .expect("main capability must be valid JSON");
-        assert_eq!(capability["identifier"], "main");
+            serde_json::from_str(include_str!("../capabilities/windows-overlay.json"))
+                .expect("Windows overlay capability must be valid JSON");
+        assert_eq!(capability["identifier"], "windows-overlay");
+        assert_eq!(capability["platforms"], serde_json::json!(["windows"]));
         assert_eq!(capability["windows"], serde_json::json!(["main"]));
         let permissions = capability["permissions"]
             .as_array()
@@ -1326,46 +1327,8 @@ mod tests {
             permissions
                 .iter()
                 .any(|permission| permission == "core:window:allow-set-overlay-icon"),
-            "main window must explicitly admit the Windows overlay command"
+            "main Windows window must explicitly admit the overlay command"
         );
-    }
-
-    #[cfg(all(target_os = "windows", feature = "windows-overlay-ipc-test"))]
-    #[test]
-    fn windows_overlay_ipc_is_authorized() {
-        use tauri::webview::InvokeRequest;
-
-        let app = tauri::test::mock_builder()
-            .build(tauri::generate_context!())
-            .expect("build app from checked-in Tauri context");
-        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
-            .build()
-            .expect("build main mock webview");
-
-        for body in [
-            serde_json::json!({
-                "label": "main",
-                "value": { "rgba": [255, 0, 0, 255], "width": 1, "height": 1 }
-            }),
-            serde_json::json!({ "label": "main", "value": null }),
-        ] {
-            let response = tauri::test::get_ipc_response(
-                &webview,
-                InvokeRequest {
-                    cmd: "plugin:window|set_overlay_icon".into(),
-                    callback: tauri::ipc::CallbackFn(0),
-                    error: tauri::ipc::CallbackFn(1),
-                    url: "http://tauri.localhost".parse().expect("valid local URL"),
-                    body: tauri::ipc::InvokeBody::Json(body),
-                    headers: Default::default(),
-                    invoke_key: tauri::test::INVOKE_KEY.to_owned(),
-                },
-            );
-            assert!(
-                response.is_ok(),
-                "overlay IPC must cross the real ACL: {response:?}"
-            );
-        }
     }
 
     #[test]
