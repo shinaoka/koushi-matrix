@@ -58,8 +58,9 @@ When Activity is open and unresolved rooms exist, `AppActor` sends a private
 internal resolution request to `AccountActor`. The request carries the room id,
 fully-read marker, minimum unread count, and generation; its `Debug` output is
 redacted. `AccountActor` owns the Matrix session and a single cancellable
-resolution task. It resolves at most two rooms concurrently and uses the shared
-account `/messages` backpressure gate.
+resolution task. Each generation resolves at most 16 rooms serially and uses
+the shared account `/messages` backpressure gate. Per-room successes are emitted
+even when another room fails; the remaining placeholder count stays retryable.
 
 The SDK resolver builds a decrypted room timeline, consumes cached items first,
 then paginates backward in pages of 50 until it reaches the fully-read marker,
@@ -96,4 +97,3 @@ construct message rows.
   loading, failure, and retry command shape; completed known unread content may
   not consist only of `roomUnread` rows.
 - Local headless QA records token-only resolution evidence.
-

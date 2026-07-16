@@ -614,6 +614,10 @@ pub enum AppAction {
     ActivityRowsObserved {
         rows: Vec<ActivityRow>,
     },
+    ActivityResolutionRowsObserved {
+        generation: u64,
+        rows: Vec<ActivityRow>,
+    },
     ActivityRowsUpdated {
         recent: ActivityStream,
         unread: ActivityStream,
@@ -1306,6 +1310,11 @@ impl fmt::Debug for AppAction {
                 .finish(),
             Self::ActivityRowsObserved { rows } => formatter
                 .debug_struct("ActivityRowsObserved")
+                .field("rows", &format_args!("{} row(s)", rows.len()))
+                .finish(),
+            Self::ActivityResolutionRowsObserved { generation, rows } => formatter
+                .debug_struct("ActivityResolutionRowsObserved")
+                .field("generation", generation)
                 .field("rows", &format_args!("{} row(s)", rows.len()))
                 .finish(),
             Self::ActivityRowsUpdated {

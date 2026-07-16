@@ -2292,8 +2292,9 @@ stateDiagram-v2
   Observed event rows remain preferred for the same room. The placeholder is a
   transient resolver input, never completed message content: `AccountActor`
   consumes decrypted cache/live timeline items and bounded 50-event backward
-  pages (maximum 32) through the shared `/messages` gate, then feeds real event
-  rows back through `ActivityRowsObserved`.
+  pages (maximum 32 per room and 16 rooms per generation) through the shared
+  `/messages` gate, then feeds real event rows back through a generation-guarded
+  observation. Per-room successes are retained when another room fails.
 - `ActivityStream.resolution` is Rust-owned `Idle | Resolving | Failed` state.
   Generation guards reject late completion after retry, close, logout, lock, or
   account replacement. Failure exposes only a coarse `OperationFailureKind` and

@@ -652,6 +652,9 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             excluded_room_ids,
         ),
         AppAction::ActivityRowsObserved { .. } => activity::handle_activity_rows_observed(state),
+        AppAction::ActivityResolutionRowsObserved { .. } => {
+            activity::handle_activity_rows_observed(state)
+        }
         AppAction::ActivityRowsUpdated {
             recent,
             unread,

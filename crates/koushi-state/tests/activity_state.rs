@@ -459,6 +459,23 @@ fn activity_debug_output_redacts_private_values() {
         ),
         format!(
             "{:?}",
+            AppAction::ActivityResolutionRowsObserved {
+                generation: 4,
+                rows: vec![ActivityRow::event(
+                    "!private-room:example.invalid".to_owned(),
+                    "$private-event:example.invalid".to_owned(),
+                    None,
+                    "Private Room".to_owned(),
+                    Some("Private Sender".to_owned()),
+                    Some("private message body".to_owned()),
+                    1,
+                    true,
+                    false,
+                )],
+            }
+        ),
+        format!(
+            "{:?}",
             AppAction::ActivityMarkReadFailed {
                 request_id: 3,
                 target,

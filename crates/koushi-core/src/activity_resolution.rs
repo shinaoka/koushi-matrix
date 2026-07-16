@@ -9,6 +9,25 @@ const PAGE_SIZE: u16 = 50;
 const MAX_PAGES: usize = 32;
 const MAX_ATTEMPTS: usize = 3;
 
+#[derive(Default)]
+pub(crate) struct ActivityResolutionOutcome {
+    pub(crate) rows: Vec<ActivityRow>,
+    pub(crate) unresolved_room_count: u32,
+    pub(crate) failure_kind: Option<OperationFailureKind>,
+}
+
+impl ActivityResolutionOutcome {
+    fn record(&mut self, result: Result<Vec<ActivityRow>, OperationFailureKind>) {
+        match result {
+            Ok(rows) => self.rows.extend(rows),
+            Err(kind) => {
+                self.unresolved_room_count = self.unresolved_room_count.saturating_add(1);
+                self.failure_kind.get_or_insert(kind);
+            }
+        }
+    }
+}
+
 #[derive(Clone, Eq, PartialEq)]
 pub struct ActivityResolutionRequest {
     pub(crate) room_id: String,
@@ -34,12 +53,12 @@ pub(crate) async fn resolve_activity_requests(
     session: &MatrixClientSession,
     requests: &[ActivityResolutionRequest],
     backpressure: &MessagesBackpressure,
-) -> Result<Vec<ActivityRow>, OperationFailureKind> {
-    let mut rows = Vec::new();
+) -> ActivityResolutionOutcome {
+    let mut outcome = ActivityResolutionOutcome::default();
     for request in requests {
-        rows.extend(resolve_activity_request(session, request, backpressure).await?);
+        outcome.record(resolve_activity_request(session, request, backpressure).await);
     }
-    Ok(rows)
+    outcome
 }
 
 async fn resolve_activity_request(
@@ -184,5 +203,16 @@ mod tests {
         assert!(select_unread_items(&items, &request, false).is_none());
         let selected = select_unread_items(&items, &request, true).expect("start is authoritative");
         assert_eq!(selected[0].event_id, "$new");
+    }
+
+    #[test]
+    fn partial_resolution_keeps_successful_rows_and_failure_count() {
+        let mut outcome = ActivityResolutionOutcome::default();
+        outcome.record(Ok(vec![activity_row(&item("$resolved", 10))]));
+        outcome.record(Err(OperationFailureKind::Network));
+
+        assert_eq!(outcome.rows.len(), 1);
+        assert_eq!(outcome.unresolved_room_count, 1);
+        assert_eq!(outcome.failure_kind, Some(OperationFailureKind::Network));
     }
 }

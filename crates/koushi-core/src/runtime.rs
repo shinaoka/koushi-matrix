@@ -38,6 +38,8 @@ use crate::event::{
     NativeAttentionEvent, TimelineEvent, VersionedAppStateSnapshot,
     project_room_event_display_labels, project_timeline_event_display_labels,
 };
+
+const MAX_ACTIVITY_RESOLUTION_ROOMS: usize = 16;
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey, TimelineKind};
@@ -1106,8 +1108,12 @@ fn sort_activity_rows(rows: &mut [ActivityRow]) {
 }
 
 fn guard_activity_resolution_completion(state: &AppState, action: AppAction) -> AppAction {
-    let AppAction::ActivityResolutionSucceeded { generation } = &action else {
-        return action;
+    let (generation, failure_kind) = match &action {
+        AppAction::ActivityResolutionSucceeded { generation } => (*generation, None),
+        AppAction::ActivityResolutionFailed {
+            generation, kind, ..
+        } => (*generation, Some(*kind)),
+        _ => return action,
     };
     let ActivityState::Open { unread, .. } = &state.activity else {
         return action;
@@ -1119,7 +1125,7 @@ fn guard_activity_resolution_completion(state: &AppState, action: AppAction) -> 
     else {
         return action;
     };
-    if active_generation != *generation {
+    if active_generation != generation {
         return action;
     }
 
@@ -1129,14 +1135,37 @@ fn guard_activity_resolution_completion(state: &AppState, action: AppAction) -> 
         .filter(|row| row.kind == ActivityRowKind::RoomUnread)
         .count() as u32;
     if unresolved_room_count == 0 {
-        action
+        AppAction::ActivityResolutionSucceeded { generation }
     } else {
         AppAction::ActivityResolutionFailed {
-            generation: *generation,
+            generation,
             unresolved_room_count,
-            kind: OperationFailureKind::Timeout,
+            kind: failure_kind.unwrap_or(OperationFailureKind::Timeout),
         }
     }
+}
+
+fn normalize_activity_resolution_action(state: &AppState, action: AppAction) -> Option<AppAction> {
+    let AppAction::ActivityResolutionRowsObserved { generation, rows } = action else {
+        return Some(action);
+    };
+    let ActivityState::Open { unread, .. } = &state.activity else {
+        return None;
+    };
+    if !matches!(
+        unread.resolution,
+        ActivityResolutionState::Resolving { generation: current, .. } if current == generation
+    ) {
+        return None;
+    }
+    Some(AppAction::ActivityRowsObserved { rows })
+}
+
+fn cap_activity_resolution_requests(
+    mut requests: Vec<ActivityResolutionRequest>,
+) -> Vec<ActivityResolutionRequest> {
+    requests.truncate(MAX_ACTIVITY_RESOLUTION_ROOMS);
+    requests
 }
 
 fn current_epoch_ms() -> u64 {
@@ -1201,6 +1230,10 @@ impl AppActor {
                     let clone_ms = loop_started.elapsed().as_millis();
                     let mut state_changed = false;
                     for action in actions {
+                        let Some(action) = normalize_activity_resolution_action(&self.state, action)
+                        else {
+                            continue;
+                        };
                         let action = guard_activity_resolution_completion(&self.state, action);
                         let trust_projection_transition = match &action {
                             AppAction::AuthoritativeDeviceTrustChanged { generation, transition_id, .. } => {
@@ -1712,6 +1745,7 @@ impl AppActor {
         if placeholder_room_ids.is_empty() {
             return;
         }
+        let total_unresolved_room_count = placeholder_room_ids.len().try_into().unwrap_or(u32::MAX);
         let requests = self
             .state
             .rooms
@@ -1728,16 +1762,16 @@ impl AppActor {
                 minimum_unread_count: room.notification_count.max(room.highlight_count).max(1),
             })
             .collect::<Vec<_>>();
+        let requests = cap_activity_resolution_requests(requests);
         if requests.is_empty() {
             return;
         }
         self.activity_resolution_generation = self.activity_resolution_generation.saturating_add(1);
         let generation = self.activity_resolution_generation;
-        let unresolved_room_count = requests.len().try_into().unwrap_or(u32::MAX);
         let effects = self
             .reduce_app_action(AppAction::ActivityResolutionStarted {
                 generation,
-                unresolved_room_count,
+                unresolved_room_count: total_unresolved_room_count,
             })
             .await;
         self.handle_ui_event_effects(&effects).await;
@@ -3963,6 +3997,72 @@ mod tests {
                 unresolved_room_count: 1,
                 kind: OperationFailureKind::Timeout,
             }
+        );
+    }
+
+    #[test]
+    fn activity_resolution_rows_are_generation_guarded() {
+        let generation = 7;
+        let mut state = AppState::default();
+        state.activity = ActivityState::Open {
+            active_tab: ActivityTab::Unread,
+            recent: ActivityStream::default(),
+            unread: ActivityStream {
+                rows: Vec::new(),
+                next_batch: None,
+                resolution: ActivityResolutionState::Resolving {
+                    generation,
+                    unresolved_room_count: 1,
+                },
+            },
+            mark_read: Default::default(),
+        };
+        let row = ActivityRow::event(
+            "!room:example.invalid".to_owned(),
+            "$event:example.invalid".to_owned(),
+            None,
+            String::new(),
+            None,
+            None,
+            1,
+            false,
+            false,
+        );
+
+        assert!(
+            normalize_activity_resolution_action(
+                &state,
+                AppAction::ActivityResolutionRowsObserved {
+                    generation: generation - 1,
+                    rows: vec![row.clone()],
+                },
+            )
+            .is_none()
+        );
+        assert_eq!(
+            normalize_activity_resolution_action(
+                &state,
+                AppAction::ActivityResolutionRowsObserved {
+                    generation,
+                    rows: vec![row.clone()],
+                },
+            ),
+            Some(AppAction::ActivityRowsObserved { rows: vec![row] })
+        );
+    }
+
+    #[test]
+    fn activity_resolution_request_batch_has_an_account_wide_cap() {
+        let requests = (0..(MAX_ACTIVITY_RESOLUTION_ROOMS + 3))
+            .map(|index| ActivityResolutionRequest {
+                room_id: format!("!room-{index}:example.invalid"),
+                fully_read_event_id: None,
+                minimum_unread_count: 1,
+            })
+            .collect();
+        assert_eq!(
+            cap_activity_resolution_requests(requests).len(),
+            MAX_ACTIVITY_RESOLUTION_ROOMS
         );
     }
 

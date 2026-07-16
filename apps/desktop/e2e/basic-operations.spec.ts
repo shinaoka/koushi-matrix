@@ -1369,6 +1369,7 @@ test("Activity Unread replaces unresolved room placeholders with retryable statu
     .click();
   await expect(page.getByRole("alert")).toContainText("Unread messages could not be loaded");
   await expect(page.locator('[data-kind="roomUnread"]')).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Mark all read" })).toBeVisible();
   await page.getByRole("button", { name: "Retry" }).click();
   await expect.poll(() => invocationCount(page, "retry_activity_resolution")).toBe(1);
   await expect(page.getByRole("region", { name: "Unread" }).getByRole("status"))

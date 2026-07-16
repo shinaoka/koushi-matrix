@@ -1060,32 +1060,29 @@ impl AccountActor {
                     let action_tx = self.action_tx.clone();
                     let backpressure = self.messages_backpressure.clone();
                     self.activity_resolution_task = Some(crate::executor::spawn(async move {
-                        let unresolved_room_count = requests.len().try_into().unwrap_or(u32::MAX);
-                        match crate::activity_resolution::resolve_activity_requests(
+                        let outcome = crate::activity_resolution::resolve_activity_requests(
                             &session,
                             &requests,
                             &backpressure,
                         )
-                        .await
-                        {
-                            Ok(rows) => {
-                                let _ = action_tx
-                                    .send(vec![
-                                        AppAction::ActivityRowsObserved { rows },
-                                        AppAction::ActivityResolutionSucceeded { generation },
-                                    ])
-                                    .await;
-                            }
-                            Err(kind) => {
-                                let _ = action_tx
-                                    .send(vec![AppAction::ActivityResolutionFailed {
-                                        generation,
-                                        unresolved_room_count,
-                                        kind,
-                                    }])
-                                    .await;
-                            }
-                        }
+                        .await;
+                        let settlement = match outcome.failure_kind {
+                            Some(kind) => AppAction::ActivityResolutionFailed {
+                                generation,
+                                unresolved_room_count: outcome.unresolved_room_count,
+                                kind,
+                            },
+                            None => AppAction::ActivityResolutionSucceeded { generation },
+                        };
+                        let _ = action_tx
+                            .send(vec![
+                                AppAction::ActivityResolutionRowsObserved {
+                                    generation,
+                                    rows: outcome.rows,
+                                },
+                                settlement,
+                            ])
+                            .await;
                     }));
                 }
                 AccountMessage::CancelActivityResolution => {

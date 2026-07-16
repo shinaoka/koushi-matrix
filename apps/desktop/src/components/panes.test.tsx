@@ -130,18 +130,19 @@ describe("ActivityPane", () => {
     expect(screen.getAllByRole("listitem")).toHaveLength(1);
   });
 
-  it("offers typed retry for failed resolution", () => {
-    const failed = activityState([placeholderRow]);
+  it("keeps retry and mark-all available when resolution is partial or failed", () => {
+    const failed = activityState([eventRow, placeholderRow]);
     if (failed.kind === "open") {
       failed.unread.resolution = { kind: "failed", generation: 3, unresolved_room_count: 1, failure_kind: "network" };
     }
     const onRetryResolution = vi.fn();
+    const onMarkRead = vi.fn();
     render(
       <ActivityPane
         activity={failed}
         onClose={vi.fn()}
         onLoadMore={vi.fn()}
-        onMarkRead={vi.fn()}
+        onMarkRead={onMarkRead}
         onOpenRow={vi.fn()}
         onRetryResolution={onRetryResolution}
         onSetTab={vi.fn()}
@@ -149,6 +150,29 @@ describe("ActivityPane", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: /Retry/ }));
     expect(onRetryResolution).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("listitem")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Mark all read/ }));
+    expect(onMarkRead).toHaveBeenCalledWith({ kind: "all" });
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+  });
+
+  it("keeps mark-all available when every unread row is unresolved", () => {
+    const failed = activityState([placeholderRow]);
+    if (failed.kind === "open") {
+      failed.unread.resolution = { kind: "failed", generation: 3, unresolved_room_count: 1, failure_kind: "network" };
+    }
+    const onMarkRead = vi.fn();
+    render(
+      <ActivityPane
+        activity={failed}
+        onClose={vi.fn()}
+        onLoadMore={vi.fn()}
+        onMarkRead={onMarkRead}
+        onOpenRow={vi.fn()}
+        onRetryResolution={vi.fn()}
+        onSetTab={vi.fn()}
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Mark all read/ }));
+    expect(onMarkRead).toHaveBeenCalledWith({ kind: "all" });
   });
 });
