@@ -11,6 +11,11 @@ import {
   SecureImeTextField
 } from "./ImeTextControl";
 
+const fieldLabel = "field";
+const secretLabel = "secret";
+const formLabel = "form";
+const submitLabel = "Submit";
+
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
@@ -19,13 +24,13 @@ afterEach(() => {
 describe("IME text controls", () => {
   it.each([
     ["text", (props: { value: string; syncKey: string }) => (
-      <ImeTextField aria-label="field" {...props} />
+      <ImeTextField aria-label={fieldLabel} {...props} />
     )],
     ["search", (props: { value: string; syncKey: string }) => (
-      <ImeTextField aria-label="field" type="search" {...props} />
+      <ImeTextField aria-label={fieldLabel} type="search" {...props} />
     )],
     ["textarea", (props: { value: string; syncKey: string }) => (
-      <ImeTextArea aria-label="field" {...props} />
+      <ImeTextArea aria-label={fieldLabel} {...props} />
     )]
   ] as const)("keeps %s DOM value and selection across stale composition rerenders", (_kind, field) => {
     const { rerender } = render(field({ value: "before", syncKey: "field-a" }));
@@ -44,35 +49,35 @@ describe("IME text controls", () => {
 
   it("keeps a dirty local value until an external acknowledgement arrives", () => {
     const { rerender } = render(
-      <ImeTextField aria-label="field" value="before" syncKey="field-a" />
+      <ImeTextField aria-label={fieldLabel} value="before" syncKey="field-a" />
     );
     const control = screen.getByRole("textbox", { name: "field" }) as HTMLInputElement;
 
     fireEvent.change(control, { target: { value: "local" } });
-    rerender(<ImeTextField aria-label="field" value="before" syncKey="field-a" />);
+    rerender(<ImeTextField aria-label={fieldLabel} value="before" syncKey="field-a" />);
     expect(control.value).toBe("local");
 
-    rerender(<ImeTextField aria-label="field" value="local" syncKey="field-a" />);
-    rerender(<ImeTextField aria-label="field" value="server" syncKey="field-a" />);
+    rerender(<ImeTextField aria-label={fieldLabel} value="local" syncKey="field-a" />);
+    rerender(<ImeTextField aria-label={fieldLabel} value="server" syncKey="field-a" />);
     expect(control.value).toBe("server");
   });
 
   it("forces the next semantic field value when syncKey changes", () => {
     const { rerender } = render(
-      <ImeTextField aria-label="field" value="before" syncKey="field-a" />
+      <ImeTextField aria-label={fieldLabel} value="before" syncKey="field-a" />
     );
     const control = screen.getByRole("textbox", { name: "field" }) as HTMLInputElement;
     fireEvent.compositionStart(control);
     fireEvent.change(control, { target: { value: "old composition" } });
 
-    rerender(<ImeTextField aria-label="field" value="next" syncKey="field-b" />);
+    rerender(<ImeTextField aria-label={fieldLabel} value="next" syncKey="field-b" />);
 
     expect(control.value).toBe("next");
   });
 
   it("keeps secure values DOM-only behind a forwarded ref", () => {
     const ref = createRef<HTMLInputElement>();
-    render(<SecureImeTextField ref={ref} aria-label="secret" autoComplete="off" />);
+    render(<SecureImeTextField ref={ref} aria-label={secretLabel} autoComplete="off" />);
     const control = screen.getByLabelText("secret") as HTMLInputElement;
 
     fireEvent.input(control, { target: { value: "private value" } });
@@ -86,9 +91,9 @@ describe("IME text controls", () => {
     const onSubmit = vi.fn((event: React.FormEvent<HTMLFormElement>) => event.preventDefault());
     const onKeyDown = vi.fn();
     render(
-      <ImeSafeForm aria-label="form" onSubmit={onSubmit}>
-        <ImeTextField aria-label="field" onKeyDown={onKeyDown} />
-        <button type="submit">Submit</button>
+      <ImeSafeForm aria-label={formLabel} onSubmit={onSubmit}>
+        <ImeTextField aria-label={fieldLabel} onKeyDown={onKeyDown} />
+        <button type="submit">{submitLabel}</button>
       </ImeSafeForm>
     );
     const form = screen.getByRole("form", { name: "form" });
