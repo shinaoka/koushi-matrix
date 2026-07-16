@@ -304,3 +304,22 @@ input. SDK and Koushi PRs remain behavior-neutral and do not close #271.
   repair-before-checkpoint without private data.
 - Both repositories have reproducible focused tests and the local headless
   stage reports only closed token evidence.
+
+## Final Fix Addendum
+
+After approving the observation slice, the maintainer explicitly authorized
+continuing through a fix and a PR that closes #271. The production change built
+on this boundary is deliberately narrower than blocking room open:
+
+- timeline construction, `InitialItems`, and projection ACK continue normally;
+- only SyncService room-entry `LiveEdge` inspection waits for the matching
+  room-subscription generation checkpoint;
+- a checkpoint with a committed gap selects that exact opaque descriptor;
+- no-timeline, no-gap, stale-generation, and missing-topology checkpoints do
+  not fall back to another persisted gap; and
+- actor registration replays the RoomListService-retained checkpoint so a fast
+  response is not lost.
+
+The SDK fork PR remains a prerequisite dependency change. The Koushi PR is the
+behavioral fix and may use `Fixes #271` after both repositories' focused gates
+and required CI pass.

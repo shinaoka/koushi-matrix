@@ -1776,6 +1776,22 @@ the implementation plan is
 
 ## Local Homeserver QA Failures
 
+- SyncService room-entry live catch-up is generation-fenced. RoomListService
+  retains the latest token-free checkpoint per room; TimelineManager replays it
+  after actor registration, and TimelineActor defers only `LiveEdge` repair
+  until the matching subscription generation arrives. The actor must repair
+  the checkpoint-owned gap exactly and never substitute another persisted gap.
+- The focused deterministic gate is
+  `cargo test -p koushi-core --lib timeline_actor_waits_for_current_subscription_checkpoint_before_live_edge_repair`.
+  The local `timeline_reconnect` stage additionally unsubscribes A, sends 21
+  offline events past the room-subscription limit, reopens the room, and emits
+  only `live_catchup_checkpoint=ok` and `live_catchup_gap_repaired=ok`.
+- As of 2026-07-16, the fresh-account Conduit core lane on `origin/main` can
+  stop after verification-method discovery reports `completion_received`,
+  before `LoggedIn`. Treat that baseline login timeout separately from a
+  timeline catch-up failure; do not weaken the timeline assertions or print
+  private identifiers to diagnose it.
+
 - Installing Conduit or Tuwunel from source with `cargo install --git` must set
   `RUMA_UNSTABLE_EXHAUSTIVE_TYPES=1`. Without it, Ruma marks many public API
   structs as non-exhaustive and both homeservers fail to compile with

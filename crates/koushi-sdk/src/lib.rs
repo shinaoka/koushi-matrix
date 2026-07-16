@@ -2530,6 +2530,23 @@ impl MatrixRoomSubscriptionCheckpoint {
         }
     }
 
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn from_gap_for_testing(
+        subscription_generation: u64,
+        gap: &MatrixTimelineGapHandle,
+    ) -> Self {
+        Self {
+            subscription_generation,
+            room_id: gap.room_id.clone(),
+            limited: true,
+            event_count: 1,
+            prev_batch_present: true,
+            has_timeline_update: true,
+            inserted_gap: Some(gap.descriptor.clone()),
+        }
+    }
+
     pub fn subscription_generation(&self) -> u64 {
         self.subscription_generation
     }

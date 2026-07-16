@@ -354,9 +354,14 @@ Rules:
    nearest the live edge). An unchanged candidate is idle; a changed candidate
    remains queued across active work and projection/render ACK fences.
    Candidate-driven automatic repair keeps a zero cached-chunk budget.
-   Room-entry live-edge repair is a separate bounded intent: it may select the
-   newest unprojected descriptor only while an actor-private rendered live-edge
-   target exists, reveals at most one cached chunk per request, stops on
+   Room-entry live-edge repair is a separate bounded intent. On SyncService it
+   must wait for the matching RoomListService subscription-generation
+   checkpoint and may select only the opaque persisted gap introduced by that
+   response. It must not acquire repair ownership while the checkpoint is
+   pending, reuse a baseline observation for an empty response, or fall back to
+   another historical gap when the checkpoint gap is absent. Timeline build,
+   initial projection, and ACK remain non-blocking while provenance is pending.
+   The selected repair reveals at most one cached chunk per request, stops on
    unchanged topology or zero progress, and has a small per-generation batch
    ceiling. Repairing a projected descriptor must preserve this intent; only a
    joined/start-reached live-edge fallback may downgrade its continuation to
