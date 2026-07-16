@@ -6,7 +6,7 @@ glue. Vendored upstream code must keep its original license and copyright
 notices; local changes to vendored code must remain easy to upstream or
 revert.
 
-Last amended: 2026-07-03.
+Last amended: 2026-07-16.
 
 ## Read Order And Authority
 
@@ -63,6 +63,30 @@ conflict is being resolved.
   or QA oracle must choose the underlying correction. If that correction
   requires a canon change, follow the Canon-First Change Protocol before code
   continues.
+
+## Text Input And IME Ownership
+
+- Every user-editable text surface in the desktop React application uses the
+  shared IME-safe text-control primitives. Raw composable `input` elements,
+  raw `textarea`, raw `form`, and unapproved `contentEditable` surfaces are
+  prohibited outside that primitive implementation. File, checkbox, radio,
+  date/time, and other non-text controls remain native.
+- The browser DOM owns the active composition and any unacknowledged local
+  draft. A Rust/Tauri snapshot or React rerender must not overwrite that value
+  or its selection. A matching authoritative value acknowledges the draft; an
+  explicit logical identity change may reset it through a stable synchronization
+  key.
+- Candidate-confirmation Enter is native IME work, not a product command. It
+  must not invoke send/search/submit handlers, must not be prevented, and must
+  fence the associated form's implicit submit. Normal Enter behavior resumes
+  after composition ends.
+- Async text mutations are latest-wins per logical field. Stale completions
+  must not replace newer drafts or newly selected entities. Passwords and other
+  entered secrets remain DOM-owned and uncontrolled; React state may retain
+  only non-secret presentation facts such as whether a field is non-empty.
+- `npm --prefix apps/desktop run lint` enforces the surface inventory through
+  `scripts/check-ime-text-inputs.mjs`. New text-entry variants extend the
+  shared primitive and its behavioral tests instead of adding local IME fixes.
 
 ## Architecture And Ownership
 

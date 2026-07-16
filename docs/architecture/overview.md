@@ -5,7 +5,7 @@ Dated specs and plans under `docs/superpowers/` are implementation guides
 toward this document and must not contradict it. Amend this document first
 when a design change is needed, then update or supersede the affected specs.
 
-Last amended: 2026-06-16.
+Last amended: 2026-07-16.
 
 ## Product Scope
 
@@ -92,6 +92,15 @@ Crate responsibilities:
   unsupported slash commands fail locally with structured private-data-free
   failure kinds. React does not construct `m.mentions`, formatted bodies, or
   slash-command dispatch.
+  The same native-composition boundary applies to every desktop text-entry
+  surface, including upload captions, search, room/profile/settings fields,
+  authentication, recovery, and dialogs. These surfaces share one React
+  primitive layer: the DOM owns composition and unacknowledged drafts, logical
+  keys define explicit resets, candidate-confirmation Enter fences associated
+  form submission, and latest-wins tokens reject stale async snapshots.
+  Password and recovery strings remain uncontrolled DOM values and do not enter
+  React state. A repository AST gate prevents feature components from bypassing
+  this layer with raw composable controls or forms.
   Room management is likewise Rust-owned: room settings snapshots, room-scoped
   member summaries, permission facts, setting changes, power-level role edits,
   and kick/ban/unban moderation operations live in
