@@ -6,6 +6,7 @@ license.workspace = true
 
 [features]
 smoke = ["rpassword"]
+test-hooks = []
 
 [[bin]]
 name = "password-login-smoke"
