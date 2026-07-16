@@ -101,7 +101,10 @@
               "timestamp_ms": 20,
               "unread": false
             }
-          ]
+          ],
+          "resolution": {
+            "kind": "idle"
+          }
         },
         "request_id": {
           "connection_id": 3,
@@ -140,7 +143,10 @@
               "timestamp_ms": 9,
               "unread": true
             }
-          ]
+          ],
+          "resolution": {
+            "kind": "idle"
+          }
         }
       }
     },
@@ -1469,5 +1475,17 @@
       }
     },
     "kind": "Timeline"
+  },
+  "activityResolutionRetried": {
+    "kind": "Activity",
+    "event": {
+      "ResolutionRetried": {
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "generation": 4
+      }
+    }
   }
 }

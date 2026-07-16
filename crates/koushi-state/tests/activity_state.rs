@@ -1,7 +1,7 @@
 use koushi_state::{
-    ActivityMarkReadState, ActivityMarkReadTarget, ActivityRow, ActivityState, ActivityStream,
-    ActivityTab, AppAction, AppEffect, AppState, OperationFailureKind, SessionInfo, SessionState,
-    UiEvent, reduce,
+    ActivityMarkReadState, ActivityMarkReadTarget, ActivityResolutionState, ActivityRow,
+    ActivityState, ActivityStream, ActivityTab, AppAction, AppEffect, AppState,
+    OperationFailureKind, SessionInfo, SessionState, UiEvent, reduce,
 };
 use serde_json;
 
@@ -38,7 +38,104 @@ fn stream(rows: Vec<ActivityRow>, next_batch: Option<&str>) -> ActivityStream {
     ActivityStream {
         rows,
         next_batch: next_batch.map(str::to_owned),
+        resolution: ActivityResolutionState::Idle,
     }
+}
+
+#[test]
+fn activity_resolution_is_generation_guarded_and_retryable() {
+    let mut state = ready_state();
+    reduce(&mut state, AppAction::ActivityOpened { request_id: 1 });
+    reduce(
+        &mut state,
+        AppAction::ActivitySnapshotLoaded {
+            request_id: 1,
+            active_tab: ActivityTab::Unread,
+            recent: stream(Vec::new(), None),
+            unread: stream(Vec::new(), None),
+            excluded_room_ids: Vec::new(),
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::ActivityResolutionStarted {
+            generation: 4,
+            unresolved_room_count: 2,
+        },
+    );
+    let ActivityState::Open { unread, .. } = &state.activity else {
+        panic!("activity should be open");
+    };
+    assert_eq!(
+        unread.resolution,
+        ActivityResolutionState::Resolving {
+            generation: 4,
+            unresolved_room_count: 2,
+        }
+    );
+
+    reduce(
+        &mut state,
+        AppAction::ActivityResolutionFailed {
+            generation: 3,
+            unresolved_room_count: 1,
+            kind: OperationFailureKind::Network,
+        },
+    );
+    let ActivityState::Open { unread, .. } = &state.activity else {
+        panic!("activity should be open");
+    };
+    assert!(matches!(
+        unread.resolution,
+        ActivityResolutionState::Resolving { generation: 4, .. }
+    ));
+
+    reduce(
+        &mut state,
+        AppAction::ActivityResolutionFailed {
+            generation: 4,
+            unresolved_room_count: 1,
+            kind: OperationFailureKind::Network,
+        },
+    );
+    let ActivityState::Open { unread, .. } = &state.activity else {
+        panic!("activity should be open");
+    };
+    assert_eq!(
+        unread.resolution,
+        ActivityResolutionState::Failed {
+            generation: 4,
+            unresolved_room_count: 1,
+            failure_kind: OperationFailureKind::Network,
+        }
+    );
+
+    reduce(
+        &mut state,
+        AppAction::ActivityResolutionStarted {
+            generation: 5,
+            unresolved_room_count: 1,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ActivityResolutionSucceeded { generation: 5 },
+    );
+    let ActivityState::Open { unread, .. } = &state.activity else {
+        panic!("activity should be open");
+    };
+    assert_eq!(unread.resolution, ActivityResolutionState::Idle);
+}
+
+#[test]
+fn activity_resolution_deserializes_old_streams_as_idle() {
+    let stream: ActivityStream = serde_json::from_value(serde_json::json!({
+        "rows": [],
+        "next_batch": null
+    }))
+    .expect("legacy activity stream");
+    assert_eq!(stream.resolution, ActivityResolutionState::Idle);
 }
 
 #[test]
@@ -358,6 +455,23 @@ fn activity_debug_output_redacts_private_values() {
                 recent: stream(vec![private_row.clone()], None),
                 unread: stream(vec![private_row], None),
                 excluded_room_ids: vec!["!private-room:example.invalid".to_owned()],
+            }
+        ),
+        format!(
+            "{:?}",
+            AppAction::ActivityResolutionRowsObserved {
+                generation: 4,
+                rows: vec![ActivityRow::event(
+                    "!private-room:example.invalid".to_owned(),
+                    "$private-event:example.invalid".to_owned(),
+                    None,
+                    "Private Room".to_owned(),
+                    Some("Private Sender".to_owned()),
+                    Some("private message body".to_owned()),
+                    1,
+                    true,
+                    false,
+                )],
             }
         ),
         format!(

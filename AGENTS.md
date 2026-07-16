@@ -837,12 +837,22 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `MarkActivityRead` settles both room targets and the all-activity target
   through the Rust `mark_read` substate and then updates Activity streams;
   future SDK fully-read writes must stay behind the same typed command boundary.
+- `ActivityStream.resolution` owns stale-unread history loading. A
+  `RoomUnread` row is a transient Rust resolver input, not terminal GUI content.
+  `AccountActor` resolves it from decrypted timeline cache/live updates and
+  bounded backward pagination (at most 16 rooms per generation), guarded by a
+  generation and the shared messages backpressure gate. Per-room success is
+  retained when another room fails, and capped batches rotate across retry
+  generations so persistent failures cannot starve later rooms. React renders
+  resolving/failed status, hides placeholders, and dispatches only typed
+  `retry_activity_resolution`.
 - When adding or changing `ActivityState`, `ActivityRow`, `ActivityEvent`, or
   Activity command shapes, update the Tauri DTO, TypeScript domain types,
   checked-in CoreEvent contract artifact, browser fake, Tauri IPC mock, app
   harness snapshots, and serialization-contract tests in the same change.
 - The local core QA `activity` scenario is token-only:
-  `activity_recent=ok`, `activity_unread=ok`, and `activity_markread=ok`. Do not
+  `activity_recent=ok`, `activity_unread=ok`, `activity_resolution=ok`, and
+  `activity_markread=ok`. Do not
   print Matrix room IDs, event IDs, sender IDs, message bodies, pagination
   tokens, or raw SDK errors for this stage.
 - Browser-headless Activity GUI tests should seed Rust-shaped

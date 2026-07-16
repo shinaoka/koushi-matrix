@@ -18,15 +18,17 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_state::{
-    AccountManagementOperation, ActivityMarkReadTarget, ActivityRow, ActivityRowKind,
-    ActivityState, ActivityStream, ActivityTab, AppAction, AppEffect, AppState, ComposerDraftStore,
-    LoginAttemptId, ProfileUpdateRequest, RoomNotificationMode, RoomSummary,
-    ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchScope as AppSearchScope,
-    SessionState, SpaceSummary, ThreadPaneState, UiEvent, reduce, room_activity_unread_count,
+    AccountManagementOperation, ActivityMarkReadTarget, ActivityResolutionState, ActivityRow,
+    ActivityRowKind, ActivityState, ActivityStream, ActivityTab, AppAction, AppEffect, AppState,
+    ComposerDraftStore, LoginAttemptId, OperationFailureKind, ProfileUpdateRequest,
+    RoomNotificationMode, RoomSummary, ScheduledSendCapability, ScheduledSendHandle,
+    ScheduledSendItem, SearchScope as AppSearchScope, SessionState, SpaceSummary, ThreadPaneState,
+    UiEvent, reduce, room_activity_unread_count,
 };
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::account::{AccountActorHandle, AccountMessage};
+use crate::activity_resolution::ActivityResolutionRequest;
 use crate::command::{
     AccountCommand, AppCommand, CoreCommand, SearchCommand, SearchScope, SyncCommand,
     TimelineCommand,
@@ -36,6 +38,8 @@ use crate::event::{
     NativeAttentionEvent, TimelineEvent, VersionedAppStateSnapshot,
     project_room_event_display_labels, project_timeline_event_display_labels,
 };
+
+const MAX_ACTIVITY_RESOLUTION_ROOMS: usize = 16;
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey, TimelineKind};
@@ -295,6 +299,7 @@ impl CoreRuntime {
             pending_composer_draft_persist: None,
             account_actor,
             activity_projection: ActivityProjection::default(),
+            activity_resolution_generation: 0,
             next_internal_request_sequence: 1,
             pending_select: HashMap::new(),
             pending_focused_navigation: None,
@@ -517,6 +522,7 @@ struct AppActor {
     pending_composer_draft_persist: Option<PendingComposerDraftPersist>,
     account_actor: AccountActorHandle,
     activity_projection: ActivityProjection,
+    activity_resolution_generation: u64,
     next_internal_request_sequence: u64,
     /// Correlation map for SelectRoom intents: room_id → FIFO queue of request_ids.
     /// Multiple concurrent SelectRoom commands for the same room are queued in
@@ -760,7 +766,16 @@ impl ActivityProjection {
         if !matches!(state.activity, ActivityState::Open { .. }) {
             return None;
         }
-        let (recent, unread, excluded_room_ids) = self.snapshot(state);
+        let (mut recent, mut unread, excluded_room_ids) = self.snapshot(state);
+        if let ActivityState::Open {
+            recent: current_recent,
+            unread: current_unread,
+            ..
+        } = &state.activity
+        {
+            recent.resolution = current_recent.resolution;
+            unread.resolution = current_unread.resolution;
+        }
         Some(AppAction::ActivityRowsUpdated {
             recent,
             unread,
@@ -817,6 +832,7 @@ impl ActivityProjection {
         let mut recent = Vec::new();
         let mut unread = Vec::new();
         let mut recent_event_ids = BTreeSet::new();
+        let mut unread_event_room_ids = BTreeSet::new();
         for row in self.rows_by_event_id.values() {
             if excluded.contains(row.room_id.as_str()) {
                 continue;
@@ -871,6 +887,10 @@ impl ActivityProjection {
             };
             if let Some(event_id) = row.event_id.clone() {
                 recent_event_ids.insert(event_id);
+            }
+            if row.unread {
+                unread_event_room_ids.insert(row.room_id.clone());
+                unread.push(row.clone());
             }
             recent.push(row);
         }
@@ -934,6 +954,10 @@ impl ActivityProjection {
             );
             row.sender_avatar = latest_event.sender_avatar.clone();
             row.context_label = context_label;
+            if row.unread {
+                unread_event_room_ids.insert(row.room_id.clone());
+                unread.push(row.clone());
+            }
             recent.push(row);
         }
 
@@ -965,6 +989,9 @@ impl ActivityProjection {
                     false,
                     "cleared_local",
                 );
+                continue;
+            }
+            if unread_event_room_ids.contains(&room.room_id) {
                 continue;
             }
             let highlight = room.highlight_count > 0;
@@ -1012,10 +1039,12 @@ impl ActivityProjection {
             ActivityStream {
                 rows: recent,
                 next_batch: None,
+                resolution: Default::default(),
             },
             ActivityStream {
                 rows: unread,
                 next_batch: None,
+                resolution: Default::default(),
             },
             excluded_room_ids,
         )
@@ -1076,6 +1105,75 @@ fn sort_activity_rows(rows: &mut [ActivityRow]) {
             .then_with(|| left.room_id.cmp(&right.room_id))
             .then_with(|| left.event_id.cmp(&right.event_id))
     });
+}
+
+fn guard_activity_resolution_completion(state: &AppState, action: AppAction) -> AppAction {
+    let (generation, failure_kind) = match &action {
+        AppAction::ActivityResolutionSucceeded { generation } => (*generation, None),
+        AppAction::ActivityResolutionFailed {
+            generation, kind, ..
+        } => (*generation, Some(*kind)),
+        _ => return action,
+    };
+    let ActivityState::Open { unread, .. } = &state.activity else {
+        return action;
+    };
+    let ActivityResolutionState::Resolving {
+        generation: active_generation,
+        ..
+    } = unread.resolution
+    else {
+        return action;
+    };
+    if active_generation != generation {
+        return action;
+    }
+
+    let unresolved_room_count = unread
+        .rows
+        .iter()
+        .filter(|row| row.kind == ActivityRowKind::RoomUnread)
+        .count() as u32;
+    if unresolved_room_count == 0 {
+        AppAction::ActivityResolutionSucceeded { generation }
+    } else {
+        AppAction::ActivityResolutionFailed {
+            generation,
+            unresolved_room_count,
+            kind: failure_kind.unwrap_or(OperationFailureKind::Timeout),
+        }
+    }
+}
+
+fn normalize_activity_resolution_action(state: &AppState, action: AppAction) -> Option<AppAction> {
+    let AppAction::ActivityResolutionRowsObserved { generation, rows } = action else {
+        return Some(action);
+    };
+    let ActivityState::Open { unread, .. } = &state.activity else {
+        return None;
+    };
+    if !matches!(
+        unread.resolution,
+        ActivityResolutionState::Resolving { generation: current, .. } if current == generation
+    ) {
+        return None;
+    }
+    Some(AppAction::ActivityRowsObserved { rows })
+}
+
+fn cap_activity_resolution_requests(
+    mut requests: Vec<ActivityResolutionRequest>,
+    generation: u64,
+) -> Vec<ActivityResolutionRequest> {
+    if requests.len() > MAX_ACTIVITY_RESOLUTION_ROOMS {
+        let room_count = requests.len() as u64;
+        let generation_offset = generation.saturating_sub(1) % room_count;
+        let batch_width = MAX_ACTIVITY_RESOLUTION_ROOMS as u64 % room_count;
+        let start = (generation_offset * batch_width % room_count) as usize;
+        requests.rotate_left(start);
+    }
+    requests.truncate(MAX_ACTIVITY_RESOLUTION_ROOMS);
+    requests
 }
 
 fn current_epoch_ms() -> u64 {
@@ -1140,6 +1238,11 @@ impl AppActor {
                     let clone_ms = loop_started.elapsed().as_millis();
                     let mut state_changed = false;
                     for action in actions {
+                        let Some(action) = normalize_activity_resolution_action(&self.state, action)
+                        else {
+                            continue;
+                        };
+                        let action = guard_activity_resolution_completion(&self.state, action);
                         let trust_projection_transition = match &action {
                             AppAction::AuthoritativeDeviceTrustChanged { generation, transition_id, .. } => {
                                 Some((*generation, *transition_id))
@@ -1363,6 +1466,7 @@ impl AppActor {
     }
 
     async fn reduce_app_action(&mut self, action: AppAction) -> Vec<AppEffect> {
+        let activity_was_open = matches!(self.state.activity, ActivityState::Open { .. });
         let previous_session = composer_draft_session_key(&self.state);
         let previous_drafts = self.state.composer_drafts.clone();
         let previous_navigation_session = navigation_session_key(&self.state);
@@ -1370,6 +1474,12 @@ impl AppActor {
         let previous_scheduled_session = scheduled_send_session_key(&self.state);
         let previous_scheduled_sends = self.state.scheduled_sends.clone();
         let effects = reduce_with_unread_diagnostics(&mut self.state, action);
+        if activity_was_open && matches!(self.state.activity, ActivityState::Closed) {
+            let _ = self
+                .account_actor
+                .send(AccountMessage::CancelActivityResolution)
+                .await;
+        }
         if previous_navigation != self.state.navigation {
             let target_session =
                 navigation_session_key(&self.state).or(previous_navigation_session);
@@ -1628,6 +1738,58 @@ impl AppActor {
             connection_id: INTERNAL_RUNTIME_CONNECTION_ID,
             sequence,
         }
+    }
+
+    async fn start_activity_resolution(&mut self) {
+        let placeholder_room_ids = match &self.state.activity {
+            ActivityState::Open { unread, .. } => unread
+                .rows
+                .iter()
+                .filter(|row| row.kind == ActivityRowKind::RoomUnread)
+                .map(|row| row.room_id.as_str())
+                .collect::<BTreeSet<_>>(),
+            _ => return,
+        };
+        if placeholder_room_ids.is_empty() {
+            return;
+        }
+        let total_unresolved_room_count = placeholder_room_ids.len().try_into().unwrap_or(u32::MAX);
+        let requests = self
+            .state
+            .rooms
+            .iter()
+            .filter(|room| placeholder_room_ids.contains(room.room_id.as_str()))
+            .map(|room| ActivityResolutionRequest {
+                room_id: room.room_id.clone(),
+                fully_read_event_id: self
+                    .state
+                    .live_signals
+                    .rooms
+                    .get(&room.room_id)
+                    .and_then(|signals| signals.fully_read_event_id.clone()),
+                minimum_unread_count: room.notification_count.max(room.highlight_count).max(1),
+            })
+            .collect::<Vec<_>>();
+        if requests.is_empty() {
+            return;
+        }
+        self.activity_resolution_generation = self.activity_resolution_generation.saturating_add(1);
+        let generation = self.activity_resolution_generation;
+        let requests = cap_activity_resolution_requests(requests, generation);
+        let effects = self
+            .reduce_app_action(AppAction::ActivityResolutionStarted {
+                generation,
+                unresolved_room_count: total_unresolved_room_count,
+            })
+            .await;
+        self.handle_ui_event_effects(&effects).await;
+        let _ = self
+            .account_actor
+            .send(AccountMessage::ResolveActivity {
+                generation,
+                requests,
+            })
+            .await;
     }
 
     /// Returns whether `AppState` changed.
@@ -2360,7 +2522,14 @@ impl AppActor {
                         })
                         .await;
                     self.handle_app_effects(request_id, snapshot_effects).await;
+                    self.start_activity_resolution().await;
                     self.emit(CoreEvent::Activity(ActivityEvent::Opened { request_id }));
+                    let (recent, unread) = match &self.state.activity {
+                        ActivityState::Open { recent, unread, .. } => {
+                            (recent.clone(), unread.clone())
+                        }
+                        _ => (recent, unread),
+                    };
                     self.emit(CoreEvent::Activity(ActivityEvent::SnapshotLoaded {
                         request_id,
                         active_tab: ActivityTab::Recent,
@@ -2370,6 +2539,10 @@ impl AppActor {
                     true
                 }
                 AppCommand::CloseActivity { request_id } => {
+                    let _ = self
+                        .account_actor
+                        .send(AccountMessage::CancelActivityResolution)
+                        .await;
                     let effects = self.reduce_app_action(AppAction::ActivityClosed).await;
                     self.handle_app_effects(request_id, effects).await;
                     self.emit(CoreEvent::Activity(ActivityEvent::Closed { request_id }));
@@ -2404,6 +2577,14 @@ impl AppActor {
                         active_tab: tab,
                         recent,
                         unread,
+                    }));
+                    true
+                }
+                AppCommand::RetryActivityResolution { request_id } => {
+                    self.start_activity_resolution().await;
+                    self.emit(CoreEvent::Activity(ActivityEvent::ResolutionRetried {
+                        request_id,
+                        generation: self.activity_resolution_generation,
                     }));
                     true
                 }
@@ -3790,6 +3971,113 @@ mod tests {
             room_id: "!room:example.invalid".to_owned(),
             event_id: "$target".to_owned(),
         }
+    }
+
+    #[test]
+    fn activity_resolution_cannot_succeed_while_room_placeholders_remain() {
+        let generation = 7;
+        let mut state = AppState::default();
+        state.activity = ActivityState::Open {
+            active_tab: ActivityTab::Unread,
+            recent: ActivityStream::default(),
+            unread: ActivityStream {
+                rows: vec![ActivityRow {
+                    kind: ActivityRowKind::RoomUnread,
+                    room_id: "!room:example.invalid".to_owned(),
+                    ..ActivityRow::default()
+                }],
+                next_batch: None,
+                resolution: ActivityResolutionState::Resolving {
+                    generation,
+                    unresolved_room_count: 1,
+                },
+            },
+            mark_read: Default::default(),
+        };
+
+        assert_eq!(
+            guard_activity_resolution_completion(
+                &state,
+                AppAction::ActivityResolutionSucceeded { generation },
+            ),
+            AppAction::ActivityResolutionFailed {
+                generation,
+                unresolved_room_count: 1,
+                kind: OperationFailureKind::Timeout,
+            }
+        );
+    }
+
+    #[test]
+    fn activity_resolution_rows_are_generation_guarded() {
+        let generation = 7;
+        let mut state = AppState::default();
+        state.activity = ActivityState::Open {
+            active_tab: ActivityTab::Unread,
+            recent: ActivityStream::default(),
+            unread: ActivityStream {
+                rows: Vec::new(),
+                next_batch: None,
+                resolution: ActivityResolutionState::Resolving {
+                    generation,
+                    unresolved_room_count: 1,
+                },
+            },
+            mark_read: Default::default(),
+        };
+        let row = ActivityRow::event(
+            "!room:example.invalid".to_owned(),
+            "$event:example.invalid".to_owned(),
+            None,
+            String::new(),
+            None,
+            None,
+            1,
+            false,
+            false,
+        );
+
+        assert!(
+            normalize_activity_resolution_action(
+                &state,
+                AppAction::ActivityResolutionRowsObserved {
+                    generation: generation - 1,
+                    rows: vec![row.clone()],
+                },
+            )
+            .is_none()
+        );
+        assert_eq!(
+            normalize_activity_resolution_action(
+                &state,
+                AppAction::ActivityResolutionRowsObserved {
+                    generation,
+                    rows: vec![row.clone()],
+                },
+            ),
+            Some(AppAction::ActivityRowsObserved { rows: vec![row] })
+        );
+    }
+
+    #[test]
+    fn activity_resolution_request_batch_has_an_account_wide_cap() {
+        let requests = (0..(MAX_ACTIVITY_RESOLUTION_ROOMS + 3))
+            .map(|index| ActivityResolutionRequest {
+                room_id: format!("!room-{index}:example.invalid"),
+                fully_read_event_id: None,
+                minimum_unread_count: 1,
+            })
+            .collect::<Vec<_>>();
+        let first = cap_activity_resolution_requests(requests.clone(), 1);
+        let second = cap_activity_resolution_requests(requests, 2);
+        assert_eq!(first.len(), MAX_ACTIVITY_RESOLUTION_ROOMS);
+        assert_eq!(second.len(), MAX_ACTIVITY_RESOLUTION_ROOMS);
+        let attempted = first
+            .into_iter()
+            .chain(second)
+            .map(|request| request.room_id)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(attempted.len(), MAX_ACTIVITY_RESOLUTION_ROOMS + 3);
     }
 
     #[test]

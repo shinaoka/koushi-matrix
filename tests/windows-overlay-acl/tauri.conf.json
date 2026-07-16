@@ -1,0 +1,18 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Koushi Windows Overlay ACL Test",
+  "version": "0.0.0",
+  "identifier": "chat.koushi.windows-overlay-acl-test",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Koushi Windows Overlay ACL Test"
+      }
+    ]
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["../../apps/desktop/src-tauri/icons/icon.png"]
+  }
+}

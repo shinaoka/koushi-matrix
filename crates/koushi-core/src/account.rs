@@ -224,6 +224,11 @@ pub enum AccountMessage {
     SyncCommand(SyncCommand),
     RoomCommand(RoomCommand),
     TimelineCommand(TimelineCommand),
+    ResolveActivity {
+        generation: u64,
+        requests: Vec<crate::activity_resolution::ActivityResolutionRequest>,
+    },
+    CancelActivityResolution,
     AcknowledgeTimelineProjection {
         projection_request_id: RequestId,
         key: TimelineKey,
@@ -822,6 +827,7 @@ pub struct AccountActor {
     /// Account-wide gate for `/rooms/{roomId}/messages` requests. Timeline
     /// pagination has priority over background search-history crawling.
     messages_backpressure: crate::messages_backpressure::MessagesBackpressure,
+    activity_resolution_task: Option<crate::executor::JoinHandle<()>>,
     /// Application data directory for cached preview images.
     data_dir: std::path::PathBuf,
     /// Latest link-preview policy snapshot from AppState, kept current so a
@@ -969,6 +975,7 @@ impl AccountActor {
             room_actor,
             timeline_manager,
             messages_backpressure,
+            activity_resolution_task: None,
             data_dir,
             link_preview_policy: initial_link_preview_policy,
             search_actor: None,
@@ -1028,6 +1035,60 @@ impl AccountActor {
                 }
                 AccountMessage::TimelineCommand(timeline_command) => {
                     self.route_timeline_command(timeline_command).await;
+                }
+                AccountMessage::ResolveActivity {
+                    generation,
+                    requests,
+                } => {
+                    if let Some(task) = self.activity_resolution_task.take() {
+                        task.abort();
+                    }
+                    let Some(session) = self.session.clone() else {
+                        let _ = self
+                            .action_tx
+                            .send(vec![AppAction::ActivityResolutionFailed {
+                                generation,
+                                unresolved_room_count: requests
+                                    .len()
+                                    .try_into()
+                                    .unwrap_or(u32::MAX),
+                                kind: OperationFailureKind::Sdk,
+                            }])
+                            .await;
+                        continue;
+                    };
+                    let action_tx = self.action_tx.clone();
+                    let backpressure = self.messages_backpressure.clone();
+                    self.activity_resolution_task = Some(crate::executor::spawn(async move {
+                        let outcome = crate::activity_resolution::resolve_activity_requests(
+                            &session,
+                            &requests,
+                            &backpressure,
+                        )
+                        .await;
+                        let settlement = match outcome.failure_kind {
+                            Some(kind) => AppAction::ActivityResolutionFailed {
+                                generation,
+                                unresolved_room_count: outcome.unresolved_room_count,
+                                kind,
+                            },
+                            None => AppAction::ActivityResolutionSucceeded { generation },
+                        };
+                        let _ = action_tx
+                            .send(vec![
+                                AppAction::ActivityResolutionRowsObserved {
+                                    generation,
+                                    rows: outcome.rows,
+                                },
+                                settlement,
+                            ])
+                            .await;
+                    }));
+                }
+                AccountMessage::CancelActivityResolution => {
+                    if let Some(task) = self.activity_resolution_task.take() {
+                        task.abort();
+                    }
                 }
                 AccountMessage::AcknowledgeTimelineProjection {
                     projection_request_id,
@@ -11130,6 +11191,7 @@ mod tests {
             room_actor,
             timeline_manager,
             messages_backpressure,
+            activity_resolution_task: None,
             data_dir: data_dir_path,
             link_preview_policy: LinkPreviewContext::default(),
             pending_oidc_login: None,

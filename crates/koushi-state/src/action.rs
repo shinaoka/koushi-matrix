@@ -614,10 +614,26 @@ pub enum AppAction {
     ActivityRowsObserved {
         rows: Vec<ActivityRow>,
     },
+    ActivityResolutionRowsObserved {
+        generation: u64,
+        rows: Vec<ActivityRow>,
+    },
     ActivityRowsUpdated {
         recent: ActivityStream,
         unread: ActivityStream,
         excluded_room_ids: Vec<String>,
+    },
+    ActivityResolutionStarted {
+        generation: u64,
+        unresolved_room_count: u32,
+    },
+    ActivityResolutionSucceeded {
+        generation: u64,
+    },
+    ActivityResolutionFailed {
+        generation: u64,
+        unresolved_room_count: u32,
+        kind: OperationFailureKind,
     },
     ActivityTabSelected {
         tab: ActivityTab,
@@ -1294,6 +1310,11 @@ impl fmt::Debug for AppAction {
                 .finish(),
             Self::ActivityRowsObserved { rows } => formatter
                 .debug_struct("ActivityRowsObserved")
+                .field("rows", &format_args!("{} row(s)", rows.len()))
+                .finish(),
+            Self::ActivityResolutionRowsObserved { generation, rows } => formatter
+                .debug_struct("ActivityResolutionRowsObserved")
+                .field("generation", generation)
                 .field("rows", &format_args!("{} row(s)", rows.len()))
                 .finish(),
             Self::ActivityRowsUpdated {

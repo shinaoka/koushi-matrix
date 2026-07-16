@@ -13,6 +13,7 @@ export const DESKTOP_ATTENTION_SOUND_COOLDOWN_MS = 3_000;
 export type DesktopAttentionDiagnosticToken =
   | "attention_title_failed"
   | "attention_badge_failed"
+  | "attention_overlay_acl_denied"
   | "attention_overlay_failed"
   | "attention_tray_failed"
   | "attention_sound_failed"
@@ -97,7 +98,7 @@ export async function applyDesktopAttentionToWindow(
     operations.push(
       runNativeOperation(() => windowLike.setOverlayIcon!(
         badgeCount > 0 ? WINDOWS_ATTENTION_OVERLAY_ICON_PATH : undefined
-      ), "attention_overlay_failed", diagnostic)
+      ), "attention_overlay_failed", diagnostic, overlayFailureToken)
     );
   }
 
@@ -119,13 +120,22 @@ export async function applyDesktopAttentionToWindow(
 async function runNativeOperation(
   operation: () => Promise<void>,
   failureToken: DesktopAttentionDiagnosticToken,
-  diagnostic?: DesktopAttentionDiagnosticSink
+  diagnostic?: DesktopAttentionDiagnosticSink,
+  classifyFailure?: (error: unknown) => DesktopAttentionDiagnosticToken
 ): Promise<void> {
   try {
     await operation();
-  } catch {
-    diagnostic?.(failureToken);
+  } catch (error) {
+    diagnostic?.(classifyFailure?.(error) ?? failureToken);
   }
+}
+
+function overlayFailureToken(error: unknown): DesktopAttentionDiagnosticToken {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  return normalized.includes("overlay") && normalized.includes("not allowed")
+    ? "attention_overlay_acl_denied"
+    : "attention_overlay_failed";
 }
 
 export async function dispatchDesktopAttentionTransientEffects(

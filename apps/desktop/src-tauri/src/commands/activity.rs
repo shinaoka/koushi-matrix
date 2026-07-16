@@ -56,6 +56,21 @@ pub async fn paginate_activity(
 }
 
 #[tauri::command]
+pub async fn retry_activity_resolution(
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_retry_activity_resolution_command(request_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn mark_activity_read(
     target: ActivityMarkReadTarget,
     app: AppHandle,

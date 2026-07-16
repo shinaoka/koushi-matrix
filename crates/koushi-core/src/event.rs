@@ -129,6 +129,10 @@ pub enum ActivityEvent {
         request_id: RequestId,
         tab: ActivityTab,
     },
+    ResolutionRetried {
+        request_id: RequestId,
+        generation: u64,
+    },
     MarkedRead {
         request_id: RequestId,
         cleared_event_ids: Vec<String>,
@@ -162,6 +166,14 @@ impl fmt::Debug for ActivityEvent {
                 .debug_struct("ActivityTabSelected")
                 .field("request_id", request_id)
                 .field("tab", tab)
+                .finish(),
+            Self::ResolutionRetried {
+                request_id,
+                generation,
+            } => formatter
+                .debug_struct("ActivityResolutionRetried")
+                .field("request_id", request_id)
+                .field("generation", generation)
                 .finish(),
             Self::MarkedRead {
                 request_id,
@@ -2322,6 +2334,7 @@ mod tests {
         koushi_state::ActivityStream {
             rows,
             next_batch: Some("private-page-token".to_owned()),
+            resolution: Default::default(),
         }
     }
 

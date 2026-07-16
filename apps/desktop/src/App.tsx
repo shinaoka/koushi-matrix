@@ -2305,6 +2305,10 @@ export function App() {
     setSnapshot(await api.paginateActivity(tab, cursor));
   }
 
+  async function retryActivityResolution() {
+    setSnapshot(await api.retryActivityResolution());
+  }
+
   async function markActivityRead(target: ActivityMarkReadTarget) {
     setSnapshot(await api.markActivityRead(target));
   }
@@ -3683,6 +3687,9 @@ export function App() {
               } else if (row.kind === "roomUnread") {
                 void openActivityRoom(row.room_id);
               }
+            }}
+            onRetryResolution={() => {
+              void retryActivityResolution();
             }}
             onSetTab={(tab) => {
               void setActivityTab(tab);

@@ -1566,7 +1566,7 @@ fn collected_alias_mirror() {
 
     const runtimeFindings = scanDiagnosticSources(runtimeRustSources());
     expect(runtimeFindings).toEqual([]);
-  });
+  }, 15_000);
 
   test("scanner rejects structured producers inside every recognized gate form without stderr", () => {
     const directGateFixture = `

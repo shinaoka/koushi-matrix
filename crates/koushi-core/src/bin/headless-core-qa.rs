@@ -591,6 +591,7 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
         QaStage::Activity => &[
             "activity_recent=ok",
             "activity_unread=ok",
+            "activity_resolution=ok",
             "activity_markread=ok",
         ],
         QaStage::Composer => &[
@@ -686,6 +687,7 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "hide_redacted=ok",
         "activity_recent=ok",
         "activity_unread=ok",
+        "activity_resolution=ok",
         "activity_markread=ok",
         "mention_send=ok",
         "markdown_send=ok",
@@ -7695,7 +7697,7 @@ async fn wait_for_activity_snapshot(
     conn: &mut CoreConnection,
     request_id: RequestId,
     label: &str,
-) -> Result<(Vec<String>, Vec<String>), String> {
+) -> Result<(Vec<String>, Vec<String>, Vec<String>), String> {
     loop {
         let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
             .await
@@ -7710,9 +7712,22 @@ async fn wait_for_activity_snapshot(
                 ..
             }) if ev_id == request_id => {
                 let mut unread_room_ids = Vec::new();
+                let mut unread_event_ids = Vec::new();
                 for row in unread.rows {
-                    if row.kind != ActivityRowKind::RoomUnread || row.event_id.is_some() {
-                        return Err(format!("{label}: Activity unread contained an event row"));
+                    match row.kind {
+                        ActivityRowKind::Event => {
+                            let event_id = row.event_id.ok_or_else(|| {
+                                format!("{label}: Activity event row lacked an event id")
+                            })?;
+                            unread_event_ids.push(event_id);
+                        }
+                        ActivityRowKind::RoomUnread => {
+                            if row.event_id.is_some() {
+                                return Err(format!(
+                                    "{label}: Activity placeholder contained an event id"
+                                ));
+                            }
+                        }
                     }
                     unread_room_ids.push(row.room_id);
                 }
@@ -7723,6 +7738,7 @@ async fn wait_for_activity_snapshot(
                         .into_iter()
                         .filter_map(|row| row.event_id)
                         .collect(),
+                    unread_event_ids,
                     unread_room_ids,
                 ));
             }
@@ -8319,7 +8335,7 @@ async fn run_activity_stage(
         }))
         .await
         .map_err(|e| format!("activity: submit open failed: {e}"))?;
-    let (recent_event_ids, unread_room_ids) =
+    let (recent_event_ids, unread_event_ids, unread_room_ids) =
         wait_for_activity_snapshot(conn_a, open_id, "activity open").await?;
 
     if !recent_event_ids
@@ -8337,6 +8353,13 @@ async fn run_activity_stage(
         return Err("activity unread projection did not include the unread seed".to_owned());
     }
     println!("activity_unread=ok");
+    if !unread_event_ids
+        .iter()
+        .any(|event_id| event_id == &send_outcome.event_id)
+    {
+        return Err("activity unread projection did not resolve the unread event".to_owned());
+    }
+    println!("activity_resolution=ok");
 
     let mark_id = conn_a.next_request_id();
     conn_a
@@ -15207,6 +15230,7 @@ mod tests {
                 "hide_redacted=ok",
                 "activity_recent=ok",
                 "activity_unread=ok",
+                "activity_resolution=ok",
                 "activity_markread=ok",
                 "mention_send=ok",
                 "markdown_send=ok",
@@ -15462,6 +15486,7 @@ mod tests {
                 "hide_redacted=ok",
                 "activity_recent=ok",
                 "activity_unread=ok",
+                "activity_resolution=ok",
                 "activity_markread=ok",
                 "restore_cleanup=ok",
             ]
@@ -15672,6 +15697,7 @@ mod tests {
                 "hide_redacted=ok",
                 "activity_recent=ok",
                 "activity_unread=ok",
+                "activity_resolution=ok",
                 "activity_markread=ok",
                 "mention_send=ok",
                 "markdown_send=ok",

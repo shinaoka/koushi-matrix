@@ -72,6 +72,7 @@ impl CoreCommand {
                 | AppCommand::CloseActivity { request_id }
                 | AppCommand::SetActivityTab { request_id, .. }
                 | AppCommand::PaginateActivity { request_id, .. }
+                | AppCommand::RetryActivityResolution { request_id }
                 | AppCommand::MarkActivityRead { request_id, .. }
                 | AppCommand::OpenFilesView { request_id, .. }
                 | AppCommand::CloseFilesView { request_id }
@@ -436,6 +437,9 @@ pub enum AppCommand {
         tab: ActivityTab,
         cursor: Option<String>,
     },
+    RetryActivityResolution {
+        request_id: RequestId,
+    },
     MarkActivityRead {
         request_id: RequestId,
         target: ActivityMarkReadTarget,
@@ -760,6 +764,10 @@ impl fmt::Debug for AppCommand {
                 .field("request_id", request_id)
                 .field("tab", tab)
                 .field("cursor", &cursor.as_ref().map(|_| "PageToken(..)"))
+                .finish(),
+            Self::RetryActivityResolution { request_id } => formatter
+                .debug_struct("RetryActivityResolution")
+                .field("request_id", request_id)
                 .finish(),
             Self::MarkActivityRead { request_id, target } => formatter
                 .debug_struct("MarkActivityRead")

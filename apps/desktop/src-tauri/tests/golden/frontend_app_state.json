@@ -64,6 +64,9 @@
         },
         "recent": {
           "next_batch": null,
+          "resolution": {
+            "kind": "idle"
+          },
           "rows": [
             {
               "context_label": "",
@@ -84,6 +87,9 @@
         },
         "unread": {
           "next_batch": null,
+          "resolution": {
+            "kind": "idle"
+          },
           "rows": [
             {
               "context_label": "",

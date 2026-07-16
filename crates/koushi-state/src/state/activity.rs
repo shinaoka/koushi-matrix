@@ -69,6 +69,8 @@ pub enum ActivityTab {
 pub struct ActivityStream {
     pub rows: Vec<ActivityRow>,
     pub next_batch: Option<String>,
+    #[serde(default)]
+    pub resolution: ActivityResolutionState,
 }
 
 impl fmt::Debug for ActivityStream {
@@ -80,8 +82,25 @@ impl fmt::Debug for ActivityStream {
                 "next_batch",
                 &self.next_batch.as_ref().map(|_| "PageToken(..)"),
             )
+            .field("resolution", &self.resolution)
             .finish()
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ActivityResolutionState {
+    #[default]
+    Idle,
+    Resolving {
+        generation: u64,
+        unresolved_room_count: u32,
+    },
+    Failed {
+        generation: u64,
+        unresolved_room_count: u32,
+        failure_kind: OperationFailureKind,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

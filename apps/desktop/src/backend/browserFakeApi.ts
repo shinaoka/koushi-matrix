@@ -233,6 +233,7 @@ export interface DesktopApi {
   closeActivity(): Promise<DesktopSnapshot>;
   setActivityTab(tab: ActivityTab): Promise<DesktopSnapshot>;
   paginateActivity(tab: ActivityTab, cursor?: string | null): Promise<DesktopSnapshot>;
+  retryActivityResolution(): Promise<DesktopSnapshot>;
   markActivityRead(target: ActivityMarkReadTarget): Promise<DesktopSnapshot>;
   setComposerDraft(roomId: string, draft: string): Promise<DesktopSnapshot>;
   openThread(roomId: string, rootEventId: string): Promise<DesktopSnapshot>;
@@ -2809,8 +2810,18 @@ class BrowserFakeApi implements DesktopApi {
       .map((row) => ({ ...row, unread: false, highlight: false }));
     this.snapshot.state.domain.activity.recent = {
       rows: [...this.snapshot.state.domain.activity.recent.rows, ...olderRows],
-      next_batch: null
+      next_batch: null,
+      resolution: this.snapshot.state.domain.activity.recent.resolution
     };
+    return this.getSnapshot();
+  }
+
+  async retryActivityResolution(): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || this.snapshot.state.domain.activity.kind !== "open") {
+      return this.getSnapshot();
+    }
+    const unread = this.snapshot.state.domain.activity.unread;
+    unread.resolution = { kind: "resolving", generation: this.nextRequestId(), unresolved_room_count: unread.rows.filter((row) => row.kind === "roomUnread").length };
     return this.getSnapshot();
   }
 
@@ -2829,7 +2840,11 @@ class BrowserFakeApi implements DesktopApi {
     await Promise.resolve();
 
     if (target.kind === "all") {
-      this.snapshot.state.domain.activity.unread = { rows: [], next_batch: null };
+      this.snapshot.state.domain.activity.unread = {
+        rows: [],
+        next_batch: null,
+        resolution: { kind: "idle" }
+      };
       this.snapshot.state.domain.rooms = this.snapshot.state.domain.rooms.map((room) => ({
         ...room,
         unread_count: 0
@@ -4502,11 +4517,15 @@ function createActivityStreams(
   return {
     recent: {
       rows: recentRows,
-      next_batch: includeBackfill ? null : "browser-activity-recent-page-2"
+      next_batch: includeBackfill ? null : "browser-activity-recent-page-2",
+      resolution: { kind: "idle" }
     },
     unread: {
       rows: sortActivityRows(unreadPlaceholderRows),
-      next_batch: null
+      next_batch: null,
+      resolution: unreadPlaceholderRows.length
+        ? { kind: "resolving", generation: 1, unresolved_room_count: unreadPlaceholderRows.length }
+        : { kind: "idle" }
     }
   };
 }

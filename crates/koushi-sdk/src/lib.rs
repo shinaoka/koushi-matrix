@@ -3653,6 +3653,7 @@ pub enum MatrixTimelineUpdate {
 pub type MatrixTimelineUpdateStream = Pin<Box<dyn Stream<Item = Vec<MatrixTimelineUpdate>> + Send>>;
 
 pub struct MatrixTimelineSubscription {
+    room_id: String,
     timeline: Arc<matrix_sdk_ui::Timeline>,
     initial_items: Vec<MatrixTimelineItem>,
     updates: MatrixTimelineUpdateStream,
@@ -3694,6 +3695,15 @@ impl MatrixTimelineSubscription {
         MatrixTimelinePaginationHandle {
             timeline: self.timeline.clone(),
         }
+    }
+
+    pub async fn current_items(&mut self) -> Vec<MatrixTimelineItem> {
+        self.timeline
+            .items()
+            .await
+            .iter()
+            .filter_map(|item| matrix_timeline_item_from_ui(&self.room_id, item))
+            .collect()
     }
 
     pub async fn paginate_backwards(&self, event_count: u16) -> Result<bool, MatrixTimelineError> {
@@ -5303,6 +5313,7 @@ pub async fn subscribe_room_timeline(
         .boxed();
 
     Ok(MatrixTimelineSubscription {
+        room_id: room_id.to_owned(),
         timeline,
         initial_items,
         updates,

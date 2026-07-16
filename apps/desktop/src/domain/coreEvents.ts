@@ -881,6 +881,7 @@ export type ActivityEvent =
       };
     }
   | { TabSelected: { request_id: RequestId; tab: ActivityTab } }
+  | { ResolutionRetried: { request_id: RequestId; generation: number } }
   | { MarkedRead: { request_id: RequestId; cleared_event_ids: string[] } };
 
 export type ActivityTab = "recent" | "unread";
@@ -888,7 +889,13 @@ export type ActivityTab = "recent" | "unread";
 export interface ActivityStream {
   rows: ActivityRow[];
   next_batch: string | null;
+  resolution: ActivityResolutionState;
 }
+
+export type ActivityResolutionState =
+  | { kind: "idle" }
+  | { kind: "resolving"; generation: number; unresolved_room_count: number }
+  | { kind: "failed"; generation: number; unresolved_room_count: number; failure_kind: OperationFailureKind };
 
 export type ActivityRowKind = "event" | "roomUnread";
 

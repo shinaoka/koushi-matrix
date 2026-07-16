@@ -359,6 +359,7 @@ describe("TauriDesktopApi", () => {
     await api.openActivity();
     await api.setActivityTab("unread");
     await api.paginateActivity("recent", "recent-page-2");
+    await api.retryActivityResolution();
     await api.markActivityRead({
       kind: "room",
       room_id: "!room:example.invalid",
@@ -372,6 +373,7 @@ describe("TauriDesktopApi", () => {
       tab: "recent",
       cursor: "recent-page-2"
     });
+    expect(invoke).toHaveBeenCalledWith("retry_activity_resolution");
     expect(invoke).toHaveBeenCalledWith("mark_activity_read", {
       target: {
         kind: "room",

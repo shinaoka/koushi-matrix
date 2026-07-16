@@ -98,6 +98,7 @@ export function ActivityPane({
   onLoadMore,
   onMarkRead,
   onOpenRow,
+  onRetryResolution,
   onSetTab
 }: {
   activity: ActivityState;
@@ -105,12 +106,17 @@ export function ActivityPane({
   onLoadMore: (tab: ActivityTab, cursor: string | null) => void;
   onMarkRead: (target: ActivityMarkReadTarget) => void;
   onOpenRow: (row: ActivityRow) => void;
+  onRetryResolution: () => void;
   onSetTab: (tab: ActivityTab) => void;
 }) {
   const activeTab =
     activity.kind === "open" ? activity.active_tab : activity.kind === "opening" ? activity.tab : "recent";
   const stream = activity.kind === "open" ? activityStream(activity, activeTab) : null;
   const rows = stream?.rows ?? [];
+  const resolution = activeTab === "unread" ? stream?.resolution : undefined;
+  const visibleRows = activeTab === "unread"
+    ? rows.filter((row) => row.kind === "event")
+    : rows;
   const markReadState = activity.kind === "open" ? activity.mark_read : { kind: "idle" as const };
   const markAllPending =
     markReadState.kind === "pending" && markReadState.target.kind === "all";
@@ -174,16 +180,31 @@ export function ActivityPane({
             <Clock3 size={ICON_SIZE.emptyState} />
             <span>{t("activity.loading")}</span>
           </div>
-        ) : rows.length === 0 ? (
-          <div className="activity-empty">
-            <Clock3 size={ICON_SIZE.emptyState} />
-            <span>
-              {activeTab === "recent" ? t("activity.noRecent") : t("activity.noUnread")}
-            </span>
-          </div>
         ) : (
-          <ol className="activity-list">
-            {rows.map((row) => {
+          <>
+            {resolution?.kind === "resolving" ? (
+              <div className="activity-empty" role="status">
+                <Clock3 size={ICON_SIZE.emptyState} />
+                <span>{t("activity.resolvingUnread")}</span>
+              </div>
+            ) : resolution?.kind === "failed" ? (
+              <div className="activity-empty" role="alert">
+                <span>{t("activity.resolveFailed")}</span>
+                <button className="dialog-button secondary" type="button" onClick={onRetryResolution}>
+                  {t("activity.retryResolution")}
+                </button>
+              </div>
+            ) : null}
+            {visibleRows.length === 0 && resolution?.kind !== "resolving" && resolution?.kind !== "failed" ? (
+              <div className="activity-empty">
+                <Clock3 size={ICON_SIZE.emptyState} />
+                <span>
+                  {activeTab === "recent" ? t("activity.noRecent") : t("activity.noUnread")}
+                </span>
+              </div>
+            ) : visibleRows.length > 0 ? (
+              <ol className="activity-list">
+            {visibleRows.map((row) => {
               const isPlaceholder = row.kind === "roomUnread";
               return (
                 <li
@@ -273,7 +294,9 @@ export function ActivityPane({
                 </li>
               );
             })}
-          </ol>
+              </ol>
+            ) : null}
+          </>
         )}
       </section>
       {stream?.next_batch ? (

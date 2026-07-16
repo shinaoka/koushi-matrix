@@ -3229,6 +3229,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "koushi-windows-overlay-acl"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "tauri",
+ "tauri-build",
+]
+
+[[package]]
 name = "language-tags"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6423,10 +6432,12 @@ dependencies = [
  "glob",
  "heck 0.5.0",
  "json-patch",
+ "quote",
  "schemars 0.8.22",
  "semver",
  "serde",
  "serde_json",
+ "tauri-codegen",
  "tauri-utils",
  "tauri-winres",
  "walkdir",

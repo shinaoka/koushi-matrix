@@ -108,8 +108,8 @@ pub use navigation::{
 
 // ── Re-exports: activity ────────────────────────────────────────────────────
 pub use activity::{
-    ActivityMarkReadState, ActivityMarkReadTarget, ActivityRow, ActivityRowKind, ActivityState,
-    ActivityStream, ActivityTab,
+    ActivityMarkReadState, ActivityMarkReadTarget, ActivityResolutionState, ActivityRow,
+    ActivityRowKind, ActivityState, ActivityStream, ActivityTab,
 };
 
 // ── Re-exports: directory ───────────────────────────────────────────────────

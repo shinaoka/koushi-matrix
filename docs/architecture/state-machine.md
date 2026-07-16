@@ -2265,6 +2265,11 @@ stateDiagram-v2
     Opening --> Closed: CloseActivity
     Open --> Open: SetActivityTab
     Open --> Open: ActivityRowsUpdated
+    Open --> Resolving: unresolved RoomUnread rows
+    Resolving --> Open: ActivityResolutionSucceeded [matching generation]
+    Resolving --> ResolutionFailed: ActivityResolutionFailed [matching generation]
+    ResolutionFailed --> Resolving: RetryActivityResolution [new generation]
+    Resolving --> Closed: close/session clear cancels task
     Open --> Open: PaginateActivity/ActivitySnapshotLoaded
     Open --> MarkReadPending: MarkActivityRead(room|all)
     MarkReadPending --> Open: ActivityMarkReadSucceeded [matching request_id]
@@ -2284,13 +2289,24 @@ stateDiagram-v2
   highlight state but no observed unread event row survives the fully-read
   marker / cleared-event filter, `ActivityProjection` synthesizes a private-data-
   minimized room-level placeholder row (`kind = RoomUnread`, `event_id = None`).
-  Observed event rows remain preferred for the same room.
+  Observed event rows remain preferred for the same room. The placeholder is a
+  transient resolver input, never completed message content: `AccountActor`
+  consumes decrypted cache/live timeline items and bounded 50-event backward
+  pages (maximum 32 per room and 16 rooms per generation) through the shared
+  `/messages` gate, then feeds real event rows back through a generation-guarded
+  observation. Per-room successes are retained when another room fails; capped
+  batches rotate across retry generations to avoid starvation.
+- `ActivityStream.resolution` is Rust-owned `Idle | Resolving | Failed` state.
+  Generation guards reject late completion after retry, close, logout, lock, or
+  account replacement. Failure exposes only a coarse `OperationFailureKind` and
+  unresolved count. React hides `RoomUnread` rows, renders resolving/failure
+  status, and may dispatch only `retry_activity_resolution`.
 - `ActivityRow` is typed, not string-sniffed:
   - `kind = Event` rows carry a real Matrix `event_id` and support focused
     context open and row-level mark-read.
-  - `kind = RoomUnread` placeholders carry no `event_id`; they are not event-
-    openable and have no row-level mark-read action. GUI code must branch on
-  `kind`, not on `event_id` shape or sentinel strings.
+  - `kind = RoomUnread` placeholders carry no `event_id`; they are resolver
+    inputs and are not rendered as message rows. GUI code must branch on `kind`,
+    not on `event_id` shape or sentinel strings.
 - Recent and Unread are separate `ActivityStream`s. Changing tabs only updates
   `active_tab`; viewing Unread does not mark rows read. Mark-read commands
   transition the Rust `mark_read` substate to pending, then clear projection
@@ -2790,8 +2806,9 @@ stateDiagram-v2
   navigation may preserve the current Home subsection.
 - Activity `Recent` and `Unread` are message-centric inbox views. Event-backed
   rows foreground the sender avatar/display label and timestamp, then show
-  context (`DM` or `Room · Space / Room`) and preview. Room-unread placeholder
-  rows stay typed and eventless.
+  context (`DM` or `Room · Space / Room`) and preview. Room-unread placeholders
+  stay typed and eventless inside Rust but are replaced by resolution status in
+  the GUI until real message rows are available.
 - People and Profile are right-panel states separate from Room info. Room info
   may link to People but must not render the dense member-card list.
 - Thread-list display ordering is a Rust-owned setting. The SDK timeline/order
