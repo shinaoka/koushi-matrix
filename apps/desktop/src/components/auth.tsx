@@ -8,6 +8,7 @@ import type {
   LoginFlow
 } from "../domain/types";
 import { ICON_SIZE } from "../app/uiShared";
+import { ImeSafeForm, ImeTextField, SecureImeTextField } from "./ImeTextControl";
 
 export function RecoveryPanel({
   isBusy,
@@ -29,7 +30,7 @@ export function RecoveryPanel({
 
   return (
     <section className="recovery-panel-body" data-testid="recovery-panel">
-      <form className="recovery-panel-form" onSubmit={onSubmit}>
+      <ImeSafeForm className="recovery-panel-form" onSubmit={onSubmit}>
         <div className="auth-brand">
           <div className="auth-mark recovery-mark">
             <ShieldCheck size={ICON_SIZE.auth} />
@@ -51,12 +52,11 @@ export function RecoveryPanel({
         </div>
         <label className="auth-field">
           <span>{t("auth.recoverySecret")}</span>
-          <input
+          <SecureImeTextField
             autoComplete="off"
             name="recoverySecret"
             ref={secretInputRef}
             spellCheck={false}
-            type="password"
             onInput={(event) => onSecretPresenceChange(event.currentTarget.value.length > 0)}
           />
         </label>
@@ -68,7 +68,7 @@ export function RecoveryPanel({
         <button className="auth-submit" disabled={isBusy || !secretFilled} type="submit">
           {isBusy ? t("action.recovering") : t("action.recover")}
         </button>
-      </form>
+      </ImeSafeForm>
     </section>
   );
 }
@@ -119,7 +119,7 @@ export function AuthScreen({
 
   return (
     <main className="auth-screen" data-testid="auth-screen">
-      <form className="auth-panel" onSubmit={onSubmit}>
+      <ImeSafeForm className="auth-panel" onSubmit={onSubmit}>
         <div className="auth-brand">
           <div className="auth-mark">
             <Hash size={ICON_SIZE.large} />
@@ -137,11 +137,10 @@ export function AuthScreen({
             </div>
             <label className="auth-field">
               <span>{t("auth.password")}</span>
-              <input
+              <SecureImeTextField
                 autoComplete="current-password"
                 name="password"
                 ref={passwordInputRef}
-                type="password"
                 onInput={(event) => onPasswordPresenceChange(event.currentTarget.value.length > 0)}
               />
             </label>
@@ -162,11 +161,12 @@ export function AuthScreen({
           <>
             <label className="auth-field">
               <span>{t("settings.homeserver")}</span>
-              <input
+              <ImeTextField
                 autoComplete="url"
                 name="homeserver"
                 spellCheck={false}
                 value={homeserver}
+                syncKey="login-homeserver"
                 onChange={(event) => onHomeserverChange(event.target.value)}
               />
             </label>
@@ -200,35 +200,36 @@ export function AuthScreen({
             ) : null}
             <label className="auth-field">
               <span>{t("auth.username")}</span>
-              <input
+              <ImeTextField
                 aria-label={t("auth.username")}
                 autoComplete="username"
                 name="username"
                 placeholder={t("auth.usernamePlaceholder")}
                 spellCheck={false}
                 value={username}
+                syncKey="login-username"
                 onChange={(event) => onUsernameChange(event.target.value)}
               />
             </label>
             <p className="auth-field-help">{t("auth.usernameHelp")}</p>
             <label className="auth-field">
               <span>{t("auth.password")}</span>
-              <input
+              <SecureImeTextField
                 autoComplete="current-password"
                 name="password"
                 ref={passwordInputRef}
-                type="password"
                 disabled={!passwordLoginAvailable}
                 onInput={(event) => onPasswordPresenceChange(event.currentTarget.value.length > 0)}
               />
             </label>
             <label className="auth-field">
               <span>{t("auth.deviceName")}</span>
-              <input
+              <ImeTextField
                 autoComplete="off"
                 name="deviceName"
                 spellCheck={false}
                 value={deviceName}
+                syncKey="login-device-name"
                 onChange={(event) => onDeviceNameChange(event.target.value)}
               />
             </label>
@@ -255,7 +256,7 @@ export function AuthScreen({
             </button>
           </>
         )}
-      </form>
+      </ImeSafeForm>
     </main>
   );
 }

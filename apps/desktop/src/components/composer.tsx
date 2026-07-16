@@ -39,7 +39,7 @@ import {
   shouldResolveComposerKeyEvent
 } from "../domain/composerKeyEvents";
 import { EmojiPicker } from "./EmojiPicker";
-import { ImeOwnedTextArea } from "./ImeTextControl";
+import { ImeOwnedTextArea, ImeSafeForm } from "./ImeTextControl";
 import {
   canApplyResolvedComposerAction,
   isComposerImeEnter,
@@ -649,7 +649,7 @@ export const Composer = memo(function Composer({
         </button>
       </div>
       {scheduleOpen && onScheduleSend ? (
-        <form className="scheduled-send-form" onSubmit={submitSchedule}>
+        <ImeSafeForm className="scheduled-send-form" onSubmit={submitSchedule}>
           <label className="scheduled-send-field">
             <span>{t("scheduled.timeInput")}</span>
             <input
@@ -671,7 +671,7 @@ export const Composer = memo(function Composer({
               {t("scheduled.schedule")}
             </button>
           </div>
-        </form>
+        </ImeSafeForm>
       ) : null}
     </section>
   );

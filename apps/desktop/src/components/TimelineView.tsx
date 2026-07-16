@@ -5205,7 +5205,7 @@ export const TimelineView = memo(function TimelineView({
       ) : null}
       {aliasTarget ? (
         <div className="dialog-overlay" role="presentation" onMouseDown={closeAliasDialog}>
-          <form
+          <ImeSafeForm
             className="dialog-box timeline-alias-dialog"
             aria-label={t("room.aliasDialogTitle", { name: aliasTarget.displayLabel })}
             onMouseDown={(event) => event.stopPropagation()}
@@ -5234,7 +5234,7 @@ export const TimelineView = memo(function TimelineView({
                 {t("action.done")}
               </button>
             </div>
-          </form>
+          </ImeSafeForm>
         </div>
       ) : null}
       </div>

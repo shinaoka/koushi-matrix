@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 
 import { t } from "../i18n/messages";
+import { ImeSafeForm, ImeTextField, SecureImeTextField } from "./ImeTextControl";
 import { KeyboardSettingsContent } from "./KeyboardSettingsPanel";
 import { TrustHelpButton } from "./TrustHelp";
 import type { DisplayDensity } from "../app/localPresentation";
@@ -337,12 +338,12 @@ export function UserSettingsPanel({
               <span>{profileInitial}</span>
             )}
           </div>
-          <form className="profile-settings-form" onSubmit={submitDisplayName}>
+          <ImeSafeForm className="profile-settings-form" onSubmit={submitDisplayName}>
             <label className="profile-settings-field">
               <span>{t("settings.profileDisplayName")}</span>
-              <input
-                type="text"
+              <ImeTextField
                 value={displayNameDraft}
+                syncKey={currentSession?.user_id ?? "profile-display-name"}
                 placeholder={t("settings.profileDisplayNamePlaceholder")}
                 disabled={profileBusy}
                 onChange={(event) => setDisplayNameDraft(event.currentTarget.value)}
@@ -381,7 +382,7 @@ export function UserSettingsPanel({
                 </span>
               </button>
             </div>
-          </form>
+          </ImeSafeForm>
         </div>
       </section>
 
@@ -922,7 +923,7 @@ function SecuritySection({
       <section className="settings-section" aria-label={t("settings.keyManagement")}>
         <h4 className="settings-subheading">{t("settings.keyManagement")}</h4>
         <div className="settings-control-stack">
-          <form
+          <ImeSafeForm
             aria-label={t("settings.roomKeyExport")}
             className="profile-settings-form"
             onSubmit={(event) => {
@@ -945,9 +946,9 @@ function SecuritySection({
                 <span>{t("settings.exportRoomKeys")}</span>
               </button>
             </div>
-          </form>
+          </ImeSafeForm>
 
-          <form
+          <ImeSafeForm
             aria-label={t("settings.roomKeyImport")}
             className="profile-settings-form"
             onSubmit={(event) => {
@@ -970,9 +971,9 @@ function SecuritySection({
                 <span>{t("settings.importRoomKeys")}</span>
               </button>
             </div>
-          </form>
+          </ImeSafeForm>
 
-          <form
+          <ImeSafeForm
             aria-label={t("settings.secureBackup")}
             className="profile-settings-form"
             onSubmit={submitSecureBackupSetup}
@@ -984,15 +985,18 @@ function SecuritySection({
             />
             <label className="profile-settings-field">
               <span>{t("settings.secureBackupPassphrase")}</span>
-              <input
+              <SecureImeTextField
                 ref={secureBackupPassphraseRef}
                 autoComplete="new-password"
-                type="password"
               />
             </label>
             <label className="profile-settings-field">
               <span>{t("settings.recoveryKeyDestination")}</span>
-              <input ref={secureBackupRecoveryPathRef} autoComplete="off" type="text" />
+              <ImeTextField
+                ref={secureBackupRecoveryPathRef}
+                autoComplete="off"
+                syncKey="secure-backup-recovery-path"
+              />
             </label>
             <div className="profile-settings-actions">
               <button className="trust-action-button primary" type="submit">
@@ -1000,9 +1004,9 @@ function SecuritySection({
                 <span>{t("settings.setupSecureBackup")}</span>
               </button>
             </div>
-          </form>
+          </ImeSafeForm>
 
-          <form
+          <ImeSafeForm
             aria-label={t("settings.changeSecureBackupPassphrase")}
             className="profile-settings-form"
             onSubmit={submitSecureBackupPassphraseChange}
@@ -1014,23 +1018,25 @@ function SecuritySection({
             />
             <label className="profile-settings-field">
               <span>{t("settings.oldSecureBackupSecret")}</span>
-              <input
+              <SecureImeTextField
                 ref={oldSecureBackupSecretRef}
                 autoComplete="current-password"
-                type="password"
               />
             </label>
             <label className="profile-settings-field">
               <span>{t("settings.newSecureBackupPassphrase")}</span>
-              <input
+              <SecureImeTextField
                 ref={newSecureBackupPassphraseRef}
                 autoComplete="new-password"
-                type="password"
               />
             </label>
             <label className="profile-settings-field">
               <span>{t("settings.recoveryKeyDestination")}</span>
-              <input ref={passphraseChangeRecoveryPathRef} autoComplete="off" type="text" />
+              <ImeTextField
+                ref={passphraseChangeRecoveryPathRef}
+                autoComplete="off"
+                syncKey="secure-backup-passphrase-recovery-path"
+              />
             </label>
             <div className="profile-settings-actions">
               <button className="trust-action-button primary" type="submit">
@@ -1038,12 +1044,12 @@ function SecuritySection({
                 <span>{t("settings.updateSecureBackupPassphrase")}</span>
               </button>
             </div>
-          </form>
+          </ImeSafeForm>
         </div>
       </section>
       {roomKeyPassphraseRequest ? (
         <div className="dialog-overlay" role="presentation">
-          <form
+          <ImeSafeForm
             className="dialog-box"
             role="dialog"
             aria-modal="true"
@@ -1058,11 +1064,10 @@ function SecuritySection({
                 ? t("settings.roomKeyPassphrasePromptExport")
                 : t("settings.roomKeyPassphrasePromptImport")}
             </p>
-            <input
+            <SecureImeTextField
               className="dialog-input"
               ref={roomKeyPassphraseRef}
               autoComplete="new-password"
-              type="password"
               aria-label={t("settings.roomKeyPassphrase")}
             />
             <div className="dialog-actions">
@@ -1075,7 +1080,7 @@ function SecuritySection({
                   : t("settings.importRoomKeys")}
               </button>
             </div>
-          </form>
+          </ImeSafeForm>
         </div>
       ) : null}
     </>
@@ -1222,8 +1227,9 @@ function AccountManagementSection({
 
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showDeactivate, setShowDeactivate] = useState(false);
-  const [newPassword, setNewPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
+  const newPasswordRef = useRef<HTMLInputElement>(null);
+  const confirmPasswordRef = useRef<HTMLInputElement>(null);
+  const [passwordFieldsComplete, setPasswordFieldsComplete] = useState(false);
   const [eraseData, setEraseData] = useState(false);
   const [mismatch, setMismatch] = useState(false);
 
@@ -1243,6 +1249,8 @@ function AccountManagementSection({
 
   function submitChangePassword(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const newPassword = newPasswordRef.current?.value ?? "";
+    const confirmPassword = confirmPasswordRef.current?.value ?? "";
     if (newPassword !== confirmPassword) {
       setMismatch(true);
       return;
@@ -1251,16 +1259,27 @@ function AccountManagementSection({
     onChangePassword(newPassword);
   }
 
+  function updatePasswordFieldsComplete() {
+    setPasswordFieldsComplete(
+      Boolean(newPasswordRef.current?.value && confirmPasswordRef.current?.value)
+    );
+  }
+
   function submitDeactivate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     onDeactivateAccount(eraseData);
   }
 
   function resetForms() {
+    if (newPasswordRef.current) {
+      newPasswordRef.current.value = "";
+    }
+    if (confirmPasswordRef.current) {
+      confirmPasswordRef.current.value = "";
+    }
     setShowChangePassword(false);
     setShowDeactivate(false);
-    setNewPassword("");
-    setConfirmPassword("");
+    setPasswordFieldsComplete(false);
     setEraseData(false);
     setMismatch(false);
   }
@@ -1322,24 +1341,22 @@ function AccountManagementSection({
       ) : null}
 
       {showChangePassword ? (
-        <form className="profile-settings-form" onSubmit={submitChangePassword}>
+        <ImeSafeForm className="profile-settings-form" onSubmit={submitChangePassword}>
           <label className="profile-settings-field">
             <span>{t("settings.changePasswordLabel")}</span>
-            <input
-              type="password"
+            <SecureImeTextField
+              ref={newPasswordRef}
               autoComplete="new-password"
-              value={newPassword}
-              onInput={(event) => setNewPassword(event.currentTarget.value)}
+              onInput={updatePasswordFieldsComplete}
               data-testid="change-password-input"
             />
           </label>
           <label className="profile-settings-field">
             <span>{t("settings.changePasswordConfirm")}</span>
-            <input
-              type="password"
+            <SecureImeTextField
+              ref={confirmPasswordRef}
               autoComplete="new-password"
-              value={confirmPassword}
-              onInput={(event) => setConfirmPassword(event.currentTarget.value)}
+              onInput={updatePasswordFieldsComplete}
               data-testid="change-password-confirm-input"
             />
           </label>
@@ -1359,17 +1376,17 @@ function AccountManagementSection({
             <button
               className="trust-action-button primary"
               type="submit"
-              disabled={!newPassword || !confirmPassword || accountManagement.kind === "working"}
+              disabled={!passwordFieldsComplete || accountManagement.kind === "working"}
               data-testid="change-password-submit"
             >
               {t("settings.changePassword")}
             </button>
           </div>
-        </form>
+        </ImeSafeForm>
       ) : null}
 
       {showDeactivate ? (
-        <form className="settings-form" onSubmit={submitDeactivate}>
+        <ImeSafeForm className="settings-form" onSubmit={submitDeactivate}>
           <p className="settings-status-text">{t("settings.deactivateAccountConfirm")}</p>
           <label className="settings-detail-row">
             <input
@@ -1399,7 +1416,7 @@ function AccountManagementSection({
               {t("settings.deactivateAccount")}
             </button>
           </div>
-        </form>
+        </ImeSafeForm>
       ) : null}
     </section>
   );
@@ -1430,12 +1447,12 @@ function SessionRow({
 
   if (renaming) {
     return (
-      <form className="session-row session-row-renaming" onSubmit={submit}>
+      <ImeSafeForm className="session-row session-row-renaming" onSubmit={submit}>
         <label className="session-rename-field">
           <span className="sr-only">{t("settings.deviceNamePlaceholder")}</span>
-          <input
-            type="text"
+          <ImeTextField
             value={draft}
+            syncKey={`session-rename:${device.device_ordinal}`}
             placeholder={t("settings.deviceNamePlaceholder")}
             onChange={(event) => setDraft(event.currentTarget.value)}
           />
@@ -1454,7 +1471,7 @@ function SessionRow({
             <span>{t("action.cancel")}</span>
           </button>
         </div>
-      </form>
+      </ImeSafeForm>
     );
   }
 
@@ -1511,13 +1528,12 @@ function AccountManagementUiaForm({
   }
 
   return (
-    <form className="trust-auth-row" onSubmit={submit}>
+    <ImeSafeForm className="trust-auth-row" onSubmit={submit}>
       <label className="trust-password-field">
         <span>{t("auth.password")}</span>
-        <input
+        <SecureImeTextField
           autoComplete="current-password"
           ref={passwordInput}
-          type="password"
           onInput={(event) => setPasswordFilled(event.currentTarget.value.length > 0)}
         />
       </label>
@@ -1525,7 +1541,7 @@ function AccountManagementUiaForm({
         <Check size={14} />
         <span>{t("action.continue")}</span>
       </button>
-    </form>
+    </ImeSafeForm>
   );
 }
 
@@ -2433,13 +2449,12 @@ function IdentityResetAuthControls({
   }
 
   return (
-    <form className="trust-auth-row" onSubmit={submit}>
+    <ImeSafeForm className="trust-auth-row" onSubmit={submit}>
       <label className="trust-password-field">
         <span>{t("trust.identityResetPassword")}</span>
-        <input
+        <SecureImeTextField
           autoComplete="current-password"
           ref={passwordInput}
-          type="password"
           onInput={(event) => setPasswordFilled(event.currentTarget.value.length > 0)}
         />
       </label>
@@ -2455,7 +2470,7 @@ function IdentityResetAuthControls({
         <X size={14} />
         <span>{t("trust.cancelIdentityReset")}</span>
       </button>
-    </form>
+    </ImeSafeForm>
   );
 }
 

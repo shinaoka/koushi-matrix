@@ -64,6 +64,7 @@ import {
 } from "./mediaLists";
 import { Composer } from "./composer";
 import { UploadStagingDialog } from "./dialogs";
+import { ImeSafeForm, ImeTextField } from "./ImeTextControl";
 
 const EMPTY_PINNED_EVENTS: DesktopSnapshot["state"]["domain"]["room_interactions"][string]["pinned_events"] = [];
 
@@ -347,12 +348,13 @@ export function ExplorePane({
           <h1 id="explore-title">{t("workspace.explore")}</h1>
         </div>
       </header>
-      <form className="directory-search" onSubmit={submitSearch}>
+      <ImeSafeForm className="directory-search" onSubmit={submitSearch}>
         <label className="directory-search-field">
           <span>{t("directory.searchPublicRooms")}</span>
-          <input
+          <ImeTextField
             type="search"
             value={queryDraft}
+            syncKey="directory-search"
             aria-label={t("directory.searchPublicRooms")}
             placeholder={t("directory.searchPlaceholder")}
             onChange={(event) => onQueryChange(event.currentTarget.value)}
@@ -371,7 +373,7 @@ export function ExplorePane({
               : t("directory.search")}
           </span>
         </button>
-      </form>
+      </ImeSafeForm>
       {queryState.kind === "failed" ? (
         <div className="directory-status" role="status">
           {t("directory.searchFailed", {

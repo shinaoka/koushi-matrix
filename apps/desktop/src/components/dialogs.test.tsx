@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { StagedUploadItem } from "../domain/types";
-import { UploadStagingDialog } from "./dialogs";
+import { CreateEntityDialog, UploadStagingDialog } from "./dialogs";
 
 afterEach(cleanup);
 
@@ -84,5 +84,33 @@ describe("UploadStagingDialog", () => {
     rerender(dialog([stagedImage("before", { kind: "preparing" })]));
 
     expect(caption.value).toBe("local caption");
+  });
+});
+
+describe("dialog IME submit handling", () => {
+  it("does not create a room for candidate-confirmation Enter", () => {
+    const onSubmit = vi.fn();
+    const { container } = render(
+      <CreateEntityDialog
+        kind="room"
+        isBusy={false}
+        value="合成ルーム"
+        onCancel={vi.fn()}
+        onSubmit={onSubmit}
+        onValueChange={vi.fn()}
+      />
+    );
+    const name = screen.getByRole("textbox", { name: "Room name" });
+
+    fireEvent.compositionStart(name);
+    fireEvent.keyDown(name, {
+      key: "Enter",
+      code: "Enter",
+      keyCode: 229,
+      isComposing: true
+    });
+    fireEvent.submit(container.querySelector("form")!);
+
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 });

@@ -1,7 +1,7 @@
 import { ChevronLeft, MessageCircle, UserPlus, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type UIEvent } from "react";
 import { t } from "../i18n/messages";
-import { ImeTextField } from "./ImeTextControl";
+import { ImeSafeForm, ImeTextField } from "./ImeTextControl";
 import type {
   RoomManagementState,
   RoomMemberRole,
@@ -142,9 +142,10 @@ export function PeoplePanel(props: PeoplePanelProps) {
           </button>
         ) : null}
         <label className="people-search">
-          <input
+          <ImeTextField
             type="search"
             value={query}
+            syncKey={contextId ?? "people-search"}
             placeholder={t("people.searchMembers")}
             aria-label={t("people.searchMembers")}
             onChange={(event) => setQuery(event.currentTarget.value)}
@@ -397,7 +398,7 @@ export function ProfilePanel({
             </p>
           ) : null}
           {showAliasForm ? (
-            <form
+            <ImeSafeForm
               className="profile-alias-form"
               onSubmit={(event) => {
                 event.preventDefault();
@@ -417,7 +418,7 @@ export function ProfilePanel({
               >
                 {t("action.done")}
               </button>
-            </form>
+            </ImeSafeForm>
           ) : null}
           {canTargetMember ? (
             <div className="profile-member-actions" aria-label={t("people.memberActions")}>
