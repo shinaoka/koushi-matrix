@@ -1330,7 +1330,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(all(target_os = "windows", feature = "windows-overlay-ipc-test"))]
     #[test]
     fn windows_overlay_ipc_is_authorized() {
         use tauri::webview::InvokeRequest;

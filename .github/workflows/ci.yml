@@ -120,4 +120,4 @@ jobs:
           workspaces: .
           shared-key: koushi-windows-overlay-acl
       - name: Prove overlay set and clear cross the Tauri ACL
-        run: cargo test -p koushi-desktop windows_overlay_ipc_is_authorized
+        run: cargo test -p koushi-desktop --features windows-overlay-ipc-test windows_overlay_ipc_is_authorized

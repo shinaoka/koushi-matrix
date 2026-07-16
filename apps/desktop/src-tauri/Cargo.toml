@@ -8,6 +8,9 @@ license = "MIT"
 name = "koushi_desktop"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+windows-overlay-ipc-test = ["tauri/test"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
