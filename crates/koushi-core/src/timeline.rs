@@ -5662,6 +5662,40 @@ impl TimelineGapRepairTracker {
 mod timeline_gap_repair_tracker_tests {
     use super::*;
 
+    fn event_item(event_id: &str, body: &str) -> TimelineItem {
+        TimelineItem {
+            id: TimelineItemId::Event {
+                event_id: event_id.to_owned(),
+            },
+            sender: None,
+            sender_label: None,
+            sender_avatar: None,
+            body: Some(body.to_owned()),
+            notice_i18n: None,
+            message_kind: Default::default(),
+            spoiler_spans: Vec::new(),
+            timestamp_ms: None,
+            in_reply_to_event_id: None,
+            formatted: None,
+            reply_quote: None,
+            thread_root: None,
+            thread_summary: None,
+            media: None,
+            link_previews: None,
+            link_ranges: Vec::new(),
+            reactions: Vec::new(),
+            can_react: false,
+            is_redacted: false,
+            is_hidden: false,
+            can_redact: false,
+            is_edited: false,
+            can_edit: false,
+            actions: TimelineMessageActions::default(),
+            send_state: None,
+            unable_to_decrypt: None,
+        }
+    }
+
     #[tokio::test]
     async fn lagged_observable_projection_wait_is_bounded() {
         assert_eq!(
@@ -6240,29 +6274,116 @@ mod timeline_gap_repair_tracker_tests {
     }
 
     #[test]
-    fn relation_boundary_fixture_recovers_the_live_edge_without_historical_fallback() {
+    fn actor_fixture_recovers_relation_bounded_live_edge_after_exact_render_ack() {
         // The raw newest boundary is an edit/reaction and therefore has no
         // standalone projected row. The rendered owner still supplies the
         // actor-private live-edge target.
+        let actor_generation = 7;
+        let timeline_generation = TimelineGeneration(3);
+        let projection_batch = 1;
+        let rendered_batch_id = TimelineBatchId(41);
+        let older = event_item("$older:test", "older");
+        let missing = event_item("$missing:test", "missing");
+        let newer_owner = event_item("$owner:test", "newer");
+        let mut rendered_items = vec![older.clone(), newer_owner.clone()];
+        let mut tracker = TimelineGapRepairTracker::default();
+        let mut correlation = TimelineGapProjectionCorrelation::default();
+
+        assert!(tracker.observe_live_edge_target(rendered_live_edge_target(&rendered_items)));
+        tracker.queue_inspection(TimelineGapRepairTrigger::LiveEdge);
+        assert_eq!(
+            tracker.begin_pending_inspection(false),
+            None,
+            "the initial projection must be acknowledged before inspection"
+        );
+        let (inspection_serial, trigger) = tracker
+            .begin_pending_inspection(true)
+            .expect("initial render ACK releases live-edge inspection");
+        assert_eq!(trigger, TimelineGapRepairTrigger::LiveEdge);
+        assert!(tracker.finish_work(inspection_serial));
+
         let projected_relation_boundaries = Vec::new();
         assert_eq!(
             select_gap_repair_candidate(
-                TimelineGapRepairTrigger::LiveEdge,
+                trigger,
                 &projected_relation_boundaries,
                 None,
                 3,
-                true,
+                tracker.has_live_edge_target(),
             ),
             GapRepairSelection::LiveEdgeFallback { ordinal: 2 },
+        );
+
+        let repair_serial = tracker.begin_repair(3).expect("repair owns scheduler");
+        correlation.begin(actor_generation, repair_serial);
+
+        // Model the SDK relay publication carrying the repair correlation tag.
+        // A duplicate delivery is included deliberately: the same display
+        // normalization used by TimelineActor/WebView must retain one row.
+        apply_timeline_diffs_to_display_items(
+            &mut rendered_items,
+            &[
+                TimelineDiff::Insert {
+                    index: 1,
+                    item: missing.clone(),
+                },
+                TimelineDiff::Insert {
+                    index: 1,
+                    item: missing.clone(),
+                },
+            ],
+        );
+        assert_eq!(
+            correlation.observe(
+                GapRepairProjectionId {
+                    actor_generation,
+                    repair_generation: repair_serial,
+                    projection_batch,
+                },
+                rendered_batch_id,
+            ),
+            None,
+            "publication alone cannot continue before SDK completion"
+        );
+        assert_eq!(
+            correlation.complete(actor_generation, repair_serial, Some(projection_batch)),
+            TimelineGapProjectionCompletion::Ready(rendered_batch_id),
+        );
+        assert!(tracker.finish_work(repair_serial));
+        assert_eq!(
+            tracker.record_batch(trigger),
+            Some(1),
+            "one bounded live-edge repair batch is recorded"
         );
 
         // Once that newest gap joins, reinspection uses ordinary automatic
         // policy, so the two unrelated unprojected historical gaps stay idle.
         let continuation = gap_repair_continuation_trigger(
-            TimelineGapRepairTrigger::LiveEdge,
+            trigger,
             &MatrixTimelineGapRepairOutcome::BoundariesJoined { events: 1 },
         );
         assert_eq!(continuation, TimelineGapRepairTrigger::Automatic);
+        tracker.queue_inspection(continuation);
+        let fence = TimelineGapRenderFence {
+            actor_generation,
+            timeline_generation,
+            repair_generation: repair_serial,
+            minimum_batch_id: rendered_batch_id,
+        };
+        tracker.await_projection(fence);
+        assert!(!tracker.acknowledge_projection(TimelineGapRenderFence {
+            minimum_batch_id: TimelineBatchId(rendered_batch_id.0 - 1),
+            ..fence
+        }));
+        assert_eq!(
+            tracker.begin_pending_inspection(true),
+            None,
+            "an unrelated or older render ACK cannot release continuation"
+        );
+        assert!(tracker.acknowledge_projection(fence));
+        let (continuation_serial, continuation) = tracker
+            .begin_pending_inspection(true)
+            .expect("the exact render ACK releases continuation");
         assert_eq!(
             select_gap_repair_candidate(
                 continuation,
@@ -6272,6 +6393,17 @@ mod timeline_gap_repair_tracker_tests {
                 true,
             ),
             GapRepairSelection::None,
+        );
+        assert!(tracker.finish_work(continuation_serial));
+
+        assert_eq!(rendered_items, vec![older, missing.clone(), newer_owner]);
+        assert_eq!(
+            rendered_items
+                .iter()
+                .filter(|item| item.id == missing.id)
+                .count(),
+            1,
+            "the repaired interval is projected exactly once"
         );
     }
 
