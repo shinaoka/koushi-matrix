@@ -842,8 +842,10 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `AccountActor` resolves it from decrypted timeline cache/live updates and
   bounded backward pagination (at most 16 rooms per generation), guarded by a
   generation and the shared messages backpressure gate. Per-room success is
-  retained when another room fails. React renders resolving/failed status,
-  hides placeholders, and dispatches only typed `retry_activity_resolution`.
+  retained when another room fails, and capped batches rotate across retry
+  generations so persistent failures cannot starve later rooms. React renders
+  resolving/failed status, hides placeholders, and dispatches only typed
+  `retry_activity_resolution`.
 - When adding or changing `ActivityState`, `ActivityRow`, `ActivityEvent`, or
   Activity command shapes, update the Tauri DTO, TypeScript domain types,
   checked-in CoreEvent contract artifact, browser fake, Tauri IPC mock, app

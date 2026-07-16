@@ -60,7 +60,9 @@ fully-read marker, minimum unread count, and generation; its `Debug` output is
 redacted. `AccountActor` owns the Matrix session and a single cancellable
 resolution task. Each generation resolves at most 16 rooms serially and uses
 the shared account `/messages` backpressure gate. Per-room successes are emitted
-even when another room fails; the remaining placeholder count stays retryable.
+even when another room fails; capped batches rotate across retry generations so
+persistent failures cannot starve later rooms, and the remaining placeholder
+count stays retryable.
 
 The SDK resolver builds a decrypted room timeline, consumes cached items first,
 then paginates backward in pages of 50 until it reaches the fully-read marker,

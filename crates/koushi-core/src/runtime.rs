@@ -1163,7 +1163,15 @@ fn normalize_activity_resolution_action(state: &AppState, action: AppAction) -> 
 
 fn cap_activity_resolution_requests(
     mut requests: Vec<ActivityResolutionRequest>,
+    generation: u64,
 ) -> Vec<ActivityResolutionRequest> {
+    if requests.len() > MAX_ACTIVITY_RESOLUTION_ROOMS {
+        let room_count = requests.len() as u64;
+        let generation_offset = generation.saturating_sub(1) % room_count;
+        let batch_width = MAX_ACTIVITY_RESOLUTION_ROOMS as u64 % room_count;
+        let start = (generation_offset * batch_width % room_count) as usize;
+        requests.rotate_left(start);
+    }
     requests.truncate(MAX_ACTIVITY_RESOLUTION_ROOMS);
     requests
 }
@@ -1762,12 +1770,12 @@ impl AppActor {
                 minimum_unread_count: room.notification_count.max(room.highlight_count).max(1),
             })
             .collect::<Vec<_>>();
-        let requests = cap_activity_resolution_requests(requests);
         if requests.is_empty() {
             return;
         }
         self.activity_resolution_generation = self.activity_resolution_generation.saturating_add(1);
         let generation = self.activity_resolution_generation;
+        let requests = cap_activity_resolution_requests(requests, generation);
         let effects = self
             .reduce_app_action(AppAction::ActivityResolutionStarted {
                 generation,
@@ -4059,11 +4067,17 @@ mod tests {
                 fully_read_event_id: None,
                 minimum_unread_count: 1,
             })
-            .collect();
-        assert_eq!(
-            cap_activity_resolution_requests(requests).len(),
-            MAX_ACTIVITY_RESOLUTION_ROOMS
-        );
+            .collect::<Vec<_>>();
+        let first = cap_activity_resolution_requests(requests.clone(), 1);
+        let second = cap_activity_resolution_requests(requests, 2);
+        assert_eq!(first.len(), MAX_ACTIVITY_RESOLUTION_ROOMS);
+        assert_eq!(second.len(), MAX_ACTIVITY_RESOLUTION_ROOMS);
+        let attempted = first
+            .into_iter()
+            .chain(second)
+            .map(|request| request.room_id)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(attempted.len(), MAX_ACTIVITY_RESOLUTION_ROOMS + 3);
     }
 
     #[test]
