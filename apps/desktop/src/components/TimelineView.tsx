@@ -96,7 +96,7 @@ import type {
 } from "../domain/coreEvents";
 import { openExternalHttpUrl, toExternalHttpUrl } from "../domain/externalLinks";
 import { mediaSourceUrl } from "../domain/mediaUrl";
-import { ImeOwnedTextArea, ImeSafeForm } from "./ImeTextControl";
+import { ImeOwnedTextArea, ImeSafeForm, ImeTextField } from "./ImeTextControl";
 import {
   canApplyResolvedComposerAction,
   isComposerImeEnter,
@@ -5221,10 +5221,11 @@ export const TimelineView = memo(function TimelineView({
                 })}
               </p>
             ) : null}
-            <input
+            <ImeTextField
               className="dialog-input"
               aria-label={t("room.aliasInput")}
               value={aliasDraft}
+              syncKey={aliasTarget.userId}
               onChange={(event) => updateAliasDraft(event.currentTarget.value)}
               autoFocus
             />

@@ -1,6 +1,7 @@
 import { ChevronLeft, MessageCircle, UserPlus, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type UIEvent } from "react";
 import { t } from "../i18n/messages";
+import { ImeTextField } from "./ImeTextControl";
 import type {
   RoomManagementState,
   RoomMemberRole,
@@ -403,9 +404,10 @@ export function ProfilePanel({
                 setShowAliasForm(false);
               }}
             >
-              <input
+              <ImeTextField
                 type="text"
                 value={aliasDraft}
+                syncKey={userId}
                 aria-label={t("room.aliasInput")}
                 onChange={(event) => updateAliasDraft(event.currentTarget.value)}
               />

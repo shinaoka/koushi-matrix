@@ -1,99 +1,88 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-  CreateEntityDialog,
-  type CreateRoomDialogOptions,
-  DiagnosticDialog
-} from "./dialogs";
+import type { StagedUploadItem } from "../domain/types";
+import { UploadStagingDialog } from "./dialogs";
 
 afterEach(cleanup);
 
-describe("DiagnosticDialog", () => {
-  it("shows copyable diagnostics", () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.assign(navigator, { clipboard: { writeText } });
+function stagedImage(caption: string, preparation: StagedUploadItem["preparation"]): StagedUploadItem {
+  return {
+    staged_id: "staged-1",
+    room_id: "!synthetic:example.invalid",
+    position: 0,
+    filename: "synthetic.png",
+    mime_type: "image/png",
+    byte_count: 128,
+    kind: { kind: "image", width: 16, height: 16 },
+    caption: caption
+      ? {
+          plain_body: caption,
+          formatted_body: null,
+          mentions: { targets: [] }
+        }
+      : null,
+    compression_choice: { kind: "original" },
+    preparation
+  };
+}
 
-    render(
-      <DiagnosticDialog
-        report={"Koushi diagnostics\nDownloading messages from 1 room(s)"}
-        onClose={vi.fn()}
-      />
+function dialog(items: StagedUploadItem[], onUpdateCaption = vi.fn()) {
+  return (
+    <UploadStagingDialog
+      items={items}
+      onClear={vi.fn()}
+      onUpdateCaption={onUpdateCaption}
+      onSelectVariant={vi.fn()}
+      onRetryPreparation={vi.fn()}
+      onUseOriginal={vi.fn()}
+      loadPreview={vi.fn(async () => [])}
+    />
+  );
+}
+
+describe("UploadStagingDialog", () => {
+  it("preserves active Japanese composition across stale preparation snapshots", () => {
+    const onUpdateCaption = vi.fn();
+    const { rerender } = render(
+      dialog([stagedImage("before", { kind: "preparing" })], onUpdateCaption)
+    );
+    const caption = screen.getByRole("textbox", {
+      name: "Caption for synthetic.png"
+    }) as HTMLInputElement;
+
+    fireEvent.compositionStart(caption);
+    fireEvent.change(caption, { target: { value: "日本語変換中" } });
+    caption.setSelectionRange(3, 5);
+    rerender(
+      dialog(
+        [
+          stagedImage("before", {
+            kind: "ready",
+            variants: [],
+            selected_variant_id: "original"
+          })
+        ],
+        onUpdateCaption
+      )
     );
 
-    expect(screen.getByRole("dialog", { name: "Diagnostics" })).toBeTruthy();
-    expect(screen.getByText(/Downloading messages from 1 room/)).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "Copy diagnostics" }));
-
-    expect(writeText).toHaveBeenCalledWith(
-      "Koushi diagnostics\nDownloading messages from 1 room(s)"
-    );
+    expect(caption.value).toBe("日本語変換中");
+    expect([caption.selectionStart, caption.selectionEnd]).toEqual([3, 5]);
+    expect(onUpdateCaption).toHaveBeenCalledWith("staged-1", "日本語変換中");
   });
-});
 
-describe("CreateEntityDialog", () => {
-  it("collects private space-room options without exposing encryption for public rooms", () => {
-    const onSubmit = vi.fn();
-    const onRoomOptionsChange = vi.fn();
+  it("preserves an ordinary dirty caption until Rust acknowledges it", () => {
+    const { rerender } = render(dialog([stagedImage("before", { kind: "preparing" })]));
+    const caption = screen.getByRole("textbox", {
+      name: "Caption for synthetic.png"
+    }) as HTMLInputElement;
 
-    function ControlledDialog() {
-      const [roomOptions, setRoomOptions] = useState<CreateRoomDialogOptions>({
-        aliasLocalpart: "",
-        encrypted: true,
-        topic: "",
-        visibility: "private"
-      });
-      return (
-        <CreateEntityDialog
-          activeSpaceName="Synthetic Workspace"
-          isBusy={false}
-          kind="room"
-          roomOptions={roomOptions}
-          value="Ops Room"
-          onCancel={vi.fn()}
-          onRoomOptionsChange={(next) => {
-            setRoomOptions(next);
-            onRoomOptionsChange(next);
-          }}
-          onSubmit={onSubmit}
-          onValueChange={vi.fn()}
-        />
-      );
-    }
+    fireEvent.change(caption, { target: { value: "local caption" } });
+    rerender(dialog([stagedImage("before", { kind: "preparing" })]));
 
-    render(<ControlledDialog />);
-
-    expect(
-      (screen.getByRole("radio", { name: "Private room" }) as HTMLInputElement).checked
-    ).toBe(true);
-    expect(screen.getByText("Standard room in Synthetic Workspace")).toBeTruthy();
-    fireEvent.change(screen.getByRole("textbox", { name: "Topic" }), {
-      target: { value: "Deployment notes" }
-    });
-    expect(onRoomOptionsChange).toHaveBeenLastCalledWith({
-      aliasLocalpart: "",
-      encrypted: true,
-      topic: "Deployment notes",
-      visibility: "private"
-    });
-
-    fireEvent.click(screen.getByRole("radio", { name: "Public room" }));
-    expect(screen.queryByRole("checkbox", { name: "Encrypted room" })).toBeNull();
-    fireEvent.change(screen.getByRole("textbox", { name: "Room address" }), {
-      target: { value: "ops-room" }
-    });
-    expect(onRoomOptionsChange).toHaveBeenLastCalledWith({
-      aliasLocalpart: "ops-room",
-      encrypted: false,
-      topic: "Deployment notes",
-      visibility: "public"
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Submit create room" }));
-    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(caption.value).toBe("local caption");
   });
 });

@@ -153,6 +153,7 @@ import type {
   TimelineScrollAnchor
 } from "./domain/types";
 import { stageAttachmentFiles } from "./domain/attachmentIngestion";
+import { createLatestAsyncResultGate } from "./domain/latestAsyncResult";
 import { SNAPSHOT_SCHEMA_VERSION } from "./domain/types";
 import {
   type DisplayDensity,
@@ -901,6 +902,22 @@ export function App() {
     setSchemaMismatchVersion(null);
     setAppStoreSnapshot(next);
   }, []);
+  const latestTextResultGateRef = useRef(createLatestAsyncResultGate<string>());
+
+  async function applyLatestTextSnapshot(
+    key: string,
+    operation: () => Promise<DesktopSnapshot>
+  ): Promise<void> {
+    const token = latestTextResultGateRef.current.begin(key);
+    try {
+      const nextSnapshot = await operation();
+      if (token.isCurrent()) {
+        setSnapshot(nextSnapshot);
+      }
+    } finally {
+      token.settle();
+    }
+  }
   const [searchQuery, setSearchQuery] = useState(() => initialSearchQuery());
   const [searchScope, setSearchScope] = useState<SearchScopeKind>("allRooms");
   const [composerMentions, setComposerMentions] = useState<MentionIntent>(EMPTY_MENTION_INTENT);
@@ -1969,7 +1986,7 @@ export function App() {
   }
 
   async function setLocalUserAlias(userId: string, alias: string | null) {
-    setSnapshot(await api.setLocalUserAlias(userId, alias));
+    await applyLatestTextSnapshot(`alias:${userId}`, () => api.setLocalUserAlias(userId, alias));
   }
 
   async function ignoreUser(userId: string) {
@@ -2371,6 +2388,9 @@ export function App() {
   }
 
   async function closeInviteUserDialog() {
+    if (inviteUserDialog) {
+      latestTextResultGateRef.current.invalidate(`invite:${inviteUserDialog.roomId}`);
+    }
     setInviteUserDialog(null);
     setInviteUserDraftQuery("");
     setInviteScopeSelection(DEFAULT_INVITE_SCOPE);
@@ -2383,17 +2403,23 @@ export function App() {
     if (!dialog) {
       return;
     }
-    const nextSnapshot = await api.searchInviteTargets(dialog.roomId, value);
-    const workflow = nextSnapshot.state.domain.invite_workflow ?? DEFAULT_INVITE_WORKFLOW;
-    if (
-      workflow.scope_plan &&
-      !workflow.scope_plan.options.some(
-        (option) => inviteScopeKey(option.scope) === inviteScopeKey(inviteScopeSelection)
-      )
-    ) {
-      setInviteScopeSelection(inviteScopeFromWorkflow(workflow));
+    const token = latestTextResultGateRef.current.begin(`invite:${dialog.roomId}`);
+    try {
+      const nextSnapshot = await api.searchInviteTargets(dialog.roomId, value);
+      if (!token.isCurrent()) return;
+      const workflow = nextSnapshot.state.domain.invite_workflow ?? DEFAULT_INVITE_WORKFLOW;
+      if (
+        workflow.scope_plan &&
+        !workflow.scope_plan.options.some(
+          (option) => inviteScopeKey(option.scope) === inviteScopeKey(inviteScopeSelection)
+        )
+      ) {
+        setInviteScopeSelection(inviteScopeFromWorkflow(workflow));
+      }
+      setSnapshot(nextSnapshot);
+    } finally {
+      token.settle();
     }
-    setSnapshot(nextSnapshot);
   }
 
   async function selectInviteTarget(userId: string) {
@@ -2560,6 +2586,11 @@ export function App() {
     if (uploads.length > 0) {
       if (uploads.some((item) => item.preparation.kind !== "ready")) {
         return;
+      }
+      for (const item of uploads) {
+        latestTextResultGateRef.current.invalidate(
+          `caption:main:${roomId}:${item.staged_id}`
+        );
       }
       cancelComposerDraftPersist();
       clearLocalComposerDraft(roomId);
@@ -2768,8 +2799,8 @@ export function App() {
   async function updateStagedUploadCaption(stagedId: string, caption: string): Promise<void> {
     const roomId = snapshot?.state.ui.timeline.room_id;
     if (!roomId) return;
-    setSnapshot(
-      await api.updateStagedUploadCaption(
+    await applyLatestTextSnapshot(`caption:main:${roomId}:${stagedId}`, () =>
+      api.updateStagedUploadCaption(
         { kind: "main", room_id: roomId },
         stagedId,
         caption
@@ -2820,6 +2851,9 @@ export function App() {
     const roomId = snapshot?.state.ui.timeline.room_id;
     if (!roomId) {
       return;
+    }
+    for (const item of snapshot?.state.ui.timeline.staged_uploads ?? []) {
+      latestTextResultGateRef.current.invalidate(`caption:main:${roomId}:${item.staged_id}`);
     }
     setSnapshot(await api.clearUploadStaging({ kind: "main", room_id: roomId }));
   }
@@ -2965,6 +2999,11 @@ export function App() {
         : [];
     if (uploads.length > 0) {
       if (uploads.some((item) => item.preparation.kind !== "ready")) return;
+      for (const item of uploads) {
+        latestTextResultGateRef.current.invalidate(
+          `caption:thread:${roomId}:${rootEventId}:${item.staged_id}`
+        );
+      }
       cancelThreadComposerDraftPersist(roomId, rootEventId);
       clearLocalThreadComposerDraft(roomId, rootEventId);
       setSnapshot(await api.sendPreparedUploads(target));
@@ -3037,6 +3076,18 @@ export function App() {
   }
 
   async function clearThreadUploadStaging(roomId: string, rootEventId: string) {
+    const thread = snapshot?.state.ui.thread;
+    if (
+      thread?.kind === "open" &&
+      thread.room_id === roomId &&
+      thread.root_event_id === rootEventId
+    ) {
+      for (const item of thread.staged_uploads ?? []) {
+        latestTextResultGateRef.current.invalidate(
+          `caption:thread:${roomId}:${rootEventId}:${item.staged_id}`
+        );
+      }
+    }
     setSnapshot(
       await api.clearUploadStaging({
         kind: "thread",
@@ -3052,8 +3103,8 @@ export function App() {
     stagedId: string,
     caption: string
   ) {
-    setSnapshot(
-      await api.updateStagedUploadCaption(
+    await applyLatestTextSnapshot(`caption:thread:${roomId}:${rootEventId}:${stagedId}`, () =>
+      api.updateStagedUploadCaption(
         { kind: "thread", room_id: roomId, root_event_id: rootEventId },
         stagedId,
         caption

@@ -27,6 +27,7 @@ import {
   type ImageUploadVariantKindPayload,
   type ImageCompressionPlan
 } from "../app/uiShared";
+import { ImeTextField } from "./ImeTextControl";
 
 async function writeClipboardText(value: string): Promise<void> {
   if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
@@ -720,8 +721,9 @@ export function UploadStagingDialog({
             ) : null}
             <label className="upload-staging-caption">
               <span>{t("upload.captionForFile", { filename: item.filename })}</span>
-              <input
+              <ImeTextField
                 value={captionBody(item)}
+                syncKey={item.staged_id}
                 aria-label={t("upload.captionForFile", { filename: item.filename })}
                 onChange={(event) => {
                   void onUpdateCaption(item.staged_id, event.currentTarget.value);
