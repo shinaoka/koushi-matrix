@@ -354,6 +354,11 @@ Rules:
    nearest the live edge). An unchanged candidate is idle; a changed candidate
    remains queued across active work and projection/render ACK fences.
    Candidate-driven automatic repair keeps a zero cached-chunk budget.
+   Room-entry live-edge repair is a separate bounded intent: it may select the
+   newest unprojected descriptor only while an actor-private rendered live-edge
+   target exists, reveals at most one cached chunk per request, stops on
+   unchanged topology or zero progress, and has a small per-generation batch
+   ceiling. It must not broaden viewport-driven repair or log its target.
    Underfilled-initial pagination must use the settled height model and virtual
    range; a transient virtual DOM `scrollHeight` is not proof that a timeline
    with canonical overflow needs another page.

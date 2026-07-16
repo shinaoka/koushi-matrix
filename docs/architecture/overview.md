@@ -867,13 +867,23 @@ are idle. A wake that arrives during an active inspection or an outstanding
 projection/render acknowledgement remains queued and is released when the
 existing fence settles, independent of ACK/event ordering.
 
+Room live-edge recovery is a distinct bounded scheduler intent, not a
+relaxation of viewport-driven automatic repair. After the initial projection
+acknowledgement, and again when the actor-private rendered live-edge target
+changes, Core may repair the newest SDK descriptor even when its raw boundary
+is an aggregated relation with no standalone row. This intent reveals at most
+one cached chunk per request, has a small actor-generation batch ceiling, and
+stops on unchanged topology or zero progress. It never invents a gap row or
+causes unrelated historical gaps to become ordinary automatic work.
+
 Timeline gaps cross the WebView boundary only as Rust-positioned, content-free
 rows with coarse state. React renders those rows, reports presentation-only
 viewport facts, preserves the viewport anchor while repair diffs apply, and
 dispatches typed retry/navigation commands. It must not infer gaps, construct
 tokens, select cache boundaries, or synthesize **Start of conversation**.
 
-Manual and automatic repair share the same bounded scheduler. Normal product
+Manual, live-edge, and automatic repair share the same bounded scheduler.
+Normal product
 paths must never repair by removing a room event cache. Failure, cancellation,
 stale generations, and unsupported missing-token recovery preserve existing
 events and expose a retryable incomplete state. Candidate-driven automatic
