@@ -2509,6 +2509,13 @@ impl std::fmt::Debug for MatrixTimelineGapHandle {
 }
 
 impl MatrixTimelineGapHandle {
+    /// Coarse persisted-topology revision used by Core to detect an unchanged
+    /// gap selection. The opaque descriptor, token, and boundary identities
+    /// remain SDK-owned and actor-private.
+    pub fn topology_revision(&self) -> u64 {
+        self.descriptor.revision
+    }
+
     pub fn older_boundary_event_id(&self) -> Option<&str> {
         self.descriptor
             .older_event_id

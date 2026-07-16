@@ -1,5 +1,6 @@
 use koushi_sdk::{
-    MatrixTimelineContinuity, MatrixTimelineGapError, MatrixTimelineGapRepairOutcome,
+    MatrixTimelineContinuity, MatrixTimelineGapError, MatrixTimelineGapHandle,
+    MatrixTimelineGapRepairOutcome,
 };
 
 #[test]
@@ -29,6 +30,12 @@ fn public_gap_contract_is_token_free_and_coarse() {
             cached_chunks_loaded: 2
         }
     );
+}
+
+#[test]
+fn gap_handle_exposes_only_a_coarse_topology_revision() {
+    let accessor: fn(&MatrixTimelineGapHandle) -> u64 = MatrixTimelineGapHandle::topology_revision;
+    let _ = accessor;
 }
 
 #[test]
