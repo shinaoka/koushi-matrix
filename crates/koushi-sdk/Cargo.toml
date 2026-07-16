@@ -6,6 +6,7 @@ license.workspace = true
 
 [features]
 smoke = ["rpassword"]
+bundled-sqlite = ["matrix-sdk/bundled-sqlite"]
 
 [[bin]]
 name = "password-login-smoke"
