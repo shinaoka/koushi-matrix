@@ -32,6 +32,7 @@ import type {
 import { contextMenuItems } from "../domain/contextMenus";
 import { mediaSourceUrl } from "../domain/mediaUrl";
 import { Tooltip } from "./Tooltip";
+import { ImeTextField } from "./ImeTextControl";
 import { useRecoverableImageSource } from "./avatarImage";
 import {
   ICON_SIZE,
@@ -141,10 +142,11 @@ export function TopBar({
       </div>
       <label className="top-search">
         <Search size={ICON_SIZE.input} />
-        <input
+        <ImeTextField
           ref={searchInputRef}
           aria-label={t("workspace.search")}
           value={searchQuery}
+          syncKey="workspace-search"
           dir="auto"
           placeholder={t("workspace.searchPlaceholder", { spaceName: activeSpaceName })}
           onChange={(event) => onSearchQueryChange(event.target.value)}

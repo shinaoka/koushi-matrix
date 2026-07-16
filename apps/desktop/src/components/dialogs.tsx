@@ -27,6 +27,7 @@ import {
   type ImageUploadVariantKindPayload,
   type ImageCompressionPlan
 } from "../app/uiShared";
+import { ImeSafeForm, ImeTextField } from "./ImeTextControl";
 
 async function writeClipboardText(value: string): Promise<void> {
   if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
@@ -111,7 +112,7 @@ export function CreateEntityDialog({
       aria-label={title}
       onKeyDown={onDialogKeyDown}
     >
-      <form
+      <ImeSafeForm
         className="dialog-box"
         onSubmit={(event) => {
           event.preventDefault();
@@ -121,13 +122,14 @@ export function CreateEntityDialog({
         }}
       >
         <div className="dialog-title">{title}</div>
-        <input
+        <ImeTextField
           className="dialog-input"
           type="text"
           autoFocus
           aria-label={inputLabel}
           placeholder={inputLabel}
           value={value}
+          syncKey={`create-${kind}-name`}
           onChange={(event) => onValueChange(event.target.value)}
         />
         {!isSpace ? (
@@ -182,12 +184,13 @@ export function CreateEntityDialog({
                 <span>{t("dialog.encryptedRoom")}</span>
               </label>
             ) : null}
-            <input
+            <ImeTextField
               className="dialog-input"
               type="text"
               aria-label={t("dialog.roomTopic")}
               placeholder={t("dialog.roomTopic")}
               value={effectiveRoomOptions.topic}
+              syncKey="create-room-topic"
               onChange={(event) =>
                 updateRoomOptions({
                   topic: event.target.value
@@ -195,12 +198,13 @@ export function CreateEntityDialog({
               }
             />
             {effectiveRoomOptions.visibility === "public" ? (
-              <input
+              <ImeTextField
                 className="dialog-input"
                 type="text"
                 aria-label={t("dialog.roomAddress")}
                 placeholder={t("dialog.roomAddress")}
                 value={effectiveRoomOptions.aliasLocalpart}
+                syncKey="create-room-address"
                 onChange={(event) =>
                   updateRoomOptions({
                     aliasLocalpart: event.target.value
@@ -228,7 +232,7 @@ export function CreateEntityDialog({
             {isSpace ? t("action.createSpace") : t("action.createRoom")}
           </button>
         </div>
-      </form>
+      </ImeSafeForm>
     </div>
   );
 }
@@ -400,7 +404,7 @@ export function UserIdDialog({
       aria-label={title}
       onKeyDown={onDialogKeyDown}
     >
-      <form
+      <ImeSafeForm
         className="dialog-box"
         onSubmit={(event) => {
           event.preventDefault();
@@ -410,7 +414,7 @@ export function UserIdDialog({
         }}
       >
         <div className="dialog-title">{title}</div>
-        <input
+        <ImeTextField
           className="dialog-input"
           type="text"
           autoFocus
@@ -418,6 +422,7 @@ export function UserIdDialog({
           placeholder={inputLabel}
           spellCheck={false}
           value={value}
+          syncKey={title}
           onChange={(event) => onValueChange(event.target.value)}
         />
         <div className="dialog-actions">
@@ -438,7 +443,7 @@ export function UserIdDialog({
             {submitLabel}
           </button>
         </div>
-      </form>
+      </ImeSafeForm>
     </div>
   );
 }
@@ -488,7 +493,7 @@ export function InviteTargetsDialog({
       aria-label={title}
       onKeyDown={onDialogKeyDown}
     >
-      <form
+      <ImeSafeForm
         className="dialog-box invite-target-dialog"
         onSubmit={(event) => {
           event.preventDefault();
@@ -517,7 +522,7 @@ export function InviteTargetsDialog({
             </span>
           ))}
         </div>
-        <input
+        <ImeTextField
           className="dialog-input"
           type="text"
           autoFocus
@@ -525,6 +530,7 @@ export function InviteTargetsDialog({
           placeholder={t("dialog.inviteSearch")}
           spellCheck={false}
           value={query}
+          syncKey={title}
           onChange={(event) => onQueryChange(event.target.value)}
         />
         <div className="invite-target-candidates" aria-label={t("dialog.inviteCandidates")}>
@@ -582,7 +588,7 @@ export function InviteTargetsDialog({
             {t("dialog.sendInvite")}
           </button>
         </div>
-      </form>
+      </ImeSafeForm>
     </div>
   );
 }
@@ -623,7 +629,7 @@ export function ReportReasonDialog({
       aria-label={title}
       onKeyDown={onDialogKeyDown}
     >
-      <form
+      <ImeSafeForm
         className="dialog-box"
         onSubmit={(event) => {
           event.preventDefault();
@@ -635,13 +641,14 @@ export function ReportReasonDialog({
         <div className="dialog-title">{title}</div>
         <label className="dialog-input-label">
           <span>{t("dialog.reportReasonLabel")}</span>
-          <input
+          <ImeTextField
             className="dialog-input"
             type="text"
             autoFocus
             aria-label={t("dialog.reportReasonLabel")}
             placeholder={t("dialog.reportReasonPlaceholder")}
             value={reason}
+            syncKey="report-reason"
             onChange={(event) => onReasonChange(event.target.value)}
           />
         </label>
@@ -663,7 +670,7 @@ export function ReportReasonDialog({
             {t("action.report")}
           </button>
         </div>
-      </form>
+      </ImeSafeForm>
     </div>
   );
 }
@@ -720,8 +727,9 @@ export function UploadStagingDialog({
             ) : null}
             <label className="upload-staging-caption">
               <span>{t("upload.captionForFile", { filename: item.filename })}</span>
-              <input
+              <ImeTextField
                 value={captionBody(item)}
+                syncKey={item.staged_id}
                 aria-label={t("upload.captionForFile", { filename: item.filename })}
                 onChange={(event) => {
                   void onUpdateCaption(item.staged_id, event.currentTarget.value);

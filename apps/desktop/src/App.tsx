@@ -45,6 +45,11 @@ export function reconcileComposerSubmissionSnapshot(
 }
 import { ContextMenuSurface } from "./components/ContextMenuSurface";
 import {
+  ImeSafeForm,
+  ImeTextField,
+  SecureImeTextField
+} from "./components/ImeTextControl";
+import {
   type TimelineDiagnosticLogEntry,
   type TimelineDiagnostics,
   type TimelineTransport
@@ -153,6 +158,7 @@ import type {
   TimelineScrollAnchor
 } from "./domain/types";
 import { stageAttachmentFiles } from "./domain/attachmentIngestion";
+import { createLatestAsyncOperationQueue } from "./domain/latestAsyncResult";
 import { SNAPSHOT_SCHEMA_VERSION } from "./domain/types";
 import {
   type DisplayDensity,
@@ -838,8 +844,8 @@ export function SessionVerificationGate({ snapshot, onSnapshot, onSignOut, onSta
     {awaiting && methods.includes("existingDeviceSas") && <button disabled={gateOperation === "sas"} onClick={() => void run("sas", operations.startOwnUserSas)}>{t("gate.otherDevice")}</button>}
     {sasVerifying && session.sas_emojis?.length === 7 && <div className="session-verification-emojis">{session.sas_emojis.map((emoji, index) => <span key={index}>{emoji.symbol} {emoji.description}</span>)}</div>}
     {sasVerifying && session.sas_emojis?.length === 7 && flowId !== undefined && <><button onClick={() => void run("sas", () => api.confirmSasVerification(flowId))}>{t("gate.match")}</button><button onClick={() => void run("sas", () => api.mismatchSasVerification(flowId))}>{t("gate.mismatch")}</button></>}
-    {awaiting && (methods.includes("recoveryKey") || methods.includes("securityPhrase")) && <form onSubmit={(event) => { event.preventDefault(); const secret = recoveryRef.current?.value.trim() ?? ""; if (secret) void run("recovery", () => operations.submitRecovery(secret)); if (recoveryRef.current) recoveryRef.current.value = ""; }}><input ref={recoveryRef} type="password" aria-label={t("gate.recoverySecret")} autoComplete="off"/><button disabled={gateOperation === "recovery"} type="submit">{t("gate.recover")}</button></form>}
-    {awaiting && methods.includes("bootstrap") && <form onSubmit={(event) => { event.preventDefault(); const destination = destinationRef.current?.value.trim() ?? ""; const passphrase = passphraseRef.current?.value || null; if (destinationRef.current) destinationRef.current.value = ""; if (passphraseRef.current) passphraseRef.current.value = ""; if (destination) void run("recovery", () => api.startSessionBootstrap(passphrase, destination)); }}><input ref={destinationRef} aria-label={t("gate.destination")}/><input ref={passphraseRef} type="password" aria-label={t("gate.passphrase")} autoComplete="new-password"/><button type="submit">{t("gate.bootstrap")}</button></form>}
+    {awaiting && (methods.includes("recoveryKey") || methods.includes("securityPhrase")) && <ImeSafeForm onSubmit={(event) => { event.preventDefault(); const secret = recoveryRef.current?.value.trim() ?? ""; if (secret) void run("recovery", () => operations.submitRecovery(secret)); if (recoveryRef.current) recoveryRef.current.value = ""; }}><SecureImeTextField ref={recoveryRef} aria-label={t("gate.recoverySecret")} autoComplete="off"/><button disabled={gateOperation === "recovery"} type="submit">{t("gate.recover")}</button></ImeSafeForm>}
+    {awaiting && methods.includes("bootstrap") && <ImeSafeForm onSubmit={(event) => { event.preventDefault(); const destination = destinationRef.current?.value.trim() ?? ""; const passphrase = passphraseRef.current?.value || null; if (destinationRef.current) destinationRef.current.value = ""; if (passphraseRef.current) passphraseRef.current.value = ""; if (destination) void run("recovery", () => api.startSessionBootstrap(passphrase, destination)); }}><ImeTextField ref={destinationRef} aria-label={t("gate.destination")} syncKey="session-bootstrap-destination"/><SecureImeTextField ref={passphraseRef} aria-label={t("gate.passphrase")} autoComplete="new-password"/><button type="submit">{t("gate.bootstrap")}</button></ImeSafeForm>}
     {session.kind === "awaitingBootstrapConfirmation" && flowId !== undefined && <button onClick={() => void run("recovery", () => api.confirmSessionBootstrapSaved(flowId))}>{t("gate.saved")}</button>}
     {(awaiting || discovering || rechecking) && <button disabled={gateOperation === "recovery"} onClick={() => void run("recovery", operations.retryCurrentDeviceTrustDiscovery)}>{t("gate.retry")}</button>}
     {sasVerifying && flowId !== undefined && <button onClick={() => void run("sas", () => api.cancelVerification(flowId))}>{t("action.cancel")}</button>}
@@ -901,6 +907,17 @@ export function App() {
     setSchemaMismatchVersion(null);
     setAppStoreSnapshot(next);
   }, []);
+  const latestTextOperationQueueRef = useRef(createLatestAsyncOperationQueue<string>());
+
+  async function applyLatestTextSnapshot(
+    key: string,
+    operation: () => Promise<DesktopSnapshot>
+  ): Promise<void> {
+    const result = await latestTextOperationQueueRef.current.run(key, operation);
+    if (result.kind === "applied") {
+      setSnapshot(result.value);
+    }
+  }
   const [searchQuery, setSearchQuery] = useState(() => initialSearchQuery());
   const [searchScope, setSearchScope] = useState<SearchScopeKind>("allRooms");
   const [composerMentions, setComposerMentions] = useState<MentionIntent>(EMPTY_MENTION_INTENT);
@@ -1969,7 +1986,7 @@ export function App() {
   }
 
   async function setLocalUserAlias(userId: string, alias: string | null) {
-    setSnapshot(await api.setLocalUserAlias(userId, alias));
+    await applyLatestTextSnapshot(`alias:${userId}`, () => api.setLocalUserAlias(userId, alias));
   }
 
   async function ignoreUser(userId: string) {
@@ -2371,6 +2388,9 @@ export function App() {
   }
 
   async function closeInviteUserDialog() {
+    if (inviteUserDialog) {
+      latestTextOperationQueueRef.current.invalidate(`invite:${inviteUserDialog.roomId}`);
+    }
     setInviteUserDialog(null);
     setInviteUserDraftQuery("");
     setInviteScopeSelection(DEFAULT_INVITE_SCOPE);
@@ -2383,7 +2403,12 @@ export function App() {
     if (!dialog) {
       return;
     }
-    const nextSnapshot = await api.searchInviteTargets(dialog.roomId, value);
+    const result = await latestTextOperationQueueRef.current.run(
+      `invite:${dialog.roomId}`,
+      () => api.searchInviteTargets(dialog.roomId, value)
+    );
+    if (result.kind === "superseded") return;
+    const nextSnapshot = result.value;
     const workflow = nextSnapshot.state.domain.invite_workflow ?? DEFAULT_INVITE_WORKFLOW;
     if (
       workflow.scope_plan &&
@@ -2560,6 +2585,11 @@ export function App() {
     if (uploads.length > 0) {
       if (uploads.some((item) => item.preparation.kind !== "ready")) {
         return;
+      }
+      for (const item of uploads) {
+        latestTextOperationQueueRef.current.invalidate(
+          `caption:main:${roomId}:${item.staged_id}`
+        );
       }
       cancelComposerDraftPersist();
       clearLocalComposerDraft(roomId);
@@ -2768,8 +2798,8 @@ export function App() {
   async function updateStagedUploadCaption(stagedId: string, caption: string): Promise<void> {
     const roomId = snapshot?.state.ui.timeline.room_id;
     if (!roomId) return;
-    setSnapshot(
-      await api.updateStagedUploadCaption(
+    await applyLatestTextSnapshot(`caption:main:${roomId}:${stagedId}`, () =>
+      api.updateStagedUploadCaption(
         { kind: "main", room_id: roomId },
         stagedId,
         caption
@@ -2820,6 +2850,9 @@ export function App() {
     const roomId = snapshot?.state.ui.timeline.room_id;
     if (!roomId) {
       return;
+    }
+    for (const item of snapshot?.state.ui.timeline.staged_uploads ?? []) {
+      latestTextOperationQueueRef.current.invalidate(`caption:main:${roomId}:${item.staged_id}`);
     }
     setSnapshot(await api.clearUploadStaging({ kind: "main", room_id: roomId }));
   }
@@ -2965,6 +2998,11 @@ export function App() {
         : [];
     if (uploads.length > 0) {
       if (uploads.some((item) => item.preparation.kind !== "ready")) return;
+      for (const item of uploads) {
+        latestTextOperationQueueRef.current.invalidate(
+          `caption:thread:${roomId}:${rootEventId}:${item.staged_id}`
+        );
+      }
       cancelThreadComposerDraftPersist(roomId, rootEventId);
       clearLocalThreadComposerDraft(roomId, rootEventId);
       setSnapshot(await api.sendPreparedUploads(target));
@@ -3037,6 +3075,18 @@ export function App() {
   }
 
   async function clearThreadUploadStaging(roomId: string, rootEventId: string) {
+    const thread = snapshot?.state.ui.thread;
+    if (
+      thread?.kind === "open" &&
+      thread.room_id === roomId &&
+      thread.root_event_id === rootEventId
+    ) {
+      for (const item of thread.staged_uploads ?? []) {
+        latestTextOperationQueueRef.current.invalidate(
+          `caption:thread:${roomId}:${rootEventId}:${item.staged_id}`
+        );
+      }
+    }
     setSnapshot(
       await api.clearUploadStaging({
         kind: "thread",
@@ -3052,8 +3102,8 @@ export function App() {
     stagedId: string,
     caption: string
   ) {
-    setSnapshot(
-      await api.updateStagedUploadCaption(
+    await applyLatestTextSnapshot(`caption:thread:${roomId}:${rootEventId}:${stagedId}`, () =>
+      api.updateStagedUploadCaption(
         { kind: "thread", room_id: roomId, root_event_id: rootEventId },
         stagedId,
         caption

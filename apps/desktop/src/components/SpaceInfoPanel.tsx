@@ -12,6 +12,7 @@ import { type ReactNode, useEffect, useState } from "react";
 
 import { t } from "../i18n/messages";
 import type { RoomManagementState, RoomSummary, SpaceSummary } from "../domain/types";
+import { ImeTextField } from "./ImeTextControl";
 
 export function SpaceInfoPanel({
   fallbackName,
@@ -87,8 +88,9 @@ export function SpaceInfoPanel({
           <div className="profile-settings-form">
             <label className="profile-settings-field">
               <span>{t("space.localName")}</span>
-              <input
+              <ImeTextField
                 value={localNameDraft}
+                syncKey={`${space.space_id}:local-name`}
                 placeholder={t("space.localNamePlaceholder")}
                 onChange={(event) =>
                   updateLocalPresentation({
@@ -100,8 +102,9 @@ export function SpaceInfoPanel({
             </label>
             <label className="profile-settings-field">
               <span>{t("space.localIcon")}</span>
-              <input
+              <ImeTextField
                 value={localIconDraft}
+                syncKey={`${space.space_id}:local-icon`}
                 placeholder={t("space.localIconPlaceholder")}
                 maxLength={12}
                 onChange={(event) =>

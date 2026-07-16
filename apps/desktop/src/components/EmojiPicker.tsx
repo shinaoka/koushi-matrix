@@ -12,6 +12,7 @@ import {
 } from "react";
 
 import { t } from "../i18n/messages";
+import { ImeTextField } from "./ImeTextControl";
 import {
   EMOJI_BY_CATEGORY,
   EMOJI_CATEGORIES,
@@ -202,10 +203,11 @@ export function EmojiPicker({
       <div className="emoji-picker-header">
         <div className="emoji-picker-search">
           <Search size={14} aria-hidden="true" />
-          <input
+          <ImeTextField
             ref={searchRef}
             type="search"
             value={query}
+            syncKey="emoji-search"
             placeholder={t("composer.emojiSearch")}
             aria-label={t("composer.emojiSearch")}
             onChange={(event) => setQuery(event.currentTarget.value)}

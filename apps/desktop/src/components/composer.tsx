@@ -39,6 +39,7 @@ import {
   shouldResolveComposerKeyEvent
 } from "../domain/composerKeyEvents";
 import { EmojiPicker } from "./EmojiPicker";
+import { ImeOwnedTextArea, ImeSafeForm } from "./ImeTextControl";
 import {
   canApplyResolvedComposerAction,
   isComposerImeEnter,
@@ -120,12 +121,8 @@ export const Composer = memo(function Composer({
   const [activeMentionIndex, setActiveMentionIndex] = useState(0);
   const [dismissedMentionKey, setDismissedMentionKey] = useState<string | null>(null);
   const [fileDragActive, setFileDragActive] = useState(false);
-  const {
-    textareaRef,
-    lifecycle: imeComposition,
-    onCompositionStart,
-    onCompositionEnd
-  } = useCompositionOwnedTextarea(value, draftKey);
+  const imeTextControl = useCompositionOwnedTextarea(value, draftKey);
+  const { textareaRef, lifecycle: imeComposition } = imeTextControl;
   const captureKeyIntent = useComposerKeyIntentSnapshot(imeComposition);
   const autocompleteListboxId = useId();
   const activeMention = activeMentionQuery(localValue);
@@ -558,15 +555,13 @@ export const Composer = memo(function Composer({
           ))}
         </div>
       ) : null}
-      <textarea
-        ref={textareaRef}
+      <ImeOwnedTextArea
+        ownership={imeTextControl}
         aria-label={ariaLabel}
         disabled={!canEdit}
-        defaultValue={localValue}
+        value={localValue}
         placeholder={placeholder ?? t("composer.placeholder", { roomName })}
         onKeyDown={onComposerKeyDown}
-        onCompositionStart={onCompositionStart}
-        onCompositionEnd={onCompositionEnd}
         onPaste={(event) => {
           const files = filesFromAttachmentTransfer(event.clipboardData);
           if (files.length > 0) {
@@ -654,7 +649,7 @@ export const Composer = memo(function Composer({
         </button>
       </div>
       {scheduleOpen && onScheduleSend ? (
-        <form className="scheduled-send-form" onSubmit={submitSchedule}>
+        <ImeSafeForm className="scheduled-send-form" onSubmit={submitSchedule}>
           <label className="scheduled-send-field">
             <span>{t("scheduled.timeInput")}</span>
             <input
@@ -676,7 +671,7 @@ export const Composer = memo(function Composer({
               {t("scheduled.schedule")}
             </button>
           </div>
-        </form>
+        </ImeSafeForm>
       ) : null}
     </section>
   );

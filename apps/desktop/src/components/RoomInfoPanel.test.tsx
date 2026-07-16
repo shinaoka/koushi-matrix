@@ -88,6 +88,48 @@ afterEach(() => {
 });
 
 describe("RoomInfoPanel", () => {
+  test("keeps a room-name composition across equivalent Rust settings snapshots", () => {
+    const management = () => ({
+      selected_room_id: baseRoom.room_id,
+      settings: {
+        room_id: baseRoom.room_id,
+        name: "Alpha Room",
+        topic: null,
+        avatar_url: null,
+        join_rule: "invite" as const,
+        history_visibility: "shared" as const,
+        permissions: {
+          can_edit_settings: true,
+          can_edit_roles: true,
+          can_kick: true,
+          can_ban: true,
+          can_unban: true
+        },
+        members: []
+      },
+      operation: { kind: "idle" as const }
+    });
+    const view = () => (
+      <RoomInfoPanel
+        room={baseRoom}
+        roomManagement={management()}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        onUpdateRoomSetting={vi.fn()}
+      />
+    );
+    const { rerender } = render(view());
+    const name = screen.getByRole("textbox", { name: "Room name" }) as HTMLInputElement;
+
+    fireEvent.compositionStart(name);
+    fireEvent.change(name, { target: { value: "日本語変換中" } });
+    name.setSelectionRange(3, 5);
+    rerender(view());
+
+    expect(name.value).toBe("日本語変換中");
+    expect([name.selectionStart, name.selectionEnd]).toEqual([3, 5]);
+  });
+
   test("renders room identity and simplified info entries", () => {
     render(
       <RoomInfoPanel
