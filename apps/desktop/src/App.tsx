@@ -158,7 +158,7 @@ import type {
   TimelineScrollAnchor
 } from "./domain/types";
 import { stageAttachmentFiles } from "./domain/attachmentIngestion";
-import { createLatestAsyncResultGate } from "./domain/latestAsyncResult";
+import { createLatestAsyncOperationQueue } from "./domain/latestAsyncResult";
 import { SNAPSHOT_SCHEMA_VERSION } from "./domain/types";
 import {
   type DisplayDensity,
@@ -907,20 +907,15 @@ export function App() {
     setSchemaMismatchVersion(null);
     setAppStoreSnapshot(next);
   }, []);
-  const latestTextResultGateRef = useRef(createLatestAsyncResultGate<string>());
+  const latestTextOperationQueueRef = useRef(createLatestAsyncOperationQueue<string>());
 
   async function applyLatestTextSnapshot(
     key: string,
     operation: () => Promise<DesktopSnapshot>
   ): Promise<void> {
-    const token = latestTextResultGateRef.current.begin(key);
-    try {
-      const nextSnapshot = await operation();
-      if (token.isCurrent()) {
-        setSnapshot(nextSnapshot);
-      }
-    } finally {
-      token.settle();
+    const result = await latestTextOperationQueueRef.current.run(key, operation);
+    if (result.kind === "applied") {
+      setSnapshot(result.value);
     }
   }
   const [searchQuery, setSearchQuery] = useState(() => initialSearchQuery());
@@ -2394,7 +2389,7 @@ export function App() {
 
   async function closeInviteUserDialog() {
     if (inviteUserDialog) {
-      latestTextResultGateRef.current.invalidate(`invite:${inviteUserDialog.roomId}`);
+      latestTextOperationQueueRef.current.invalidate(`invite:${inviteUserDialog.roomId}`);
     }
     setInviteUserDialog(null);
     setInviteUserDraftQuery("");
@@ -2408,23 +2403,22 @@ export function App() {
     if (!dialog) {
       return;
     }
-    const token = latestTextResultGateRef.current.begin(`invite:${dialog.roomId}`);
-    try {
-      const nextSnapshot = await api.searchInviteTargets(dialog.roomId, value);
-      if (!token.isCurrent()) return;
-      const workflow = nextSnapshot.state.domain.invite_workflow ?? DEFAULT_INVITE_WORKFLOW;
-      if (
-        workflow.scope_plan &&
-        !workflow.scope_plan.options.some(
-          (option) => inviteScopeKey(option.scope) === inviteScopeKey(inviteScopeSelection)
-        )
-      ) {
-        setInviteScopeSelection(inviteScopeFromWorkflow(workflow));
-      }
-      setSnapshot(nextSnapshot);
-    } finally {
-      token.settle();
+    const result = await latestTextOperationQueueRef.current.run(
+      `invite:${dialog.roomId}`,
+      () => api.searchInviteTargets(dialog.roomId, value)
+    );
+    if (result.kind === "superseded") return;
+    const nextSnapshot = result.value;
+    const workflow = nextSnapshot.state.domain.invite_workflow ?? DEFAULT_INVITE_WORKFLOW;
+    if (
+      workflow.scope_plan &&
+      !workflow.scope_plan.options.some(
+        (option) => inviteScopeKey(option.scope) === inviteScopeKey(inviteScopeSelection)
+      )
+    ) {
+      setInviteScopeSelection(inviteScopeFromWorkflow(workflow));
     }
+    setSnapshot(nextSnapshot);
   }
 
   async function selectInviteTarget(userId: string) {
@@ -2593,7 +2587,7 @@ export function App() {
         return;
       }
       for (const item of uploads) {
-        latestTextResultGateRef.current.invalidate(
+        latestTextOperationQueueRef.current.invalidate(
           `caption:main:${roomId}:${item.staged_id}`
         );
       }
@@ -2858,7 +2852,7 @@ export function App() {
       return;
     }
     for (const item of snapshot?.state.ui.timeline.staged_uploads ?? []) {
-      latestTextResultGateRef.current.invalidate(`caption:main:${roomId}:${item.staged_id}`);
+      latestTextOperationQueueRef.current.invalidate(`caption:main:${roomId}:${item.staged_id}`);
     }
     setSnapshot(await api.clearUploadStaging({ kind: "main", room_id: roomId }));
   }
@@ -3005,7 +2999,7 @@ export function App() {
     if (uploads.length > 0) {
       if (uploads.some((item) => item.preparation.kind !== "ready")) return;
       for (const item of uploads) {
-        latestTextResultGateRef.current.invalidate(
+        latestTextOperationQueueRef.current.invalidate(
           `caption:thread:${roomId}:${rootEventId}:${item.staged_id}`
         );
       }
@@ -3088,7 +3082,7 @@ export function App() {
       thread.root_event_id === rootEventId
     ) {
       for (const item of thread.staged_uploads ?? []) {
-        latestTextResultGateRef.current.invalidate(
+        latestTextOperationQueueRef.current.invalidate(
           `caption:thread:${roomId}:${rootEventId}:${item.staged_id}`
         );
       }

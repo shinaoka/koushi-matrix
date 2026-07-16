@@ -80,10 +80,12 @@ conflict is being resolved.
   must not invoke send/search/submit handlers, must not be prevented, and must
   fence the associated form's implicit submit. Normal Enter behavior resumes
   after composition ends.
-- Async text mutations are latest-wins per logical field. Stale completions
-  must not replace newer drafts or newly selected entities. Passwords and other
-  entered secrets remain DOM-owned and uncontrolled; React state may retain
-  only non-secret presentation facts such as whether a field is non-empty.
+- Async text mutations are latest-wins per logical field. Writes for one field
+  are serialized, superseded pending writes are coalesced, and stale
+  completions must not replace newer drafts or newly selected entities.
+  Passwords and other entered secrets remain DOM-owned and uncontrolled; React
+  state may retain only non-secret presentation facts such as whether a field
+  is non-empty.
 - `npm --prefix apps/desktop run lint` enforces the surface inventory through
   `scripts/check-ime-text-inputs.mjs`. New text-entry variants extend the
   shared primitive and its behavioral tests instead of adding local IME fixes.

@@ -56,7 +56,7 @@ Feature callbacks retain domain semantics. The primitives only normalize text-co
 
 ### Async result ordering
 
-`apps/desktop/src/domain/latestAsyncResult.ts` provides a keyed monotonic result gate. Each submitted request receives a generation; only the current generation for that logical field may apply its returned full snapshot. Upload captions and per-user aliases use this gate. Query fields that already keep the typed query locally may use the same gate when their returned snapshot can otherwise replace newer results.
+`apps/desktop/src/domain/latestAsyncResult.ts` provides a keyed monotonic result gate and a per-key operation queue. Each submitted request receives a generation; operations for one logical field are serialized, pending generations superseded before dispatch are skipped, and only the current generation may apply its returned full snapshot. This preserves backend write order while coalescing intermediate keystrokes. Upload captions, per-user aliases, and invite queries use the queue; independent logical fields remain concurrent.
 
 ### Static enforcement
 

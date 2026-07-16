@@ -8,12 +8,17 @@ import { CreateEntityDialog, UploadStagingDialog } from "./dialogs";
 
 afterEach(cleanup);
 
-function stagedImage(caption: string, preparation: StagedUploadItem["preparation"]): StagedUploadItem {
+function stagedImage(
+  caption: string,
+  preparation: StagedUploadItem["preparation"],
+  stagedId = "staged-1",
+  filename = "synthetic.png"
+): StagedUploadItem {
   return {
-    staged_id: "staged-1",
+    staged_id: stagedId,
     room_id: "!synthetic:example.invalid",
     position: 0,
-    filename: "synthetic.png",
+    filename,
     mime_type: "image/png",
     byte_count: 128,
     kind: { kind: "image", width: 16, height: 16 },
@@ -84,6 +89,33 @@ describe("UploadStagingDialog", () => {
     rerender(dialog([stagedImage("before", { kind: "preparing" })]));
 
     expect(caption.value).toBe("local caption");
+  });
+
+  it("isolates composition ownership by staged upload identity", () => {
+    const { rerender } = render(
+      dialog([
+        stagedImage("first", { kind: "preparing" }, "staged-a", "first.png"),
+        stagedImage("second", { kind: "preparing" }, "staged-b", "second.png")
+      ])
+    );
+    const first = screen.getByRole("textbox", {
+      name: "Caption for first.png"
+    }) as HTMLInputElement;
+    const second = screen.getByRole("textbox", {
+      name: "Caption for second.png"
+    }) as HTMLInputElement;
+
+    fireEvent.compositionStart(first);
+    fireEvent.change(first, { target: { value: "一つ目を変換中" } });
+    rerender(
+      dialog([
+        stagedImage("first", { kind: "preparing" }, "staged-a", "first.png"),
+        stagedImage("second from Rust", { kind: "preparing" }, "staged-b", "second.png")
+      ])
+    );
+
+    expect(first.value).toBe("一つ目を変換中");
+    expect(second.value).toBe("second from Rust");
   });
 });
 

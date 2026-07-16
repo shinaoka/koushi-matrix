@@ -97,7 +97,8 @@ Crate responsibilities:
   authentication, recovery, and dialogs. These surfaces share one React
   primitive layer: the DOM owns composition and unacknowledged drafts, logical
   keys define explicit resets, candidate-confirmation Enter fences associated
-  form submission, and latest-wins tokens reject stale async snapshots.
+  form submission, and per-field latest-wins queues serialize writes, coalesce
+  superseded pending work, and reject stale async snapshots.
   Password and recovery strings remain uncontrolled DOM values and do not enter
   React state. A repository AST gate prevents feature components from bypassing
   this layer with raw composable controls or forms.

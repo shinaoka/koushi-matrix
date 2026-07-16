@@ -4,7 +4,7 @@
 
 **Goal:** Make IME-safe DOM ownership and candidate-confirmation submit handling a single shared contract across every desktop text input.
 
-**Architecture:** Generalize the current composition lifecycle into a reusable text-control controller, wrap it with thin React input/textarea/secure/form adapters, and migrate all feature surfaces. A keyed async-result gate protects full-snapshot text mutations, while a TypeScript-AST audit prevents raw composable controls and forms from returning.
+**Architecture:** Generalize the current composition lifecycle into a reusable text-control controller, wrap it with thin React input/textarea/secure/form adapters, and migrate all feature surfaces. A keyed async-operation queue serializes writes, coalesces superseded pending work, and protects full-snapshot text mutations, while a TypeScript-AST audit prevents raw composable controls and forms from returning.
 
 **Tech Stack:** React 19, TypeScript 6, Vitest/Testing Library, Node test runner, TypeScript compiler API, ESLint, Tauri snapshot API.
 
@@ -119,7 +119,7 @@ git commit -m "feat: add shared IME-safe text controls"
 - Modify: `apps/desktop/src/App.tsx`
 
 **Interfaces:**
-- Produces `createLatestAsyncResultGate<Key>()` with `begin(key): { isCurrent(): boolean }` and `invalidate(key)`.
+- Produces `createLatestAsyncResultGate<Key>()` for generation identity and `createLatestAsyncOperationQueue<Key>()` for per-key serialization, pending-write coalescing, and invalidation.
 - Upload caption uses `ImeTextField` with `syncKey={item.staged_id}`.
 - Alias fields use user identity as `syncKey`.
 
@@ -131,9 +131,9 @@ Begin generations A and B for one key and a generation for a second key. Assert 
 
 Run `npm --prefix apps/desktop test -- src/domain/latestAsyncResult.test.ts` and expect failure because the gate does not exist.
 
-- [ ] **Step 3: Implement the gate and verify GREEN**
+- [ ] **Step 3: Implement the gate/operation queue and verify GREEN**
 
-Use a private `Map<Key, number>` and monotonically increasing generations. Re-run the test.
+Use a private `Map<Key, number>` and monotonically increasing generations. Chain one active operation per key, skip pending operations whose generation is no longer current, and keep different keys concurrent. Re-run the test.
 
 - [ ] **Step 4: Write the failing upload-caption reproduction**
 
@@ -143,9 +143,9 @@ Start composition, enter synthetic Japanese text, set a selection, rerender with
 
 Run `npm --prefix apps/desktop test -- src/components/dialogs.test.tsx` and expect the controlled caption to be overwritten.
 
-- [ ] **Step 6: Migrate caption/alias fields and gate async snapshots**
+- [ ] **Step 6: Migrate caption/alias fields and queue async snapshots**
 
-Apply returned snapshots only when their logical field generation is still current.
+Serialize operations for each logical field and apply returned snapshots only when that generation is still current.
 
 - [ ] **Step 7: Verify GREEN and commit**
 

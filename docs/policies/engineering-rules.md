@@ -592,10 +592,12 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
    confirmation, keep the browser default, skip the feature handler, and mark
    the nearest `ImeSafeForm` so its associated implicit submit is suppressed.
    Do not infer composition from a later async callback.
-4. Text-changing async commands use a generation/token gate per logical field.
-   Apply only the newest completion for that field, invalidate pending work
-   when the field/entity is cleared or replaced, and never let an older result
-   settle or invalidate a newer generation.
+4. Text-changing async commands use a generation-guarded operation queue per
+   logical field. The queue serializes active writes, skips superseded pending
+   writes before dispatch, applies only the newest completion, and invalidates
+   pending work when the field/entity is cleared or replaced. Independent
+   fields may run concurrently; an older result must never settle or invalidate
+   a newer generation.
 5. Password/recovery inputs use `SecureImeTextField` without `value` or
    `defaultValue`. Read and clear them through a DOM ref at explicit submit or
    cancel boundaries. React state may store booleans such as `isFilled`, but
