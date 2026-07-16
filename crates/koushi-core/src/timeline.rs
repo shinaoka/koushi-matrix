@@ -58,9 +58,9 @@ use std::time::{Duration, Instant};
 
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel};
 use koushi_sdk::{
-    MatrixClientSession, MatrixTimelineContinuity, MatrixTimelineGapError, MatrixTimelineGapHandle,
-    MatrixTimelineGapInspection, MatrixTimelineGapRepairBudget, MatrixTimelineGapRepairOutcome,
-    MatrixTimelineGapRepairResult,
+    MatrixClientSession, MatrixRoomSubscriptionCheckpoint, MatrixTimelineContinuity,
+    MatrixTimelineGapError, MatrixTimelineGapHandle, MatrixTimelineGapInspection,
+    MatrixTimelineGapRepairBudget, MatrixTimelineGapRepairOutcome, MatrixTimelineGapRepairResult,
 };
 use koushi_search::{AttachmentDocument, SensitiveString};
 use koushi_state::{
@@ -125,6 +125,7 @@ use crate::ids::{
     RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration, TimelineKey, TimelineKind,
 };
 use crate::link_preview::{LinkPreviewContext, extract_link_ranges};
+use crate::live_catchup::{LiveCatchupGate, classify_live_catchup_gate};
 use crate::messages_backpressure::MessagesBackpressure;
 use crate::search::SearchIndexMessage;
 use crate::startup_trace::{self, StartupPhase};
@@ -188,6 +189,10 @@ pub enum TimelineMessage {
     /// this, e.g. Conduit's sliding sync only delivers the initial window).
     SyncStarted {
         room_list_service: Option<Arc<matrix_sdk_ui::room_list_service::RoomListService>>,
+    },
+    RoomSubscriptionCheckpoint {
+        service_epoch: u64,
+        checkpoint: MatrixRoomSubscriptionCheckpoint,
     },
     IgnoredUsersUpdated {
         user_ids: std::collections::BTreeSet<String>,
@@ -1066,6 +1071,8 @@ impl TimelineManagerHandle {
 pub struct TimelineManagerActor {
     session: Option<Arc<MatrixClientSession>>,
     room_list_service: Option<Arc<matrix_sdk_ui::room_list_service::RoomListService>>,
+    room_subscription_checkpoint_task: Option<executor::JoinHandle<()>>,
+    room_subscription_service_epoch: u64,
     timelines: HashMap<TimelineKey, TimelineActorHandle>,
     accepted_submissions: SubmissionAdmissionLedger,
     action_tx: mpsc::Sender<Vec<AppAction>>,
@@ -1158,6 +1165,8 @@ impl TimelineManagerActor {
         let actor = TimelineManagerActor {
             session: None,
             room_list_service: None,
+            room_subscription_checkpoint_task: None,
+            room_subscription_service_epoch: 0,
             timelines: HashMap::new(),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
@@ -1199,6 +1208,8 @@ impl TimelineManagerActor {
         let actor = TimelineManagerActor {
             session: Some(session),
             room_list_service: None,
+            room_subscription_checkpoint_task: None,
+            room_subscription_service_epoch: 0,
             timelines: HashMap::new(),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
@@ -1235,6 +1246,13 @@ impl TimelineManagerActor {
                 }
                 TimelineMessage::SyncStarted { room_list_service } => {
                     self.handle_sync_started(room_list_service).await;
+                }
+                TimelineMessage::RoomSubscriptionCheckpoint {
+                    service_epoch,
+                    checkpoint,
+                } => {
+                    self.handle_room_subscription_checkpoint(service_epoch, checkpoint)
+                        .await;
                 }
                 TimelineMessage::IgnoredUsersUpdated { user_ids } => {
                     self.handle_ignored_users_updated(user_ids).await;
@@ -1302,6 +1320,9 @@ impl TimelineManagerActor {
             self.clear_thread_root_projections_for_room(&key).await;
         }
         self.thread_root_projection_fetches.abort_all();
+        if let Some(task) = self.room_subscription_checkpoint_task.take() {
+            task.abort();
+        }
         if let Some(acknowledged) = shutdown_acknowledgement {
             let _ = acknowledged.send(());
         }
@@ -1442,14 +1463,87 @@ impl TimelineManagerActor {
         &mut self,
         room_list_service: Option<Arc<matrix_sdk_ui::room_list_service::RoomListService>>,
     ) {
+        self.room_subscription_service_epoch =
+            self.room_subscription_service_epoch.wrapping_add(1).max(1);
+        let service_epoch = self.room_subscription_service_epoch;
+        if let Some(task) = self.room_subscription_checkpoint_task.take() {
+            task.abort();
+        }
         self.room_list_service = room_list_service.clone();
         let Some(service) = room_list_service else {
             return;
         };
 
+        let mut checkpoints = service.room_subscription_checkpoints();
+        let manager_tx = self.msg_tx.clone();
+        self.room_subscription_checkpoint_task = Some(executor::spawn(async move {
+            loop {
+                let retained = checkpoints.get();
+                for checkpoint in retained.values() {
+                    if manager_tx
+                        .send(TimelineMessage::RoomSubscriptionCheckpoint {
+                            service_epoch,
+                            checkpoint: MatrixRoomSubscriptionCheckpoint::from_sdk(checkpoint),
+                        })
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                if checkpoints.next().await.is_none() {
+                    return;
+                }
+            }
+        }));
+
         self.subscribe_existing_timeline_rooms(&service).await;
         self.rebuild_existing_room_timelines_after_sync_started()
             .await;
+    }
+
+    async fn handle_room_subscription_checkpoint(
+        &self,
+        service_epoch: u64,
+        checkpoint: MatrixRoomSubscriptionCheckpoint,
+    ) {
+        if service_epoch != self.room_subscription_service_epoch {
+            return;
+        }
+        for (key, handle) in &self.timelines {
+            if matches!(key.kind, TimelineKind::Room { .. })
+                && key.room_id() == checkpoint.room_id()
+                && handle.subscription_generation == Some(checkpoint.subscription_generation())
+            {
+                let _ = handle
+                    .send(TimelineActorMessage::RoomSubscriptionCheckpoint(
+                        checkpoint.clone(),
+                    ))
+                    .await;
+            }
+        }
+    }
+
+    async fn replay_retained_room_subscription_checkpoint(&self, key: &TimelineKey) {
+        if !matches!(key.kind, TimelineKind::Room { .. }) {
+            return;
+        }
+        let Some(service) = self.room_list_service.clone() else {
+            return;
+        };
+        let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(key.room_id()) else {
+            return;
+        };
+        let checkpoints = service.room_subscription_checkpoints();
+        let retained = checkpoints.get();
+        let Some(checkpoint) = retained.get(&room_id) else {
+            return;
+        };
+        self.handle_room_subscription_checkpoint(
+            self.room_subscription_service_epoch,
+            MatrixRoomSubscriptionCheckpoint::from_sdk(checkpoint),
+        )
+        .await;
     }
 
     async fn subscribe_existing_timeline_rooms(
@@ -1506,7 +1600,9 @@ impl TimelineManagerActor {
         {
             Ok(handle) => {
                 self.emit_timeline_subscribed_action(&key).await;
-                self.timelines.insert(key, handle);
+                self.timelines.insert(key.clone(), handle);
+                self.replay_retained_room_subscription_checkpoint(&key)
+                    .await;
             }
             Err(kind) => {
                 self.timeline_actor_generations
@@ -2344,7 +2440,9 @@ impl TimelineManagerActor {
         {
             Ok(handle) => {
                 self.emit_timeline_subscribed_action(&key).await;
-                self.timelines.insert(key, handle);
+                self.timelines.insert(key.clone(), handle);
+                self.replay_retained_room_subscription_checkpoint(&key)
+                    .await;
                 trace("subscribed_done");
             }
             Err(kind) => {
@@ -2389,9 +2487,15 @@ impl TimelineManagerActor {
         // streams the room's NEW timeline events; the all-rooms list alone
         // only guarantees the initial window on some servers (Conduit).
         // This is the Element X room-open pattern.
+        let mut subscription_generation = None;
         if let Some(service) = &self.room_list_service {
             trace("subscribe_rooms_begin");
-            service.subscribe_to_rooms(&[&room_id]).await;
+            let generation = service
+                .subscribe_to_rooms_with_generation(&[&room_id])
+                .await;
+            if matches!(key.kind, TimelineKind::Room { .. }) {
+                subscription_generation = Some(generation.get());
+            }
             trace("subscribe_rooms_done");
         }
 
@@ -2450,6 +2554,7 @@ impl TimelineManagerActor {
             Arc::clone(&self.replay_known_thread_root_projections),
             Arc::clone(&self.timeline_actor_generations),
             actor_generation,
+            subscription_generation,
             self.msg_tx.clone(),
         )
         .await;
@@ -2872,6 +2977,7 @@ fn ruma_mentions_from_intent(intent: &MentionIntent) -> Option<Mentions> {
 // ---------------------------------------------------------------------------
 
 enum TimelineActorMessage {
+    RoomSubscriptionCheckpoint(MatrixRoomSubscriptionCheckpoint),
     InspectTimelineGaps {
         trigger: TimelineGapRepairTrigger,
     },
@@ -3058,6 +3164,8 @@ enum TimelineActorMessage {
         repair_generation: u64,
         batch_id: TimelineBatchId,
     },
+    #[cfg(test)]
+    Barrier(oneshot::Sender<()>),
 }
 
 impl TimelineActorMessage {
@@ -3335,6 +3443,37 @@ fn record_timeline_gap_repair(
                 batches_processed.into(),
             ))
             .field(DiagnosticField::token("outcome", outcome)),
+    );
+}
+
+fn record_live_catchup_gate(
+    gate: LiveCatchupGate,
+    expected_generation: Option<u64>,
+    checkpoint: Option<&MatrixRoomSubscriptionCheckpoint>,
+) {
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(DiagnosticLevel::Info, "core.live_catchup", "checkpoint")
+            .field(DiagnosticField::token("decision", gate.token()))
+            .field(DiagnosticField::boolean(
+                "supported_backend",
+                expected_generation.is_some(),
+            ))
+            .field(DiagnosticField::count(
+                "subscription_generation",
+                expected_generation.unwrap_or_default(),
+            ))
+            .field(DiagnosticField::boolean(
+                "timeline_update",
+                checkpoint.is_some_and(|checkpoint| checkpoint.has_timeline_update()),
+            ))
+            .field(DiagnosticField::boolean(
+                "checkpoint_gap",
+                checkpoint.is_some_and(|checkpoint| checkpoint.has_inserted_gap()),
+            ))
+            .field(DiagnosticField::count(
+                "event_count",
+                checkpoint.map_or(0, |checkpoint| checkpoint.event_count() as u64),
+            )),
     );
 }
 
@@ -5094,6 +5233,7 @@ struct TimelineActorHandle {
     tx: mpsc::Sender<TimelineActorMessage>,
     task: executor::JoinHandle<()>,
     auxiliary_tasks: Vec<executor::JoinHandle<()>>,
+    subscription_generation: Option<u64>,
 }
 
 impl TimelineActorHandle {
@@ -6441,7 +6581,7 @@ mod timeline_gap_repair_tracker_tests {
     }
 
     #[tokio::test]
-    async fn timeline_actor_repairs_an_unprojected_relation_gap_after_render_ack() {
+    async fn timeline_actor_waits_for_current_subscription_checkpoint_before_live_edge_repair() {
         use matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation;
 
         let server = MatrixMockServer::new().await;
@@ -6545,6 +6685,16 @@ mod timeline_gap_repair_tracker_tests {
                 device_id: "DEVICE".to_owned(),
             },
         ));
+        let checkpoint_gap = session
+            .inspect_room_timeline_gaps(room_id.as_str())
+            .await
+            .expect("pre-repair inspection")
+            .gaps
+            .into_iter()
+            .next()
+            .expect("seeded gap");
+        let subscription_checkpoint =
+            MatrixRoomSubscriptionCheckpoint::from_gap_for_testing(7, &checkpoint_gap);
         let timeline = Arc::new(
             koushi_timeline_builder(
                 &room,
@@ -6584,6 +6734,7 @@ mod timeline_gap_repair_tracker_tests {
             )),
             generations,
             actor_generation,
+            Some(7),
             manager_tx,
         )
         .await;
@@ -6618,6 +6769,29 @@ mod timeline_gap_repair_tracker_tests {
                 .await
         );
         assert!(ack_rx.await.expect("projection ACK response"));
+
+        let (barrier_tx, barrier_rx) = oneshot::channel();
+        assert!(handle.send(TimelineActorMessage::Barrier(barrier_tx)).await);
+        barrier_rx.await.expect("pre-checkpoint actor barrier");
+        let messages_before_checkpoint = server
+            .received_requests()
+            .await
+            .expect("recorded mock requests")
+            .into_iter()
+            .filter(|request| request.url.path().contains("/messages"))
+            .count();
+        assert_eq!(
+            messages_before_checkpoint, 0,
+            "LiveEdge repair must remain blocked after projection ACK until the checkpoint arrives",
+        );
+
+        assert!(
+            handle
+                .send(TimelineActorMessage::RoomSubscriptionCheckpoint(
+                    subscription_checkpoint,
+                ))
+                .await
+        );
 
         let mut repaired_batch_acknowledged = false;
         let mut post_ack_continuity_complete = false;
@@ -6937,6 +7111,8 @@ struct TimelineActor {
     /// Core events require a lease for this actor generation.
     timeline_actor_generations: Arc<TimelineActorGenerationGate>,
     actor_generation: u64,
+    subscription_generation: Option<u64>,
+    room_subscription_checkpoint: Option<MatrixRoomSubscriptionCheckpoint>,
     /// Bounded root hydration workers are manager-owned so their completion is
     /// ordered with unsubscribe/shutdown lifecycle commands.
     manager_tx: mpsc::Sender<TimelineMessage>,
@@ -7373,6 +7549,7 @@ impl TimelineActor {
         replay_known_thread_root_projections: Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
         timeline_actor_generations: Arc<TimelineActorGenerationGate>,
         actor_generation: u64,
+        subscription_generation: Option<u64>,
         manager_tx: mpsc::Sender<TimelineMessage>,
     ) -> TimelineActorHandle {
         let mut auxiliary_tasks: Vec<executor::JoinHandle<()>> = Vec::new();
@@ -7699,6 +7876,8 @@ impl TimelineActor {
             replay_known_thread_root_projections,
             timeline_actor_generations,
             actor_generation,
+            subscription_generation,
+            room_subscription_checkpoint: None,
             manager_tx,
             reply_detail_fetch_attempted_event_ids: HashSet::new(),
             pagination_task: None,
@@ -7727,6 +7906,7 @@ impl TimelineActor {
             tx: actor_tx,
             task,
             auxiliary_tasks,
+            subscription_generation,
         }
     }
 
@@ -7820,6 +8000,19 @@ impl TimelineActor {
 
     async fn handle_msg(&mut self, msg: TimelineActorMessage) {
         match msg {
+            TimelineActorMessage::RoomSubscriptionCheckpoint(checkpoint) => {
+                if self.subscription_generation == Some(checkpoint.subscription_generation())
+                    && self.key.room_id() == checkpoint.room_id()
+                {
+                    self.room_subscription_checkpoint = Some(checkpoint);
+                    record_live_catchup_gate(
+                        self.live_catchup_gate(),
+                        self.subscription_generation,
+                        self.room_subscription_checkpoint.as_ref(),
+                    );
+                    self.start_pending_timeline_gap_inspection().await;
+                }
+            }
             TimelineActorMessage::InspectTimelineGaps { trigger } => {
                 self.request_timeline_gap_inspection(trigger).await;
             }
@@ -8189,6 +8382,10 @@ impl TimelineActor {
                     self.start_pending_timeline_gap_inspection().await;
                 }
             }
+            #[cfg(test)]
+            TimelineActorMessage::Barrier(response) => {
+                let _ = response.send(());
+            }
         }
         if self.hydrate_after_restore_flush && self.restore_anchor.is_none() {
             self.hydrate_after_restore_flush = false;
@@ -8247,6 +8444,20 @@ impl TimelineActor {
         {
             return;
         }
+        if matches!(
+            self.gap_repair.pending_trigger,
+            Some(TimelineGapRepairTrigger::LiveEdge)
+        ) && matches!(
+            self.live_catchup_gate(),
+            LiveCatchupGate::AwaitingCheckpoint | LiveCatchupGate::Stale
+        ) {
+            record_live_catchup_gate(
+                self.live_catchup_gate(),
+                self.subscription_generation,
+                self.room_subscription_checkpoint.as_ref(),
+            );
+            return;
+        }
         let Some((serial, trigger)) = self
             .gap_repair
             .begin_pending_inspection(self.projection_acknowledged)
@@ -8285,6 +8496,21 @@ impl TimelineActor {
                 })
                 .await;
         }));
+    }
+
+    fn live_catchup_gate(&self) -> LiveCatchupGate {
+        classify_live_catchup_gate(
+            self.subscription_generation,
+            self.room_subscription_checkpoint
+                .as_ref()
+                .map(|checkpoint| {
+                    (
+                        checkpoint.subscription_generation(),
+                        checkpoint.has_timeline_update(),
+                        checkpoint.has_inserted_gap(),
+                    )
+                }),
+        )
     }
 
     async fn handle_timeline_gap_inspection_finished(
@@ -8334,13 +8560,37 @@ impl TimelineActor {
                 match inspection.continuity {
                     MatrixTimelineContinuity::Gapped => {
                         self.gap_repair.gap_count = known_gap_count;
-                        let selection = select_gap_repair_candidate(
-                            trigger,
-                            &projected_gaps,
-                            viewport_range,
-                            inspection.gaps.len(),
-                            self.gap_repair.has_live_edge_target(),
-                        );
+                        let selection = if matches!(trigger, TimelineGapRepairTrigger::LiveEdge)
+                            && self.subscription_generation.is_some()
+                        {
+                            match self.live_catchup_gate() {
+                                LiveCatchupGate::RepairCheckpointGap => self
+                                    .room_subscription_checkpoint
+                                    .as_ref()
+                                    .and_then(|checkpoint| {
+                                        inspection
+                                            .gaps
+                                            .iter()
+                                            .position(|gap| checkpoint.matches_gap(gap))
+                                    })
+                                    .map_or(GapRepairSelection::None, |ordinal| {
+                                        GapRepairSelection::LiveEdgeFallback { ordinal }
+                                    }),
+                                LiveCatchupGate::Unsupported
+                                | LiveCatchupGate::AwaitingCheckpoint
+                                | LiveCatchupGate::Stale
+                                | LiveCatchupGate::NoTimelineUpdate
+                                | LiveCatchupGate::NoGap => GapRepairSelection::None,
+                            }
+                        } else {
+                            select_gap_repair_candidate(
+                                trigger,
+                                &projected_gaps,
+                                viewport_range,
+                                inspection.gaps.len(),
+                                self.gap_repair.has_live_edge_target(),
+                            )
+                        };
                         let (ordinal, outcome, repaired_live_edge_fallback) = match selection {
                             GapRepairSelection::None => {
                                 record_timeline_gap_repair(
@@ -17274,6 +17524,8 @@ mod tests {
         let mut manager = TimelineManagerActor {
             session: None,
             room_list_service: None,
+            room_subscription_checkpoint_task: None,
+            room_subscription_service_epoch: 0,
             timelines: HashMap::from([(key.clone(), test_timeline_actor_handle())]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
@@ -18622,6 +18874,8 @@ mod tests {
         let mut manager = TimelineManagerActor {
             session: None,
             room_list_service: None,
+            room_subscription_checkpoint_task: None,
+            room_subscription_service_epoch: 0,
             timelines: HashMap::from([(key.clone(), test_timeline_actor_handle())]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
@@ -19025,6 +19279,7 @@ mod tests {
             tx,
             task: actor_task,
             auxiliary_tasks: vec![auxiliary_task],
+            subscription_generation: None,
         };
         drop(handle);
         executor::sleep(Duration::from_millis(25)).await;
@@ -19086,6 +19341,7 @@ mod tests {
             tx,
             task,
             auxiliary_tasks: Vec::new(),
+            subscription_generation: None,
         }
     }
 
@@ -19100,12 +19356,15 @@ mod tests {
         let mut manager = TimelineManagerActor {
             session: None,
             room_list_service: None,
+            room_subscription_checkpoint_task: None,
+            room_subscription_service_epoch: 0,
             timelines: HashMap::from([(
                 key.clone(),
                 TimelineActorHandle {
                     tx: actor_tx,
                     task: actor_task,
                     auxiliary_tasks: Vec::new(),
+                    subscription_generation: None,
                 },
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
@@ -19185,6 +19444,7 @@ mod tests {
                 tx: actor_tx,
                 task: actor_task,
                 auxiliary_tasks: Vec::new(),
+                subscription_generation: None,
             },
         );
         let (closed_action_tx, closed_action_rx) = mpsc::channel(1);
@@ -19294,12 +19554,15 @@ mod tests {
         let manager = TimelineManagerActor {
             session: None,
             room_list_service: None,
+            room_subscription_checkpoint_task: None,
+            room_subscription_service_epoch: 0,
             timelines: HashMap::from([(
                 key.clone(),
                 TimelineActorHandle {
                     tx: actor_tx,
                     task: child,
                     auxiliary_tasks: Vec::new(),
+                    subscription_generation: None,
                 },
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
@@ -19363,12 +19626,15 @@ mod tests {
         let mut manager = TimelineManagerActor {
             session: None,
             room_list_service: None,
+            room_subscription_checkpoint_task: None,
+            room_subscription_service_epoch: 0,
             timelines: HashMap::from([(
                 key.clone(),
                 TimelineActorHandle {
                     tx: actor_tx,
                     task: actor_task,
                     auxiliary_tasks: Vec::new(),
+                    subscription_generation: None,
                 },
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
@@ -20591,12 +20857,15 @@ mod tests {
         let mut manager = TimelineManagerActor {
             session: None,
             room_list_service: None,
+            room_subscription_checkpoint_task: None,
+            room_subscription_service_epoch: 0,
             timelines: HashMap::from([(
                 key.clone(),
                 TimelineActorHandle {
                     tx: actor_tx,
                     task: actor_task,
                     auxiliary_tasks: Vec::new(),
+                    subscription_generation: None,
                 },
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
@@ -20766,12 +21035,15 @@ mod tests {
         let mut manager = TimelineManagerActor {
             session: None,
             room_list_service: None,
+            room_subscription_checkpoint_task: None,
+            room_subscription_service_epoch: 0,
             timelines: HashMap::from([(
                 key.clone(),
                 TimelineActorHandle {
                     tx: actor_tx,
                     task: actor_task,
                     auxiliary_tasks: Vec::new(),
+                    subscription_generation: None,
                 },
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
@@ -21773,16 +22045,24 @@ mod tests {
         // mailbox) intentionally falls back to a full rebuild via
         // `self.timelines.remove(&key)`, so no "must-not-remove" assertion here.
 
-        // The new-key (full subscribe) path must still call subscribe_to_rooms
-        // and build a fresh timeline.
+        // The new-key (full subscribe) path must still delegate to the actor
+        // builder, which subscribes the room with a generation checkpoint and
+        // builds a fresh timeline.
         let new_key_path = handle_subscribe_source
             .split("let client = session.client()")
             .nth(1)
             .expect("new-key SDK path must follow the existing-key branch");
+        let build_helper_source = source
+            .split("async fn build_timeline_actor_handle")
+            .nth(1)
+            .expect("timeline actor build helper should exist")
+            .split("async fn route_to_actor_or_fail")
+            .next()
+            .expect("route helper should follow timeline actor build helper");
 
         assert!(
-            new_key_path.contains("service.subscribe_to_rooms"),
-            "a new (not yet subscribed) key must still call subscribe_to_rooms"
+            build_helper_source.contains("subscribe_to_rooms_with_generation"),
+            "a new (not yet subscribed) key must still call subscribe_to_rooms_with_generation"
         );
         assert!(
             new_key_path.contains("koushi_timeline_builder("),

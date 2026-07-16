@@ -16,6 +16,7 @@ pub mod executor;
 pub mod failure;
 pub mod ids;
 pub mod link_preview;
+mod live_catchup;
 pub mod media_preparation;
 pub(crate) mod messages_backpressure;
 pub mod renderable_thumbnail;

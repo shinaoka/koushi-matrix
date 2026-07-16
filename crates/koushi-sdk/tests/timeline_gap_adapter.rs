@@ -1,6 +1,6 @@
 use koushi_sdk::{
-    MatrixTimelineContinuity, MatrixTimelineGapError, MatrixTimelineGapHandle,
-    MatrixTimelineGapRepairOutcome,
+    MatrixRoomSubscriptionCheckpoint, MatrixTimelineContinuity, MatrixTimelineGapError,
+    MatrixTimelineGapHandle, MatrixTimelineGapRepairOutcome,
 };
 
 #[test]
@@ -30,6 +30,21 @@ fn public_gap_contract_is_token_free_and_coarse() {
             cached_chunks_loaded: 2
         }
     );
+}
+
+#[test]
+fn room_subscription_checkpoint_contract_is_closed_and_token_free() {
+    let generation: fn(&MatrixRoomSubscriptionCheckpoint) -> u64 =
+        MatrixRoomSubscriptionCheckpoint::subscription_generation;
+    let room_id: fn(&MatrixRoomSubscriptionCheckpoint) -> &str =
+        MatrixRoomSubscriptionCheckpoint::room_id;
+    let has_timeline: fn(&MatrixRoomSubscriptionCheckpoint) -> bool =
+        MatrixRoomSubscriptionCheckpoint::has_timeline_update;
+    let has_gap: fn(&MatrixRoomSubscriptionCheckpoint) -> bool =
+        MatrixRoomSubscriptionCheckpoint::has_inserted_gap;
+    let matches_gap: fn(&MatrixRoomSubscriptionCheckpoint, &MatrixTimelineGapHandle) -> bool =
+        MatrixRoomSubscriptionCheckpoint::matches_gap;
+    let _ = (generation, room_id, has_timeline, has_gap, matches_gap);
 }
 
 #[test]

@@ -581,6 +581,8 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
         QaStage::Timeline => &["timeline=ok", "timeline_nav=ok", "hide_redacted=ok"],
         QaStage::TimelineReconnect => &[
             "timeline_reconnect_recv_after_reconnect=ok",
+            "live_catchup_checkpoint=ok",
+            "live_catchup_gap_repaired=ok",
             "timeline_reconnect=ok",
         ],
         QaStage::TimelineStress => &[
@@ -4048,42 +4050,90 @@ async fn run_timeline_reconnect_scenario(config: &QaConfig) -> Result<(), String
     subscribe_timeline_for_qa(&mut conn_a, &key_a, "timeline_reconnect subscribe A").await?;
     subscribe_timeline_for_qa(&mut conn_b, &key_b, "timeline_reconnect subscribe B").await?;
 
-    proxy.disable();
-    wait_for_sync_reconnecting(&mut conn_a, "timeline_reconnect A offline").await?;
-
-    let body = "QA timeline reconnect message from B";
-    let txn = "qa-timeline-reconnect-b";
-    let send_b_id = conn_b.next_request_id();
+    let seed_body = "QA timeline reconnect known anchor";
+    let seed_txn = "qa-timeline-reconnect-seed";
+    let seed_send_id = conn_b.next_request_id();
     conn_b
         .command(CoreCommand::Timeline(TimelineCommand::SendText {
-            request_id: send_b_id,
+            request_id: seed_send_id,
             key: key_b.clone(),
-            transaction_id: txn.to_owned(),
-            body: body.to_owned(),
+            transaction_id: seed_txn.to_owned(),
+            body: seed_body.to_owned(),
             mentions: MentionIntent::default(),
         }))
         .await
-        .map_err(|e| format!("timeline_reconnect: submit B send failed: {e}"))?;
+        .map_err(|e| format!("timeline_reconnect: submit seed failed: {e}"))?;
     wait_for_send_flow_completion(
         &mut conn_b,
-        send_b_id,
+        seed_send_id,
         &key_b,
-        txn,
-        body,
-        "timeline_reconnect B send while A offline",
+        seed_txn,
+        seed_body,
+        "timeline_reconnect seed known anchor",
     )
     .await?;
-
-    proxy.enable();
-    wait_for_sync_running_after_reconnect(&mut conn_a, "timeline_reconnect A recovered").await?;
     wait_for_item_with_body(
         &mut conn_a,
         &key_a,
-        body,
-        "timeline_reconnect A receives after reconnect",
+        seed_body,
+        "timeline_reconnect A receives known anchor",
+    )
+    .await?;
+    unsubscribe_timeline_for_qa(
+        &mut conn_a,
+        &key_a,
+        "timeline_reconnect unsubscribe A before offline gap",
+    )
+    .await?;
+
+    proxy.disable();
+    wait_for_sync_reconnecting(&mut conn_a, "timeline_reconnect A offline").await?;
+
+    let offline_bodies = (0..=20)
+        .map(|index| format!("QA timeline reconnect offline {index:02}"))
+        .collect::<Vec<_>>();
+    for (index, body) in offline_bodies.iter().enumerate() {
+        let txn = format!("qa-timeline-reconnect-offline-{index:02}");
+        let send_b_id = conn_b.next_request_id();
+        conn_b
+            .command(CoreCommand::Timeline(TimelineCommand::SendText {
+                request_id: send_b_id,
+                key: key_b.clone(),
+                transaction_id: txn.clone(),
+                body: body.clone(),
+                mentions: MentionIntent::default(),
+            }))
+            .await
+            .map_err(|e| format!("timeline_reconnect: submit B offline send failed: {e}"))?;
+        wait_for_send_flow_completion(
+            &mut conn_b,
+            send_b_id,
+            &key_b,
+            &txn,
+            body,
+            "timeline_reconnect B send while A offline",
+        )
+        .await?;
+    }
+
+    proxy.enable();
+    wait_for_sync_running_after_reconnect(&mut conn_a, "timeline_reconnect A recovered").await?;
+    subscribe_timeline_for_qa(
+        &mut conn_a,
+        &key_a,
+        "timeline_reconnect reopen unsubscribed A room",
+    )
+    .await?;
+    wait_for_all_items_with_bodies(
+        &mut conn_a,
+        &key_a,
+        &offline_bodies,
+        "timeline_reconnect A repairs the complete missed batch",
     )
     .await?;
     println!("timeline_reconnect_recv_after_reconnect=ok");
+    println!("live_catchup_checkpoint=ok");
+    println!("live_catchup_gap_repaired=ok");
     println!("timeline_reconnect=ok");
 
     cleanup_logged_in_runtime(
@@ -12234,6 +12284,67 @@ async fn wait_for_item_with_body(
     }
 }
 
+async fn wait_for_all_items_with_bodies(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    expected_bodies: &[String],
+    label: &str,
+) -> Result<(), String> {
+    let mut seen = vec![false; expected_bodies.len()];
+
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| {
+                let missing_count = seen.iter().filter(|found| !**found).count();
+                format!("{label}: timed out with {missing_count} expected rows still missing")
+            })?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: ref event_key,
+                items,
+                ..
+            }) if event_key == key => {
+                for item in &items {
+                    observe_expected_bodies(item, expected_bodies, &mut seen);
+                }
+            }
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref event_key,
+                diffs,
+                ..
+            }) if event_key == key => {
+                visit_timeline_diff_items(&diffs, |item| {
+                    observe_expected_bodies(item, expected_bodies, &mut seen);
+                    Ok(())
+                })?;
+            }
+            _ => {}
+        }
+
+        if seen.iter().all(|found| *found) {
+            return Ok(());
+        }
+    }
+}
+
+fn observe_expected_bodies(
+    item: &koushi_core::event::TimelineItem,
+    expected_bodies: &[String],
+    seen: &mut [bool],
+) {
+    let Some(body) = item.body.as_deref() else {
+        return;
+    };
+    for (index, expected) in expected_bodies.iter().enumerate() {
+        if body.contains(expected) {
+            seen[index] = true;
+        }
+    }
+}
+
 async fn wait_for_event_item_with_body(
     conn: &mut CoreConnection,
     key: &TimelineKey,
@@ -14726,6 +14837,8 @@ mod tests {
         assert!(production_source.contains("wait_for_sync_running_after_reconnect"));
         assert!(production_source.contains("wait_for_item_with_body("));
         assert!(production_source.contains("timeline_reconnect_recv_after_reconnect=ok"));
+        assert!(production_source.contains("live_catchup_checkpoint=ok"));
+        assert!(production_source.contains("live_catchup_gap_repaired=ok"));
     }
 
     #[test]
@@ -15457,6 +15570,8 @@ mod tests {
             [
                 "safety=ok",
                 "timeline_reconnect_recv_after_reconnect=ok",
+                "live_catchup_checkpoint=ok",
+                "live_catchup_gap_repaired=ok",
                 "timeline_reconnect=ok",
             ]
         );
