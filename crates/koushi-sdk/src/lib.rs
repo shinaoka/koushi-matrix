@@ -2500,6 +2500,87 @@ pub struct MatrixTimelineGapHandle {
     descriptor: matrix_sdk::event_cache::RoomTimelineGapDescriptor,
 }
 
+/// Token-free room-subscription response provenance used by Core.
+#[derive(Clone)]
+pub struct MatrixRoomSubscriptionCheckpoint {
+    subscription_generation: u64,
+    room_id: matrix_sdk::ruma::OwnedRoomId,
+    limited: bool,
+    event_count: usize,
+    prev_batch_present: bool,
+    has_timeline_update: bool,
+    inserted_gap: Option<matrix_sdk::event_cache::RoomTimelineGapDescriptor>,
+}
+
+impl MatrixRoomSubscriptionCheckpoint {
+    /// Convert the SDK UI checkpoint without exposing its private gap token.
+    pub fn from_sdk(
+        checkpoint: &matrix_sdk_ui::room_list_service::RoomSubscriptionCheckpoint,
+    ) -> Self {
+        let timeline = checkpoint.timeline();
+        Self {
+            subscription_generation: checkpoint.subscription_generation().get(),
+            room_id: checkpoint.room_id().to_owned(),
+            limited: timeline.is_some_and(|observation| observation.limited()),
+            event_count: timeline.map_or(0, |observation| observation.event_count()),
+            prev_batch_present: timeline
+                .is_some_and(|observation| observation.prev_batch_present()),
+            has_timeline_update: timeline.is_some(),
+            inserted_gap: timeline.and_then(|observation| observation.inserted_gap().cloned()),
+        }
+    }
+
+    pub fn subscription_generation(&self) -> u64 {
+        self.subscription_generation
+    }
+
+    pub fn room_id(&self) -> &str {
+        self.room_id.as_str()
+    }
+
+    pub fn has_timeline_update(&self) -> bool {
+        self.has_timeline_update
+    }
+
+    pub fn limited(&self) -> bool {
+        self.limited
+    }
+
+    pub fn event_count(&self) -> usize {
+        self.event_count
+    }
+
+    pub fn prev_batch_present(&self) -> bool {
+        self.prev_batch_present
+    }
+
+    pub fn has_inserted_gap(&self) -> bool {
+        self.inserted_gap.is_some()
+    }
+
+    pub fn matches_gap(&self, gap: &MatrixTimelineGapHandle) -> bool {
+        self.room_id == gap.room_id
+            && self
+                .inserted_gap
+                .as_ref()
+                .is_some_and(|descriptor| descriptor == &gap.descriptor)
+    }
+}
+
+impl std::fmt::Debug for MatrixRoomSubscriptionCheckpoint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MatrixRoomSubscriptionCheckpoint")
+            .field("subscription_generation", &self.subscription_generation)
+            .field("limited", &self.limited)
+            .field("event_count", &self.event_count)
+            .field("prev_batch_present", &self.prev_batch_present)
+            .field("has_timeline_update", &self.has_timeline_update)
+            .field("has_inserted_gap", &self.inserted_gap.is_some())
+            .finish()
+    }
+}
+
 impl std::fmt::Debug for MatrixTimelineGapHandle {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
