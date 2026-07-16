@@ -4124,20 +4124,11 @@ async fn run_timeline_reconnect_scenario(config: &QaConfig) -> Result<(), String
         "timeline_reconnect reopen unsubscribed A room",
     )
     .await?;
-    wait_for_item_with_body(
+    wait_for_all_items_with_bodies(
         &mut conn_a,
         &key_a,
-        offline_bodies
-            .first()
-            .expect("offline batch has first body"),
-        "timeline_reconnect A repairs oldest missed event",
-    )
-    .await?;
-    wait_for_item_with_body(
-        &mut conn_a,
-        &key_a,
-        offline_bodies.last().expect("offline batch has last body"),
-        "timeline_reconnect A receives newest missed event",
+        &offline_bodies,
+        "timeline_reconnect A repairs the complete missed batch",
     )
     .await?;
     println!("timeline_reconnect_recv_after_reconnect=ok");
@@ -12289,6 +12280,67 @@ async fn wait_for_item_with_body(
                 }
             }
             _ => {}
+        }
+    }
+}
+
+async fn wait_for_all_items_with_bodies(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    expected_bodies: &[String],
+    label: &str,
+) -> Result<(), String> {
+    let mut seen = vec![false; expected_bodies.len()];
+
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| {
+                let missing_count = seen.iter().filter(|found| !**found).count();
+                format!("{label}: timed out with {missing_count} expected rows still missing")
+            })?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: ref event_key,
+                items,
+                ..
+            }) if event_key == key => {
+                for item in &items {
+                    observe_expected_bodies(item, expected_bodies, &mut seen);
+                }
+            }
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref event_key,
+                diffs,
+                ..
+            }) if event_key == key => {
+                visit_timeline_diff_items(&diffs, |item| {
+                    observe_expected_bodies(item, expected_bodies, &mut seen);
+                    Ok(())
+                })?;
+            }
+            _ => {}
+        }
+
+        if seen.iter().all(|found| *found) {
+            return Ok(());
+        }
+    }
+}
+
+fn observe_expected_bodies(
+    item: &koushi_core::event::TimelineItem,
+    expected_bodies: &[String],
+    seen: &mut [bool],
+) {
+    let Some(body) = item.body.as_deref() else {
+        return;
+    };
+    for (index, expected) in expected_bodies.iter().enumerate() {
+        if body.contains(expected) {
+            seen[index] = true;
         }
     }
 }

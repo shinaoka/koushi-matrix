@@ -359,8 +359,10 @@ Rules:
    checkpoint and may select only the opaque persisted gap introduced by that
    response. It must not acquire repair ownership while the checkpoint is
    pending, reuse a baseline observation for an empty response, or fall back to
-   another historical gap when the checkpoint gap is absent. Timeline build,
-   initial projection, and ACK remain non-blocking while provenance is pending.
+   another historical gap when the checkpoint gap is absent. Checkpoint routing
+   must match both the RoomListService instance epoch and its room-local
+   subscription generation. Timeline build, initial projection, and ACK remain
+   non-blocking while provenance is pending.
    The selected repair reveals at most one cached chunk per request, stops on
    unchanged topology or zero progress, and has a small per-generation batch
    ceiling. Repairing a projected descriptor must preserve this intent; only a

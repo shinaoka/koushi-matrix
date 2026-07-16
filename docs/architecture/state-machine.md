@@ -823,7 +823,10 @@ stateDiagram-v2
   gap scheduler until RoomListService has observed a response for the actor's
   exact room-subscription generation. Timeline construction, `InitialItems`,
   and projection acknowledgement remain available while waiting. The retained
-  checkpoint is replayed when the response beats actor registration.
+  checkpoint is replayed when the response beats actor registration. Manager
+  routing also fences the originating RoomListService epoch, so an already
+  queued checkpoint from a replaced service cannot match a reused local
+  subscription generation.
 - A checkpoint carrying a committed sync gap selects only that opaque SDK gap.
   A response with no newer timeline, a continuous response, a stale generation,
   or a gap no longer present in the inspected topology never falls back to an

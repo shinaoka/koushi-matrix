@@ -190,7 +190,10 @@ pub enum TimelineMessage {
     SyncStarted {
         room_list_service: Option<Arc<matrix_sdk_ui::room_list_service::RoomListService>>,
     },
-    RoomSubscriptionCheckpoint(MatrixRoomSubscriptionCheckpoint),
+    RoomSubscriptionCheckpoint {
+        service_epoch: u64,
+        checkpoint: MatrixRoomSubscriptionCheckpoint,
+    },
     IgnoredUsersUpdated {
         user_ids: std::collections::BTreeSet<String>,
     },
@@ -1069,6 +1072,7 @@ pub struct TimelineManagerActor {
     session: Option<Arc<MatrixClientSession>>,
     room_list_service: Option<Arc<matrix_sdk_ui::room_list_service::RoomListService>>,
     room_subscription_checkpoint_task: Option<executor::JoinHandle<()>>,
+    room_subscription_service_epoch: u64,
     timelines: HashMap<TimelineKey, TimelineActorHandle>,
     accepted_submissions: SubmissionAdmissionLedger,
     action_tx: mpsc::Sender<Vec<AppAction>>,
@@ -1162,6 +1166,7 @@ impl TimelineManagerActor {
             session: None,
             room_list_service: None,
             room_subscription_checkpoint_task: None,
+            room_subscription_service_epoch: 0,
             timelines: HashMap::new(),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
@@ -1204,6 +1209,7 @@ impl TimelineManagerActor {
             session: Some(session),
             room_list_service: None,
             room_subscription_checkpoint_task: None,
+            room_subscription_service_epoch: 0,
             timelines: HashMap::new(),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
@@ -1241,8 +1247,12 @@ impl TimelineManagerActor {
                 TimelineMessage::SyncStarted { room_list_service } => {
                     self.handle_sync_started(room_list_service).await;
                 }
-                TimelineMessage::RoomSubscriptionCheckpoint(checkpoint) => {
-                    self.handle_room_subscription_checkpoint(checkpoint).await;
+                TimelineMessage::RoomSubscriptionCheckpoint {
+                    service_epoch,
+                    checkpoint,
+                } => {
+                    self.handle_room_subscription_checkpoint(service_epoch, checkpoint)
+                        .await;
                 }
                 TimelineMessage::IgnoredUsersUpdated { user_ids } => {
                     self.handle_ignored_users_updated(user_ids).await;
@@ -1453,6 +1463,9 @@ impl TimelineManagerActor {
         &mut self,
         room_list_service: Option<Arc<matrix_sdk_ui::room_list_service::RoomListService>>,
     ) {
+        self.room_subscription_service_epoch =
+            self.room_subscription_service_epoch.wrapping_add(1).max(1);
+        let service_epoch = self.room_subscription_service_epoch;
         if let Some(task) = self.room_subscription_checkpoint_task.take() {
             task.abort();
         }
@@ -1468,9 +1481,10 @@ impl TimelineManagerActor {
                 let retained = checkpoints.get();
                 for checkpoint in retained.values() {
                     if manager_tx
-                        .send(TimelineMessage::RoomSubscriptionCheckpoint(
-                            MatrixRoomSubscriptionCheckpoint::from_sdk(checkpoint),
-                        ))
+                        .send(TimelineMessage::RoomSubscriptionCheckpoint {
+                            service_epoch,
+                            checkpoint: MatrixRoomSubscriptionCheckpoint::from_sdk(checkpoint),
+                        })
                         .await
                         .is_err()
                     {
@@ -1490,8 +1504,12 @@ impl TimelineManagerActor {
 
     async fn handle_room_subscription_checkpoint(
         &self,
+        service_epoch: u64,
         checkpoint: MatrixRoomSubscriptionCheckpoint,
     ) {
+        if service_epoch != self.room_subscription_service_epoch {
+            return;
+        }
         for (key, handle) in &self.timelines {
             if matches!(key.kind, TimelineKind::Room { .. })
                 && key.room_id() == checkpoint.room_id()
@@ -1521,9 +1539,10 @@ impl TimelineManagerActor {
         let Some(checkpoint) = retained.get(&room_id) else {
             return;
         };
-        self.handle_room_subscription_checkpoint(MatrixRoomSubscriptionCheckpoint::from_sdk(
-            checkpoint,
-        ))
+        self.handle_room_subscription_checkpoint(
+            self.room_subscription_service_epoch,
+            MatrixRoomSubscriptionCheckpoint::from_sdk(checkpoint),
+        )
         .await;
     }
 
@@ -3145,6 +3164,8 @@ enum TimelineActorMessage {
         repair_generation: u64,
         batch_id: TimelineBatchId,
     },
+    #[cfg(test)]
+    Barrier(oneshot::Sender<()>),
 }
 
 impl TimelineActorMessage {
@@ -6749,6 +6770,21 @@ mod timeline_gap_repair_tracker_tests {
         );
         assert!(ack_rx.await.expect("projection ACK response"));
 
+        let (barrier_tx, barrier_rx) = oneshot::channel();
+        assert!(handle.send(TimelineActorMessage::Barrier(barrier_tx)).await);
+        barrier_rx.await.expect("pre-checkpoint actor barrier");
+        let messages_before_checkpoint = server
+            .received_requests()
+            .await
+            .expect("recorded mock requests")
+            .into_iter()
+            .filter(|request| request.url.path().contains("/messages"))
+            .count();
+        assert_eq!(
+            messages_before_checkpoint, 0,
+            "LiveEdge repair must remain blocked after projection ACK until the checkpoint arrives",
+        );
+
         assert!(
             handle
                 .send(TimelineActorMessage::RoomSubscriptionCheckpoint(
@@ -8345,6 +8381,10 @@ impl TimelineActor {
                 if accepted {
                     self.start_pending_timeline_gap_inspection().await;
                 }
+            }
+            #[cfg(test)]
+            TimelineActorMessage::Barrier(response) => {
+                let _ = response.send(());
             }
         }
         if self.hydrate_after_restore_flush && self.restore_anchor.is_none() {
@@ -17485,6 +17525,7 @@ mod tests {
             session: None,
             room_list_service: None,
             room_subscription_checkpoint_task: None,
+            room_subscription_service_epoch: 0,
             timelines: HashMap::from([(key.clone(), test_timeline_actor_handle())]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
@@ -18834,6 +18875,7 @@ mod tests {
             session: None,
             room_list_service: None,
             room_subscription_checkpoint_task: None,
+            room_subscription_service_epoch: 0,
             timelines: HashMap::from([(key.clone(), test_timeline_actor_handle())]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
@@ -19315,6 +19357,7 @@ mod tests {
             session: None,
             room_list_service: None,
             room_subscription_checkpoint_task: None,
+            room_subscription_service_epoch: 0,
             timelines: HashMap::from([(
                 key.clone(),
                 TimelineActorHandle {
@@ -19512,6 +19555,7 @@ mod tests {
             session: None,
             room_list_service: None,
             room_subscription_checkpoint_task: None,
+            room_subscription_service_epoch: 0,
             timelines: HashMap::from([(
                 key.clone(),
                 TimelineActorHandle {
@@ -19583,6 +19627,7 @@ mod tests {
             session: None,
             room_list_service: None,
             room_subscription_checkpoint_task: None,
+            room_subscription_service_epoch: 0,
             timelines: HashMap::from([(
                 key.clone(),
                 TimelineActorHandle {
@@ -20813,6 +20858,7 @@ mod tests {
             session: None,
             room_list_service: None,
             room_subscription_checkpoint_task: None,
+            room_subscription_service_epoch: 0,
             timelines: HashMap::from([(
                 key.clone(),
                 TimelineActorHandle {
@@ -20990,6 +21036,7 @@ mod tests {
             session: None,
             room_list_service: None,
             room_subscription_checkpoint_task: None,
+            room_subscription_service_epoch: 0,
             timelines: HashMap::from([(
                 key.clone(),
                 TimelineActorHandle {
