@@ -66,6 +66,9 @@ existing causal/render fence, then publish and merge the change.
 7. During inspection, prefer projected selection. For `LiveEdge` with a target,
    fall back to the newest descriptor; reject an unchanged post-batch
    fingerprint as `no_progress`.
+   Retain `LiveEdge` after repairing a projected descriptor, and downgrade a
+   joined/start-reached continuation only when the completed descriptor was
+   the live-edge fallback.
 8. During repair completion, stop stale, deferred-zero, zero-event progress,
    and budget-exhausted live-edge attempts, reliably settle failure/incomplete
    state, release ownership, and do not immediately requeue.
@@ -79,15 +82,17 @@ existing causal/render fence, then publish and merge the change.
 - Modify `crates/koushi-sdk/tests/timeline_gap_adapter.rs`
 - Add a focused integration fixture under `crates/koushi-core/tests/` if the
   current runtime test support can inject the required persisted topology;
-  otherwise add the deterministic actor-policy fixture beside the actor and
-  document why local homeserver APIs cannot directly seed an internal cache
-  gap.
+  otherwise add a feature-gated Matrix SDK test constructor and drive the real
+  actor against a mock-server-backed persisted event-cache topology.
 
 1. Turn the Task 1 tests green.
 2. Add a deterministic fixture containing older row, unprojected relation
    boundary, newest missing interval, and newer live row. Assert selection of
    the newest descriptor, exact-once ordered projection, and no historical-gap
    selection.
+   The actor fixture must acknowledge the real initial projection and repaired
+   desktop batch; helper-only sequencing is supplementary rather than the
+   behavioral proof.
 3. Retain existing tests that prove unprojected `Automatic` repair is idle and
    exact render ACK fences are unchanged.
 4. Run:

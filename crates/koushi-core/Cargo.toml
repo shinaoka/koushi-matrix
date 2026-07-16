@@ -49,6 +49,7 @@ qa-bin = []
 # constructors). Unit tests in src/ already have cfg(test), so this is a
 # no-op for them.
 koushi-core = { path = ".", features = ["test-hooks"] }
+koushi-sdk = { path = "../koushi-sdk", features = ["test-hooks"] }
 matrix-sdk = { workspace = true, features = ["testing"] }
 matrix-sdk-test = { workspace = true }
 tempfile = "3"

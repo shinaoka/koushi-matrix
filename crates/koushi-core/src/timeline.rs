@@ -2883,6 +2883,7 @@ enum TimelineActorMessage {
     TimelineGapRepairFinished {
         serial: u64,
         trigger: TimelineGapRepairTrigger,
+        repaired_live_edge_fallback: bool,
         result: Result<MatrixTimelineGapRepairResult, MatrixTimelineGapError>,
     },
     Paginate {
@@ -5320,9 +5321,11 @@ fn live_edge_repair_made_progress(outcome: &MatrixTimelineGapRepairOutcome) -> b
 
 fn gap_repair_continuation_trigger(
     trigger: TimelineGapRepairTrigger,
+    repaired_live_edge_fallback: bool,
     outcome: &MatrixTimelineGapRepairOutcome,
 ) -> TimelineGapRepairTrigger {
     if matches!(trigger, TimelineGapRepairTrigger::LiveEdge)
+        && repaired_live_edge_fallback
         && matches!(
             outcome,
             MatrixTimelineGapRepairOutcome::BoundariesJoined { .. }
@@ -5661,6 +5664,14 @@ impl TimelineGapRepairTracker {
 #[cfg(test)]
 mod timeline_gap_repair_tracker_tests {
     use super::*;
+    use crate::{AccountKey, RuntimeConnectionId};
+    use matrix_sdk::{
+        linked_chunk::{ChunkIdentifier, LinkedChunkId, Position, Update},
+        test_utils::mocks::{MatrixMockServer, RoomMessagesResponseTemplate},
+    };
+    use matrix_sdk_base::event_cache::Gap;
+    use matrix_sdk_test::{ALICE, event_factory::EventFactory};
+    use matrix_sdk_ui::timeline::TimelineFocus;
 
     fn event_item(event_id: &str, body: &str) -> TimelineItem {
         TimelineItem {
@@ -5694,6 +5705,16 @@ mod timeline_gap_repair_tracker_tests {
             send_state: None,
             unable_to_decrypt: None,
         }
+    }
+
+    fn event_ids(items: &[TimelineItem]) -> Vec<&str> {
+        items
+            .iter()
+            .filter_map(|item| match &item.id {
+                TimelineItemId::Event { event_id } => Some(event_id.as_str()),
+                TimelineItemId::Transaction { .. } | TimelineItemId::Synthetic { .. } => None,
+            })
+            .collect()
     }
 
     #[tokio::test]
@@ -6260,6 +6281,7 @@ mod timeline_gap_repair_tracker_tests {
         assert_eq!(
             gap_repair_continuation_trigger(
                 TimelineGapRepairTrigger::LiveEdge,
+                true,
                 &MatrixTimelineGapRepairOutcome::BoundariesJoined { events: 3 },
             ),
             TimelineGapRepairTrigger::Automatic,
@@ -6267,9 +6289,19 @@ mod timeline_gap_repair_tracker_tests {
         assert_eq!(
             gap_repair_continuation_trigger(
                 TimelineGapRepairTrigger::LiveEdge,
+                true,
                 &MatrixTimelineGapRepairOutcome::Progress { events: 3 },
             ),
             TimelineGapRepairTrigger::LiveEdge,
+        );
+        assert_eq!(
+            gap_repair_continuation_trigger(
+                TimelineGapRepairTrigger::LiveEdge,
+                false,
+                &MatrixTimelineGapRepairOutcome::BoundariesJoined { events: 3 },
+            ),
+            TimelineGapRepairTrigger::LiveEdge,
+            "repairing a projected gap must preserve the live-edge intent"
         );
     }
 
@@ -6360,6 +6392,7 @@ mod timeline_gap_repair_tracker_tests {
         // policy, so the two unrelated unprojected historical gaps stay idle.
         let continuation = gap_repair_continuation_trigger(
             trigger,
+            true,
             &MatrixTimelineGapRepairOutcome::BoundariesJoined { events: 1 },
         );
         assert_eq!(continuation, TimelineGapRepairTrigger::Automatic);
@@ -6404,6 +6437,238 @@ mod timeline_gap_repair_tracker_tests {
                 .count(),
             1,
             "the repaired interval is projected exactly once"
+        );
+    }
+
+    #[tokio::test]
+    async fn timeline_actor_repairs_an_unprojected_relation_gap_after_render_ack() {
+        use matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation;
+
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = matrix_sdk::ruma::room_id!("!live-edge-gap:example.org");
+        let owner_id = matrix_sdk::ruma::event_id!("$owner");
+        let older_edit_id = matrix_sdk::ruma::event_id!("$older-edit");
+        let newer_edit_id = matrix_sdk::ruma::event_id!("$newer-edit");
+        let newer_id = matrix_sdk::ruma::event_id!("$newer");
+        let missing_id = matrix_sdk::ruma::event_id!("$missing");
+        let factory = EventFactory::new().room(room_id).sender(&ALICE);
+        let owner = factory.text_msg("owner").event_id(owner_id).into_event();
+        let older_edit = factory
+            .text_msg("older edit")
+            .event_id(older_edit_id)
+            .edit(
+                owner_id,
+                RoomMessageEventContentWithoutRelation::text_plain("older edit"),
+            )
+            .into_event();
+        let newer_edit = factory
+            .text_msg("newer edit")
+            .event_id(newer_edit_id)
+            .edit(
+                owner_id,
+                RoomMessageEventContentWithoutRelation::text_plain("newer edit"),
+            )
+            .into_event();
+        let newer = factory.text_msg("newer").event_id(newer_id).into_event();
+
+        {
+            let store = client
+                .event_cache_store()
+                .lock()
+                .await
+                .expect("cache store");
+            store
+                .as_clean()
+                .expect("clean cache store")
+                .handle_linked_chunk_updates(
+                    LinkedChunkId::Room(room_id),
+                    vec![
+                        Update::NewItemsChunk {
+                            previous: None,
+                            new: ChunkIdentifier::new(0),
+                            next: None,
+                        },
+                        Update::PushItems {
+                            at: Position::new(ChunkIdentifier::new(0), 0),
+                            items: vec![owner, older_edit.clone()],
+                        },
+                        Update::NewGapChunk {
+                            previous: Some(ChunkIdentifier::new(0)),
+                            new: ChunkIdentifier::new(1),
+                            next: None,
+                            gap: Gap {
+                                token: "live-edge-token".to_owned(),
+                            },
+                        },
+                        Update::NewItemsChunk {
+                            previous: Some(ChunkIdentifier::new(1)),
+                            new: ChunkIdentifier::new(2),
+                            next: None,
+                        },
+                        Update::PushItems {
+                            at: Position::new(ChunkIdentifier::new(2), 0),
+                            items: vec![newer_edit, newer],
+                        },
+                    ],
+                )
+                .await
+                .expect("seed relation-bounded gap");
+        }
+
+        client
+            .event_cache()
+            .subscribe()
+            .expect("event cache subscribe");
+        let room = server.sync_joined_room(&client, room_id).await;
+        server
+            .mock_room_messages()
+            .match_from("live-edge-token")
+            .match_limit(64)
+            .ok(RoomMessagesResponseTemplate::default().events(vec![
+                factory.text_msg("missing").event_id(missing_id),
+                factory.text_msg("older edit").event_id(older_edit_id).edit(
+                    owner_id,
+                    RoomMessageEventContentWithoutRelation::text_plain("older edit"),
+                ),
+            ]))
+            .expect(1)
+            .named("actor-live-edge-gap-repair")
+            .mount()
+            .await;
+
+        let session = Arc::new(MatrixClientSession::from_client_for_testing(
+            client,
+            koushi_state::SessionInfo {
+                homeserver: "http://example.invalid".to_owned(),
+                user_id: ALICE.to_string(),
+                device_id: "DEVICE".to_owned(),
+            },
+        ));
+        let timeline = Arc::new(
+            koushi_timeline_builder(
+                &room,
+                TimelineFocus::Live {
+                    hide_threaded_events: false,
+                },
+            )
+            .build()
+            .await
+            .expect("room timeline"),
+        );
+        let key = TimelineKey::room(AccountKey("gap-fixture".to_owned()), room_id.to_string());
+        let projection_request_id = RequestId {
+            connection_id: RuntimeConnectionId(7),
+            sequence: 1,
+        };
+        let (action_tx, mut action_rx) = mpsc::channel(32);
+        let (event_tx, mut event_rx) = broadcast::channel(64);
+        let (manager_tx, _manager_rx) = mpsc::channel(8);
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = generations.activate_after_quiescence(&key).await.generation;
+        let handle = TimelineActor::spawn(
+            key.clone(),
+            timeline,
+            session.clone(),
+            projection_request_id,
+            action_tx,
+            event_tx,
+            None,
+            Default::default(),
+            None,
+            LinkPreviewContext::default(),
+            MessagesBackpressure::default(),
+            Arc::new(Mutex::new(ThreadRootProjectionService::default())),
+            Arc::new(Mutex::new(
+                ReplayKnownThreadRootProjectionRegistry::default(),
+            )),
+            generations,
+            actor_generation,
+            manager_tx,
+        )
+        .await;
+
+        let mut rendered = loop {
+            match event_rx.recv().await.expect("initial timeline event") {
+                CoreEvent::Timeline(TimelineEvent::InitialItems {
+                    request_id: Some(request_id),
+                    actor_generation: emitted_actor_generation,
+                    generation,
+                    items,
+                    ..
+                }) => {
+                    assert_eq!(request_id, projection_request_id);
+                    assert_eq!(emitted_actor_generation, actor_generation);
+                    assert_eq!(generation, TimelineGeneration(0));
+                    break items;
+                }
+                _ => continue,
+            }
+        };
+        assert!(!event_ids(&rendered).contains(&missing_id.as_str()));
+
+        let (ack_tx, ack_rx) = oneshot::channel();
+        assert!(
+            handle
+                .send(TimelineActorMessage::AcknowledgeProjection {
+                    projection_request_id,
+                    generation: TimelineGeneration(0),
+                    response: ack_tx,
+                })
+                .await
+        );
+        assert!(ack_rx.await.expect("projection ACK response"));
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                tokio::select! {
+                    event = event_rx.recv() => {
+                        if let Ok(CoreEvent::Timeline(TimelineEvent::ItemsUpdated { diffs, .. })) = event {
+                            apply_timeline_diffs_to_display_items(&mut rendered, &diffs);
+                        }
+                    }
+                    actions = action_rx.recv() => {
+                        for action in actions.expect("gap repair action channel") {
+                            if let AppAction::TimelineGapRepairProgressed {
+                                generation: repair_generation,
+                                minimum_batch_id: Some(batch_id),
+                                ..
+                            } = action
+                            {
+                                assert!(handle.send(TimelineActorMessage::AcknowledgeBatchRendered {
+                                    actor_generation,
+                                    timeline_generation: TimelineGeneration(0),
+                                    repair_generation,
+                                    batch_id: TimelineBatchId(batch_id),
+                                }).await);
+                            }
+                        }
+                    }
+                }
+                if event_ids(&rendered).contains(&missing_id.as_str())
+                    && session
+                        .inspect_room_timeline_gaps(room_id.as_str())
+                        .await
+                        .expect("post-repair inspection")
+                        .gaps
+                        .is_empty()
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("actor live-edge repair completed");
+
+        let ids = event_ids(&rendered);
+        assert_eq!(
+            ids.iter().filter(|id| **id == missing_id.as_str()).count(),
+            1
+        );
+        assert!(
+            ids.iter().position(|id| *id == missing_id.as_str())
+                < ids.iter().position(|id| *id == newer_id.as_str()),
+            "the repaired event must be ordered before the newer live row"
         );
     }
 
@@ -7555,10 +7820,16 @@ impl TimelineActor {
             TimelineActorMessage::TimelineGapRepairFinished {
                 serial,
                 trigger,
+                repaired_live_edge_fallback,
                 result,
             } => {
-                self.handle_timeline_gap_repair_finished(serial, trigger, result)
-                    .await;
+                self.handle_timeline_gap_repair_finished(
+                    serial,
+                    trigger,
+                    repaired_live_edge_fallback,
+                    result,
+                )
+                .await;
             }
             TimelineActorMessage::Paginate {
                 request_id,
@@ -8056,7 +8327,7 @@ impl TimelineActor {
                             inspection.gaps.len(),
                             self.gap_repair.has_live_edge_target(),
                         );
-                        let (ordinal, outcome) = match selection {
+                        let (ordinal, outcome, repaired_live_edge_fallback) = match selection {
                             GapRepairSelection::None => {
                                 record_timeline_gap_repair(
                                     "inspection",
@@ -8070,12 +8341,14 @@ impl TimelineActor {
                                 self.emit_gap_repair_released_if_idle(serial);
                                 return;
                             }
-                            GapRepairSelection::Projected { ordinal } => (ordinal, "projected"),
+                            GapRepairSelection::Projected { ordinal } => {
+                                (ordinal, "projected", false)
+                            }
                             GapRepairSelection::LiveEdgeFallback { ordinal } => {
-                                (ordinal, "live_edge_fallback")
+                                (ordinal, "live_edge_fallback", true)
                             }
                             GapRepairSelection::ManualFallback { ordinal } => {
-                                (ordinal, "manual_fallback")
+                                (ordinal, "manual_fallback", false)
                             }
                         };
                         record_timeline_gap_repair(
@@ -8126,8 +8399,13 @@ impl TimelineActor {
                                 return;
                             }
                         }
-                        self.start_timeline_gap_repair(trigger, descriptor, known_gap_count)
-                            .await;
+                        self.start_timeline_gap_repair(
+                            trigger,
+                            repaired_live_edge_fallback,
+                            descriptor,
+                            known_gap_count,
+                        )
+                        .await;
                     }
                     MatrixTimelineContinuity::Unknown | MatrixTimelineContinuity::Complete => {
                         self.gap_repair.gap_count = 0;
@@ -8231,6 +8509,7 @@ impl TimelineActor {
     async fn start_timeline_gap_repair(
         &mut self,
         trigger: TimelineGapRepairTrigger,
+        repaired_live_edge_fallback: bool,
         descriptor: MatrixTimelineGapHandle,
         gap_count: u32,
     ) {
@@ -8303,6 +8582,7 @@ impl TimelineActor {
                 .send(TimelineActorMessage::TimelineGapRepairFinished {
                     serial,
                     trigger,
+                    repaired_live_edge_fallback,
                     result,
                 })
                 .await;
@@ -8313,6 +8593,7 @@ impl TimelineActor {
         &mut self,
         serial: u64,
         trigger: TimelineGapRepairTrigger,
+        repaired_live_edge_fallback: bool,
         result: Result<MatrixTimelineGapRepairResult, MatrixTimelineGapError>,
     ) {
         if !self.gap_repair.finish_work(serial) {
@@ -8387,7 +8668,8 @@ impl TimelineActor {
             .await;
             return;
         }
-        let continuation_trigger = gap_repair_continuation_trigger(trigger, &result.outcome);
+        let continuation_trigger =
+            gap_repair_continuation_trigger(trigger, repaired_live_edge_fallback, &result.outcome);
         let Some(batches_processed) = self.gap_repair.record_batch(trigger) else {
             self.gap_projection_correlation
                 .clear(self.actor_generation, serial);

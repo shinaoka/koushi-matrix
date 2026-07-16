@@ -2570,6 +2570,12 @@ pub struct MatrixTimelineGapRepairResult {
 }
 
 impl MatrixClientSession {
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn from_client_for_testing(client: matrix_sdk::Client, info: SessionInfo) -> Self {
+        Self { client, info }
+    }
+
     pub fn client(&self) -> matrix_sdk::Client {
         self.client.clone()
     }

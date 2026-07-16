@@ -358,7 +358,10 @@ Rules:
    newest unprojected descriptor only while an actor-private rendered live-edge
    target exists, reveals at most one cached chunk per request, stops on
    unchanged topology or zero progress, and has a small per-generation batch
-   ceiling. It must not broaden viewport-driven repair or log its target.
+   ceiling. Repairing a projected descriptor must preserve this intent; only a
+   joined/start-reached live-edge fallback may downgrade its continuation to
+   ordinary automatic repair. It must not broaden viewport-driven repair or
+   log its target.
    Underfilled-initial pagination must use the settled height model and virtual
    range; a transient virtual DOM `scrollHeight` is not proof that a timeline
    with canonical overflow needs another page.

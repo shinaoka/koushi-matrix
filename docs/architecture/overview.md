@@ -875,6 +875,11 @@ is an aggregated relation with no standalone row. This intent reveals at most
 one cached chunk per request, has a small actor-generation batch ceiling, and
 stops on unchanged topology or zero progress. It never invents a gap row or
 causes unrelated historical gaps to become ordinary automatic work.
+When that intent first selects a projected descriptor, it remains live-edge
+work after the exact render fence. It downgrades to ordinary automatic repair
+only after a joined/start-reached descriptor was actually selected by the
+unprojected live-edge fallback, so repairing another visible gap cannot discard
+the live-edge recovery target.
 
 Timeline gaps cross the WebView boundary only as Rust-positioned, content-free
 rows with coarse state. React renders those rows, reports presentation-only

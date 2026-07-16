@@ -105,6 +105,11 @@ selection after a completed batch is `no_progress` and terminates. SDK
 `Stale`, `Deferred { cached_chunks_loaded: 0 }`, and zero-event `Progress`
 outcomes also terminate without immediate requeue. A changed revision or a
 positive bounded outcome may continue after its exact projection/render fence.
+If `LiveEdge` first repairs a projected descriptor, the continuation retains
+the live-edge intent so the newest unprojected descriptor is not skipped.
+`BoundariesJoined` or `StartReached` downgrades to ordinary `Automatic` only
+after the completed descriptor was selected by `live_edge_fallback`; that
+prevents the completed live-edge attempt from walking into unrelated history.
 
 Reaching four live-edge batches records `budget_exhausted` and leaves the
 timeline retryably incomplete. A later changed live-edge target may start a
