@@ -24,7 +24,7 @@
     "release:preflight": "node ../../scripts/desktop-release-preflight.mjs --check-config",
     "release:preflight:macos-signing": "node ../../scripts/desktop-release-preflight.mjs --macos-signing",
     "release:preflight:strict": "node ../../scripts/desktop-release-preflight.mjs --strict-signing",
-    "lint": "eslint src",
+    "lint": "eslint src && node ../../scripts/check-ime-text-inputs.mjs",
     "lint:tauri-boundary": "node ../../scripts/check-tauri-adapter-boundary.mjs",
     "lint:domain-deps": "node ../../scripts/check-domain-crate-platform-deps.mjs",
     "test": "vitest run",

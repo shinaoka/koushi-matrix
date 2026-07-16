@@ -7,7 +7,7 @@ build gates. AGENTS.md remains the operational how-to (permissions, install
 caveats, recovery steps); durable rules discovered there are promoted to
 REPOSITORY_RULES.md or this document.
 
-Last amended: 2026-07-12.
+Last amended: 2026-07-16.
 
 ## Secrets and Private Data
 
@@ -581,6 +581,44 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
 
 Operational setup (Accessibility/Automation/Screen Recording permissions,
 PTY handling, prompt line order) is documented in `AGENTS.md`.
+
+## Desktop Text Input And IME Safety
+
+1. Text-entry components use `ImeTextField`, `SecureImeTextField`,
+   `ImeTextArea`, or the existing externally-owned `ImeOwnedTextArea` from
+   `apps/desktop/src/components/ImeTextControl.tsx`. Forms containing text
+   entry use `ImeSafeForm`. Do not duplicate composition handlers in feature
+   components.
+2. While composing, and while a local edit has not been acknowledged, the DOM
+   value and selection are authoritative. Snapshot-driven props may update the
+   control only when they acknowledge the same value or when `syncKey` changes
+   because the logical entity/field changed. Object identity alone is not a
+   synchronization key.
+3. `keydown` facts are sampled synchronously. If the composition epoch,
+   `nativeEvent.isComposing`, or legacy IME key code identifies candidate
+   confirmation, keep the browser default, skip the feature handler, and mark
+   the nearest `ImeSafeForm` so its associated implicit submit is suppressed.
+   Do not infer composition from a later async callback.
+4. Text-changing async commands use a generation-guarded operation queue per
+   logical field. The queue serializes active writes, skips superseded pending
+   writes before dispatch, applies only the newest completion, and invalidates
+   pending work when the field/entity is cleared or replaced. Independent
+   fields may run concurrently; an older result must never settle or invalidate
+   a newer generation.
+5. Password/recovery inputs use `SecureImeTextField` without `value` or
+   `defaultValue`. Read and clear them through a DOM ref at explicit submit or
+   cancel boundaries. React state may store booleans such as `isFilled`, but
+   not the secret string.
+6. Behavioral tests cover composition plus a parent rerender, ordinary dirty
+   draft plus a stale snapshot, acknowledgement, logical-key reset, selection
+   preservation, candidate-confirmation Enter, associated-form submit fencing,
+   and ordinary Enter. At least one upload-caption surface and one ordinary
+   form/search surface must exercise the shared behavior.
+7. `scripts/check-ime-text-inputs.mjs` AST-scans production TSX and rejects raw
+   composable `input`, `textarea`, `form`, dynamic input types, and
+   `contentEditable` outside the shared primitive. The gate is part of the
+   desktop `lint` command; exclusions are limited to tests and the primitive
+   implementation itself.
 
 ## Build, Dependencies, QA Gates
 

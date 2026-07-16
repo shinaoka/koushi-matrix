@@ -15,6 +15,7 @@ import {
 import { useEffect, useState, type ReactNode } from "react";
 
 import { t } from "../i18n/messages";
+import { ImeSafeForm, ImeTextArea, ImeTextField } from "./ImeTextControl";
 import type {
   RoomHistoryVisibility,
   RoomJoinRule,
@@ -93,7 +94,15 @@ export function RoomInfoPanel({
     setAvatarDraft(settings?.avatar_url ?? "");
     setJoinRuleDraft(settings?.join_rule ?? "invite");
     setHistoryVisibilityDraft(settings?.history_visibility ?? "shared");
-  }, [roomName, settings]);
+  }, [
+    roomId,
+    roomName,
+    settings?.avatar_url,
+    settings?.history_visibility,
+    settings?.join_rule,
+    settings?.name,
+    settings?.topic
+  ]);
 
   useEffect(() => {
     setReshareState("idle");
@@ -321,7 +330,7 @@ export function RoomInfoPanel({
                 value={roomHistoryVisibilityLabel(settings.history_visibility)}
               />
             </div>
-            <form
+            <ImeSafeForm
               className="room-management-form"
               onSubmit={(event) => {
                 event.preventDefault();
@@ -334,8 +343,9 @@ export function RoomInfoPanel({
             >
               <label className="profile-settings-field">
                 <span>{t("dialog.roomName")}</span>
-                <input
+                <ImeTextField
                   value={nameDraft}
+                  syncKey={`${roomId}:name`}
                   aria-label={t("dialog.roomName")}
                   disabled={!canEditSettings}
                   onChange={(event) => setNameDraft(event.currentTarget.value)}
@@ -348,8 +358,8 @@ export function RoomInfoPanel({
               >
                 {t("room.saveName")}
               </button>
-            </form>
-            <form
+            </ImeSafeForm>
+            <ImeSafeForm
               className="room-management-form"
               onSubmit={(event) => {
                 event.preventDefault();
@@ -362,8 +372,9 @@ export function RoomInfoPanel({
             >
               <label className="profile-settings-field">
                 <span>{t("room.avatarUrl")}</span>
-                <input
+                <ImeTextField
                   value={avatarDraft}
+                  syncKey={`${roomId}:avatar`}
                   aria-label={t("room.avatarUrl")}
                   disabled={!canEditSettings}
                   onChange={(event) => setAvatarDraft(event.currentTarget.value)}
@@ -376,8 +387,8 @@ export function RoomInfoPanel({
               >
                 {t("room.saveAvatar")}
               </button>
-            </form>
-            <form
+            </ImeSafeForm>
+            <ImeSafeForm
               className="room-management-form"
               onSubmit={(event) => {
                 event.preventDefault();
@@ -390,8 +401,9 @@ export function RoomInfoPanel({
             >
               <label className="profile-settings-field">
                 <span>{t("room.topic")}</span>
-                <textarea
+                <ImeTextArea
                   value={topicDraft}
+                  syncKey={`${roomId}:topic`}
                   aria-label={t("room.topic")}
                   disabled={!canEditSettings}
                   onChange={(event) => setTopicDraft(event.currentTarget.value)}
@@ -404,8 +416,8 @@ export function RoomInfoPanel({
               >
                 {t("room.saveTopic")}
               </button>
-            </form>
-            <form
+            </ImeSafeForm>
+            <ImeSafeForm
               className="room-management-form"
               onSubmit={(event) => {
                 event.preventDefault();
@@ -468,7 +480,7 @@ export function RoomInfoPanel({
               >
                 {t("room.saveAccess")}
               </button>
-            </form>
+            </ImeSafeForm>
             {operation.kind === "failed" ? (
               <div className="room-management-status" role="status">
                 {t("room.operationFailed")}

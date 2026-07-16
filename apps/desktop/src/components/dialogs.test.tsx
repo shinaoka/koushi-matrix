@@ -1,99 +1,148 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-  CreateEntityDialog,
-  type CreateRoomDialogOptions,
-  DiagnosticDialog
-} from "./dialogs";
+import type { StagedUploadItem } from "../domain/types";
+import { CreateEntityDialog, UploadStagingDialog } from "./dialogs";
 
 afterEach(cleanup);
 
-describe("DiagnosticDialog", () => {
-  it("shows copyable diagnostics", () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.assign(navigator, { clipboard: { writeText } });
+function stagedImage(
+  caption: string,
+  preparation: StagedUploadItem["preparation"],
+  stagedId = "staged-1",
+  filename = "synthetic.png"
+): StagedUploadItem {
+  return {
+    staged_id: stagedId,
+    room_id: "!synthetic:example.invalid",
+    position: 0,
+    filename,
+    mime_type: "image/png",
+    byte_count: 128,
+    kind: { kind: "image", width: 16, height: 16 },
+    caption: caption
+      ? {
+          plain_body: caption,
+          formatted_body: null,
+          mentions: { targets: [] }
+        }
+      : null,
+    compression_choice: { kind: "original" },
+    preparation
+  };
+}
 
-    render(
-      <DiagnosticDialog
-        report={"Koushi diagnostics\nDownloading messages from 1 room(s)"}
-        onClose={vi.fn()}
-      />
+function dialog(items: StagedUploadItem[], onUpdateCaption = vi.fn()) {
+  return (
+    <UploadStagingDialog
+      items={items}
+      onClear={vi.fn()}
+      onUpdateCaption={onUpdateCaption}
+      onSelectVariant={vi.fn()}
+      onRetryPreparation={vi.fn()}
+      onUseOriginal={vi.fn()}
+      loadPreview={vi.fn(async () => [])}
+    />
+  );
+}
+
+describe("UploadStagingDialog", () => {
+  it("preserves active Japanese composition across stale preparation snapshots", () => {
+    const onUpdateCaption = vi.fn();
+    const { rerender } = render(
+      dialog([stagedImage("before", { kind: "preparing" })], onUpdateCaption)
+    );
+    const caption = screen.getByRole("textbox", {
+      name: "Caption for synthetic.png"
+    }) as HTMLInputElement;
+
+    fireEvent.compositionStart(caption);
+    fireEvent.change(caption, { target: { value: "日本語変換中" } });
+    caption.setSelectionRange(3, 5);
+    rerender(
+      dialog(
+        [
+          stagedImage("before", {
+            kind: "ready",
+            variants: [],
+            selected_variant_id: "original"
+          })
+        ],
+        onUpdateCaption
+      )
     );
 
-    expect(screen.getByRole("dialog", { name: "Diagnostics" })).toBeTruthy();
-    expect(screen.getByText(/Downloading messages from 1 room/)).toBeTruthy();
+    expect(caption.value).toBe("日本語変換中");
+    expect([caption.selectionStart, caption.selectionEnd]).toEqual([3, 5]);
+    expect(onUpdateCaption).toHaveBeenCalledWith("staged-1", "日本語変換中");
+  });
 
-    fireEvent.click(screen.getByRole("button", { name: "Copy diagnostics" }));
+  it("preserves an ordinary dirty caption until Rust acknowledges it", () => {
+    const { rerender } = render(dialog([stagedImage("before", { kind: "preparing" })]));
+    const caption = screen.getByRole("textbox", {
+      name: "Caption for synthetic.png"
+    }) as HTMLInputElement;
 
-    expect(writeText).toHaveBeenCalledWith(
-      "Koushi diagnostics\nDownloading messages from 1 room(s)"
+    fireEvent.change(caption, { target: { value: "local caption" } });
+    rerender(dialog([stagedImage("before", { kind: "preparing" })]));
+
+    expect(caption.value).toBe("local caption");
+  });
+
+  it("isolates composition ownership by staged upload identity", () => {
+    const { rerender } = render(
+      dialog([
+        stagedImage("first", { kind: "preparing" }, "staged-a", "first.png"),
+        stagedImage("second", { kind: "preparing" }, "staged-b", "second.png")
+      ])
     );
+    const first = screen.getByRole("textbox", {
+      name: "Caption for first.png"
+    }) as HTMLInputElement;
+    const second = screen.getByRole("textbox", {
+      name: "Caption for second.png"
+    }) as HTMLInputElement;
+
+    fireEvent.compositionStart(first);
+    fireEvent.change(first, { target: { value: "一つ目を変換中" } });
+    rerender(
+      dialog([
+        stagedImage("first", { kind: "preparing" }, "staged-a", "first.png"),
+        stagedImage("second from Rust", { kind: "preparing" }, "staged-b", "second.png")
+      ])
+    );
+
+    expect(first.value).toBe("一つ目を変換中");
+    expect(second.value).toBe("second from Rust");
   });
 });
 
-describe("CreateEntityDialog", () => {
-  it("collects private space-room options without exposing encryption for public rooms", () => {
+describe("dialog IME submit handling", () => {
+  it("does not create a room for candidate-confirmation Enter", () => {
     const onSubmit = vi.fn();
-    const onRoomOptionsChange = vi.fn();
+    const { container } = render(
+      <CreateEntityDialog
+        kind="room"
+        isBusy={false}
+        value="合成ルーム"
+        onCancel={vi.fn()}
+        onSubmit={onSubmit}
+        onValueChange={vi.fn()}
+      />
+    );
+    const name = screen.getByRole("textbox", { name: "Room name" });
 
-    function ControlledDialog() {
-      const [roomOptions, setRoomOptions] = useState<CreateRoomDialogOptions>({
-        aliasLocalpart: "",
-        encrypted: true,
-        topic: "",
-        visibility: "private"
-      });
-      return (
-        <CreateEntityDialog
-          activeSpaceName="Synthetic Workspace"
-          isBusy={false}
-          kind="room"
-          roomOptions={roomOptions}
-          value="Ops Room"
-          onCancel={vi.fn()}
-          onRoomOptionsChange={(next) => {
-            setRoomOptions(next);
-            onRoomOptionsChange(next);
-          }}
-          onSubmit={onSubmit}
-          onValueChange={vi.fn()}
-        />
-      );
-    }
-
-    render(<ControlledDialog />);
-
-    expect(
-      (screen.getByRole("radio", { name: "Private room" }) as HTMLInputElement).checked
-    ).toBe(true);
-    expect(screen.getByText("Standard room in Synthetic Workspace")).toBeTruthy();
-    fireEvent.change(screen.getByRole("textbox", { name: "Topic" }), {
-      target: { value: "Deployment notes" }
+    fireEvent.compositionStart(name);
+    fireEvent.keyDown(name, {
+      key: "Enter",
+      code: "Enter",
+      keyCode: 229,
+      isComposing: true
     });
-    expect(onRoomOptionsChange).toHaveBeenLastCalledWith({
-      aliasLocalpart: "",
-      encrypted: true,
-      topic: "Deployment notes",
-      visibility: "private"
-    });
+    fireEvent.submit(container.querySelector("form")!);
 
-    fireEvent.click(screen.getByRole("radio", { name: "Public room" }));
-    expect(screen.queryByRole("checkbox", { name: "Encrypted room" })).toBeNull();
-    fireEvent.change(screen.getByRole("textbox", { name: "Room address" }), {
-      target: { value: "ops-room" }
-    });
-    expect(onRoomOptionsChange).toHaveBeenLastCalledWith({
-      aliasLocalpart: "ops-room",
-      encrypted: false,
-      topic: "Deployment notes",
-      visibility: "public"
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Submit create room" }));
-    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 });

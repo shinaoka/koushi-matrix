@@ -96,6 +96,7 @@ import type {
 } from "../domain/coreEvents";
 import { openExternalHttpUrl, toExternalHttpUrl } from "../domain/externalLinks";
 import { mediaSourceUrl } from "../domain/mediaUrl";
+import { ImeOwnedTextArea, ImeSafeForm, ImeTextField } from "./ImeTextControl";
 import {
   canApplyResolvedComposerAction,
   isComposerImeEnter,
@@ -5204,7 +5205,7 @@ export const TimelineView = memo(function TimelineView({
       ) : null}
       {aliasTarget ? (
         <div className="dialog-overlay" role="presentation" onMouseDown={closeAliasDialog}>
-          <form
+          <ImeSafeForm
             className="dialog-box timeline-alias-dialog"
             aria-label={t("room.aliasDialogTitle", { name: aliasTarget.displayLabel })}
             onMouseDown={(event) => event.stopPropagation()}
@@ -5220,10 +5221,11 @@ export const TimelineView = memo(function TimelineView({
                 })}
               </p>
             ) : null}
-            <input
+            <ImeTextField
               className="dialog-input"
               aria-label={t("room.aliasInput")}
               value={aliasDraft}
+              syncKey={aliasTarget.userId}
               onChange={(event) => updateAliasDraft(event.currentTarget.value)}
               autoFocus
             />
@@ -5232,7 +5234,7 @@ export const TimelineView = memo(function TimelineView({
                 {t("action.done")}
               </button>
             </div>
-          </form>
+          </ImeSafeForm>
         </div>
       ) : null}
       </div>
@@ -5428,12 +5430,8 @@ export function TimelineItemRow({
   const actionMenuControlRef = useRef<HTMLDivElement>(null);
   const actionMenuTriggerRef = useRef<HTMLButtonElement>(null);
   const firstActionMenuItemRef = useRef<HTMLButtonElement>(null);
-  const {
-    textareaRef: editTextareaRef,
-    lifecycle: editImeComposition,
-    onCompositionStart: onEditCompositionStart,
-    onCompositionEnd: onEditCompositionEnd
-  } = useCompositionOwnedTextarea(editDraft, eventId ?? "edit");
+  const editImeTextControl = useCompositionOwnedTextarea(editDraft, eventId ?? "edit");
+  const { textareaRef: editTextareaRef, lifecycle: editImeComposition } = editImeTextControl;
   const captureEditKeyIntent = useComposerKeyIntentSnapshot(editImeComposition);
   const editMacKillRingRef = useRef<string>("");
   const requestedLinkPreviewsRef = useRef<Set<string>>(new Set());
@@ -5913,16 +5911,14 @@ export function TimelineItemRow({
       {t("timeline.redactedMessage")}
     </div>
   ) : isEditing ? (
-    <form className="message-edit-form" onSubmit={submitEdit}>
-      <textarea
-        ref={editTextareaRef}
+    <ImeSafeForm className="message-edit-form" onSubmit={submitEdit}>
+      <ImeOwnedTextArea
+        ownership={editImeTextControl}
         aria-label={t("timeline.editBody")}
         className="message-edit-body"
-        defaultValue={editDraft}
+        value={editDraft}
         onChange={(event) => setEditDraft(event.target.value)}
         onKeyDown={onEditKeyDown}
-        onCompositionStart={onEditCompositionStart}
-        onCompositionEnd={onEditCompositionEnd}
       />
       <div className="message-edit-actions">
         <button className="message-edit-button" type="submit">
@@ -5936,7 +5932,7 @@ export function TimelineItemRow({
           {t("timeline.cancelEdit")}
         </button>
       </div>
-    </form>
+    </ImeSafeForm>
   ) : (
     <div
       className={messageBodyClassName}

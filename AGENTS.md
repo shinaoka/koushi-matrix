@@ -189,6 +189,28 @@ reverse.
 - Native / manual GUI inspection is the last and weakest layer: a confirmation
   only, never the primary correctness gate.
 
+## IME-Safe Text Input Checks
+
+When changing any text field, textarea, password/recovery entry, upload
+caption, search box, or form, use the primitives in
+`apps/desktop/src/components/ImeTextControl.tsx`. Run the focused contract and
+the production surface inventory from the repository root:
+
+```bash
+node --test scripts/check-ime-text-inputs.test.mjs
+node scripts/check-ime-text-inputs.mjs
+npm --prefix apps/desktop test -- src/components/ImeTextControl.test.tsx
+```
+
+The normal desktop lint command includes the inventory gate:
+
+```bash
+npm --prefix apps/desktop run lint
+```
+
+If the gate finds a new surface, migrate it to the shared primitive. Do not add
+a per-file exception or local composition workaround.
+
 ## Codex Diff Review Recipe
 
 The preferred external auditor is OpenAI `codex` (the `codex` CLI). For

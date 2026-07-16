@@ -1188,4 +1188,43 @@ describe("UserSettingsPanel", () => {
     expect(markup).toContain("Password");
     expect(markup).toContain("Continue");
   });
+
+  test("submits and clears a UIA password through the secure DOM ref", () => {
+    const onSubmitAccountManagementUia = vi.fn();
+    render(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        deviceSessions={idleDeviceSessions}
+        accountManagement={{
+          kind: "awaitingUia",
+          request_id: 53,
+          flow_id: 9,
+          operation: "changePassword"
+        }}
+        accountManagementCapabilities={{
+          change_password: { kind: "enabled" }
+        }}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+        onSubmitAccountManagementUia={onSubmitAccountManagementUia}
+      />
+    );
+    const password = screen.getByLabelText("Password") as HTMLInputElement;
+    const form = password.closest("form");
+
+    fireEvent.input(password, { target: { value: "synthetic-secret" } });
+    fireEvent.submit(form!);
+
+    expect(onSubmitAccountManagementUia).toHaveBeenCalledWith(9, "synthetic-secret");
+    expect(password.value).toBe("");
+  });
 });

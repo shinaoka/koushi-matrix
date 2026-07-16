@@ -8,6 +8,7 @@ import {
 import { useState } from "react";
 
 import { t } from "../i18n/messages";
+import { ImeTextField } from "./ImeTextControl";
 import type {
   AttachmentFilter,
   AttachmentKind,
@@ -116,10 +117,11 @@ function FilesViewToolbar({
         ))}
       </div>
       <div className="files-view-query-row">
-        <input
+        <ImeTextField
           className="files-view-query-input"
           type="search"
           value={draftQuery}
+          syncKey="files-query"
           placeholder={t("files.filterPlaceholder")}
           onChange={(event) => setDraftQuery(event.currentTarget.value)}
           onKeyDown={(event) => {

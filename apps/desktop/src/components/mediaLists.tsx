@@ -27,6 +27,7 @@ import type {
 import { contextMenuItems } from "../domain/contextMenus";
 import { mediaSourceUrl } from "../domain/mediaUrl";
 import { renderTimelineMessageText } from "./TimelineView";
+import { ImeSafeForm } from "./ImeTextControl";
 import {
   ICON_SIZE,
   formatUploadBytes,
@@ -292,7 +293,7 @@ function ScheduledMessagesList({
                 </span>
               </div>
               {isEditing ? (
-                <form
+                <ImeSafeForm
                   className="scheduled-message-edit"
                   onSubmit={(event) => submitEdit(event, item)}
                 >
@@ -321,7 +322,7 @@ function ScheduledMessagesList({
                       {t("scheduled.save")}
                     </button>
                   </div>
-                </form>
+                </ImeSafeForm>
               ) : (
                 <div className="scheduled-message-actions">
                   <button
