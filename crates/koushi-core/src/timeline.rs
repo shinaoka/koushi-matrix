@@ -6619,6 +6619,8 @@ mod timeline_gap_repair_tracker_tests {
         );
         assert!(ack_rx.await.expect("projection ACK response"));
 
+        let mut repaired_batch_acknowledged = false;
+        let mut post_ack_continuity_complete = false;
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 tokio::select! {
@@ -6641,11 +6643,23 @@ mod timeline_gap_repair_tracker_tests {
                                     repair_generation,
                                     batch_id: TimelineBatchId(batch_id),
                                 }).await);
+                                repaired_batch_acknowledged = true;
+                            } else if matches!(
+                                action,
+                                AppAction::TimelineContinuityInspected {
+                                    inspection: TimelineContinuityInspection::Complete,
+                                    ..
+                                }
+                            ) && repaired_batch_acknowledged
+                            {
+                                post_ack_continuity_complete = true;
                             }
                         }
                     }
                 }
                 if event_ids(&rendered).contains(&missing_id.as_str())
+                    && repaired_batch_acknowledged
+                    && post_ack_continuity_complete
                     && session
                         .inspect_room_timeline_gaps(room_id.as_str())
                         .await
