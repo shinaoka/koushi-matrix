@@ -10,6 +10,67 @@ export interface CompositionLifecycle {
   dispose(): void;
 }
 
+export type TextControlElement = HTMLInputElement | HTMLTextAreaElement;
+
+export type CompositionOwnedValueDecision =
+  | { kind: "acknowledged" }
+  | { kind: "ignoreComposition" }
+  | { kind: "ignoreStale" }
+  | { kind: "uncontrolled" }
+  | { kind: "write"; value: string };
+
+export interface CompositionOwnedValueState {
+  currentKey(): string;
+  recordLocalValue(value: string): void;
+  observeExternal(
+    externalValue: string | undefined,
+    syncKey: string,
+    compositionActive: boolean
+  ): CompositionOwnedValueDecision;
+}
+
+export function createCompositionOwnedValueState(
+  initialExternalValue: string | undefined,
+  initialKey: string
+): CompositionOwnedValueState {
+  let key = initialKey;
+  let localValue = initialExternalValue;
+  let dirty = false;
+
+  return {
+    currentKey: () => key,
+    recordLocalValue(value) {
+      localValue = value;
+      dirty = true;
+    },
+    observeExternal(externalValue, syncKey, compositionActive) {
+      if (syncKey !== key) {
+        key = syncKey;
+        localValue = externalValue;
+        dirty = false;
+        return externalValue === undefined
+          ? { kind: "uncontrolled" }
+          : { kind: "write", value: externalValue };
+      }
+      if (externalValue === undefined) {
+        return { kind: "uncontrolled" };
+      }
+      if (dirty && externalValue === localValue) {
+        dirty = false;
+        return { kind: "acknowledged" };
+      }
+      if (compositionActive) {
+        return { kind: "ignoreComposition" };
+      }
+      if (dirty) {
+        return { kind: "ignoreStale" };
+      }
+      localValue = externalValue;
+      return { kind: "write", value: externalValue };
+    }
+  };
+}
+
 export function createCompositionLifecycle(): CompositionLifecycle {
   let epoch = 0;
   let isActive = false;
@@ -129,35 +190,49 @@ export function isComposerImeEnter(
   );
 }
 
-export function useCompositionOwnedTextarea(externalValue: string, syncKey: string) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+export function useCompositionOwnedTextControl<T extends TextControlElement>(
+  externalValue: string | undefined,
+  syncKey: string
+) {
+  const controlRef = useRef<T>(null);
   const lifecycleRef = useRef<CompositionLifecycle | null>(null);
-  const previousKeyRef = useRef(syncKey);
+  const valueStateRef = useRef<CompositionOwnedValueState | null>(null);
   if (lifecycleRef.current === null) {
     lifecycleRef.current = createCompositionLifecycle();
   }
+  if (valueStateRef.current === null) {
+    valueStateRef.current = createCompositionOwnedValueState(externalValue, syncKey);
+  }
   const lifecycle = lifecycleRef.current;
+  const valueState = valueStateRef.current;
 
   useLayoutEffect(() => {
-    const keyChanged = previousKeyRef.current !== syncKey;
-    previousKeyRef.current = syncKey;
+    const keyChanged = valueState.currentKey() !== syncKey;
     if (keyChanged) {
       lifecycle.finish();
-    } else if (lifecycle.active()) {
-      return;
     }
-    const textarea = textareaRef.current;
-    if (textarea && textarea.value !== externalValue) {
-      textarea.value = externalValue;
+    const decision = valueState.observeExternal(externalValue, syncKey, lifecycle.active());
+    const control = controlRef.current;
+    if (control && decision.kind === "write" && control.value !== decision.value) {
+      control.value = decision.value;
     }
-  }, [externalValue, lifecycle, syncKey]);
+  }, [externalValue, lifecycle, syncKey, valueState]);
 
   useEffect(() => () => lifecycle.dispose(), [lifecycle]);
 
   return {
-    textareaRef,
+    controlRef,
     lifecycle,
+    recordLocalValue: (value: string) => valueState.recordLocalValue(value),
     onCompositionStart: () => lifecycle.start(),
     onCompositionEnd: () => lifecycle.end()
+  };
+}
+
+export function useCompositionOwnedTextarea(externalValue: string, syncKey: string) {
+  const control = useCompositionOwnedTextControl<HTMLTextAreaElement>(externalValue, syncKey);
+  return {
+    ...control,
+    textareaRef: control.controlRef
   };
 }

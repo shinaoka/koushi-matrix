@@ -2,12 +2,58 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   canApplyResolvedComposerAction,
+  createCompositionOwnedValueState,
   createCompositionLifecycle,
   isComposerImeEnter,
   type ComposerKeyIntentSnapshot
 } from "./compositionLifecycle";
 
 describe("composition lifecycle", () => {
+  it("keeps a dirty DOM value until the external owner acknowledges it", () => {
+    const state = createCompositionOwnedValueState("before", "field-a");
+
+    state.recordLocalValue("local");
+
+    expect(state.observeExternal("before", "field-a", false)).toEqual({
+      kind: "ignoreStale"
+    });
+    expect(state.observeExternal("local", "field-a", false)).toEqual({
+      kind: "acknowledged"
+    });
+    expect(state.observeExternal("server", "field-a", false)).toEqual({
+      kind: "write",
+      value: "server"
+    });
+  });
+
+  it("keeps the native DOM authoritative while composition is active", () => {
+    const state = createCompositionOwnedValueState("before", "field-a");
+
+    expect(state.observeExternal("stale", "field-a", true)).toEqual({
+      kind: "ignoreComposition"
+    });
+  });
+
+  it("forces a new semantic field value across a dirty key change", () => {
+    const state = createCompositionOwnedValueState("before", "field-a");
+    state.recordLocalValue("local");
+
+    expect(state.observeExternal("next", "field-b", true)).toEqual({
+      kind: "write",
+      value: "next"
+    });
+    expect(state.currentKey()).toBe("field-b");
+  });
+
+  it("does not synchronize DOM-only controls from an absent external value", () => {
+    const state = createCompositionOwnedValueState(undefined, "secret");
+    state.recordLocalValue("private");
+
+    expect(state.observeExternal(undefined, "secret", false)).toEqual({
+      kind: "uncontrolled"
+    });
+  });
+
   it("keeps composition B active when the deferred end from A fires", () => {
     vi.useFakeTimers();
     const lifecycle = createCompositionLifecycle();
