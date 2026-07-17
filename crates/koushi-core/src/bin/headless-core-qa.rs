@@ -176,6 +176,7 @@ enum QaScenario {
     Timeline,
     TimelineReconnect,
     TimelineLegacyFallback,
+    TimelineLegacyPersistedGap,
     TimelineStress,
     Activity,
     Composer,
@@ -209,6 +210,7 @@ enum QaStage {
     Timeline,
     TimelineReconnect,
     TimelineLegacyFallback,
+    TimelineLegacyPersistedGap,
     TimelineStress,
     Activity,
     Composer,
@@ -327,6 +329,7 @@ impl QaScenario {
             "timeline" => Ok(Self::Timeline),
             "timeline_reconnect" => Ok(Self::TimelineReconnect),
             "timeline_legacy_fallback" => Ok(Self::TimelineLegacyFallback),
+            "timeline_legacy_persisted_gap" => Ok(Self::TimelineLegacyPersistedGap),
             "timeline_stress" => Ok(Self::TimelineStress),
             "activity" => Ok(Self::Activity),
             "composer" => Ok(Self::Composer),
@@ -342,7 +345,7 @@ impl QaScenario {
             "link_preview" => Ok(Self::LinkPreview),
             "cache_restore" => Ok(Self::CacheRestore),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, credential_health, native_attention, e2ee_trust, invites_dm, room_space, directory, room_management, timeline, timeline_reconnect, timeline_legacy_fallback, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, search_crawler, scheduled_send, restore_cleanup, link_preview, cache_restore; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, credential_health, native_attention, e2ee_trust, invites_dm, room_space, directory, room_management, timeline, timeline_reconnect, timeline_legacy_fallback, timeline_legacy_persisted_gap, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, search_crawler, scheduled_send, restore_cleanup, link_preview, cache_restore; got {other}"
             )),
         }
     }
@@ -353,6 +356,7 @@ impl QaScenario {
                 stage,
                 QaStage::TimelineReconnect
                     | QaStage::TimelineLegacyFallback
+                    | QaStage::TimelineLegacyPersistedGap
                     | QaStage::TimelineStress
             ),
             Self::Safety => matches!(stage, QaStage::Safety),
@@ -405,6 +409,9 @@ impl QaScenario {
             }
             Self::TimelineLegacyFallback => {
                 matches!(stage, QaStage::Safety | QaStage::TimelineLegacyFallback)
+            }
+            Self::TimelineLegacyPersistedGap => {
+                matches!(stage, QaStage::Safety | QaStage::TimelineLegacyPersistedGap)
             }
             Self::TimelineStress => matches!(
                 stage,
@@ -602,6 +609,11 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "legacy_fallback_gap_repaired=ok",
             "legacy_fallback_settled=ok",
             "legacy_fallback_lifecycle=ok",
+        ],
+        QaStage::TimelineLegacyPersistedGap => &[
+            "legacy_persisted_gap_fence=ok",
+            "legacy_persisted_gap_repaired=ok",
+            "legacy_persisted_gap_settled=ok",
         ],
         QaStage::TimelineStress => &[
             "timeline_stress=ok",
@@ -805,6 +817,9 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
         QaScenario::TimelineLegacyFallback => {
             vec![QaStage::Safety, QaStage::TimelineLegacyFallback]
         }
+        QaScenario::TimelineLegacyPersistedGap => {
+            vec![QaStage::Safety, QaStage::TimelineLegacyPersistedGap]
+        }
         QaScenario::TimelineStress => vec![
             QaStage::Safety,
             QaStage::LoginSync,
@@ -972,6 +987,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
         }
         QaScenario::TimelineReconnect
         | QaScenario::TimelineLegacyFallback
+        | QaScenario::TimelineLegacyPersistedGap
         | QaScenario::CacheRestore
         | QaScenario::GateRestore
         | QaScenario::GateNegative
@@ -3956,22 +3972,31 @@ async fn unsubscribe_timeline_for_qa(
 }
 
 async fn run_timeline_reconnect_scenario(config: &QaConfig) -> Result<(), String> {
-    run_timeline_reconnect_scenario_impl(config, false).await
+    run_timeline_reconnect_scenario_impl(config, false, false).await
 }
 
 async fn run_timeline_legacy_fallback_scenario(config: &QaConfig) -> Result<(), String> {
-    run_timeline_reconnect_scenario_impl(config, true).await
+    run_timeline_reconnect_scenario_impl(config, true, false).await
+}
+
+async fn run_timeline_legacy_persisted_gap_scenario(config: &QaConfig) -> Result<(), String> {
+    run_timeline_reconnect_scenario_impl(config, true, true).await
 }
 
 async fn run_timeline_reconnect_scenario_impl(
     config: &QaConfig,
     legacy_fallback: bool,
+    restart_with_persisted_gap: bool,
 ) -> Result<(), String> {
     let proxy = QaTcpProxy::start(&config.homeserver)?;
-    let data_dir_a = qa_data_dir("timeline_reconnect_a");
+    let data_dir_a = qa_data_dir(if restart_with_persisted_gap {
+        "timeline_legacy_persisted_gap_a"
+    } else {
+        "timeline_reconnect_a"
+    });
     let data_dir_b = qa_data_dir("timeline_reconnect_b");
 
-    let runtime_a = CoreRuntime::start_with_data_dir(data_dir_a);
+    let runtime_a = CoreRuntime::start_with_data_dir(data_dir_a.clone());
     let mut conn_a = runtime_a.attach();
     let login_a_id = conn_a.next_request_id();
     conn_a
@@ -4138,6 +4163,14 @@ async fn run_timeline_reconnect_scenario_impl(
     )
     .await?;
     if legacy_fallback {
+        if restart_with_persisted_gap {
+            unsubscribe_timeline_for_qa(
+                &mut conn_a,
+                &key_a,
+                "timeline legacy persisted gap unsubscribe before first response",
+            )
+            .await?;
+        }
         stop_sync_for_qa(&mut conn_a, "timeline legacy fallback stop A").await?;
     } else {
         unsubscribe_timeline_for_qa(
@@ -4211,6 +4244,85 @@ async fn run_timeline_reconnect_scenario_impl(
         wait_for_sync_running_after_reconnect(&mut conn_a, "timeline_reconnect A recovered")
             .await?;
     }
+    let (runtime_a, mut conn_a) = if restart_with_persisted_gap {
+        stop_sync_for_qa(
+            &mut conn_a,
+            "timeline legacy persisted gap stop before restart",
+        )
+        .await?;
+        drop(conn_a);
+        tokio::time::timeout(EVENT_TIMEOUT, runtime_a.shutdown())
+            .await
+            .map_err(|_| {
+                "timeline legacy persisted gap timed out shutting down before restart".to_owned()
+            })?;
+
+        let restarted_runtime = CoreRuntime::start_with_data_dir(data_dir_a);
+        let mut restarted_conn = restarted_runtime.attach();
+        let restore_id = restarted_conn.next_request_id();
+        restarted_conn
+            .command(CoreCommand::Account(AccountCommand::RestoreSession {
+                request_id: restore_id,
+                account_key: account_key_a.clone(),
+            }))
+            .await
+            .map_err(|e| format!("timeline legacy persisted gap: submit restore A failed: {e}"))?;
+        wait_for_session_restored(
+            &mut restarted_conn,
+            restore_id,
+            &account_key_a,
+            "timeline legacy persisted gap restore A",
+        )
+        .await?;
+        wait_for_ready_snapshot(
+            &mut restarted_conn,
+            "timeline legacy persisted gap restored session A Ready",
+        )
+        .await?;
+
+        proxy.arm_legacy_fallback()?;
+        let restart_sync_id = restarted_conn.next_request_id();
+        restarted_conn
+            .command(CoreCommand::Sync(SyncCommand::Start {
+                request_id: restart_sync_id,
+            }))
+            .await
+            .map_err(|e| {
+                format!("timeline legacy persisted gap: submit restarted sync A failed: {e}")
+            })?;
+        let selected = wait_for_sync_started(
+            &mut restarted_conn,
+            restart_sync_id,
+            "timeline legacy persisted gap restart selects SyncService",
+        )
+        .await?;
+        if selected != SyncBackendKind::SyncService {
+            return Err(
+                "timeline legacy persisted gap restart did not initially select SyncService"
+                    .to_owned(),
+            );
+        }
+        wait_for_legacy_fallback_starting(
+            &mut restarted_conn,
+            "timeline legacy persisted gap fallback starting",
+        )
+        .await?;
+        proxy.wait_for_legacy_request_held(EVENT_TIMEOUT)?;
+        prove_legacy_stays_starting(
+            &mut restarted_conn,
+            "timeline legacy persisted gap lifecycle barrier",
+        )
+        .await?;
+        proxy.release_legacy()?;
+        wait_for_sync_running_after_reconnect(
+            &mut restarted_conn,
+            "timeline legacy persisted gap room-absent response committed",
+        )
+        .await?;
+        (restarted_runtime, restarted_conn)
+    } else {
+        (runtime_a, conn_a)
+    };
     let reopened_before_later = if legacy_fallback {
         Some(
             subscribe_and_ack_active_timeline_projection_for_qa(
@@ -4298,10 +4410,16 @@ async fn run_timeline_reconnect_scenario_impl(
             "timeline legacy fallback receives after repair settlement",
         )
         .await?;
-        println!("legacy_fallback_checkpoint=ok");
-        println!("legacy_fallback_gap_repaired=ok");
-        println!("legacy_fallback_settled=ok");
-        println!("legacy_fallback_lifecycle=ok");
+        if restart_with_persisted_gap {
+            println!("legacy_persisted_gap_fence=ok");
+            println!("legacy_persisted_gap_repaired=ok");
+            println!("legacy_persisted_gap_settled=ok");
+        } else {
+            println!("legacy_fallback_checkpoint=ok");
+            println!("legacy_fallback_gap_repaired=ok");
+            println!("legacy_fallback_settled=ok");
+            println!("legacy_fallback_lifecycle=ok");
+        }
     } else {
         wait_for_all_items_with_bodies(
             &mut conn_a,
@@ -4469,6 +4587,11 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     if scenario == QaScenario::TimelineLegacyFallback {
         println!("safety=ok");
         run_timeline_legacy_fallback_scenario(&config).await?;
+        return Ok(scenario_report(&config.server_kind, scenario));
+    }
+    if scenario == QaScenario::TimelineLegacyPersistedGap {
+        println!("safety=ok");
+        run_timeline_legacy_persisted_gap_scenario(&config).await?;
         return Ok(scenario_report(&config.server_kind, scenario));
     }
     if scenario == QaScenario::GateNoProof {
@@ -15534,6 +15657,41 @@ mod tests {
         assert!(production_source.contains("legacy_fallback_gap_repaired=ok"));
         assert!(production_source.contains("legacy_fallback_settled=ok"));
         assert!(production_source.contains("legacy_fallback_lifecycle=ok"));
+    }
+
+    #[test]
+    fn timeline_legacy_persisted_gap_scenario_restarts_before_room_absent_recovery() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/bin/headless-core-qa.rs"
+        ));
+        let production_source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("headless-core-qa source should contain production section");
+
+        assert_eq!(
+            QaScenario::from_env_value("timeline_legacy_persisted_gap").unwrap(),
+            QaScenario::TimelineLegacyPersistedGap,
+        );
+        assert!(
+            QaScenario::TimelineLegacyPersistedGap
+                .should_run_stage(QaStage::TimelineLegacyPersistedGap)
+        );
+        assert!(production_source.contains("run_timeline_legacy_persisted_gap_scenario"));
+        assert!(production_source.contains("AccountCommand::RestoreSession"));
+        assert!(production_source.contains("legacy_persisted_gap_fence=ok"));
+        assert!(production_source.contains("legacy_persisted_gap_repaired=ok"));
+        assert!(production_source.contains("legacy_persisted_gap_settled=ok"));
+        assert_eq!(
+            final_tokens_for_scenario(QaScenario::TimelineLegacyPersistedGap),
+            [
+                "safety=ok",
+                "legacy_persisted_gap_fence=ok",
+                "legacy_persisted_gap_repaired=ok",
+                "legacy_persisted_gap_settled=ok",
+            ],
+        );
     }
 
     #[test]

@@ -38,12 +38,24 @@ This note separates SDK-upstreamable material from desktop-product decisions. El
   keeping room IDs, event IDs, pagination tokens, and raw errors out of Debug
   output.
 
+- Committed sync-response fence (2026-07-17, issue #275): `EventCache` also
+  retains one `CommittedRoomUpdatesResponse` only after all joined/left room
+  topology work for that response has completed. Its monotonic response
+  sequence and aggregate room counts let consumers distinguish an unchanged,
+  omitted room from a response that has not committed yet. This closes the
+  legacy `/sync` ambiguity without exposing room IDs, event IDs, pagination
+  tokens, message bodies, or raw errors. The desktop adapter uses an omitted
+  room only as a bounded signal to inspect and repair its newest persisted
+  live-edge gap after restart.
+
 Current SDK-only patch area:
 
 - `vendor/matrix-rust-sdk/crates/matrix-sdk-search`
 - `vendor/matrix-rust-sdk/crates/matrix-sdk/src/search_index`
 - `vendor/matrix-rust-sdk/crates/matrix-sdk/src/send_queue/mod.rs`
   (`SendHandle::transaction_id()` accessor only)
+- `vendor/matrix-rust-sdk/crates/matrix-sdk/src/event_cache/mod.rs`
+- `vendor/matrix-rust-sdk/crates/matrix-sdk/tests/integration/event_cache/mod.rs`
 
 ## API Questions
 

@@ -3515,7 +3515,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk"
 version = "0.18.0"
-source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=590d9469041407178047eb633d309a5ea75a01c1#590d9469041407178047eb633d309a5ea75a01c1"
+source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=34ed8377478b47c58f3c08889d69d4ee5a0791ca#34ed8377478b47c58f3c08889d69d4ee5a0791ca"
 dependencies = [
  "anymap2",
  "aquamarine",
@@ -3578,7 +3578,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-base"
 version = "0.18.0"
-source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=590d9469041407178047eb633d309a5ea75a01c1#590d9469041407178047eb633d309a5ea75a01c1"
+source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=34ed8377478b47c58f3c08889d69d4ee5a0791ca#34ed8377478b47c58f3c08889d69d4ee5a0791ca"
 dependencies = [
  "as_variant",
  "assert_matches",
@@ -3608,7 +3608,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-common"
 version = "0.18.0"
-source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=590d9469041407178047eb633d309a5ea75a01c1#590d9469041407178047eb633d309a5ea75a01c1"
+source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=34ed8377478b47c58f3c08889d69d4ee5a0791ca#34ed8377478b47c58f3c08889d69d4ee5a0791ca"
 dependencies = [
  "eyeball-im",
  "futures-core",
@@ -3631,7 +3631,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-crypto"
 version = "0.18.0"
-source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=590d9469041407178047eb633d309a5ea75a01c1#590d9469041407178047eb633d309a5ea75a01c1"
+source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=34ed8377478b47c58f3c08889d69d4ee5a0791ca#34ed8377478b47c58f3c08889d69d4ee5a0791ca"
 dependencies = [
  "aes",
  "aquamarine",
@@ -3672,7 +3672,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-indexeddb"
 version = "0.18.0"
-source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=590d9469041407178047eb633d309a5ea75a01c1#590d9469041407178047eb633d309a5ea75a01c1"
+source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=34ed8377478b47c58f3c08889d69d4ee5a0791ca#34ed8377478b47c58f3c08889d69d4ee5a0791ca"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3703,7 +3703,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-search"
 version = "0.18.0"
-source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=590d9469041407178047eb633d309a5ea75a01c1#590d9469041407178047eb633d309a5ea75a01c1"
+source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=34ed8377478b47c58f3c08889d69d4ee5a0791ca#34ed8377478b47c58f3c08889d69d4ee5a0791ca"
 dependencies = [
  "aes",
  "byteorder",
@@ -3724,7 +3724,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-sqlite"
 version = "0.18.0"
-source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=590d9469041407178047eb633d309a5ea75a01c1#590d9469041407178047eb633d309a5ea75a01c1"
+source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=34ed8377478b47c58f3c08889d69d4ee5a0791ca#34ed8377478b47c58f3c08889d69d4ee5a0791ca"
 dependencies = [
  "as_variant",
  "async-trait",
@@ -3751,7 +3751,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-store-encryption"
 version = "0.18.0"
-source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=590d9469041407178047eb633d309a5ea75a01c1#590d9469041407178047eb633d309a5ea75a01c1"
+source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=34ed8377478b47c58f3c08889d69d4ee5a0791ca#34ed8377478b47c58f3c08889d69d4ee5a0791ca"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -3772,7 +3772,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-test"
 version = "0.18.0"
-source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=590d9469041407178047eb633d309a5ea75a01c1#590d9469041407178047eb633d309a5ea75a01c1"
+source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=34ed8377478b47c58f3c08889d69d4ee5a0791ca#34ed8377478b47c58f3c08889d69d4ee5a0791ca"
 dependencies = [
  "as_variant",
  "ctor 0.2.9",
@@ -3795,7 +3795,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-test-macros"
 version = "0.18.0"
-source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=590d9469041407178047eb633d309a5ea75a01c1#590d9469041407178047eb633d309a5ea75a01c1"
+source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=34ed8377478b47c58f3c08889d69d4ee5a0791ca#34ed8377478b47c58f3c08889d69d4ee5a0791ca"
 dependencies = [
  "quote",
  "syn 2.0.118",
@@ -3804,7 +3804,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-ui"
 version = "0.18.0"
-source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=590d9469041407178047eb633d309a5ea75a01c1#590d9469041407178047eb633d309a5ea75a01c1"
+source = "git+https://github.com/shinaoka/matrix-rust-sdk-work.git?rev=34ed8377478b47c58f3c08889d69d4ee5a0791ca#34ed8377478b47c58f3c08889d69d4ee5a0791ca"
 dependencies = [
  "as_variant",
  "async-rx",

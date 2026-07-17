@@ -1,5 +1,6 @@
 use koushi_sdk::{
     MatrixCommittedRoomTimelineBackend, MatrixCommittedRoomTimelineCheckpoint,
+    MatrixCommittedRoomTimelineOrigin, MatrixCommittedRoomUpdatesResponse,
     MatrixRoomSubscriptionCheckpoint, MatrixTimelineContinuity, MatrixTimelineGapError,
     MatrixTimelineGapHandle, MatrixTimelineGapRepairOutcome,
 };
@@ -43,6 +44,14 @@ fn committed_room_checkpoint_contract_is_backend_neutral_and_closed() {
         &matrix_sdk::event_cache::CommittedRoomTimelineObservation,
     ) -> MatrixCommittedRoomTimelineCheckpoint =
         MatrixCommittedRoomTimelineCheckpoint::from_committed_observation;
+    let response_from_sdk: fn(
+        &matrix_sdk::event_cache::CommittedRoomUpdatesResponse,
+    ) -> MatrixCommittedRoomUpdatesResponse = MatrixCommittedRoomUpdatesResponse::from_sdk;
+    let from_absent: fn(
+        &MatrixCommittedRoomUpdatesResponse,
+        &matrix_sdk::ruma::RoomId,
+    ) -> MatrixCommittedRoomTimelineCheckpoint =
+        MatrixCommittedRoomTimelineCheckpoint::from_legacy_room_absent;
     let backend: fn(&MatrixCommittedRoomTimelineCheckpoint) -> MatrixCommittedRoomTimelineBackend =
         MatrixCommittedRoomTimelineCheckpoint::backend;
     let generation: fn(&MatrixCommittedRoomTimelineCheckpoint) -> u64 =
@@ -57,9 +66,23 @@ fn committed_room_checkpoint_contract_is_backend_neutral_and_closed() {
         MatrixCommittedRoomTimelineCheckpoint::inserted_gap_handle;
     let matches_gap: fn(&MatrixCommittedRoomTimelineCheckpoint, &MatrixTimelineGapHandle) -> bool =
         MatrixCommittedRoomTimelineCheckpoint::matches_gap;
+    let origin: fn(&MatrixCommittedRoomTimelineCheckpoint) -> MatrixCommittedRoomTimelineOrigin =
+        MatrixCommittedRoomTimelineCheckpoint::origin;
+    let is_room_absent: fn(&MatrixCommittedRoomTimelineCheckpoint) -> bool =
+        MatrixCommittedRoomTimelineCheckpoint::is_room_absent;
+    let response_generation: fn(&MatrixCommittedRoomUpdatesResponse) -> u64 =
+        MatrixCommittedRoomUpdatesResponse::generation;
+    let joined_room_count: fn(&MatrixCommittedRoomUpdatesResponse) -> usize =
+        MatrixCommittedRoomUpdatesResponse::joined_room_count;
+    let left_room_count: fn(&MatrixCommittedRoomUpdatesResponse) -> usize =
+        MatrixCommittedRoomUpdatesResponse::left_room_count;
+    let invited_room_count: fn(&MatrixCommittedRoomUpdatesResponse) -> usize =
+        MatrixCommittedRoomUpdatesResponse::invited_room_count;
     let _ = (
         from_subscription,
         from_legacy,
+        response_from_sdk,
+        from_absent,
         backend,
         generation,
         room_id,
@@ -67,6 +90,12 @@ fn committed_room_checkpoint_contract_is_backend_neutral_and_closed() {
         has_gap,
         gap_handle,
         matches_gap,
+        origin,
+        is_room_absent,
+        response_generation,
+        joined_room_count,
+        left_room_count,
+        invited_room_count,
     );
 }
 

@@ -29,11 +29,11 @@ exclude = ["vendor/matrix-rust-sdk"]
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-matrix-sdk = { git = "https://github.com/shinaoka/matrix-rust-sdk-work.git", rev = "590d9469041407178047eb633d309a5ea75a01c1", default-features = false, features = ["automatic-room-key-forwarding", "e2e-encryption", "experimental-search", "sqlite"] }
-matrix-sdk-base = { git = "https://github.com/shinaoka/matrix-rust-sdk-work.git", rev = "590d9469041407178047eb633d309a5ea75a01c1" }
-matrix-sdk-search = { git = "https://github.com/shinaoka/matrix-rust-sdk-work.git", rev = "590d9469041407178047eb633d309a5ea75a01c1" }
-matrix-sdk-test = { git = "https://github.com/shinaoka/matrix-rust-sdk-work.git", rev = "590d9469041407178047eb633d309a5ea75a01c1" }
-matrix-sdk-ui = { git = "https://github.com/shinaoka/matrix-rust-sdk-work.git", rev = "590d9469041407178047eb633d309a5ea75a01c1", default-features = false }
+matrix-sdk = { git = "https://github.com/shinaoka/matrix-rust-sdk-work.git", rev = "34ed8377478b47c58f3c08889d69d4ee5a0791ca", default-features = false, features = ["automatic-room-key-forwarding", "e2e-encryption", "experimental-search", "sqlite"] }
+matrix-sdk-base = { git = "https://github.com/shinaoka/matrix-rust-sdk-work.git", rev = "34ed8377478b47c58f3c08889d69d4ee5a0791ca" }
+matrix-sdk-search = { git = "https://github.com/shinaoka/matrix-rust-sdk-work.git", rev = "34ed8377478b47c58f3c08889d69d4ee5a0791ca" }
+matrix-sdk-test = { git = "https://github.com/shinaoka/matrix-rust-sdk-work.git", rev = "34ed8377478b47c58f3c08889d69d4ee5a0791ca" }
+matrix-sdk-ui = { git = "https://github.com/shinaoka/matrix-rust-sdk-work.git", rev = "34ed8377478b47c58f3c08889d69d4ee5a0791ca", default-features = false }
 image = { version = "0.25.9", default-features = false, features = ["jpeg", "png", "webp"] }
 
 [profile.dev.package."*"]

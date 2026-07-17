@@ -2518,10 +2518,54 @@ pub enum MatrixCommittedRoomTimelineBackend {
     LegacySync,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixCommittedRoomTimelineOrigin {
+    RoomUpdate,
+    RoomAbsent,
+}
+
+/// Token-free summary of one SDK room-updates response after event-cache
+/// topology mutation has committed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MatrixCommittedRoomUpdatesResponse {
+    generation: u64,
+    joined_room_count: usize,
+    left_room_count: usize,
+    invited_room_count: usize,
+}
+
+impl MatrixCommittedRoomUpdatesResponse {
+    pub fn from_sdk(response: &matrix_sdk::event_cache::CommittedRoomUpdatesResponse) -> Self {
+        Self {
+            generation: response.response_sequence(),
+            joined_room_count: response.joined_room_count(),
+            left_room_count: response.left_room_count(),
+            invited_room_count: response.invited_room_count(),
+        }
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn joined_room_count(&self) -> usize {
+        self.joined_room_count
+    }
+
+    pub fn left_room_count(&self) -> usize {
+        self.left_room_count
+    }
+
+    pub fn invited_room_count(&self) -> usize {
+        self.invited_room_count
+    }
+}
+
 /// Backend-neutral, token-free room timeline provenance committed by the SDK.
 #[derive(Clone)]
 pub struct MatrixCommittedRoomTimelineCheckpoint {
     backend: MatrixCommittedRoomTimelineBackend,
+    origin: MatrixCommittedRoomTimelineOrigin,
     generation: u64,
     observation_sequence: Option<u64>,
     room_id: matrix_sdk::ruma::OwnedRoomId,
@@ -2536,6 +2580,7 @@ impl MatrixCommittedRoomTimelineCheckpoint {
         let timeline = checkpoint.timeline();
         Self {
             backend: MatrixCommittedRoomTimelineBackend::SyncService,
+            origin: MatrixCommittedRoomTimelineOrigin::RoomUpdate,
             generation: checkpoint.subscription_generation().get(),
             observation_sequence: timeline.map(|observation| observation.sequence()),
             room_id: checkpoint.room_id().to_owned(),
@@ -2549,11 +2594,27 @@ impl MatrixCommittedRoomTimelineCheckpoint {
     ) -> Self {
         Self {
             backend: MatrixCommittedRoomTimelineBackend::LegacySync,
+            origin: MatrixCommittedRoomTimelineOrigin::RoomUpdate,
             generation: observation.response_sequence(),
             observation_sequence: Some(observation.sequence()),
             room_id: observation.room_id().to_owned(),
             has_timeline_update: observation.has_timeline_update(),
             inserted_gap: observation.inserted_gap().cloned(),
+        }
+    }
+
+    pub fn from_legacy_room_absent(
+        response: &MatrixCommittedRoomUpdatesResponse,
+        room_id: &matrix_sdk::ruma::RoomId,
+    ) -> Self {
+        Self {
+            backend: MatrixCommittedRoomTimelineBackend::LegacySync,
+            origin: MatrixCommittedRoomTimelineOrigin::RoomAbsent,
+            generation: response.generation(),
+            observation_sequence: None,
+            room_id: room_id.to_owned(),
+            has_timeline_update: false,
+            inserted_gap: None,
         }
     }
 
@@ -2566,6 +2627,7 @@ impl MatrixCommittedRoomTimelineCheckpoint {
     ) -> Self {
         Self {
             backend: MatrixCommittedRoomTimelineBackend::SyncService,
+            origin: MatrixCommittedRoomTimelineOrigin::RoomUpdate,
             generation,
             observation_sequence: Some(observation_sequence),
             room_id: gap.room_id.clone(),
@@ -2579,6 +2641,7 @@ impl MatrixCommittedRoomTimelineCheckpoint {
     pub fn from_legacy_gap_for_testing(generation: u64, gap: &MatrixTimelineGapHandle) -> Self {
         Self {
             backend: MatrixCommittedRoomTimelineBackend::LegacySync,
+            origin: MatrixCommittedRoomTimelineOrigin::RoomUpdate,
             generation,
             observation_sequence: Some(generation),
             room_id: gap.room_id.clone(),
@@ -2589,6 +2652,14 @@ impl MatrixCommittedRoomTimelineCheckpoint {
 
     pub fn backend(&self) -> MatrixCommittedRoomTimelineBackend {
         self.backend
+    }
+
+    pub fn origin(&self) -> MatrixCommittedRoomTimelineOrigin {
+        self.origin
+    }
+
+    pub fn is_room_absent(&self) -> bool {
+        self.origin == MatrixCommittedRoomTimelineOrigin::RoomAbsent
     }
 
     pub fn generation(&self) -> u64 {
@@ -2626,6 +2697,7 @@ impl MatrixCommittedRoomTimelineCheckpoint {
 
     pub fn same_response_as(&self, other: &Self) -> bool {
         self.backend == other.backend
+            && self.origin == other.origin
             && self.generation == other.generation
             && self.room_id == other.room_id
             && (self.backend == MatrixCommittedRoomTimelineBackend::LegacySync
@@ -2638,10 +2710,54 @@ impl std::fmt::Debug for MatrixCommittedRoomTimelineCheckpoint {
         formatter
             .debug_struct("MatrixCommittedRoomTimelineCheckpoint")
             .field("backend", &self.backend)
+            .field("origin", &self.origin)
             .field("generation", &self.generation)
             .field("has_timeline_update", &self.has_timeline_update)
             .field("has_inserted_gap", &self.inserted_gap.is_some())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod committed_room_timeline_checkpoint_tests {
+    use super::*;
+
+    #[test]
+    fn room_absent_checkpoint_is_routed_and_debugged_without_private_data() {
+        let response = MatrixCommittedRoomUpdatesResponse {
+            generation: 41,
+            joined_room_count: 2,
+            left_room_count: 1,
+            invited_room_count: 3,
+        };
+        let room_id = matrix_sdk::ruma::room_id!("!private-room:example.org");
+        let checkpoint =
+            MatrixCommittedRoomTimelineCheckpoint::from_legacy_room_absent(&response, room_id);
+
+        assert_eq!(
+            checkpoint.backend(),
+            MatrixCommittedRoomTimelineBackend::LegacySync
+        );
+        assert_eq!(
+            checkpoint.origin(),
+            MatrixCommittedRoomTimelineOrigin::RoomAbsent
+        );
+        assert!(checkpoint.is_room_absent());
+        assert_eq!(checkpoint.generation(), 41);
+        assert_eq!(checkpoint.room_id(), room_id.as_str());
+        assert!(!checkpoint.has_timeline_update());
+        assert!(!checkpoint.has_inserted_gap());
+        assert_eq!(response.joined_room_count(), 2);
+        assert_eq!(response.left_room_count(), 1);
+        assert_eq!(response.invited_room_count(), 3);
+
+        let debug = format!("{response:?} {checkpoint:?}");
+        assert!(debug.contains("origin: RoomAbsent"));
+        assert!(debug.contains("generation: 41"));
+        assert!(debug.contains("has_timeline_update: false"));
+        assert!(debug.contains("has_inserted_gap: false"));
+        assert!(!debug.contains(room_id.as_str()));
+        assert!(!debug.contains("private-token"));
     }
 }
 
