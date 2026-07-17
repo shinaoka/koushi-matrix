@@ -45,19 +45,12 @@ impl CausalProjectionOperationId {
     }
 }
 
-/// Advance a raw producer serial without ever consuming the domain bit.
-///
-/// Exhaustion may restart at one only after the caller proves that no
-/// operation in the same domain still owns a pending causal identity.
-pub(crate) fn next_causal_projection_serial(
-    current: u64,
-    same_domain_identity_pending: bool,
-) -> Option<u64> {
-    match current.checked_add(1) {
-        Some(next) if next <= CAUSAL_PROJECTION_SERIAL_MAX => Some(next),
-        _ if !same_domain_identity_pending => Some(1),
-        _ => None,
-    }
+/// Advance a raw producer serial without ever consuming the domain bit or
+/// reusing an identity within one actor generation.
+pub(crate) fn next_causal_projection_serial(current: u64) -> Option<u64> {
+    current
+        .checked_add(1)
+        .filter(|next| *next <= CAUSAL_PROJECTION_SERIAL_MAX)
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]

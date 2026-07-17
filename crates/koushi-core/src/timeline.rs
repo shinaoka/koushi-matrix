@@ -3650,6 +3650,22 @@ enum TimelineActorMessage {
         batch_id: TimelineBatchId,
     },
     #[cfg(test)]
+    TestBeginRestore {
+        request_id: RequestId,
+        event_id: String,
+        acknowledged: oneshot::Sender<()>,
+    },
+    #[cfg(test)]
+    TestInjectRestoreDiff {
+        diffs: Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>,
+        projections: BTreeSet<CausalProjectionId>,
+        acknowledged: oneshot::Sender<()>,
+    },
+    #[cfg(test)]
+    TestRestoreCausalState(oneshot::Sender<(bool, bool, usize, BTreeSet<CausalProjectionId>)>),
+    #[cfg(test)]
+    TestFlushRestore(oneshot::Sender<bool>),
+    #[cfg(test)]
     Barrier(oneshot::Sender<()>),
 }
 
@@ -6584,19 +6600,11 @@ struct TimelineGapRepairTracker {
 impl TimelineGapRepairTracker {
     #[cfg(test)]
     fn begin_inspection(&mut self) -> Option<u64> {
-        self.begin_work(false)
+        self.begin_work()
     }
 
     fn begin_repair(&mut self, gap_count: u32) -> Option<u64> {
-        self.begin_repair_with_projection_owner(gap_count, false)
-    }
-
-    fn begin_repair_with_projection_owner(
-        &mut self,
-        gap_count: u32,
-        same_domain_identity_pending: bool,
-    ) -> Option<u64> {
-        let serial = self.begin_work(same_domain_identity_pending)?;
+        let serial = self.begin_work()?;
         self.gap_count = gap_count;
         Some(serial)
     }
@@ -6679,7 +6687,7 @@ impl TimelineGapRepairTracker {
             return None;
         }
         let trigger = self.pending_trigger?;
-        let serial = self.begin_work(false)?;
+        let serial = self.begin_work()?;
         self.pending_trigger = None;
         Some((serial, trigger))
     }
@@ -6721,12 +6729,11 @@ impl TimelineGapRepairTracker {
         true
     }
 
-    fn begin_work(&mut self, same_domain_identity_pending: bool) -> Option<u64> {
+    fn begin_work(&mut self) -> Option<u64> {
         if self.active_serial.is_some() {
             return None;
         }
-        self.next_serial =
-            next_causal_projection_serial(self.next_serial, same_domain_identity_pending)?;
+        self.next_serial = next_causal_projection_serial(self.next_serial)?;
         self.active_serial = Some(self.next_serial);
         Some(self.next_serial)
     }
@@ -8889,6 +8896,40 @@ mod timeline_gap_repair_tracker_tests {
     }
 
     #[test]
+    fn historical_projection_serial_exhaustion_never_reuses_one() {
+        let actor_generation = 9;
+        let mut correlation = TimelineGapProjectionCorrelation::default();
+        let prior_operation = historical_causal_projection_operation(CAUSAL_PROJECTION_SERIAL_MAX);
+        correlation.begin(actor_generation, prior_operation);
+        assert_eq!(
+            correlation.complete(actor_generation, prior_operation, Some(1)),
+            TimelineGapProjectionCompletion::Pending,
+        );
+
+        let mut tracker = TimelineGapRepairTracker {
+            next_serial: CAUSAL_PROJECTION_SERIAL_MAX,
+            ..TimelineGapRepairTracker::default()
+        };
+        assert_eq!(tracker.begin_repair(1), None);
+        assert_eq!(tracker.begin_repair(1), None, "exhaustion cannot busy-loop");
+        assert!(tracker.active_serial.is_none());
+        assert_eq!(tracker.next_serial, CAUSAL_PROJECTION_SERIAL_MAX);
+        assert_eq!(
+            correlation.observe(
+                CausalProjectionId {
+                    actor_generation,
+                    operation: historical_causal_projection_operation(1),
+                    projection_batch: 1,
+                },
+                TimelineBatchId(8),
+            ),
+            None,
+            "serial one from a hypothetical wrap cannot cross-complete the prior identity",
+        );
+        assert!(correlation.is_pending());
+    }
+
+    #[test]
     fn timeline_gap_repair_tracker_bounds_batches() {
         let mut tracker = TimelineGapRepairTracker::default();
         for expected in 1..=MAX_TIMELINE_GAP_REPAIR_BATCHES {
@@ -9940,14 +9981,18 @@ impl TimelineActor {
                     self.handle_msg(msg).await;
                 }
             }
-            if let Some(batch_id) = self.ready_restore_gap_projection_batch.take() {
-                self.finish_pending_gap_projection(batch_id).await;
-            }
-            if self.pending_live_tail_projection.is_some()
-                && !self.live_tail_projection_correlation.is_pending()
-            {
-                self.finish_pending_live_tail_projection().await;
-            }
+            self.finish_ready_causal_projection_handoffs().await;
+        }
+    }
+
+    async fn finish_ready_causal_projection_handoffs(&mut self) {
+        if let Some(batch_id) = self.ready_restore_gap_projection_batch.take() {
+            self.finish_pending_gap_projection(batch_id).await;
+        }
+        if self.pending_live_tail_projection.is_some()
+            && !self.live_tail_projection_correlation.is_pending()
+        {
+            self.finish_pending_live_tail_projection().await;
         }
     }
 
@@ -10599,6 +10644,48 @@ impl TimelineActor {
                 }
             }
             #[cfg(test)]
+            TimelineActorMessage::TestBeginRestore {
+                request_id,
+                event_id,
+                acknowledged,
+            } => {
+                self.restore_anchor = Some(RestoreTimelineAnchorState {
+                    request_id,
+                    event_id,
+                    max_batches_remaining: 1,
+                    event_count: 1,
+                    in_flight: false,
+                    awaiting_diff_batch: false,
+                    continuation_scheduled: false,
+                    continuation_serial: None,
+                    anchor_relay_wait: None,
+                });
+                let _ = acknowledged.send(());
+            }
+            #[cfg(test)]
+            TimelineActorMessage::TestInjectRestoreDiff {
+                diffs,
+                projections,
+                acknowledged,
+            } => {
+                let provenance = ThreadAttentionBatchProvenance::from_sdk_diffs(&diffs);
+                self.handle_diff_batch(diffs, provenance, projections).await;
+                let _ = acknowledged.send(());
+            }
+            #[cfg(test)]
+            TimelineActorMessage::TestRestoreCausalState(response) => {
+                let _ = response.send((
+                    self.live_tail_projection_correlation.is_pending(),
+                    self.pending_live_tail_projection.is_some(),
+                    self.restore_emit_buffer.len(),
+                    self.restore_causal_projections.projections.clone(),
+                ));
+            }
+            #[cfg(test)]
+            TimelineActorMessage::TestFlushRestore(response) => {
+                let _ = response.send(self.flush_restore_emit_buffer());
+            }
+            #[cfg(test)]
             TimelineActorMessage::Barrier(response) => {
                 let _ = response.send(());
             }
@@ -11103,10 +11190,7 @@ impl TimelineActor {
         descriptor: MatrixTimelineGapHandle,
         gap_count: u32,
     ) {
-        let Some(serial) = self.gap_repair.begin_repair_with_projection_owner(
-            gap_count,
-            self.gap_projection_correlation.is_pending(),
-        ) else {
+        let Some(serial) = self.gap_repair.begin_repair(gap_count) else {
             return;
         };
         let room_id = self.key.room_id().to_owned();
@@ -22198,14 +22282,14 @@ mod tests {
             "raw serials must never consume the operation-domain bit",
         );
         assert_eq!(
-            next_causal_projection_serial(CAUSAL_PROJECTION_SERIAL_MAX, true),
+            next_causal_projection_serial(CAUSAL_PROJECTION_SERIAL_MAX),
             None,
-            "rollover is blocked while the same domain owns a pending identity",
+            "exhaustion is terminal while the same domain owns a pending identity",
         );
         assert_eq!(
-            next_causal_projection_serial(CAUSAL_PROJECTION_SERIAL_MAX, false),
-            Some(1),
-            "an idle domain restarts at one instead of crossing the domain bit",
+            next_causal_projection_serial(CAUSAL_PROJECTION_SERIAL_MAX),
+            None,
+            "one actor generation never wraps even when no operation is pending",
         );
 
         let mut historical = TimelineGapProjectionCorrelation::default();
@@ -22294,105 +22378,302 @@ mod tests {
         );
     }
 
-    #[test]
-    fn live_tail_restore_flush_consumes_causal_projection_once_and_releases_scheduler() {
-        let account = AccountKey("@restore:test".to_owned());
-        let room_a = TimelineKey::room(account.clone(), "!a:test");
-        let room_b = TimelineKey::room(account, "!b:test");
-        let actor_generation = 4;
-        let mut coordinator = LiveTailRefreshCoordinator::new();
-        assert_eq!(
-            coordinator.activate(room_a.clone(), 7),
-            vec![LiveTailSchedulerAction::Start {
-                key: room_a.clone(),
-                epoch: 7,
-                operation_generation: 1,
-                limit: 128,
-            }]
-        );
-        assert!(coordinator.mark_unproven(room_b.clone(), 7).is_empty());
+    #[tokio::test]
+    async fn live_tail_restore_actor_flush_hands_completion_to_manager_once() {
+        use matrix_sdk::test_utils::mocks::{MatrixMockServer, RoomMessagesResponseTemplate};
+        use matrix_sdk_test::{ALICE, JoinedRoomBuilder, event_factory::EventFactory};
 
-        let mut correlation = TimelineGapProjectionCorrelation::default();
-        let operation = live_tail_causal_projection_operation(1);
-        correlation.begin(actor_generation, operation);
-        assert_eq!(
-            correlation.complete(actor_generation, operation, Some(2)),
-            TimelineGapProjectionCompletion::Pending
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        client
+            .event_cache()
+            .subscribe()
+            .expect("event cache subscription");
+        let sdk_room_id = matrix_sdk::ruma::room_id!("!restore-live-tail:example.org");
+        let stale_edge_id = matrix_sdk::ruma::event_id!("$stale-edge:example.org");
+        let refreshed_id = matrix_sdk::ruma::event_id!("$refreshed:example.org");
+        let room = server.sync_joined_room(&client, sdk_room_id).await;
+        let factory = EventFactory::new().room(sdk_room_id).sender(&ALICE);
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(sdk_room_id).add_timeline_event(
+                    factory
+                        .text_msg("stale edge")
+                        .event_id(stale_edge_id)
+                        .into_raw_sync(),
+                ),
+            )
+            .await;
+        let timeline = Arc::new(
+            koushi_timeline_builder(
+                &room,
+                TimelineFocus::Live {
+                    hide_threaded_events: false,
+                },
+            )
+            .build()
+            .await
+            .expect("room timeline"),
         );
-        let mut historical = TimelineGapProjectionCorrelation::default();
-        let mut restore_projections = RestoreCausalProjectionBuffer::default();
-        restore_projections.buffer_batch(BTreeSet::from([
+        let (initial_sdk_items, _fixture_stream) = timeline.subscribe().await;
+        let real_sdk_item = initial_sdk_items
+            .iter()
+            .find(|item| item.as_event().and_then(|event| event.event_id()) == Some(stale_edge_id))
+            .cloned()
+            .expect("real SDK timeline item for the wrong-tag restore batch");
+        server
+            .mock_room_messages()
+            .match_limit(u32::from(FOREGROUND_LIVE_TAIL_LIMIT))
+            .ok(RoomMessagesResponseTemplate::default()
+                .events(vec![
+                    factory.text_msg("refreshed").event_id(refreshed_id),
+                    factory.text_msg("stale edge").event_id(stale_edge_id),
+                ])
+                .with_delay(Duration::from_millis(500)))
+            .expect(1)
+            .named("restore-live-tail-production-refresh")
+            .mount()
+            .await;
+
+        let session = Arc::new(MatrixClientSession::from_client_for_testing(
+            client,
+            SessionInfo {
+                homeserver: "http://example.invalid".to_owned(),
+                user_id: ALICE.to_string(),
+                device_id: "DEVICE".to_owned(),
+            },
+        ));
+        let account = AccountKey("@restore:test".to_owned());
+        let room_a = TimelineKey::room(account.clone(), sdk_room_id.to_string());
+        let room_b = TimelineKey::room(account, "!delayed:example.org");
+        let delayed_log = Arc::new(Mutex::new(Vec::new()));
+        let mut manager = live_tail_test_manager(HashMap::from([(
+            room_b.clone(),
+            live_tail_test_actor_handle("B", delayed_log.clone()),
+        )]));
+        let mut event_rx = manager.event_tx.subscribe();
+        let actor_generation = manager
+            .timeline_actor_generations
+            .activate_after_quiescence(&room_a)
+            .await
+            .generation;
+        let projection_request_id = fake_rid(40);
+        let actor_handle = TimelineActor::spawn(
+            room_a.clone(),
+            timeline,
+            session,
+            projection_request_id,
+            manager.action_tx.clone(),
+            manager.event_tx.clone(),
+            None,
+            Default::default(),
+            None,
+            LinkPreviewContext::default(),
+            manager.messages_backpressure.clone(),
+            Arc::clone(&manager.thread_root_projection_service),
+            Arc::clone(&manager.replay_known_thread_root_projections),
+            Arc::clone(&manager.timeline_actor_generations),
+            actor_generation,
+            None,
+            manager.msg_tx.clone(),
+        )
+        .await;
+        manager.timelines.insert(room_a.clone(), actor_handle);
+        loop {
+            if matches!(
+                event_rx.recv().await.expect("initial actor event"),
+                CoreEvent::Timeline(TimelineEvent::InitialItems { key, .. }) if key == room_a
+            ) {
+                break;
+            }
+        }
+
+        let (restore_tx, restore_rx) = oneshot::channel();
+        assert!(
+            manager
+                .timelines
+                .get(&room_a)
+                .expect("room A actor")
+                .send(TimelineActorMessage::TestBeginRestore {
+                    request_id: fake_rid(41),
+                    event_id: "$anchor-not-in-window:example.org".to_owned(),
+                    acknowledged: restore_tx,
+                })
+                .await
+        );
+        restore_rx.await.expect("restore fixture acknowledged");
+
+        let starts = manager.live_tail_refreshes.activate(room_a.clone(), 7);
+        assert!(
+            manager
+                .live_tail_refreshes
+                .mark_unproven(room_b.clone(), 7)
+                .is_empty()
+        );
+        manager.apply_live_tail_scheduler_actions(starts).await;
+        let operation = live_tail_causal_projection_operation(1);
+        let wrong_projections = BTreeSet::from([
             CausalProjectionId {
-                actor_generation: actor_generation - 1,
+                actor_generation: actor_generation + 1,
                 operation,
-                projection_batch: 2,
+                projection_batch: 1,
             },
             CausalProjectionId {
                 actor_generation,
                 operation: live_tail_causal_projection_operation(9),
-                projection_batch: 2,
+                projection_batch: 1,
             },
             CausalProjectionId {
                 actor_generation,
                 operation,
-                projection_batch: 1,
+                projection_batch: u32::MAX,
             },
-        ]));
-        assert_eq!(
-            restore_projections
-                .observe_after_publication(&mut historical, &mut correlation, TimelineBatchId(20),)
-                .live_tail_batch_id,
-            None,
+        ]);
+        let (inject_tx, inject_rx) = oneshot::channel();
+        assert!(
+            manager
+                .timelines
+                .get(&room_a)
+                .expect("room A actor")
+                .send(TimelineActorMessage::TestInjectRestoreDiff {
+                    diffs: vec![eyeball_im::VectorDiff::PushBack {
+                        value: real_sdk_item,
+                    }],
+                    projections: wrong_projections.clone(),
+                    acknowledged: inject_tx,
+                })
+                .await
         );
-        assert!(correlation.is_pending());
+        inject_rx.await.expect("wrong-tag diff handled");
+
+        let snapshot = |manager: &TimelineManagerActor, key: &TimelineKey| {
+            let (response, state) = oneshot::channel();
+            let handle = manager.timelines.get(key).expect("room A actor");
+            (handle.tx.clone(), response, state)
+        };
+        let (actor_tx, state_tx, state_rx) = snapshot(&manager, &room_a);
+        actor_tx
+            .send(TimelineActorMessage::TestRestoreCausalState(state_tx))
+            .await
+            .expect("snapshot request");
+        let (pending, completion_waiting, buffered_diff_count, buffered_projections) =
+            state_rx.await.expect("wrong-tag snapshot");
+        assert!(pending);
+        assert!(!completion_waiting);
+        assert_eq!(buffered_diff_count, 1);
+        assert_eq!(buffered_projections, wrong_projections);
         assert_eq!(
-            coordinator.freshness(&room_a),
-            Some(
-                crate::live_tail_freshness::LiveTailFreshnessState::Refreshing {
-                    epoch: 7,
-                    operation_generation: 1,
-                }
-            ),
-            "buffering and wrong causal tags must not prove freshness before flush",
+            manager.live_tail_refreshes.freshness(&room_a),
+            Some(LiveTailFreshnessState::Refreshing {
+                epoch: 7,
+                operation_generation: 1,
+            }),
+            "wrong actor, operation, and batch identities cannot prove freshness",
         );
 
-        restore_projections.buffer_batch(BTreeSet::from([CausalProjectionId {
-            actor_generation,
-            operation,
-            projection_batch: 2,
-        }]));
+        let matching_projection = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let (actor_tx, state_tx, state_rx) = snapshot(&manager, &room_a);
+                actor_tx
+                    .send(TimelineActorMessage::TestRestoreCausalState(state_tx))
+                    .await
+                    .expect("snapshot request");
+                let (pending, completion_waiting, buffered_diff_count, projections) =
+                    state_rx.await.expect("matching-tag snapshot");
+                if let Some(projection) = projections.iter().copied().find(|projection| {
+                    projection.actor_generation == actor_generation
+                        && projection.operation == operation
+                        && projection.projection_batch != u32::MAX
+                }) && completion_waiting
+                    && buffered_diff_count > 1
+                {
+                    assert!(
+                        pending,
+                        "matching metadata remains pending until publication"
+                    );
+                    break projection;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("real tagged SDK diff reached the restore buffer");
+        assert_ne!(matching_projection.projection_batch, u32::MAX);
+
+        let (flush_tx, flush_rx) = oneshot::channel();
+        manager
+            .timelines
+            .get(&room_a)
+            .expect("room A actor")
+            .tx
+            .send(TimelineActorMessage::TestFlushRestore(flush_tx))
+            .await
+            .expect("flush request");
+        assert!(flush_rx.await.expect("production restore flush result"));
+
+        let completion = tokio::time::timeout(Duration::from_secs(2), manager.msg_rx.recv())
+            .await
+            .expect("actor loop published manager completion")
+            .expect("manager completion channel");
+        let TimelineMessage::LiveTailRefreshCompleted {
+            key,
+            actor_generation: completed_actor_generation,
+            epoch,
+            operation_generation,
+            outcome,
+            requested_limit,
+            returned_events,
+            historical_gap_remaining,
+            duration_ms,
+        } = completion
+        else {
+            panic!("actor must publish the live-tail manager completion");
+        };
+        manager
+            .handle_live_tail_refresh_completed(
+                key,
+                completed_actor_generation,
+                epoch,
+                operation_generation,
+                outcome,
+                requested_limit,
+                returned_events,
+                historical_gap_remaining,
+                duration_ms,
+            )
+            .await;
         assert_eq!(
-            restore_projections
-                .observe_after_publication(&mut historical, &mut correlation, TimelineBatchId(21),)
-                .live_tail_batch_id,
-            Some(TimelineBatchId(21)),
+            manager.live_tail_refreshes.freshness(&room_a),
+            Some(LiveTailFreshnessState::Fresh { epoch: 7 }),
         );
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !delayed_log.lock().expect("delayed start log").is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("manager scheduled delayed room B");
         assert_eq!(
-            restore_projections.observe_after_publication(
-                &mut historical,
-                &mut correlation,
-                TimelineBatchId(22),
-            ),
-            CausalProjectionObservation::default(),
-            "the restore projection metadata is consumed by one publication",
+            *delayed_log.lock().expect("delayed start log"),
+            ["start:B:epoch=7:limit=128"],
         );
+
+        let mut items_updated_count = 0;
+        while let Ok(event) = event_rx.try_recv() {
+            if matches!(
+                event,
+                CoreEvent::Timeline(TimelineEvent::ItemsUpdated { .. })
+            ) {
+                items_updated_count += 1;
+            }
+        }
         assert_eq!(
-            coordinator.finish(
-                room_a.clone(),
-                7,
-                1,
-                LiveTailRefreshOutcome::Advanced { events: 1 },
-            ),
-            vec![LiveTailSchedulerAction::Start {
-                key: room_b,
-                epoch: 7,
-                operation_generation: 2,
-                limit: 128,
-            }]
-        );
-        assert_eq!(
-            coordinator.freshness(&room_a),
-            Some(crate::live_tail_freshness::LiveTailFreshnessState::Fresh { epoch: 7 }),
+            items_updated_count, 1,
+            "restore publishes one coalesced batch"
         );
     }
 

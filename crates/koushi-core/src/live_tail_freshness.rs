@@ -110,13 +110,22 @@ where
 
         let old_active = self.active.replace(key.clone());
         self.remove_delayed(&key);
-        if !matches!(
+        let preserve_exhausted_retryable = next_causal_projection_serial(self.operation_generation)
+            .is_none()
+            && matches!(
+                self.states.get(&key),
+                Some(LiveTailFreshnessState::Retryable { epoch: known_epoch })
+                    if *known_epoch == epoch
+            );
+        if !preserve_exhausted_retryable
+            && !matches!(
             self.states.get(&key),
             Some(LiveTailFreshnessState::Unproven { epoch: known_epoch }
                 | LiveTailFreshnessState::Refreshing { epoch: known_epoch, .. }
                 | LiveTailFreshnessState::Fresh { epoch: known_epoch })
                 if *known_epoch == epoch
-        ) {
+            )
+        {
             self.states
                 .insert(key.clone(), LiveTailFreshnessState::Unproven { epoch });
         }
@@ -154,6 +163,12 @@ where
             | Some(LiveTailFreshnessState::Refreshing {
                 epoch: known_epoch, ..
             }) if known_epoch == epoch => return Vec::new(),
+            Some(LiveTailFreshnessState::Retryable { epoch: known_epoch })
+                if known_epoch == epoch
+                    && next_causal_projection_serial(self.operation_generation).is_none() =>
+            {
+                return Vec::new();
+            }
             _ => {}
         }
 
@@ -411,7 +426,7 @@ where
         if let Some(active) = self.active.clone() {
             if skip != Some(&active) && self.cancelled_active.as_ref() != Some(&active) {
                 if let Some(epoch) = self.unproven_epoch(&active) {
-                    return vec![self.start(active, epoch)];
+                    return self.start(active, epoch).into_iter().collect();
                 }
             }
         }
@@ -434,19 +449,24 @@ where
             let Some(epoch) = self.deferred_epoch(&key) else {
                 continue;
             };
-            return vec![self.start(key, epoch)];
+            return self.start(key, epoch).into_iter().collect();
         }
 
         Vec::new()
     }
 
-    fn start(&mut self, key: K, epoch: u64) -> LiveTailSchedulerAction<K> {
+    fn start(&mut self, key: K, epoch: u64) -> Option<LiveTailSchedulerAction<K>> {
         debug_assert!(self.running.is_none());
         self.remove_delayed(&key);
         self.clear_cancelled_active(&key);
-        self.operation_generation =
-            next_causal_projection_serial(self.operation_generation, self.running.is_some())
-                .expect("live-tail serial cannot roll over while its domain is pending");
+        let Some(next_operation_generation) =
+            next_causal_projection_serial(self.operation_generation)
+        else {
+            self.states
+                .insert(key, LiveTailFreshnessState::Retryable { epoch });
+            return None;
+        };
+        self.operation_generation = next_operation_generation;
         let operation_generation = self.operation_generation;
         self.states.insert(
             key.clone(),
@@ -460,12 +480,12 @@ where
             epoch,
             operation_generation,
         });
-        LiveTailSchedulerAction::Start {
+        Some(LiveTailSchedulerAction::Start {
             key,
             epoch,
             operation_generation,
             limit: FOREGROUND_LIVE_TAIL_LIMIT,
-        }
+        })
     }
 
     fn queue_delayed(&mut self, key: K) {
@@ -738,6 +758,33 @@ mod tests {
                 operation_generation: 3,
                 limit: 128,
             }]
+        );
+    }
+
+    #[test]
+    fn exhausted_operation_serial_never_wraps_or_starts_a_retry_loop() {
+        let room = "!a:test";
+        let mut coordinator = LiveTailRefreshCoordinator::new();
+        coordinator.operation_generation = crate::causal_projection::CAUSAL_PROJECTION_SERIAL_MAX;
+
+        assert!(coordinator.activate(room, 7).is_empty());
+        assert_eq!(
+            coordinator.freshness(&room),
+            Some(LiveTailFreshnessState::Retryable { epoch: 7 }),
+        );
+        assert!(coordinator.running.is_none());
+        assert_eq!(
+            coordinator.operation_generation,
+            crate::causal_projection::CAUSAL_PROJECTION_SERIAL_MAX,
+        );
+
+        assert!(coordinator.activate(room, 7).is_empty());
+        assert!(coordinator.mark_unproven(room, 7).is_empty());
+        assert!(coordinator.running.is_none());
+        assert_eq!(
+            coordinator.operation_generation,
+            crate::causal_projection::CAUSAL_PROJECTION_SERIAL_MAX,
+            "same-generation retries must not reuse serial one",
         );
     }
 
