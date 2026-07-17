@@ -15,6 +15,12 @@ committed its timeline into the event cache. The TimelineActor then runs
 and later live event can restore live delivery without repairing the preceding
 offline interval.
 
+The same stall occurs after process restart when a real gap is already
+persisted but the first incremental legacy response omits that unchanged room.
+The event cache currently publishes committed provenance only for rooms present
+in that response, so the actor waits forever for a per-room checkpoint that can
+never be produced.
+
 The existing RoomListService checkpoint solves this ordering race only for the
 SyncService backend. Legacy actors have no current-response provenance and
 therefore fall through `LiveCatchupGate::Unsupported` to an arbitrary persisted
@@ -25,9 +31,14 @@ follow-up inspection.
 ## Goals
 
 - Make committed room-timeline provenance a backend-neutral Core contract.
+- Prove completion of a legacy response even when an active room is omitted
+  from that response.
 - Prevent `LiveEdge` repair from acquiring scheduler ownership before the
   active backend's current room response is committed.
-- Select only the opaque gap created by that committed response.
+- When the committed response contains a room timeline mutation, select only
+  the opaque gap created by that response.
+- When a committed response omits an active room, repair only the newest
+  persisted gap as a bounded live-edge recovery chain.
 - Recover deterministically from lost relay correlation and missing render
   acknowledgement while preserving queued `LiveEdge` work.
 - Project `Running` only after the active backend has produced a successful
@@ -40,7 +51,9 @@ follow-up inspection.
 - Do not optimize member lazy-loading or persisted-history scanning without
   measurement from the functional regression.
 - Do not move Matrix continuity decisions into React or Tauri.
-- Do not persist response checkpoints across process restart.
+- Do not persist response checkpoints across process restart; the first newly
+  committed response supplies the process-local fence needed to inspect the
+  persisted topology safely.
 - Do not expose room IDs, event IDs, gap identities, tokens, bodies, or raw SDK
   errors in diagnostics or normal `Debug` output.
 
@@ -67,6 +80,15 @@ without reusing an older observation. SyncService response identity combines
 the subscription generation with the room event-cache observation sequence,
 because one subscription generation covers multiple sync responses.
 
+The SDK event cache also publishes a retained global committed-response fence
+after all room updates for a response have finished topology mutation. The
+fence advances even when a particular room is absent from the incremental
+response. TimelineManager compares the fence with the retained per-room
+observations for currently active timelines. A room observation from the same
+response produces the exact checkpoint above; an active room without one
+produces an explicit `room_absent` checkpoint. This avoids an all-rooms scan on
+every sync response while preserving commit ordering.
+
 TimelineManager owns the active backend epoch and the sole observation task.
 Backend replacement aborts the old task, increments the epoch, clears retained
 checkpoints, and fences queued delivery. Manager routing requires backend
@@ -78,8 +100,8 @@ projection remain non-blocking.
 A room actor queues `LiveEdge` on open but does not begin inspection until the
 current checkpoint arrives. Once it arrives:
 
-- the exact current-response gap is the only descriptor eligible to start a
-  repair chain;
+- when the response contains a room timeline mutation, its exact gap is the
+  only descriptor eligible to start a repair chain;
 - that opaque descriptor remains retained until the first bounded repair is
   admitted, even when later responses are empty or also limited;
 - after the exact first batch makes progress, continuation follows only the
@@ -87,6 +109,9 @@ current checkpoint arrives. Once it arrives:
   to normal automatic policy rather than touching unrelated history;
 - a response with no timeline mutation or no gap closes this `LiveEdge`
   decision without selecting historical topology;
+- a `room_absent` checkpoint permits one authoritative inspection of persisted
+  topology and selects only its newest gap for a bounded live-edge recovery
+  chain; it never selects older gaps or bypasses the normal batch limits;
 - a stale/absent descriptor causes one re-inspection, then an explicit closed
   stale decision that clears the old checkpoint so the next committed response
   can be admitted; the latest checkpoint delivered during that attempt is
@@ -135,6 +160,18 @@ recovery.
 - Repeated repair with unchanged topology/zero progress closes under the
   existing bounded batch rules.
 
+## Diagnostics
+
+Diagnostics remain token-free and content-free. SDK response-commit records
+include the published response sequence, committed fence sequence, and counts
+of joined/left/invited updates. TimelineManager records active timeline count,
+rooms updated in the committed response, and checkpoints routed with origin
+`room_update` or `room_absent`. TimelineActor records the checkpoint origin,
+live-catchup gate decision, candidate kind (`exact_response_gap` or
+`newest_persisted`), scheduler phase, and bounded batch count. Room IDs, event
+IDs, gap identities, sync tokens, message bodies, and raw SDK errors remain
+excluded.
+
 ## Verification
 
 The primary RED test is a deterministic real-actor fixture with an unrelated
@@ -143,6 +180,15 @@ an offline interval larger than the live limit, and one later live event. It
 asserts that stale topology is never selected, the exact committed-response gap
 is repaired, all expected event IDs occur once, and scheduler state returns to
 idle.
+
+A second RED regression seeds a persisted gap for room A, commits the first
+legacy response with only room B updated, and opens room A without injecting a
+checkpoint directly. It asserts that the global response fence yields a
+`room_absent` checkpoint, only the newest persisted gap is repaired, and the
+scheduler returns to idle. SDK coverage independently proves that the global
+fence advances only after event-cache mutation has committed when a known room
+is omitted. Linux headless coverage repeats the omitted-room case across a Core
+restart using the same store.
 
 Focused coverage also includes SDK retained observation replay, no-timeline
 responses, privacy-safe `Debug`, backend/actor generation rejection, relay
