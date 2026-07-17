@@ -155,6 +155,13 @@ where
             _ => {}
         }
 
+        let mut actions = Vec::new();
+        let fenced_replacement = if let Some(cancel) = self.fence_replaced_running(&key, epoch) {
+            actions.push(cancel);
+            true
+        } else {
+            false
+        };
         let is_active = self.active.as_ref() == Some(&key);
         self.clear_cancelled_active(&key);
         self.states.insert(
@@ -167,11 +174,11 @@ where
         );
 
         if !is_active {
-            self.queue_delayed(key);
-            return self.schedule_next(None);
+            self.queue_delayed(key.clone());
+            actions.extend(self.schedule_next(fenced_replacement.then_some(&key)));
+            return actions;
         }
 
-        let mut actions = Vec::new();
         if self
             .running
             .as_ref()
@@ -274,19 +281,8 @@ where
         let mut actions = Vec::new();
         self.clear_cancelled_active(&key);
 
-        if self
-            .running
-            .as_ref()
-            .is_some_and(|running| running.key == key)
-        {
-            let running = self
-                .running
-                .take()
-                .expect("matching live-tail refresh must still be running");
-            actions.push(LiveTailSchedulerAction::CancelNetwork {
-                key: running.key,
-                operation_generation: running.operation_generation,
-            });
+        if let Some(cancel) = self.fence_replaced_running(&key, epoch) {
+            actions.push(cancel);
         }
 
         self.states.insert(
@@ -349,6 +345,28 @@ where
         self.running
             .as_ref()
             .is_some_and(|running| &running.key == key)
+    }
+
+    fn fence_replaced_running(
+        &mut self,
+        key: &K,
+        epoch: u64,
+    ) -> Option<LiveTailSchedulerAction<K>> {
+        let is_replaced = self
+            .running
+            .as_ref()
+            .is_some_and(|running| &running.key == key && running.epoch != epoch);
+        if !is_replaced {
+            return None;
+        }
+        let running = self
+            .running
+            .take()
+            .expect("replaced live-tail refresh must still be running");
+        Some(LiveTailSchedulerAction::CancelNetwork {
+            key: running.key,
+            operation_generation: running.operation_generation,
+        })
     }
 
     fn defer_if_pending(&mut self, key: K) {
@@ -598,6 +616,85 @@ mod tests {
         assert_eq!(
             coordinator.freshness(&A),
             Some(LiveTailFreshnessState::Fresh { epoch: 8 })
+        );
+    }
+
+    #[test]
+    fn inactive_epoch_replacement_fences_old_finish_and_preserves_one_deferred_entry() {
+        let mut coordinator = LiveTailRefreshCoordinator::new();
+
+        assert_eq!(
+            coordinator.activate(A, 7),
+            vec![LiveTailSchedulerAction::Start {
+                key: A,
+                epoch: 7,
+                operation_generation: 1,
+                limit: 128,
+            }]
+        );
+        assert_eq!(coordinator.mark_unproven(B, 8), Vec::new());
+        assert_eq!(
+            coordinator.finish(A, 7, 1, LiveTailRefreshOutcome::Unchanged),
+            vec![LiveTailSchedulerAction::Start {
+                key: B,
+                epoch: 8,
+                operation_generation: 2,
+                limit: 128,
+            }]
+        );
+
+        assert_eq!(
+            coordinator.mark_unproven(B, 9),
+            vec![LiveTailSchedulerAction::CancelNetwork {
+                key: B,
+                operation_generation: 2,
+            }]
+        );
+        assert_eq!(
+            coordinator.freshness(&B),
+            Some(LiveTailFreshnessState::Deferred { epoch: 9 })
+        );
+        assert_eq!(
+            coordinator.delayed.iter().copied().collect::<Vec<_>>(),
+            vec![B]
+        );
+        assert_eq!(coordinator.delayed_members.len(), 1);
+        assert!(coordinator.delayed_members.contains(&B));
+
+        assert_eq!(
+            coordinator.finish(B, 8, 2, LiveTailRefreshOutcome::Unchanged),
+            Vec::new()
+        );
+        assert_eq!(
+            coordinator.freshness(&B),
+            Some(LiveTailFreshnessState::Deferred { epoch: 9 })
+        );
+        assert_eq!(
+            coordinator.delayed.iter().copied().collect::<Vec<_>>(),
+            vec![B]
+        );
+
+        assert_eq!(
+            coordinator.activate(C, 10),
+            vec![LiveTailSchedulerAction::Start {
+                key: C,
+                epoch: 10,
+                operation_generation: 3,
+                limit: 128,
+            }]
+        );
+        assert_eq!(
+            coordinator.finish(C, 10, 3, LiveTailRefreshOutcome::Unchanged),
+            vec![LiveTailSchedulerAction::Start {
+                key: B,
+                epoch: 9,
+                operation_generation: 4,
+                limit: 128,
+            }]
+        );
+        assert_eq!(
+            coordinator.finish(B, 9, 4, LiveTailRefreshOutcome::Unchanged),
+            Vec::new()
         );
     }
 
