@@ -2526,38 +2526,66 @@ pub enum MatrixCommittedRoomTimelineOrigin {
 
 /// Token-free summary of one SDK room-updates response after event-cache
 /// topology mutation has committed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct MatrixCommittedRoomUpdatesResponse {
-    generation: u64,
-    joined_room_count: usize,
-    left_room_count: usize,
-    invited_room_count: usize,
+    inner: matrix_sdk::event_cache::CommittedRoomUpdatesResponse,
 }
 
 impl MatrixCommittedRoomUpdatesResponse {
     pub fn from_sdk(response: &matrix_sdk::event_cache::CommittedRoomUpdatesResponse) -> Self {
         Self {
-            generation: response.response_sequence(),
-            joined_room_count: response.joined_room_count(),
-            left_room_count: response.left_room_count(),
-            invited_room_count: response.invited_room_count(),
+            inner: response.clone(),
         }
     }
 
     pub fn generation(&self) -> u64 {
-        self.generation
+        self.inner.response_sequence()
     }
 
     pub fn joined_room_count(&self) -> usize {
-        self.joined_room_count
+        self.inner.joined_room_count()
     }
 
     pub fn left_room_count(&self) -> usize {
-        self.left_room_count
+        self.inner.left_room_count()
     }
 
     pub fn invited_room_count(&self) -> usize {
-        self.invited_room_count
+        self.inner.invited_room_count()
+    }
+
+    /// Return token-free provenance for one room in this exact committed
+    /// response. Only a genuinely omitted room receives a RoomAbsent
+    /// checkpoint; left, invited, and joined updates that failed before commit
+    /// do not authorize fallback repair.
+    pub fn room_checkpoint(
+        &self,
+        room_id: &matrix_sdk::ruma::RoomId,
+    ) -> Option<MatrixCommittedRoomTimelineCheckpoint> {
+        use matrix_sdk::event_cache::CommittedRoomUpdateMembership;
+
+        match self.inner.room_membership(room_id) {
+            CommittedRoomUpdateMembership::Joined => self
+                .inner
+                .room_timeline_observation(room_id)
+                .map(MatrixCommittedRoomTimelineCheckpoint::from_committed_observation),
+            CommittedRoomUpdateMembership::Absent => {
+                MatrixCommittedRoomTimelineCheckpoint::from_legacy_room_absent(self, room_id)
+            }
+            CommittedRoomUpdateMembership::Left | CommittedRoomUpdateMembership::Invited => None,
+        }
+    }
+}
+
+impl std::fmt::Debug for MatrixCommittedRoomUpdatesResponse {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MatrixCommittedRoomUpdatesResponse")
+            .field("generation", &self.generation())
+            .field("joined_room_count", &self.joined_room_count())
+            .field("left_room_count", &self.left_room_count())
+            .field("invited_room_count", &self.invited_room_count())
+            .finish()
     }
 }
 
@@ -2606,8 +2634,13 @@ impl MatrixCommittedRoomTimelineCheckpoint {
     pub fn from_legacy_room_absent(
         response: &MatrixCommittedRoomUpdatesResponse,
         room_id: &matrix_sdk::ruma::RoomId,
-    ) -> Self {
-        Self {
+    ) -> Option<Self> {
+        if response.inner.room_membership(room_id)
+            != matrix_sdk::event_cache::CommittedRoomUpdateMembership::Absent
+        {
+            return None;
+        }
+        Some(Self {
             backend: MatrixCommittedRoomTimelineBackend::LegacySync,
             origin: MatrixCommittedRoomTimelineOrigin::RoomAbsent,
             generation: response.generation(),
@@ -2615,7 +2648,7 @@ impl MatrixCommittedRoomTimelineCheckpoint {
             room_id: room_id.to_owned(),
             has_timeline_update: false,
             inserted_gap: None,
-        }
+        })
     }
 
     #[cfg(feature = "test-hooks")]
@@ -2647,6 +2680,23 @@ impl MatrixCommittedRoomTimelineCheckpoint {
             room_id: gap.room_id.clone(),
             has_timeline_update: true,
             inserted_gap: Some(gap.descriptor.clone()),
+        }
+    }
+
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn from_legacy_room_absent_for_testing(
+        generation: u64,
+        room_id: &matrix_sdk::ruma::RoomId,
+    ) -> Self {
+        Self {
+            backend: MatrixCommittedRoomTimelineBackend::LegacySync,
+            origin: MatrixCommittedRoomTimelineOrigin::RoomAbsent,
+            generation,
+            observation_sequence: None,
+            room_id: room_id.to_owned(),
+            has_timeline_update: false,
+            inserted_gap: None,
         }
     }
 
@@ -2723,16 +2773,17 @@ mod committed_room_timeline_checkpoint_tests {
     use super::*;
 
     #[test]
-    fn room_absent_checkpoint_is_routed_and_debugged_without_private_data() {
-        let response = MatrixCommittedRoomUpdatesResponse {
-            generation: 41,
-            joined_room_count: 2,
-            left_room_count: 1,
-            invited_room_count: 3,
-        };
+    fn room_absent_checkpoint_is_debugged_without_private_data() {
         let room_id = matrix_sdk::ruma::room_id!("!private-room:example.org");
-        let checkpoint =
-            MatrixCommittedRoomTimelineCheckpoint::from_legacy_room_absent(&response, room_id);
+        let checkpoint = MatrixCommittedRoomTimelineCheckpoint {
+            backend: MatrixCommittedRoomTimelineBackend::LegacySync,
+            origin: MatrixCommittedRoomTimelineOrigin::RoomAbsent,
+            generation: 41,
+            observation_sequence: None,
+            room_id: room_id.to_owned(),
+            has_timeline_update: false,
+            inserted_gap: None,
+        };
 
         assert_eq!(
             checkpoint.backend(),
@@ -2747,11 +2798,7 @@ mod committed_room_timeline_checkpoint_tests {
         assert_eq!(checkpoint.room_id(), room_id.as_str());
         assert!(!checkpoint.has_timeline_update());
         assert!(!checkpoint.has_inserted_gap());
-        assert_eq!(response.joined_room_count(), 2);
-        assert_eq!(response.left_room_count(), 1);
-        assert_eq!(response.invited_room_count(), 3);
-
-        let debug = format!("{response:?} {checkpoint:?}");
+        let debug = format!("{checkpoint:?}");
         assert!(debug.contains("origin: RoomAbsent"));
         assert!(debug.contains("generation: 41"));
         assert!(debug.contains("has_timeline_update: false"));

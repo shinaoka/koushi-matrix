@@ -611,6 +611,8 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "legacy_fallback_lifecycle=ok",
         ],
         QaStage::TimelineLegacyPersistedGap => &[
+            "legacy_persisted_gap_room_absent=ok",
+            "legacy_persisted_gap_unrelated_gap_retained=ok",
             "legacy_persisted_gap_fence=ok",
             "legacy_persisted_gap_repaired=ok",
             "legacy_persisted_gap_settled=ok",
@@ -4244,7 +4246,58 @@ async fn run_timeline_reconnect_scenario_impl(
         wait_for_sync_running_after_reconnect(&mut conn_a, "timeline_reconnect A recovered")
             .await?;
     }
-    let (runtime_a, mut conn_a) = if restart_with_persisted_gap {
+    let newest_persisted_gap_bodies = if restart_with_persisted_gap {
+        proxy.disable();
+        wait_for_sync_reconnecting(
+            &mut conn_a,
+            "timeline legacy persisted gap disconnect before second limited response",
+        )
+        .await?;
+        let bodies = (0..30)
+            .map(|index| format!("QA timeline persisted newest gap {index:03}"))
+            .collect::<Vec<_>>();
+        for (index, body) in bodies.iter().enumerate() {
+            let txn = format!("qa-timeline-persisted-newest-{index:03}");
+            let send_b_id = conn_b.next_request_id();
+            conn_b
+                .command(CoreCommand::Timeline(TimelineCommand::SendText {
+                    request_id: send_b_id,
+                    key: key_b.clone(),
+                    transaction_id: txn.clone(),
+                    body: body.clone(),
+                    mentions: MentionIntent::default(),
+                }))
+                .await
+                .map_err(|e| {
+                    format!("timeline legacy persisted gap: submit second batch failed: {e}")
+                })?;
+            wait_for_send_flow_completion(
+                &mut conn_b,
+                send_b_id,
+                &key_b,
+                &txn,
+                body,
+                "timeline legacy persisted gap second offline batch",
+            )
+            .await?;
+        }
+
+        proxy.enable();
+        wait_for_sync_running_after_reconnect(
+            &mut conn_a,
+            "timeline legacy persisted gap second limited reconnect committed",
+        )
+        .await?;
+        Some(bodies)
+    } else {
+        None
+    };
+    let (runtime_a, mut conn_a, room_absent_checkpoint_baseline) = if restart_with_persisted_gap {
+        stop_sync_for_qa(
+            &mut conn_b,
+            "timeline legacy persisted gap stop B before room-absent proof",
+        )
+        .await?;
         stop_sync_for_qa(
             &mut conn_a,
             "timeline legacy persisted gap stop before restart",
@@ -4256,6 +4309,19 @@ async fn run_timeline_reconnect_scenario_impl(
             .map_err(|_| {
                 "timeline legacy persisted gap timed out shutting down before restart".to_owned()
             })?;
+        let room_absent_checkpoint_baseline = koushi_diagnostics::snapshot()
+            .records
+            .iter()
+            .filter(|record| {
+                record.event.source == "core.live_catchup"
+                    && record.event.stage == "checkpoint"
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "checkpoint_origin"
+                            && field.value
+                                == koushi_diagnostics::DiagnosticValue::Token("room_absent")
+                    })
+            })
+            .count();
 
         let restarted_runtime = CoreRuntime::start_with_data_dir(data_dir_a);
         let mut restarted_conn = restarted_runtime.attach();
@@ -4319,9 +4385,13 @@ async fn run_timeline_reconnect_scenario_impl(
             "timeline legacy persisted gap room-absent response committed",
         )
         .await?;
-        (restarted_runtime, restarted_conn)
+        (
+            restarted_runtime,
+            restarted_conn,
+            Some(room_absent_checkpoint_baseline),
+        )
     } else {
-        (runtime_a, conn_a)
+        (runtime_a, conn_a, None)
     };
     let reopened_before_later = if legacy_fallback {
         Some(
@@ -4335,7 +4405,43 @@ async fn run_timeline_reconnect_scenario_impl(
     } else {
         None
     };
-    let mut expected_bodies = offline_bodies.clone();
+    if let Some(baseline) = room_absent_checkpoint_baseline {
+        tokio::time::timeout(EVENT_TIMEOUT, async {
+            loop {
+                let count = koushi_diagnostics::snapshot()
+                    .records
+                    .iter()
+                    .filter(|record| {
+                        record.event.source == "core.live_catchup"
+                            && record.event.stage == "checkpoint"
+                            && record.event.fields.iter().any(|field| {
+                                field.key == "checkpoint_origin"
+                                    && field.value
+                                        == koushi_diagnostics::DiagnosticValue::Token(
+                                            "room_absent",
+                                        )
+                            })
+                    })
+                    .count();
+                if count > baseline {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .map_err(|_| {
+            "timeline legacy persisted gap did not observe a new room_absent checkpoint after restart"
+                .to_owned()
+        })?;
+        println!("legacy_persisted_gap_room_absent=ok");
+        start_sync_for_qa(
+            &mut conn_b,
+            "timeline legacy persisted gap resume B after room-absent proof",
+        )
+        .await?;
+    }
+    let mut expected_bodies = newest_persisted_gap_bodies.unwrap_or(offline_bodies.clone());
     if legacy_fallback {
         let later_body = "QA timeline legacy fallback later live event".to_owned();
         let later_txn = "qa-timeline-legacy-fallback-later";
@@ -4381,6 +4487,18 @@ async fn run_timeline_reconnect_scenario_impl(
             "timeline legacy fallback exact recovery",
         )
         .await?;
+        if restart_with_persisted_gap {
+            match conn_a.snapshot().timeline.continuity {
+                koushi_state::TimelineContinuityState::Incomplete { gap_count: 1, .. } => {
+                    println!("legacy_persisted_gap_unrelated_gap_retained=ok");
+                }
+                ref continuity => {
+                    return Err(format!(
+                        "timeline legacy persisted gap expected one unrelated older gap after newest repair, got {continuity:?}"
+                    ));
+                }
+            }
+        }
         let settled_body = "QA timeline legacy fallback settled live event";
         let settled_txn = "qa-timeline-legacy-fallback-settled";
         let settled_send_id = conn_b.next_request_id();
@@ -15680,6 +15798,27 @@ mod tests {
         );
         assert!(production_source.contains("run_timeline_legacy_persisted_gap_scenario"));
         assert!(production_source.contains("AccountCommand::RestoreSession"));
+        assert!(production_source.contains("let bodies = (0..30)"));
+        assert!(production_source.contains("gap_count: 1"));
+        let stop_b = production_source
+            .find("timeline legacy persisted gap stop B before room-absent proof")
+            .expect("the competing B sync must stop before the room-absent proof");
+        let baseline = production_source
+            .find("let room_absent_checkpoint_baseline")
+            .expect("the room-absent proof must take a diagnostics baseline");
+        let marker = baseline
+            + production_source[baseline..]
+                .find("legacy_persisted_gap_room_absent=ok")
+                .expect("the room-absent proof must emit its marker");
+        let resume_b = marker
+            + production_source[marker..]
+                .find("timeline legacy persisted gap resume B after room-absent proof")
+                .expect("the competing B sync must resume after the room-absent proof");
+        assert!(stop_b < baseline);
+        assert!(baseline < marker);
+        assert!(marker < resume_b);
+        assert!(production_source.contains("legacy_persisted_gap_room_absent=ok"));
+        assert!(production_source.contains("legacy_persisted_gap_unrelated_gap_retained=ok"));
         assert!(production_source.contains("legacy_persisted_gap_fence=ok"));
         assert!(production_source.contains("legacy_persisted_gap_repaired=ok"));
         assert!(production_source.contains("legacy_persisted_gap_settled=ok"));
@@ -15687,6 +15826,8 @@ mod tests {
             final_tokens_for_scenario(QaScenario::TimelineLegacyPersistedGap),
             [
                 "safety=ok",
+                "legacy_persisted_gap_room_absent=ok",
+                "legacy_persisted_gap_unrelated_gap_retained=ok",
                 "legacy_persisted_gap_fence=ok",
                 "legacy_persisted_gap_repaired=ok",
                 "legacy_persisted_gap_settled=ok",

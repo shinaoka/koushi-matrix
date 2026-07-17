@@ -50,8 +50,13 @@ fn committed_room_checkpoint_contract_is_backend_neutral_and_closed() {
     let from_absent: fn(
         &MatrixCommittedRoomUpdatesResponse,
         &matrix_sdk::ruma::RoomId,
-    ) -> MatrixCommittedRoomTimelineCheckpoint =
+    ) -> Option<MatrixCommittedRoomTimelineCheckpoint> =
         MatrixCommittedRoomTimelineCheckpoint::from_legacy_room_absent;
+    let response_room_checkpoint: fn(
+        &MatrixCommittedRoomUpdatesResponse,
+        &matrix_sdk::ruma::RoomId,
+    ) -> Option<MatrixCommittedRoomTimelineCheckpoint> =
+        MatrixCommittedRoomUpdatesResponse::room_checkpoint;
     let backend: fn(&MatrixCommittedRoomTimelineCheckpoint) -> MatrixCommittedRoomTimelineBackend =
         MatrixCommittedRoomTimelineCheckpoint::backend;
     let generation: fn(&MatrixCommittedRoomTimelineCheckpoint) -> u64 =
@@ -83,6 +88,7 @@ fn committed_room_checkpoint_contract_is_backend_neutral_and_closed() {
         from_legacy,
         response_from_sdk,
         from_absent,
+        response_room_checkpoint,
         backend,
         generation,
         room_id,

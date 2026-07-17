@@ -28,8 +28,8 @@ test("vendored Matrix SDK crates are consumed as one rev-pinned git source", () 
   const gitmodules = readRepoFile(".gitmodules");
 
   assert.match(rootCargo, /^\[workspace\.dependencies\]$/m);
-  assert.match(rootCargo, /matrix-sdk = \{ git = "https:\/\/github\.com\/shinaoka\/matrix-rust-sdk-work\.git", rev = "34ed8377478b47c58f3c08889d69d4ee5a0791ca"/);
-  assert.match(rootCargo, /matrix-sdk-ui = \{ git = "https:\/\/github\.com\/shinaoka\/matrix-rust-sdk-work\.git", rev = "34ed8377478b47c58f3c08889d69d4ee5a0791ca"/);
+  assert.match(rootCargo, /matrix-sdk = \{ git = "https:\/\/github\.com\/shinaoka\/matrix-rust-sdk-work\.git", rev = "7e370d82965b3159776311bfa6cddb3aed1d402c"/);
+  assert.match(rootCargo, /matrix-sdk-ui = \{ git = "https:\/\/github\.com\/shinaoka\/matrix-rust-sdk-work\.git", rev = "7e370d82965b3159776311bfa6cddb3aed1d402c"/);
   assert.match(gitmodules, /url = https:\/\/github\.com\/shinaoka\/matrix-rust-sdk-work\.git/);
   assert.doesNotMatch(gitmodules, /^\s*branch\s*=/m);
   assert.doesNotMatch(sdkCargo, /vendor\/matrix-rust-sdk/);

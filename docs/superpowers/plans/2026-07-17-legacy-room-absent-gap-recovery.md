@@ -359,7 +359,9 @@ Run the two focused commands from Step 2. Expected: pass, and captured diagnosti
 
 **Interfaces:**
 - Produces scenario `timeline_legacy_persisted_gap`.
-- Emits markers `legacy_persisted_gap_fence=ok`, `legacy_persisted_gap_repaired=ok`, and `legacy_persisted_gap_settled=ok`.
+- Emits typed evidence markers `legacy_persisted_gap_room_absent=ok` and
+  `legacy_persisted_gap_unrelated_gap_retained=ok`, followed by the fence,
+  repair, and settlement markers.
 
 - [ ] **Step 1: Add the failing restart scenario**
 

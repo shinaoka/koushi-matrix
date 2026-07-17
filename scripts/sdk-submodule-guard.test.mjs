@@ -48,7 +48,7 @@ test("parseSubmoduleStatus accepts only initialized in-sync SDK status", () => {
 });
 
 test("readPinnedSdkRevision reads one shared SDK revision from the root workspace", () => {
-  assert.equal(readPinnedSdkRevision({ repoRoot }), "34ed8377478b47c58f3c08889d69d4ee5a0791ca");
+  assert.equal(readPinnedSdkRevision({ repoRoot }), "7e370d82965b3159776311bfa6cddb3aed1d402c");
 });
 
 test("assertSdkSubmoduleSynced rejects a gitlink that differs from the pinned SDK revision", () => {
