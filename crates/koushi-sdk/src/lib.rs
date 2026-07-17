@@ -2512,6 +2512,139 @@ pub struct MatrixRoomSubscriptionCheckpoint {
     inserted_gap: Option<matrix_sdk::event_cache::RoomTimelineGapDescriptor>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixCommittedRoomTimelineBackend {
+    SyncService,
+    LegacySync,
+}
+
+/// Backend-neutral, token-free room timeline provenance committed by the SDK.
+#[derive(Clone)]
+pub struct MatrixCommittedRoomTimelineCheckpoint {
+    backend: MatrixCommittedRoomTimelineBackend,
+    generation: u64,
+    observation_sequence: Option<u64>,
+    room_id: matrix_sdk::ruma::OwnedRoomId,
+    has_timeline_update: bool,
+    inserted_gap: Option<matrix_sdk::event_cache::RoomTimelineGapDescriptor>,
+}
+
+impl MatrixCommittedRoomTimelineCheckpoint {
+    pub fn from_room_subscription(
+        checkpoint: &matrix_sdk_ui::room_list_service::RoomSubscriptionCheckpoint,
+    ) -> Self {
+        let timeline = checkpoint.timeline();
+        Self {
+            backend: MatrixCommittedRoomTimelineBackend::SyncService,
+            generation: checkpoint.subscription_generation().get(),
+            observation_sequence: timeline.map(|observation| observation.sequence()),
+            room_id: checkpoint.room_id().to_owned(),
+            has_timeline_update: timeline.is_some(),
+            inserted_gap: timeline.and_then(|observation| observation.inserted_gap().cloned()),
+        }
+    }
+
+    pub fn from_committed_observation(
+        observation: &matrix_sdk::event_cache::CommittedRoomTimelineObservation,
+    ) -> Self {
+        Self {
+            backend: MatrixCommittedRoomTimelineBackend::LegacySync,
+            generation: observation.response_sequence(),
+            observation_sequence: Some(observation.sequence()),
+            room_id: observation.room_id().to_owned(),
+            has_timeline_update: observation.has_timeline_update(),
+            inserted_gap: observation.inserted_gap().cloned(),
+        }
+    }
+
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn from_gap_for_testing(
+        generation: u64,
+        observation_sequence: u64,
+        gap: &MatrixTimelineGapHandle,
+    ) -> Self {
+        Self {
+            backend: MatrixCommittedRoomTimelineBackend::SyncService,
+            generation,
+            observation_sequence: Some(observation_sequence),
+            room_id: gap.room_id.clone(),
+            has_timeline_update: true,
+            inserted_gap: Some(gap.descriptor.clone()),
+        }
+    }
+
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn from_legacy_gap_for_testing(generation: u64, gap: &MatrixTimelineGapHandle) -> Self {
+        Self {
+            backend: MatrixCommittedRoomTimelineBackend::LegacySync,
+            generation,
+            observation_sequence: Some(generation),
+            room_id: gap.room_id.clone(),
+            has_timeline_update: true,
+            inserted_gap: Some(gap.descriptor.clone()),
+        }
+    }
+
+    pub fn backend(&self) -> MatrixCommittedRoomTimelineBackend {
+        self.backend
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn room_id(&self) -> &str {
+        self.room_id.as_str()
+    }
+
+    pub fn has_timeline_update(&self) -> bool {
+        self.has_timeline_update
+    }
+
+    pub fn has_inserted_gap(&self) -> bool {
+        self.inserted_gap.is_some()
+    }
+
+    pub fn inserted_gap_handle(&self) -> Option<MatrixTimelineGapHandle> {
+        self.inserted_gap
+            .clone()
+            .map(|descriptor| MatrixTimelineGapHandle {
+                room_id: self.room_id.clone(),
+                descriptor,
+            })
+    }
+
+    pub fn matches_gap(&self, gap: &MatrixTimelineGapHandle) -> bool {
+        self.room_id == gap.room_id
+            && self
+                .inserted_gap
+                .as_ref()
+                .is_some_and(|descriptor| descriptor == &gap.descriptor)
+    }
+
+    pub fn same_response_as(&self, other: &Self) -> bool {
+        self.backend == other.backend
+            && self.generation == other.generation
+            && self.room_id == other.room_id
+            && (self.backend == MatrixCommittedRoomTimelineBackend::LegacySync
+                || self.observation_sequence == other.observation_sequence)
+    }
+}
+
+impl std::fmt::Debug for MatrixCommittedRoomTimelineCheckpoint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MatrixCommittedRoomTimelineCheckpoint")
+            .field("backend", &self.backend)
+            .field("generation", &self.generation)
+            .field("has_timeline_update", &self.has_timeline_update)
+            .field("has_inserted_gap", &self.inserted_gap.is_some())
+            .finish()
+    }
+}
+
 impl MatrixRoomSubscriptionCheckpoint {
     /// Convert the SDK UI checkpoint without exposing its private gap token.
     pub fn from_sdk(

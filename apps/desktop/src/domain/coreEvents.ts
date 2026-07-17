@@ -81,7 +81,10 @@ export type TimelineFailureKind =
   | "Sdk"
   | "QueueOverflow";
 
-export type TimelineResyncReason = "QueueOverflow" | "SubscriptionRestarted";
+export type TimelineResyncReason =
+  | "QueueOverflow"
+  | "SubscriptionRestarted"
+  | "GapSettlementTimeout";
 
 // ---------------------------------------------------------------------------
 // Timeline items (stable identity contract; Viewport/Scrollback)

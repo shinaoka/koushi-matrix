@@ -1,6 +1,5 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LiveCatchupGate {
-    Unsupported,
     AwaitingCheckpoint,
     Stale,
     NoTimelineUpdate,
@@ -11,7 +10,6 @@ pub(crate) enum LiveCatchupGate {
 impl LiveCatchupGate {
     pub(crate) fn token(self) -> &'static str {
         match self {
-            Self::Unsupported => "unsupported_backend",
             Self::AwaitingCheckpoint => "awaiting_subscription_response",
             Self::Stale => "stale",
             Self::NoTimelineUpdate => "no_timeline_update",
@@ -25,13 +23,10 @@ pub(crate) fn classify_live_catchup_gate(
     expected_generation: Option<u64>,
     checkpoint: Option<(u64, bool, bool)>,
 ) -> LiveCatchupGate {
-    let Some(expected_generation) = expected_generation else {
-        return LiveCatchupGate::Unsupported;
-    };
     let Some((checkpoint_generation, has_timeline, has_gap)) = checkpoint else {
         return LiveCatchupGate::AwaitingCheckpoint;
     };
-    if checkpoint_generation != expected_generation {
+    if expected_generation.is_some_and(|expected| checkpoint_generation != expected) {
         return LiveCatchupGate::Stale;
     }
     if !has_timeline {
@@ -71,7 +66,19 @@ mod tests {
         );
         assert_eq!(
             classify_live_catchup_gate(None, None),
-            LiveCatchupGate::Unsupported,
+            LiveCatchupGate::AwaitingCheckpoint,
+        );
+    }
+
+    #[test]
+    fn legacy_live_edge_waits_for_a_committed_response() {
+        assert_eq!(
+            classify_live_catchup_gate(None, None),
+            LiveCatchupGate::AwaitingCheckpoint,
+        );
+        assert_eq!(
+            classify_live_catchup_gate(None, Some((19, true, true))),
+            LiveCatchupGate::RepairCheckpointGap,
         );
     }
 }
