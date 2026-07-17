@@ -1,4 +1,5 @@
 use koushi_sdk::{
+    MatrixCommittedRoomTimelineBackend, MatrixCommittedRoomTimelineCheckpoint,
     MatrixRoomSubscriptionCheckpoint, MatrixTimelineContinuity, MatrixTimelineGapError,
     MatrixTimelineGapHandle, MatrixTimelineGapRepairOutcome,
 };
@@ -29,6 +30,43 @@ fn public_gap_contract_is_token_free_and_coarse() {
         MatrixTimelineGapRepairOutcome::Deferred {
             cached_chunks_loaded: 2
         }
+    );
+}
+
+#[test]
+fn committed_room_checkpoint_contract_is_backend_neutral_and_closed() {
+    let from_subscription: fn(
+        &matrix_sdk_ui::room_list_service::RoomSubscriptionCheckpoint,
+    ) -> MatrixCommittedRoomTimelineCheckpoint =
+        MatrixCommittedRoomTimelineCheckpoint::from_room_subscription;
+    let from_legacy: fn(
+        &matrix_sdk::event_cache::CommittedRoomTimelineObservation,
+    ) -> MatrixCommittedRoomTimelineCheckpoint =
+        MatrixCommittedRoomTimelineCheckpoint::from_committed_observation;
+    let backend: fn(&MatrixCommittedRoomTimelineCheckpoint) -> MatrixCommittedRoomTimelineBackend =
+        MatrixCommittedRoomTimelineCheckpoint::backend;
+    let generation: fn(&MatrixCommittedRoomTimelineCheckpoint) -> u64 =
+        MatrixCommittedRoomTimelineCheckpoint::generation;
+    let room_id: fn(&MatrixCommittedRoomTimelineCheckpoint) -> &str =
+        MatrixCommittedRoomTimelineCheckpoint::room_id;
+    let has_timeline: fn(&MatrixCommittedRoomTimelineCheckpoint) -> bool =
+        MatrixCommittedRoomTimelineCheckpoint::has_timeline_update;
+    let has_gap: fn(&MatrixCommittedRoomTimelineCheckpoint) -> bool =
+        MatrixCommittedRoomTimelineCheckpoint::has_inserted_gap;
+    let gap_handle: fn(&MatrixCommittedRoomTimelineCheckpoint) -> Option<MatrixTimelineGapHandle> =
+        MatrixCommittedRoomTimelineCheckpoint::inserted_gap_handle;
+    let matches_gap: fn(&MatrixCommittedRoomTimelineCheckpoint, &MatrixTimelineGapHandle) -> bool =
+        MatrixCommittedRoomTimelineCheckpoint::matches_gap;
+    let _ = (
+        from_subscription,
+        from_legacy,
+        backend,
+        generation,
+        room_id,
+        has_timeline,
+        has_gap,
+        gap_handle,
+        matches_gap,
     );
 }
 

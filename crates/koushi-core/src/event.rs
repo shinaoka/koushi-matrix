@@ -1336,6 +1336,7 @@ pub enum PaginationState {
 pub enum TimelineResyncReason {
     QueueOverflow,
     SubscriptionRestarted,
+    GapSettlementTimeout,
 }
 
 /// Stable identity for every renderable item (Viewport/Scrollback contract):

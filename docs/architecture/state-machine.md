@@ -786,9 +786,9 @@ stateDiagram-v2
 ```mermaid
 stateDiagram-v2
     [*] --> Unknown
-    Unknown --> AwaitingSubscriptionCheckpoint: room open [SyncService LiveEdge]
-    AwaitingSubscriptionCheckpoint --> Inspecting: matching room/subscription checkpoint
-    AwaitingSubscriptionCheckpoint --> [*]: unsubscribe / logout / actor replacement
+    Unknown --> AwaitingCommittedResponse: room open [LiveEdge]
+    AwaitingCommittedResponse --> Inspecting: matching backend/room/actor committed response
+    AwaitingCommittedResponse --> [*]: unsubscribe / logout / actor replacement
     Unknown --> Inspecting: InspectRequested
     Inspecting --> Healthy: InspectionComplete [SDK Complete, matching generation]
     Inspecting --> Incomplete: InspectionComplete [SDK Gapped, matching generation]
@@ -799,7 +799,9 @@ stateDiagram-v2
     FailedIncomplete --> Repairing: RepairRequested [coalesced]
     Repairing --> AwaitingRelay: SDK reports a final tagged repair publication
     AwaitingRelay --> AwaitingProjection: exact tagged publication assigned a desktop batch ID
+    AwaitingRelay --> Inspecting: relay overflow / settlement deadline [authoritative resync, queued intent retained]
     AwaitingProjection --> Inspecting: matching actor/timeline/repair/batch render ACK
+    AwaitingProjection --> Inspecting: actor replacement / render deadline [obsolete fence cleared, queued intent retained]
     Repairing --> Inspecting: successful no-diff outcome
     Repairing --> FailedIncomplete: RepairFailed [matching generation]
     Repairing --> FailedIncomplete: automatic zero-budget Deferred(0)
@@ -819,25 +821,38 @@ stateDiagram-v2
 - Every inspection/repair start advances a room-local generation. Late SDK
   outcomes apply only when account, timeline actor, and room-local generations
   still match.
-- On the SyncService backend, room-entry `LiveEdge` work does not acquire the
-  gap scheduler until RoomListService has observed a response for the actor's
-  exact room-subscription generation. Timeline construction, `InitialItems`,
-  and projection acknowledgement remain available while waiting. The retained
-  checkpoint is replayed when the response beats actor registration. Manager
-  routing also fences the originating RoomListService epoch, so an already
-  queued checkpoint from a replaced service cannot match a reused local
-  subscription generation.
+- On either SyncService or legacy sync, room-entry `LiveEdge` work does not
+  acquire the gap scheduler until the SDK has committed that backend's current
+  response to the room event cache. Timeline construction, `InitialItems`, and
+  projection acknowledgement remain available while waiting. The retained
+  committed-room observation is replayed when the response beats actor
+  registration. Manager routing fences the backend instance epoch, room key,
+  actor generation, and backend-local response/subscription generation, so a
+  queued observation from a replaced backend cannot match a reused local
+  generation.
+- Each SDK room update carries the process-local response sequence assigned
+  before publication. Legacy promotion records the first successful response
+  sequence and rejects committed observations from any earlier response;
+  per-room commit sequences are delivered at most once from that boundary.
 - A checkpoint carrying a committed sync gap selects only that opaque SDK gap.
   A response with no newer timeline, a continuous response, a stale generation,
   or a gap no longer present in the inspected topology never falls back to an
-  unrelated persisted gap. Legacy sync keeps the pre-checkpoint behavior and
-  is explicitly outside this provenance gate.
+  unrelated persisted gap. An explicit no-update/no-gap response closes the
+  `LiveEdge` intent. If the descriptor became stale before inspection, Core
+  performs one authoritative re-inspection and then releases scheduler
+  ownership without choosing a substitute.
 - `Healthy` means the SDK proved the persisted timeline complete. No gap rows,
   an empty local list, a new live event, or edge `EndReached` cannot make this
   transition.
 - `AwaitingRelay` and `AwaitingProjection` are actor-private and do not enter `AppState`; the
   public continuity remains `Repairing`. React reports only that the matching
   presentation work committed through layout and never decides continuity.
+- `AwaitingRelay` and `AwaitingProjection` are bounded by actor-owned,
+  generation-tagged settlement deadlines. Relay overflow or an authoritative
+  replacement snapshot that cannot contain the pending correlation clears the
+  obsolete correlation; actor/timeline generation replacement clears an old
+  render fence. Both paths retain the highest-priority queued trigger and
+  return through authoritative resync/re-inspection. A stale timer is ignored.
 - SDK repair publications carry actor, repair, and repair-publication
   generations through the UI timeline relay. A diff-producing repair outcome
   re-inspects only after the final tagged publication receives an exact desktop

@@ -354,15 +354,34 @@ Rules:
    nearest the live edge). An unchanged candidate is idle; a changed candidate
    remains queued across active work and projection/render ACK fences.
    Candidate-driven automatic repair keeps a zero cached-chunk budget.
-   Room-entry live-edge repair is a separate bounded intent. On SyncService it
-   must wait for the matching RoomListService subscription-generation
-   checkpoint and may select only the opaque persisted gap introduced by that
-   response. It must not acquire repair ownership while the checkpoint is
-   pending, reuse a baseline observation for an empty response, or fall back to
-   another historical gap when the checkpoint gap is absent. Checkpoint routing
-   must match both the RoomListService instance epoch and its room-local
+   Room-entry live-edge repair is a separate bounded intent. On SyncService and
+   legacy sync it must wait for the matching committed-room response and may
+   select only the opaque persisted gap introduced by that response. It must
+   not acquire repair ownership while provenance is pending, reuse a baseline
+   observation for an empty response, or fall back to another historical gap
+   when the committed-response gap is absent. Routing must match backend
+   instance epoch, room key, actor generation, and backend-local response or
    subscription generation. Timeline build, initial projection, and ACK remain
-   non-blocking while provenance is pending.
+   non-blocking while provenance is pending. Explicit no-update/no-gap closes
+   the intent; a stale descriptor permits one authoritative re-inspection,
+   then closes and clears that checkpoint so a later committed response can
+   be admitted, but never permits arbitrary gap selection. While that bounded
+   attempt is unsettled, retain the latest newer checkpoint separately and
+   promote it immediately after close/admission; delivery is at-most-once and
+   another room update may never arrive to replay it. SyncService response
+   identity combines subscription generation with the room event-cache
+   observation sequence; one subscription generation spans many responses.
+   The SDK serializes process-local response sequence assignment and room
+   update publication in one critical section. Legacy promotion carries the
+   first successful response sequence
+   and accepts only observations from that response or a later one; retained
+   values from an earlier backend response and duplicate per-room commit
+   sequences are stale by construction.
+   Relay and render settlement fences are also bounded actor state. Overflow,
+   an authoritative replacement that cannot contain the correlation, a
+   generation replacement, or a matching deadline clears only the obsolete
+   fence, retains the highest-priority queued trigger, and resumes through
+   authoritative resync/re-inspection. Stale deadlines are ignored.
    The selected repair reveals at most one cached chunk per request, stops on
    unchanged topology or zero progress, and has a small per-generation batch
    ceiling. Repairing a projected descriptor must preserve this intent; only a

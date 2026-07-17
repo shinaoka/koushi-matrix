@@ -1798,16 +1798,29 @@ the implementation plan is
 
 ## Local Homeserver QA Failures
 
-- SyncService room-entry live catch-up is generation-fenced. RoomListService
-  retains the latest token-free checkpoint per room; TimelineManager replays it
-  after actor registration, and TimelineActor defers only `LiveEdge` repair
-  until the matching subscription generation arrives. The actor must repair
-  the checkpoint-owned gap exactly and never substitute another persisted gap.
+- SyncService and legacy room-entry live catch-up are committed-response and
+  generation fenced. The SDK retains the latest token-free committed
+  observation per room; TimelineManager replays it after actor registration,
+  and TimelineActor defers only `LiveEdge` repair until the matching backend
+  epoch, room, actor, and response/subscription generation arrive. The actor
+  must repair the observation-owned gap exactly and never substitute another
+  persisted gap. Explicit no-update/no-gap closes the intent; stale descriptors
+  get one authoritative re-inspection. Relay/render settlement fences must be
+  bounded and recover through authoritative resync while retaining queued work.
+  A legacy run must carry the SDK response sequence of its first successful
+  response and reject retained observations from earlier responses plus
+  duplicate per-room commit sequences.
 - The focused deterministic gate is
   `cargo test -p koushi-core --lib timeline_actor_waits_for_current_subscription_checkpoint_before_live_edge_repair`.
   The local `timeline_reconnect` stage additionally unsubscribes A, sends 21
   offline events past the room-subscription limit, reopens the room, and emits
   only `live_catchup_checkpoint=ok` and `live_catchup_gap_repaired=ok`.
+- The legacy-fallback deterministic gate is
+  `cargo test -p koushi-core --lib legacy_fallback_waits_for_committed_response_and_recovers_missing_interval`.
+  The local `timeline_legacy_fallback` stage must select legacy automatically
+  after a pre-connectivity SyncService failure and emit only
+  `legacy_fallback_checkpoint=ok`, `legacy_fallback_gap_repaired=ok`,
+  `legacy_fallback_settled=ok`, and `legacy_fallback_lifecycle=ok`.
 - As of 2026-07-16, the fresh-account Conduit core lane on `origin/main` can
   stop after verification-method discovery reports `completion_received`,
   before `LoggedIn`. Treat that baseline login timeout separately from a

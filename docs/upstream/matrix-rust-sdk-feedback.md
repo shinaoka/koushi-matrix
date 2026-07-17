@@ -24,6 +24,20 @@ This note separates SDK-upstreamable material from desktop-product decisions. El
   small, additive, no behavior change — good candidate for an upstream PR
   alongside (or independent of) the search-index patch.
 
+- Committed per-room sync-response provenance (2026-07-17, issue #275):
+  `EventCache` retains a private-safe `CommittedRoomTimelineObservation` for
+  each joined room after timeline topology persistence. It distinguishes a
+  response with no timeline mutation from one that inserted an exact opaque
+  gap, and late subscribers receive the latest observation. Ancillary
+  post-processing failures cannot erase already-committed provenance. Why:
+  clients using legacy `/sync` need the same exact, generation-fenced
+  live-catchup anchor that SyncService exposes through room-subscription
+  checkpoints; otherwise a newly received live event can coexist with an
+  unrepaired offline interval. Upstreaming intent: propose the retained
+  backend-neutral observation API upstream after the #275 production proof,
+  keeping room IDs, event IDs, pagination tokens, and raw errors out of Debug
+  output.
+
 Current SDK-only patch area:
 
 - `vendor/matrix-rust-sdk/crates/matrix-sdk-search`

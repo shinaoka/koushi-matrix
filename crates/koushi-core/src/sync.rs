@@ -133,8 +133,65 @@ impl SyncActorHandle {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SyncLifecycle {
     Stopped,
+    Starting,
     Running,
+    Reconnecting,
     Failed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SyncActorControl {
+    FirstResponseCommitted {
+        legacy_run_generation: u64,
+        committed_from_response_sequence: u64,
+    },
+    SyncServiceRunning {
+        sync_service_run_generation: u64,
+    },
+    BackendReconnecting {
+        backend: ActiveBackend,
+        run_generation: u64,
+        reason: &'static str,
+    },
+    BackendRecovered {
+        backend: ActiveBackend,
+        run_generation: u64,
+    },
+}
+
+fn accepts_first_legacy_response(
+    active_backend: ActiveBackend,
+    lifecycle: SyncLifecycle,
+    active_generation: u64,
+    observed_generation: u64,
+) -> bool {
+    active_backend == ActiveBackend::LegacySync
+        && lifecycle == SyncLifecycle::Starting
+        && active_generation == observed_generation
+}
+
+fn accepts_sync_service_running(
+    active_backend: ActiveBackend,
+    lifecycle: SyncLifecycle,
+    active_generation: u64,
+    observed_generation: u64,
+) -> bool {
+    active_backend == ActiveBackend::SyncService
+        && lifecycle == SyncLifecycle::Starting
+        && active_generation == observed_generation
+}
+
+fn accepts_backend_transition(
+    active_backend: ActiveBackend,
+    lifecycle: SyncLifecycle,
+    active_generation: u64,
+    observed_backend: ActiveBackend,
+    observed_generation: u64,
+    expected_lifecycle: SyncLifecycle,
+) -> bool {
+    active_backend == observed_backend
+        && lifecycle == expected_lifecycle
+        && active_generation == observed_generation
 }
 
 /// What the sync background task produced when it ended.
@@ -159,7 +216,9 @@ enum ActiveBackend {
 fn sync_lifecycle_label(lifecycle: SyncLifecycle) -> &'static str {
     match lifecycle {
         SyncLifecycle::Stopped => "stopped",
+        SyncLifecycle::Starting => "starting",
         SyncLifecycle::Running => "running",
+        SyncLifecycle::Reconnecting => "reconnecting",
         SyncLifecycle::Failed => "failed",
     }
 }
@@ -358,11 +417,7 @@ fn note_room_list_service_state(
     status: &mut SyncServiceObserverStatus,
     state: RoomListServiceStateKind,
 ) -> Option<SyncServiceObserverDecision> {
-    if matches!(
-        state,
-        RoomListServiceStateKind::SettingUp | RoomListServiceStateKind::Running
-    ) && !status.connectivity_proven
-    {
+    if matches!(state, RoomListServiceStateKind::Running) && !status.connectivity_proven {
         status.connectivity_proven = true;
         return Some(SyncServiceObserverDecision::ConnectivityProven);
     }
@@ -375,6 +430,8 @@ pub struct SyncActor {
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     command_rx: mpsc::Receiver<SyncMessage>,
+    control_tx: mpsc::Sender<SyncActorControl>,
+    control_rx: mpsc::Receiver<SyncActorControl>,
     /// RoomActor inbox: the SyncActor notifies it on sync start/stop because
     /// only the SyncActor knows the selected backend and owns the live
     /// `RoomListService` (canon: RoomActor consumes the ONE live service).
@@ -389,6 +446,8 @@ pub struct SyncActor {
     sync_task: Option<executor::JoinHandle<SyncTaskOutcome>>,
     /// Stop-signal for the legacy sync loop.
     legacy_stop_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    legacy_run_generation: u64,
+    sync_service_run_generation: u64,
     /// SyncService handle (Some when SyncService backend is running).
     sync_service: Option<Arc<matrix_sdk_ui::sync_service::SyncService>>,
     active_start_request_id: Option<RequestId>,
@@ -408,11 +467,14 @@ impl SyncActor {
         sync_generation: Arc<AtomicU64>,
     ) -> SyncActorHandle {
         let (tx, command_rx) = mpsc::channel(16);
+        let (control_tx, control_rx) = mpsc::channel(4);
         let actor = SyncActor {
             session,
             action_tx,
             event_tx,
             command_rx,
+            control_tx,
+            control_rx,
             room_tx,
             timeline_tx,
             lifecycle: SyncLifecycle::Stopped,
@@ -420,6 +482,8 @@ impl SyncActor {
             active_backend: ActiveBackend::None,
             sync_task: None,
             legacy_stop_tx: None,
+            legacy_run_generation: 0,
+            sync_service_run_generation: 0,
             sync_service: None,
             active_start_request_id: None,
             sync_service_runtime_fallback_attempted: false,
@@ -455,6 +519,11 @@ impl SyncActor {
                             }
                         }
                     }
+                    control = self.control_rx.recv() => {
+                        if let Some(control) = control {
+                            self.handle_control(control).await;
+                        }
+                    }
                 }
             } else {
                 match self.command_rx.recv().await {
@@ -470,6 +539,84 @@ impl SyncActor {
         // Ordered shutdown: stop any running sync task.
         if self.sync_task.is_some() {
             self.do_stop(None).await;
+        }
+    }
+
+    async fn handle_control(&mut self, control: SyncActorControl) {
+        match control {
+            SyncActorControl::FirstResponseCommitted {
+                legacy_run_generation,
+                committed_from_response_sequence,
+            } if accepts_first_legacy_response(
+                self.active_backend,
+                self.lifecycle,
+                self.legacy_run_generation,
+                legacy_run_generation,
+            ) =>
+            {
+                self.lifecycle = SyncLifecycle::Running;
+                notify_dependents_sync_started(
+                    self.session.clone(),
+                    self.room_tx.clone(),
+                    self.timeline_tx.clone(),
+                    None,
+                    Some(committed_from_response_sequence),
+                )
+                .await;
+                self.emit(CoreEvent::Sync(SyncEvent::Running));
+                self.project_sync_status(SyncLifecycleStatus::Running).await;
+            }
+            SyncActorControl::FirstResponseCommitted { .. } => {}
+            SyncActorControl::SyncServiceRunning {
+                sync_service_run_generation,
+            } if accepts_sync_service_running(
+                self.active_backend,
+                self.lifecycle,
+                self.sync_service_run_generation,
+                sync_service_run_generation,
+            ) =>
+            {
+                self.lifecycle = SyncLifecycle::Running;
+            }
+            SyncActorControl::SyncServiceRunning { .. } => {}
+            SyncActorControl::BackendReconnecting {
+                backend,
+                run_generation,
+                reason,
+            } if accepts_backend_transition(
+                self.active_backend,
+                self.lifecycle,
+                self.active_run_generation(),
+                backend,
+                run_generation,
+                SyncLifecycle::Running,
+            ) =>
+            {
+                self.lifecycle = SyncLifecycle::Reconnecting;
+                self.emit(CoreEvent::Sync(SyncEvent::Reconnecting));
+                self.project_sync_status(SyncLifecycleStatus::Reconnecting {
+                    reason: reason.to_owned(),
+                })
+                .await;
+            }
+            SyncActorControl::BackendReconnecting { .. } => {}
+            SyncActorControl::BackendRecovered {
+                backend,
+                run_generation,
+            } if accepts_backend_transition(
+                self.active_backend,
+                self.lifecycle,
+                self.active_run_generation(),
+                backend,
+                run_generation,
+                SyncLifecycle::Reconnecting,
+            ) =>
+            {
+                self.lifecycle = SyncLifecycle::Running;
+                self.emit(CoreEvent::Sync(SyncEvent::Running));
+                self.project_sync_status(SyncLifecycleStatus::Running).await;
+            }
+            SyncActorControl::BackendRecovered { .. } => {}
         }
     }
 
@@ -654,6 +801,22 @@ impl SyncActor {
             return;
         }
 
+        if matches!(
+            self.lifecycle,
+            SyncLifecycle::Starting | SyncLifecycle::Reconnecting
+        ) {
+            let backend = self.current_backend_kind();
+            let mode = sync_mode_from_backend(backend, false);
+            self.reduce(vec![AppAction::SyncModeChanged { mode }]);
+            self.emit(CoreEvent::Sync(SyncEvent::Started {
+                request_id: Some(request_id),
+                backend,
+            }));
+            self.emit(CoreEvent::Sync(SyncEvent::ModeChanged { mode }));
+            return;
+        }
+
+        self.lifecycle = SyncLifecycle::Starting;
         self.project_sync_status(SyncLifecycleStatus::Starting)
             .await;
 
@@ -703,7 +866,6 @@ impl SyncActor {
                 self.start_legacy_sync(client).await;
             }
         }
-        self.lifecycle = SyncLifecycle::Running;
         trace_sync!(
             "backend_running",
             [
@@ -734,19 +896,15 @@ impl SyncActor {
             }
         );
 
-        // LegacySync has no SDK-level Running state observer, so hand off as
-        // soon as the stream task is launched. SyncService handoff happens from
-        // observe_sync_service_states after the SDK reports the first Running
-        // state; otherwise an initial Offline state can look subscribed while
-        // no live sync is actually connected.
-        if backend_kind == SyncBackendKind::LegacySync {
-            notify_dependents_sync_started(
-                self.session.clone(),
-                self.room_tx.clone(),
-                self.timeline_tx.clone(),
-                None,
-            )
-            .await;
+        // LegacySync promotion and dependent handoff happen only after the
+        // first response has been committed and reported through actor control.
+    }
+
+    fn active_run_generation(&self) -> u64 {
+        match self.active_backend {
+            ActiveBackend::SyncService => self.sync_service_run_generation,
+            ActiveBackend::LegacySync => self.legacy_run_generation,
+            ActiveBackend::None => 0,
         }
     }
 
@@ -773,6 +931,7 @@ impl SyncActor {
         self.emit(CoreEvent::Sync(SyncEvent::ModeChanged {
             mode: transition_mode,
         }));
+        self.lifecycle = SyncLifecycle::Starting;
         self.project_sync_status(SyncLifecycleStatus::Starting)
             .await;
 
@@ -793,7 +952,6 @@ impl SyncActor {
         }));
 
         self.start_legacy_sync(client).await;
-        self.lifecycle = SyncLifecycle::Running;
         let (request_connection_id, request_sequence, request_id_present) =
             request_id_trace_parts(request_id);
         trace_sync!(
@@ -809,19 +967,13 @@ impl SyncActor {
             request_id_trace_label(request_id),
             sync_lifecycle_label(self.lifecycle)
         );
-
-        notify_dependents_sync_started(
-            self.session.clone(),
-            self.room_tx.clone(),
-            self.timeline_tx.clone(),
-            None,
-        )
-        .await;
     }
 
     /// Returns Ok(()) on success, Err(()) when SyncService build fails (caller falls back).
     async fn start_sync_service(&mut self, client: matrix_sdk::Client) -> Result<(), ()> {
         self.register_ignored_user_list_handler(&client);
+        self.sync_service_run_generation = self.sync_service_run_generation.wrapping_add(1).max(1);
+        let sync_service_run_generation = self.sync_service_run_generation;
         trace_sync!(
             "sync_service_build",
             [DiagnosticField::token("action", "begin")],
@@ -860,6 +1012,7 @@ impl SyncActor {
         let observer_room_tx = self.room_tx.clone();
         let observer_timeline_tx = self.timeline_tx.clone();
         let observer_room_list_service = service.room_list_service();
+        let observer_control_tx = self.control_tx.clone();
 
         let task: executor::JoinHandle<SyncTaskOutcome> = executor::spawn(async move {
             observe_sync_service_states(
@@ -871,6 +1024,8 @@ impl SyncActor {
                 observer_room_tx,
                 observer_timeline_tx,
                 observer_room_list_service,
+                observer_control_tx,
+                sync_service_run_generation,
             )
             .await
         });
@@ -899,14 +1054,26 @@ impl SyncActor {
 
     async fn start_legacy_sync(&mut self, client: matrix_sdk::Client) {
         self.register_ignored_user_list_handler(&client);
+        self.legacy_run_generation = self.legacy_run_generation.wrapping_add(1).max(1);
+        let legacy_run_generation = self.legacy_run_generation;
 
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
         let event_tx = self.event_tx.clone();
         let action_tx = self.action_tx.clone();
         let sync_generation = self.sync_generation.clone();
+        let control_tx = self.control_tx.clone();
 
         let task: executor::JoinHandle<SyncTaskOutcome> = executor::spawn(async move {
-            run_legacy_sync_loop(client, stop_rx, event_tx, action_tx, sync_generation).await
+            run_legacy_sync_loop(
+                client,
+                stop_rx,
+                event_tx,
+                action_tx,
+                sync_generation,
+                control_tx,
+                legacy_run_generation,
+            )
+            .await
         });
 
         self.legacy_stop_tx = Some(stop_tx);
@@ -1030,6 +1197,7 @@ async fn notify_dependents_sync_started(
     room_tx: mpsc::Sender<RoomMessage>,
     timeline_tx: mpsc::Sender<crate::timeline::TimelineMessage>,
     room_list_service: Option<Arc<matrix_sdk_ui::room_list_service::RoomListService>>,
+    legacy_committed_from_response_sequence: Option<u64>,
 ) {
     let _ = room_tx
         .send(RoomMessage::SyncStarted {
@@ -1042,7 +1210,10 @@ async fn notify_dependents_sync_started(
     // recovery, reusing this same path rebuilds live room timelines without
     // restarting the SyncService itself.
     let _ = timeline_tx
-        .send(crate::timeline::TimelineMessage::SyncStarted { room_list_service })
+        .send(crate::timeline::TimelineMessage::SyncStarted {
+            room_list_service,
+            legacy_committed_from_response_sequence,
+        })
         .await;
 }
 
@@ -1061,6 +1232,8 @@ async fn observe_sync_service_states(
     room_tx: mpsc::Sender<RoomMessage>,
     timeline_tx: mpsc::Sender<crate::timeline::TimelineMessage>,
     room_list_service: Arc<matrix_sdk_ui::room_list_service::RoomListService>,
+    control_tx: mpsc::Sender<SyncActorControl>,
+    sync_service_run_generation: u64,
 ) -> SyncTaskOutcome {
     let mut status = SyncServiceObserverStatus::default();
     let mut room_list_state_sub = room_list_service.state();
@@ -1156,18 +1329,24 @@ async fn observe_sync_service_states(
                             status.connectivity_proven,
                             status.reconnecting
                         );
-                        let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Running));
-                        send_sync_status(
-                            &action_tx,
-                            &sync_generation,
-                            SyncLifecycleStatus::Running,
-                        )
-                        .await;
                         notify_dependents_sync_started(
                             session.clone(),
                             room_tx.clone(),
                             timeline_tx.clone(),
                             Some(room_list_service.clone()),
+                            None,
+                        )
+                        .await;
+                        let _ = control_tx
+                            .send(SyncActorControl::SyncServiceRunning {
+                                sync_service_run_generation,
+                            })
+                            .await;
+                        let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Running));
+                        send_sync_status(
+                            &action_tx,
+                            &sync_generation,
+                            SyncLifecycleStatus::Running,
                         )
                         .await;
                     }
@@ -1194,20 +1373,20 @@ async fn observe_sync_service_states(
                             status.connectivity_proven,
                             status.reconnecting
                         );
-                        let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Running));
-                        send_sync_status(
-                            &action_tx,
-                            &sync_generation,
-                            SyncLifecycleStatus::Running,
-                        )
-                        .await;
                         notify_dependents_sync_started(
                             session.clone(),
                             room_tx.clone(),
                             timeline_tx.clone(),
                             Some(room_list_service.clone()),
+                            None,
                         )
                         .await;
+                        let _ = control_tx
+                            .send(SyncActorControl::BackendRecovered {
+                                backend: ActiveBackend::SyncService,
+                                run_generation: sync_service_run_generation,
+                            })
+                            .await;
                     }
                     SyncServiceObserverDecision::RunningNoop => {
                         trace_sync!(
@@ -1300,15 +1479,13 @@ async fn observe_sync_service_states(
                             SyncServiceStateKind::Error => "network_error",
                             _ => "network_error",
                         };
-                        let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Reconnecting));
-                        send_sync_status(
-                            &action_tx,
-                            &sync_generation,
-                            SyncLifecycleStatus::Reconnecting {
-                                reason: reason.to_owned(),
-                            },
-                        )
-                        .await;
+                        let _ = control_tx
+                            .send(SyncActorControl::BackendReconnecting {
+                                backend: ActiveBackend::SyncService,
+                                run_generation: sync_service_run_generation,
+                                reason,
+                            })
+                            .await;
                     }
                     SyncServiceObserverDecision::AlreadyReconnecting => {
                         trace_sync!(
@@ -1397,9 +1574,11 @@ async fn observe_sync_service_states(
 async fn run_legacy_sync_loop(
     client: matrix_sdk::Client,
     mut stop_rx: tokio::sync::oneshot::Receiver<()>,
-    event_tx: broadcast::Sender<CoreEvent>,
-    action_tx: mpsc::Sender<Vec<AppAction>>,
-    sync_generation: Arc<AtomicU64>,
+    _event_tx: broadcast::Sender<CoreEvent>,
+    _action_tx: mpsc::Sender<Vec<AppAction>>,
+    _sync_generation: Arc<AtomicU64>,
+    control_tx: mpsc::Sender<SyncActorControl>,
+    legacy_run_generation: u64,
 ) -> SyncTaskOutcome {
     use futures_util::StreamExt as _;
 
@@ -1461,13 +1640,14 @@ async fn run_legacy_sync_loop(
                             );
                             ever_ran = true;
                             reconnecting = false;
-                            let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Running));
-                            send_sync_status(
-                                &action_tx,
-                                &sync_generation,
-                                SyncLifecycleStatus::Running,
-                            )
-                            .await;
+                            let committed_from_response_sequence =
+                                client.latest_room_updates_response_sequence();
+                            let _ = control_tx
+                                .send(SyncActorControl::FirstResponseCommitted {
+                                    legacy_run_generation,
+                                    committed_from_response_sequence,
+                                })
+                                .await;
                         } else if reconnecting {
                             trace_sync!(
                                 "legacy_state",
@@ -1482,13 +1662,12 @@ async fn run_legacy_sync_loop(
                                 reconnecting
                             );
                             reconnecting = false;
-                            let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Running));
-                            send_sync_status(
-                                &action_tx,
-                                &sync_generation,
-                                SyncLifecycleStatus::Running,
-                            )
-                            .await;
+                            let _ = control_tx
+                                .send(SyncActorControl::BackendRecovered {
+                                    backend: ActiveBackend::LegacySync,
+                                    run_generation: legacy_run_generation,
+                                })
+                                .await;
                         }
                         // Else: normal running tick — no event needed.
                     }
@@ -1530,15 +1709,13 @@ async fn run_legacy_sync_loop(
                                 reconnecting
                             );
                             reconnecting = true;
-                            let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Reconnecting));
-                            send_sync_status(
-                                &action_tx,
-                                &sync_generation,
-                                SyncLifecycleStatus::Reconnecting {
-                                    reason: "network_error".to_owned(),
-                                },
-                            )
-                            .await;
+                            let _ = control_tx
+                                .send(SyncActorControl::BackendReconnecting {
+                                    backend: ActiveBackend::LegacySync,
+                                    run_generation: legacy_run_generation,
+                                    reason: "network_error",
+                                })
+                                .await;
                         } else {
                             trace_sync!(
                                 "legacy_state",
@@ -1909,6 +2086,7 @@ pub mod tests {
         };
 
         assert_eq!(sync_lifecycle_label(SyncLifecycle::Stopped), "stopped");
+        assert_eq!(sync_lifecycle_label(SyncLifecycle::Starting), "starting");
         assert_eq!(sync_lifecycle_label(SyncLifecycle::Running), "running");
         assert_eq!(sync_lifecycle_label(SyncLifecycle::Failed), "failed");
         assert_eq!(active_backend_label(ActiveBackend::None), "none");
@@ -1969,7 +2147,7 @@ pub mod tests {
     }
 
     #[test]
-    fn room_list_state_proves_connectivity_before_sync_service_waits_on_recovery() {
+    fn room_list_running_proves_connectivity_but_setting_up_does_not() {
         let mut status = SyncServiceObserverStatus::default();
 
         assert_eq!(
@@ -1978,6 +2156,11 @@ pub mod tests {
         );
         assert_eq!(
             note_room_list_service_state(&mut status, RoomListServiceStateKind::SettingUp),
+            None
+        );
+        assert!(!status.connectivity_proven);
+        assert_eq!(
+            note_room_list_service_state(&mut status, RoomListServiceStateKind::Running),
             Some(SyncServiceObserverDecision::ConnectivityProven)
         );
         assert!(status.connectivity_proven);
@@ -2113,6 +2296,122 @@ pub mod tests {
     }
 
     #[test]
+    fn legacy_lifecycle_task_launch_stays_starting() {
+        let source = include_str!("sync.rs");
+        let lifecycle = source
+            .split("enum SyncLifecycle")
+            .nth(1)
+            .and_then(|rest| rest.split('}').next())
+            .expect("SyncLifecycle body");
+        assert!(
+            lifecycle.contains("Starting"),
+            "legacy task launch needs an internal Starting state until proof"
+        );
+
+        let direct_start = source
+            .split("    async fn handle_start")
+            .nth(1)
+            .and_then(|rest| {
+                rest.split("    async fn start_legacy_runtime_fallback")
+                    .next()
+            })
+            .expect("handle_start body");
+        assert!(
+            !direct_start.contains("self.lifecycle = SyncLifecycle::Running"),
+            "neither backend may claim Running in the task-launch path"
+        );
+    }
+
+    #[test]
+    fn legacy_lifecycle_first_response_uses_actor_control_once() {
+        let source = include_str!("sync.rs");
+        let legacy_loop = source
+            .split("async fn run_legacy_sync_loop")
+            .nth(1)
+            .and_then(|rest| rest.split("fn legacy_sync_settings").next())
+            .expect("legacy sync loop body");
+        assert!(
+            legacy_loop.contains("FirstResponseCommitted"),
+            "the legacy task must prove its first committed response to SyncActor"
+        );
+        assert_eq!(
+            legacy_loop.matches("FirstResponseCommitted").count(),
+            1,
+            "the task sends the promotion control only for the first response"
+        );
+
+        let control_arm = source
+            .split("    async fn handle_control")
+            .nth(1)
+            .expect("SyncActor control handler")
+            .split("SyncActorControl::FirstResponseCommitted {")
+            .nth(1)
+            .and_then(|rest| {
+                rest.split("SyncActorControl::FirstResponseCommitted { .. }")
+                    .next()
+            })
+            .expect("accepted first-response control arm");
+        assert!(
+            control_arm
+                .find("notify_dependents_sync_started")
+                .expect("legacy dependent handoff")
+                < control_arm
+                    .find("SyncEvent::Running")
+                    .expect("legacy Running event"),
+            "legacy Running must not race ahead of the timeline/room dependent handoff"
+        );
+    }
+
+    #[test]
+    fn legacy_lifecycle_idempotent_start_before_proof_does_not_emit_running() {
+        let source = include_str!("sync.rs");
+        let start = source
+            .split("    async fn handle_start")
+            .nth(1)
+            .and_then(|rest| {
+                rest.split("    async fn start_legacy_runtime_fallback")
+                    .next()
+            })
+            .expect("handle_start body");
+        assert!(
+            start.contains("SyncLifecycle::Starting"),
+            "idempotent Start must recognize the pre-proof Starting state"
+        );
+        assert!(
+            start.contains("SyncLifecycle::Starting | SyncLifecycle::Reconnecting"),
+            "idempotent Start must not re-publish Running while recovery is unproven"
+        );
+    }
+
+    #[test]
+    fn backend_recovery_controls_are_generation_fenced() {
+        assert!(accepts_backend_transition(
+            ActiveBackend::LegacySync,
+            SyncLifecycle::Running,
+            4,
+            ActiveBackend::LegacySync,
+            4,
+            SyncLifecycle::Running,
+        ));
+        assert!(accepts_backend_transition(
+            ActiveBackend::LegacySync,
+            SyncLifecycle::Reconnecting,
+            4,
+            ActiveBackend::LegacySync,
+            4,
+            SyncLifecycle::Reconnecting,
+        ));
+        assert!(!accepts_backend_transition(
+            ActiveBackend::LegacySync,
+            SyncLifecycle::Reconnecting,
+            5,
+            ActiveBackend::LegacySync,
+            4,
+            SyncLifecycle::Reconnecting,
+        ));
+    }
+
+    #[test]
     fn sync_service_offline_state_falls_back_before_first_running_and_recovers_afterward() {
         let source = include_str!("sync.rs");
         let observer_body = source
@@ -2195,6 +2494,24 @@ pub mod tests {
             first_running_arm.contains("Some(room_list_service.clone())"),
             "initial SyncService handoff must use the live RoomListService owned by the running SyncService"
         );
+        assert!(
+            first_running_arm
+                .find("notify_dependents_sync_started")
+                .expect("dependent handoff")
+                < first_running_arm
+                    .find("SyncActorControl::SyncServiceRunning")
+                    .expect("actor lifecycle promotion"),
+            "SyncActor must not enter Running before the timeline/room dependent handoff completes"
+        );
+        assert!(
+            first_running_arm
+                .find("SyncActorControl::SyncServiceRunning")
+                .expect("actor lifecycle promotion")
+                < first_running_arm
+                    .find("SyncEvent::Running")
+                    .expect("public Running event"),
+            "public Running must follow the actor lifecycle promotion"
+        );
     }
 
     #[test]
@@ -2213,6 +2530,16 @@ pub mod tests {
                     .next()
             })
             .expect("Running recovery arm");
+
+        assert!(
+            recovery_arm
+                .find("notify_dependents_sync_started")
+                .expect("recovery dependent handoff")
+                < recovery_arm
+                    .find("SyncEvent::Running")
+                    .expect("recovery Running event"),
+            "recovery Running must not race ahead of rebuilding dependent timelines"
+        );
 
         assert!(
             recovery_arm.contains("notify_dependents_sync_started"),
@@ -2321,6 +2648,50 @@ pub mod tests {
             Some(matrix_sdk::ruma::uint!(128)),
             "LegacySync fallback must keep a large enough live tail to avoid a gap between /sync and /messages backfill under the local timeline stress cap"
         );
+    }
+
+    #[test]
+    fn stale_legacy_first_response_cannot_promote_a_replacement_run() {
+        assert!(accepts_first_legacy_response(
+            ActiveBackend::LegacySync,
+            SyncLifecycle::Starting,
+            8,
+            8,
+        ));
+        assert!(!accepts_first_legacy_response(
+            ActiveBackend::LegacySync,
+            SyncLifecycle::Starting,
+            8,
+            7,
+        ));
+        assert!(!accepts_first_legacy_response(
+            ActiveBackend::LegacySync,
+            SyncLifecycle::Running,
+            8,
+            8,
+        ));
+    }
+
+    #[test]
+    fn stale_sync_service_running_cannot_promote_a_replacement_run() {
+        assert!(accepts_sync_service_running(
+            ActiveBackend::SyncService,
+            SyncLifecycle::Starting,
+            8,
+            8,
+        ));
+        assert!(!accepts_sync_service_running(
+            ActiveBackend::SyncService,
+            SyncLifecycle::Starting,
+            8,
+            7,
+        ));
+        assert!(!accepts_sync_service_running(
+            ActiveBackend::LegacySync,
+            SyncLifecycle::Starting,
+            8,
+            8,
+        ));
     }
 
     // --- AppAction channel round-trip (no real client needed) ---
