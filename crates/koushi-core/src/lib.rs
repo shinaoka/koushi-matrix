@@ -10,6 +10,7 @@
 pub mod account;
 mod activity_resolution;
 pub(crate) mod cached_image;
+mod causal_projection;
 pub mod command;
 pub mod event;
 pub mod executor;

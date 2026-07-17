@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 
+use crate::causal_projection::next_causal_projection_serial;
+
 pub(crate) const FOREGROUND_LIVE_TAIL_LIMIT: u16 = 128;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -442,10 +444,9 @@ where
         debug_assert!(self.running.is_none());
         self.remove_delayed(&key);
         self.clear_cancelled_active(&key);
-        self.operation_generation = self
-            .operation_generation
-            .checked_add(1)
-            .expect("live-tail operation generation exhausted");
+        self.operation_generation =
+            next_causal_projection_serial(self.operation_generation, self.running.is_some())
+                .expect("live-tail serial cannot roll over while its domain is pending");
         let operation_generation = self.operation_generation;
         self.states.insert(
             key.clone(),

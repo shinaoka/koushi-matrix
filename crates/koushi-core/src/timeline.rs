@@ -107,6 +107,12 @@ use matrix_sdk_ui::timeline::{
 };
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
+#[cfg(test)]
+use crate::causal_projection::{CAUSAL_PROJECTION_DOMAIN_BIT, CAUSAL_PROJECTION_SERIAL_MAX};
+use crate::causal_projection::{
+    CausalProjectionDomain, CausalProjectionId, CausalProjectionOperationId,
+    next_causal_projection_serial,
+};
 use crate::command::{
     MediaDownloadSelection, TimelineCommand, UploadMediaKind, UploadMediaRequest,
 };
@@ -3759,7 +3765,7 @@ struct TimelineRelayBatch {
     generation: TimelineGeneration,
     diffs: Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>,
     thread_attention_provenance: ThreadAttentionBatchProvenance,
-    gap_repair_projections: BTreeSet<GapRepairProjectionId>,
+    gap_repair_projections: BTreeSet<CausalProjectionId>,
 }
 
 fn timeline_key_trace_kind(key: &TimelineKey) -> &'static str {
@@ -6022,6 +6028,37 @@ const TIMELINE_GAP_OBSERVABLE_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs
 const TIMELINE_GAP_RELAY_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(5);
 const TIMELINE_GAP_RENDER_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(5);
 
+fn historical_causal_projection_operation(serial: u64) -> CausalProjectionOperationId {
+    CausalProjectionOperationId::new(CausalProjectionDomain::HistoricalGap, serial)
+        .expect("historical projection serial must stay within its 63-bit domain")
+}
+
+fn live_tail_causal_projection_operation(serial: u64) -> CausalProjectionOperationId {
+    CausalProjectionOperationId::new(CausalProjectionDomain::LiveTail, serial)
+        .expect("live-tail projection serial must stay within its 63-bit domain")
+}
+
+impl CausalProjectionId {
+    /// Decode the SDK/UI transport tag once, at the relay boundary. Downstream
+    /// Core code routes only this typed identity and never reinterprets the
+    /// raw numeric generation.
+    fn decode_transport(projection: GapRepairProjectionId) -> Self {
+        Self {
+            actor_generation: projection.actor_generation,
+            operation: CausalProjectionOperationId::decode_transport(projection.repair_generation),
+            projection_batch: projection.projection_batch,
+        }
+    }
+
+    fn encode_transport(self) -> GapRepairProjectionId {
+        GapRepairProjectionId {
+            actor_generation: self.actor_generation,
+            repair_generation: self.operation.encode_transport(),
+            projection_batch: self.projection_batch,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TimelineGapObservableSettlement {
     Observable,
@@ -6067,14 +6104,14 @@ enum TimelineGapProjectionCompletion {
 
 #[derive(Debug, Default)]
 struct TimelineGapProjectionCorrelation {
-    operation: Option<(u64, u64)>,
+    operation: Option<(u64, CausalProjectionOperationId)>,
     observed_batches: BTreeMap<u32, TimelineBatchId>,
     expected_last_projection_batch: Option<u32>,
 }
 
 impl TimelineGapProjectionCorrelation {
-    fn begin(&mut self, actor_generation: u64, repair_generation: u64) {
-        self.operation = Some((actor_generation, repair_generation));
+    fn begin(&mut self, actor_generation: u64, operation: CausalProjectionOperationId) {
+        self.operation = Some((actor_generation, operation));
         self.observed_batches.clear();
         self.expected_last_projection_batch = None;
     }
@@ -6082,19 +6119,19 @@ impl TimelineGapProjectionCorrelation {
     fn complete(
         &mut self,
         actor_generation: u64,
-        repair_generation: u64,
+        operation: CausalProjectionOperationId,
         last_projection_batch: Option<u32>,
     ) -> TimelineGapProjectionCompletion {
-        if self.operation != Some((actor_generation, repair_generation)) {
+        if self.operation != Some((actor_generation, operation)) {
             return TimelineGapProjectionCompletion::NoDiff;
         }
         let Some(expected) = last_projection_batch else {
-            self.clear(actor_generation, repair_generation);
+            self.clear(actor_generation, operation);
             return TimelineGapProjectionCompletion::NoDiff;
         };
         self.expected_last_projection_batch = Some(expected);
         if let Some(batch_id) = self.observed_batches.get(&expected).copied() {
-            self.clear(actor_generation, repair_generation);
+            self.clear(actor_generation, operation);
             TimelineGapProjectionCompletion::Ready(batch_id)
         } else {
             TimelineGapProjectionCompletion::Pending
@@ -6103,10 +6140,10 @@ impl TimelineGapProjectionCorrelation {
 
     fn observe(
         &mut self,
-        projection: GapRepairProjectionId,
+        projection: CausalProjectionId,
         batch_id: TimelineBatchId,
     ) -> Option<TimelineBatchId> {
-        if self.operation != Some((projection.actor_generation, projection.repair_generation)) {
+        if self.operation != Some((projection.actor_generation, projection.operation)) {
             return None;
         }
         self.observed_batches
@@ -6114,12 +6151,12 @@ impl TimelineGapProjectionCorrelation {
         if self.expected_last_projection_batch != Some(projection.projection_batch) {
             return None;
         }
-        self.clear(projection.actor_generation, projection.repair_generation);
+        self.clear(projection.actor_generation, projection.operation);
         Some(batch_id)
     }
 
-    fn clear(&mut self, actor_generation: u64, repair_generation: u64) {
-        if self.operation == Some((actor_generation, repair_generation)) {
+    fn clear(&mut self, actor_generation: u64, operation: CausalProjectionOperationId) {
+        if self.operation == Some((actor_generation, operation)) {
             self.operation = None;
             self.observed_batches.clear();
             self.expected_last_projection_batch = None;
@@ -6130,33 +6167,68 @@ impl TimelineGapProjectionCorrelation {
         self.operation.is_some()
     }
 
-    fn accepts(&self, projection: GapRepairProjectionId) -> bool {
-        self.operation == Some((projection.actor_generation, projection.repair_generation))
+    fn accepts(&self, projection: CausalProjectionId) -> bool {
+        self.operation == Some((projection.actor_generation, projection.operation))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct CausalProjectionObservation {
+    historical_gap_batch_id: Option<TimelineBatchId>,
+    live_tail_batch_id: Option<TimelineBatchId>,
+}
+
+fn observe_causal_projection(
+    historical_gap: &mut TimelineGapProjectionCorrelation,
+    live_tail: &mut TimelineGapProjectionCorrelation,
+    projection: CausalProjectionId,
+    batch_id: TimelineBatchId,
+) -> CausalProjectionObservation {
+    match projection.operation.domain {
+        CausalProjectionDomain::HistoricalGap => CausalProjectionObservation {
+            historical_gap_batch_id: historical_gap.observe(projection, batch_id),
+            live_tail_batch_id: None,
+        },
+        CausalProjectionDomain::LiveTail => CausalProjectionObservation {
+            historical_gap_batch_id: None,
+            live_tail_batch_id: live_tail.observe(projection, batch_id),
+        },
     }
 }
 
 #[derive(Debug, Default)]
 struct RestoreCausalProjectionBuffer {
-    projections: BTreeSet<GapRepairProjectionId>,
+    projections: BTreeSet<CausalProjectionId>,
 }
 
 impl RestoreCausalProjectionBuffer {
-    fn buffer_batch(&mut self, projections: BTreeSet<GapRepairProjectionId>) {
+    fn buffer_batch(&mut self, projections: BTreeSet<CausalProjectionId>) {
         self.projections.extend(projections);
     }
 
-    fn observe_live_tail_after_publication(
+    fn observe_after_publication(
         &mut self,
-        correlation: &mut TimelineGapProjectionCorrelation,
+        historical_gap: &mut TimelineGapProjectionCorrelation,
+        live_tail: &mut TimelineGapProjectionCorrelation,
         published_batch_id: TimelineBatchId,
-    ) -> bool {
-        std::mem::take(&mut self.projections)
-            .into_iter()
-            .any(|projection| {
-                correlation
-                    .observe(projection, published_batch_id)
-                    .is_some()
-            })
+    ) -> CausalProjectionObservation {
+        std::mem::take(&mut self.projections).into_iter().fold(
+            CausalProjectionObservation::default(),
+            |mut ready, projection| {
+                let observation = observe_causal_projection(
+                    historical_gap,
+                    live_tail,
+                    projection,
+                    published_batch_id,
+                );
+                ready.historical_gap_batch_id = ready
+                    .historical_gap_batch_id
+                    .or(observation.historical_gap_batch_id);
+                ready.live_tail_batch_id =
+                    ready.live_tail_batch_id.or(observation.live_tail_batch_id);
+                ready
+            },
+        )
     }
 }
 
@@ -6188,10 +6260,11 @@ fn recover_obsolete_gap_settlement(
     repair_generation: u64,
     trigger: TimelineGapRepairTrigger,
 ) -> bool {
-    if correlation.operation != Some((actor_generation, repair_generation)) {
+    let operation = historical_causal_projection_operation(repair_generation);
+    if correlation.operation != Some((actor_generation, operation)) {
         return false;
     }
-    correlation.clear(actor_generation, repair_generation);
+    correlation.clear(actor_generation, operation);
     if pending_projection
         .as_ref()
         .is_some_and(|pending| pending.repair_generation == repair_generation)
@@ -6511,11 +6584,19 @@ struct TimelineGapRepairTracker {
 impl TimelineGapRepairTracker {
     #[cfg(test)]
     fn begin_inspection(&mut self) -> Option<u64> {
-        self.begin_work()
+        self.begin_work(false)
     }
 
     fn begin_repair(&mut self, gap_count: u32) -> Option<u64> {
-        let serial = self.begin_work()?;
+        self.begin_repair_with_projection_owner(gap_count, false)
+    }
+
+    fn begin_repair_with_projection_owner(
+        &mut self,
+        gap_count: u32,
+        same_domain_identity_pending: bool,
+    ) -> Option<u64> {
+        let serial = self.begin_work(same_domain_identity_pending)?;
         self.gap_count = gap_count;
         Some(serial)
     }
@@ -6598,7 +6679,7 @@ impl TimelineGapRepairTracker {
             return None;
         }
         let trigger = self.pending_trigger?;
-        let serial = self.begin_work()?;
+        let serial = self.begin_work(false)?;
         self.pending_trigger = None;
         Some((serial, trigger))
     }
@@ -6640,11 +6721,12 @@ impl TimelineGapRepairTracker {
         true
     }
 
-    fn begin_work(&mut self) -> Option<u64> {
+    fn begin_work(&mut self, same_domain_identity_pending: bool) -> Option<u64> {
         if self.active_serial.is_some() {
             return None;
         }
-        self.next_serial = self.next_serial.wrapping_add(1);
+        self.next_serial =
+            next_causal_projection_serial(self.next_serial, same_domain_identity_pending)?;
         self.active_serial = Some(self.next_serial);
         Some(self.next_serial)
     }
@@ -7446,7 +7528,8 @@ mod timeline_gap_repair_tracker_tests {
         );
 
         let repair_serial = tracker.begin_repair(3).expect("repair owns scheduler");
-        correlation.begin(actor_generation, repair_serial);
+        let repair_operation = historical_causal_projection_operation(repair_serial);
+        correlation.begin(actor_generation, repair_operation);
 
         // Model the SDK relay publication carrying the repair correlation tag.
         // A duplicate delivery is included deliberately: the same display
@@ -7466,9 +7549,9 @@ mod timeline_gap_repair_tracker_tests {
         );
         assert_eq!(
             correlation.observe(
-                GapRepairProjectionId {
+                CausalProjectionId {
                     actor_generation,
-                    repair_generation: repair_serial,
+                    operation: repair_operation,
                     projection_batch,
                 },
                 rendered_batch_id,
@@ -7477,7 +7560,7 @@ mod timeline_gap_repair_tracker_tests {
             "publication alone cannot continue before SDK completion"
         );
         assert_eq!(
-            correlation.complete(actor_generation, repair_serial, Some(projection_batch)),
+            correlation.complete(actor_generation, repair_operation, Some(projection_batch)),
             TimelineGapProjectionCompletion::Ready(rendered_batch_id),
         );
         assert!(tracker.finish_work(repair_serial));
@@ -8764,7 +8847,10 @@ mod timeline_gap_repair_tracker_tests {
         let mut tracker = TimelineGapRepairTracker::default();
         let repair_generation = tracker.begin_repair(1).expect("repair owns scheduler");
         let mut correlation = TimelineGapProjectionCorrelation::default();
-        correlation.begin(actor_generation, repair_generation);
+        correlation.begin(
+            actor_generation,
+            historical_causal_projection_operation(repair_generation),
+        );
         let mut pending = Some(PendingTimelineGapProjection {
             trigger: TimelineGapRepairTrigger::LiveEdge,
             repair_generation,
@@ -8822,18 +8908,19 @@ mod timeline_gap_repair_tracker_tests {
     #[test]
     fn repair_projection_waits_for_the_exact_tagged_batch() {
         let mut correlation = TimelineGapProjectionCorrelation::default();
-        correlation.begin(9, 11);
+        let operation = historical_causal_projection_operation(11);
+        correlation.begin(9, operation);
 
         // An unrelated live diff can consume batch 5 without satisfying the repair.
         assert_eq!(
-            correlation.complete(9, 11, Some(1)),
+            correlation.complete(9, operation, Some(1)),
             TimelineGapProjectionCompletion::Pending
         );
         assert_eq!(
             correlation.observe(
-                GapRepairProjectionId {
+                CausalProjectionId {
                     actor_generation: 9,
-                    repair_generation: 10,
+                    operation: historical_causal_projection_operation(10),
                     projection_batch: 1,
                 },
                 TimelineBatchId(5),
@@ -8842,9 +8929,9 @@ mod timeline_gap_repair_tracker_tests {
         );
         assert_eq!(
             correlation.observe(
-                GapRepairProjectionId {
+                CausalProjectionId {
                     actor_generation: 9,
-                    repair_generation: 11,
+                    operation,
                     projection_batch: 1,
                 },
                 TimelineBatchId(6),
@@ -8856,12 +8943,13 @@ mod timeline_gap_repair_tracker_tests {
     #[test]
     fn repair_projection_uses_the_last_sdk_projection_batch() {
         let mut correlation = TimelineGapProjectionCorrelation::default();
-        correlation.begin(4, 7);
+        let operation = historical_causal_projection_operation(7);
+        correlation.begin(4, operation);
         assert_eq!(
             correlation.observe(
-                GapRepairProjectionId {
+                CausalProjectionId {
                     actor_generation: 4,
-                    repair_generation: 7,
+                    operation,
                     projection_batch: 1,
                 },
                 TimelineBatchId(20),
@@ -8869,14 +8957,14 @@ mod timeline_gap_repair_tracker_tests {
             None
         );
         assert_eq!(
-            correlation.complete(4, 7, Some(2)),
+            correlation.complete(4, operation, Some(2)),
             TimelineGapProjectionCompletion::Pending
         );
         assert_eq!(
             correlation.observe(
-                GapRepairProjectionId {
+                CausalProjectionId {
                     actor_generation: 4,
-                    repair_generation: 7,
+                    operation,
                     projection_batch: 2,
                 },
                 TimelineBatchId(21),
@@ -8888,9 +8976,10 @@ mod timeline_gap_repair_tracker_tests {
     #[test]
     fn gap_only_cache_reveal_requires_no_render_fence() {
         let mut correlation = TimelineGapProjectionCorrelation::default();
-        correlation.begin(2, 3);
+        let operation = historical_causal_projection_operation(3);
+        correlation.begin(2, operation);
         assert_eq!(
-            correlation.complete(2, 3, None),
+            correlation.complete(2, operation, None),
             TimelineGapProjectionCompletion::NoDiff
         );
         assert!(!correlation.is_pending());
@@ -9012,6 +9101,10 @@ struct TimelineActor {
     gap_repair: TimelineGapRepairTracker,
     gap_projection_correlation: TimelineGapProjectionCorrelation,
     pending_gap_projection: Option<PendingTimelineGapProjection>,
+    /// Historical projection released by a coalesced restore publication.
+    /// The synchronous flush records the exact published batch; the actor loop
+    /// performs the existing async scheduler handoff immediately afterwards.
+    ready_restore_gap_projection_batch: Option<TimelineBatchId>,
     live_tail_projection_correlation: TimelineGapProjectionCorrelation,
     pending_live_tail_projection: Option<PendingLiveTailRefreshCompletion>,
     live_tail_refresh: Option<(
@@ -9065,14 +9158,14 @@ struct ThreadAttentionBatchProvenance {
 
 fn gap_repair_projections_from_sdk_diffs(
     diffs: &[eyeball_im::VectorDiff<Arc<SdkTimelineItem>>],
-) -> BTreeSet<GapRepairProjectionId> {
+) -> BTreeSet<CausalProjectionId> {
     let mut projections = BTreeSet::new();
     let mut observe = |item: &Arc<SdkTimelineItem>| {
         if let Some(projection) = item
             .as_event()
             .and_then(EventTimelineItem::gap_repair_projection)
         {
-            projections.insert(projection);
+            projections.insert(CausalProjectionId::decode_transport(projection));
         }
     };
     for diff in diffs {
@@ -9782,6 +9875,7 @@ impl TimelineActor {
             gap_repair,
             gap_projection_correlation: TimelineGapProjectionCorrelation::default(),
             pending_gap_projection: None,
+            ready_restore_gap_projection_batch: None,
             live_tail_projection_correlation: TimelineGapProjectionCorrelation::default(),
             pending_live_tail_projection: None,
             live_tail_refresh: None,
@@ -9845,6 +9939,9 @@ impl TimelineActor {
                     let Some(msg) = msg else { break };
                     self.handle_msg(msg).await;
                 }
+            }
+            if let Some(batch_id) = self.ready_restore_gap_projection_batch.take() {
+                self.finish_pending_gap_projection(batch_id).await;
             }
             if self.pending_live_tail_projection.is_some()
                 && !self.live_tail_projection_correlation.is_pending()
@@ -9918,8 +10015,9 @@ impl TimelineActor {
         let actor_tx = self.msg_tx.clone();
         let room_id = self.key.room_id().to_owned();
         let actor_generation = self.actor_generation;
+        let projection_operation = live_tail_causal_projection_operation(operation_generation);
         self.live_tail_projection_correlation
-            .begin(actor_generation, operation_generation);
+            .begin(actor_generation, projection_operation);
         record_live_tail_commit("started", operation_generation);
         let task = executor::spawn(async move {
             let started = Instant::now();
@@ -9928,7 +10026,7 @@ impl TimelineActor {
                     &room_id,
                     limit,
                     actor_generation,
-                    operation_generation,
+                    projection_operation.encode_transport(),
                     task_cancellation,
                 )
                 .await;
@@ -9985,7 +10083,7 @@ impl TimelineActor {
         };
         match self.live_tail_projection_correlation.complete(
             actor_generation,
-            operation_generation,
+            live_tail_causal_projection_operation(operation_generation),
             result.last_projection_batch,
         ) {
             TimelineGapProjectionCompletion::NoDiff | TimelineGapProjectionCompletion::Ready(_) => {
@@ -10133,7 +10231,10 @@ impl TimelineActor {
                 trigger,
             } => {
                 if self.gap_projection_correlation.operation
-                    == Some((actor_generation, repair_generation))
+                    == Some((
+                        actor_generation,
+                        historical_causal_projection_operation(repair_generation),
+                    ))
                 {
                     if let Some(task) = self.gap_relay_settlement_task.take() {
                         task.abort();
@@ -11002,7 +11103,10 @@ impl TimelineActor {
         descriptor: MatrixTimelineGapHandle,
         gap_count: u32,
     ) {
-        let Some(serial) = self.gap_repair.begin_repair(gap_count) else {
+        let Some(serial) = self.gap_repair.begin_repair_with_projection_owner(
+            gap_count,
+            self.gap_projection_correlation.is_pending(),
+        ) else {
             return;
         };
         let room_id = self.key.room_id().to_owned();
@@ -11035,11 +11139,17 @@ impl TimelineActor {
         let actor_tx = self.msg_tx.clone();
         let budget = timeline_gap_repair_budget(trigger);
         let actor_generation = self.actor_generation;
+        let projection_operation = historical_causal_projection_operation(serial);
         self.gap_projection_correlation
-            .begin(actor_generation, serial);
+            .begin(actor_generation, projection_operation);
         self.gap_work_task = Some(executor::spawn(async move {
             let mut result = session
-                .repair_room_timeline_gap(&descriptor, budget, actor_generation, serial)
+                .repair_room_timeline_gap(
+                    &descriptor,
+                    budget,
+                    actor_generation,
+                    projection_operation.encode_transport(),
+                )
                 .await;
             if let Some(projection_batch) = result
                 .as_ref()
@@ -11048,11 +11158,14 @@ impl TimelineActor {
             {
                 match wait_for_gap_repair_projection_with_timeout(
                     TIMELINE_GAP_OBSERVABLE_SETTLEMENT_TIMEOUT,
-                    timeline.wait_for_gap_repair_projection(GapRepairProjectionId {
-                        actor_generation,
-                        repair_generation: serial,
-                        projection_batch,
-                    }),
+                    timeline.wait_for_gap_repair_projection(
+                        CausalProjectionId {
+                            actor_generation,
+                            operation: projection_operation,
+                            projection_batch,
+                        }
+                        .encode_transport(),
+                    ),
                 )
                 .await
                 {
@@ -11092,8 +11205,10 @@ impl TimelineActor {
         let room_id = self.key.room_id().to_owned();
         let gap_count = self.gap_repair.gap_count;
         let Ok(result) = result else {
-            self.gap_projection_correlation
-                .clear(self.actor_generation, serial);
+            self.gap_projection_correlation.clear(
+                self.actor_generation,
+                historical_causal_projection_operation(serial),
+            );
             self.emit_gap_repair_failure_and_resume(
                 room_id,
                 serial,
@@ -11104,8 +11219,10 @@ impl TimelineActor {
             return;
         };
         if result.outcome == MatrixTimelineGapRepairOutcome::Failed {
-            self.gap_projection_correlation
-                .clear(self.actor_generation, serial);
+            self.gap_projection_correlation.clear(
+                self.actor_generation,
+                historical_causal_projection_operation(serial),
+            );
             self.emit_gap_repair_failure_and_resume(
                 room_id,
                 serial,
@@ -11116,8 +11233,10 @@ impl TimelineActor {
             return;
         }
         if automatic_gap_repair_is_offscreen(trigger, &result.outcome) {
-            self.gap_projection_correlation
-                .clear(self.actor_generation, serial);
+            self.gap_projection_correlation.clear(
+                self.actor_generation,
+                historical_causal_projection_operation(serial),
+            );
             record_timeline_gap_repair(
                 "repair",
                 timeline_gap_repair_trigger_token(trigger),
@@ -11138,8 +11257,10 @@ impl TimelineActor {
         if matches!(trigger, TimelineGapRepairTrigger::LiveEdge)
             && !live_edge_repair_made_progress(&result.outcome)
         {
-            self.gap_projection_correlation
-                .clear(self.actor_generation, serial);
+            self.gap_projection_correlation.clear(
+                self.actor_generation,
+                historical_causal_projection_operation(serial),
+            );
             record_timeline_gap_repair(
                 "repair",
                 timeline_gap_repair_trigger_token(trigger),
@@ -11160,8 +11281,10 @@ impl TimelineActor {
         let continuation_trigger =
             gap_repair_continuation_trigger(trigger, repaired_live_edge_fallback, &result.outcome);
         let Some(batches_processed) = self.gap_repair.record_batch(trigger) else {
-            self.gap_projection_correlation
-                .clear(self.actor_generation, serial);
+            self.gap_projection_correlation.clear(
+                self.actor_generation,
+                historical_causal_projection_operation(serial),
+            );
             self.emit_gap_repair_failure_and_resume(
                 room_id,
                 serial,
@@ -11173,7 +11296,7 @@ impl TimelineActor {
         };
         match self.gap_projection_correlation.complete(
             self.actor_generation,
-            serial,
+            historical_causal_projection_operation(serial),
             result.last_projection_batch,
         ) {
             TimelineGapProjectionCompletion::Ready(batch_id) => {
@@ -13556,7 +13679,7 @@ impl TimelineActor {
         &mut self,
         diffs: Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>,
         thread_attention_provenance: ThreadAttentionBatchProvenance,
-        gap_repair_projections: BTreeSet<GapRepairProjectionId>,
+        gap_repair_projections: BTreeSet<CausalProjectionId>,
     ) {
         if diffs.is_empty() {
             return;
@@ -13691,17 +13814,17 @@ impl TimelineActor {
                 let mut ready_gap_projection_batch = None;
                 let mut live_tail_projection_ready = false;
                 for projection in gap_repair_projections {
-                    if self
-                        .live_tail_projection_correlation
-                        .observe(projection, emitted_batch_id)
-                        .is_some()
-                    {
+                    let observation = observe_causal_projection(
+                        &mut self.gap_projection_correlation,
+                        &mut self.live_tail_projection_correlation,
+                        projection,
+                        emitted_batch_id,
+                    );
+                    if observation.live_tail_batch_id.is_some() {
                         live_tail_projection_ready = true;
                     }
                     if ready_gap_projection_batch.is_none() {
-                        ready_gap_projection_batch = self
-                            .gap_projection_correlation
-                            .observe(projection, emitted_batch_id);
+                        ready_gap_projection_batch = observation.historical_gap_batch_id;
                     }
                 }
                 if let Some(batch_id) = ready_gap_projection_batch {
@@ -14900,7 +15023,11 @@ impl TimelineActor {
                 item.as_event()
                     .and_then(EventTimelineItem::gap_repair_projection)
             })
-            .filter(|projection| self.gap_projection_correlation.accepts(*projection))
+            .map(CausalProjectionId::decode_transport)
+            .filter(|projection| {
+                self.gap_projection_correlation.accepts(*projection)
+                    || self.live_tail_projection_correlation.accepts(*projection)
+            })
             .collect::<BTreeSet<_>>();
         let diff_stream = prepared.stream;
         let old_window_event_ids = self
@@ -14971,28 +15098,36 @@ impl TimelineActor {
         if !snapshot_gap_repair_projections.is_empty() {
             let recovery_batch_id = self.next_batch_id;
             if self.emit_items_updated_and_reconcile_replay_known(Vec::new()) {
-                if let Some(batch_id) =
-                    snapshot_gap_repair_projections
-                        .into_iter()
-                        .find_map(|projection| {
-                            self.gap_projection_correlation
-                                .observe(projection, recovery_batch_id)
-                        })
-                {
+                let mut ready_gap_projection_batch = None;
+                let mut live_tail_projection_ready = false;
+                for projection in snapshot_gap_repair_projections {
+                    let observation = observe_causal_projection(
+                        &mut self.gap_projection_correlation,
+                        &mut self.live_tail_projection_correlation,
+                        projection,
+                        recovery_batch_id,
+                    );
+                    ready_gap_projection_batch =
+                        ready_gap_projection_batch.or(observation.historical_gap_batch_id);
+                    live_tail_projection_ready |= observation.live_tail_batch_id.is_some();
+                }
+                if let Some(batch_id) = ready_gap_projection_batch {
                     self.finish_pending_gap_projection(batch_id).await;
+                }
+                if live_tail_projection_ready {
+                    self.finish_pending_live_tail_projection().await;
                 }
             }
         }
-        if let Some((actor_generation, repair_generation)) =
-            self.gap_projection_correlation.operation
-        {
+        if let Some((actor_generation, operation)) = self.gap_projection_correlation.operation {
             let trigger = self
                 .pending_gap_projection
                 .as_ref()
                 .map_or(TimelineGapRepairTrigger::Automatic, |pending| {
                     pending.trigger
                 });
-            self.release_gap_relay_settlement(actor_generation, repair_generation, trigger)
+            debug_assert_eq!(operation.domain, CausalProjectionDomain::HistoricalGap);
+            self.release_gap_relay_settlement(actor_generation, operation.serial, trigger)
                 .await;
         }
         if let Some(fence) = self.gap_repair.awaiting_projection {
@@ -15065,11 +15200,12 @@ impl TimelineActor {
             let emitted = self.emit_items_updated_and_reconcile_replay_known(diffs);
             self.emit_navigation_if_changed();
             if emitted {
-                self.restore_causal_projections
-                    .observe_live_tail_after_publication(
-                        &mut self.live_tail_projection_correlation,
-                        published_batch_id,
-                    );
+                let observation = self.restore_causal_projections.observe_after_publication(
+                    &mut self.gap_projection_correlation,
+                    &mut self.live_tail_projection_correlation,
+                    published_batch_id,
+                );
+                self.ready_restore_gap_projection_batch = observation.historical_gap_batch_id;
             }
             return emitted;
         } else {
@@ -22036,6 +22172,129 @@ mod tests {
     }
 
     #[test]
+    fn causal_projection_domains_route_equal_raw_serial_without_collision() {
+        let actor_generation = 4;
+        let raw_serial = 1;
+        let projection_batch = 1;
+        let published_batch_id = TimelineBatchId(21);
+        let historical_operation =
+            CausalProjectionOperationId::new(CausalProjectionDomain::HistoricalGap, raw_serial)
+                .expect("historical serial fits the transport envelope");
+        let live_tail_operation =
+            CausalProjectionOperationId::new(CausalProjectionDomain::LiveTail, raw_serial)
+                .expect("live-tail serial fits the transport envelope");
+
+        assert_eq!(historical_operation.encode_transport(), raw_serial);
+        assert_eq!(
+            live_tail_operation.encode_transport(),
+            CAUSAL_PROJECTION_DOMAIN_BIT | raw_serial,
+        );
+        assert!(
+            CausalProjectionOperationId::new(
+                CausalProjectionDomain::HistoricalGap,
+                CAUSAL_PROJECTION_DOMAIN_BIT,
+            )
+            .is_none(),
+            "raw serials must never consume the operation-domain bit",
+        );
+        assert_eq!(
+            next_causal_projection_serial(CAUSAL_PROJECTION_SERIAL_MAX, true),
+            None,
+            "rollover is blocked while the same domain owns a pending identity",
+        );
+        assert_eq!(
+            next_causal_projection_serial(CAUSAL_PROJECTION_SERIAL_MAX, false),
+            Some(1),
+            "an idle domain restarts at one instead of crossing the domain bit",
+        );
+
+        let mut historical = TimelineGapProjectionCorrelation::default();
+        historical.begin(actor_generation, historical_operation);
+        assert_eq!(
+            historical.complete(
+                actor_generation,
+                historical_operation,
+                Some(projection_batch),
+            ),
+            TimelineGapProjectionCompletion::Pending,
+        );
+        let mut live_tail = TimelineGapProjectionCorrelation::default();
+        live_tail.begin(actor_generation, live_tail_operation);
+        assert_eq!(
+            live_tail.complete(
+                actor_generation,
+                live_tail_operation,
+                Some(projection_batch),
+            ),
+            TimelineGapProjectionCompletion::Pending,
+        );
+
+        let historical_projection = CausalProjectionId::decode_transport(GapRepairProjectionId {
+            actor_generation,
+            repair_generation: historical_operation.encode_transport(),
+            projection_batch,
+        });
+        let historical_observation = observe_causal_projection(
+            &mut historical,
+            &mut live_tail,
+            historical_projection,
+            published_batch_id,
+        );
+        assert_eq!(
+            historical_observation.historical_gap_batch_id,
+            Some(published_batch_id),
+        );
+        assert_eq!(historical_observation.live_tail_batch_id, None);
+        assert!(
+            live_tail.is_pending(),
+            "historical tag cannot prove live-tail freshness"
+        );
+
+        // Re-arm the historical correlation to prove the reverse isolation on
+        // the same actor/raw serial/batch collision.
+        historical.begin(actor_generation, historical_operation);
+        assert_eq!(
+            historical.complete(
+                actor_generation,
+                historical_operation,
+                Some(projection_batch),
+            ),
+            TimelineGapProjectionCompletion::Pending,
+        );
+        let live_tail_projection = CausalProjectionId::decode_transport(GapRepairProjectionId {
+            actor_generation,
+            repair_generation: live_tail_operation.encode_transport(),
+            projection_batch,
+        });
+        let live_tail_observation = observe_causal_projection(
+            &mut historical,
+            &mut live_tail,
+            live_tail_projection,
+            TimelineBatchId(22),
+        );
+        assert_eq!(live_tail_observation.historical_gap_batch_id, None);
+        assert_eq!(
+            live_tail_observation.live_tail_batch_id,
+            Some(TimelineBatchId(22)),
+        );
+        assert!(
+            historical.is_pending(),
+            "live-tail tag cannot release historical repair"
+        );
+
+        assert_eq!(
+            observe_causal_projection(
+                &mut historical,
+                &mut live_tail,
+                live_tail_projection,
+                TimelineBatchId(23),
+            ),
+            CausalProjectionObservation::default(),
+            "one live-tail projection can complete only once",
+        );
+    }
+
+    #[test]
     fn live_tail_restore_flush_consumes_causal_projection_once_and_releases_scheduler() {
         let account = AccountKey("@restore:test".to_owned());
         let room_a = TimelineKey::room(account.clone(), "!a:test");
@@ -22054,32 +22313,36 @@ mod tests {
         assert!(coordinator.mark_unproven(room_b.clone(), 7).is_empty());
 
         let mut correlation = TimelineGapProjectionCorrelation::default();
-        correlation.begin(actor_generation, 1);
+        let operation = live_tail_causal_projection_operation(1);
+        correlation.begin(actor_generation, operation);
         assert_eq!(
-            correlation.complete(actor_generation, 1, Some(2)),
+            correlation.complete(actor_generation, operation, Some(2)),
             TimelineGapProjectionCompletion::Pending
         );
+        let mut historical = TimelineGapProjectionCorrelation::default();
         let mut restore_projections = RestoreCausalProjectionBuffer::default();
         restore_projections.buffer_batch(BTreeSet::from([
-            GapRepairProjectionId {
+            CausalProjectionId {
                 actor_generation: actor_generation - 1,
-                repair_generation: 1,
+                operation,
                 projection_batch: 2,
             },
-            GapRepairProjectionId {
+            CausalProjectionId {
                 actor_generation,
-                repair_generation: 9,
+                operation: live_tail_causal_projection_operation(9),
                 projection_batch: 2,
             },
-            GapRepairProjectionId {
+            CausalProjectionId {
                 actor_generation,
-                repair_generation: 1,
+                operation,
                 projection_batch: 1,
             },
         ]));
-        assert!(
-            !restore_projections
-                .observe_live_tail_after_publication(&mut correlation, TimelineBatchId(20),)
+        assert_eq!(
+            restore_projections
+                .observe_after_publication(&mut historical, &mut correlation, TimelineBatchId(20),)
+                .live_tail_batch_id,
+            None,
         );
         assert!(correlation.is_pending());
         assert_eq!(
@@ -22093,18 +22356,24 @@ mod tests {
             "buffering and wrong causal tags must not prove freshness before flush",
         );
 
-        restore_projections.buffer_batch(BTreeSet::from([GapRepairProjectionId {
+        restore_projections.buffer_batch(BTreeSet::from([CausalProjectionId {
             actor_generation,
-            repair_generation: 1,
+            operation,
             projection_batch: 2,
         }]));
-        assert!(
+        assert_eq!(
             restore_projections
-                .observe_live_tail_after_publication(&mut correlation, TimelineBatchId(21),)
+                .observe_after_publication(&mut historical, &mut correlation, TimelineBatchId(21),)
+                .live_tail_batch_id,
+            Some(TimelineBatchId(21)),
         );
-        assert!(
-            !restore_projections
-                .observe_live_tail_after_publication(&mut correlation, TimelineBatchId(22),),
+        assert_eq!(
+            restore_projections.observe_after_publication(
+                &mut historical,
+                &mut correlation,
+                TimelineBatchId(22),
+            ),
+            CausalProjectionObservation::default(),
             "the restore projection metadata is consumed by one publication",
         );
         assert_eq!(
@@ -22194,25 +22463,26 @@ mod tests {
         );
 
         let mut projection = TimelineGapProjectionCorrelation::default();
-        projection.begin(actor_generation, 2);
+        let operation = live_tail_causal_projection_operation(2);
+        projection.begin(actor_generation, operation);
         assert_eq!(
-            projection.complete(actor_generation, 2, Some(2)),
+            projection.complete(actor_generation, operation, Some(2)),
             TimelineGapProjectionCompletion::Pending
         );
         for stale in [
-            GapRepairProjectionId {
+            CausalProjectionId {
                 actor_generation: actor_generation.saturating_sub(1),
-                repair_generation: 2,
+                operation,
                 projection_batch: 2,
             },
-            GapRepairProjectionId {
+            CausalProjectionId {
                 actor_generation,
-                repair_generation: 1,
+                operation: live_tail_causal_projection_operation(1),
                 projection_batch: 2,
             },
-            GapRepairProjectionId {
+            CausalProjectionId {
                 actor_generation,
-                repair_generation: 2,
+                operation,
                 projection_batch: 1,
             },
         ] {
@@ -22221,9 +22491,9 @@ mod tests {
         }
         assert_eq!(
             projection.observe(
-                GapRepairProjectionId {
+                CausalProjectionId {
                     actor_generation,
-                    repair_generation: 2,
+                    operation,
                     projection_batch: 2,
                 },
                 TimelineBatchId(10),
