@@ -611,11 +611,9 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "legacy_fallback_lifecycle=ok",
         ],
         QaStage::TimelineLegacyPersistedGap => &[
-            "legacy_persisted_gap_room_absent=ok",
-            "legacy_persisted_gap_unrelated_gap_retained=ok",
-            "legacy_persisted_gap_fence=ok",
-            "legacy_persisted_gap_repaired=ok",
-            "legacy_persisted_gap_settled=ok",
+            "legacy_live_tail_room_absent=ok",
+            "live_tail_detached_gap=ok",
+            "live_tail_historical_continuation=ok",
         ],
         QaStage::TimelineStress => &[
             "timeline_stress=ok",
@@ -4080,36 +4078,97 @@ async fn run_timeline_reconnect_scenario_impl(
         "timeline_reconnect sync start B",
     )?;
 
-    let room_id = create_room_for_qa(
-        &mut conn_a,
-        "QA Timeline Reconnect Room",
-        false,
-        "timeline_reconnect create room",
-    )
-    .await?;
-    sync_once_for_qa(&mut conn_a, "timeline_reconnect sync A after room create").await?;
-    wait_for_room_in_room_list(&mut conn_a, &room_id, "timeline_reconnect A room list").await?;
-
     let user_b_full_id = format!("@{}:{}", config.user_b, config.server_name);
-    invite_user_for_qa(
-        &mut conn_a,
-        &room_id,
-        &user_b_full_id,
-        "timeline_reconnect invite B",
-    )
-    .await?;
-    sync_once_for_qa(&mut conn_b, "timeline_reconnect sync B for invite").await?;
-    wait_for_invite_in_snapshot(
-        &mut conn_b,
-        &room_id,
-        Some(false),
-        "timeline_reconnect B sees invite",
-    )
-    .await?;
-    accept_invite_for_qa(&mut conn_b, &room_id, "timeline_reconnect B accepts invite").await?;
-    sync_once_for_qa(&mut conn_b, "timeline_reconnect sync B after accept").await?;
-    wait_for_room_in_room_list(&mut conn_b, &room_id, "timeline_reconnect B room list").await?;
-    sync_once_for_qa(&mut conn_a, "timeline_reconnect sync A after B accepts").await?;
+    let room_id = if restart_with_persisted_gap {
+        let room_id = start_direct_message_for_qa(
+            &mut conn_a,
+            &user_b_full_id,
+            "timeline legacy persisted gap start direct message",
+        )
+        .await?;
+        sync_once_for_qa(
+            &mut conn_a,
+            "timeline legacy persisted gap sync A after DM create",
+        )
+        .await?;
+        wait_for_dm_room_in_room_list(
+            &mut conn_a,
+            &room_id,
+            "timeline legacy persisted gap A DM room list",
+        )
+        .await?;
+        sync_once_for_qa(
+            &mut conn_b,
+            "timeline legacy persisted gap sync B for DM invite",
+        )
+        .await?;
+        wait_for_invite_in_snapshot(
+            &mut conn_b,
+            &room_id,
+            None,
+            "timeline legacy persisted gap B sees DM invite",
+        )
+        .await?;
+        accept_invite_for_qa(
+            &mut conn_b,
+            &room_id,
+            "timeline legacy persisted gap B accepts DM invite",
+        )
+        .await?;
+        sync_once_for_qa(
+            &mut conn_b,
+            "timeline legacy persisted gap sync B after DM accept",
+        )
+        .await?;
+        wait_for_room_in_room_list(
+            &mut conn_b,
+            &room_id,
+            "timeline legacy persisted gap B room list",
+        )
+        .await?;
+        sync_once_for_qa(
+            &mut conn_a,
+            "timeline legacy persisted gap sync A after DM accept",
+        )
+        .await?;
+        wait_for_dm_room_in_room_list(
+            &mut conn_a,
+            &room_id,
+            "timeline legacy persisted gap A confirms direct message",
+        )
+        .await?;
+        room_id
+    } else {
+        let room_id = create_room_for_qa(
+            &mut conn_a,
+            "QA Timeline Reconnect Room",
+            false,
+            "timeline_reconnect create room",
+        )
+        .await?;
+        sync_once_for_qa(&mut conn_a, "timeline_reconnect sync A after room create").await?;
+        wait_for_room_in_room_list(&mut conn_a, &room_id, "timeline_reconnect A room list").await?;
+        invite_user_for_qa(
+            &mut conn_a,
+            &room_id,
+            &user_b_full_id,
+            "timeline_reconnect invite B",
+        )
+        .await?;
+        sync_once_for_qa(&mut conn_b, "timeline_reconnect sync B for invite").await?;
+        wait_for_invite_in_snapshot(
+            &mut conn_b,
+            &room_id,
+            Some(false),
+            "timeline_reconnect B sees invite",
+        )
+        .await?;
+        accept_invite_for_qa(&mut conn_b, &room_id, "timeline_reconnect B accepts invite").await?;
+        sync_once_for_qa(&mut conn_b, "timeline_reconnect sync B after accept").await?;
+        wait_for_room_in_room_list(&mut conn_b, &room_id, "timeline_reconnect B room list").await?;
+        sync_once_for_qa(&mut conn_a, "timeline_reconnect sync A after B accepts").await?;
+        room_id
+    };
 
     // Rebuild both SyncService instances after the room membership is stable.
     // The subsequent timeline subscription then exercises a room present in
@@ -4148,7 +4207,7 @@ async fn run_timeline_reconnect_scenario_impl(
         }))
         .await
         .map_err(|e| format!("timeline_reconnect: submit seed failed: {e}"))?;
-    wait_for_send_flow_completion(
+    let seed_outcome = wait_for_send_flow_completion(
         &mut conn_b,
         seed_send_id,
         &key_b,
@@ -4323,7 +4382,7 @@ async fn run_timeline_reconnect_scenario_impl(
             })
             .count();
 
-        let restarted_runtime = CoreRuntime::start_with_data_dir(data_dir_a);
+        let restarted_runtime = CoreRuntime::start_with_data_dir(data_dir_a.clone());
         let mut restarted_conn = restarted_runtime.attach();
         let restore_id = restarted_conn.next_request_id();
         restarted_conn
@@ -4393,6 +4452,21 @@ async fn run_timeline_reconnect_scenario_impl(
     } else {
         (runtime_a, conn_a, None)
     };
+    let initial_live_tail_snapshot_baseline = if restart_with_persisted_gap {
+        Some(live_tail_snapshot_completion_count_for_qa())
+    } else {
+        None
+    };
+    let live_tail_recent_body = "QA timeline live tail refreshed recent";
+    if restart_with_persisted_gap {
+        proxy.arm_first_live_tail_messages_page(
+            seed_outcome.event_id.clone(),
+            user_b_full_id.clone(),
+            seed_body.to_owned(),
+            "$qa-live-tail-refreshed:example.invalid".to_owned(),
+            live_tail_recent_body.to_owned(),
+        )?;
+    }
     let reopened_before_later = if legacy_fallback {
         Some(
             subscribe_and_ack_active_timeline_projection_for_qa(
@@ -4406,6 +4480,8 @@ async fn run_timeline_reconnect_scenario_impl(
         None
     };
     if let Some(baseline) = room_absent_checkpoint_baseline {
+        let initial_live_tail_snapshot_baseline = initial_live_tail_snapshot_baseline
+            .expect("persisted-gap live-tail snapshot baseline must be armed before refresh");
         tokio::time::timeout(EVENT_TIMEOUT, async {
             loop {
                 let count = koushi_diagnostics::snapshot()
@@ -4434,12 +4510,289 @@ async fn run_timeline_reconnect_scenario_impl(
             "timeline legacy persisted gap did not observe a new room_absent checkpoint after restart"
                 .to_owned()
         })?;
-        println!("legacy_persisted_gap_room_absent=ok");
+        let recent_live_tail_render = wait_for_item_with_body(
+            &mut conn_a,
+            &key_a,
+            live_tail_recent_body,
+            "timeline legacy persisted gap renders tokenless live-tail refresh",
+        )
+        .await;
+        let observation = proxy.live_tail_messages_observation()?;
+        if recent_live_tail_render.is_err() {
+            return Err(format!(
+                "timeline legacy persisted gap did not render canned live-tail event \
+                 (requests={}, exact_tokenless_limit={}, had_from={}, served={})",
+                observation.room_messages_request_count,
+                observation.first_request_was_exact_tokenless_limit,
+                observation.first_request_had_from,
+                observation.freshness_page_served,
+            ));
+        }
+        if observation.room_messages_request_count != 1
+            || !observation.first_request_was_exact_tokenless_limit
+            || observation.first_request_had_from
+            || !observation.freshness_page_served
+        {
+            return Err(format!(
+                "timeline legacy persisted gap expected one exact tokenless live-tail request \
+                 (requests={}, exact_tokenless_limit={}, had_from={}, served={})",
+                observation.room_messages_request_count,
+                observation.first_request_was_exact_tokenless_limit,
+                observation.first_request_had_from,
+                observation.freshness_page_served,
+            ));
+        }
+        let initial_live_tail_gap_count = wait_for_live_tail_snapshot_gap_count_for_qa(
+            &conn_a,
+            initial_live_tail_snapshot_baseline,
+            "timeline legacy persisted gap initial live-tail snapshot",
+        )
+        .await?;
+        if initial_live_tail_gap_count == 0 {
+            return Err(
+                "timeline legacy persisted gap initial live-tail snapshot did not retain a continuity gap"
+                    .to_owned(),
+            );
+        }
+        println!("legacy_live_tail_room_absent=ok");
+
+        stop_sync_for_qa(
+            &mut conn_a,
+            "timeline legacy persisted gap stop before detached tail restart",
+        )
+        .await?;
+        drop(conn_a);
+        tokio::time::timeout(EVENT_TIMEOUT, runtime_a.shutdown())
+            .await
+            .map_err(|_| {
+                "timeline legacy persisted gap timed out shutting down before detached restart"
+                    .to_owned()
+            })?;
+
+        let detached_room_absent_baseline = room_absent_checkpoint_count_for_qa();
+        let detached_runtime = CoreRuntime::start_with_data_dir(data_dir_a.clone());
+        let mut detached_conn = detached_runtime.attach();
+        let detached_restore_id = detached_conn.next_request_id();
+        detached_conn
+            .command(CoreCommand::Account(AccountCommand::RestoreSession {
+                request_id: detached_restore_id,
+                account_key: account_key_a.clone(),
+            }))
+            .await
+            .map_err(|e| {
+                format!("timeline legacy persisted gap: submit detached restore A failed: {e}")
+            })?;
+        wait_for_session_restored(
+            &mut detached_conn,
+            detached_restore_id,
+            &account_key_a,
+            "timeline legacy persisted gap detached restore A",
+        )
+        .await?;
+        wait_for_ready_snapshot(
+            &mut detached_conn,
+            "timeline legacy persisted gap detached restored session A Ready",
+        )
+        .await?;
+
+        proxy.arm_legacy_fallback()?;
+        let detached_sync_start_id = detached_conn.next_request_id();
+        detached_conn
+            .command(CoreCommand::Sync(SyncCommand::Start {
+                request_id: detached_sync_start_id,
+            }))
+            .await
+            .map_err(|e| {
+                format!("timeline legacy persisted gap: submit detached sync A failed: {e}")
+            })?;
+        let detached_selected = wait_for_sync_started(
+            &mut detached_conn,
+            detached_sync_start_id,
+            "timeline legacy persisted gap detached restart selects SyncService",
+        )
+        .await?;
+        if detached_selected != SyncBackendKind::SyncService {
+            return Err(
+                "timeline legacy persisted gap detached restart did not initially select SyncService"
+                    .to_owned(),
+            );
+        }
+        wait_for_legacy_fallback_starting(
+            &mut detached_conn,
+            "timeline legacy persisted gap detached fallback starting",
+        )
+        .await?;
+        proxy.wait_for_legacy_request_held(EVENT_TIMEOUT)?;
+        prove_legacy_stays_starting(
+            &mut detached_conn,
+            "timeline legacy persisted gap detached lifecycle barrier",
+        )
+        .await?;
+        proxy.release_legacy()?;
+        wait_for_sync_running_after_reconnect(
+            &mut detached_conn,
+            "timeline legacy persisted gap detached room-absent response committed",
+        )
+        .await?;
+
+        let detached_newest_body = "QA timeline detached live tail 127";
+        let detached_end_token = "qa-live-tail-detached-end".to_owned();
+        let detached_live_tail_refresh_baseline = koushi_diagnostics::snapshot().records.len();
+        let detached_live_tail_snapshot_baseline = live_tail_snapshot_completion_count_for_qa();
+        proxy.arm_detached_live_tail_messages_page(
+            qa_detached_live_tail_events(&user_b_full_id),
+            detached_end_token.clone(),
+        )?;
+        subscribe_and_ack_active_timeline_projection_for_qa(
+            &mut detached_conn,
+            &key_a,
+            "timeline legacy persisted gap detached live tail subscription",
+        )
+        .await?;
+        wait_for_room_absent_checkpoint_after_for_qa(
+            detached_room_absent_baseline,
+            "timeline legacy persisted gap detached room-absent proof",
+        )
+        .await?;
+        let detached_live_tail_render = wait_for_item_with_body(
+            &mut detached_conn,
+            &key_a,
+            detached_newest_body,
+            "timeline legacy persisted gap renders detached live-tail newest event",
+        )
+        .await;
+        let detached_observation = proxy.live_tail_messages_observation()?;
+        if detached_live_tail_render.is_err() {
+            return Err(format!(
+                "timeline legacy persisted gap did not render detached live-tail event \
+                 (requests={}, exact_tokenless_limit={}, had_from={}, served={})",
+                detached_observation.room_messages_request_count,
+                detached_observation.first_request_was_exact_tokenless_limit,
+                detached_observation.first_request_had_from,
+                detached_observation.freshness_page_served,
+            ));
+        }
+        if detached_observation.room_messages_request_count != 1
+            || !detached_observation.first_request_was_exact_tokenless_limit
+            || detached_observation.first_request_had_from
+            || !detached_observation.freshness_page_served
+        {
+            return Err(format!(
+                "timeline legacy persisted gap expected one exact tokenless detached request \
+                 (requests={}, exact_tokenless_limit={}, had_from={}, served={})",
+                detached_observation.room_messages_request_count,
+                detached_observation.first_request_was_exact_tokenless_limit,
+                detached_observation.first_request_had_from,
+                detached_observation.freshness_page_served,
+            ));
+        }
+        let detached_gap_count = wait_for_live_tail_snapshot_gap_count_for_qa(
+            &detached_conn,
+            detached_live_tail_snapshot_baseline,
+            "timeline legacy persisted gap detached live-tail snapshot",
+        )
+        .await?;
+        wait_for_detached_live_tail_refresh_for_qa(
+            detached_live_tail_refresh_baseline,
+            "timeline legacy persisted gap detached live-tail result",
+        )
+        .await?;
+        let detached_observation = proxy.live_tail_messages_observation()?;
+        if detached_gap_count == 0 {
+            return Err(format!(
+                "timeline legacy persisted gap detached tail did not retain a continuity gap \
+                 (observed={}, detached_end_token_requests={})",
+                detached_gap_count, detached_observation.expected_end_token_request_count,
+            ));
+        }
+        if detached_observation.expected_end_token_request_count != 0 {
+            return Err(format!(
+                "timeline legacy persisted gap detached tail consumed its continuation token before ordinary pagination \
+                 (detached_end_token_requests={})",
+                detached_observation.expected_end_token_request_count,
+            ));
+        }
+        println!("live_tail_detached_gap=ok");
+
+        let historical_continuation_body = "QA timeline detached historical continuation";
+        proxy.arm_historical_continuation_messages_page(
+            detached_end_token,
+            qa_detached_historical_continuation_events(&user_b_full_id),
+        )?;
+        let historical_paginate_id = detached_conn.next_request_id();
+        detached_conn
+            .command(CoreCommand::Timeline(TimelineCommand::Paginate {
+                request_id: historical_paginate_id,
+                key: key_a.clone(),
+                direction: PaginationDirection::Backward,
+                event_count: 50,
+            }))
+            .await
+            .map_err(|e| {
+                format!(
+                    "timeline legacy persisted gap: submit detached historical paginate failed: {e}"
+                )
+            })?;
+        let historical_continuation_render = wait_for_item_with_body(
+            &mut detached_conn,
+            &key_a,
+            historical_continuation_body,
+            "timeline legacy persisted gap renders detached historical continuation",
+        )
+        .await;
+        let historical_observation = proxy.live_tail_messages_observation()?;
+        if historical_continuation_render.is_err() {
+            return Err(format!(
+                "timeline legacy persisted gap did not render historical continuation \
+                 (had_from={}, exact_end={}, exact_end_requests={}, served={})",
+                historical_observation.first_request_had_from,
+                historical_observation.expected_end_token_was_used,
+                historical_observation.expected_end_token_request_count,
+                historical_observation.freshness_page_served,
+            ));
+        }
+        if !historical_observation.first_request_had_from
+            || !historical_observation.expected_end_token_was_used
+            || historical_observation.expected_end_token_request_count != 1
+            || !historical_observation.freshness_page_served
+        {
+            return Err(format!(
+                "timeline legacy persisted gap expected one historical continuation request \
+                 (had_from={}, exact_end={}, exact_end_requests={}, served={})",
+                historical_observation.first_request_had_from,
+                historical_observation.expected_end_token_was_used,
+                historical_observation.expected_end_token_request_count,
+                historical_observation.freshness_page_served,
+            ));
+        }
+        wait_for_timeline_gap_count_for_qa(
+            &detached_conn,
+            detached_gap_count.saturating_sub(1),
+            "timeline legacy persisted gap detached continuation closes its added gap",
+        )
+        .await?;
+        println!("live_tail_historical_continuation=ok");
+
         start_sync_for_qa(
             &mut conn_b,
             "timeline legacy persisted gap resume B after room-absent proof",
         )
         .await?;
+        cleanup_logged_in_runtime(
+            conn_b,
+            runtime_b,
+            account_key_b,
+            "timeline legacy persisted gap detached live-tail cleanup B",
+        )
+        .await?;
+        cleanup_logged_in_runtime(
+            detached_conn,
+            detached_runtime,
+            account_key_a,
+            "timeline legacy persisted gap detached live-tail cleanup A",
+        )
+        .await?;
+        return Ok(());
     }
     let mut expected_bodies = newest_persisted_gap_bodies.unwrap_or(offline_bodies.clone());
     if legacy_fallback {
@@ -4567,6 +4920,211 @@ async fn run_timeline_reconnect_scenario_impl(
     )
     .await?;
     Ok(())
+}
+
+fn room_absent_checkpoint_count_for_qa() -> usize {
+    koushi_diagnostics::snapshot()
+        .records
+        .iter()
+        .filter(|record| {
+            record.event.source == "core.live_catchup"
+                && record.event.stage == "checkpoint"
+                && record.event.fields.iter().any(|field| {
+                    field.key == "checkpoint_origin"
+                        && field.value == koushi_diagnostics::DiagnosticValue::Token("room_absent")
+                })
+        })
+        .count()
+}
+
+async fn wait_for_room_absent_checkpoint_after_for_qa(
+    baseline: usize,
+    label: &str,
+) -> Result<(), String> {
+    tokio::time::timeout(EVENT_TIMEOUT, async {
+        loop {
+            if room_absent_checkpoint_count_for_qa() > baseline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_| format!("{label}: did not observe a new room_absent checkpoint"))
+}
+
+fn timeline_gap_count_for_qa(conn: &CoreConnection) -> u32 {
+    match conn.snapshot().timeline.continuity {
+        koushi_state::TimelineContinuityState::Inspecting {
+            known_gap_count, ..
+        } => known_gap_count,
+        koushi_state::TimelineContinuityState::Incomplete { gap_count, .. }
+        | koushi_state::TimelineContinuityState::Repairing { gap_count, .. }
+        | koushi_state::TimelineContinuityState::FailedIncomplete { gap_count, .. } => gap_count,
+        koushi_state::TimelineContinuityState::Unknown
+        | koushi_state::TimelineContinuityState::Healthy { .. } => 0,
+    }
+}
+
+fn live_tail_snapshot_completion_count_for_qa() -> usize {
+    koushi_diagnostics::snapshot()
+        .records
+        .iter()
+        .filter(|record| {
+            record.event.source == "core.timeline_gap_repair"
+                && record.event.stage == "inspection"
+                && record.event.fields.iter().any(|field| {
+                    field.key == "trigger"
+                        && field.value
+                            == koushi_diagnostics::DiagnosticValue::Token("live_tail_snapshot")
+                })
+                && record.event.fields.iter().any(|field| {
+                    field.key == "outcome"
+                        && matches!(
+                            field.value,
+                            koushi_diagnostics::DiagnosticValue::Token(
+                                "unknown" | "incomplete" | "healthy"
+                            )
+                        )
+                })
+        })
+        .count()
+}
+
+fn is_detached_live_tail_refresh_for_qa(record: &koushi_diagnostics::DiagnosticRecord) -> bool {
+    record.event.source == "core.timeline"
+        && record.event.stage == "timeline_live_tail_refresh"
+        && record.event.fields.iter().any(|field| {
+            field.key == "outcome"
+                && field.value == koushi_diagnostics::DiagnosticValue::Token("detached")
+        })
+        && record.event.fields.iter().any(|field| {
+            field.key == "requested_limit"
+                && field.value == koushi_diagnostics::DiagnosticValue::Count(128)
+        })
+        && record.event.fields.iter().any(|field| {
+            field.key == "returned_events"
+                && field.value == koushi_diagnostics::DiagnosticValue::Count(128)
+        })
+        && record.event.fields.iter().any(|field| {
+            field.key == "historical_gap_remaining"
+                && field.value == koushi_diagnostics::DiagnosticValue::Boolean(true)
+        })
+}
+
+async fn wait_for_detached_live_tail_refresh_for_qa(
+    diagnostics_baseline: usize,
+    label: &str,
+) -> Result<(), String> {
+    tokio::time::timeout(EVENT_TIMEOUT, async {
+        loop {
+            let diagnostics = koushi_diagnostics::snapshot();
+            if diagnostics
+                .records
+                .iter()
+                .skip(diagnostics_baseline)
+                .any(is_detached_live_tail_refresh_for_qa)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        let diagnostics = koushi_diagnostics::snapshot();
+        format!(
+            "{label}: did not observe detached 128-event live-tail completion with a historical gap \
+             (records_after_baseline={})",
+            diagnostics.records.len().saturating_sub(diagnostics_baseline),
+        )
+    })
+}
+
+async fn wait_for_live_tail_snapshot_gap_count_for_qa(
+    conn: &CoreConnection,
+    completion_baseline: usize,
+    label: &str,
+) -> Result<u32, String> {
+    tokio::time::timeout(EVENT_TIMEOUT, async {
+        let mut previous_gap_count = None;
+        let mut stable_samples = 0_u8;
+        loop {
+            let snapshot_completed =
+                live_tail_snapshot_completion_count_for_qa() > completion_baseline;
+            let continuity_is_inspecting = matches!(
+                conn.snapshot().timeline.continuity,
+                koushi_state::TimelineContinuityState::Inspecting { .. }
+            );
+            let gap_count = timeline_gap_count_for_qa(conn);
+            if snapshot_completed && !continuity_is_inspecting {
+                if previous_gap_count == Some(gap_count) {
+                    stable_samples = stable_samples.saturating_add(1);
+                } else {
+                    previous_gap_count = Some(gap_count);
+                    stable_samples = 0;
+                }
+                if stable_samples >= 1 {
+                    break gap_count;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        format!(
+            "{label}: did not settle a completed live-tail snapshot (snapshots={}, observed={})",
+            live_tail_snapshot_completion_count_for_qa(),
+            timeline_gap_count_for_qa(conn),
+        )
+    })
+}
+
+async fn wait_for_timeline_gap_count_for_qa(
+    conn: &CoreConnection,
+    expected_gap_count: u32,
+    label: &str,
+) -> Result<(), String> {
+    let result = tokio::time::timeout(EVENT_TIMEOUT, async {
+        loop {
+            if timeline_gap_count_for_qa(conn) == expected_gap_count {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    match result {
+        Ok(()) => Ok(()),
+        Err(_) => Err(format!(
+            "{label}: did not settle at the expected coarse gap count \
+             (expected={}, observed={})",
+            expected_gap_count,
+            timeline_gap_count_for_qa(conn),
+        )),
+    }
+}
+
+fn qa_detached_live_tail_events(sender: &str) -> Vec<QaCannedTimelineEvent> {
+    (0..128)
+        .rev()
+        .map(|index| QaCannedTimelineEvent {
+            event_id: format!("$qa-live-tail-detached-{index:03}:example.invalid"),
+            sender: sender.to_owned(),
+            body: format!("QA timeline detached live tail {index:03}"),
+            origin_server_ts: 1_900_000_100_000 + index as u64,
+        })
+        .collect()
+}
+
+fn qa_detached_historical_continuation_events(sender: &str) -> Vec<QaCannedTimelineEvent> {
+    vec![QaCannedTimelineEvent {
+        event_id: "$qa-live-tail-detached-historical:example.invalid".to_owned(),
+        sender: sender.to_owned(),
+        body: "QA timeline detached historical continuation".to_owned(),
+        origin_server_ts: 1_900_000_099_999,
+    }]
 }
 
 async fn cleanup_after_full_flow(
@@ -10660,6 +11218,7 @@ struct QaTcpProxy {
     running: Arc<AtomicBool>,
     active_streams: Arc<Mutex<Vec<TcpStream>>>,
     fallback_control: Arc<(Mutex<QaFallbackProxyState>, Condvar)>,
+    messages_control: Arc<Mutex<QaMessagesProxyControl>>,
     accept_thread: Option<JoinHandle<()>>,
 }
 
@@ -10694,14 +11253,207 @@ enum QaProxyRequestKind {
     Versions,
     SyncService,
     LegacySync,
+    RoomMessages,
     Other,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum QaProxyRequestAction {
     Forward,
     FailClosed,
     HoldLegacy,
+    ServeCannedMessages(Vec<u8>),
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct QaMessagesProxyObservation {
+    room_messages_request_count: u32,
+    first_request_was_exact_tokenless_limit: bool,
+    first_request_had_from: bool,
+    freshness_page_served: bool,
+    expected_end_token_was_used: bool,
+    expected_end_token_request_count: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum QaMessagesProxyExpectation {
+    TokenlessLiveTail,
+    BackwardFrom { token: String },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QaMessagesProxyPhase {
+    Open,
+    Armed,
+    Served,
+    Rejected,
+}
+
+impl Default for QaMessagesProxyPhase {
+    fn default() -> Self {
+        Self::Open
+    }
+}
+
+struct QaMessagesProxyState {
+    phase: QaMessagesProxyPhase,
+    expectation: Option<QaMessagesProxyExpectation>,
+    tracked_end_token: Option<String>,
+    observation: QaMessagesProxyObservation,
+}
+
+impl Default for QaMessagesProxyState {
+    fn default() -> Self {
+        Self {
+            phase: QaMessagesProxyPhase::Open,
+            expectation: None,
+            tracked_end_token: None,
+            observation: QaMessagesProxyObservation::default(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QaMessagesProxyDecision {
+    Forward,
+    FailClosed,
+    ServeCannedPage,
+}
+
+impl QaMessagesProxyState {
+    fn arm_page(
+        &mut self,
+        expectation: QaMessagesProxyExpectation,
+        tracked_end_token: Option<String>,
+    ) {
+        self.phase = QaMessagesProxyPhase::Armed;
+        self.expectation = Some(expectation);
+        self.tracked_end_token = tracked_end_token;
+        self.observation = QaMessagesProxyObservation::default();
+    }
+
+    fn observe_room_messages_request(
+        &mut self,
+        metadata: &QaRoomMessagesRequestMetadata,
+    ) -> QaMessagesProxyDecision {
+        self.observation.room_messages_request_count = self
+            .observation
+            .room_messages_request_count
+            .saturating_add(1);
+        if metadata.direction_is_backward
+            && self
+                .tracked_end_token
+                .as_deref()
+                .is_some_and(|token| metadata.from_token.as_deref() == Some(token))
+        {
+            self.observation.expected_end_token_request_count = self
+                .observation
+                .expected_end_token_request_count
+                .saturating_add(1);
+        }
+        if self.phase != QaMessagesProxyPhase::Armed {
+            return QaMessagesProxyDecision::Forward;
+        }
+
+        self.observation.first_request_was_exact_tokenless_limit =
+            metadata.query_is_exact_tokenless_limit;
+        self.observation.first_request_had_from = metadata.has_from;
+        let expected_request_matched = match self.expectation.as_ref() {
+            Some(QaMessagesProxyExpectation::TokenlessLiveTail) => {
+                metadata.query_is_exact_tokenless_limit && !metadata.has_from
+            }
+            Some(QaMessagesProxyExpectation::BackwardFrom { token }) => {
+                let matched = metadata.direction_is_backward
+                    && metadata.from_token.as_deref() == Some(token.as_str());
+                self.observation.expected_end_token_was_used = matched;
+                matched
+            }
+            None => false,
+        };
+        if expected_request_matched {
+            self.phase = QaMessagesProxyPhase::Served;
+            self.observation.freshness_page_served = true;
+            QaMessagesProxyDecision::ServeCannedPage
+        } else {
+            self.phase = QaMessagesProxyPhase::Rejected;
+            QaMessagesProxyDecision::FailClosed
+        }
+    }
+}
+
+struct QaCannedTimelineEvent {
+    event_id: String,
+    sender: String,
+    body: String,
+    origin_server_ts: u64,
+}
+
+struct QaCannedMessagesPage {
+    events: Vec<QaCannedTimelineEvent>,
+    end: Option<String>,
+}
+
+impl QaCannedMessagesPage {
+    fn overlapping(
+        overlap_event_id: String,
+        sender: String,
+        overlap_body: String,
+        recent_event_id: String,
+        recent_body: String,
+    ) -> Self {
+        Self {
+            events: vec![
+                QaCannedTimelineEvent {
+                    event_id: recent_event_id,
+                    sender: sender.clone(),
+                    body: recent_body,
+                    origin_server_ts: 1_900_000_000_000,
+                },
+                QaCannedTimelineEvent {
+                    event_id: overlap_event_id,
+                    sender,
+                    body: overlap_body,
+                    origin_server_ts: 1,
+                },
+            ],
+            end: None,
+        }
+    }
+
+    fn response_body(&self) -> io::Result<Vec<u8>> {
+        let chunk = self
+            .events
+            .iter()
+            .map(|event| {
+                serde_json::json!({
+                    "type": "m.room.message",
+                    "event_id": event.event_id,
+                    "sender": event.sender,
+                    "origin_server_ts": event.origin_server_ts,
+                    "content": {
+                        "msgtype": "m.text",
+                        "body": event.body,
+                    },
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut response = serde_json::json!({
+            "start": "qa-live-tail-start",
+            "chunk": chunk,
+            "state": [],
+        });
+        if let Some(end) = &self.end {
+            response["end"] = serde_json::Value::String(end.clone());
+        }
+        serde_json::to_vec(&response)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
+}
+
+#[derive(Default)]
+struct QaMessagesProxyControl {
+    state: QaMessagesProxyState,
+    canned_page: Option<QaCannedMessagesPage>,
 }
 
 impl QaTcpProxy {
@@ -10720,11 +11472,13 @@ impl QaTcpProxy {
         let active_streams = Arc::new(Mutex::new(Vec::new()));
         let fallback_control =
             Arc::new((Mutex::new(QaFallbackProxyState::default()), Condvar::new()));
+        let messages_control = Arc::new(Mutex::new(QaMessagesProxyControl::default()));
 
         let thread_enabled = enabled.clone();
         let thread_running = running.clone();
         let thread_streams = active_streams.clone();
         let thread_fallback_control = fallback_control.clone();
+        let thread_messages_control = messages_control.clone();
         let accept_thread = thread::spawn(move || {
             while thread_running.load(Ordering::SeqCst) {
                 match listener.accept() {
@@ -10738,6 +11492,7 @@ impl QaTcpProxy {
                             target,
                             thread_streams.clone(),
                             thread_fallback_control.clone(),
+                            thread_messages_control.clone(),
                         );
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -10758,6 +11513,7 @@ impl QaTcpProxy {
             running,
             active_streams,
             fallback_control,
+            messages_control,
             accept_thread: Some(accept_thread),
         })
     }
@@ -10824,6 +11580,78 @@ impl QaTcpProxy {
         changed.notify_all();
         Ok(())
     }
+
+    fn arm_first_live_tail_messages_page(
+        &self,
+        overlap_event_id: String,
+        sender: String,
+        overlap_body: String,
+        recent_event_id: String,
+        recent_body: String,
+    ) -> Result<(), String> {
+        self.arm_messages_page(
+            QaMessagesProxyExpectation::TokenlessLiveTail,
+            QaCannedMessagesPage::overlapping(
+                overlap_event_id,
+                sender,
+                overlap_body,
+                recent_event_id,
+                recent_body,
+            ),
+            None,
+        )
+    }
+
+    fn arm_detached_live_tail_messages_page(
+        &self,
+        events: Vec<QaCannedTimelineEvent>,
+        end_token: String,
+    ) -> Result<(), String> {
+        let tracked_end_token = end_token.clone();
+        self.arm_messages_page(
+            QaMessagesProxyExpectation::TokenlessLiveTail,
+            QaCannedMessagesPage {
+                events,
+                end: Some(end_token),
+            },
+            Some(tracked_end_token),
+        )
+    }
+
+    fn arm_historical_continuation_messages_page(
+        &self,
+        end_token: String,
+        events: Vec<QaCannedTimelineEvent>,
+    ) -> Result<(), String> {
+        let tracked_end_token = end_token.clone();
+        self.arm_messages_page(
+            QaMessagesProxyExpectation::BackwardFrom { token: end_token },
+            QaCannedMessagesPage { events, end: None },
+            Some(tracked_end_token),
+        )
+    }
+
+    fn arm_messages_page(
+        &self,
+        expectation: QaMessagesProxyExpectation,
+        page: QaCannedMessagesPage,
+        tracked_end_token: Option<String>,
+    ) -> Result<(), String> {
+        let mut control = self
+            .messages_control
+            .lock()
+            .map_err(|_| "timeline messages proxy state lock was poisoned".to_owned())?;
+        control.state.arm_page(expectation, tracked_end_token);
+        control.canned_page = Some(page);
+        Ok(())
+    }
+
+    fn live_tail_messages_observation(&self) -> Result<QaMessagesProxyObservation, String> {
+        self.messages_control
+            .lock()
+            .map(|control| control.state.observation)
+            .map_err(|_| "timeline messages proxy state lock was poisoned".to_owned())
+    }
 }
 
 impl Drop for QaTcpProxy {
@@ -10861,9 +11689,16 @@ fn spawn_proxy_pair(
     target: SocketAddr,
     active_streams: Arc<Mutex<Vec<TcpStream>>>,
     fallback_control: Arc<(Mutex<QaFallbackProxyState>, Condvar)>,
+    messages_control: Arc<Mutex<QaMessagesProxyControl>>,
 ) {
     thread::spawn(move || {
-        let _ = proxy_single_http_request(&mut client, target, active_streams, fallback_control);
+        let _ = proxy_single_http_request(
+            &mut client,
+            target,
+            active_streams,
+            fallback_control,
+            messages_control,
+        );
         let _ = client.shutdown(Shutdown::Both);
     });
 }
@@ -10873,6 +11708,7 @@ fn proxy_single_http_request(
     target: SocketAddr,
     active_streams: Arc<Mutex<Vec<TcpStream>>>,
     fallback_control: Arc<(Mutex<QaFallbackProxyState>, Condvar)>,
+    messages_control: Arc<Mutex<QaMessagesProxyControl>>,
 ) -> io::Result<()> {
     let mut request_head = Vec::new();
     {
@@ -10907,7 +11743,10 @@ fn proxy_single_http_request(
         }
     }
 
-    match fallback_proxy_action(&fallback_control, qa_proxy_request_kind(&request_head)?)? {
+    let request_kind = qa_proxy_request_kind(&request_head)?;
+    let action = qa_messages_proxy_action(&messages_control, request_kind, &request_head)?
+        .unwrap_or(fallback_proxy_action(&fallback_control, request_kind)?);
+    match action {
         QaProxyRequestAction::Forward => {}
         QaProxyRequestAction::FailClosed => {
             return Err(io::Error::new(
@@ -10931,6 +11770,10 @@ fn proxy_single_http_request(
                     "QA fallback proxy stopped before legacy release",
                 ));
             }
+        }
+        QaProxyRequestAction::ServeCannedMessages(body) => {
+            write_qa_json_response(client, &body)?;
+            return Ok(());
         }
     }
 
@@ -10983,8 +11826,117 @@ fn qa_proxy_request_kind(request: &[u8]) -> io::Result<QaProxyRequestKind> {
         (_, "/_matrix/client/v3/sync" | "/_matrix/client/r0/sync") => {
             QaProxyRequestKind::LegacySync
         }
+        (_, path)
+            if path.starts_with("/_matrix/client/")
+                && path.contains("/rooms/")
+                && path.ends_with("/messages") =>
+        {
+            QaProxyRequestKind::RoomMessages
+        }
         _ => QaProxyRequestKind::Other,
     })
+}
+
+fn qa_messages_proxy_action(
+    control: &Arc<Mutex<QaMessagesProxyControl>>,
+    request_kind: QaProxyRequestKind,
+    request: &[u8],
+) -> io::Result<Option<QaProxyRequestAction>> {
+    if request_kind != QaProxyRequestKind::RoomMessages {
+        return Ok(None);
+    }
+    let metadata = qa_room_messages_request_metadata(request)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "room messages proxy received a non-room-messages request",
+        )
+    })?;
+    let mut control = control
+        .lock()
+        .map_err(|_| io::Error::other("QA messages proxy state lock was poisoned"))?;
+    match control.state.observe_room_messages_request(&metadata) {
+        QaMessagesProxyDecision::Forward => Ok(None),
+        QaMessagesProxyDecision::FailClosed => Ok(Some(QaProxyRequestAction::FailClosed)),
+        QaMessagesProxyDecision::ServeCannedPage => {
+            let page = control.canned_page.take().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "QA messages proxy armed without a canned messages page",
+                )
+            })?;
+            Ok(Some(QaProxyRequestAction::ServeCannedMessages(
+                page.response_body()?,
+            )))
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct QaRoomMessagesRequestMetadata {
+    query_is_exact_tokenless_limit: bool,
+    has_from: bool,
+    direction_is_backward: bool,
+    from_token: Option<String>,
+}
+
+fn qa_room_messages_request_metadata(
+    request: &[u8],
+) -> io::Result<Option<QaRoomMessagesRequestMetadata>> {
+    let header_end = find_http_header_end(request)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing HTTP headers"))?;
+    let head = String::from_utf8_lossy(&request[..header_end]);
+    let line = head
+        .lines()
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing HTTP request line"))?;
+    let mut fields = line.split_ascii_whitespace();
+    let _method = fields
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing HTTP method"))?;
+    let target = fields
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing HTTP target"))?;
+    let version = fields
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing HTTP version"))?;
+    if fields.next().is_some() || !version.starts_with("HTTP/") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid HTTP request line",
+        ));
+    }
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    if !path.starts_with("/_matrix/client/")
+        || !path.contains("/rooms/")
+        || !path.ends_with("/messages")
+    {
+        return Ok(None);
+    }
+    let mut direction_is_backward = false;
+    let mut from_token = None;
+    for field in query.split('&') {
+        let (name, value) = field.split_once('=').unwrap_or((field, ""));
+        match name {
+            "dir" => direction_is_backward = value == "b",
+            "from" => from_token = Some(value.to_owned()),
+            _ => {}
+        }
+    }
+    Ok(Some(QaRoomMessagesRequestMetadata {
+        query_is_exact_tokenless_limit: query == "dir=b&limit=128",
+        has_from: from_token.is_some(),
+        direction_is_backward,
+        from_token,
+    }))
+}
+
+fn write_qa_json_response(client: &mut TcpStream, body: &[u8]) -> io::Result<()> {
+    let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    io::Write::write_all(client, headers.as_bytes())?;
+    io::Write::write_all(client, body)
 }
 
 fn fallback_proxy_action(
@@ -15659,7 +16611,6 @@ mod tests {
             .split("#[cfg(test)]")
             .next()
             .expect("headless-core-qa source should contain production section");
-
         assert!(production_source.contains("init_headless_qa_tracing_from_env();"));
         assert!(production_source.contains("tracing_subscriber::EnvFilter"));
     }
@@ -15778,7 +16729,7 @@ mod tests {
     }
 
     #[test]
-    fn timeline_legacy_persisted_gap_scenario_restarts_before_room_absent_recovery() {
+    fn timeline_legacy_persisted_gap_scenario_proves_live_tail_refresh_and_continuation() {
         let source = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/src/bin/headless-core-qa.rs"
@@ -15787,6 +16738,11 @@ mod tests {
             .split("#[cfg(test)]")
             .next()
             .expect("headless-core-qa source should contain production section");
+        let scenario_source = production_source
+            .split("async fn run_timeline_reconnect_scenario_impl")
+            .nth(1)
+            .and_then(|source| source.split("async fn cleanup_after_full_flow").next())
+            .expect("timeline reconnect scenario implementation should exist");
 
         assert_eq!(
             QaScenario::from_env_value("timeline_legacy_persisted_gap").unwrap(),
@@ -15798,6 +16754,22 @@ mod tests {
         );
         assert!(production_source.contains("run_timeline_legacy_persisted_gap_scenario"));
         assert!(production_source.contains("AccountCommand::RestoreSession"));
+        assert!(scenario_source.contains("start_direct_message_for_qa("));
+        assert!(scenario_source.contains("wait_for_dm_room_in_room_list"));
+        assert!(scenario_source.contains("arm_first_live_tail_messages_page"));
+        assert!(scenario_source.contains("arm_detached_live_tail_messages_page"));
+        assert!(scenario_source.contains("arm_historical_continuation_messages_page"));
+        assert!(scenario_source.contains("TimelineCommand::Paginate {"));
+        assert!(scenario_source.contains("direction: PaginationDirection::Backward"));
+        assert!(scenario_source.contains("wait_for_live_tail_snapshot_gap_count_for_qa"));
+        assert!(scenario_source.contains("wait_for_detached_live_tail_refresh_for_qa"));
+        assert!(scenario_source.contains("expected_end_token_request_count"));
+        assert!(scenario_source.contains("detached_gap_count.saturating_sub(1)"));
+        assert!(
+            !scenario_source.contains("detached_gap_baseline"),
+            "the detached assertion must not compare topology across runtime restores"
+        );
+        assert!(scenario_source.contains("did not render canned live-tail event"));
         assert!(production_source.contains("let bodies = (0..30)"));
         assert!(production_source.contains("gap_count: 1"));
         let stop_b = production_source
@@ -15808,7 +16780,7 @@ mod tests {
             .expect("the room-absent proof must take a diagnostics baseline");
         let marker = baseline
             + production_source[baseline..]
-                .find("legacy_persisted_gap_room_absent=ok")
+                .find("legacy_live_tail_room_absent=ok")
                 .expect("the room-absent proof must emit its marker");
         let resume_b = marker
             + production_source[marker..]
@@ -15817,20 +16789,26 @@ mod tests {
         assert!(stop_b < baseline);
         assert!(baseline < marker);
         assert!(marker < resume_b);
-        assert!(production_source.contains("legacy_persisted_gap_room_absent=ok"));
-        assert!(production_source.contains("legacy_persisted_gap_unrelated_gap_retained=ok"));
-        assert!(production_source.contains("legacy_persisted_gap_fence=ok"));
-        assert!(production_source.contains("legacy_persisted_gap_repaired=ok"));
-        assert!(production_source.contains("legacy_persisted_gap_settled=ok"));
+        let initial_snapshot = scenario_source
+            .find("timeline legacy persisted gap initial live-tail snapshot")
+            .expect("the initial live-tail snapshot must settle before the baseline is read");
+        let initial_marker = scenario_source
+            .find("legacy_live_tail_room_absent=ok")
+            .expect("the initial live-tail marker must exist");
+        assert!(
+            initial_snapshot < initial_marker,
+            "the persisted-gap baseline must come from the completed initial snapshot"
+        );
+        assert!(production_source.contains("legacy_live_tail_room_absent=ok"));
+        assert!(production_source.contains("live_tail_detached_gap=ok"));
+        assert!(production_source.contains("live_tail_historical_continuation=ok"));
         assert_eq!(
             final_tokens_for_scenario(QaScenario::TimelineLegacyPersistedGap),
             [
                 "safety=ok",
-                "legacy_persisted_gap_room_absent=ok",
-                "legacy_persisted_gap_unrelated_gap_retained=ok",
-                "legacy_persisted_gap_fence=ok",
-                "legacy_persisted_gap_repaired=ok",
-                "legacy_persisted_gap_settled=ok",
+                "legacy_live_tail_room_absent=ok",
+                "live_tail_detached_gap=ok",
+                "live_tail_historical_continuation=ok",
             ],
         );
     }
@@ -16047,6 +17025,52 @@ mod tests {
             .unwrap(),
             QaProxyRequestKind::LegacySync,
         );
+    }
+
+    #[test]
+    fn live_tail_proxy_requires_an_exact_tokenless_room_messages_request() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/bin/headless-core-qa.rs"
+        ));
+        let production_source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("headless-core-qa source should contain production section");
+
+        assert!(production_source.contains("QaProxyRequestKind::RoomMessages"));
+        assert!(production_source.contains("query == \"dir=b&limit=128\""));
+        assert!(production_source.contains("QaMessagesProxyObservation"));
+        assert!(production_source.contains("QaMessagesProxyExpectation::BackwardFrom"));
+        assert!(production_source.contains("expected_end_token_was_used"));
+        assert!(production_source.contains("expected_end_token_request_count"));
+        assert!(
+            !production_source.contains("backward_from_request_count"),
+            "the QA proof must track only the detached continuation token, never total historical requests"
+        );
+        assert!(production_source.contains("arm_detached_live_tail_messages_page"));
+        assert!(production_source.contains("arm_historical_continuation_messages_page"));
+    }
+
+    #[test]
+    fn canned_live_tail_messages_page_has_the_required_start_token() {
+        let body = QaCannedMessagesPage::overlapping(
+            "$overlap:example.invalid".to_owned(),
+            "@sender:example.invalid".to_owned(),
+            "cached edge".to_owned(),
+            "$recent:example.invalid".to_owned(),
+            "recent live tail".to_owned(),
+        )
+        .response_body()
+        .expect("canned /messages response should serialize");
+        let response: serde_json::Value =
+            serde_json::from_slice(&body).expect("canned /messages response should be JSON");
+
+        assert_eq!(
+            response.get("start").and_then(serde_json::Value::as_str),
+            Some("qa-live-tail-start")
+        );
+        assert!(response.get("end").is_none());
     }
 
     #[test]
