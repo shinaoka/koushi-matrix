@@ -5,7 +5,7 @@ pub(crate) enum LiveCatchupGate {
     NoTimelineUpdate,
     NoGap,
     RepairCheckpointGap,
-    RepairPersistedLiveEdge,
+    ProveLiveTailFreshness,
 }
 
 impl LiveCatchupGate {
@@ -16,7 +16,7 @@ impl LiveCatchupGate {
             Self::NoTimelineUpdate => "no_timeline_update",
             Self::NoGap => "checkpoint_anchored",
             Self::RepairCheckpointGap => "checkpoint_gap_matches_selection",
-            Self::RepairPersistedLiveEdge => "repair_persisted_live_edge",
+            Self::ProveLiveTailFreshness => "prove_live_tail_freshness",
         }
     }
 }
@@ -32,7 +32,7 @@ pub(crate) fn classify_live_catchup_gate(
         return LiveCatchupGate::Stale;
     }
     if room_absent {
-        return LiveCatchupGate::RepairPersistedLiveEdge;
+        return LiveCatchupGate::ProveLiveTailFreshness;
     }
     if !has_timeline {
         return LiveCatchupGate::NoTimelineUpdate;
@@ -87,7 +87,7 @@ mod tests {
         );
         assert_eq!(
             classify_live_catchup_gate(None, Some((19, false, false, true))),
-            LiveCatchupGate::RepairPersistedLiveEdge,
+            LiveCatchupGate::ProveLiveTailFreshness,
         );
         assert_eq!(
             classify_live_catchup_gate(None, Some((19, false, false, false))),
