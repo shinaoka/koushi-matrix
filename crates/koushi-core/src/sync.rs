@@ -2536,9 +2536,9 @@ pub mod tests {
                 .find("notify_dependents_sync_started")
                 .expect("recovery dependent handoff")
                 < recovery_arm
-                    .find("SyncEvent::Running")
-                    .expect("recovery Running event"),
-            "recovery Running must not race ahead of rebuilding dependent timelines"
+                    .find("SyncActorControl::BackendRecovered")
+                    .expect("generation-fenced recovery control"),
+            "recovery promotion must not race ahead of rebuilding dependent timelines"
         );
 
         assert!(
