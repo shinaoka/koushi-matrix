@@ -1647,7 +1647,7 @@ impl TimelineManagerActor {
             .filter(|key| self.live_tail_refreshes.freshness(key).is_some())
             .cloned()
             .collect::<Vec<_>>();
-        let mut starts = Vec::new();
+        let mut pending_start = None;
         for key in keys {
             let from = self.live_tail_refreshes.freshness(&key);
             let actions = self
@@ -1660,14 +1660,59 @@ impl TimelineManagerActor {
             );
             record_live_tail_queue("foreground", &actions);
             for action in actions {
-                if matches!(action, LiveTailSchedulerAction::Start { .. }) {
-                    starts.push(action);
-                } else {
-                    self.apply_live_tail_scheduler_actions(vec![action]).await;
+                match action {
+                    LiveTailSchedulerAction::Start { .. } => {
+                        debug_assert!(pending_start.is_none());
+                        pending_start = Some(action);
+                    }
+                    LiveTailSchedulerAction::CancelNetwork {
+                        key,
+                        operation_generation,
+                    } => {
+                        let cancels_pending = pending_start.as_ref().is_some_and(|pending| {
+                            matches!(
+                                pending,
+                                LiveTailSchedulerAction::Start {
+                                    key: pending_key,
+                                    operation_generation: pending_operation,
+                                    ..
+                                } if pending_key == &key
+                                    && *pending_operation == operation_generation
+                            )
+                        });
+                        if cancels_pending {
+                            pending_start = None;
+                        } else {
+                            self.apply_live_tail_scheduler_actions(vec![
+                                LiveTailSchedulerAction::CancelNetwork {
+                                    key,
+                                    operation_generation,
+                                },
+                            ])
+                            .await;
+                        }
+                    }
                 }
             }
         }
-        starts
+        pending_start
+            .filter(|pending| {
+                matches!(
+                    pending,
+                    LiveTailSchedulerAction::Start {
+                        key,
+                        epoch,
+                        operation_generation,
+                        ..
+                    } if self.live_tail_refreshes.freshness(key)
+                        == Some(LiveTailFreshnessState::Refreshing {
+                            epoch: *epoch,
+                            operation_generation: *operation_generation,
+                        })
+                )
+            })
+            .into_iter()
+            .collect()
     }
 
     async fn handle_room_subscription_checkpoint(
@@ -6090,6 +6135,31 @@ impl TimelineGapProjectionCorrelation {
     }
 }
 
+#[derive(Debug, Default)]
+struct RestoreCausalProjectionBuffer {
+    projections: BTreeSet<GapRepairProjectionId>,
+}
+
+impl RestoreCausalProjectionBuffer {
+    fn buffer_batch(&mut self, projections: BTreeSet<GapRepairProjectionId>) {
+        self.projections.extend(projections);
+    }
+
+    fn observe_live_tail_after_publication(
+        &mut self,
+        correlation: &mut TimelineGapProjectionCorrelation,
+        published_batch_id: TimelineBatchId,
+    ) -> bool {
+        std::mem::take(&mut self.projections)
+            .into_iter()
+            .any(|projection| {
+                correlation
+                    .observe(projection, published_batch_id)
+                    .is_some()
+            })
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct PendingTimelineGapProjection {
     trigger: TimelineGapRepairTrigger,
@@ -7471,7 +7541,6 @@ mod timeline_gap_repair_tracker_tests {
 
     #[tokio::test]
     async fn legacy_room_absent_refreshes_active_live_tail_not_persisted_gap() {
-        let diagnostic_start = koushi_diagnostics::snapshot().records.len();
         let server = MatrixMockServer::new().await;
         let client = server.client_builder().build().await;
         let room_id = matrix_sdk::ruma::room_id!("!private:example.org");
@@ -7600,6 +7669,10 @@ mod timeline_gap_repair_tracker_tests {
             .expect("event cache subscribe");
         server.sync_joined_room(&client, room_id).await;
         server.sync_joined_room(&client, other_room_id).await;
+        const DIAGNOSTIC_RESPONSE_SEQUENCE: u64 = 41;
+        while client.latest_room_updates_response_sequence() < DIAGNOSTIC_RESPONSE_SEQUENCE - 1 {
+            server.sync_joined_room(&client, other_room_id).await;
+        }
         server
             .mock_room_messages()
             .match_limit(128)
@@ -7647,6 +7720,30 @@ mod timeline_gap_repair_tracker_tests {
                 device_id: "DEVICE".to_owned(),
             },
         ));
+        let gap_topology = |inspection: &MatrixTimelineGapInspection| {
+            inspection
+                .gaps
+                .iter()
+                .map(|gap| {
+                    (
+                        gap.topology_revision(),
+                        gap.older_boundary_event_id().map(str::to_owned),
+                        gap.newer_boundary_event_id().map(str::to_owned),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let seeded_gap_topology = gap_topology(
+            &session
+                .inspect_room_timeline_gaps(room_id.as_str())
+                .await
+                .expect("seeded gap inspection"),
+        );
+        assert_eq!(
+            seeded_gap_topology.len(),
+            4,
+            "the fixture starts with exactly four unrelated persisted gaps",
+        );
         let (action_tx, _action_rx) = mpsc::channel(64);
         let (event_tx, mut event_rx) = broadcast::channel(128);
         let (search_index_tx, _search_index_rx) = mpsc::channel(16);
@@ -7662,6 +7759,10 @@ mod timeline_gap_repair_tracker_tests {
         let committed_from_response_sequence = client
             .latest_room_updates_response_sequence()
             .wrapping_add(1);
+        assert_eq!(
+            committed_from_response_sequence, DIAGNOSTIC_RESPONSE_SEQUENCE,
+            "the diagnostic regression uses a unique committed response generation",
+        );
         assert!(
             manager
                 .send(TimelineMessage::SyncStarted {
@@ -7733,14 +7834,14 @@ mod timeline_gap_repair_tracker_tests {
                 {
                     apply_timeline_diffs_to_display_items(&mut rendered, &diffs);
                 }
-                if event_ids(&rendered).contains(&missing_id.as_str())
-                    && session
+                let current_topology = gap_topology(
+                    &session
                         .inspect_room_timeline_gaps(room_id.as_str())
                         .await
-                        .expect("post-repair inspection")
-                        .gaps
-                        .len()
-                        >= 4
+                        .expect("post-refresh inspection"),
+                );
+                if event_ids(&rendered).contains(&missing_id.as_str())
+                    && current_topology == seeded_gap_topology
                 {
                     break;
                 }
@@ -7760,8 +7861,96 @@ mod timeline_gap_repair_tracker_tests {
                 < ids.iter().position(|id| *id == missing_id.as_str()),
             "the tokenless refresh appends the recent event after the stale rendered edge",
         );
+        assert_eq!(
+            gap_topology(
+                &session
+                    .inspect_room_timeline_gaps(room_id.as_str())
+                    .await
+                    .expect("settled gap inspection"),
+            ),
+            seeded_gap_topology,
+            "tokenless refresh must preserve all four seeded persisted gaps exactly",
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let records = koushi_diagnostics::snapshot().records;
+                let refresh_finished = records.iter().any(|record| {
+                    record.event.source == "core.timeline"
+                        && record.event.stage == "timeline_live_tail_refresh"
+                        && record.event.fields.iter().any(|field| {
+                            field.key == "returned_events"
+                                && field.value == koushi_diagnostics::DiagnosticValue::Count(2)
+                        })
+                });
+                let fresh = records.iter().any(|record| {
+                    record.event.source == "core.timeline"
+                        && record.event.stage == "timeline_live_tail_state"
+                        && record.event.fields.iter().any(|field| {
+                            field.key == "to"
+                                && field.value
+                                    == koushi_diagnostics::DiagnosticValue::Token("fresh")
+                        })
+                        && record.event.fields.iter().any(|field| {
+                            field.key == "sync_epoch"
+                                && field.value == koushi_diagnostics::DiagnosticValue::Count(1)
+                        })
+                });
+                if refresh_finished && fresh {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first same-epoch refresh committed Fresh");
+
+        server
+            .sync_room(
+                &client,
+                matrix_sdk_test::JoinedRoomBuilder::new(other_room_id),
+            )
+            .await;
+        let repeated_room_absent_sequence = client.latest_room_updates_response_sequence();
+        assert_eq!(
+            repeated_room_absent_sequence,
+            committed_from_response_sequence + 1,
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if koushi_diagnostics::snapshot().records.iter().any(|record| {
+                    record.event.source == "core.timeline"
+                        && record.event.stage == "legacy_response_commit"
+                        && record.event.fields.iter().any(|field| {
+                            field.key == "response_sequence"
+                                && field.value
+                                    == koushi_diagnostics::DiagnosticValue::Count(
+                                        repeated_room_absent_sequence,
+                                    )
+                        })
+                        && record.event.fields.iter().any(|field| {
+                            field.key == "rooms_updated_count"
+                                && field.value == koushi_diagnostics::DiagnosticValue::Count(0)
+                        })
+                }) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("second same-epoch RoomAbsent committed without another refresh");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            gap_topology(
+                &session
+                    .inspect_room_timeline_gaps(room_id.as_str())
+                    .await
+                    .expect("repeat RoomAbsent gap inspection"),
+            ),
+            seeded_gap_topology,
+            "repeat RoomAbsent must preserve the exact four-gap topology",
+        );
         let diagnostic_records = koushi_diagnostics::snapshot().records;
-        let diagnostic_records = &diagnostic_records[diagnostic_start..];
         let expected_response_fields = [
             (
                 "active_timeline_count",
@@ -8104,19 +8293,17 @@ mod timeline_gap_repair_tracker_tests {
         .expect("left-room response fence committed");
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert!(
-            !koushi_diagnostics::snapshot().records[diagnostic_start..]
-                .iter()
-                .any(|record| {
-                    record.event.source == "core.live_catchup"
-                        && record.event.stage == "checkpoint"
-                        && record.event.fields.iter().any(|field| {
-                            field.key == "checkpoint_generation"
-                                && field.value
-                                    == koushi_diagnostics::DiagnosticValue::Count(
-                                        left_response_sequence,
-                                    )
-                        })
-                }),
+            !koushi_diagnostics::snapshot().records.iter().any(|record| {
+                record.event.source == "core.live_catchup"
+                    && record.event.stage == "checkpoint"
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "checkpoint_generation"
+                            && field.value
+                                == koushi_diagnostics::DiagnosticValue::Count(
+                                    left_response_sequence,
+                                )
+                    })
+            }),
             "a left-room update is present in the response and must not be routed as RoomAbsent"
         );
 
@@ -8811,6 +8998,9 @@ struct TimelineActor {
     /// (Found/EndReached/BudgetExhausted/Failed/Superseded), so React receives
     /// a single settled update rather than O(chunks) intermediate renders.
     restore_emit_buffer: Vec<TimelineDiff>,
+    /// Causal SDK projection tags for the diffs above. They must be observed
+    /// only after the coalesced restore batch is published to the UI.
+    restore_causal_projections: RestoreCausalProjectionBuffer,
     /// `maybe_hydrate_missing_thread_roots` is deliberately deferred until a
     /// buffered restore window has emitted its final canonical `ItemsUpdated`.
     /// Otherwise a newly observed Pending projection is pruned by the store
@@ -9586,6 +9776,7 @@ impl TimelineActor {
             restore_anchor: None,
             next_restore_anchor_serial: 0,
             restore_emit_buffer: Vec::new(),
+            restore_causal_projections: RestoreCausalProjectionBuffer::default(),
             hydrate_after_restore_flush: false,
             diff_batch_seq: 0,
             gap_repair,
@@ -9654,6 +9845,11 @@ impl TimelineActor {
                     let Some(msg) = msg else { break };
                     self.handle_msg(msg).await;
                 }
+            }
+            if self.pending_live_tail_projection.is_some()
+                && !self.live_tail_projection_correlation.is_pending()
+            {
+                self.finish_pending_live_tail_projection().await;
             }
         }
     }
@@ -13461,6 +13657,8 @@ impl TimelineActor {
             // is still advanced so later non-restore emits remain monotonic.
             self.next_batch_id = TimelineBatchId(self.next_batch_id.0 + 1);
             self.restore_emit_buffer.extend(core_diffs);
+            self.restore_causal_projections
+                .buffer_batch(gap_repair_projections);
             // Hydration Pending must be emitted only after this buffer's final
             // canonical ItemsUpdated group, otherwise the desktop store prunes
             // it before the reply item which keeps it active is present.
@@ -14859,15 +15057,24 @@ impl TimelineActor {
     fn flush_restore_emit_buffer(&mut self) -> bool {
         if !self.restore_emit_buffer.is_empty() {
             let diffs = std::mem::take(&mut self.restore_emit_buffer);
+            let published_batch_id = self.next_batch_id;
             // A restore has deliberately deferred its UI diffs. Reconcile only
             // now, immediately beside the one settled ItemsUpdated emission,
             // so a replacement actor can never observe a replay transition
             // without the canonical batch that caused it.
             let emitted = self.emit_items_updated_and_reconcile_replay_known(diffs);
             self.emit_navigation_if_changed();
+            if emitted {
+                self.restore_causal_projections
+                    .observe_live_tail_after_publication(
+                        &mut self.live_tail_projection_correlation,
+                        published_batch_id,
+                    );
+            }
             return emitted;
         } else {
             self.restore_emit_buffer.clear();
+            self.restore_causal_projections = RestoreCausalProjectionBuffer::default();
         }
         self.emit_navigation_if_changed();
         false
@@ -21561,6 +21768,49 @@ mod tests {
         }
     }
 
+    fn live_tail_replacement_test_actor_handle(
+        key: TimelineKey,
+        labels: Arc<Mutex<HashMap<TimelineKey, &'static str>>>,
+        log: Arc<Mutex<Vec<String>>>,
+    ) -> TimelineActorHandle {
+        let (tx, mut rx) = mpsc::channel(8);
+        let task = executor::spawn(async move {
+            while let Some(message) = rx.recv().await {
+                let label = labels
+                    .lock()
+                    .expect("live-tail replacement labels lock")
+                    .get(&key)
+                    .copied()
+                    .expect("replacement actor label");
+                match message {
+                    TimelineActorMessage::StartLiveTailRefresh {
+                        epoch,
+                        operation_generation,
+                        limit,
+                    } => log.lock().expect("live-tail replacement log lock").push(format!(
+                        "start:{label}:epoch={epoch}:operation={operation_generation}:limit={limit}"
+                    )),
+                    TimelineActorMessage::CancelLiveTailNetwork {
+                        operation_generation,
+                        acknowledged,
+                    } => {
+                        log.lock().expect("live-tail replacement log lock").push(format!(
+                            "cancel-network:{label}:operation={operation_generation}"
+                        ));
+                        let _ = acknowledged.send(());
+                    }
+                    _ => {}
+                }
+            }
+        });
+        TimelineActorHandle {
+            tx,
+            task,
+            auxiliary_tasks: Vec::new(),
+            subscription_generation: None,
+        }
+    }
+
     fn live_tail_test_manager(
         timelines: HashMap<TimelineKey, TimelineActorHandle>,
     ) -> TimelineManagerActor {
@@ -21640,6 +21890,240 @@ mod tests {
                 "cancel-network:A:epoch=7",
                 "start:B:epoch=9:limit=128",
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn live_tail_epoch_replacement_folds_stale_pending_starts_before_dispatch() {
+        let account = AccountKey("@replacement:test".to_owned());
+        let candidates = ["!one:test", "!two:test", "!three:test"]
+            .map(|room_id| TimelineKey::room(account.clone(), room_id));
+        let labels = Arc::new(Mutex::new(HashMap::new()));
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut manager = live_tail_test_manager(
+            candidates
+                .iter()
+                .cloned()
+                .map(|key| {
+                    (
+                        key.clone(),
+                        live_tail_replacement_test_actor_handle(key, labels.clone(), log.clone()),
+                    )
+                })
+                .collect(),
+        );
+        let ordered = manager.timelines.keys().cloned().collect::<Vec<_>>();
+        let [room_b, room_c, room_a] = ordered.as_slice() else {
+            panic!("three replacement rooms");
+        };
+        let (room_b, room_c, room_a) = (room_b.clone(), room_c.clone(), room_a.clone());
+        labels
+            .lock()
+            .expect("live-tail replacement labels lock")
+            .extend([
+                (room_b.clone(), "B"),
+                (room_c.clone(), "C"),
+                (room_a.clone(), "A"),
+            ]);
+
+        let prepare = || {
+            let mut coordinator = LiveTailRefreshCoordinator::new();
+            assert_eq!(
+                coordinator.activate(room_a.clone(), 7),
+                vec![LiveTailSchedulerAction::Start {
+                    key: room_a.clone(),
+                    epoch: 7,
+                    operation_generation: 1,
+                    limit: 128,
+                }]
+            );
+            assert!(coordinator.mark_unproven(room_b.clone(), 7).is_empty());
+            assert!(coordinator.mark_unproven(room_c.clone(), 7).is_empty());
+            let start_b =
+                coordinator.finish(room_a.clone(), 7, 1, LiveTailRefreshOutcome::Unchanged);
+            (coordinator, start_b)
+        };
+
+        let (mut evidence, _) = prepare();
+        let logical_actions = [room_b.clone(), room_c.clone(), room_a.clone()]
+            .into_iter()
+            .flat_map(|key| evidence.invalidate_epoch(key, 8))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            logical_actions,
+            vec![
+                LiveTailSchedulerAction::CancelNetwork {
+                    key: room_b.clone(),
+                    operation_generation: 2,
+                },
+                LiveTailSchedulerAction::Start {
+                    key: room_c.clone(),
+                    epoch: 7,
+                    operation_generation: 3,
+                    limit: 128,
+                },
+                LiveTailSchedulerAction::CancelNetwork {
+                    key: room_c.clone(),
+                    operation_generation: 3,
+                },
+                LiveTailSchedulerAction::Start {
+                    key: room_b.clone(),
+                    epoch: 8,
+                    operation_generation: 4,
+                    limit: 128,
+                },
+                LiveTailSchedulerAction::CancelNetwork {
+                    key: room_b.clone(),
+                    operation_generation: 4,
+                },
+                LiveTailSchedulerAction::Start {
+                    key: room_a.clone(),
+                    epoch: 8,
+                    operation_generation: 5,
+                    limit: 128,
+                },
+            ],
+            "the coordinator cancellation stream must remain causal",
+        );
+
+        let (coordinator, start_b) = prepare();
+        manager.live_tail_refreshes = coordinator;
+        manager.apply_live_tail_scheduler_actions(start_b).await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !log
+                    .lock()
+                    .expect("live-tail replacement log lock")
+                    .is_empty()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("initial delayed B start");
+        log.lock().expect("live-tail replacement log lock").clear();
+
+        let starts = manager
+            .invalidate_live_tail_epoch_for_existing_rooms(8)
+            .await;
+        manager.apply_live_tail_scheduler_actions(starts).await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if log
+                    .lock()
+                    .expect("live-tail replacement log lock")
+                    .iter()
+                    .any(|entry| entry.starts_with("start:A:epoch=8:"))
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("final replacement start");
+        tokio::task::yield_now().await;
+        assert_eq!(
+            *log.lock().expect("live-tail replacement log lock"),
+            [
+                "cancel-network:B:operation=2",
+                "start:A:epoch=8:operation=5:limit=128",
+            ],
+            "only the already-dispatched network and final coordinator start reach actors",
+        );
+    }
+
+    #[test]
+    fn live_tail_restore_flush_consumes_causal_projection_once_and_releases_scheduler() {
+        let account = AccountKey("@restore:test".to_owned());
+        let room_a = TimelineKey::room(account.clone(), "!a:test");
+        let room_b = TimelineKey::room(account, "!b:test");
+        let actor_generation = 4;
+        let mut coordinator = LiveTailRefreshCoordinator::new();
+        assert_eq!(
+            coordinator.activate(room_a.clone(), 7),
+            vec![LiveTailSchedulerAction::Start {
+                key: room_a.clone(),
+                epoch: 7,
+                operation_generation: 1,
+                limit: 128,
+            }]
+        );
+        assert!(coordinator.mark_unproven(room_b.clone(), 7).is_empty());
+
+        let mut correlation = TimelineGapProjectionCorrelation::default();
+        correlation.begin(actor_generation, 1);
+        assert_eq!(
+            correlation.complete(actor_generation, 1, Some(2)),
+            TimelineGapProjectionCompletion::Pending
+        );
+        let mut restore_projections = RestoreCausalProjectionBuffer::default();
+        restore_projections.buffer_batch(BTreeSet::from([
+            GapRepairProjectionId {
+                actor_generation: actor_generation - 1,
+                repair_generation: 1,
+                projection_batch: 2,
+            },
+            GapRepairProjectionId {
+                actor_generation,
+                repair_generation: 9,
+                projection_batch: 2,
+            },
+            GapRepairProjectionId {
+                actor_generation,
+                repair_generation: 1,
+                projection_batch: 1,
+            },
+        ]));
+        assert!(
+            !restore_projections
+                .observe_live_tail_after_publication(&mut correlation, TimelineBatchId(20),)
+        );
+        assert!(correlation.is_pending());
+        assert_eq!(
+            coordinator.freshness(&room_a),
+            Some(
+                crate::live_tail_freshness::LiveTailFreshnessState::Refreshing {
+                    epoch: 7,
+                    operation_generation: 1,
+                }
+            ),
+            "buffering and wrong causal tags must not prove freshness before flush",
+        );
+
+        restore_projections.buffer_batch(BTreeSet::from([GapRepairProjectionId {
+            actor_generation,
+            repair_generation: 1,
+            projection_batch: 2,
+        }]));
+        assert!(
+            restore_projections
+                .observe_live_tail_after_publication(&mut correlation, TimelineBatchId(21),)
+        );
+        assert!(
+            !restore_projections
+                .observe_live_tail_after_publication(&mut correlation, TimelineBatchId(22),),
+            "the restore projection metadata is consumed by one publication",
+        );
+        assert_eq!(
+            coordinator.finish(
+                room_a.clone(),
+                7,
+                1,
+                LiveTailRefreshOutcome::Advanced { events: 1 },
+            ),
+            vec![LiveTailSchedulerAction::Start {
+                key: room_b,
+                epoch: 7,
+                operation_generation: 2,
+                limit: 128,
+            }]
+        );
+        assert_eq!(
+            coordinator.freshness(&room_a),
+            Some(crate::live_tail_freshness::LiveTailFreshnessState::Fresh { epoch: 7 }),
         );
     }
 
