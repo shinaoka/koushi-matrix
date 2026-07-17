@@ -223,6 +223,12 @@ pub enum TimelineMessage {
         historical_gap_remaining: bool,
         duration_ms: u128,
     },
+    #[cfg(test)]
+    TestLiveTailDispatchState {
+        key: TimelineKey,
+        epoch: u64,
+        response: oneshot::Sender<(bool, usize)>,
+    },
     IgnoredUsersUpdated {
         user_ids: std::collections::BTreeSet<String>,
     },
@@ -1283,6 +1289,8 @@ impl TimelineManagerActor {
 
     async fn run(mut self) {
         let mut shutdown_acknowledgement = None;
+        #[cfg(test)]
+        let mut live_tail_completion_dispatches = 0;
         while let Some(msg) = self.msg_rx.recv().await {
             match msg {
                 TimelineMessage::Shutdown { acknowledged } => {
@@ -1324,6 +1332,10 @@ impl TimelineManagerActor {
                     historical_gap_remaining,
                     duration_ms,
                 } => {
+                    #[cfg(test)]
+                    {
+                        live_tail_completion_dispatches += 1;
+                    }
                     self.handle_live_tail_refresh_completed(
                         key,
                         actor_generation,
@@ -1336,6 +1348,18 @@ impl TimelineManagerActor {
                         duration_ms,
                     )
                     .await;
+                }
+                #[cfg(test)]
+                TimelineMessage::TestLiveTailDispatchState {
+                    key,
+                    epoch,
+                    response,
+                } => {
+                    let _ = response.send((
+                        self.live_tail_refreshes.freshness(&key)
+                            == Some(LiveTailFreshnessState::Fresh { epoch }),
+                        live_tail_completion_dispatches,
+                    ));
                 }
                 TimelineMessage::IgnoredUsersUpdated { user_ids } => {
                     self.handle_ignored_users_updated(user_ids).await;
@@ -22601,51 +22625,47 @@ mod tests {
         .expect("real tagged SDK diff reached the restore buffer");
         assert_ne!(matching_projection.projection_batch, u32::MAX);
 
-        let (flush_tx, flush_rx) = oneshot::channel();
-        manager
+        let manager_tx = manager.msg_tx.clone();
+        let actor_tx = manager
             .timelines
             .get(&room_a)
             .expect("room A actor")
             .tx
+            .clone();
+        let _manager_task = executor::spawn(manager.run());
+
+        let (flush_tx, flush_rx) = oneshot::channel();
+        actor_tx
             .send(TimelineActorMessage::TestFlushRestore(flush_tx))
             .await
             .expect("flush request");
         assert!(flush_rx.await.expect("production restore flush result"));
 
-        let completion = tokio::time::timeout(Duration::from_secs(2), manager.msg_rx.recv())
+        let (freshness, completion_dispatches) =
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let (state_tx, state_rx) = oneshot::channel();
+                    manager_tx
+                        .send(TimelineMessage::TestLiveTailDispatchState {
+                            key: room_a.clone(),
+                            epoch: 7,
+                            response: state_tx,
+                        })
+                        .await
+                        .expect("manager state request");
+                    let state = state_rx.await.expect("manager state response");
+                    if state.0 && !delayed_log.lock().expect("delayed start log").is_empty() {
+                        break state;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
             .await
-            .expect("actor loop published manager completion")
-            .expect("manager completion channel");
-        let TimelineMessage::LiveTailRefreshCompleted {
-            key,
-            actor_generation: completed_actor_generation,
-            epoch,
-            operation_generation,
-            outcome,
-            requested_limit,
-            returned_events,
-            historical_gap_remaining,
-            duration_ms,
-        } = completion
-        else {
-            panic!("actor must publish the live-tail manager completion");
-        };
-        manager
-            .handle_live_tail_refresh_completed(
-                key,
-                completed_actor_generation,
-                epoch,
-                operation_generation,
-                outcome,
-                requested_limit,
-                returned_events,
-                historical_gap_remaining,
-                duration_ms,
-            )
-            .await;
+            .expect("production manager dispatch completed live-tail refresh");
+        assert!(freshness, "room A becomes Fresh for epoch 7");
         assert_eq!(
-            manager.live_tail_refreshes.freshness(&room_a),
-            Some(LiveTailFreshnessState::Fresh { epoch: 7 }),
+            completion_dispatches, 1,
+            "the production manager loop dispatches exactly one completion",
         );
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
@@ -22675,6 +22695,15 @@ mod tests {
             items_updated_count, 1,
             "restore publishes one coalesced batch"
         );
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        manager_tx
+            .send(TimelineMessage::Shutdown {
+                acknowledged: Some(shutdown_tx),
+            })
+            .await
+            .expect("manager shutdown request");
+        shutdown_rx.await.expect("manager shutdown acknowledged");
     }
 
     #[tokio::test]
