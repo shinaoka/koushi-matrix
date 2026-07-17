@@ -2963,6 +2963,164 @@ pub struct MatrixTimelineGapRepairResult {
     pub last_projection_batch: Option<u32>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixLiveTailRefreshOutcome {
+    Cancelled,
+    Unchanged,
+    Advanced {
+        events: usize,
+    },
+    Detached {
+        events: usize,
+        historical_gap_remaining: bool,
+    },
+    Stale,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MatrixLiveTailRefreshResult {
+    pub outcome: MatrixLiveTailRefreshOutcome,
+    pub returned_events: usize,
+    pub last_projection_batch: Option<u32>,
+}
+
+#[derive(Clone, Default)]
+pub struct MatrixLiveTailRefreshCancellation {
+    inner: matrix_sdk::event_cache::RoomLiveTailRefreshCancellation,
+}
+
+impl MatrixLiveTailRefreshCancellation {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.inner.cancel();
+    }
+}
+
+impl std::fmt::Debug for MatrixLiveTailRefreshCancellation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("MatrixLiveTailRefreshCancellation(..)")
+    }
+}
+
+fn failed_live_tail_refresh_result() -> MatrixLiveTailRefreshResult {
+    MatrixLiveTailRefreshResult {
+        outcome: MatrixLiveTailRefreshOutcome::Failed,
+        returned_events: 0,
+        last_projection_batch: None,
+    }
+}
+
+fn map_live_tail_refresh_result(
+    result: matrix_sdk::event_cache::Result<matrix_sdk::event_cache::RoomLiveTailRefreshResult>,
+) -> MatrixLiveTailRefreshResult {
+    use matrix_sdk::event_cache::RoomLiveTailRefreshOutcome;
+
+    let Ok(result) = result else {
+        return failed_live_tail_refresh_result();
+    };
+    let outcome = match result.outcome {
+        RoomLiveTailRefreshOutcome::Cancelled => MatrixLiveTailRefreshOutcome::Cancelled,
+        RoomLiveTailRefreshOutcome::Unchanged => MatrixLiveTailRefreshOutcome::Unchanged,
+        RoomLiveTailRefreshOutcome::Advanced { events } => {
+            MatrixLiveTailRefreshOutcome::Advanced { events }
+        }
+        RoomLiveTailRefreshOutcome::Detached {
+            events,
+            historical_gap_remaining,
+        } => MatrixLiveTailRefreshOutcome::Detached {
+            events,
+            historical_gap_remaining,
+        },
+        RoomLiveTailRefreshOutcome::Stale => MatrixLiveTailRefreshOutcome::Stale,
+        RoomLiveTailRefreshOutcome::Failed => MatrixLiveTailRefreshOutcome::Failed,
+    };
+    MatrixLiveTailRefreshResult {
+        outcome,
+        returned_events: result.returned_events,
+        last_projection_batch: result.last_projection_batch,
+    }
+}
+
+#[cfg(test)]
+mod matrix_live_tail_refresh_mapping_tests {
+    use super::*;
+    use matrix_sdk::event_cache::{
+        EventCacheError, RoomLiveTailRefreshOutcome as SdkOutcome,
+        RoomLiveTailRefreshResult as SdkResult,
+    };
+
+    #[test]
+    fn sdk_live_tail_outcomes_map_one_for_one_with_projection_metadata() {
+        let cases = [
+            (
+                SdkOutcome::Cancelled,
+                MatrixLiveTailRefreshOutcome::Cancelled,
+            ),
+            (
+                SdkOutcome::Unchanged,
+                MatrixLiveTailRefreshOutcome::Unchanged,
+            ),
+            (
+                SdkOutcome::Advanced { events: 3 },
+                MatrixLiveTailRefreshOutcome::Advanced { events: 3 },
+            ),
+            (
+                SdkOutcome::Detached {
+                    events: 5,
+                    historical_gap_remaining: true,
+                },
+                MatrixLiveTailRefreshOutcome::Detached {
+                    events: 5,
+                    historical_gap_remaining: true,
+                },
+            ),
+            (SdkOutcome::Stale, MatrixLiveTailRefreshOutcome::Stale),
+            (SdkOutcome::Failed, MatrixLiveTailRefreshOutcome::Failed),
+        ];
+
+        for (sdk_outcome, expected_outcome) in cases {
+            let mapped = map_live_tail_refresh_result(Ok(SdkResult {
+                outcome: sdk_outcome,
+                returned_events: 9,
+                last_projection_batch: Some(1),
+            }));
+
+            assert_eq!(
+                mapped,
+                MatrixLiveTailRefreshResult {
+                    outcome: expected_outcome,
+                    returned_events: 9,
+                    last_projection_batch: Some(1),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn sdk_live_tail_errors_map_to_private_data_free_failure() {
+        let mapped =
+            map_live_tail_refresh_result(Err(EventCacheError::InvalidLinkedChunkMetadata {
+                details: "raw token for !private-room:example.invalid".to_owned(),
+            }));
+
+        assert_eq!(
+            mapped,
+            MatrixLiveTailRefreshResult {
+                outcome: MatrixLiveTailRefreshOutcome::Failed,
+                returned_events: 0,
+                last_projection_batch: None,
+            }
+        );
+        let debug = format!("{mapped:?}");
+        assert!(!debug.contains("raw token"));
+        assert!(!debug.contains("!private-room"));
+    }
+}
+
 impl MatrixClientSession {
     #[cfg(feature = "test-hooks")]
     #[doc(hidden)]
@@ -3066,6 +3224,38 @@ impl MatrixClientSession {
             outcome,
             last_projection_batch: result.last_projection_batch,
         })
+    }
+
+    pub async fn refresh_room_live_tail(
+        &self,
+        room_id: &str,
+        event_limit: u16,
+        actor_generation: u64,
+        operation_generation: u64,
+        cancellation: MatrixLiveTailRefreshCancellation,
+    ) -> MatrixLiveTailRefreshResult {
+        let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(room_id) else {
+            return failed_live_tail_refresh_result();
+        };
+        let Some(room) = self.client.get_room(&room_id) else {
+            return failed_live_tail_refresh_result();
+        };
+        let Ok((cache, _drop_handles)) = room.event_cache().await else {
+            return failed_live_tail_refresh_result();
+        };
+        map_live_tail_refresh_result(
+            cache
+                .pagination()
+                .refresh_live_tail_with_projection(
+                    event_limit,
+                    matrix_sdk::event_cache::RoomTimelineGapProjectionId {
+                        actor_generation,
+                        repair_generation: operation_generation,
+                    },
+                    cancellation.inner,
+                )
+                .await,
+        )
     }
 
     pub fn persistable_session(&self) -> Result<PersistableMatrixSession, PasswordLoginError> {

@@ -1,9 +1,72 @@
 use koushi_sdk::{
     MatrixCommittedRoomTimelineBackend, MatrixCommittedRoomTimelineCheckpoint,
     MatrixCommittedRoomTimelineOrigin, MatrixCommittedRoomUpdatesResponse,
+    MatrixLiveTailRefreshCancellation, MatrixLiveTailRefreshOutcome, MatrixLiveTailRefreshResult,
     MatrixRoomSubscriptionCheckpoint, MatrixTimelineContinuity, MatrixTimelineGapError,
-    MatrixTimelineGapHandle, MatrixTimelineGapRepairOutcome,
+    MatrixTimelineGapHandle, MatrixTimelineGapRepairOutcome, PersistableMatrixSession,
 };
+
+#[test]
+fn live_tail_refresh_debug_is_privacy_safe() {
+    let cancellation = MatrixLiveTailRefreshCancellation::new();
+    let debug = format!("{cancellation:?}");
+    assert_eq!(debug, "MatrixLiveTailRefreshCancellation(..)");
+    assert!(!debug.contains("!room"));
+    assert!(!debug.contains("token"));
+}
+
+#[test]
+fn live_tail_refresh_outcomes_are_token_free_and_coarse() {
+    let outcome = MatrixLiveTailRefreshOutcome::Detached {
+        events: 128,
+        historical_gap_remaining: true,
+    };
+    assert_eq!(
+        format!("{outcome:?}"),
+        "Detached { events: 128, historical_gap_remaining: true }"
+    );
+}
+
+#[test]
+fn live_tail_refresh_invalid_and_unavailable_rooms_fail_coarsely() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime should build");
+
+    runtime.block_on(async {
+        let persistable = PersistableMatrixSession::from_json(
+            r#"{"homeserver":"https://matrix.example.invalid","user_id":"@alice:example.invalid","device_id":"ALICEDEVICE","access_token":"synthetic-access"}"#,
+        )
+        .expect("synthetic session should deserialize");
+        let session = koushi_sdk::restore_session(&persistable)
+            .await
+            .expect("synthetic session should restore");
+        let failed = MatrixLiveTailRefreshResult {
+            outcome: MatrixLiveTailRefreshOutcome::Failed,
+            returned_events: 0,
+            last_projection_batch: None,
+        };
+
+        for room_id in ["not-a-room-id", "!missing-room:example.invalid"] {
+            let result = session
+                .refresh_room_live_tail(
+                    room_id,
+                    64,
+                    7,
+                    11,
+                    MatrixLiveTailRefreshCancellation::new(),
+                )
+                .await;
+
+            assert_eq!(result, failed);
+            let debug = format!("{result:?}");
+            assert!(!debug.contains(room_id));
+            assert!(!debug.contains("synthetic-access"));
+            assert!(!debug.contains("error"));
+        }
+    });
+}
 
 #[test]
 fn public_gap_contract_is_token_free_and_coarse() {
