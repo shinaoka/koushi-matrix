@@ -339,7 +339,7 @@ export type TimelineAnchorRestoreStatus =
   | { Failed: { kind: TimelineFailureKind } };
 
 export interface TimelineGapId {
-  topology_revision: number;
+  topology_revision: string;
   ordinal: number;
 }
 

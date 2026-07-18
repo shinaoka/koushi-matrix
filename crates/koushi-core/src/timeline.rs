@@ -7115,6 +7115,21 @@ mod timeline_gap_repair_tracker_tests {
     }
 
     #[test]
+    fn timeline_gap_id_wire_preserves_full_range_projected_identity() {
+        let id = projected_gap_id(14_695_981_039_346_656_037, 1);
+
+        let encoded = serde_json::to_string(&id).expect("projected gap id serializes");
+        assert_eq!(
+            encoded,
+            r#"{"topology_revision":"14695981039346656037","ordinal":1}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<TimelineGapId>(&encoded).expect("projected gap id deserializes"),
+            id
+        );
+    }
+
+    #[test]
     fn projected_gap_identity_validates_revision_and_ordinal_before_descriptor_lookup() {
         let selected = projected_gap_id(7, 1);
 

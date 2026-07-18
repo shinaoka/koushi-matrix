@@ -6837,6 +6837,38 @@ mod tests {
     }
 
     #[test]
+    fn observe_timeline_viewport_parses_full_range_topology_revision() {
+        let visible_gap_ids: Vec<koushi_core::TimelineGapId> =
+            serde_json::from_value(serde_json::json!([{
+                "topology_revision": "14695981039346656037",
+                "ordinal": 0,
+            }]))
+            .expect("Tauri viewport gap ids parse from their JSON wire shape");
+
+        let command = build_observe_timeline_viewport_command(
+            fake_request_id(42),
+            AccountKey("@alice:example.org".to_owned()),
+            "!room:example.org".to_owned(),
+            None,
+            None,
+            visible_gap_ids,
+            false,
+        );
+
+        let CoreCommand::Timeline(TimelineCommand::ObserveViewport { observation, .. }) = command
+        else {
+            panic!("expected observe viewport command");
+        };
+        assert_eq!(
+            observation.visible_gap_ids,
+            vec![koushi_core::TimelineGapId {
+                topology_revision: 14_695_981_039_346_656_037,
+                ordinal: 0,
+            }]
+        );
+    }
+
+    #[test]
     fn room_management_tauri_commands_wait_for_correlated_core_events() {
         let source = commands_source();
 

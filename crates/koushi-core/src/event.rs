@@ -1267,8 +1267,36 @@ pub struct TimelineViewportObservation {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct TimelineGapId {
+    #[serde(with = "u64_decimal_string")]
     pub topology_revision: u64,
     pub ordinal: u32,
+}
+
+mod u64_decimal_string {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
+
+    pub(super) fn serialize<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&value.to_string())
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<u64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        let parsed = encoded
+            .parse::<u64>()
+            .map_err(|_| D::Error::custom("expected a canonical unsigned decimal string"))?;
+        if parsed.to_string() != encoded {
+            return Err(D::Error::custom(
+                "expected a canonical unsigned decimal string",
+            ));
+        }
+        Ok(parsed)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2317,6 +2345,45 @@ impl fmt::Debug for SearchResultItem {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    const FULL_RANGE_TOPOLOGY_REVISION: u64 = 14_695_981_039_346_656_037;
+
+    #[test]
+    fn timeline_gap_id_wire_serializes_and_deserializes_full_range_revision() {
+        let gap_id = TimelineGapId {
+            topology_revision: FULL_RANGE_TOPOLOGY_REVISION,
+            ordinal: 0,
+        };
+
+        let encoded = serde_json::to_value(gap_id).expect("timeline gap id serializes");
+        assert_eq!(
+            encoded,
+            json!({
+                "topology_revision": "14695981039346656037",
+                "ordinal": 0,
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<TimelineGapId>(encoded)
+                .expect("canonical decimal-string topology revision deserializes"),
+            gap_id
+        );
+    }
+
+    #[test]
+    fn timeline_gap_id_wire_rejects_noncanonical_revision_encodings() {
+        for encoded in [
+            r#"{"topology_revision":14695981039346656037,"ordinal":0}"#,
+            r#"{"topology_revision":"+14695981039346656037","ordinal":0}"#,
+            r#"{"topology_revision":" 14695981039346656037","ordinal":0}"#,
+            r#"{"topology_revision":"014695981039346656037","ordinal":0}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<TimelineGapId>(encoded).is_err(),
+                "noncanonical topology revision must be rejected: {encoded}"
+            );
+        }
+    }
 
     fn fake_rid(sequence: u64) -> RequestId {
         RequestId {

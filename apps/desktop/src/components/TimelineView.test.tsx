@@ -1126,7 +1126,7 @@ describe("TimelineView", () => {
   });
 
   it.each(["rootEvent", "latestReply"] as const)(
-    "reports a visible persisted gap without visible events in %s order",
+    "reports a full-range topology revision for a visible persisted gap in %s order",
     async (threadRootOrder) => {
       let emit: (payload: CoreEventPayload) => void = () => undefined;
       const observeViewport = vi.fn().mockResolvedValue(undefined);
@@ -1214,7 +1214,10 @@ describe("TimelineView", () => {
                 actor_generation: 0,
                 generation: 3,
                 positions: [
-                  { id: { topology_revision: 7, ordinal: 0 }, before_item_index: 2 }
+                  {
+                    id: { topology_revision: "14695981039346656037", ordinal: 0 },
+                    before_item_index: 2
+                  }
                 ]
               }
             }
@@ -1230,12 +1233,12 @@ describe("TimelineView", () => {
             "!room:example.invalid",
             null,
             null,
-            [{ topology_revision: 7, ordinal: 0 }],
+            [{ topology_revision: "14695981039346656037", ordinal: 0 }],
             false
           );
         });
         const gap = screen.getByTestId("timeline-gap-row");
-        expect(gap.dataset["gapTopologyRevision"]).toBe("7");
+        expect(gap.dataset["gapTopologyRevision"]).toBe("14695981039346656037");
         expect(gap.dataset["gapOrdinal"]).toBe("0");
       } finally {
         rectSpy.mockRestore();
@@ -6742,7 +6745,7 @@ describe("TimelineView", () => {
             actor_generation: 0,
             generation: 3,
             positions: [
-              { id: { topology_revision: 7, ordinal: 0 }, before_item_index: 1 }
+              { id: { topology_revision: "7", ordinal: 0 }, before_item_index: 1 }
             ]
           }
         }
@@ -6806,7 +6809,7 @@ describe("TimelineView", () => {
             actor_generation: 1,
             generation: 3,
             positions: [
-              { id: { topology_revision: 7, ordinal: 0 }, before_item_index: 2 }
+              { id: { topology_revision: "7", ordinal: 0 }, before_item_index: 2 }
             ]
           }
         }

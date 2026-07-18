@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vitest";
 
+import coreEventsContract from "./coreEvents.generated.json";
+
 import {
   focusedTimelineKey,
   roomTimelineKey,
@@ -99,8 +101,32 @@ function materialRowIds(rows: ReturnType<typeof projectTimelineDisplayRows>) {
 }
 
 describe("timeline display projection", () => {
+  test("preserves a full-range topology revision from the checked-in wire artifact", () => {
+    const gapId =
+      coreEventsContract.timelineGapPositionsUpdated.event.GapPositionsUpdated.positions[0].id;
+
+    expect(gapId.topology_revision).toBe("14695981039346656037");
+
+    const canonical = insertTimelineGapItems(
+      [event("$before", 100), event("$after", 200)],
+      [{ id: gapId, before_item_index: 1 }],
+      9
+    );
+    const rows = projectTimelineDisplayRows(canonical, ROOM_KEY, ROOT_EVENT);
+
+    expect(rows.map((row) => row.row_id)).toEqual([
+      "$before",
+      "syn:timeline-gap-9-14695981039346656037-0",
+      "$after"
+    ]);
+    expect(rows[1]?.gap_id).toEqual({
+      topology_revision: "14695981039346656037",
+      ordinal: 0
+    });
+  });
+
   test("carries a projected persisted gap identity into only the synthetic gap row", () => {
-    const gapId = { topology_revision: 7, ordinal: 1 };
+    const gapId = { topology_revision: "7", ordinal: 1 };
     const gapPosition: TimelineGapPosition = {
       id: gapId,
       before_item_index: 1

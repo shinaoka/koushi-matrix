@@ -2720,7 +2720,7 @@ mod tests {
                 generation: 4,
                 positions: vec![TimelineGapPosition {
                     id: TimelineGapId {
-                        topology_revision: 7,
+                        topology_revision: 14_695_981_039_346_656_037,
                         ordinal: 0,
                     },
                     before_item_index: 2,

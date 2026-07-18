@@ -573,6 +573,27 @@ function findTimelineEventNode(
   );
 }
 
+const CANONICAL_UNSIGNED_DECIMAL = /^(?:0|[1-9][0-9]*)$/;
+const MAX_U32 = 4_294_967_295;
+
+function isCanonicalUnsignedDecimal(value: string | undefined): value is string {
+  return value !== undefined && CANONICAL_UNSIGNED_DECIMAL.test(value);
+}
+
+function parseCanonicalU32(value: string | undefined): number | null {
+  if (!isCanonicalUnsignedDecimal(value)) {
+    return null;
+  }
+  let parsed = 0;
+  for (const digit of value) {
+    parsed = parsed * 10 + digit.charCodeAt(0) - "0".charCodeAt(0);
+    if (parsed > MAX_U32) {
+      return null;
+    }
+  }
+  return parsed;
+}
+
 function visibleTimelineViewportFacts(container: HTMLElement): {
   firstVisibleEventId: string | null;
   lastVisibleEventId: string | null;
@@ -604,14 +625,9 @@ function visibleTimelineViewportFacts(container: HTMLElement): {
     if (rect.bottom <= containerRect.top || rect.top >= containerRect.bottom) {
       continue;
     }
-    const topologyRevision = Number(node.dataset["gapTopologyRevision"]);
-    const ordinal = Number(node.dataset["gapOrdinal"]);
-    if (
-      !Number.isSafeInteger(topologyRevision) ||
-      topologyRevision < 0 ||
-      !Number.isSafeInteger(ordinal) ||
-      ordinal < 0
-    ) {
+    const topologyRevision = node.dataset["gapTopologyRevision"];
+    const ordinal = parseCanonicalU32(node.dataset["gapOrdinal"]);
+    if (!isCanonicalUnsignedDecimal(topologyRevision) || ordinal === null) {
       continue;
     }
     const signature = `${topologyRevision}\u0000${ordinal}`;
