@@ -1,5 +1,11 @@
 # Active Live-Tail Freshness Design
 
+> **Superseded on 2026-07-18:** The token-free live-tail freshness mechanism
+> remains useful, but the historical-gap follow-up in this document assumes
+> compatible Core and UI index spaces and a viable automatic repair path.
+> Production evidence disproved both assumptions. The replacement design is
+> [Canonical Timeline Projection and Demand-Driven Gap Repair](./2026-07-18-canonical-timeline-gap-repair-design.md).
+
 **Date:** 2026-07-17
 
 ## Problem
