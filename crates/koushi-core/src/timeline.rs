@@ -6397,6 +6397,71 @@ fn timeline_gap_repair_made_progress(outcome: &MatrixTimelineGapRepairOutcome) -
     }
 }
 
+fn record_timeline_gap_repair_attempt(
+    admission: TimelineGapAttemptAdmission,
+    demand_revision: u64,
+) {
+    koushi_diagnostics::record_and_stderr(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "core.timeline_gap_repair",
+            "attempt_admitted",
+        )
+        .field(DiagnosticField::count(
+            "attempt_number",
+            admission.attempt_number,
+        ))
+        .field(DiagnosticField::token(
+            "reset_reason",
+            admission.reason.as_str(),
+        ))
+        .field(DiagnosticField::boolean(
+            "topology_changed",
+            admission.topology_changed,
+        ))
+        .field(DiagnosticField::boolean(
+            "ordinal_changed",
+            admission.ordinal_changed,
+        ))
+        .field(DiagnosticField::boolean(
+            "demand_changed",
+            admission.demand_changed,
+        ))
+        .field(DiagnosticField::count("demand_revision", demand_revision)),
+    );
+}
+
+fn record_timeline_gap_repair_budget(
+    attempt_number: u64,
+    demand_revision: u64,
+    consecutive_no_progress_batches: u32,
+    cached_chunks_loaded: usize,
+) {
+    let budget_remaining =
+        MAX_TIMELINE_GAP_REPAIR_BATCHES.saturating_sub(consecutive_no_progress_batches);
+    koushi_diagnostics::record_and_stderr(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "core.timeline_gap_repair",
+            "budget_updated",
+        )
+        .field(DiagnosticField::count("attempt_number", attempt_number))
+        .field(DiagnosticField::count("demand_revision", demand_revision))
+        .field(DiagnosticField::count(
+            "consecutive_no_progress_batches",
+            consecutive_no_progress_batches.into(),
+        ))
+        .field(DiagnosticField::count(
+            "budget_remaining",
+            budget_remaining.into(),
+        ))
+        .field(DiagnosticField::count(
+            "cached_chunks_loaded",
+            cached_chunks_loaded.try_into().unwrap_or(u64::MAX),
+        )),
+    );
+}
+
 fn checkpoint_is_strictly_newer(
     incoming: &MatrixRoomSubscriptionCheckpoint,
     existing: &MatrixRoomSubscriptionCheckpoint,
@@ -6703,6 +6768,34 @@ fn rendered_live_edge_target(items: &[TimelineItem]) -> Option<String> {
     })
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TimelineGapAttemptResetReason {
+    Initial,
+    Topology,
+    Ordinal,
+    Demand,
+}
+
+impl TimelineGapAttemptResetReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Initial => "initial",
+            Self::Topology => "topology",
+            Self::Ordinal => "ordinal",
+            Self::Demand => "demand",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TimelineGapAttemptAdmission {
+    attempt_number: u64,
+    reason: TimelineGapAttemptResetReason,
+    topology_changed: bool,
+    ordinal_changed: bool,
+    demand_changed: bool,
+}
+
 #[derive(Default)]
 struct TimelineGapRepairTracker {
     next_serial: u64,
@@ -6712,6 +6805,7 @@ struct TimelineGapRepairTracker {
     gap_count: u32,
     attempt_gap_id: Option<TimelineGapId>,
     attempt_demand_revision: Option<u64>,
+    attempt_number: u64,
     demand_revision: u64,
     batches_processed: u32,
     consecutive_no_progress_batches: u32,
@@ -6897,18 +6991,47 @@ impl TimelineGapRepairTracker {
         true
     }
 
-    fn admit_gap_attempt(&mut self, id: TimelineGapId, demand_revision: u64) -> bool {
+    fn admit_gap_attempt(
+        &mut self,
+        id: TimelineGapId,
+        demand_revision: u64,
+    ) -> Option<TimelineGapAttemptAdmission> {
         if self.attempt_gap_id == Some(id) && self.attempt_demand_revision == Some(demand_revision)
         {
-            return false;
+            return None;
         }
+        let topology_changed = self
+            .attempt_gap_id
+            .is_some_and(|previous| previous.topology_revision != id.topology_revision);
+        let ordinal_changed = self
+            .attempt_gap_id
+            .is_some_and(|previous| previous.ordinal != id.ordinal);
+        let demand_changed = self
+            .attempt_demand_revision
+            .is_some_and(|previous| previous != demand_revision);
+        let reason = if self.attempt_gap_id.is_none() {
+            TimelineGapAttemptResetReason::Initial
+        } else if topology_changed {
+            TimelineGapAttemptResetReason::Topology
+        } else if ordinal_changed {
+            TimelineGapAttemptResetReason::Ordinal
+        } else {
+            TimelineGapAttemptResetReason::Demand
+        };
+        self.attempt_number = self.attempt_number.saturating_add(1);
         self.attempt_gap_id = Some(id);
         self.attempt_demand_revision = Some(demand_revision);
         self.batches_processed = 0;
         self.consecutive_no_progress_batches = 0;
         self.live_edge_batches_processed = 0;
         self.last_live_edge_selection = None;
-        true
+        Some(TimelineGapAttemptAdmission {
+            attempt_number: self.attempt_number,
+            reason,
+            topology_changed,
+            ordinal_changed,
+            demand_changed,
+        })
     }
 
     fn record_batch(&mut self, trigger: TimelineGapRepairTrigger) -> Option<u32> {
@@ -9327,7 +9450,7 @@ mod timeline_gap_repair_tracker_tests {
         let mut tracker = TimelineGapRepairTracker::default();
         let id = projected_gap_id(7, 1);
         let demand_revision = 11;
-        assert!(tracker.admit_gap_attempt(id, demand_revision));
+        assert!(tracker.admit_gap_attempt(id, demand_revision).is_some());
 
         for expected in 1..=MAX_TIMELINE_GAP_REPAIR_BATCHES + 1 {
             let outcome = MatrixTimelineGapRepairOutcome::Deferred {
@@ -9354,11 +9477,106 @@ mod timeline_gap_repair_tracker_tests {
     }
 
     #[test]
+    fn gap_repair_attempt_diagnostics_classify_attempt_resets() {
+        let mut tracker = TimelineGapRepairTracker::default();
+
+        let initial = tracker
+            .admit_gap_attempt(projected_gap_id(7, 1), 11)
+            .expect("initial gap attempt is admitted");
+        assert_eq!(initial.attempt_number, 1);
+        assert_eq!(initial.reason, TimelineGapAttemptResetReason::Initial);
+        assert!(!initial.topology_changed);
+        assert!(!initial.ordinal_changed);
+        assert!(!initial.demand_changed);
+        assert_eq!(initial.reason.as_str(), "initial");
+
+        let topology = tracker
+            .admit_gap_attempt(projected_gap_id(8, 1), 11)
+            .expect("topology change is admitted");
+        assert_eq!(topology.attempt_number, 2);
+        assert_eq!(topology.reason, TimelineGapAttemptResetReason::Topology);
+        assert!(topology.topology_changed);
+        assert!(!topology.ordinal_changed);
+        assert!(!topology.demand_changed);
+        assert_eq!(topology.reason.as_str(), "topology");
+
+        let ordinal = tracker
+            .admit_gap_attempt(projected_gap_id(8, 2), 11)
+            .expect("ordinal change is admitted");
+        assert_eq!(ordinal.attempt_number, 3);
+        assert_eq!(ordinal.reason, TimelineGapAttemptResetReason::Ordinal);
+        assert!(!ordinal.topology_changed);
+        assert!(ordinal.ordinal_changed);
+        assert!(!ordinal.demand_changed);
+        assert_eq!(ordinal.reason.as_str(), "ordinal");
+
+        let demand = tracker
+            .admit_gap_attempt(projected_gap_id(8, 2), 12)
+            .expect("explicit demand change is admitted");
+        assert_eq!(demand.attempt_number, 4);
+        assert_eq!(demand.reason, TimelineGapAttemptResetReason::Demand);
+        assert!(!demand.topology_changed);
+        assert!(!demand.ordinal_changed);
+        assert!(demand.demand_changed);
+        assert_eq!(demand.reason.as_str(), "demand");
+
+        assert!(
+            tracker
+                .admit_gap_attempt(projected_gap_id(8, 2), 12)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn gap_repair_attempt_diagnostics_source_contract_is_privacy_safe() {
+        let source = include_str!("timeline.rs");
+        let diagnostics = source
+            .split_once("fn record_timeline_gap_repair_attempt(")
+            .map(|(_, source)| source)
+            .expect("attempt diagnostic must exist")
+            .split("fn checkpoint_is_strictly_newer(")
+            .next()
+            .expect("checkpoint helper must follow gap diagnostics");
+
+        for field in [
+            "attempt_number",
+            "reset_reason",
+            "topology_changed",
+            "ordinal_changed",
+            "demand_changed",
+            "demand_revision",
+            "consecutive_no_progress_batches",
+            "budget_remaining",
+            "cached_chunks_loaded",
+        ] {
+            assert!(
+                diagnostics.contains(&format!("\"{field}\"")),
+                "missing diagnostic field {field}"
+            );
+        }
+        for forbidden in [
+            "room_id",
+            "event_id",
+            "descriptor",
+            "token",
+            "message",
+            "raw_error",
+            "gap_ordinal",
+            "topology_revision",
+        ] {
+            assert!(
+                !diagnostics.contains(&format!("\"{forbidden}\"")),
+                "diagnostic source contains forbidden field {forbidden}"
+            );
+        }
+    }
+
+    #[test]
     fn gap_repair_progress_budget_rejects_thirty_third_consecutive_noop() {
         let mut tracker = TimelineGapRepairTracker::default();
         let id = projected_gap_id(7, 1);
         let demand_revision = 11;
-        assert!(tracker.admit_gap_attempt(id, demand_revision));
+        assert!(tracker.admit_gap_attempt(id, demand_revision).is_some());
 
         for expected in 1..=MAX_TIMELINE_GAP_REPAIR_BATCHES {
             let outcome = MatrixTimelineGapRepairOutcome::Deferred {
@@ -9391,7 +9609,7 @@ mod timeline_gap_repair_tracker_tests {
         let mut tracker = TimelineGapRepairTracker::default();
         let id = projected_gap_id(7, 1);
         let demand_revision = 11;
-        assert!(tracker.admit_gap_attempt(id, demand_revision));
+        assert!(tracker.admit_gap_attempt(id, demand_revision).is_some());
 
         for expected in 1..=MAX_TIMELINE_GAP_REPAIR_BATCHES {
             assert_eq!(
@@ -9408,7 +9626,11 @@ mod timeline_gap_repair_tracker_tests {
         assert_eq!(tracker.attempt_gap_id, Some(id));
         assert_eq!(tracker.attempt_demand_revision, Some(demand_revision));
 
-        assert!(tracker.admit_gap_attempt(projected_gap_id(8, 1), demand_revision));
+        assert!(
+            tracker
+                .admit_gap_attempt(projected_gap_id(8, 1), demand_revision)
+                .is_some()
+        );
         tracker.batches_processed = u32::MAX;
         assert_eq!(
             tracker.record_batch(TimelineGapRepairTrigger::Automatic),
@@ -9422,13 +9644,13 @@ mod timeline_gap_repair_tracker_tests {
         let mut tracker = TimelineGapRepairTracker::default();
         let id = projected_gap_id(7, 1);
 
-        assert!(tracker.admit_gap_attempt(id, 11));
+        assert!(tracker.admit_gap_attempt(id, 11).is_some());
         assert_eq!(
             tracker.record_batch(TimelineGapRepairTrigger::Automatic),
             Some(1)
         );
 
-        assert!(!tracker.admit_gap_attempt(id, 11));
+        assert!(tracker.admit_gap_attempt(id, 11).is_none());
         assert_eq!(tracker.attempt_gap_id, Some(id));
         assert_eq!(tracker.batches_processed, 1);
     }
@@ -9439,14 +9661,14 @@ mod timeline_gap_repair_tracker_tests {
         let first = projected_gap_id(7, 1);
         let revised = projected_gap_id(8, 1);
 
-        assert!(tracker.admit_gap_attempt(first, 11));
+        assert!(tracker.admit_gap_attempt(first, 11).is_some());
         assert!(
             tracker
                 .record_batch(TimelineGapRepairTrigger::LiveEdge)
                 .is_some()
         );
 
-        assert!(tracker.admit_gap_attempt(revised, 11));
+        assert!(tracker.admit_gap_attempt(revised, 11).is_some());
         assert_eq!(tracker.attempt_gap_id, Some(revised));
         assert_eq!(tracker.batches_processed, 0);
         assert_eq!(tracker.live_edge_batches_processed, 0);
@@ -9458,14 +9680,14 @@ mod timeline_gap_repair_tracker_tests {
         let first = projected_gap_id(7, 1);
         let another = projected_gap_id(7, 2);
 
-        assert!(tracker.admit_gap_attempt(first, 11));
+        assert!(tracker.admit_gap_attempt(first, 11).is_some());
         assert!(
             tracker
                 .record_batch(TimelineGapRepairTrigger::Automatic)
                 .is_some()
         );
 
-        assert!(tracker.admit_gap_attempt(another, 11));
+        assert!(tracker.admit_gap_attempt(another, 11).is_some());
         assert_eq!(tracker.attempt_gap_id, Some(another));
         assert_eq!(tracker.batches_processed, 0);
     }
@@ -9475,14 +9697,14 @@ mod timeline_gap_repair_tracker_tests {
         let mut tracker = TimelineGapRepairTracker::default();
         let id = projected_gap_id(7, 1);
 
-        assert!(tracker.admit_gap_attempt(id, 11));
+        assert!(tracker.admit_gap_attempt(id, 11).is_some());
         assert!(
             tracker
                 .record_batch(TimelineGapRepairTrigger::Automatic)
                 .is_some()
         );
 
-        assert!(tracker.admit_gap_attempt(id, 12));
+        assert!(tracker.admit_gap_attempt(id, 12).is_some());
         assert_eq!(tracker.attempt_gap_id, Some(id));
         assert_eq!(tracker.batches_processed, 0);
     }
@@ -9494,7 +9716,7 @@ mod timeline_gap_repair_tracker_tests {
         let mut tracker = TimelineGapRepairTracker::default();
         tracker.replace_projected_gaps(projected, Some((5, 10)), &[id]);
         let initial_demand = tracker.begin_explicit_demand();
-        assert!(tracker.admit_gap_attempt(id, initial_demand));
+        assert!(tracker.admit_gap_attempt(id, initial_demand).is_some());
         assert_eq!(
             tracker.record_batch(TimelineGapRepairTrigger::Automatic),
             Some(1)
@@ -9508,7 +9730,7 @@ mod timeline_gap_repair_tracker_tests {
             tracker.evaluate_viewport_wake(Some((5, 10)), &[id]),
             GapRepairViewportWakeDecision::Wake { .. }
         ));
-        assert!(tracker.admit_gap_attempt(id, reselection_demand));
+        assert!(tracker.admit_gap_attempt(id, reselection_demand).is_some());
         assert_eq!(tracker.batches_processed, 0);
     }
 
@@ -9519,7 +9741,7 @@ mod timeline_gap_repair_tracker_tests {
         let mut tracker = TimelineGapRepairTracker::default();
         let initial_demand = tracker.begin_explicit_demand();
         tracker.replace_projected_gaps(projected, None, &[]);
-        assert!(tracker.admit_gap_attempt(id, initial_demand));
+        assert!(tracker.admit_gap_attempt(id, initial_demand).is_some());
         assert_eq!(
             tracker.record_batch(TimelineGapRepairTrigger::Automatic),
             Some(1)
@@ -9537,7 +9759,7 @@ mod timeline_gap_repair_tracker_tests {
         let visible_demand = tracker.demand_revision;
 
         assert_ne!(initial_demand, visible_demand);
-        assert!(tracker.admit_gap_attempt(id, visible_demand));
+        assert!(tracker.admit_gap_attempt(id, visible_demand).is_some());
         assert_eq!(tracker.batches_processed, 0);
         assert!(matches!(
             tracker.evaluate_viewport_wake(None, &[id]),
@@ -11751,8 +11973,12 @@ impl TimelineActor {
                             Some(projected_gap_id(descriptor.topology_revision(), ordinal))
                         });
                         if let Some(id) = selected_gap_id {
-                            self.gap_repair
-                                .admit_gap_attempt(id, self.gap_repair.demand_revision);
+                            let demand_revision = self.gap_repair.demand_revision;
+                            if let Some(admission) =
+                                self.gap_repair.admit_gap_attempt(id, demand_revision)
+                            {
+                                record_timeline_gap_repair_attempt(admission, demand_revision);
+                            }
                         }
                         if matches!(trigger, TimelineGapRepairTrigger::LiveEdge) {
                             if !self.gap_repair.can_start_batch(trigger) {
@@ -12002,6 +12228,14 @@ impl TimelineActor {
         let gap_count = self.gap_repair.gap_count;
         let Ok(result) = result else {
             self.gap_repair.record_batch_error();
+            record_timeline_gap_repair_budget(
+                self.gap_repair.attempt_number,
+                self.gap_repair
+                    .attempt_demand_revision
+                    .unwrap_or(self.gap_repair.demand_revision),
+                self.gap_repair.consecutive_no_progress_batches,
+                0,
+            );
             self.gap_projection_correlation.clear(
                 self.actor_generation,
                 historical_causal_projection_operation(serial),
@@ -12016,6 +12250,24 @@ impl TimelineActor {
             return;
         };
         self.gap_repair.record_batch_outcome(&result.outcome);
+        let cached_chunks_loaded = match &result.outcome {
+            MatrixTimelineGapRepairOutcome::Deferred {
+                cached_chunks_loaded,
+            } => *cached_chunks_loaded,
+            MatrixTimelineGapRepairOutcome::Progress { .. }
+            | MatrixTimelineGapRepairOutcome::BoundariesJoined { .. }
+            | MatrixTimelineGapRepairOutcome::StartReached { .. }
+            | MatrixTimelineGapRepairOutcome::Stale
+            | MatrixTimelineGapRepairOutcome::Failed => 0,
+        };
+        record_timeline_gap_repair_budget(
+            self.gap_repair.attempt_number,
+            self.gap_repair
+                .attempt_demand_revision
+                .unwrap_or(self.gap_repair.demand_revision),
+            self.gap_repair.consecutive_no_progress_batches,
+            cached_chunks_loaded,
+        );
         let batches_processed = self.gap_repair.batches_processed;
         if result.outcome == MatrixTimelineGapRepairOutcome::Failed {
             self.gap_projection_correlation.clear(
