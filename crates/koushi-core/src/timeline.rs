@@ -3461,6 +3461,13 @@ fn ruma_mentions_from_intent(intent: &MentionIntent) -> Option<Mentions> {
 // Individual TimelineActor
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+struct TestGapRepairCompletionPause {
+    reached: oneshot::Sender<()>,
+    release: oneshot::Receiver<()>,
+    forwarded: oneshot::Sender<bool>,
+}
+
 enum TimelineActorMessage {
     RoomSubscriptionCheckpoint(MatrixRoomSubscriptionCheckpoint),
     StartLiveTailRefresh {
@@ -3693,6 +3700,11 @@ enum TimelineActorMessage {
     TestRestoreCausalState(oneshot::Sender<(bool, bool, usize, BTreeSet<CausalProjectionId>)>),
     #[cfg(test)]
     TestFlushRestore(oneshot::Sender<bool>),
+    #[cfg(test)]
+    TestArmGapRepairCompletionPause {
+        pause: TestGapRepairCompletionPause,
+        acknowledged: oneshot::Sender<()>,
+    },
     #[cfg(test)]
     Barrier(oneshot::Sender<()>),
 }
@@ -10204,6 +10216,8 @@ struct TimelineActor {
     gap_work_task: Option<executor::JoinHandle<()>>,
     gap_relay_settlement_task: Option<executor::JoinHandle<()>>,
     gap_render_settlement_task: Option<executor::JoinHandle<()>>,
+    #[cfg(test)]
+    test_gap_repair_completion_pause: Option<TestGapRepairCompletionPause>,
     last_gap_repair_evaluation_diagnostic: Option<GapRepairEvaluationDiagnosticSignature>,
 }
 
@@ -10971,6 +10985,8 @@ impl TimelineActor {
             gap_work_task: None,
             gap_relay_settlement_task: None,
             gap_render_settlement_task: None,
+            #[cfg(test)]
+            test_gap_repair_completion_pause: None,
             last_gap_repair_evaluation_diagnostic: None,
         };
 
@@ -11776,6 +11792,14 @@ impl TimelineActor {
                 let _ = response.send(self.flush_restore_emit_buffer());
             }
             #[cfg(test)]
+            TimelineActorMessage::TestArmGapRepairCompletionPause {
+                pause,
+                acknowledged,
+            } => {
+                self.test_gap_repair_completion_pause = Some(pause);
+                let _ = acknowledged.send(());
+            }
+            #[cfg(test)]
             TimelineActorMessage::Barrier(response) => {
                 let _ = response.send(());
             }
@@ -12363,6 +12387,8 @@ impl TimelineActor {
         let projection_operation = historical_causal_projection_operation(serial);
         self.gap_projection_correlation
             .begin(actor_generation, projection_operation);
+        #[cfg(test)]
+        let completion_pause = self.test_gap_repair_completion_pause.take();
         self.gap_work_task = Some(executor::spawn(async move {
             let mut result = session
                 .repair_room_timeline_gap(
@@ -12401,14 +12427,32 @@ impl TimelineActor {
                     }
                 }
             }
-            let _ = actor_tx
+            #[cfg(test)]
+            let forwarded = if let Some(TestGapRepairCompletionPause {
+                reached,
+                release,
+                forwarded,
+            }) = completion_pause
+            {
+                let _ = reached.send(());
+                let _ = release.await;
+                Some(forwarded)
+            } else {
+                None
+            };
+            let _completion_forwarded = actor_tx
                 .send(TimelineActorMessage::TimelineGapRepairFinished {
                     serial,
                     trigger,
                     repaired_live_edge_fallback,
                     result,
                 })
-                .await;
+                .await
+                .is_ok();
+            #[cfg(test)]
+            if let Some(forwarded) = forwarded {
+                let _ = forwarded.send(_completion_forwarded);
+            }
         }));
     }
 
@@ -26349,77 +26393,294 @@ mod tests {
 
     #[tokio::test]
     async fn gap_repair_room_switch_cancels_completion() {
-        let key = room_key();
-        let gate = Arc::new(TimelineActorGenerationGate::default());
-        let old_generation = gate.activate_after_quiescence(&key).await.generation;
+        use matrix_sdk::{
+            linked_chunk::{ChunkIdentifier, LinkedChunkId, Position, Update},
+            test_utils::mocks::{MatrixMockServer, RoomMessagesResponseTemplate},
+        };
+        use matrix_sdk_base::event_cache::Gap;
+        use matrix_sdk_test::{ALICE, event_factory::EventFactory};
 
-        gate.invalidate_and_quiesce(&key).await;
-        let new_generation = gate.activate_after_quiescence(&key).await.generation;
-
-        assert_ne!(old_generation, new_generation);
-        assert!(
-            gate.try_acquire(&key, old_generation).is_none(),
-            "an old repair completion cannot publish after room replacement"
-        );
-        assert!(gate.try_acquire(&key, new_generation).is_some());
-
-        let source = include_str!("timeline.rs");
-        let unsubscribe = source
-            .split("TimelineCommand::Unsubscribe { request_id, key } => {")
-            .nth(1)
-            .expect("unsubscribe manager arm")
-            .split("TimelineCommand::Paginate")
-            .next()
-            .expect("paginate should follow unsubscribe");
-        let invalidate_offset = unsubscribe
-            .find("self.clear_thread_root_projections_for_room(&key).await")
-            .expect("room unsubscribe must invalidate the actor generation");
-        let remove_offset = unsubscribe
-            .find("self.timelines.remove(&key)")
-            .expect("room unsubscribe must drop the old actor handle");
-        assert!(
-            invalidate_offset < remove_offset,
-            "the generation fence must close before the old actor is dropped"
-        );
-
-        let clear_room = source
-            .split("async fn clear_thread_root_projections_for_room")
-            .nth(1)
-            .expect("room projection cleanup helper")
-            .split("async fn handle_thread_root_projection_completion")
-            .next()
-            .expect("projection completion should follow cleanup");
-        assert!(clear_room.contains(".invalidate_and_quiesce(key)"));
-
-        let handle_drop = source
-            .split("impl Drop for TimelineActorHandle")
-            .nth(1)
-            .expect("actor handle drop contract")
-            .split("struct PrivateMediaEntry")
-            .next()
-            .expect("private media entry should follow actor handle");
-        assert!(
-            handle_drop.contains("self.task.abort()"),
-            "dropping the old subscription must reject an already-queued repair completion"
-        );
-
-        let actor_drop = source
-            .split("impl Drop for TimelineActor {")
-            .nth(1)
-            .expect("timeline actor drop contract")
-            .split("fn backward_pagination_changed_oldest_edge")
-            .next()
-            .expect("pagination helper should follow actor drop");
-        for task in [
-            "self.gap_work_task.take()",
-            "self.gap_relay_settlement_task.take()",
-            "self.gap_render_settlement_task.take()",
-        ] {
-            assert!(
-                actor_drop.contains(task),
-                "room replacement must abort repair work and every continuation path: {task}"
-            );
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = matrix_sdk::ruma::room_id!("!cancel-gap:example.org");
+        let older_id = matrix_sdk::ruma::event_id!("$cancel-older:example.org");
+        let newer_id = matrix_sdk::ruma::event_id!("$cancel-newer:example.org");
+        let missing_id = matrix_sdk::ruma::event_id!("$cancel-missing:example.org");
+        let factory = EventFactory::new().room(room_id).sender(&ALICE);
+        {
+            let store = client
+                .event_cache_store()
+                .lock()
+                .await
+                .expect("cache store");
+            store
+                .as_clean()
+                .expect("clean cache store")
+                .handle_linked_chunk_updates(
+                    LinkedChunkId::Room(room_id),
+                    vec![
+                        Update::NewItemsChunk {
+                            previous: None,
+                            new: ChunkIdentifier::new(0),
+                            next: None,
+                        },
+                        Update::PushItems {
+                            at: Position::new(ChunkIdentifier::new(0), 0),
+                            items: vec![factory.text_msg("older").event_id(older_id).into_event()],
+                        },
+                        Update::NewGapChunk {
+                            previous: Some(ChunkIdentifier::new(0)),
+                            new: ChunkIdentifier::new(1),
+                            next: None,
+                            gap: Gap {
+                                token: "cancel-gap-token".to_owned(),
+                            },
+                        },
+                        Update::NewItemsChunk {
+                            previous: Some(ChunkIdentifier::new(1)),
+                            new: ChunkIdentifier::new(2),
+                            next: None,
+                        },
+                        Update::PushItems {
+                            at: Position::new(ChunkIdentifier::new(2), 0),
+                            items: vec![factory.text_msg("newer").event_id(newer_id).into_event()],
+                        },
+                    ],
+                )
+                .await
+                .expect("seed persisted gap");
         }
+        client
+            .event_cache()
+            .subscribe()
+            .expect("event cache subscribe");
+        server.sync_joined_room(&client, room_id).await;
+        server
+            .mock_room_messages()
+            .match_from("cancel-gap-token")
+            .match_limit(64)
+            .ok(RoomMessagesResponseTemplate::default().events(vec![
+                factory.text_msg("missing").event_id(missing_id),
+                factory.text_msg("older").event_id(older_id),
+            ]))
+            .expect(1)
+            .named("old-actor-real-gap-repair")
+            .mount()
+            .await;
+
+        let session = Arc::new(MatrixClientSession::from_client_for_testing(
+            client,
+            SessionInfo {
+                homeserver: "http://example.invalid".to_owned(),
+                user_id: ALICE.to_string(),
+                device_id: "DEVICE".to_owned(),
+            },
+        ));
+        let key = TimelineKey::room(
+            AccountKey("@cancel-gap:example.org".to_owned()),
+            room_id.to_string(),
+        );
+        let projection_request_id = fake_rid(27_500);
+        let (action_tx, mut action_rx) = mpsc::channel(128);
+        let (event_tx, mut event_rx) = broadcast::channel(128);
+        let (manager_tx, _manager_rx) = mpsc::channel(16);
+        let mut manager = live_tail_test_manager(HashMap::new());
+        manager.session = Some(session);
+        manager.action_tx = action_tx;
+        manager.event_tx = event_tx;
+        manager.msg_tx = manager_tx;
+        manager.test_session_available = false;
+        manager
+            .handle_subscribe(projection_request_id, key.clone(), true)
+            .await;
+
+        let (old_actor_generation, timeline_generation) =
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if let CoreEvent::Timeline(TimelineEvent::InitialItems {
+                        request_id: Some(request_id),
+                        key: emitted_key,
+                        actor_generation,
+                        generation,
+                        ..
+                    }) = event_rx.recv().await.expect("initial actor event")
+                        && request_id == projection_request_id
+                        && emitted_key == key
+                    {
+                        break (actor_generation, generation);
+                    }
+                }
+            })
+            .await
+            .expect("real actor initial projection");
+        let old_actor_tx = manager
+            .timelines
+            .get(&key)
+            .expect("old room actor")
+            .tx
+            .clone();
+
+        let (projection_ack_tx, projection_ack_rx) = oneshot::channel();
+        assert!(
+            manager
+                .timelines
+                .get(&key)
+                .expect("old room actor")
+                .send(TimelineActorMessage::AcknowledgeProjection {
+                    projection_request_id,
+                    generation: timeline_generation,
+                    response: projection_ack_tx,
+                })
+                .await
+        );
+        assert!(
+            projection_ack_rx
+                .await
+                .expect("initial projection acknowledgement")
+        );
+
+        let (reached_tx, reached_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let (forwarded_tx, forwarded_rx) = oneshot::channel();
+        let (armed_tx, armed_rx) = oneshot::channel();
+        assert!(
+            manager
+                .timelines
+                .get(&key)
+                .expect("old room actor")
+                .send(TimelineActorMessage::TestArmGapRepairCompletionPause {
+                    pause: TestGapRepairCompletionPause {
+                        reached: reached_tx,
+                        release: release_rx,
+                        forwarded: forwarded_tx,
+                    },
+                    acknowledged: armed_tx,
+                })
+                .await
+        );
+        armed_rx.await.expect("completion pause armed");
+        assert!(
+            manager
+                .timelines
+                .get(&key)
+                .expect("old room actor")
+                .send(TimelineActorMessage::InspectTimelineGaps {
+                    trigger: TimelineGapRepairTrigger::Manual,
+                })
+                .await
+        );
+
+        let started_generation = tokio::time::timeout(Duration::from_secs(5), async {
+            'started: loop {
+                for action in action_rx.recv().await.expect("gap repair action channel") {
+                    if let AppAction::TimelineGapRepairStarted {
+                        room_id: started_room_id,
+                        generation,
+                        ..
+                    } = action
+                        && started_room_id == room_id.as_str()
+                    {
+                        break 'started generation;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("real SDK gap repair started");
+        tokio::time::timeout(Duration::from_secs(5), reached_rx)
+            .await
+            .expect("real SDK repair reached the session-to-actor completion boundary")
+            .expect("completion pause sender");
+
+        let (old_barrier_tx, old_barrier_rx) = oneshot::channel();
+        assert!(
+            manager
+                .timelines
+                .get(&key)
+                .expect("old room actor")
+                .send(TimelineActorMessage::Barrier(old_barrier_tx))
+                .await
+        );
+        old_barrier_rx.await.expect("old actor pre-switch barrier");
+        while action_rx.try_recv().is_ok() {}
+        while event_rx.try_recv().is_ok() {}
+
+        manager
+            .handle_command(TimelineCommand::Unsubscribe {
+                request_id: fake_rid(27_501),
+                key: key.clone(),
+            })
+            .await;
+        assert!(!manager.timelines.contains_key(&key));
+        let replacement_generation = manager
+            .timeline_actor_generations
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
+        assert_ne!(old_actor_generation, replacement_generation);
+        while action_rx.try_recv().is_ok() {}
+        while event_rx.try_recv().is_ok() {}
+
+        let _ = release_tx.send(());
+        let completion_forwarded = match tokio::time::timeout(Duration::from_secs(1), forwarded_rx)
+            .await
+            .expect("paused repair worker must settle after old actor drop")
+        {
+            Ok(forwarded) => forwarded,
+            Err(_) => false,
+        };
+        let old_actor_closed =
+            tokio::time::timeout(Duration::from_millis(100), old_actor_tx.closed())
+                .await
+                .is_ok();
+        if !old_actor_closed {
+            let (barrier_tx, barrier_rx) = oneshot::channel();
+            if old_actor_tx
+                .send(TimelineActorMessage::Barrier(barrier_tx))
+                .await
+                .is_ok()
+            {
+                let _ = tokio::time::timeout(Duration::from_secs(1), barrier_rx).await;
+            }
+        }
+
+        let mut stale_actions = Vec::new();
+        while let Ok(actions) = action_rx.try_recv() {
+            for action in actions {
+                let label = match action {
+                    AppAction::TimelineGapRepairProgressed { .. } => Some("Progressed"),
+                    AppAction::TimelineGapRepairFailed { .. } => Some("Failed"),
+                    AppAction::TimelineContinuityInspectionStarted { .. } => {
+                        Some("inspection continuation")
+                    }
+                    _ => None,
+                };
+                if let Some(label) = label {
+                    stale_actions.push(label);
+                }
+            }
+        }
+        let mut stale_core_event_count = 0;
+        while event_rx.try_recv().is_ok() {
+            stale_core_event_count += 1;
+        }
+
+        assert!(
+            !completion_forwarded,
+            "the released old-generation repair completion reached its actor mailbox"
+        );
+        assert!(
+            old_actor_closed,
+            "the unsubscribed actor channel stayed open"
+        );
+        assert!(
+            stale_actions.is_empty(),
+            "old generation {old_actor_generation} published reducer work after replacement generation {replacement_generation}: {stale_actions:?}; repair generation {started_generation}"
+        );
+        assert_eq!(
+            stale_core_event_count, 0,
+            "old generation {old_actor_generation} published CoreEvent output after replacement generation {replacement_generation}"
+        );
     }
 
     #[test]
