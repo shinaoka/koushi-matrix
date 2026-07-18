@@ -4287,6 +4287,153 @@ fn record_timeline_gap_repair_evaluation(
     );
 }
 
+fn record_timeline_gap_projection(
+    gap_count: usize,
+    counts: GapBoundaryPresenceCounts,
+    navigation_event_count: usize,
+    foreground_demand_active: bool,
+    foreground_demand_epoch: u64,
+    scheduler_phase: &'static str,
+) {
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "core.timeline_gap_projection",
+            "inspection",
+        )
+        .field(DiagnosticField::count(
+            "gap_count",
+            gap_count.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "projected_count",
+            counts.projected.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "boundary_both_count",
+            counts.both.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "boundary_one_count",
+            counts.one.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "boundary_none_count",
+            counts.none.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "navigation_event_count",
+            navigation_event_count.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::boolean(
+            "foreground_demand_active",
+            foreground_demand_active,
+        ))
+        .field(DiagnosticField::count(
+            "foreground_demand_epoch",
+            foreground_demand_epoch,
+        ))
+        .field(DiagnosticField::token("scheduler_phase", scheduler_phase)),
+    );
+}
+
+fn record_timeline_gap_demand(
+    foreground_demand_epoch: u64,
+    projected_gap_count: usize,
+    visible_gap_count: usize,
+    inspection_requested: bool,
+    reason: &'static str,
+    scheduler_phase: &'static str,
+) {
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "core.timeline_gap_demand",
+            "activate",
+        )
+        .field(DiagnosticField::count(
+            "foreground_demand_epoch",
+            foreground_demand_epoch,
+        ))
+        .field(DiagnosticField::boolean("foreground_demand_active", true))
+        .field(DiagnosticField::count(
+            "projected_gap_count",
+            projected_gap_count.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "visible_gap_count",
+            visible_gap_count.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::boolean(
+            "inspection_requested",
+            inspection_requested,
+        ))
+        .field(DiagnosticField::token("reason", reason))
+        .field(DiagnosticField::token("scheduler_phase", scheduler_phase)),
+    );
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TimelineGapSelectionDiagnostic {
+    trigger: &'static str,
+    decision: &'static str,
+    repair_started: bool,
+    gap_count: usize,
+    projected_gap_count: usize,
+    visible_gap_count: usize,
+    foreground_demand_active: bool,
+    foreground_demand_epoch: u64,
+    has_live_edge_target: bool,
+    scheduler_phase: &'static str,
+}
+
+fn record_timeline_gap_selection(diagnostic: TimelineGapSelectionDiagnostic) {
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "core.timeline_gap_selection",
+            "evaluation",
+        )
+        .field(DiagnosticField::token("trigger", diagnostic.trigger))
+        .field(DiagnosticField::token("decision", diagnostic.decision))
+        .field(DiagnosticField::boolean(
+            "repair_started",
+            diagnostic.repair_started,
+        ))
+        .field(DiagnosticField::count(
+            "gap_count",
+            diagnostic.gap_count.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "projected_gap_count",
+            diagnostic
+                .projected_gap_count
+                .try_into()
+                .unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "visible_gap_count",
+            diagnostic.visible_gap_count.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::boolean(
+            "foreground_demand_active",
+            diagnostic.foreground_demand_active,
+        ))
+        .field(DiagnosticField::count(
+            "foreground_demand_epoch",
+            diagnostic.foreground_demand_epoch,
+        ))
+        .field(DiagnosticField::boolean(
+            "has_live_edge_target",
+            diagnostic.has_live_edge_target,
+        ))
+        .field(DiagnosticField::token(
+            "scheduler_phase",
+            diagnostic.scheduler_phase,
+        )),
+    );
+}
+
 fn trace_timeline_actor_operation(
     stage: &str,
     kind: &str,
@@ -6631,6 +6778,33 @@ fn projected_gap_insertion_index(
     newer_position.or_else(|| older_position.map(|index| index.saturating_add(1)))
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct GapBoundaryPresenceCounts {
+    both: usize,
+    one: usize,
+    none: usize,
+    projected: usize,
+}
+
+fn summarize_gap_boundary_presence(
+    boundary_presence: impl IntoIterator<Item = (bool, bool)>,
+) -> GapBoundaryPresenceCounts {
+    boundary_presence.into_iter().fold(
+        GapBoundaryPresenceCounts::default(),
+        |mut counts, (newer_present, older_present)| {
+            match (newer_present, older_present) {
+                (true, true) => counts.both += 1,
+                (true, false) | (false, true) => counts.one += 1,
+                (false, false) => counts.none += 1,
+            }
+            if newer_present || older_present {
+                counts.projected += 1;
+            }
+            counts
+        },
+    )
+}
+
 fn projected_gap_id(topology_revision: u64, ordinal: usize) -> TimelineGapId {
     TimelineGapId {
         topology_revision,
@@ -6770,6 +6944,45 @@ enum GapRepairSelection {
     DirectCommittedResponse,
     LiveEdgeFallback { ordinal: usize },
     ManualFallback { ordinal: usize },
+}
+
+fn gap_selection_diagnostic_decision(
+    selection: GapRepairSelection,
+    projected_candidate: Option<ProjectedGapCandidate>,
+    foreground_demand_active: bool,
+    gap_count: usize,
+    projected_gap_count: usize,
+) -> &'static str {
+    if let GapRepairSelection::Projected { id } = selection {
+        return match projected_candidate.filter(|candidate| candidate.id == id) {
+            Some(ProjectedGapCandidate {
+                relation: ProjectedGapRelation::ExplicitVisible,
+                ..
+            }) => "explicit_visible",
+            Some(ProjectedGapCandidate {
+                relation: ProjectedGapRelation::IntersectsViewport,
+                ..
+            }) => "viewport",
+            Some(ProjectedGapCandidate {
+                relation: ProjectedGapRelation::NearestLiveEdge,
+                ..
+            }) => "nearest_live_edge",
+            None => "blocked",
+        };
+    }
+    if matches!(
+        selection,
+        GapRepairSelection::DirectCommittedResponse
+            | GapRepairSelection::LiveEdgeFallback { .. }
+            | GapRepairSelection::ManualFallback { .. }
+    ) {
+        return "nearest_live_edge";
+    }
+    if foreground_demand_active && gap_count > 0 && projected_gap_count == 0 {
+        "foreground_unlocated"
+    } else {
+        "blocked"
+    }
 }
 
 fn select_gap_repair_candidate(
@@ -7331,6 +7544,116 @@ mod timeline_gap_repair_tracker_tests {
         assert!(projected_gap_identity_matches_descriptor(selected, 1, 7));
         assert!(!projected_gap_identity_matches_descriptor(selected, 1, 8));
         assert!(!projected_gap_identity_matches_descriptor(selected, 0, 7));
+    }
+
+    #[test]
+    fn gap_projection_counts_unlocated_sdk_descriptors() {
+        let counts = summarize_gap_boundary_presence([
+            (false, false),
+            (false, false),
+            (false, false),
+            (false, false),
+        ]);
+
+        assert_eq!(
+            counts,
+            GapBoundaryPresenceCounts {
+                both: 0,
+                one: 0,
+                none: 4,
+                projected: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn foreground_unlocated_selection_is_distinguished_from_blocked_selection() {
+        assert_eq!(
+            gap_selection_diagnostic_decision(GapRepairSelection::None, None, true, 4, 0,),
+            "foreground_unlocated"
+        );
+        assert_eq!(
+            gap_selection_diagnostic_decision(GapRepairSelection::None, None, false, 4, 0,),
+            "blocked"
+        );
+    }
+
+    #[test]
+    fn projected_selection_diagnostic_preserves_candidate_relation() {
+        let id = projected_gap_id(7, 1);
+        for (relation, expected) in [
+            (ProjectedGapRelation::ExplicitVisible, "explicit_visible"),
+            (ProjectedGapRelation::IntersectsViewport, "viewport"),
+            (ProjectedGapRelation::NearestLiveEdge, "nearest_live_edge"),
+        ] {
+            assert_eq!(
+                gap_selection_diagnostic_decision(
+                    GapRepairSelection::Projected { id },
+                    Some(ProjectedGapCandidate { id, relation }),
+                    true,
+                    1,
+                    1,
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn unlocated_gap_diagnostics_are_private_safe() {
+        record_timeline_gap_projection(
+            4,
+            GapBoundaryPresenceCounts {
+                both: 0,
+                one: 0,
+                none: 4,
+                projected: 0,
+            },
+            19,
+            true,
+            3,
+            "idle",
+        );
+        record_timeline_gap_demand(3, 0, 0, false, "room_selected", "idle");
+        record_timeline_gap_selection(TimelineGapSelectionDiagnostic {
+            trigger: "cache_gap",
+            decision: "foreground_unlocated",
+            repair_started: false,
+            gap_count: 4,
+            projected_gap_count: 0,
+            visible_gap_count: 0,
+            foreground_demand_active: true,
+            foreground_demand_epoch: 3,
+            has_live_edge_target: false,
+            scheduler_phase: "idle",
+        });
+
+        let snapshot = koushi_diagnostics::snapshot();
+        for source in [
+            "core.timeline_gap_projection",
+            "core.timeline_gap_demand",
+            "core.timeline_gap_selection",
+        ] {
+            let event = &snapshot
+                .records
+                .iter()
+                .rev()
+                .find(|record| record.event.source == source)
+                .expect("new gap diagnostic")
+                .event;
+            let debug = format!("{event:?}");
+            for forbidden in [
+                "room_id",
+                "event_id",
+                "user_id",
+                "gap_id",
+                "transaction_id",
+                "message",
+                "ordinal",
+            ] {
+                assert!(!debug.contains(forbidden), "{source} leaked {forbidden}");
+            }
+        }
     }
 
     #[test]
@@ -10219,6 +10542,9 @@ struct TimelineActor {
     #[cfg(test)]
     test_gap_repair_completion_pause: Option<TestGapRepairCompletionPause>,
     last_gap_repair_evaluation_diagnostic: Option<GapRepairEvaluationDiagnosticSignature>,
+    /// Diagnostic-only evidence that this actor received foreground repair demand.
+    /// It deliberately does not affect repair admission or actor lifecycle.
+    foreground_gap_demand_active: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -10988,6 +11314,7 @@ impl TimelineActor {
             #[cfg(test)]
             test_gap_repair_completion_pause: None,
             last_gap_repair_evaluation_diagnostic: None,
+            foreground_gap_demand_active: false,
         };
 
         actor
@@ -11478,8 +11805,23 @@ impl TimelineActor {
                 }
             }
             TimelineActorMessage::BeginGapRepairDemand => {
-                self.gap_repair.begin_explicit_demand();
-                if !self.viewport_observation.visible_gap_ids.is_empty() {
+                let reason = if self.foreground_gap_demand_active {
+                    "room_reselected"
+                } else {
+                    "room_selected"
+                };
+                let foreground_demand_epoch = self.gap_repair.begin_explicit_demand();
+                self.foreground_gap_demand_active = true;
+                let inspection_requested = !self.viewport_observation.visible_gap_ids.is_empty();
+                record_timeline_gap_demand(
+                    foreground_demand_epoch,
+                    self.gap_repair.projected_gaps.len(),
+                    self.viewport_observation.visible_gap_ids.len(),
+                    inspection_requested,
+                    reason,
+                    self.gap_repair_scheduler_phase(),
+                );
+                if inspection_requested {
                     self.request_timeline_gap_inspection(TimelineGapRepairTrigger::Automatic)
                         .await;
                 }
@@ -11845,6 +12187,28 @@ impl TimelineActor {
         }
     }
 
+    fn record_gap_selection_diagnostic(
+        &self,
+        trigger: TimelineGapRepairTrigger,
+        decision: &'static str,
+        repair_started: bool,
+        gap_count: usize,
+        projected_gap_count: usize,
+    ) {
+        record_timeline_gap_selection(TimelineGapSelectionDiagnostic {
+            trigger: timeline_gap_repair_trigger_token(trigger),
+            decision,
+            repair_started,
+            gap_count,
+            projected_gap_count,
+            visible_gap_count: self.viewport_observation.visible_gap_ids.len(),
+            foreground_demand_active: self.foreground_gap_demand_active,
+            foreground_demand_epoch: self.gap_repair.demand_revision,
+            has_live_edge_target: self.gap_repair.has_live_edge_target(),
+            scheduler_phase: self.gap_repair_scheduler_phase(),
+        });
+    }
+
     async fn request_timeline_gap_inspection(&mut self, trigger: TimelineGapRepairTrigger) {
         if !matches!(self.key.kind, TimelineKind::Room { .. }) {
             return;
@@ -12058,6 +12422,18 @@ impl TimelineActor {
                                 self.gap_repair.has_live_edge_target(),
                             )
                         };
+                        let projected_candidate = select_projected_gap_candidate(
+                            &projected_gaps,
+                            viewport_range,
+                            &self.viewport_observation.visible_gap_ids,
+                        );
+                        let selection_decision = gap_selection_diagnostic_decision(
+                            selection,
+                            projected_candidate,
+                            self.foreground_gap_demand_active,
+                            inspection.gaps.len(),
+                            projected_gaps.len(),
+                        );
                         let selected_projected_gap_id = match selection {
                             GapRepairSelection::Projected { id } => Some(id),
                             GapRepairSelection::None
@@ -12067,6 +12443,13 @@ impl TimelineActor {
                         };
                         let (ordinal, outcome, repaired_live_edge_fallback) = match selection {
                             GapRepairSelection::None => {
+                                self.record_gap_selection_diagnostic(
+                                    trigger,
+                                    selection_decision,
+                                    false,
+                                    inspection.gaps.len(),
+                                    projected_gaps.len(),
+                                );
                                 if let Some(checkpoint) = committed_response.as_ref() {
                                     let retry_key = (checkpoint.backend(), checkpoint.generation());
                                     match missing_committed_gap_decision(
@@ -12178,6 +12561,13 @@ impl TimelineActor {
                             let Some(descriptor) =
                                 projected_descriptor.or(fallback_descriptor).cloned()
                             else {
+                                self.record_gap_selection_diagnostic(
+                                    trigger,
+                                    selection_decision,
+                                    false,
+                                    inspection.gaps.len(),
+                                    projected_gaps.len(),
+                                );
                                 self.start_pending_timeline_gap_inspection().await;
                                 self.emit_gap_repair_released_if_idle(serial);
                                 return;
@@ -12205,6 +12595,13 @@ impl TimelineActor {
                         }
                         if matches!(trigger, TimelineGapRepairTrigger::LiveEdge) {
                             if !self.gap_repair.can_start_batch(trigger) {
+                                self.record_gap_selection_diagnostic(
+                                    trigger,
+                                    selection_decision,
+                                    false,
+                                    inspection.gaps.len(),
+                                    projected_gaps.len(),
+                                );
                                 record_timeline_gap_repair(
                                     "selection",
                                     timeline_gap_repair_trigger_token(trigger),
@@ -12225,6 +12622,13 @@ impl TimelineActor {
                                 self.gap_repair.evaluate_live_edge_selection(fingerprint),
                                 LiveEdgeSelectionDecision::NoProgress
                             ) {
+                                self.record_gap_selection_diagnostic(
+                                    trigger,
+                                    selection_decision,
+                                    false,
+                                    inspection.gaps.len(),
+                                    projected_gaps.len(),
+                                );
                                 record_timeline_gap_repair(
                                     "selection",
                                     timeline_gap_repair_trigger_token(trigger),
@@ -12238,6 +12642,13 @@ impl TimelineActor {
                                 return;
                             }
                         }
+                        self.record_gap_selection_diagnostic(
+                            trigger,
+                            selection_decision,
+                            true,
+                            inspection.gaps.len(),
+                            projected_gaps.len(),
+                        );
                         self.start_timeline_gap_repair(
                             trigger,
                             repaired_live_edge_fallback,
@@ -12305,6 +12716,19 @@ impl TimelineActor {
         generation: u64,
         gaps: &[MatrixTimelineGapHandle],
     ) -> Vec<(usize, TimelineGapPosition)> {
+        let boundary_presence = gaps
+            .iter()
+            .map(|gap| {
+                let newer_present = gap
+                    .newer_boundary_event_id()
+                    .is_some_and(|event_id| self.timeline_event_position(event_id).is_some());
+                let older_present = gap
+                    .older_boundary_event_id()
+                    .is_some_and(|event_id| self.timeline_event_position(event_id).is_some());
+                (newer_present, older_present)
+            })
+            .collect::<Vec<_>>();
+        let boundary_counts = summarize_gap_boundary_presence(boundary_presence.iter().copied());
         let projected = gaps
             .iter()
             .enumerate()
@@ -12328,6 +12752,22 @@ impl TimelineActor {
                 )
             })
             .collect::<Vec<_>>();
+        debug_assert_eq!(boundary_counts.projected, projected.len());
+        if !gaps.is_empty() {
+            let navigation_event_count = self
+                .navigation_items
+                .iter()
+                .filter(|item| matches!(&item.id, TimelineItemId::Event { .. }))
+                .count();
+            record_timeline_gap_projection(
+                gaps.len(),
+                boundary_counts,
+                navigation_event_count,
+                self.foreground_gap_demand_active,
+                self.gap_repair.demand_revision,
+                self.gap_repair_scheduler_phase(),
+            );
+        }
         let positions = projected.iter().map(|(_, position)| *position).collect();
         self.emit(CoreEvent::Timeline(TimelineEvent::GapPositionsUpdated {
             key: self.key.clone(),
