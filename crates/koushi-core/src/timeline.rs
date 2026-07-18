@@ -6915,19 +6915,23 @@ impl TimelineGapRepairTracker {
         if !self.can_start_batch(trigger) {
             return None;
         }
-        self.batches_processed += 1;
+        self.batches_processed = self.batches_processed.saturating_add(1);
         if matches!(trigger, TimelineGapRepairTrigger::LiveEdge) {
-            self.live_edge_batches_processed += 1;
+            self.live_edge_batches_processed = self.live_edge_batches_processed.saturating_add(1);
         }
         Some(self.batches_processed)
+    }
+
+    fn record_batch_error(&mut self) {
+        self.consecutive_no_progress_batches =
+            self.consecutive_no_progress_batches.saturating_add(1);
     }
 
     fn record_batch_outcome(&mut self, outcome: &MatrixTimelineGapRepairOutcome) {
         if timeline_gap_repair_made_progress(outcome) {
             self.consecutive_no_progress_batches = 0;
         } else {
-            self.consecutive_no_progress_batches =
-                self.consecutive_no_progress_batches.saturating_add(1);
+            self.record_batch_error();
         }
     }
 
@@ -7481,6 +7485,36 @@ mod timeline_gap_repair_tracker_tests {
         assert!(
             resume_offset < wake_offset,
             "the retry wake must be emitted only after queued scheduler work has had a chance to restart"
+        );
+    }
+
+    #[test]
+    fn gap_repair_sdk_error_budget_records_error_before_resume() {
+        let source = include_str!("timeline.rs");
+        let handler = source
+            .rsplit_once("async fn handle_timeline_gap_repair_finished")
+            .map(|(_, handler)| handler)
+            .expect("gap repair completion handler must exist")
+            .split("async fn finish_pending_gap_projection")
+            .next()
+            .expect("pending projection handler must follow repair completion");
+        let sdk_error_branch = handler
+            .split_once("let Ok(result) = result else {")
+            .map(|(_, branch)| branch)
+            .expect("SDK errors must have an explicit completion branch")
+            .split("self.gap_repair.record_batch_outcome")
+            .next()
+            .expect("successful outcome accounting must follow the SDK error branch");
+        let accounting_offset = sdk_error_branch
+            .find("self.gap_repair.record_batch_error()")
+            .expect("SDK errors must count as no-progress outcomes");
+        let resume_offset = sdk_error_branch
+            .find("emit_gap_repair_failure_and_resume")
+            .expect("SDK errors must release queued scheduler work");
+
+        assert!(
+            accounting_offset < resume_offset,
+            "SDK error accounting must happen before scheduler work resumes"
         );
     }
 
@@ -9350,6 +9384,37 @@ mod timeline_gap_repair_tracker_tests {
             tracker.consecutive_no_progress_batches,
             MAX_TIMELINE_GAP_REPAIR_BATCHES
         );
+    }
+
+    #[test]
+    fn gap_repair_sdk_error_budget_rejects_thirty_third_consecutive_error() {
+        let mut tracker = TimelineGapRepairTracker::default();
+        let id = projected_gap_id(7, 1);
+        let demand_revision = 11;
+        assert!(tracker.admit_gap_attempt(id, demand_revision));
+
+        for expected in 1..=MAX_TIMELINE_GAP_REPAIR_BATCHES {
+            assert_eq!(
+                tracker.record_batch(TimelineGapRepairTrigger::Automatic),
+                Some(expected)
+            );
+            tracker.record_batch_error();
+            assert_eq!(tracker.consecutive_no_progress_batches, expected);
+        }
+        assert_eq!(
+            tracker.record_batch(TimelineGapRepairTrigger::Automatic),
+            None
+        );
+        assert_eq!(tracker.attempt_gap_id, Some(id));
+        assert_eq!(tracker.attempt_demand_revision, Some(demand_revision));
+
+        assert!(tracker.admit_gap_attempt(projected_gap_id(8, 1), demand_revision));
+        tracker.batches_processed = u32::MAX;
+        assert_eq!(
+            tracker.record_batch(TimelineGapRepairTrigger::Automatic),
+            Some(u32::MAX)
+        );
+        assert_eq!(tracker.batches_processed, u32::MAX);
     }
 
     #[test]
@@ -11936,6 +12001,7 @@ impl TimelineActor {
         let room_id = self.key.room_id().to_owned();
         let gap_count = self.gap_repair.gap_count;
         let Ok(result) = result else {
+            self.gap_repair.record_batch_error();
             self.gap_projection_correlation.clear(
                 self.actor_generation,
                 historical_causal_projection_operation(serial),
