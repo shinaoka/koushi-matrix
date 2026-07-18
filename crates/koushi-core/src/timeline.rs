@@ -120,7 +120,7 @@ use crate::event::{
     CoreEvent, LinkPreview, LinkPreviewState, LiveSignalsEvent, PaginationDirection,
     PaginationState, ReactionGroup, ThreadRootProjectionDto, ThreadRootProjectionSourceDto,
     ThreadRootProjectionStateDto, ThreadSummaryDto, TimelineAnchorRestoreStatus, TimelineDiff,
-    TimelineEvent, TimelineGapPosition, TimelineItem, TimelineItemId, TimelineMedia,
+    TimelineEvent, TimelineGapId, TimelineGapPosition, TimelineItem, TimelineItemId, TimelineMedia,
     TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineMessageActions,
     TimelineMessageKind, TimelineMessageSource, TimelineNavigationSnapshot, TimelineNoticeI18n,
     TimelineNoticeI18nKey, TimelineResyncReason, TimelineSendFailureReason, TimelineSendState,
@@ -6506,9 +6506,16 @@ fn projected_gap_insertion_index(
     newer_position.or_else(|| older_position.map(|index| index.saturating_add(1)))
 }
 
+fn projected_gap_id(topology_revision: u64, ordinal: usize) -> TimelineGapId {
+    TimelineGapId {
+        topology_revision,
+        ordinal: ordinal.try_into().unwrap_or(u32::MAX),
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ProjectedGapCandidate {
-    ordinal: usize,
+    id: TimelineGapId,
     relation: ProjectedGapRelation,
 }
 
@@ -6554,15 +6561,15 @@ fn select_projected_gap_candidate(
         projected
             .iter()
             .filter(|(_, position)| (start..=end).contains(&position.before_item_index))
-            .map(|(ordinal, _)| ProjectedGapCandidate {
-                ordinal: *ordinal,
+            .map(|(_, position)| ProjectedGapCandidate {
+                id: position.id,
                 relation: ProjectedGapRelation::IntersectsViewport,
             })
             .next_back()
     });
     in_viewport.or_else(|| {
-        projected.last().map(|(ordinal, _)| ProjectedGapCandidate {
-            ordinal: *ordinal,
+        projected.last().map(|(_, position)| ProjectedGapCandidate {
+            id: position.id,
             relation: ProjectedGapRelation::NearestLiveEdge,
         })
     })
@@ -6583,17 +6590,26 @@ fn evaluate_gap_repair_viewport_wake(
     }
 }
 
-fn select_projected_gap_ordinal(
+fn select_projected_gap_id(
     projected: &[(usize, TimelineGapPosition)],
     viewport_range: Option<(usize, usize)>,
-) -> Option<usize> {
-    select_projected_gap_candidate(projected, viewport_range).map(|candidate| candidate.ordinal)
+) -> Option<TimelineGapId> {
+    select_projected_gap_candidate(projected, viewport_range).map(|candidate| candidate.id)
+}
+
+fn projected_gap_identity_matches_descriptor(
+    id: TimelineGapId,
+    descriptor_ordinal: usize,
+    descriptor_topology_revision: u64,
+) -> bool {
+    usize::try_from(id.ordinal).ok() == Some(descriptor_ordinal)
+        && id.topology_revision == descriptor_topology_revision
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GapRepairSelection {
     None,
-    Projected { ordinal: usize },
+    Projected { id: TimelineGapId },
     DirectCommittedResponse,
     LiveEdgeFallback { ordinal: usize },
     ManualFallback { ordinal: usize },
@@ -6609,8 +6625,8 @@ fn select_gap_repair_candidate(
     if matches!(trigger, TimelineGapRepairTrigger::LiveTailSnapshot) {
         return GapRepairSelection::None;
     }
-    if let Some(ordinal) = select_projected_gap_ordinal(projected, viewport_range) {
-        return GapRepairSelection::Projected { ordinal };
+    if let Some(id) = select_projected_gap_id(projected, viewport_range) {
+        return GapRepairSelection::Projected { id };
     }
     let Some(ordinal) = gap_count.checked_sub(1) else {
         return GapRepairSelection::None;
@@ -6980,6 +6996,17 @@ mod timeline_gap_repair_tracker_tests {
         );
     }
 
+    fn projected_gap_position(
+        topology_revision: u64,
+        ordinal: usize,
+        before_item_index: usize,
+    ) -> TimelineGapPosition {
+        TimelineGapPosition {
+            id: projected_gap_id(topology_revision, ordinal),
+            before_item_index,
+        }
+    }
+
     #[test]
     fn unlocated_gap_has_no_projection_position() {
         assert_eq!(projected_gap_insertion_index(None, None), None);
@@ -6988,64 +7015,59 @@ mod timeline_gap_repair_tracker_tests {
     }
 
     #[test]
+    fn projected_gap_identity_is_stable_only_within_the_same_topology_revision() {
+        let select = |topology_revision| {
+            let projected = [(1, projected_gap_position(topology_revision, 1, 18))];
+            select_projected_gap_candidate(&projected, Some((15, 20)))
+                .expect("the projected gap intersects the viewport")
+        };
+
+        let first = select(7);
+        let repeated = select(7);
+        let revised = select(8);
+
+        assert_eq!(first.id, repeated.id);
+        assert_ne!(first.id, revised.id);
+    }
+
+    #[test]
+    fn projected_gap_identity_validates_revision_and_ordinal_before_descriptor_lookup() {
+        let selected = projected_gap_id(7, 1);
+
+        assert!(projected_gap_identity_matches_descriptor(selected, 1, 7));
+        assert!(!projected_gap_identity_matches_descriptor(selected, 1, 8));
+        assert!(!projected_gap_identity_matches_descriptor(selected, 0, 7));
+    }
+
+    #[test]
     fn automatic_repair_prefers_a_gap_intersecting_the_viewport() {
         let projected = vec![
-            (
-                0,
-                TimelineGapPosition {
-                    ordinal: 0,
-                    before_item_index: 3,
-                },
-            ),
-            (
-                1,
-                TimelineGapPosition {
-                    ordinal: 1,
-                    before_item_index: 18,
-                },
-            ),
-            (
-                2,
-                TimelineGapPosition {
-                    ordinal: 2,
-                    before_item_index: 40,
-                },
-            ),
+            (0, projected_gap_position(7, 0, 3)),
+            (1, projected_gap_position(7, 1, 18)),
+            (2, projected_gap_position(7, 2, 40)),
         ];
         assert_eq!(
-            select_projected_gap_ordinal(&projected, Some((15, 20))),
-            Some(1)
+            select_projected_gap_id(&projected, Some((15, 20))),
+            Some(projected_gap_id(7, 1))
         );
         assert_eq!(
-            select_projected_gap_ordinal(&projected, Some((25, 30))),
-            Some(2)
+            select_projected_gap_id(&projected, Some((25, 30))),
+            Some(projected_gap_id(7, 2))
         );
     }
 
     #[test]
     fn viewport_wake_requests_inspection_when_projected_candidate_changes() {
         let projected = vec![
-            (
-                0,
-                TimelineGapPosition {
-                    ordinal: 0,
-                    before_item_index: 3,
-                },
-            ),
-            (
-                1,
-                TimelineGapPosition {
-                    ordinal: 1,
-                    before_item_index: 18,
-                },
-            ),
+            (0, projected_gap_position(7, 0, 3)),
+            (1, projected_gap_position(7, 1, 18)),
         ];
 
         assert_eq!(
             evaluate_gap_repair_viewport_wake(&projected, Some((15, 20)), None),
             GapRepairViewportWakeDecision::Wake {
                 candidate: ProjectedGapCandidate {
-                    ordinal: 1,
+                    id: projected_gap_id(7, 1),
                     relation: ProjectedGapRelation::IntersectsViewport,
                 },
             }
@@ -7054,15 +7076,9 @@ mod timeline_gap_repair_tracker_tests {
 
     #[test]
     fn viewport_wake_ignores_repeated_observation_for_same_candidate() {
-        let projected = vec![(
-            0,
-            TimelineGapPosition {
-                ordinal: 0,
-                before_item_index: 8,
-            },
-        )];
+        let projected = vec![(0, projected_gap_position(7, 0, 8))];
         let previous = ProjectedGapCandidate {
-            ordinal: 0,
+            id: projected_gap_id(7, 0),
             relation: ProjectedGapRelation::IntersectsViewport,
         };
 
@@ -7077,23 +7093,11 @@ mod timeline_gap_repair_tracker_tests {
     #[test]
     fn viewport_wake_requests_again_when_viewport_selects_another_gap() {
         let projected = vec![
-            (
-                0,
-                TimelineGapPosition {
-                    ordinal: 0,
-                    before_item_index: 3,
-                },
-            ),
-            (
-                1,
-                TimelineGapPosition {
-                    ordinal: 1,
-                    before_item_index: 18,
-                },
-            ),
+            (0, projected_gap_position(7, 0, 3)),
+            (1, projected_gap_position(7, 1, 18)),
         ];
         let previous = ProjectedGapCandidate {
-            ordinal: 1,
+            id: projected_gap_id(7, 1),
             relation: ProjectedGapRelation::IntersectsViewport,
         };
 
@@ -7101,7 +7105,7 @@ mod timeline_gap_repair_tracker_tests {
             evaluate_gap_repair_viewport_wake(&projected, Some((1, 5)), Some(previous)),
             GapRepairViewportWakeDecision::Wake {
                 candidate: ProjectedGapCandidate {
-                    ordinal: 0,
+                    id: projected_gap_id(7, 0),
                     relation: ProjectedGapRelation::IntersectsViewport,
                 },
             }
@@ -7110,13 +7114,7 @@ mod timeline_gap_repair_tracker_tests {
 
     #[test]
     fn viewport_wake_preserves_pending_trigger_while_render_ack_is_outstanding() {
-        let projected = vec![(
-            0,
-            TimelineGapPosition {
-                ordinal: 0,
-                before_item_index: 8,
-            },
-        )];
+        let projected = vec![(0, projected_gap_position(7, 0, 8))];
         let mut tracker = TimelineGapRepairTracker::default();
         tracker.await_projection(TimelineGapRenderFence {
             actor_generation: 9,
@@ -7139,20 +7137,8 @@ mod timeline_gap_repair_tracker_tests {
     #[test]
     fn observe_viewport_wakes_only_after_projected_candidate_changes() {
         let projected = vec![
-            (
-                0,
-                TimelineGapPosition {
-                    ordinal: 0,
-                    before_item_index: 3,
-                },
-            ),
-            (
-                1,
-                TimelineGapPosition {
-                    ordinal: 1,
-                    before_item_index: 18,
-                },
-            ),
+            (0, projected_gap_position(7, 0, 3)),
+            (1, projected_gap_position(7, 1, 18)),
         ];
         let mut tracker = TimelineGapRepairTracker::default();
         tracker.replace_projected_gaps(projected, Some((15, 20)));
@@ -7165,7 +7151,7 @@ mod timeline_gap_repair_tracker_tests {
             tracker.evaluate_viewport_wake(Some((1, 5))),
             GapRepairViewportWakeDecision::Wake {
                 candidate: ProjectedGapCandidate {
-                    ordinal: 0,
+                    id: projected_gap_id(7, 0),
                     relation: ProjectedGapRelation::IntersectsViewport,
                 }
             }
@@ -7210,20 +7196,8 @@ mod timeline_gap_repair_tracker_tests {
     #[test]
     fn gap_repair_wake_is_retained_across_ack_and_inspection_order() {
         let projected = vec![
-            (
-                0,
-                TimelineGapPosition {
-                    ordinal: 0,
-                    before_item_index: 3,
-                },
-            ),
-            (
-                1,
-                TimelineGapPosition {
-                    ordinal: 1,
-                    before_item_index: 18,
-                },
-            ),
+            (0, projected_gap_position(7, 0, 3)),
+            (1, projected_gap_position(7, 1, 18)),
         ];
         let mut tracker = TimelineGapRepairTracker::default();
         tracker.replace_projected_gaps(projected, Some((15, 20)));
@@ -7343,20 +7317,8 @@ mod timeline_gap_repair_tracker_tests {
     #[test]
     fn candidate_wake_queued_during_repair_is_available_after_terminal_release() {
         let projected = vec![
-            (
-                0,
-                TimelineGapPosition {
-                    ordinal: 0,
-                    before_item_index: 3,
-                },
-            ),
-            (
-                1,
-                TimelineGapPosition {
-                    ordinal: 1,
-                    before_item_index: 18,
-                },
-            ),
+            (0, projected_gap_position(7, 0, 3)),
+            (1, projected_gap_position(7, 1, 18)),
         ];
         let mut tracker = TimelineGapRepairTracker::default();
         tracker.replace_projected_gaps(projected, Some((1, 5)));
@@ -7464,13 +7426,7 @@ mod timeline_gap_repair_tracker_tests {
 
     #[test]
     fn live_tail_snapshot_observes_projected_gaps_without_repairing_them() {
-        let projected = vec![(
-            0,
-            TimelineGapPosition {
-                ordinal: 0,
-                before_item_index: 0,
-            },
-        )];
+        let projected = vec![(0, projected_gap_position(7, 0, 0))];
         assert_eq!(
             select_gap_repair_candidate(
                 TimelineGapRepairTrigger::LiveTailSnapshot,
@@ -11123,6 +11079,13 @@ impl TimelineActor {
                                 self.gap_repair.has_live_edge_target(),
                             )
                         };
+                        let projected_gap_id = match selection {
+                            GapRepairSelection::Projected { id } => Some(id),
+                            GapRepairSelection::None
+                            | GapRepairSelection::DirectCommittedResponse
+                            | GapRepairSelection::LiveEdgeFallback { .. }
+                            | GapRepairSelection::ManualFallback { .. } => None,
+                        };
                         let (ordinal, outcome, repaired_live_edge_fallback) = match selection {
                             GapRepairSelection::None => {
                                 if let Some(checkpoint) = committed_response.as_ref() {
@@ -11167,8 +11130,8 @@ impl TimelineActor {
                                 self.emit_gap_repair_released_if_idle(serial);
                                 return;
                             }
-                            GapRepairSelection::Projected { ordinal } => {
-                                (Some(ordinal), "projected", false)
+                            GapRepairSelection::Projected { id } => {
+                                (usize::try_from(id.ordinal).ok(), "projected", false)
                             }
                             GapRepairSelection::DirectCommittedResponse => {
                                 self.missing_committed_response_retry = None;
@@ -11215,9 +11178,26 @@ impl TimelineActor {
                         let descriptor = if let Some(descriptor) = committed_descriptor.take() {
                             descriptor
                         } else {
-                            let Some(descriptor) = ordinal
-                                .and_then(|ordinal| inspection.gaps.get(ordinal))
-                                .cloned()
+                            let projected_descriptor = projected_gap_id.and_then(|id| {
+                                inspection
+                                    .gaps
+                                    .iter()
+                                    .enumerate()
+                                    .find(|(ordinal, descriptor)| {
+                                        projected_gap_identity_matches_descriptor(
+                                            id,
+                                            *ordinal,
+                                            descriptor.topology_revision(),
+                                        )
+                                    })
+                                    .map(|(_, descriptor)| descriptor)
+                            });
+                            let fallback_descriptor = projected_gap_id
+                                .is_none()
+                                .then(|| ordinal.and_then(|ordinal| inspection.gaps.get(ordinal)))
+                                .flatten();
+                            let Some(descriptor) =
+                                projected_descriptor.or(fallback_descriptor).cloned()
                             else {
                                 self.start_pending_timeline_gap_inspection().await;
                                 self.emit_gap_repair_released_if_idle(serial);
@@ -11343,7 +11323,7 @@ impl TimelineActor {
                         (
                             ordinal,
                             TimelineGapPosition {
-                                ordinal: ordinal.try_into().unwrap_or(u32::MAX),
+                                id: projected_gap_id(gap.topology_revision(), ordinal),
                                 before_item_index,
                             },
                         )

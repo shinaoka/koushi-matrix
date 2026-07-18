@@ -338,8 +338,13 @@ export type TimelineAnchorRestoreStatus =
   | "Superseded"
   | { Failed: { kind: TimelineFailureKind } };
 
-export interface TimelineGapPosition {
+export interface TimelineGapId {
+  topology_revision: number;
   ordinal: number;
+}
+
+export interface TimelineGapPosition {
+  id: TimelineGapId;
   before_item_index: number;
 }
 

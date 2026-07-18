@@ -6620,7 +6620,9 @@ describe("TimelineView", () => {
             key: KEY,
             actor_generation: 0,
             generation: 3,
-            positions: [{ ordinal: 0, before_item_index: 1 }]
+            positions: [
+              { id: { topology_revision: 7, ordinal: 0 }, before_item_index: 1 }
+            ]
           }
         }
       });
@@ -6682,7 +6684,9 @@ describe("TimelineView", () => {
             key: KEY,
             actor_generation: 1,
             generation: 3,
-            positions: [{ ordinal: 0, before_item_index: 2 }]
+            positions: [
+              { id: { topology_revision: 7, ordinal: 0 }, before_item_index: 2 }
+            ]
           }
         }
       });

@@ -5,10 +5,14 @@ import {
   roomTimelineKey,
   threadTimelineKey,
   timelineItemDomId,
+  type TimelineGapPosition,
   type TimelineItem
 } from "./coreEvents";
 import type { ThreadRootProjectionDto } from "./coreEvents";
-import { projectTimelineDisplayRows } from "./timelineDisplayProjection";
+import {
+  insertTimelineGapItems,
+  projectTimelineDisplayRows
+} from "./timelineDisplayProjection";
 import type { TimelineThreadRootOrder } from "./types";
 
 const ACCOUNT_KEY = "@projection:example.invalid";
@@ -95,6 +99,28 @@ function materialRowIds(rows: ReturnType<typeof projectTimelineDisplayRows>) {
 }
 
 describe("timeline display projection", () => {
+  test("carries a projected persisted gap identity into only the synthetic gap row", () => {
+    const gapId = { topology_revision: 7, ordinal: 1 };
+    const gapPosition: TimelineGapPosition = {
+      id: gapId,
+      before_item_index: 1
+    };
+    const canonical = insertTimelineGapItems(
+      [event("$before", 100), event("$after", 200)],
+      [gapPosition],
+      9
+    );
+
+    const rows = projectTimelineDisplayRows(canonical, ROOM_KEY, ROOT_EVENT);
+
+    expect(rows.map((row) => row.row_id)).toEqual([
+      "$before",
+      "syn:timeline-gap-9-7-1",
+      "$after"
+    ]);
+    expect(rows.map((row) => row.gap_id)).toEqual([null, gapId, null]);
+  });
+
   test("uses one stable summary-only row while an old root is pending, then replaces it in place", () => {
     const latestReply = reply("$latest", "$old-root", 1_800_000_010_000);
     const canonical = [event("$normal", 1_800_000_000_000), latestReply];

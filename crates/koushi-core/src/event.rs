@@ -1263,9 +1263,15 @@ pub struct TimelineViewportObservation {
     pub at_bottom: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+pub struct TimelineGapId {
+    pub topology_revision: u64,
+    pub ordinal: u32,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TimelineGapPosition {
-    pub ordinal: u32,
+    pub id: TimelineGapId,
     pub before_item_index: usize,
 }
 
