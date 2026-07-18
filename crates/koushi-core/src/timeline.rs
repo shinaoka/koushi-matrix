@@ -26347,6 +26347,81 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn gap_repair_room_switch_cancels_completion() {
+        let key = room_key();
+        let gate = Arc::new(TimelineActorGenerationGate::default());
+        let old_generation = gate.activate_after_quiescence(&key).await.generation;
+
+        gate.invalidate_and_quiesce(&key).await;
+        let new_generation = gate.activate_after_quiescence(&key).await.generation;
+
+        assert_ne!(old_generation, new_generation);
+        assert!(
+            gate.try_acquire(&key, old_generation).is_none(),
+            "an old repair completion cannot publish after room replacement"
+        );
+        assert!(gate.try_acquire(&key, new_generation).is_some());
+
+        let source = include_str!("timeline.rs");
+        let unsubscribe = source
+            .split("TimelineCommand::Unsubscribe { request_id, key } => {")
+            .nth(1)
+            .expect("unsubscribe manager arm")
+            .split("TimelineCommand::Paginate")
+            .next()
+            .expect("paginate should follow unsubscribe");
+        let invalidate_offset = unsubscribe
+            .find("self.clear_thread_root_projections_for_room(&key).await")
+            .expect("room unsubscribe must invalidate the actor generation");
+        let remove_offset = unsubscribe
+            .find("self.timelines.remove(&key)")
+            .expect("room unsubscribe must drop the old actor handle");
+        assert!(
+            invalidate_offset < remove_offset,
+            "the generation fence must close before the old actor is dropped"
+        );
+
+        let clear_room = source
+            .split("async fn clear_thread_root_projections_for_room")
+            .nth(1)
+            .expect("room projection cleanup helper")
+            .split("async fn handle_thread_root_projection_completion")
+            .next()
+            .expect("projection completion should follow cleanup");
+        assert!(clear_room.contains(".invalidate_and_quiesce(key)"));
+
+        let handle_drop = source
+            .split("impl Drop for TimelineActorHandle")
+            .nth(1)
+            .expect("actor handle drop contract")
+            .split("struct PrivateMediaEntry")
+            .next()
+            .expect("private media entry should follow actor handle");
+        assert!(
+            handle_drop.contains("self.task.abort()"),
+            "dropping the old subscription must reject an already-queued repair completion"
+        );
+
+        let actor_drop = source
+            .split("impl Drop for TimelineActor {")
+            .nth(1)
+            .expect("timeline actor drop contract")
+            .split("fn backward_pagination_changed_oldest_edge")
+            .next()
+            .expect("pagination helper should follow actor drop");
+        for task in [
+            "self.gap_work_task.take()",
+            "self.gap_relay_settlement_task.take()",
+            "self.gap_render_settlement_task.take()",
+        ] {
+            assert!(
+                actor_drop.contains(task),
+                "room replacement must abort repair work and every continuation path: {task}"
+            );
+        }
+    }
+
     #[test]
     fn room_unsubscribe_clears_projection_service_before_dropping_the_actor() {
         let source = include_str!("timeline.rs");

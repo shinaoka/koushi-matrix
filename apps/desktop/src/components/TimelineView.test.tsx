@@ -1126,11 +1126,15 @@ describe("TimelineView", () => {
   });
 
   it.each(["rootEvent", "latestReply"] as const)(
-    "reports a full-range topology revision for a visible persisted gap in %s order",
+    "preserves gap identity across thread ordering in %s mode",
     async (threadRootOrder) => {
       let emit: (payload: CoreEventPayload) => void = () => undefined;
       const observeViewport = vi.fn().mockResolvedValue(undefined);
-      const root = {
+      const fullRangeGapId = {
+        topology_revision: "14695981039346656037",
+        ordinal: 0
+      };
+      const rootEvent = {
         ...message("$thread-root:example.invalid", "Thread root"),
         thread_summary: {
           reply_count: 1,
@@ -1141,7 +1145,7 @@ describe("TimelineView", () => {
           latest_timestamp_ms: 1_800_000_010_000
         }
       };
-      const reply = {
+      const latestReply = {
         ...message("$thread-reply:example.invalid", "Standalone thread reply"),
         timestamp_ms: 1_800_000_010_000,
         thread_root: "$thread-root:example.invalid"
@@ -1202,7 +1206,12 @@ describe("TimelineView", () => {
                 request_id: null,
                 key: KEY,
                 generation: 1,
-                items: [message("$before:example.invalid", "Before"), root, reply, message("$after:example.invalid", "After")]
+                items: [
+                  message("$before:example.invalid", "Before"),
+                  rootEvent,
+                  latestReply,
+                  message("$after:example.invalid", "After")
+                ]
               }
             }
           });
@@ -1215,7 +1224,7 @@ describe("TimelineView", () => {
                 generation: 3,
                 positions: [
                   {
-                    id: { topology_revision: "14695981039346656037", ordinal: 0 },
+                    id: fullRangeGapId,
                     before_item_index: 2
                   }
                 ]
@@ -1233,7 +1242,7 @@ describe("TimelineView", () => {
             "!room:example.invalid",
             null,
             null,
-            [{ topology_revision: "14695981039346656037", ordinal: 0 }],
+            [fullRangeGapId],
             false
           );
         });
