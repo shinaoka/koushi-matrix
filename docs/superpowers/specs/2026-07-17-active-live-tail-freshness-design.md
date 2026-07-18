@@ -99,7 +99,9 @@ ordered by the existing room activity/unread ordering where available; FIFO is
 the deterministic fallback.
 
 Historical gaps are not scanned or filled in the background. They are separate
-from live-edge freshness.
+from live-edge freshness. The initially rendered viewport is nevertheless
+explicit user demand: if a gap row is visible when the room opens, Core repairs
+that gap without waiting for a scroll event.
 
 ## Room Switch and Cancellation
 
@@ -139,6 +141,15 @@ Element X model: the application requests ordinary backward pagination and the
 Rust SDK decides whether the next data comes from memory, disk, or a network
 gap.
 
+The final live-tail projection is inspected in two causally separate phases.
+The `LiveTailSnapshot` phase publishes the authoritative gap topology but never
+consumes a historical continuation token. After that snapshot settles, Core
+re-evaluates the current viewport. If a projected gap intersects the initial
+viewport, it queues exactly one ordinary `Automatic` historical-gap repair in
+the historical causal domain. This second phase does not require the viewport's
+first and last event IDs to change. A room switch cancels the queued or network
+phase under the existing historical-pagination rules.
+
 ## Existing Gap Repair Policy
 
 Remove `RepairPersistedLiveEdge` behavior that maps a room-absent checkpoint to
@@ -147,6 +158,12 @@ the last persisted gap ordinal. Room-absent now requests freshness proof.
 Keep exact-response gap repair for an actual limited room update and keep
 viewport-driven repair for a gap projected near the user. Neither path may be
 used as a substitute for proving the live edge.
+
+Publishing a new gap projection must not mark its viewport candidate as already
+handled before a repair-capable inspection has been admitted. An observe-only
+live-tail snapshot may seed the projection, but it must either queue the
+separate viewport repair itself or leave the candidate eligible for the next
+viewport observation.
 
 ## Diagnostics
 
@@ -176,14 +193,19 @@ errors.
    gap precedes them.
 4. **Historical continuation:** scroll into that gap and assert standard
    back-pagination requests and renders the next bounded page.
-5. **Preemption:** block room A's network response, select room B, and assert A
+5. **Initial visible historical gap:** open a room whose current live edge is
+   already fresh but whose initial viewport contains a persisted gap. Assert
+   the live-tail snapshot first publishes the gap without consuming it, then
+   exactly one separate automatic historical repair starts without user
+   scrolling. Assert the gap row disappears after the bounded repair.
+6. **Preemption:** block room A's network response, select room B, and assert A
    is cancelled before B starts. Revisit A and assert it resumes without losing
    committed cache data.
-6. **Commit boundary:** cancel after A's response enters cache commit and assert
+7. **Commit boundary:** cancel after A's response enters cache commit and assert
    persistence and observable publication both complete exactly once.
-7. **Epoch fencing:** a late outcome from an old sync epoch cannot prove or
+8. **Epoch fencing:** a late outcome from an old sync epoch cannot prove or
    project the replacement epoch.
-8. **Privacy:** diagnostic field tests reject identifiers, tokens, bodies, and
+9. **Privacy:** diagnostic field tests reject identifiers, tokens, bodies, and
    raw errors.
 
 ## Rejected Alternatives
@@ -197,4 +219,3 @@ errors.
 - **Application-owned `/context` merge:** can find events after an anchor, but
   unnecessarily exposes merge semantics outside the SDK and fails when no
   reliable anchor is cached.
-
