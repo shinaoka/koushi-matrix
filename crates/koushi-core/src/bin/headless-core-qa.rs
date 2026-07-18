@@ -5815,6 +5815,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
             observation: TimelineViewportObservation {
                 first_visible_event_id: Some(event1_id.clone()),
                 last_visible_event_id: Some(event1_id.clone()),
+                visible_gap_ids: Vec::new(),
                 at_bottom: false,
             },
         }))

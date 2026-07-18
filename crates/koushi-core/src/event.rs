@@ -1260,6 +1260,8 @@ impl fmt::Debug for TimelineDisplayLabelUpdate {
 pub struct TimelineViewportObservation {
     pub first_visible_event_id: Option<String>,
     pub last_visible_event_id: Option<String>,
+    #[serde(default)]
+    pub visible_gap_ids: Vec<TimelineGapId>,
     pub at_bottom: bool,
 }
 

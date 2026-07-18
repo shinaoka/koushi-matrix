@@ -4238,6 +4238,8 @@ fn record_live_catchup_gate(
 fn record_timeline_gap_repair_evaluation(
     decision: &'static str,
     projected_gap_count: usize,
+    visible_gap_count: usize,
+    visible_gap_validated: bool,
     candidate_changed: bool,
     scheduler_phase: &'static str,
 ) {
@@ -4252,6 +4254,14 @@ fn record_timeline_gap_repair_evaluation(
         .field(DiagnosticField::count(
             "projected_gap_count",
             projected_gap_count.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "visible_gap_count",
+            visible_gap_count.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::boolean(
+            "visible_gap_validated",
+            visible_gap_validated,
         ))
         .field(DiagnosticField::boolean(
             "candidate_changed",
@@ -6521,6 +6531,7 @@ struct ProjectedGapCandidate {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProjectedGapRelation {
+    ExplicitVisible,
     IntersectsViewport,
     NearestLiveEdge,
 }
@@ -6528,6 +6539,7 @@ enum ProjectedGapRelation {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GapRepairViewportWakeDecision {
     Wake { candidate: ProjectedGapCandidate },
+    WakeStaleVisibleDemand,
     IdleNoCandidate,
     IdleUnchangedCandidate { candidate: ProjectedGapCandidate },
 }
@@ -6536,8 +6548,17 @@ enum GapRepairViewportWakeDecision {
 struct GapRepairEvaluationDiagnosticSignature {
     decision: &'static str,
     projected_gap_count: usize,
+    visible_gap_count: usize,
+    visible_gap_validated: bool,
     candidate_changed: bool,
     scheduler_phase: &'static str,
+}
+
+fn projected_gaps_contain_id(
+    projected: &[(usize, TimelineGapPosition)],
+    id: TimelineGapId,
+) -> bool {
+    projected.iter().any(|(_, position)| position.id == id)
 }
 
 fn should_record_gap_repair_evaluation(
@@ -6554,7 +6575,18 @@ fn should_record_gap_repair_evaluation(
 fn select_projected_gap_candidate(
     projected: &[(usize, TimelineGapPosition)],
     viewport_range: Option<(usize, usize)>,
+    visible_gap_ids: &[TimelineGapId],
 ) -> Option<ProjectedGapCandidate> {
+    if !visible_gap_ids.is_empty() {
+        return projected
+            .iter()
+            .filter(|(_, position)| visible_gap_ids.contains(&position.id))
+            .map(|(_, position)| ProjectedGapCandidate {
+                id: position.id,
+                relation: ProjectedGapRelation::ExplicitVisible,
+            })
+            .next_back();
+    }
     let in_viewport = viewport_range.and_then(|(first, last)| {
         let start = first.min(last);
         let end = first.max(last).saturating_add(1);
@@ -6578,9 +6610,18 @@ fn select_projected_gap_candidate(
 fn evaluate_gap_repair_viewport_wake(
     projected: &[(usize, TimelineGapPosition)],
     viewport_range: Option<(usize, usize)>,
+    visible_gap_ids: &[TimelineGapId],
     previous: Option<ProjectedGapCandidate>,
 ) -> GapRepairViewportWakeDecision {
-    let Some(candidate) = select_projected_gap_candidate(projected, viewport_range) else {
+    if visible_gap_ids
+        .iter()
+        .any(|visible_id| !projected_gaps_contain_id(projected, *visible_id))
+    {
+        return GapRepairViewportWakeDecision::WakeStaleVisibleDemand;
+    }
+    let Some(candidate) =
+        select_projected_gap_candidate(projected, viewport_range, visible_gap_ids)
+    else {
         return GapRepairViewportWakeDecision::IdleNoCandidate;
     };
     if previous == Some(candidate) {
@@ -6590,11 +6631,12 @@ fn evaluate_gap_repair_viewport_wake(
     }
 }
 
+#[cfg(test)]
 fn select_projected_gap_id(
     projected: &[(usize, TimelineGapPosition)],
     viewport_range: Option<(usize, usize)>,
 ) -> Option<TimelineGapId> {
-    select_projected_gap_candidate(projected, viewport_range).map(|candidate| candidate.id)
+    select_projected_gap_candidate(projected, viewport_range, &[]).map(|candidate| candidate.id)
 }
 
 fn projected_gap_identity_matches_descriptor(
@@ -6619,14 +6661,21 @@ fn select_gap_repair_candidate(
     trigger: TimelineGapRepairTrigger,
     projected: &[(usize, TimelineGapPosition)],
     viewport_range: Option<(usize, usize)>,
+    visible_gap_ids: &[TimelineGapId],
     gap_count: usize,
     has_live_edge_target: bool,
 ) -> GapRepairSelection {
     if matches!(trigger, TimelineGapRepairTrigger::LiveTailSnapshot) {
         return GapRepairSelection::None;
     }
-    if let Some(id) = select_projected_gap_id(projected, viewport_range) {
+    if let Some(candidate) =
+        select_projected_gap_candidate(projected, viewport_range, visible_gap_ids)
+    {
+        let id = candidate.id;
         return GapRepairSelection::Projected { id };
+    }
+    if !visible_gap_ids.is_empty() && matches!(trigger, TimelineGapRepairTrigger::Automatic) {
+        return GapRepairSelection::None;
     }
     let Some(ordinal) = gap_count.checked_sub(1) else {
         return GapRepairSelection::None;
@@ -6699,9 +6748,10 @@ impl TimelineGapRepairTracker {
         &mut self,
         projected_gaps: Vec<(usize, TimelineGapPosition)>,
         viewport_range: Option<(usize, usize)>,
+        visible_gap_ids: &[TimelineGapId],
     ) {
         self.last_projected_candidate =
-            select_projected_gap_candidate(&projected_gaps, viewport_range);
+            select_projected_gap_candidate(&projected_gaps, viewport_range, visible_gap_ids);
         self.projected_gaps = projected_gaps;
     }
 
@@ -6739,10 +6789,12 @@ impl TimelineGapRepairTracker {
     fn evaluate_viewport_wake(
         &mut self,
         viewport_range: Option<(usize, usize)>,
+        visible_gap_ids: &[TimelineGapId],
     ) -> GapRepairViewportWakeDecision {
         let decision = evaluate_gap_repair_viewport_wake(
             &self.projected_gaps,
             viewport_range,
+            visible_gap_ids,
             self.last_projected_candidate,
         );
         self.last_projected_candidate = match decision {
@@ -6750,7 +6802,8 @@ impl TimelineGapRepairTracker {
             | GapRepairViewportWakeDecision::IdleUnchangedCandidate { candidate } => {
                 Some(candidate)
             }
-            GapRepairViewportWakeDecision::IdleNoCandidate => None,
+            GapRepairViewportWakeDecision::WakeStaleVisibleDemand
+            | GapRepairViewportWakeDecision::IdleNoCandidate => None,
         };
         decision
     }
@@ -7018,7 +7071,7 @@ mod timeline_gap_repair_tracker_tests {
     fn projected_gap_identity_is_stable_only_within_the_same_topology_revision() {
         let select = |topology_revision| {
             let projected = [(1, projected_gap_position(topology_revision, 1, 18))];
-            select_projected_gap_candidate(&projected, Some((15, 20)))
+            select_projected_gap_candidate(&projected, Some((15, 20)), &[])
                 .expect("the projected gap intersects the viewport")
         };
 
@@ -7057,6 +7110,87 @@ mod timeline_gap_repair_tracker_tests {
     }
 
     #[test]
+    fn visible_gap_demand_is_preferred_over_inferred_event_bounds() {
+        let projected = vec![
+            (0, projected_gap_position(7, 0, 3)),
+            (1, projected_gap_position(7, 1, 18)),
+        ];
+        let visible_gap_id = projected_gap_id(7, 0);
+
+        assert_eq!(
+            select_gap_repair_candidate(
+                TimelineGapRepairTrigger::Automatic,
+                &projected,
+                Some((15, 20)),
+                &[visible_gap_id],
+                2,
+                false,
+            ),
+            GapRepairSelection::Projected { id: visible_gap_id }
+        );
+    }
+
+    #[test]
+    fn visible_gap_without_event_bounds_wakes_foreground_repair() {
+        let projected = vec![(0, projected_gap_position(7, 0, 3))];
+        let visible_gap_id = projected_gap_id(7, 0);
+
+        assert_eq!(
+            evaluate_gap_repair_viewport_wake(&projected, None, &[visible_gap_id], None,),
+            GapRepairViewportWakeDecision::Wake {
+                candidate: ProjectedGapCandidate {
+                    id: visible_gap_id,
+                    relation: ProjectedGapRelation::ExplicitVisible,
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn stale_visible_gap_is_ignored_and_requests_fresh_inspection() {
+        let projected = vec![(0, projected_gap_position(7, 0, 3))];
+        let stale_visible_gap_id = projected_gap_id(8, 0);
+
+        assert_eq!(
+            evaluate_gap_repair_viewport_wake(
+                &projected,
+                Some((1, 5)),
+                &[stale_visible_gap_id],
+                None,
+            ),
+            GapRepairViewportWakeDecision::WakeStaleVisibleDemand
+        );
+        assert_eq!(
+            select_gap_repair_candidate(
+                TimelineGapRepairTrigger::Automatic,
+                &projected,
+                Some((1, 5)),
+                &[stale_visible_gap_id],
+                1,
+                false,
+            ),
+            GapRepairSelection::None
+        );
+    }
+
+    #[test]
+    fn stale_visible_gap_does_not_suppress_independent_live_edge_fallback() {
+        let projected = vec![(0, projected_gap_position(7, 0, 3))];
+
+        assert_eq!(
+            select_gap_repair_candidate(
+                TimelineGapRepairTrigger::LiveEdge,
+                &projected,
+                Some((1, 5)),
+                &[projected_gap_id(8, 0)],
+                2,
+                true,
+            ),
+            GapRepairSelection::LiveEdgeFallback { ordinal: 1 }
+        );
+    }
+
+    #[test]
     fn viewport_wake_requests_inspection_when_projected_candidate_changes() {
         let projected = vec![
             (0, projected_gap_position(7, 0, 3)),
@@ -7064,7 +7198,7 @@ mod timeline_gap_repair_tracker_tests {
         ];
 
         assert_eq!(
-            evaluate_gap_repair_viewport_wake(&projected, Some((15, 20)), None),
+            evaluate_gap_repair_viewport_wake(&projected, Some((15, 20)), &[], None),
             GapRepairViewportWakeDecision::Wake {
                 candidate: ProjectedGapCandidate {
                     id: projected_gap_id(7, 1),
@@ -7083,7 +7217,7 @@ mod timeline_gap_repair_tracker_tests {
         };
 
         assert_eq!(
-            evaluate_gap_repair_viewport_wake(&projected, Some((5, 10)), Some(previous)),
+            evaluate_gap_repair_viewport_wake(&projected, Some((5, 10)), &[], Some(previous)),
             GapRepairViewportWakeDecision::IdleUnchangedCandidate {
                 candidate: previous,
             }
@@ -7102,7 +7236,7 @@ mod timeline_gap_repair_tracker_tests {
         };
 
         assert_eq!(
-            evaluate_gap_repair_viewport_wake(&projected, Some((1, 5)), Some(previous)),
+            evaluate_gap_repair_viewport_wake(&projected, Some((1, 5)), &[], Some(previous)),
             GapRepairViewportWakeDecision::Wake {
                 candidate: ProjectedGapCandidate {
                     id: projected_gap_id(7, 0),
@@ -7123,7 +7257,7 @@ mod timeline_gap_repair_tracker_tests {
             minimum_batch_id: TimelineBatchId(5),
         });
 
-        let decision = evaluate_gap_repair_viewport_wake(&projected, Some((5, 10)), None);
+        let decision = evaluate_gap_repair_viewport_wake(&projected, Some((5, 10)), &[], None);
         assert!(matches!(
             decision,
             GapRepairViewportWakeDecision::Wake { .. }
@@ -7141,14 +7275,14 @@ mod timeline_gap_repair_tracker_tests {
             (1, projected_gap_position(7, 1, 18)),
         ];
         let mut tracker = TimelineGapRepairTracker::default();
-        tracker.replace_projected_gaps(projected, Some((15, 20)));
+        tracker.replace_projected_gaps(projected, Some((15, 20)), &[]);
 
         assert!(matches!(
-            tracker.evaluate_viewport_wake(Some((15, 20))),
+            tracker.evaluate_viewport_wake(Some((15, 20)), &[]),
             GapRepairViewportWakeDecision::IdleUnchangedCandidate { .. }
         ));
         assert_eq!(
-            tracker.evaluate_viewport_wake(Some((1, 5))),
+            tracker.evaluate_viewport_wake(Some((1, 5)), &[]),
             GapRepairViewportWakeDecision::Wake {
                 candidate: ProjectedGapCandidate {
                     id: projected_gap_id(7, 0),
@@ -7160,7 +7294,7 @@ mod timeline_gap_repair_tracker_tests {
 
     #[test]
     fn viewport_wake_evaluation_diagnostics_are_private_safe() {
-        record_timeline_gap_repair_evaluation("wake", 2, true, "awaiting_render_ack");
+        record_timeline_gap_repair_evaluation("wake", 2, 1, true, true, "awaiting_render_ack");
 
         let record = koushi_diagnostics::snapshot()
             .records
@@ -7183,6 +7317,8 @@ mod timeline_gap_repair_tracker_tests {
                 "trigger",
                 "decision",
                 "projected_gap_count",
+                "visible_gap_count",
+                "visible_gap_validated",
                 "candidate_changed",
                 "scheduler_phase",
             ]
@@ -7200,10 +7336,10 @@ mod timeline_gap_repair_tracker_tests {
             (1, projected_gap_position(7, 1, 18)),
         ];
         let mut tracker = TimelineGapRepairTracker::default();
-        tracker.replace_projected_gaps(projected, Some((15, 20)));
+        tracker.replace_projected_gaps(projected, Some((15, 20)), &[]);
 
         assert!(matches!(
-            tracker.evaluate_viewport_wake(Some((1, 5))),
+            tracker.evaluate_viewport_wake(Some((1, 5)), &[]),
             GapRepairViewportWakeDecision::Wake { .. }
         ));
         tracker.queue_inspection(TimelineGapRepairTrigger::Automatic);
@@ -7213,7 +7349,7 @@ mod timeline_gap_repair_tracker_tests {
             .expect("projection ACK releases the queued viewport wake");
 
         assert!(matches!(
-            tracker.evaluate_viewport_wake(Some((15, 20))),
+            tracker.evaluate_viewport_wake(Some((15, 20)), &[]),
             GapRepairViewportWakeDecision::Wake { .. }
         ));
         tracker.queue_inspection(TimelineGapRepairTrigger::Automatic);
@@ -7232,7 +7368,7 @@ mod timeline_gap_repair_tracker_tests {
         };
         tracker.await_projection(fence);
         assert!(matches!(
-            tracker.evaluate_viewport_wake(Some((1, 5))),
+            tracker.evaluate_viewport_wake(Some((1, 5)), &[]),
             GapRepairViewportWakeDecision::Wake { .. }
         ));
         tracker.queue_inspection(TimelineGapRepairTrigger::Automatic);
@@ -7241,7 +7377,7 @@ mod timeline_gap_repair_tracker_tests {
         assert!(tracker.begin_pending_inspection(true).is_some());
 
         assert!(matches!(
-            tracker.evaluate_viewport_wake(Some((1, 5))),
+            tracker.evaluate_viewport_wake(Some((1, 5)), &[]),
             GapRepairViewportWakeDecision::IdleUnchangedCandidate { .. }
         ));
         assert_eq!(
@@ -7321,13 +7457,13 @@ mod timeline_gap_repair_tracker_tests {
             (1, projected_gap_position(7, 1, 18)),
         ];
         let mut tracker = TimelineGapRepairTracker::default();
-        tracker.replace_projected_gaps(projected, Some((1, 5)));
+        tracker.replace_projected_gaps(projected, Some((1, 5)), &[]);
         let repair_serial = tracker
             .begin_repair(2)
             .expect("the initial repair should own the scheduler");
 
         assert!(matches!(
-            tracker.evaluate_viewport_wake(Some((15, 20))),
+            tracker.evaluate_viewport_wake(Some((15, 20)), &[]),
             GapRepairViewportWakeDecision::Wake { .. }
         ));
         tracker.queue_inspection(TimelineGapRepairTrigger::Automatic);
@@ -7342,6 +7478,8 @@ mod timeline_gap_repair_tracker_tests {
         let signature = GapRepairEvaluationDiagnosticSignature {
             decision: "idle_unchanged",
             projected_gap_count: 2,
+            visible_gap_count: 1,
+            visible_gap_validated: true,
             candidate_changed: false,
             scheduler_phase: "idle",
         };
@@ -7432,6 +7570,7 @@ mod timeline_gap_repair_tracker_tests {
                 TimelineGapRepairTrigger::LiveTailSnapshot,
                 &projected,
                 Some((0, 0)),
+                &[],
                 1,
                 true,
             ),
@@ -7473,15 +7612,36 @@ mod timeline_gap_repair_tracker_tests {
     #[test]
     fn live_edge_fallback_selects_only_the_newest_unprojected_gap() {
         assert_eq!(
-            select_gap_repair_candidate(TimelineGapRepairTrigger::Automatic, &[], None, 4, true,),
+            select_gap_repair_candidate(
+                TimelineGapRepairTrigger::Automatic,
+                &[],
+                None,
+                &[],
+                4,
+                true,
+            ),
             GapRepairSelection::None,
         );
         assert_eq!(
-            select_gap_repair_candidate(TimelineGapRepairTrigger::LiveEdge, &[], None, 4, false,),
+            select_gap_repair_candidate(
+                TimelineGapRepairTrigger::LiveEdge,
+                &[],
+                None,
+                &[],
+                4,
+                false,
+            ),
             GapRepairSelection::None,
         );
         assert_eq!(
-            select_gap_repair_candidate(TimelineGapRepairTrigger::LiveEdge, &[], None, 4, true,),
+            select_gap_repair_candidate(
+                TimelineGapRepairTrigger::LiveEdge,
+                &[],
+                None,
+                &[],
+                4,
+                true,
+            ),
             GapRepairSelection::LiveEdgeFallback { ordinal: 3 },
         );
     }
@@ -7615,6 +7775,7 @@ mod timeline_gap_repair_tracker_tests {
                 trigger,
                 &projected_relation_boundaries,
                 None,
+                &[],
                 3,
                 tracker.has_live_edge_target(),
             ),
@@ -7698,6 +7859,7 @@ mod timeline_gap_repair_tracker_tests {
                 continuation,
                 &projected_relation_boundaries,
                 None,
+                &[],
                 2,
                 true,
             ),
@@ -10486,11 +10648,23 @@ impl TimelineActor {
                 self.maybe_fetch_visible_reply_details();
                 self.emit_navigation_if_changed();
                 let viewport_range = self.viewport_item_range();
-                let decision = self.gap_repair.evaluate_viewport_wake(viewport_range);
+                let decision = self.gap_repair.evaluate_viewport_wake(
+                    viewport_range,
+                    &self.viewport_observation.visible_gap_ids,
+                );
                 let projected_gap_count = self.gap_repair.projected_gaps.len();
+                let visible_gap_count = self.viewport_observation.visible_gap_ids.len();
+                let visible_gap_validated = self
+                    .viewport_observation
+                    .visible_gap_ids
+                    .iter()
+                    .any(|id| projected_gaps_contain_id(&self.gap_repair.projected_gaps, *id));
                 let scheduler_phase = self.gap_repair_scheduler_phase();
                 let (decision_token, candidate_changed) = match decision {
                     GapRepairViewportWakeDecision::Wake { .. } => ("wake", true),
+                    GapRepairViewportWakeDecision::WakeStaleVisibleDemand => {
+                        ("wake_stale_visible", false)
+                    }
                     GapRepairViewportWakeDecision::IdleNoCandidate => ("idle_no_candidate", false),
                     GapRepairViewportWakeDecision::IdleUnchangedCandidate { .. } => {
                         ("idle_unchanged", false)
@@ -10499,6 +10673,8 @@ impl TimelineActor {
                 let diagnostic_signature = GapRepairEvaluationDiagnosticSignature {
                     decision: decision_token,
                     projected_gap_count,
+                    visible_gap_count,
+                    visible_gap_validated,
                     candidate_changed,
                     scheduler_phase,
                 };
@@ -10509,11 +10685,17 @@ impl TimelineActor {
                     record_timeline_gap_repair_evaluation(
                         decision_token,
                         projected_gap_count,
+                        visible_gap_count,
+                        visible_gap_validated,
                         candidate_changed,
                         scheduler_phase,
                     );
                 }
-                if matches!(decision, GapRepairViewportWakeDecision::Wake { .. }) {
+                if matches!(
+                    decision,
+                    GapRepairViewportWakeDecision::Wake { .. }
+                        | GapRepairViewportWakeDecision::WakeStaleVisibleDemand
+                ) {
                     self.request_timeline_gap_inspection(TimelineGapRepairTrigger::Automatic)
                         .await;
                 }
@@ -11006,8 +11188,11 @@ impl TimelineActor {
                 );
                 let projected_gaps = self.emit_gap_positions(serial, &inspection.gaps);
                 let viewport_range = self.viewport_item_range();
-                self.gap_repair
-                    .replace_projected_gaps(projected_gaps.clone(), viewport_range);
+                self.gap_repair.replace_projected_gaps(
+                    projected_gaps.clone(),
+                    viewport_range,
+                    &self.viewport_observation.visible_gap_ids,
+                );
                 let known_gap_count = inspection.gaps.len().try_into().unwrap_or(u32::MAX);
                 let state_inspection = match inspection.continuity {
                     MatrixTimelineContinuity::Unknown => TimelineContinuityInspection::Unknown,
@@ -11055,6 +11240,7 @@ impl TimelineActor {
                                         trigger,
                                         &projected_gaps,
                                         viewport_range,
+                                        &self.viewport_observation.visible_gap_ids,
                                         inspection.gaps.len(),
                                         true,
                                     )
@@ -11075,6 +11261,7 @@ impl TimelineActor {
                                 trigger,
                                 &projected_gaps,
                                 viewport_range,
+                                &self.viewport_observation.visible_gap_ids,
                                 inspection.gaps.len(),
                                 self.gap_repair.has_live_edge_target(),
                             )
@@ -21740,6 +21927,7 @@ mod tests {
                 at_bottom: false,
                 first_visible_event_id: Some("$event-10:test".to_owned()),
                 last_visible_event_id: Some("$event-20:test".to_owned()),
+                visible_gap_ids: Vec::new(),
             },
         );
 
@@ -21874,6 +22062,7 @@ mod tests {
             &TimelineViewportObservation {
                 first_visible_event_id: Some("$first-visible:test".to_owned()),
                 last_visible_event_id: Some("$already-requested:test".to_owned()),
+                visible_gap_ids: Vec::new(),
                 at_bottom: false,
             },
             &requested,
@@ -23559,6 +23748,7 @@ mod tests {
             &TimelineViewportObservation {
                 first_visible_event_id: Some("$unread:test".to_owned()),
                 last_visible_event_id: Some("$newer:test".to_owned()),
+                visible_gap_ids: Vec::new(),
                 at_bottom: true,
             },
             Some("@me:test"),
@@ -23592,6 +23782,7 @@ mod tests {
             &TimelineViewportObservation {
                 first_visible_event_id: Some("$read:test".to_owned()),
                 last_visible_event_id: Some("$visible:test".to_owned()),
+                visible_gap_ids: Vec::new(),
                 at_bottom: false,
             },
             Some("@me:test"),
@@ -23629,6 +23820,7 @@ mod tests {
             &TimelineViewportObservation {
                 first_visible_event_id: Some("$visible:test".to_owned()),
                 last_visible_event_id: Some("$visible:test".to_owned()),
+                visible_gap_ids: Vec::new(),
                 at_bottom: false,
             },
             Some("@me:test"),
@@ -23653,6 +23845,7 @@ mod tests {
             &TimelineViewportObservation {
                 first_visible_event_id: Some("$visible:test".to_owned()),
                 last_visible_event_id: Some("$visible:test".to_owned()),
+                visible_gap_ids: Vec::new(),
                 at_bottom: false,
             },
             Some("@me:test"),
@@ -23692,6 +23885,7 @@ mod tests {
             &TimelineViewportObservation {
                 first_visible_event_id: Some("$read:test".to_owned()),
                 last_visible_event_id: Some("$remote:test".to_owned()),
+                visible_gap_ids: Vec::new(),
                 at_bottom: true,
             },
             Some("@me:test"),

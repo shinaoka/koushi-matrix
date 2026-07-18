@@ -23,6 +23,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 
 import { createDesktopApi } from "./backend/client";
+import type { TimelineGapId } from "./domain/coreEvents";
 import {
   classifySubmissionFailure,
   createComposerSubmissionControllerRegistry,
@@ -377,12 +378,14 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
         roomId: string,
         firstVisibleEventId: string | null,
         lastVisibleEventId: string | null,
+        visibleGapIds: TimelineGapId[],
         atBottom: boolean
       ) {
         await invoke("observe_timeline_viewport", {
           roomId,
           firstVisibleEventId,
           lastVisibleEventId,
+          visibleGapIds,
           atBottom
         });
       },

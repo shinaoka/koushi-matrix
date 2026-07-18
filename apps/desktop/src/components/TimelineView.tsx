@@ -163,7 +163,7 @@ import type {
   TimelineThreadRootOrder,
   UserProfile
 } from "../domain/types";
-import type { TimelineLinkRange } from "../domain/coreEvents";
+import type { TimelineGapId, TimelineLinkRange } from "../domain/coreEvents";
 import type { TimelineForwardDestination } from "../domain/projectionTypes";
 import {
   insertTimelineGapItems,
@@ -251,6 +251,7 @@ export interface TimelineTransport {
     roomId: string,
     firstVisibleEventId: string | null,
     lastVisibleEventId: string | null,
+    visibleGapIds: TimelineGapId[],
     atBottom: boolean
   ): Promise<void>;
   /** Persist the current room-local read/scroll anchor. */
@@ -572,9 +573,10 @@ function findTimelineEventNode(
   );
 }
 
-function visibleEventIds(container: HTMLElement): {
+function visibleTimelineViewportFacts(container: HTMLElement): {
   firstVisibleEventId: string | null;
   lastVisibleEventId: string | null;
+  visibleGapIds: TimelineGapId[];
 } {
   const containerRect = container.getBoundingClientRect();
   const nodes = container.querySelectorAll<HTMLElement>("[data-activity-event-id]");
@@ -592,7 +594,34 @@ function visibleEventIds(container: HTMLElement): {
     firstVisibleEventId ??= eventId;
     lastVisibleEventId = eventId;
   }
-  return { firstVisibleEventId, lastVisibleEventId };
+  const visibleGapIds: TimelineGapId[] = [];
+  const seenGapIds = new Set<string>();
+  const gapNodes = container.querySelectorAll<HTMLElement>(
+    "[data-gap-topology-revision][data-gap-ordinal]"
+  );
+  for (const node of gapNodes) {
+    const rect = node.getBoundingClientRect();
+    if (rect.bottom <= containerRect.top || rect.top >= containerRect.bottom) {
+      continue;
+    }
+    const topologyRevision = Number(node.dataset["gapTopologyRevision"]);
+    const ordinal = Number(node.dataset["gapOrdinal"]);
+    if (
+      !Number.isSafeInteger(topologyRevision) ||
+      topologyRevision < 0 ||
+      !Number.isSafeInteger(ordinal) ||
+      ordinal < 0
+    ) {
+      continue;
+    }
+    const signature = `${topologyRevision}\u0000${ordinal}`;
+    if (seenGapIds.has(signature)) {
+      continue;
+    }
+    seenGapIds.add(signature);
+    visibleGapIds.push({ topology_revision: topologyRevision, ordinal });
+  }
+  return { firstVisibleEventId, lastVisibleEventId, visibleGapIds };
 }
 
 function timelineProjectionSignature(rows: readonly TimelineDisplayRow[]): string {
@@ -3797,8 +3826,12 @@ export const TimelineView = memo(function TimelineView({
     if (!container) {
       return;
     }
-    const visible = visibleEventIds(container);
-    if (!visible.firstVisibleEventId && !visible.lastVisibleEventId) {
+    const visible = visibleTimelineViewportFacts(container);
+    if (
+      !visible.firstVisibleEventId &&
+      !visible.lastVisibleEventId &&
+      visible.visibleGapIds.length === 0
+    ) {
       return;
     }
     const atBottom = isScrolledToBottom(container);
@@ -3819,6 +3852,9 @@ export const TimelineView = memo(function TimelineView({
       roomId,
       visible.firstVisibleEventId ?? "",
       visible.lastVisibleEventId ?? "",
+      visible.visibleGapIds
+        .map((id) => `${id.topology_revision}:${id.ordinal}`)
+        .join("\u0002"),
       effectiveAtBottom ? "bottom" : "not-bottom"
     ].join("\u0000");
     if (lastViewportObservationRef.current === signature) {
@@ -3829,6 +3865,7 @@ export const TimelineView = memo(function TimelineView({
         roomId,
         visible.firstVisibleEventId,
         visible.lastVisibleEventId,
+        visible.visibleGapIds,
         effectiveAtBottom
       )
       .catch(() => undefined);
@@ -5087,6 +5124,8 @@ export const TimelineView = memo(function TimelineView({
                   className={`timeline-gap-row${continuity.kind === "failedIncomplete" ? " failed" : ""}`}
                   role="status"
                   data-testid="timeline-gap-row"
+                  data-gap-topology-revision={row.gap_id?.topology_revision}
+                  data-gap-ordinal={row.gap_id?.ordinal}
                 >
                   <span>
                     {continuity.kind === "failedIncomplete"

@@ -252,6 +252,7 @@ pub async fn observe_timeline_viewport(
     room_id: String,
     first_visible_event_id: Option<String>,
     last_visible_event_id: Option<String>,
+    visible_gap_ids: Vec<TimelineGapId>,
     at_bottom: bool,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
@@ -266,6 +267,7 @@ pub async fn observe_timeline_viewport(
             room_id,
             first_visible_event_id,
             last_visible_event_id,
+            visible_gap_ids,
             at_bottom,
         ),
     )

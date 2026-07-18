@@ -16,6 +16,7 @@ import {
   threadTimelineKey,
   type CoreEventPayload,
   type TimelineDiff,
+  type TimelineGapId,
   type TimelineItem,
   type TimelineMessageSource
 } from "../domain/coreEvents";
@@ -172,7 +173,8 @@ function mockTimelineRects(
     const eventId =
       this.getAttribute("data-event-id") ??
       this.getAttribute("data-frame-item-id") ??
-      this.getAttribute("data-item-id");
+      this.getAttribute("data-item-id") ??
+      this.getAttribute("data-testid");
     const testId = this.getAttribute("data-testid");
     const scrollTop = scrollContainerRef?.current?.scrollTop ?? 0;
     const top =
@@ -1032,6 +1034,7 @@ describe("TimelineView", () => {
         "!room:example.invalid",
         "$older:example.invalid",
         "$latest:example.invalid",
+        [],
         true
       );
     } finally {
@@ -1121,6 +1124,124 @@ describe("TimelineView", () => {
       rectSpy.mockRestore();
     }
   });
+
+  it.each(["rootEvent", "latestReply"] as const)(
+    "reports a visible persisted gap without visible events in %s order",
+    async (threadRootOrder) => {
+      let emit: (payload: CoreEventPayload) => void = () => undefined;
+      const observeViewport = vi.fn().mockResolvedValue(undefined);
+      const root = {
+        ...message("$thread-root:example.invalid", "Thread root"),
+        thread_summary: {
+          reply_count: 1,
+          latest_event_id: "$thread-reply:example.invalid",
+          latest_sender: "@bob:example.invalid",
+          latest_sender_label: "Bob",
+          latest_body_preview: "Latest reply",
+          latest_timestamp_ms: 1_800_000_010_000
+        }
+      };
+      const reply = {
+        ...message("$thread-reply:example.invalid", "Standalone thread reply"),
+        timestamp_ms: 1_800_000_010_000,
+        thread_root: "$thread-root:example.invalid"
+      };
+      const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+      const rectSpy = mockTimelineRects(
+        {
+          "$before:example.invalid": { top: -200, height: 40 },
+          "$thread-root:example.invalid": { top: -120, height: 40 },
+          "$thread-reply:example.invalid": { top: 700, height: 40 },
+          "$after:example.invalid": { top: 800, height: 40 },
+          "timeline-gap-row": { top: 100, height: 40 }
+        },
+        { top: 0, height: 500 },
+        scrollContainerRef
+      );
+      const transport = baseTransport({
+        observeViewport,
+        listenCoreEvents(nextListener) {
+          emit = nextListener;
+          return () => undefined;
+        }
+      });
+
+      try {
+        render(
+          <TimelineView
+            timelineKey={KEY}
+            roomId="!room:example.invalid"
+            transport={transport}
+            onReply={vi.fn()}
+            threadRootOrder={{ kind: threadRootOrder }}
+            continuity={{
+              kind: "repairing",
+              generation: 3,
+              gap_count: 1,
+              batches_processed: 0,
+              minimum_batch_id: null
+            }}
+          />
+        );
+
+        const timeline = await screen.findByTestId("timeline-view");
+        scrollContainerRef.current = timeline;
+        Object.defineProperty(timeline, "clientHeight", { value: 500, configurable: true });
+        Object.defineProperty(timeline, "scrollHeight", { value: 2_000, configurable: true });
+        Object.defineProperty(timeline, "scrollTop", {
+          value: 0,
+          writable: true,
+          configurable: true
+        });
+
+        act(() => {
+          emit({
+            kind: "Timeline",
+            event: {
+              InitialItems: {
+                request_id: null,
+                key: KEY,
+                generation: 1,
+                items: [message("$before:example.invalid", "Before"), root, reply, message("$after:example.invalid", "After")]
+              }
+            }
+          });
+          emit({
+            kind: "Timeline",
+            event: {
+              GapPositionsUpdated: {
+                key: KEY,
+                actor_generation: 0,
+                generation: 3,
+                positions: [
+                  { id: { topology_revision: 7, ordinal: 0 }, before_item_index: 2 }
+                ]
+              }
+            }
+          });
+        });
+
+        timeline.scrollTop = 0;
+        fireEvent.wheel(timeline, { deltaY: 1 });
+        fireEvent.scroll(timeline);
+
+        await waitFor(() => {
+          expect(observeViewport).toHaveBeenCalledWith(
+            "!room:example.invalid",
+            null,
+            null,
+            [{ topology_revision: 7, ordinal: 0 }],
+            false
+          );
+        });
+        const gap = screen.getByTestId("timeline-gap-row");
+        expect(gap.dataset["gapTopologyRevision"]).toBe("7");
+        expect(gap.dataset["gapOrdinal"]).toBe("0");
+      } finally {
+        rectSpy.mockRestore();
+      }
+    }
+  );
 
   it("emits safe timestamped timeline event diagnostics for thread timelines", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
@@ -6814,6 +6935,7 @@ describe("TimelineView", () => {
         roomId: string,
         firstVisibleEventId: string | null,
         lastVisibleEventId: string | null,
+        _visibleGapIds: TimelineGapId[],
         _atBottom: boolean
       ) => {
         viewportObservations.push({ roomId, firstVisibleEventId, lastVisibleEventId });
@@ -6949,6 +7071,7 @@ describe("TimelineView", () => {
         _roomId: string,
         firstVisibleEventId: string | null,
         lastVisibleEventId: string | null,
+        _visibleGapIds: TimelineGapId[],
         _atBottom: boolean
       ) => {
         viewportObservations.push({ firstVisibleEventId, lastVisibleEventId });
