@@ -183,6 +183,14 @@ reverse.
   Example: use `cargo test -p koushi-state --test search_state`, not
   `cargo test -p koushi-state search`, because the latter launches every
   integration-test binary and then filters inside each one.
+- Do not run a long-duration end-to-end or homeserver scenario after every
+  small implementation edit. First complete the coherent assertion-driven
+  flow, using compile checks, focused unit/integration tests, and short
+  fail-fast checkpoints while iterating. Remove superseded fixture paths and
+  review the finished diff, then run the long scenario once as the integrated
+  gate. Re-run it only when its own evidence identifies a necessary change or
+  after the final reviewed fix; do not spend the full timeout to discover one
+  incomplete phase at a time.
 - Cooperate with the external auditor (codex) for independent root-cause
   verification and diff review (see the recipe below). A subagent's "gates
   passed" claim is not evidence — re-run the gate yourself.

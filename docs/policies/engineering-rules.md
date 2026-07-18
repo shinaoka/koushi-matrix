@@ -708,6 +708,14 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
    and all notarization credentials without requiring unrelated Windows
    credentials; post-build signature, notarization-ticket, and platform trust
    checks remain mandatory release evidence.
+10. Long-duration end-to-end and homeserver scenarios are integrated gates,
+   not inner-loop probes. Complete the coherent assertion-driven scenario
+   first, using compile checks, focused unit/integration tests, and bounded
+   fail-fast checkpoints during implementation. Remove superseded fixture
+   paths and review the finished diff before running the long scenario. Re-run
+   that scenario only when its own evidence requires a change or after the
+   final reviewed fix; repeatedly consuming the full timeout to discover one
+   unfinished phase at a time is prohibited.
 
 ## Documentation
 
