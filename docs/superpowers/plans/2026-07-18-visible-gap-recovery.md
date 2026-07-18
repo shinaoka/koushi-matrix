@@ -16,6 +16,9 @@
 - Pagination tokens, SDK gap handles, room IDs, event IDs, message bodies, and raw errors never enter diagnostics.
 - `LiveTailSnapshot` remains observe-only and must not consume a historical continuation token.
 - Existing actor/timeline generations and projection acknowledgements remain mandatory stale-work fences.
+- Rust keeps `topology_revision` as `u64`; every JSON/Tauri/TypeScript representation uses a canonical decimal string and rejects numeric JSON.
+- The 32-outcome safety fence counts only consecutive no-progress outcomes. Cache reveal and pagination progress reset it.
+- Attempt reset and budget diagnostics remain token-free and identity-free.
 - Use test-driven development: every production change follows a focused failing test.
 - Luna implements each task and self-reviews it. A separate reviewer checks the committed range before the next task.
 
@@ -306,6 +309,304 @@ git add crates/koushi-core/src/timeline.rs
 git commit -m "fix(core): scope gap repair budget to visible demand"
 ```
 
+### Task 4A: Preserve full-range topology identity across the desktop wire
+
+**Files:**
+
+- Modify: `crates/koushi-core/src/event.rs`
+- Modify: `crates/koushi-core/src/timeline.rs`
+- Modify: `apps/desktop/src/domain/coreEvents.ts`
+- Modify: `apps/desktop/src/domain/coreEvents.generated.json`
+- Modify: `apps/desktop/src/domain/timelineDisplayProjection.ts`
+- Modify: `apps/desktop/src/components/TimelineView.tsx`
+- Modify: `apps/desktop/src/App.tsx`
+- Modify: `apps/desktop/src-tauri/src/commands/mod.rs`
+- Modify: `apps/desktop/src-tauri/src/lib.rs`
+- Test: `apps/desktop/src/domain/timelineDisplayProjection.test.ts`
+- Test: `apps/desktop/src/components/TimelineView.test.tsx`
+- Test: `apps/desktop/src-tauri/src/commands/mod.rs`
+
+**Interfaces:**
+
+- Rust retains `TimelineGapId { topology_revision: u64, ordinal: u32 }`.
+- Serde encodes and accepts `topology_revision` only as a canonical decimal string.
+- TypeScript consumes and produces:
+
+```ts
+export type TimelineGapId = {
+  topology_revision: string;
+  ordinal: number;
+};
+```
+
+- [ ] **Step 1: Write the failing full-range round-trip tests**
+
+Use `14695981039346656037`, the FNV offset basis already used by the SDK and
+greater than `Number.MAX_SAFE_INTEGER`. Assert the checked-in wire artifact
+contains the string, the projected row preserves it, the DOM viewport reports
+it unchanged in both thread modes, and the Tauri command parses it back to the
+same Rust `u64`. Add a negative Rust test that rejects:
+
+```json
+{"topology_revision":14695981039346656037,"ordinal":0}
+```
+
+- [ ] **Step 2: Prove RED**
+
+Run:
+
+```bash
+cargo test -p koushi-core timeline_gap_id_wire --lib
+cargo test -p koushi-desktop observe_timeline_viewport --lib
+npm test -- --run src/domain/timelineDisplayProjection.test.ts src/components/TimelineView.test.tsx -t "full-range topology revision"
+```
+
+Expected: FAIL because Serde emits a JSON number and TypeScript rejects or
+rounds the full-range value.
+
+- [ ] **Step 3: Implement canonical decimal-string Serde**
+
+Add a private Serde adapter in `event.rs` and annotate the Rust field:
+
+```rust
+#[serde(with = "u64_decimal_string")]
+pub topology_revision: u64,
+```
+
+The deserializer first reads `String`, parses `u64`, and requires
+`parsed.to_string() == encoded`; this rejects numbers, signs, whitespace, and
+leading zeroes. Change the TypeScript type to `string`. Keep the DOM dataset
+value as a string, validate it with a canonical unsigned-decimal predicate,
+and deduplicate/sign viewport observations with the exact string. Never call
+`Number`, `parseInt`, or `BigInt` in the UI path.
+
+- [ ] **Step 4: Regenerate the wire artifact and run the focused gates**
+
+Run:
+
+```bash
+cargo test -p koushi-core timeline_gap_id_wire --lib
+cargo test -p koushi-desktop observe_timeline_viewport --lib
+npm test -- --run src/domain/timelineDisplayProjection.test.ts src/components/TimelineView.test.tsx
+npm run typecheck
+```
+
+Expected: PASS, including a lossless `>2^53` round trip and numeric rejection.
+
+- [ ] **Step 5: Commit Task 4A**
+
+```bash
+git add crates/koushi-core/src/event.rs crates/koushi-core/src/timeline.rs apps/desktop/src/domain/coreEvents.ts apps/desktop/src/domain/coreEvents.generated.json apps/desktop/src/domain/timelineDisplayProjection.ts apps/desktop/src/domain/timelineDisplayProjection.test.ts apps/desktop/src/components/TimelineView.tsx apps/desktop/src/components/TimelineView.test.tsx apps/desktop/src/App.tsx apps/desktop/src-tauri/src/commands/mod.rs apps/desktop/src-tauri/src/lib.rs
+git commit -m "fix(timeline): preserve full-range gap identity"
+```
+
+### Task 4B: Fence consecutive no-progress outcomes rather than progress
+
+**Files:**
+
+- Modify: `crates/koushi-core/src/timeline.rs`
+- Test: `crates/koushi-core/src/timeline.rs`
+
+**Interfaces:**
+
+- `batches_processed` remains a diagnostic total.
+- `consecutive_no_progress_batches` controls the 32-outcome safety fence.
+- `cached_chunks_loaded > 0` and positive pagination progress reset the fence.
+
+- [ ] **Step 1: Write the failing progress-accounting tests**
+
+Drive the same admitted `TimelineGapId` and demand revision through 33
+`Deferred { cached_chunks_loaded: 1 }` outcomes. Assert every next batch remains
+admissible and `consecutive_no_progress_batches == 0`. Separately drive 32
+`Deferred { cached_chunks_loaded: 0 }` outcomes and assert the 33rd batch is
+rejected without changing ID or demand revision.
+
+- [ ] **Step 2: Prove RED**
+
+Run:
+
+```bash
+cargo test -p koushi-core gap_repair_progress_budget --lib
+```
+
+Expected: FAIL because the current `batches_processed` counter fences the 33rd
+progressing cache reveal.
+
+- [ ] **Step 3: Implement outcome-aware accounting**
+
+Track total and no-progress counts separately:
+
+```rust
+struct TimelineGapRepairTracker {
+    batches_processed: u32,
+    consecutive_no_progress_batches: u32,
+    // existing attempt identity and demand fields remain
+}
+```
+
+Admission checks only `consecutive_no_progress_batches`. Increment the total
+when a batch starts. After the SDK outcome, reset the no-progress counter for
+`Deferred { cached_chunks_loaded }` when loaded is positive, positive
+`Progress { events }`, and completed boundary outcomes; increment it for true
+no-progress outcomes. Keep the existing per-request event/cache limits and
+causal settlement fences.
+
+- [ ] **Step 4: Run repair and live-tail suites**
+
+Run:
+
+```bash
+cargo test -p koushi-core gap_repair_progress_budget --lib
+cargo test -p koushi-core gap_repair --lib
+cargo test -p koushi-core live_tail --lib
+```
+
+Expected: PASS; a distant retained descriptor cannot be stranded while each
+batch reveals a cached chunk.
+
+- [ ] **Step 5: Commit Task 4B**
+
+```bash
+git add crates/koushi-core/src/timeline.rs
+git commit -m "fix(core): budget consecutive gap repair stalls"
+```
+
+### Task 4C: Record privacy-safe attempt and budget transitions
+
+**Files:**
+
+- Modify: `crates/koushi-core/src/timeline.rs`
+- Test: `crates/koushi-core/src/timeline.rs`
+
+**Interfaces:**
+
+- `admit_gap_attempt` produces a structured admission containing an attempt
+  number, reset reason, and change booleans.
+- Diagnostics contain no room ID, event ID, descriptor, token, message, or raw
+  error.
+
+- [ ] **Step 1: Write failing diagnostic contract tests**
+
+Assert initial admission, topology change, ordinal change, and explicit demand
+change produce the tokens `initial`, `topology`, `ordinal`, and `demand` plus:
+
+```text
+attempt_number
+topology_changed
+ordinal_changed
+demand_changed
+consecutive_no_progress_batches
+budget_remaining
+cached_chunks_loaded
+```
+
+Assert the diagnostic source contract excludes identity/token field names.
+
+- [ ] **Step 2: Prove RED**
+
+Run:
+
+```bash
+cargo test -p koushi-core gap_repair_attempt_diagnostics --lib
+```
+
+Expected: FAIL because reset and progress accounting are currently silent.
+
+- [ ] **Step 3: Emit structured transitions**
+
+Return an admission value from `admit_gap_attempt`:
+
+```rust
+struct TimelineGapAttemptAdmission {
+    attempt_number: u64,
+    reason: TimelineGapAttemptResetReason,
+    topology_changed: bool,
+    ordinal_changed: bool,
+    demand_changed: bool,
+}
+```
+
+Emit one attempt diagnostic when admission changes and one budget diagnostic
+after each outcome. Use only the enum token, change booleans, attempt number,
+demand revision, and budget counters. Do not log the gap ordinal, topology
+revision value, Matrix identifiers, or the SDK descriptor.
+
+- [ ] **Step 4: Run diagnostics and repair suites**
+
+Run:
+
+```bash
+cargo test -p koushi-core gap_repair_attempt_diagnostics --lib
+cargo test -p koushi-core gap_repair --lib
+```
+
+Expected: PASS and source-contract privacy assertions remain green.
+
+- [ ] **Step 5: Commit Task 4C**
+
+```bash
+git add crates/koushi-core/src/timeline.rs
+git commit -m "feat(diagnostics): trace gap repair attempts"
+```
+
+### Task 4D: Prove room-switch cancellation and thread-order identity
+
+**Files:**
+
+- Modify: `crates/koushi-core/src/timeline.rs`
+- Modify: `apps/desktop/src/components/TimelineView.test.tsx`
+
+**Interfaces:**
+
+- Room switch may retain SDK-committed cache state, but an old actor generation
+  cannot publish repair progress or resume work.
+- `rootEvent` and `latestReply` report the same gap ID even when the root moves
+  across the gap.
+
+- [ ] **Step 1: Write the failing cancellation and crossing tests**
+
+Pause an old-room repair after SDK work starts, switch rooms, release the old
+completion, and assert no old-generation reducer action or continuation is
+published. Render a thread whose latest reply moves its root across the gap;
+assert the gap row retains the same full-range ID and is reported visible in
+both thread modes.
+
+- [ ] **Step 2: Prove RED or existing contract**
+
+Run:
+
+```bash
+cargo test -p koushi-core gap_repair_room_switch_cancels_completion --lib
+npm test -- --run src/components/TimelineView.test.tsx -t "gap identity across thread ordering"
+```
+
+Expected: the tests either expose missing cancellation/ordering behavior or
+prove the existing generation fence without requiring production changes. A
+test that passes immediately must be mutation-checked by temporarily removing
+the relevant generation or gap-ID assertion before it is accepted.
+
+- [ ] **Step 3: Apply only evidence-backed production fixes**
+
+If RED, use the existing actor-generation and subscription cancellation fence;
+do not introduce a second room scheduler. Keep the gap row anchored by its
+stable ID rather than a projected event index.
+
+- [ ] **Step 4: Run focused suites and commit**
+
+Run:
+
+```bash
+cargo test -p koushi-core gap_repair_room_switch --lib
+npm test -- --run src/components/TimelineView.test.tsx
+```
+
+Expected: PASS.
+
+```bash
+git add crates/koushi-core/src/timeline.rs apps/desktop/src/components/TimelineView.test.tsx
+git commit -m "test(timeline): fence visible gap demand across room and thread changes"
+```
+
 ### Task 5: Add the production-shape vertical regression and verify
 
 **Files:**
@@ -317,7 +618,7 @@ git commit -m "fix(core): scope gap repair budget to visible demand"
 
 **Interfaces:**
 
-- Consumes the public contracts completed in Tasks 1-4.
+- Consumes the public contracts completed in Tasks 1-4D.
 - Produces one reproducible scenario named `visible_persisted_gap_recovery`.
 
 - [ ] **Step 1: Write the failing vertical scenario**

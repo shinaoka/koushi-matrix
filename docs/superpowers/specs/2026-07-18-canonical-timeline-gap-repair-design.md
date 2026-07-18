@@ -145,6 +145,13 @@ Core emits gap descriptors alongside the canonical display vector. The UI
 weaves a gap row into render output without inserting it into the diff target.
 The gap row therefore cannot shift subsequent diff indices.
 
+`topology_revision` remains a full-range `u64` inside Rust. Across the
+Serde/Tauri/TypeScript boundary it is encoded as a canonical unsigned decimal
+string. JSON numbers are rejected rather than rounded, and TypeScript never
+parses the value through `number`. The DOM dataset, viewport signature, and
+return command preserve the same string byte-for-byte before Rust validates
+and parses it back to `u64`.
+
 Viewport observations contain the first and last visible activity identities
 plus visible gap handles. Reporting a visible gap handle directly avoids
 inferring gap visibility only from two surrounding event indices. Core treats
@@ -181,6 +188,14 @@ budget. The SDK loads the descriptor's exact persisted chunk; it does not use
 per request, and further pages are scheduled only while the same validated
 demand remains active.
 
+The safety fence counts consecutive no-progress outcomes, not all batches.
+`Deferred { cached_chunks_loaded > 0 }`, a positive event count, a joined
+boundary, or another explicit advancement resets that counter. A batch that
+loads one cached chunk therefore cannot exhaust the attempt merely because the
+selected descriptor is more than 32 chunks away. Thirty-two consecutive
+no-progress outcomes still fence the attempt. Total batches remain diagnostic
+only and never strand a visibly demanded descriptor that continues to advance.
+
 `LiveTailSnapshot` remains observe-only: it publishes authoritative topology
 without consuming a historical token. It must not pre-consume the eligibility
 of a subsequently visible gap. An unchanged viewport does not need to wake
@@ -209,7 +224,9 @@ Retain the existing structured repair outcomes and add:
 - visible gap handle count and whether the requested handle validated;
 - descriptor residency and exact-chunk load outcome;
 - per-handle attempt number and reset reason;
-- topology revision change.
+- topology, ordinal, and demand revision change booleans;
+- consecutive no-progress count and remaining safety budget;
+- cached chunks loaded for the completed batch.
 
 Diagnostics must not contain room IDs, event IDs, gap handles, tokens, message
 content, or raw server errors.
@@ -232,13 +249,23 @@ Implementation starts with these failing tests, in this order:
    summary-only root. Assert the visible handle selects the same repair.
 5. **Budget reset:** exhaust one handle/topology attempt, make the handle visible
    under a new topology revision, and assert a new bounded attempt starts.
-6. **Live movement:** append new events so a visible gap moves into history,
+6. **Full-range wire identity:** round-trip a topology revision greater than
+   `2^53` from Rust through JSON, TypeScript, the DOM dataset, the viewport
+   command, and back into Rust. Assert that numeric JSON is rejected.
+7. **Long cache path:** return at least 33 consecutive
+   `Deferred { cached_chunks_loaded: 1 }` outcomes for the same visible demand
+   and assert repair remains admitted. Return 32 true no-progress outcomes and
+   assert the safety fence stops the attempt.
+8. **Live movement:** append new events so a visible gap moves into history,
    scroll back to it, and assert explicit visible-handle demand resumes repair.
-7. **More than 128 missing:** refresh a detached live tail, render the latest
+9. **More than 128 missing:** refresh a detached live tail, render the latest
    events immediately, and repair the persisted boundary through the same
    handle-driven path.
-8. **Room switch:** cancel the old room's network phase, prioritize the new
+10. **Room switch:** cancel the old room's network phase, prioritize the new
    room, then re-select the old room and assert a fresh foreground attempt.
+11. **Thread projection crossing:** move a `latestReply` thread root across the
+    gap and assert that the projected gap identity and visible demand remain
+    unchanged relative to `rootEvent` mode.
 
 At least one test must cross SDK fixture, Core actor, serialized desktop event,
 TypeScript store, thread projection setting, DOM viewport observation, and the
