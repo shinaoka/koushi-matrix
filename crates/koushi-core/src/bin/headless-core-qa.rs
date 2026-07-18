@@ -54,8 +54,8 @@ use koushi_core::event::{
     AccountEvent, ActivityEvent, CoreEvent, E2eeTrustEvent, LinkPreviewState, LiveSignalsEvent,
     LocalEncryptionEvent, PaginationDirection, PaginationState, RoomEvent, SearchEvent,
     SyncBackendKind, SyncEvent, TimelineAnchorRestoreStatus, TimelineDiff, TimelineEvent,
-    TimelineItem, TimelineItemId, TimelineMessageActions, TimelineSendState,
-    TimelineUnreadPosition, TimelineViewportObservation,
+    TimelineGapId, TimelineGapPosition, TimelineItem, TimelineItemId, TimelineMessageActions,
+    TimelineSendState, TimelineUnreadPosition, TimelineViewportObservation,
 };
 use koushi_core::failure::{CoreFailure, RoomFailureKind};
 use koushi_core::ids::{AccountKey, RequestId, TimelineKey, TimelineKind};
@@ -4216,7 +4216,7 @@ async fn run_timeline_reconnect_scenario_impl(
         "timeline_reconnect seed known anchor",
     )
     .await?;
-    wait_for_item_with_body(
+    wait_for_item_with_body_with_sync(
         &mut conn_a,
         &key_a,
         seed_body,
@@ -4569,7 +4569,6 @@ async fn run_timeline_reconnect_scenario_impl(
                     .to_owned()
             })?;
 
-        let detached_room_absent_baseline = room_absent_checkpoint_count_for_qa();
         let detached_runtime = CoreRuntime::start_with_data_dir(data_dir_a.clone());
         let mut detached_conn = detached_runtime.attach();
         let detached_restore_id = detached_conn.next_request_id();
@@ -4637,41 +4636,26 @@ async fn run_timeline_reconnect_scenario_impl(
 
         let detached_newest_body = "QA timeline detached live tail 127";
         let detached_end_token = "qa-live-tail-detached-end".to_owned();
-        let detached_live_tail_refresh_baseline = koushi_diagnostics::snapshot().records.len();
-        let detached_live_tail_snapshot_baseline = live_tail_snapshot_completion_count_for_qa();
         proxy.arm_detached_live_tail_messages_page(
             qa_detached_live_tail_events(&user_b_full_id),
             detached_end_token.clone(),
         )?;
-        subscribe_and_ack_active_timeline_projection_for_qa(
+        let detached_items = subscribe_and_ack_active_timeline_projection_for_qa(
             &mut detached_conn,
             &key_a,
             "timeline legacy persisted gap detached live tail subscription",
         )
         .await?;
-        wait_for_room_absent_checkpoint_after_for_qa(
-            detached_room_absent_baseline,
-            "timeline legacy persisted gap detached room-absent proof",
-        )
-        .await?;
-        let detached_live_tail_render = wait_for_item_with_body(
-            &mut detached_conn,
-            &key_a,
-            detached_newest_body,
-            "timeline legacy persisted gap renders detached live-tail newest event",
-        )
-        .await;
+        let (detached_items, visible_gap, initial_gap_projection, detached_gap_count) =
+            wait_for_projected_gap_and_item_for_qa(
+                &mut detached_conn,
+                &key_a,
+                detached_items,
+                detached_newest_body,
+                "timeline legacy persisted gap projects detached visible gap",
+            )
+            .await?;
         let detached_observation = proxy.live_tail_messages_observation()?;
-        if detached_live_tail_render.is_err() {
-            return Err(format!(
-                "timeline legacy persisted gap did not render detached live-tail event \
-                 (requests={}, exact_tokenless_limit={}, had_from={}, served={})",
-                detached_observation.room_messages_request_count,
-                detached_observation.first_request_was_exact_tokenless_limit,
-                detached_observation.first_request_had_from,
-                detached_observation.freshness_page_served,
-            ));
-        }
         if detached_observation.room_messages_request_count != 1
             || !detached_observation.first_request_was_exact_tokenless_limit
             || detached_observation.first_request_had_from
@@ -4686,28 +4670,10 @@ async fn run_timeline_reconnect_scenario_impl(
                 detached_observation.freshness_page_served,
             ));
         }
-        let detached_gap_count = wait_for_live_tail_snapshot_gap_count_for_qa(
-            &detached_conn,
-            detached_live_tail_snapshot_baseline,
-            "timeline legacy persisted gap detached live-tail snapshot",
-        )
-        .await?;
-        wait_for_detached_live_tail_refresh_for_qa(
-            detached_live_tail_refresh_baseline,
-            "timeline legacy persisted gap detached live-tail result",
-        )
-        .await?;
         let detached_observation = proxy.live_tail_messages_observation()?;
-        if detached_gap_count == 0 {
-            return Err(format!(
-                "timeline legacy persisted gap detached tail did not retain a continuity gap \
-                 (observed={}, detached_end_token_requests={})",
-                detached_gap_count, detached_observation.expected_end_token_request_count,
-            ));
-        }
         if detached_observation.expected_end_token_request_count != 0 {
             return Err(format!(
-                "timeline legacy persisted gap detached tail consumed its continuation token before ordinary pagination \
+                "timeline legacy persisted gap detached tail consumed its continuation token before explicit viewport demand \
                  (detached_end_token_requests={})",
                 detached_observation.expected_end_token_request_count,
             ));
@@ -4719,38 +4685,33 @@ async fn run_timeline_reconnect_scenario_impl(
             detached_end_token,
             qa_detached_historical_continuation_events(&user_b_full_id),
         )?;
-        let historical_paginate_id = detached_conn.next_request_id();
+        let visible_gap_request_id = detached_conn.next_request_id();
         detached_conn
-            .command(CoreCommand::Timeline(TimelineCommand::Paginate {
-                request_id: historical_paginate_id,
+            .command(CoreCommand::Timeline(TimelineCommand::ObserveViewport {
+                request_id: visible_gap_request_id,
                 key: key_a.clone(),
-                direction: PaginationDirection::Backward,
-                event_count: 50,
+                observation: TimelineViewportObservation {
+                    first_visible_event_id: visible_gap.first_visible_event_id.clone(),
+                    last_visible_event_id: visible_gap.last_visible_event_id.clone(),
+                    visible_gap_ids: vec![visible_gap.id],
+                    at_bottom: false,
+                },
             }))
             .await
             .map_err(|e| {
-                format!(
-                    "timeline legacy persisted gap: submit detached historical paginate failed: {e}"
-                )
+                format!("timeline legacy persisted gap: submit visible gap observation failed: {e}")
             })?;
-        let historical_continuation_render = wait_for_item_with_body(
+        wait_for_exact_items_and_gap_release(
             &mut detached_conn,
             &key_a,
-            historical_continuation_body,
-            "timeline legacy persisted gap renders detached historical continuation",
+            detached_items,
+            &[historical_continuation_body.to_owned()],
+            Some(initial_gap_projection),
+            Some(visible_gap.id),
+            "timeline legacy persisted gap visible continuation repair",
         )
-        .await;
+        .await?;
         let historical_observation = proxy.live_tail_messages_observation()?;
-        if historical_continuation_render.is_err() {
-            return Err(format!(
-                "timeline legacy persisted gap did not render historical continuation \
-                 (had_from={}, exact_end={}, exact_end_requests={}, served={})",
-                historical_observation.first_request_had_from,
-                historical_observation.expected_end_token_was_used,
-                historical_observation.expected_end_token_request_count,
-                historical_observation.freshness_page_served,
-            ));
-        }
         if !historical_observation.first_request_had_from
             || !historical_observation.expected_end_token_was_used
             || historical_observation.expected_end_token_request_count != 1
@@ -4837,6 +4798,8 @@ async fn run_timeline_reconnect_scenario_impl(
             &key_a,
             reopened_items,
             &expected_bodies,
+            None,
+            None,
             "timeline legacy fallback exact recovery",
         )
         .await?;
@@ -4922,37 +4885,6 @@ async fn run_timeline_reconnect_scenario_impl(
     Ok(())
 }
 
-fn room_absent_checkpoint_count_for_qa() -> usize {
-    koushi_diagnostics::snapshot()
-        .records
-        .iter()
-        .filter(|record| {
-            record.event.source == "core.live_catchup"
-                && record.event.stage == "checkpoint"
-                && record.event.fields.iter().any(|field| {
-                    field.key == "checkpoint_origin"
-                        && field.value == koushi_diagnostics::DiagnosticValue::Token("room_absent")
-                })
-        })
-        .count()
-}
-
-async fn wait_for_room_absent_checkpoint_after_for_qa(
-    baseline: usize,
-    label: &str,
-) -> Result<(), String> {
-    tokio::time::timeout(EVENT_TIMEOUT, async {
-        loop {
-            if room_absent_checkpoint_count_for_qa() > baseline {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .map_err(|_| format!("{label}: did not observe a new room_absent checkpoint"))
-}
-
 fn timeline_gap_count_for_qa(conn: &CoreConnection) -> u32 {
     match conn.snapshot().timeline.continuity {
         koushi_state::TimelineContinuityState::Inspecting {
@@ -4989,56 +4921,6 @@ fn live_tail_snapshot_completion_count_for_qa() -> usize {
                 })
         })
         .count()
-}
-
-fn is_detached_live_tail_refresh_for_qa(record: &koushi_diagnostics::DiagnosticRecord) -> bool {
-    record.event.source == "core.timeline"
-        && record.event.stage == "timeline_live_tail_refresh"
-        && record.event.fields.iter().any(|field| {
-            field.key == "outcome"
-                && field.value == koushi_diagnostics::DiagnosticValue::Token("detached")
-        })
-        && record.event.fields.iter().any(|field| {
-            field.key == "requested_limit"
-                && field.value == koushi_diagnostics::DiagnosticValue::Count(128)
-        })
-        && record.event.fields.iter().any(|field| {
-            field.key == "returned_events"
-                && field.value == koushi_diagnostics::DiagnosticValue::Count(128)
-        })
-        && record.event.fields.iter().any(|field| {
-            field.key == "historical_gap_remaining"
-                && field.value == koushi_diagnostics::DiagnosticValue::Boolean(true)
-        })
-}
-
-async fn wait_for_detached_live_tail_refresh_for_qa(
-    diagnostics_baseline: usize,
-    label: &str,
-) -> Result<(), String> {
-    tokio::time::timeout(EVENT_TIMEOUT, async {
-        loop {
-            let diagnostics = koushi_diagnostics::snapshot();
-            if diagnostics
-                .records
-                .iter()
-                .skip(diagnostics_baseline)
-                .any(is_detached_live_tail_refresh_for_qa)
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .map_err(|_| {
-        let diagnostics = koushi_diagnostics::snapshot();
-        format!(
-            "{label}: did not observe detached 128-event live-tail completion with a historical gap \
-             (records_after_baseline={})",
-            diagnostics.records.len().saturating_sub(diagnostics_baseline),
-        )
-    })
 }
 
 async fn wait_for_live_tail_snapshot_gap_count_for_qa(
@@ -5079,6 +4961,243 @@ async fn wait_for_live_tail_snapshot_gap_count_for_qa(
             timeline_gap_count_for_qa(conn),
         )
     })
+}
+
+async fn wait_for_projected_gap_and_item_for_qa(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    mut items: Vec<TimelineItem>,
+    expected_body: &str,
+    label: &str,
+) -> Result<(Vec<TimelineItem>, QaVisibleGapSelection, (u64, u64), u32), String> {
+    let mut capture = QaVisibleGapCapture::default();
+    loop {
+        capture.observe_items(&items, expected_body, label)?;
+        if let Some((visible_gap, initial_gap_projection)) = capture.projected_gap()
+            && let Some(settled_gap_count) =
+                settled_nonzero_timeline_gap_count_for_qa(conn, initial_gap_projection.1)
+        {
+            return Ok((
+                items,
+                visible_gap.clone(),
+                *initial_gap_projection,
+                settled_gap_count,
+            ));
+        }
+
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for a projected visible gap"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+        match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: ref event_key,
+                items: replacement,
+                ..
+            }) if event_key == key => items = replacement,
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref event_key,
+                diffs,
+                ..
+            }) if event_key == key => {
+                for diff in &diffs {
+                    apply_timeline_diff(&mut items, diff);
+                }
+            }
+            CoreEvent::Timeline(TimelineEvent::GapPositionsUpdated {
+                key: ref event_key,
+                actor_generation,
+                generation,
+                positions,
+                ..
+            }) if event_key == key && !positions.is_empty() => {
+                capture.observe_gap_positions(
+                    &items,
+                    actor_generation,
+                    generation,
+                    &positions,
+                    label,
+                )?;
+            }
+            _ => {}
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct QaVisibleGapSelection {
+    id: TimelineGapId,
+    first_visible_event_id: Option<String>,
+    last_visible_event_id: Option<String>,
+}
+
+#[derive(Default)]
+struct QaVisibleGapCapture {
+    exact_body_present: bool,
+    projected_gap: Option<(QaVisibleGapSelection, (u64, u64))>,
+}
+
+impl QaVisibleGapCapture {
+    fn observe_items(
+        &mut self,
+        items: &[TimelineItem],
+        expected_body: &str,
+        label: &str,
+    ) -> Result<(), String> {
+        let body_count = items
+            .iter()
+            .filter(|item| item.body.as_deref() == Some(expected_body))
+            .count();
+        if body_count > 1 {
+            return Err(format!(
+                "{label}: detached live-tail row was projected twice"
+            ));
+        }
+
+        let exact_body_present = body_count == 1;
+        if !exact_body_present || !self.exact_body_present {
+            self.projected_gap = None;
+        }
+        self.exact_body_present = exact_body_present;
+        Ok(())
+    }
+
+    fn observe_gap_positions(
+        &mut self,
+        items: &[TimelineItem],
+        actor_generation: u64,
+        generation: u64,
+        positions: &[TimelineGapPosition],
+        label: &str,
+    ) -> Result<(), String> {
+        if !self.exact_body_present {
+            self.projected_gap = None;
+            return Ok(());
+        }
+
+        let visible_gap = select_visible_gap_for_qa(items, positions)
+            .map_err(|error| format!("{label}: {error}"))?;
+        if let Some((existing_gap, (existing_actor, _))) = self.projected_gap.as_ref()
+            && (existing_gap.id != visible_gap.id || *existing_actor != actor_generation)
+        {
+            return Err(format!(
+                "{label}: projected visible gap identity changed before viewport demand"
+            ));
+        }
+        self.projected_gap = Some((visible_gap, (actor_generation, generation)));
+        Ok(())
+    }
+
+    fn projected_gap(&self) -> Option<&(QaVisibleGapSelection, (u64, u64))> {
+        self.projected_gap.as_ref()
+    }
+}
+
+fn select_visible_gap_for_qa(
+    items: &[TimelineItem],
+    positions: &[TimelineGapPosition],
+) -> Result<QaVisibleGapSelection, String> {
+    let bracketed = positions
+        .iter()
+        .filter_map(|position| {
+            let first_visible_event_id = items
+                .get(..position.before_item_index)?
+                .iter()
+                .rev()
+                .find_map(|item| match &item.id {
+                    TimelineItemId::Event { event_id } => Some(event_id.clone()),
+                    TimelineItemId::Transaction { .. } | TimelineItemId::Synthetic { .. } => None,
+                })?;
+            let last_visible_event_id =
+                items
+                    .get(position.before_item_index..)?
+                    .iter()
+                    .find_map(|item| match &item.id {
+                        TimelineItemId::Event { event_id } => Some(event_id.clone()),
+                        TimelineItemId::Transaction { .. } | TimelineItemId::Synthetic { .. } => {
+                            None
+                        }
+                    })?;
+            Some((
+                position.before_item_index,
+                position.id,
+                QaVisibleGapSelection {
+                    id: position.id,
+                    first_visible_event_id: Some(first_visible_event_id),
+                    last_visible_event_id: Some(last_visible_event_id),
+                },
+            ))
+        })
+        .max_by_key(|(before_item_index, id, _)| {
+            (*before_item_index, id.topology_revision, id.ordinal)
+        })
+        .map(|(_, _, selection)| selection);
+    if let Some(selection) = bracketed {
+        return Ok(selection);
+    }
+
+    if let Some(position) = positions
+        .iter()
+        .filter(|position| position.before_item_index == 0)
+        .max_by_key(|position| (position.id.topology_revision, position.id.ordinal))
+    {
+        return Ok(QaVisibleGapSelection {
+            id: position.id,
+            first_visible_event_id: None,
+            last_visible_event_id: None,
+        });
+    }
+
+    let min_before_item_index = positions
+        .iter()
+        .map(|position| position.before_item_index)
+        .min()
+        .map_or_else(|| "none".to_owned(), |index| index.to_string());
+    let max_before_item_index = positions
+        .iter()
+        .map(|position| position.before_item_index)
+        .max()
+        .map_or_else(|| "none".to_owned(), |index| index.to_string());
+    Err(format!(
+        "visible gap selection found no bracketed or top-row position \
+         (item_count={}, position_count={}, min_before_item_index={}, \
+         max_before_item_index={})",
+        items.len(),
+        positions.len(),
+        min_before_item_index,
+        max_before_item_index,
+    ))
+}
+
+fn settled_nonzero_timeline_gap_count_for_qa(
+    conn: &CoreConnection,
+    projection_generation: u64,
+) -> Option<u32> {
+    // The position event and Incomplete state share one inspection serial.
+    // Starting repair allocates a newer serial, which FailedIncomplete retains.
+    let gap_count = match conn.snapshot().timeline.continuity {
+        koushi_state::TimelineContinuityState::Incomplete {
+            generation,
+            gap_count,
+        } if generation == projection_generation => gap_count,
+        koushi_state::TimelineContinuityState::Repairing {
+            generation,
+            gap_count,
+            ..
+        }
+        | koushi_state::TimelineContinuityState::FailedIncomplete {
+            generation,
+            gap_count,
+            ..
+        } if generation >= projection_generation => gap_count,
+        koushi_state::TimelineContinuityState::Unknown
+        | koushi_state::TimelineContinuityState::Inspecting { .. }
+        | koushi_state::TimelineContinuityState::Healthy { .. }
+        | koushi_state::TimelineContinuityState::Incomplete { .. }
+        | koushi_state::TimelineContinuityState::Repairing { .. }
+        | koushi_state::TimelineContinuityState::FailedIncomplete { .. } => return None,
+    };
+    (gap_count > 0).then_some(gap_count)
 }
 
 async fn wait_for_timeline_gap_count_for_qa(
@@ -10393,14 +10512,14 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
     .await?;
     println!("e2ee_unverified_peer_send_nonblocking=ok");
 
-    wait_for_item_with_body_or_decryption_failure_with_sync(
+    wait_for_item_with_body_with_sync(
         conn_a2,
         &key_a2,
         E2EE_MULTI_USER_MULTI_DEVICE_BODY,
         "e2ee multi-device A2 receive",
     )
     .await?;
-    wait_for_item_with_body_or_decryption_failure_with_sync(
+    wait_for_item_with_body_with_sync(
         &mut conn_b,
         &key_b,
         E2EE_MULTI_USER_MULTI_DEVICE_BODY,
@@ -10451,7 +10570,7 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
         E2EE_EVENT_TIMEOUT,
     )
     .await?;
-    wait_for_item_with_body_or_decryption_failure_with_sync(
+    wait_for_item_with_body_with_sync(
         &mut conn_b,
         &key_b,
         blocked_body,
@@ -10484,7 +10603,7 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
     cleanup_logged_in_runtime(conn_b3, runtime_b3, account_key_b3, "e2ee cleanup B3").await?;
 
     if let Some((runtime_b2, mut conn_b2, account_key_b2, key_b2)) = maybe_recipient_second_device {
-        wait_for_item_with_body_or_decryption_failure_with_sync(
+        wait_for_item_with_body_with_sync(
             &mut conn_b2,
             &key_b2,
             E2EE_MULTI_USER_MULTI_DEVICE_BODY,
@@ -10682,6 +10801,49 @@ impl<'a> BodyWaitObserver<'a> {
                 self.expected_body
             )
         }
+    }
+}
+
+enum BodyWithSyncEventOutcome {
+    Found(TimelineItem),
+    RequestNextSync,
+    Continue,
+}
+
+fn observe_body_with_sync_event(
+    observer: &mut BodyWaitObserver<'_>,
+    key: &TimelineKey,
+    sync_request_id: RequestId,
+    event: CoreEvent,
+    label: &str,
+) -> Result<BodyWithSyncEventOutcome, String> {
+    match event {
+        CoreEvent::Timeline(TimelineEvent::InitialItems {
+            key: ref event_key,
+            items,
+            ..
+        }) if event_key == key => Ok(observer.observe_items(&items).map_or(
+            BodyWithSyncEventOutcome::Continue,
+            BodyWithSyncEventOutcome::Found,
+        )),
+        CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+            key: ref event_key,
+            diffs,
+            ..
+        }) if event_key == key => Ok(observer.observe_diffs(&diffs)?.map_or(
+            BodyWithSyncEventOutcome::Continue,
+            BodyWithSyncEventOutcome::Found,
+        )),
+        CoreEvent::Sync(SyncEvent::Stopped {
+            request_id: Some(event_request_id),
+        }) if event_request_id == sync_request_id => Ok(BodyWithSyncEventOutcome::RequestNextSync),
+        CoreEvent::OperationFailed {
+            request_id: event_request_id,
+            failure,
+        } if event_request_id == sync_request_id => {
+            Err(format!("{label}: SyncOnce failed: {failure:?}"))
+        }
+        _ => Ok(BodyWithSyncEventOutcome::Continue),
     }
 }
 
@@ -14065,14 +14227,21 @@ async fn wait_for_exact_items_and_gap_release(
     key: &TimelineKey,
     mut items: Vec<TimelineItem>,
     expected_bodies: &[String],
+    initial_gap_projection: Option<(u64, u64)>,
+    expected_closed_gap: Option<TimelineGapId>,
     label: &str,
 ) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
     let mut released = false;
-    let mut gap_actor_generation = None;
+    let mut expected_gap_absent = expected_closed_gap.is_none();
+    let mut saw_post_demand_gap_positions = false;
+    let mut closure_projection = None;
+    let mut gap_actor_generation =
+        initial_gap_projection.map(|(actor_generation, _)| actor_generation);
     let mut pending_render_ack = None;
     let mut render_ack_request_id = None;
     let mut render_ack_sent_at: Option<tokio::time::Instant> = None;
+    let mut render_ack_actor_generation = None;
     loop {
         let counts = expected_bodies
             .iter()
@@ -14083,7 +14252,7 @@ async fn wait_for_exact_items_and_gap_release(
                     .count()
             })
             .collect::<Vec<_>>();
-        if released && counts.iter().all(|count| *count == 1) {
+        if released && expected_gap_absent && counts.iter().all(|count| *count == 1) {
             return Ok(());
         }
         if counts.iter().any(|count| *count > 1) {
@@ -14097,7 +14266,15 @@ async fn wait_for_exact_items_and_gap_release(
             .map_err(|_| {
                 let missing_count = counts.iter().filter(|count| **count == 0).count();
                 format!(
-                    "{label}: timed out with {missing_count} rows missing; gap release={released}"
+                    "{label}: timed out with {missing_count} rows missing; gap_release={released}; \
+                     expected_gap_absent={expected_gap_absent}; \
+                     post_demand_gap_positions={saw_post_demand_gap_positions}; \
+                     closure_projection={}; render_ack_sent={}; render_ack_same_actor={}",
+                    closure_projection.is_some(),
+                    render_ack_sent_at.is_some(),
+                    closure_projection.is_some_and(|(actor_generation, _)| {
+                        render_ack_actor_generation == Some(actor_generation)
+                    }),
                 )
             })?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
@@ -14124,12 +14301,45 @@ async fn wait_for_exact_items_and_gap_release(
             CoreEvent::Timeline(TimelineEvent::GapPositionsUpdated {
                 key: ref event_key,
                 actor_generation,
+                generation,
+                positions,
                 ..
-            }) if event_key == key => gap_actor_generation = Some(actor_generation),
+            }) if event_key == key => {
+                if expected_closed_gap.is_none()
+                    || initial_gap_projection
+                        .is_some_and(|(initial_actor, _)| initial_actor == actor_generation)
+                {
+                    gap_actor_generation = Some(actor_generation);
+                }
+                saw_post_demand_gap_positions = true;
+                if let (Some(expected_gap), Some((initial_actor, initial_generation))) =
+                    (expected_closed_gap, initial_gap_projection)
+                    && actor_generation == initial_actor
+                    && generation > initial_generation
+                {
+                    expected_gap_absent =
+                        positions.iter().all(|position| position.id != expected_gap);
+                    closure_projection =
+                        expected_gap_absent.then_some((actor_generation, generation));
+                }
+            }
             CoreEvent::Timeline(TimelineEvent::GapRepairReleased {
-                key: ref event_key, ..
-            }) if event_key == key && counts.iter().all(|count| *count == 1) => {
+                key: ref event_key,
+                actor_generation,
+                generation,
+            }) if event_key == key => {
+                let release_projection = (actor_generation, generation);
+                if expected_closed_gap.is_some()
+                    && (closure_projection != Some(release_projection)
+                        || render_ack_actor_generation != Some(actor_generation)
+                        || render_ack_request_id.is_none())
+                {
+                    continue;
+                }
                 let Some(sent_at) = render_ack_sent_at else {
+                    if expected_closed_gap.is_some() {
+                        continue;
+                    }
                     return Err(format!(
                         "{label}: gap repair released without a correlated render acknowledgement"
                     ));
@@ -14173,6 +14383,7 @@ async fn wait_for_exact_items_and_gap_release(
             .map_err(|error| format!("{label}: render acknowledgement failed: {error}"))?;
             render_ack_request_id = Some(request_id);
             render_ack_sent_at = Some(tokio::time::Instant::now());
+            render_ack_actor_generation = Some(actor_generation);
             pending_render_ack = None;
         }
     }
@@ -14336,7 +14547,7 @@ async fn wait_for_item_with_body_or_decryption_failure(
     }
 }
 
-async fn wait_for_item_with_body_or_decryption_failure_with_sync(
+async fn wait_for_item_with_body_with_sync(
     conn: &mut CoreConnection,
     key: &TimelineKey,
     expected_body: &str,
@@ -14364,38 +14575,18 @@ async fn wait_for_item_with_body_or_decryption_failure_with_sync(
             .await
             .map_err(|_| observer.timeout_message(label))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
-
-        match event {
-            CoreEvent::Timeline(TimelineEvent::InitialItems {
-                key: ref ev_key,
-                items,
-                ..
-            }) if ev_key == key => {
-                if let Some(item) = observer.observe_items(&items) {
-                    return Ok(item);
-                }
-            }
-            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
-                key: ref ev_key,
-                diffs,
-                ..
-            }) if ev_key == key => {
-                if let Some(item) = observer.observe_diffs(&diffs)? {
-                    return Ok(item);
-                }
-            }
-            CoreEvent::Sync(SyncEvent::Stopped {
-                request_id: Some(ev_id),
-            }) if Some(ev_id) == sync_request_id => {
-                sync_request_id = None;
-            }
-            CoreEvent::OperationFailed {
-                request_id: ev_id,
-                failure,
-            } if Some(ev_id) == sync_request_id => {
-                return Err(format!("{label}: SyncOnce failed: {failure:?}"));
-            }
-            _ => {}
+        let active_sync_request_id =
+            sync_request_id.expect("a SyncOnce request is active while waiting for events");
+        match observe_body_with_sync_event(
+            &mut observer,
+            key,
+            active_sync_request_id,
+            event,
+            label,
+        )? {
+            BodyWithSyncEventOutcome::Found(item) => return Ok(item),
+            BodyWithSyncEventOutcome::RequestNextSync => sync_request_id = None,
+            BodyWithSyncEventOutcome::Continue => {}
         }
     }
 }
@@ -15618,7 +15809,225 @@ async fn wait_for_search_result(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koushi_core::event::{ThreadSummaryDto, TimelineMessageActions};
+    use koushi_core::event::{ThreadSummaryDto, TimelineGapPosition, TimelineMessageActions};
+
+    #[test]
+    fn visible_gap_selector_prefers_internal_gap_and_returns_nearest_event_bounds() {
+        let mut synthetic = projection_timeline_item("$synthetic-placeholder:test", false);
+        synthetic.id = TimelineItemId::Synthetic {
+            synthetic_id: "placeholder".to_owned(),
+        };
+        let items = vec![
+            projection_timeline_item("$far-left:test", false),
+            projection_timeline_item("$near-left:test", false),
+            synthetic,
+            projection_timeline_item("$near-right:test", false),
+            projection_timeline_item("$far-right:test", false),
+        ];
+        let top_row_id = TimelineGapId {
+            topology_revision: 10,
+            ordinal: 0,
+        };
+        let bracketed_id = TimelineGapId {
+            topology_revision: 10,
+            ordinal: 1,
+        };
+
+        let selected = select_visible_gap_for_qa(
+            &items,
+            &[
+                TimelineGapPosition {
+                    id: top_row_id,
+                    before_item_index: 0,
+                },
+                TimelineGapPosition {
+                    id: bracketed_id,
+                    before_item_index: 3,
+                },
+            ],
+        )
+        .expect("an internally bracketed gap should be visible");
+
+        assert_eq!(selected.id, bracketed_id);
+        assert_eq!(
+            selected.first_visible_event_id.as_deref(),
+            Some("$near-left:test")
+        );
+        assert_eq!(
+            selected.last_visible_event_id.as_deref(),
+            Some("$near-right:test")
+        );
+    }
+
+    #[test]
+    fn visible_gap_selector_chooses_newest_internal_gap_from_reversed_positions() {
+        let items = vec![
+            projection_timeline_item("$event-0:test", false),
+            projection_timeline_item("$event-1:test", false),
+            projection_timeline_item("$event-2:test", false),
+            projection_timeline_item("$event-3:test", false),
+            projection_timeline_item("$event-4:test", false),
+        ];
+        let older_gap_id = TimelineGapId {
+            topology_revision: 20,
+            ordinal: 0,
+        };
+        let newest_gap_id = TimelineGapId {
+            topology_revision: 21,
+            ordinal: 1,
+        };
+
+        let selected = select_visible_gap_for_qa(
+            &items,
+            &[
+                TimelineGapPosition {
+                    id: newest_gap_id,
+                    before_item_index: 4,
+                },
+                TimelineGapPosition {
+                    id: older_gap_id,
+                    before_item_index: 2,
+                },
+            ],
+        )
+        .expect("the newest internally bracketed gap should be visible");
+
+        assert_eq!(selected.id, newest_gap_id);
+        assert_eq!(
+            selected.first_visible_event_id.as_deref(),
+            Some("$event-3:test")
+        );
+        assert_eq!(
+            selected.last_visible_event_id.as_deref(),
+            Some("$event-4:test")
+        );
+    }
+
+    #[test]
+    fn visible_gap_selector_chooses_newest_top_row_gap_without_event_bounds() {
+        let older_gap_id = TimelineGapId {
+            topology_revision: 11,
+            ordinal: 0,
+        };
+        let newest_gap_id = TimelineGapId {
+            topology_revision: 12,
+            ordinal: 1,
+        };
+        let selected = select_visible_gap_for_qa(
+            &[projection_timeline_item("$first:test", false)],
+            &[
+                TimelineGapPosition {
+                    id: newest_gap_id,
+                    before_item_index: 0,
+                },
+                TimelineGapPosition {
+                    id: older_gap_id,
+                    before_item_index: 0,
+                },
+            ],
+        )
+        .expect("a top-row gap should support a gap-only viewport");
+
+        assert_eq!(selected.id, newest_gap_id);
+        assert_eq!(selected.first_visible_event_id, None);
+        assert_eq!(selected.last_visible_event_id, None);
+    }
+
+    #[test]
+    fn visible_gap_selector_rejects_unbracketed_non_top_gaps_privately() {
+        let mut synthetic = projection_timeline_item("$synthetic-placeholder:test", false);
+        synthetic.id = TimelineItemId::Synthetic {
+            synthetic_id: "placeholder".to_owned(),
+        };
+        let error = select_visible_gap_for_qa(
+            &[projection_timeline_item("$left:test", false), synthetic],
+            &[
+                TimelineGapPosition {
+                    id: TimelineGapId {
+                        topology_revision: 12,
+                        ordinal: 0,
+                    },
+                    before_item_index: 1,
+                },
+                TimelineGapPosition {
+                    id: TimelineGapId {
+                        topology_revision: 12,
+                        ordinal: 1,
+                    },
+                    before_item_index: 3,
+                },
+            ],
+        )
+        .expect_err("offscreen non-top gaps should not be reported as visible");
+
+        assert!(error.contains("item_count=2"));
+        assert!(error.contains("position_count=2"));
+        assert!(error.contains("min_before_item_index=1"));
+        assert!(error.contains("max_before_item_index=3"));
+        assert!(!error.contains("$left:test"));
+    }
+
+    #[test]
+    fn visible_gap_capture_requires_a_post_body_projection() {
+        let expected_body = "detached live-tail body";
+        let pre_body_items = vec![
+            projection_timeline_item("$old-left:test", false),
+            projection_timeline_item("$old-right:test", false),
+        ];
+        let old_gap_id = TimelineGapId {
+            topology_revision: 30,
+            ordinal: 0,
+        };
+        let new_gap_id = TimelineGapId {
+            topology_revision: 31,
+            ordinal: 0,
+        };
+        let mut capture = QaVisibleGapCapture::default();
+
+        capture
+            .observe_items(&pre_body_items, expected_body, "ordering test")
+            .unwrap();
+        capture
+            .observe_gap_positions(
+                &pre_body_items,
+                7,
+                40,
+                &[TimelineGapPosition {
+                    id: old_gap_id,
+                    before_item_index: 1,
+                }],
+                "ordering test",
+            )
+            .unwrap();
+        assert!(capture.projected_gap().is_none());
+
+        let mut body_item = projection_timeline_item("$new-right:test", false);
+        body_item.body = Some(expected_body.to_owned());
+        let post_body_items = vec![projection_timeline_item("$new-left:test", false), body_item];
+        capture
+            .observe_items(&post_body_items, expected_body, "ordering test")
+            .unwrap();
+        assert!(capture.projected_gap().is_none());
+
+        capture
+            .observe_gap_positions(
+                &post_body_items,
+                7,
+                41,
+                &[TimelineGapPosition {
+                    id: new_gap_id,
+                    before_item_index: 1,
+                }],
+                "ordering test",
+            )
+            .unwrap();
+        let (selected, (actor_generation, projection_generation)) = capture
+            .projected_gap()
+            .expect("the post-body projection should be captured");
+        assert_eq!(selected.id, new_gap_id);
+        assert_eq!(*actor_generation, 7);
+        assert_eq!(*projection_generation, 41);
+    }
 
     #[test]
     fn stale_gate_failure_is_not_attributed_to_a_fresh_sas_flow() {
@@ -15709,6 +16118,10 @@ mod tests {
         assert_eq!(
             QaScenario::from_env_value("timeline_legacy_fallback").unwrap(),
             QaScenario::TimelineLegacyFallback
+        );
+        assert_eq!(
+            QaScenario::from_env_value("timeline_legacy_persisted_gap").unwrap(),
+            QaScenario::TimelineLegacyPersistedGap
         );
         assert_eq!(
             QaScenario::from_env_value("activity").unwrap(),
@@ -16320,6 +16733,108 @@ mod tests {
     }
 
     #[test]
+    fn body_with_sync_event_observer_returns_found_before_matching_stop() {
+        let key = TimelineKey::room(
+            AccountKey("@alice:test".to_owned()),
+            "!room:test".to_owned(),
+        );
+        let sync_request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 10,
+        };
+        let delivered = synthetic_timeline_item(
+            "$delivered:test",
+            Some("delivered exact body"),
+            None,
+            None,
+            None,
+        );
+        let mut observer = BodyWaitObserver::new("delivered exact body");
+        let events = [
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: key.clone(),
+                generation: koushi_core::ids::TimelineGeneration(1),
+                batch_id: koushi_core::ids::TimelineBatchId(1),
+                diffs: vec![TimelineDiff::PushBack { item: delivered }],
+            }),
+            CoreEvent::Sync(SyncEvent::Stopped {
+                request_id: Some(sync_request_id),
+            }),
+        ];
+        let mut found = None;
+        let mut requested_next_sync = false;
+        for event in events {
+            match observe_body_with_sync_event(
+                &mut observer,
+                &key,
+                sync_request_id,
+                event,
+                "body with sync test",
+            )
+            .unwrap()
+            {
+                BodyWithSyncEventOutcome::Found(item) => {
+                    found = Some(item);
+                    break;
+                }
+                BodyWithSyncEventOutcome::RequestNextSync => {
+                    requested_next_sync = true;
+                    break;
+                }
+                BodyWithSyncEventOutcome::Continue => {}
+            }
+        }
+
+        let found = found.expect("target ItemsUpdated must win before SyncStopped");
+        assert_eq!(found.body.as_deref(), Some("delivered exact body"));
+        assert!(!requested_next_sync);
+    }
+
+    #[test]
+    fn body_with_sync_event_observer_repeats_only_for_matching_stop() {
+        let key = TimelineKey::room(
+            AccountKey("@alice:test".to_owned()),
+            "!room:test".to_owned(),
+        );
+        let sync_request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 20,
+        };
+        let other_request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 21,
+        };
+        let mut observer = BodyWaitObserver::new("missing body");
+
+        assert!(matches!(
+            observe_body_with_sync_event(
+                &mut observer,
+                &key,
+                sync_request_id,
+                CoreEvent::Sync(SyncEvent::Stopped {
+                    request_id: Some(other_request_id),
+                }),
+                "body with sync test",
+            )
+            .unwrap(),
+            BodyWithSyncEventOutcome::Continue
+        ));
+        assert!(matches!(
+            observe_body_with_sync_event(
+                &mut observer,
+                &key,
+                sync_request_id,
+                CoreEvent::Sync(SyncEvent::Stopped {
+                    request_id: Some(sync_request_id),
+                }),
+                "body with sync test",
+            )
+            .unwrap(),
+            BodyWithSyncEventOutcome::RequestNextSync
+        ));
+    }
+
+    #[test]
     fn find_timeline_item_with_body_finds_thread_reply_in_one_batch() {
         let items = vec![koushi_core::event::TimelineItem {
             id: koushi_core::event::TimelineItemId::Synthetic {
@@ -16730,91 +17245,6 @@ mod tests {
     }
 
     #[test]
-    fn timeline_legacy_persisted_gap_scenario_proves_live_tail_refresh_and_continuation() {
-        let source = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/bin/headless-core-qa.rs"
-        ));
-        let production_source = source
-            .split("#[cfg(test)]")
-            .next()
-            .expect("headless-core-qa source should contain production section");
-        let scenario_source = production_source
-            .split("async fn run_timeline_reconnect_scenario_impl")
-            .nth(1)
-            .and_then(|source| source.split("async fn cleanup_after_full_flow").next())
-            .expect("timeline reconnect scenario implementation should exist");
-
-        assert_eq!(
-            QaScenario::from_env_value("timeline_legacy_persisted_gap").unwrap(),
-            QaScenario::TimelineLegacyPersistedGap,
-        );
-        assert!(
-            QaScenario::TimelineLegacyPersistedGap
-                .should_run_stage(QaStage::TimelineLegacyPersistedGap)
-        );
-        assert!(production_source.contains("run_timeline_legacy_persisted_gap_scenario"));
-        assert!(production_source.contains("AccountCommand::RestoreSession"));
-        assert!(scenario_source.contains("start_direct_message_for_qa("));
-        assert!(scenario_source.contains("wait_for_dm_room_in_room_list"));
-        assert!(scenario_source.contains("arm_first_live_tail_messages_page"));
-        assert!(scenario_source.contains("arm_detached_live_tail_messages_page"));
-        assert!(scenario_source.contains("arm_historical_continuation_messages_page"));
-        assert!(scenario_source.contains("TimelineCommand::Paginate {"));
-        assert!(scenario_source.contains("direction: PaginationDirection::Backward"));
-        assert!(scenario_source.contains("wait_for_live_tail_snapshot_gap_count_for_qa"));
-        assert!(scenario_source.contains("wait_for_detached_live_tail_refresh_for_qa"));
-        assert!(scenario_source.contains("expected_end_token_request_count"));
-        assert!(scenario_source.contains("detached_gap_count.saturating_sub(1)"));
-        assert!(
-            !scenario_source.contains("detached_gap_baseline"),
-            "the detached assertion must not compare topology across runtime restores"
-        );
-        assert!(scenario_source.contains("did not render canned live-tail event"));
-        assert!(production_source.contains("let bodies = (0..30)"));
-        assert!(production_source.contains("gap_count: 1"));
-        let stop_b = production_source
-            .find("timeline legacy persisted gap stop B before room-absent proof")
-            .expect("the competing B sync must stop before the room-absent proof");
-        let baseline = production_source
-            .find("let room_absent_checkpoint_baseline")
-            .expect("the room-absent proof must take a diagnostics baseline");
-        let marker = baseline
-            + production_source[baseline..]
-                .find("legacy_live_tail_room_absent=ok")
-                .expect("the room-absent proof must emit its marker");
-        let resume_b = marker
-            + production_source[marker..]
-                .find("timeline legacy persisted gap resume B after room-absent proof")
-                .expect("the competing B sync must resume after the room-absent proof");
-        assert!(stop_b < baseline);
-        assert!(baseline < marker);
-        assert!(marker < resume_b);
-        let initial_snapshot = scenario_source
-            .find("timeline legacy persisted gap initial live-tail snapshot")
-            .expect("the initial live-tail snapshot must settle before the baseline is read");
-        let initial_marker = scenario_source
-            .find("legacy_live_tail_room_absent=ok")
-            .expect("the initial live-tail marker must exist");
-        assert!(
-            initial_snapshot < initial_marker,
-            "the persisted-gap baseline must come from the completed initial snapshot"
-        );
-        assert!(production_source.contains("legacy_live_tail_room_absent=ok"));
-        assert!(production_source.contains("live_tail_detached_gap=ok"));
-        assert!(production_source.contains("live_tail_historical_continuation=ok"));
-        assert_eq!(
-            final_tokens_for_scenario(QaScenario::TimelineLegacyPersistedGap),
-            [
-                "safety=ok",
-                "legacy_live_tail_room_absent=ok",
-                "live_tail_detached_gap=ok",
-                "live_tail_historical_continuation=ok",
-            ],
-        );
-    }
-
-    #[test]
     fn staged_scenarios_stop_after_their_requested_stage() {
         assert!(QaScenario::Safety.should_run_stage(QaStage::Safety));
         assert!(!QaScenario::Safety.should_run_stage(QaStage::LoginSync));
@@ -16853,6 +17283,16 @@ mod tests {
             QaScenario::TimelineLegacyFallback.should_run_stage(QaStage::TimelineLegacyFallback)
         );
         assert!(!QaScenario::TimelineLegacyFallback.should_run_stage(QaStage::LoginSync));
+
+        assert!(QaScenario::TimelineLegacyPersistedGap.should_run_stage(QaStage::Safety));
+        assert!(
+            QaScenario::TimelineLegacyPersistedGap
+                .should_run_stage(QaStage::TimelineLegacyPersistedGap)
+        );
+        assert!(
+            !QaScenario::TimelineLegacyPersistedGap
+                .should_run_stage(QaStage::TimelineLegacyFallback)
+        );
 
         assert!(QaScenario::TimelineStress.should_run_stage(QaStage::LoginSync));
         assert!(QaScenario::TimelineStress.should_run_stage(QaStage::RoomSpace));
@@ -17663,6 +18103,15 @@ mod tests {
                 "legacy_fallback_gap_repaired=ok",
                 "legacy_fallback_settled=ok",
                 "legacy_fallback_lifecycle=ok",
+            ]
+        );
+        assert_eq!(
+            final_tokens_for_scenario(QaScenario::TimelineLegacyPersistedGap),
+            [
+                "safety=ok",
+                "legacy_live_tail_room_absent=ok",
+                "live_tail_detached_gap=ok",
+                "live_tail_historical_continuation=ok",
             ]
         );
         assert_eq!(

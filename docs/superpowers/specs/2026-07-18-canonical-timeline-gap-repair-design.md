@@ -267,9 +267,29 @@ Implementation starts with these failing tests, in this order:
     gap and assert that the projected gap identity and visible demand remain
     unchanged relative to `rootEvent` mode.
 
-At least one test must cross SDK fixture, Core actor, serialized desktop event,
-TypeScript store, thread projection setting, DOM viewport observation, and the
-repair command. Component tests alone are not sufficient release evidence.
+Release evidence is a **compositional vertical**, not one test process that
+owns every layer. Requiring one process to cross a real SDK fixture and a DOM
+would force the Core homeserver harness to embed a WebView, or force the UI
+harness to introduce a test-only production seam for the SDK. Both choices
+conflate ownership and previously produced a speculative, non-compiling QA
+scaffold instead of stronger evidence.
+
+The required causal chain is therefore split across three authoritative gates:
+
+1. the real-store homeserver gate crosses the SDK fixture, Core actor,
+   persisted cold restart, projected gap ID, public viewport command, render
+   acknowledgement, exact gap closure, and `GapRepairReleased`;
+2. serialized contract/store tests preserve the full-range gap ID and apply the
+   canonical Core events without a second gap model; and
+3. the TimelineView gate crosses the TypeScript store, thread projection
+   setting, stable DOM nodes, measured viewport observation, live-history
+   movement, and room-key fencing.
+
+The handle, actor generation, and projection generation at each adjacent
+boundary must be asserted, so the composition cannot pass by exercising three
+unrelated fixtures. Component tests alone remain insufficient release
+evidence; they are accepted only together with the real-store and serialized
+contract gates above.
 
 ## Migration and Rollback
 

@@ -612,29 +612,48 @@ git commit -m "test(timeline): fence visible gap demand across room and thread c
 **Files:**
 
 - Modify: `crates/koushi-core/src/bin/headless-core-qa.rs`
-- Modify: `apps/desktop/src/domain/timelineStore.test.ts`
 - Modify: `apps/desktop/src/components/TimelineView.test.tsx`
-- Modify: `scripts/desktop-headless-local-qa.mjs`
+- Modify: `docs/superpowers/specs/2026-07-18-canonical-timeline-gap-repair-design.md`
 
 **Interfaces:**
 
 - Consumes the public contracts completed in Tasks 1-4D.
-- Produces one reproducible scenario named `visible_persisted_gap_recovery`.
+- Extends the existing real-store `timeline_legacy_persisted_gap` scenario so
+  its detached persisted gap is repaired through an explicit visible gap ID,
+  the public viewport command, render acknowledgements, and
+  `GapRepairReleased` instead of ordinary pagination.
+- Keeps tier ownership explicit: deterministic Core actor tests own the
+  >32-positive-progress fence, full-range wire identity, diagnostics
+  cardinality, and room/thread cancellation; the TimelineView test owns
+  `rootEvent`/`latestReply`, live-history movement, viewport re-reporting, and
+  room-key fencing.
 
-- [ ] **Step 1: Write the failing vertical scenario**
+- [ ] **Step 1: Write the failing vertical regressions**
 
-Seed a persisted room with a nonresident gap, open the selected room with that gap in the initial viewport, append a live event so the gap moves into history, and report it visible again. Exercise both `rootEvent` and `latestReply`. Assert one repair at a time, gap disappearance, no permanent `batches_processed=32`, and no repair continuation after switching rooms.
+In `timeline_legacy_persisted_gap`, retain the existing real login, persisted
+store, cold restart, room-absent fallback, and detached gap fixture. Capture
+the projected gap ID, report it through `ObserveViewport`, and require the
+existing render-acknowledgement helper to observe the historical continuation
+exactly once together with `GapRepairReleased` and the expected gap-count
+decrement.
 
-- [ ] **Step 2: Prove RED before enabling fixes in the scenario**
+In TimelineView, use one continuous render/rerender flow to append a live
+event, move the same gap into history, report the same ID again, cross the same
+root/gap DOM nodes between `rootEvent` and `latestReply`, close the descriptor,
+and fence the old room key after switching rooms.
+
+- [ ] **Step 2: Prove the regressions are behavior-sensitive**
 
 Run:
 
 ```bash
-cargo test -p koushi-core visible_persisted_gap_recovery --lib
-npm test -- --run src/domain/timelineStore.test.ts src/components/TimelineView.test.tsx -t "persisted gap recovery"
+cargo check -p koushi-core --features qa-bin --bin headless-core-qa
+npm test -- --run src/components/TimelineView.test.tsx -t "persisted gap recovery"
 ```
 
-Expected on the pre-fix baseline: visible gap remains and repair outcome never reaches repaired/complete.
+Expected mutation evidence: replacing the explicit gap observation with
+ordinary pagination fails the Core release assertion; keeping `rootEvent`
+during the crossing fails the DOM-order assertion.
 
 - [ ] **Step 3: Run all focused suites**
 
@@ -655,18 +674,27 @@ Expected: PASS.
 Run from `apps/desktop`:
 
 ```bash
-npm run qa:headless-local -- --scenario=visible_persisted_gap_recovery
+npm run qa:headless-local -- --server=conduit --scenario=timeline_legacy_persisted_gap --core --core-backend=probed --timeout-ms=240000
 ```
 
-Expected: selected-room gap is repaired in both thread modes and room-switch cancellation succeeds.
+Expected: the real persisted detached gap is selected by its projected ID,
+repaired through the public viewport/render-ack path, emits one release, and
+projects its continuation exactly once. Thread-mode and cancellation evidence
+comes from the focused UI and actor suites above, not from the homeserver tier.
 
 - [ ] **Step 5: Commit Task 5**
 
 ```bash
-git add crates/koushi-core/src/bin/headless-core-qa.rs apps/desktop/src/domain/timelineStore.test.ts apps/desktop/src/components/TimelineView.test.tsx scripts/desktop-headless-local-qa.mjs
+git add crates/koushi-core/src/bin/headless-core-qa.rs apps/desktop/src/components/TimelineView.test.tsx docs/superpowers/specs/2026-07-18-canonical-timeline-gap-repair-design.md docs/superpowers/plans/2026-07-18-visible-gap-recovery.md
 git commit -m "test(timeline): cover visible persisted gap recovery"
 ```
 
 ## Completion Gate
 
-Do not claim completion until fresh output proves all Task 5 commands pass and a real persisted-account diagnostic records a successful repair without a repeated `Deferred { 0 } -> offscreen` loop. The separate canonical display-projection/echo plan begins only after this gap plan is independently green.
+Do not claim the issue closed until fresh output proves all Task 5 commands
+pass and a real persisted-account diagnostic records a successful repair
+without a repeated `Deferred { 0 } -> offscreen` loop. The automated phase is
+ready for the final Mac check only after the actor, UI, and real-store
+homeserver tiers above are independently green. The separate canonical
+display-projection/echo plan begins only after this gap plan is independently
+green.
