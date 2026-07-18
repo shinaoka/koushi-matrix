@@ -6385,7 +6385,7 @@ fn live_tail_completion_requires_snapshot(outcome: MatrixLiveTailRefreshOutcome)
     )
 }
 
-fn live_edge_repair_made_progress(outcome: &MatrixTimelineGapRepairOutcome) -> bool {
+fn timeline_gap_repair_made_progress(outcome: &MatrixTimelineGapRepairOutcome) -> bool {
     match outcome {
         MatrixTimelineGapRepairOutcome::Deferred {
             cached_chunks_loaded,
@@ -6714,6 +6714,7 @@ struct TimelineGapRepairTracker {
     attempt_demand_revision: Option<u64>,
     demand_revision: u64,
     batches_processed: u32,
+    consecutive_no_progress_batches: u32,
     projected_gaps: Vec<(usize, TimelineGapPosition)>,
     last_projected_candidate: Option<ProjectedGapCandidate>,
     live_edge_target: Option<String>,
@@ -6904,6 +6905,7 @@ impl TimelineGapRepairTracker {
         self.attempt_gap_id = Some(id);
         self.attempt_demand_revision = Some(demand_revision);
         self.batches_processed = 0;
+        self.consecutive_no_progress_batches = 0;
         self.live_edge_batches_processed = 0;
         self.last_live_edge_selection = None;
         true
@@ -6920,8 +6922,17 @@ impl TimelineGapRepairTracker {
         Some(self.batches_processed)
     }
 
+    fn record_batch_outcome(&mut self, outcome: &MatrixTimelineGapRepairOutcome) {
+        if timeline_gap_repair_made_progress(outcome) {
+            self.consecutive_no_progress_batches = 0;
+        } else {
+            self.consecutive_no_progress_batches =
+                self.consecutive_no_progress_batches.saturating_add(1);
+        }
+    }
+
     fn can_start_batch(&self, trigger: TimelineGapRepairTrigger) -> bool {
-        self.batches_processed < MAX_TIMELINE_GAP_REPAIR_BATCHES
+        self.consecutive_no_progress_batches < MAX_TIMELINE_GAP_REPAIR_BATCHES
             && (!matches!(trigger, TimelineGapRepairTrigger::LiveEdge)
                 || self.live_edge_batches_processed < MAX_LIVE_EDGE_GAP_REPAIR_BATCHES)
     }
@@ -7743,7 +7754,7 @@ mod timeline_gap_repair_tracker_tests {
             },
             MatrixTimelineGapRepairOutcome::Progress { events: 0 },
         ] {
-            assert!(!live_edge_repair_made_progress(&outcome));
+            assert!(!timeline_gap_repair_made_progress(&outcome));
         }
         for outcome in [
             MatrixTimelineGapRepairOutcome::Deferred {
@@ -7753,7 +7764,7 @@ mod timeline_gap_repair_tracker_tests {
             MatrixTimelineGapRepairOutcome::BoundariesJoined { events: 0 },
             MatrixTimelineGapRepairOutcome::StartReached { events: 0 },
         ] {
-            assert!(live_edge_repair_made_progress(&outcome));
+            assert!(timeline_gap_repair_made_progress(&outcome));
         }
     }
 
@@ -9111,6 +9122,13 @@ mod timeline_gap_repair_tracker_tests {
     #[test]
     fn zero_progress_automatic_defer_remains_cache_pending() {
         let source = include_str!("timeline.rs");
+        let starter = source
+            .rsplit_once("async fn start_timeline_gap_repair")
+            .map(|(_, starter)| starter)
+            .expect("gap repair start handler must exist")
+            .split("async fn handle_timeline_gap_repair_finished")
+            .next()
+            .expect("repair completion handling must follow repair start");
         let handler = source
             .rsplit_once("async fn handle_timeline_gap_repair_finished")
             .map(|(_, handler)| handler)
@@ -9124,7 +9142,11 @@ mod timeline_gap_repair_tracker_tests {
             "an SDK repair outcome contains no viewport evidence and cannot be mapped to offscreen"
         );
         assert!(
-            handler.contains("record_batch(trigger)"),
+            starter.contains("record_batch(trigger)"),
+            "the diagnostic total is recorded when the bounded batch starts"
+        );
+        assert!(
+            handler.contains("record_batch_outcome(&result.outcome)"),
             "a zero-progress defer remains within the bounded attempt accounting"
         );
     }
@@ -9267,19 +9289,66 @@ mod timeline_gap_repair_tracker_tests {
     }
 
     #[test]
-    fn timeline_gap_repair_tracker_bounds_batches() {
+    fn gap_repair_progress_budget_allows_cache_reveal_beyond_total_batch_count() {
         let mut tracker = TimelineGapRepairTracker::default();
+        let id = projected_gap_id(7, 1);
+        let demand_revision = 11;
+        assert!(tracker.admit_gap_attempt(id, demand_revision));
+
+        for expected in 1..=MAX_TIMELINE_GAP_REPAIR_BATCHES + 1 {
+            let outcome = MatrixTimelineGapRepairOutcome::Deferred {
+                cached_chunks_loaded: 1,
+            };
+            assert!(timeline_gap_repair_made_progress(&outcome));
+            assert_eq!(tracker.attempt_gap_id, Some(id));
+            assert_eq!(tracker.attempt_demand_revision, Some(demand_revision));
+            assert!(
+                tracker.can_start_batch(TimelineGapRepairTrigger::Automatic),
+                "cache reveal batch {expected} must remain admissible"
+            );
+            assert_eq!(
+                tracker.record_batch(TimelineGapRepairTrigger::Automatic),
+                Some(expected)
+            );
+            tracker.record_batch_outcome(&outcome);
+            assert_eq!(tracker.consecutive_no_progress_batches, 0);
+        }
+        assert_eq!(
+            tracker.batches_processed,
+            MAX_TIMELINE_GAP_REPAIR_BATCHES + 1
+        );
+    }
+
+    #[test]
+    fn gap_repair_progress_budget_rejects_thirty_third_consecutive_noop() {
+        let mut tracker = TimelineGapRepairTracker::default();
+        let id = projected_gap_id(7, 1);
+        let demand_revision = 11;
+        assert!(tracker.admit_gap_attempt(id, demand_revision));
+
         for expected in 1..=MAX_TIMELINE_GAP_REPAIR_BATCHES {
+            let outcome = MatrixTimelineGapRepairOutcome::Deferred {
+                cached_chunks_loaded: 0,
+            };
+            assert!(!timeline_gap_repair_made_progress(&outcome));
             assert!(tracker.can_start_batch(TimelineGapRepairTrigger::Automatic));
             assert_eq!(
                 tracker.record_batch(TimelineGapRepairTrigger::Automatic),
                 Some(expected)
             );
+            tracker.record_batch_outcome(&outcome);
+            assert_eq!(tracker.consecutive_no_progress_batches, expected);
         }
         assert!(!tracker.can_start_batch(TimelineGapRepairTrigger::Automatic));
         assert_eq!(
             tracker.record_batch(TimelineGapRepairTrigger::Automatic),
             None
+        );
+        assert_eq!(tracker.attempt_gap_id, Some(id));
+        assert_eq!(tracker.attempt_demand_revision, Some(demand_revision));
+        assert_eq!(
+            tracker.consecutive_no_progress_batches,
+            MAX_TIMELINE_GAP_REPAIR_BATCHES
         );
     }
 
@@ -11783,7 +11852,7 @@ impl TimelineActor {
             self.gap_repair.finish_work(serial);
             return;
         }
-        if !self.gap_repair.can_start_batch(trigger) {
+        if self.gap_repair.record_batch(trigger).is_none() {
             self.gap_repair.finish_work(serial);
             let _ = self
                 .emit_action_reliable(AppAction::TimelineGapRepairFailed {
@@ -11880,6 +11949,8 @@ impl TimelineActor {
             .await;
             return;
         };
+        self.gap_repair.record_batch_outcome(&result.outcome);
+        let batches_processed = self.gap_repair.batches_processed;
         if result.outcome == MatrixTimelineGapRepairOutcome::Failed {
             self.gap_projection_correlation.clear(
                 self.actor_generation,
@@ -11895,7 +11966,7 @@ impl TimelineActor {
             return;
         }
         if matches!(trigger, TimelineGapRepairTrigger::LiveEdge)
-            && !live_edge_repair_made_progress(&result.outcome)
+            && !timeline_gap_repair_made_progress(&result.outcome)
         {
             self.gap_projection_correlation.clear(
                 self.actor_generation,
@@ -11920,20 +11991,6 @@ impl TimelineActor {
         }
         let continuation_trigger =
             gap_repair_continuation_trigger(trigger, repaired_live_edge_fallback, &result.outcome);
-        let Some(batches_processed) = self.gap_repair.record_batch(trigger) else {
-            self.gap_projection_correlation.clear(
-                self.actor_generation,
-                historical_causal_projection_operation(serial),
-            );
-            self.emit_gap_repair_failure_and_resume(
-                room_id,
-                serial,
-                gap_count,
-                TimelineGapRepairFailureKind::Timeout,
-            )
-            .await;
-            return;
-        };
         match self.gap_projection_correlation.complete(
             self.actor_generation,
             historical_causal_projection_operation(serial),
