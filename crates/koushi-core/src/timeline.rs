@@ -6431,6 +6431,18 @@ fn record_timeline_gap_repair_attempt(
     );
 }
 
+fn admit_and_record_timeline_gap_repair_attempt(
+    tracker: &mut TimelineGapRepairTracker,
+    id: TimelineGapId,
+    demand_revision: u64,
+) -> bool {
+    let Some(admission) = tracker.admit_gap_attempt(id, demand_revision) else {
+        return false;
+    };
+    record_timeline_gap_repair_attempt(admission, demand_revision);
+    true
+}
+
 fn record_timeline_gap_repair_budget(
     attempt_number: u64,
     demand_revision: u64,
@@ -6459,6 +6471,39 @@ fn record_timeline_gap_repair_budget(
             "cached_chunks_loaded",
             cached_chunks_loaded.try_into().unwrap_or(u64::MAX),
         )),
+    );
+}
+
+fn record_timeline_gap_repair_result(
+    tracker: &mut TimelineGapRepairTracker,
+    result: &Result<MatrixTimelineGapRepairResult, MatrixTimelineGapError>,
+) {
+    let cached_chunks_loaded = match result {
+        Ok(result) => {
+            tracker.record_batch_outcome(&result.outcome);
+            match result.outcome {
+                MatrixTimelineGapRepairOutcome::Deferred {
+                    cached_chunks_loaded,
+                } => cached_chunks_loaded,
+                MatrixTimelineGapRepairOutcome::Progress { .. }
+                | MatrixTimelineGapRepairOutcome::BoundariesJoined { .. }
+                | MatrixTimelineGapRepairOutcome::StartReached { .. }
+                | MatrixTimelineGapRepairOutcome::Stale
+                | MatrixTimelineGapRepairOutcome::Failed => 0,
+            }
+        }
+        Err(_) => {
+            tracker.record_batch_error();
+            0
+        }
+    };
+    record_timeline_gap_repair_budget(
+        tracker.attempt_number,
+        tracker
+            .attempt_demand_revision
+            .unwrap_or(tracker.demand_revision),
+        tracker.consecutive_no_progress_batches,
+        cached_chunks_loaded,
     );
 }
 
@@ -7614,6 +7659,13 @@ mod timeline_gap_repair_tracker_tests {
     #[test]
     fn gap_repair_sdk_error_budget_records_error_before_resume() {
         let source = include_str!("timeline.rs");
+        let result_accounting = source
+            .split_once("fn record_timeline_gap_repair_result(")
+            .map(|(_, helper)| helper)
+            .expect("gap repair result accounting helper must exist")
+            .split("fn checkpoint_is_strictly_newer")
+            .next()
+            .expect("checkpoint helper must follow gap repair diagnostics");
         let handler = source
             .rsplit_once("async fn handle_timeline_gap_repair_finished")
             .map(|(_, handler)| handler)
@@ -7621,20 +7673,17 @@ mod timeline_gap_repair_tracker_tests {
             .split("async fn finish_pending_gap_projection")
             .next()
             .expect("pending projection handler must follow repair completion");
-        let sdk_error_branch = handler
-            .split_once("let Ok(result) = result else {")
-            .map(|(_, branch)| branch)
-            .expect("SDK errors must have an explicit completion branch")
-            .split("self.gap_repair.record_batch_outcome")
-            .next()
-            .expect("successful outcome accounting must follow the SDK error branch");
-        let accounting_offset = sdk_error_branch
-            .find("self.gap_repair.record_batch_error()")
-            .expect("SDK errors must count as no-progress outcomes");
-        let resume_offset = sdk_error_branch
+        let accounting_offset = handler
+            .find("record_timeline_gap_repair_result")
+            .expect("SDK results must use the shared accounting helper");
+        let resume_offset = handler
             .find("emit_gap_repair_failure_and_resume")
             .expect("SDK errors must release queued scheduler work");
 
+        assert!(
+            result_accounting.contains("tracker.record_batch_error()"),
+            "SDK errors must count as no-progress outcomes"
+        );
         assert!(
             accounting_offset < resume_offset,
             "SDK error accounting must happen before scheduler work resumes"
@@ -9279,6 +9328,13 @@ mod timeline_gap_repair_tracker_tests {
     #[test]
     fn zero_progress_automatic_defer_remains_cache_pending() {
         let source = include_str!("timeline.rs");
+        let result_accounting = source
+            .split_once("fn record_timeline_gap_repair_result(")
+            .map(|(_, helper)| helper)
+            .expect("gap repair result accounting helper must exist")
+            .split("fn checkpoint_is_strictly_newer")
+            .next()
+            .expect("checkpoint helper must follow gap repair diagnostics");
         let starter = source
             .rsplit_once("async fn start_timeline_gap_repair")
             .map(|(_, starter)| starter)
@@ -9303,7 +9359,11 @@ mod timeline_gap_repair_tracker_tests {
             "the diagnostic total is recorded when the bounded batch starts"
         );
         assert!(
-            handler.contains("record_batch_outcome(&result.outcome)"),
+            handler.contains("record_timeline_gap_repair_result"),
+            "repair completion must use the shared result accounting helper"
+        );
+        assert!(
+            result_accounting.contains("tracker.record_batch_outcome(&result.outcome)"),
             "a zero-progress defer remains within the bounded attempt accounting"
         );
     }
@@ -9525,6 +9585,145 @@ mod timeline_gap_repair_tracker_tests {
                 .admit_gap_attempt(projected_gap_id(8, 2), 12)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn gap_repair_attempt_diagnostics_emit_once_per_changed_admission() {
+        let diagnostic_start = koushi_diagnostics::snapshot().records.len();
+        let demand_revision = 9_004_001;
+        let mut tracker = TimelineGapRepairTracker::default();
+
+        assert!(admit_and_record_timeline_gap_repair_attempt(
+            &mut tracker,
+            projected_gap_id(7, 1),
+            demand_revision,
+        ));
+        assert!(admit_and_record_timeline_gap_repair_attempt(
+            &mut tracker,
+            projected_gap_id(8, 1),
+            demand_revision,
+        ));
+        assert!(admit_and_record_timeline_gap_repair_attempt(
+            &mut tracker,
+            projected_gap_id(8, 2),
+            demand_revision,
+        ));
+        assert!(admit_and_record_timeline_gap_repair_attempt(
+            &mut tracker,
+            projected_gap_id(8, 2),
+            demand_revision + 1,
+        ));
+        assert!(!admit_and_record_timeline_gap_repair_attempt(
+            &mut tracker,
+            projected_gap_id(8, 2),
+            demand_revision + 1,
+        ));
+
+        let records = koushi_diagnostics::snapshot().records;
+        let admissions = records[diagnostic_start..]
+            .iter()
+            .filter(|record| {
+                record.event.source == "core.timeline_gap_repair"
+                    && record.event.stage == "attempt_admitted"
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "demand_revision"
+                            && matches!(
+                                field.value,
+                                koushi_diagnostics::DiagnosticValue::Count(value)
+                                    if value == demand_revision || value == demand_revision + 1
+                            )
+                    })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(admissions.len(), 4);
+        for reason in ["initial", "topology", "ordinal", "demand"] {
+            assert_eq!(
+                admissions
+                    .iter()
+                    .filter(|record| {
+                        record.event.fields.iter().any(|field| {
+                            field.key == "reset_reason"
+                                && field.value == koushi_diagnostics::DiagnosticValue::Token(reason)
+                        })
+                    })
+                    .count(),
+                1,
+                "changed admission must emit reset reason {reason} exactly once",
+            );
+        }
+    }
+
+    #[test]
+    fn gap_repair_attempt_diagnostics_emit_one_budget_update_per_sdk_result() {
+        let diagnostic_start = koushi_diagnostics::snapshot().records.len();
+        let demand_revision = 9_004_101;
+        let mut tracker = TimelineGapRepairTracker::default();
+        tracker
+            .admit_gap_attempt(projected_gap_id(7, 1), demand_revision)
+            .expect("initial gap attempt is admitted");
+        let outcomes = [
+            MatrixTimelineGapRepairOutcome::Stale,
+            MatrixTimelineGapRepairOutcome::Deferred {
+                cached_chunks_loaded: 0,
+            },
+            MatrixTimelineGapRepairOutcome::Deferred {
+                cached_chunks_loaded: 1,
+            },
+            MatrixTimelineGapRepairOutcome::Failed,
+            MatrixTimelineGapRepairOutcome::Progress { events: 0 },
+            MatrixTimelineGapRepairOutcome::Progress { events: 1 },
+            MatrixTimelineGapRepairOutcome::BoundariesJoined { events: 0 },
+            MatrixTimelineGapRepairOutcome::StartReached { events: 0 },
+        ];
+
+        for (index, outcome) in outcomes.into_iter().enumerate() {
+            record_timeline_gap_repair_result(
+                &mut tracker,
+                &Ok(MatrixTimelineGapRepairResult {
+                    outcome,
+                    last_projection_batch: None,
+                }),
+            );
+            assert_eq!(
+                timeline_gap_repair_diagnostic_count_since(
+                    diagnostic_start,
+                    "budget_updated",
+                    demand_revision,
+                ),
+                index + 1,
+                "each successful SDK result must emit exactly one budget update",
+            );
+        }
+
+        record_timeline_gap_repair_result(&mut tracker, &Err(MatrixTimelineGapError::Sdk));
+        assert_eq!(
+            timeline_gap_repair_diagnostic_count_since(
+                diagnostic_start,
+                "budget_updated",
+                demand_revision,
+            ),
+            outcomes.len() + 1,
+            "the SDK error result must emit exactly one budget update",
+        );
+    }
+
+    fn timeline_gap_repair_diagnostic_count_since(
+        diagnostic_start: usize,
+        stage: &str,
+        demand_revision: u64,
+    ) -> usize {
+        koushi_diagnostics::snapshot().records[diagnostic_start..]
+            .iter()
+            .filter(|record| {
+                record.event.source == "core.timeline_gap_repair"
+                    && record.event.stage == stage
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "demand_revision"
+                            && field.value
+                                == koushi_diagnostics::DiagnosticValue::Count(demand_revision)
+                    })
+            })
+            .count()
     }
 
     #[test]
@@ -11974,11 +12173,11 @@ impl TimelineActor {
                         });
                         if let Some(id) = selected_gap_id {
                             let demand_revision = self.gap_repair.demand_revision;
-                            if let Some(admission) =
-                                self.gap_repair.admit_gap_attempt(id, demand_revision)
-                            {
-                                record_timeline_gap_repair_attempt(admission, demand_revision);
-                            }
+                            admit_and_record_timeline_gap_repair_attempt(
+                                &mut self.gap_repair,
+                                id,
+                                demand_revision,
+                            );
                         }
                         if matches!(trigger, TimelineGapRepairTrigger::LiveEdge) {
                             if !self.gap_repair.can_start_batch(trigger) {
@@ -12226,16 +12425,8 @@ impl TimelineActor {
         self.gap_work_task = None;
         let room_id = self.key.room_id().to_owned();
         let gap_count = self.gap_repair.gap_count;
+        record_timeline_gap_repair_result(&mut self.gap_repair, &result);
         let Ok(result) = result else {
-            self.gap_repair.record_batch_error();
-            record_timeline_gap_repair_budget(
-                self.gap_repair.attempt_number,
-                self.gap_repair
-                    .attempt_demand_revision
-                    .unwrap_or(self.gap_repair.demand_revision),
-                self.gap_repair.consecutive_no_progress_batches,
-                0,
-            );
             self.gap_projection_correlation.clear(
                 self.actor_generation,
                 historical_causal_projection_operation(serial),
@@ -12249,25 +12440,6 @@ impl TimelineActor {
             .await;
             return;
         };
-        self.gap_repair.record_batch_outcome(&result.outcome);
-        let cached_chunks_loaded = match &result.outcome {
-            MatrixTimelineGapRepairOutcome::Deferred {
-                cached_chunks_loaded,
-            } => *cached_chunks_loaded,
-            MatrixTimelineGapRepairOutcome::Progress { .. }
-            | MatrixTimelineGapRepairOutcome::BoundariesJoined { .. }
-            | MatrixTimelineGapRepairOutcome::StartReached { .. }
-            | MatrixTimelineGapRepairOutcome::Stale
-            | MatrixTimelineGapRepairOutcome::Failed => 0,
-        };
-        record_timeline_gap_repair_budget(
-            self.gap_repair.attempt_number,
-            self.gap_repair
-                .attempt_demand_revision
-                .unwrap_or(self.gap_repair.demand_revision),
-            self.gap_repair.consecutive_no_progress_batches,
-            cached_chunks_loaded,
-        );
         let batches_processed = self.gap_repair.batches_processed;
         if result.outcome == MatrixTimelineGapRepairOutcome::Failed {
             self.gap_projection_correlation.clear(
