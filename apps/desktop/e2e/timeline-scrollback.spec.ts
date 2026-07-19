@@ -288,6 +288,7 @@ test("short initial load stays stable when the user scrolls up slightly", async 
   // Simulate a small user scroll up from the live edge.
   await container.evaluate((node, target) => {
     node.scrollTop = target;
+    node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -100 }));
     node.dispatchEvent(new Event("scroll", { bubbles: true }));
   }, targetScrollTop);
 
@@ -359,6 +360,7 @@ test("short variable-height load stays stable when the user scrolls up slightly"
 
   await container.evaluate((node, target) => {
     node.scrollTop = target;
+    node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -100 }));
     node.dispatchEvent(new Event("scroll", { bubbles: true }));
   }, targetScrollTop);
 
@@ -422,7 +424,7 @@ test("tall variable-height initial load snaps to the real live edge after measur
   await expect(page.locator('[data-item-id="$tall799"]')).toBeVisible();
 });
 
-test("auto-backfill after short non-virtualized growth keeps the viewport stable", async ({ page }) => {
+test("auto-backfill keeps a slight live-edge scroll stable before near-top prefetch", async ({ page }) => {
   await page.goto("/harness.html?autoLoadOlderMessages=true");
   await page.waitForSelector("[data-testid=timeline-view]");
 
@@ -438,38 +440,13 @@ test("auto-backfill after short non-virtualized growth keeps the viewport stable
     },
     {
       key: timelineKey(),
-      items: Array.from({ length: 5 }, (_, i) =>
-        makeItem(`$short${String(i).padStart(2, "0")}`, `short ${i}`)
+      items: Array.from({ length: 105 }, (_, i) =>
+        makeItem(`$grow${String(i).padStart(3, "0")}`, `grow ${i}`)
       )
     }
   );
 
   const container = page.locator("[data-testid=timeline-view]");
-  await expect(container.locator("[data-item-id]")).toHaveCount(5);
-
-  await page.evaluate(
-    ({ key, items }) => {
-      window.__harness.pushCoreEvent({
-        kind: "Timeline",
-        event: {
-          ItemsUpdated: {
-            key,
-            generation: 1,
-            batch_id: 1,
-            diffs: items.map((item) => ({ PushBack: { item } }))
-          }
-        }
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } as any);
-    },
-    {
-      key: timelineKey(),
-      items: Array.from({ length: 100 }, (_, i) =>
-        makeItem(`$grow${String(i).padStart(2, "0")}`, `grow ${i}`)
-      )
-    }
-  );
-
   await expect(container.locator("[data-item-id]")).toHaveCount(105);
   await expectTimelineScrolledToBottom(container);
 
@@ -933,7 +910,7 @@ test("timeline does not auto-backfill unless the setting enables it", async ({ p
     .toBe(0);
 });
 
-test("timeline prefetches older messages one batch before the top edge", async ({ page }) => {
+test("timeline prefetches older messages within two viewport heights", async ({ page }) => {
   await page.goto("/harness.html?autoLoadOlderMessages=true");
   await page.waitForSelector("[data-testid=timeline-view]");
   await pushInitialTimelineItems(page, 180);
@@ -941,10 +918,8 @@ test("timeline prefetches older messages one batch before the top edge", async (
   const container = page.locator("[data-testid=timeline-view]");
   await expect(container).toHaveAttribute("data-total-items", "180");
 
-  // 3,500px is far above the old 80px top-edge trigger, but inside one
-  // 100-item batch in the deterministic harness (100 * 48px).
   await container.evaluate((node) => {
-    node.scrollTop = 3_500;
+    node.scrollTop = Math.round(node.clientHeight * 1.5);
     node.dispatchEvent(new Event("scroll", { bubbles: true }));
   });
 
@@ -1256,7 +1231,7 @@ test("active scroll inside mounted overscan does not recompose the virtual windo
   expect(diagnostics?.renderCommits ?? 0).toBeLessThanOrEqual(1);
 });
 
-test("manual anchor correction is the only row-growth correction path", async ({ page }) => {
+test("measurement commit compensates the local anchor before paint", async ({ page }) => {
   await page.goto("/harness.html?variableHeights=true");
   await page.waitForSelector("[data-testid=timeline-view]");
   await pushInitialTimelineItems(page, 1_000);
@@ -1299,6 +1274,12 @@ test("manual anchor correction is the only row-growth correction path", async ({
   await expect(anchor).toBeVisible();
   const beforeTop = await anchor.evaluate((node) => node.getBoundingClientRect().top);
 
+  await container.evaluate((node) => {
+    node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -4 }));
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await page.evaluate(() => window.__harness.resetScrollDiagnostics());
+
   await page.addStyleTag({
     content: `
       [data-frame-item-id="${targets.growId}"] .message-body::after {
@@ -1308,10 +1289,89 @@ test("manual anchor correction is the only row-growth correction path", async ({
       }
     `
   });
-  await waitAnimationFrames(page, 5);
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__harness.scrollDiagnostics()?.measurementFlushes ?? 0)
+    )
+    .toBeGreaterThan(0);
 
   const afterTop = await anchor.evaluate((node) => node.getBoundingClientRect().top);
   expect(Math.abs(afterTop - beforeTop)).toBeLessThanOrEqual(ANCHOR_PIXEL_TOLERANCE);
+  const diagnostics = await page.evaluate(() => window.__harness.scrollDiagnostics());
+  expect(diagnostics?.maxAnchorTopDeltaPx ?? 0).toBeGreaterThan(0);
+  expect(diagnostics?.scrollWrites.backfillCompensation ?? 0).toBeGreaterThan(0);
+});
+
+test("active upward input defers prepend until idle", async ({ page }) => {
+  await page.goto("/harness.html");
+  await page.waitForSelector("[data-testid=timeline-view]");
+  await page.addStyleTag({
+    path: path.join(process.cwd(), "apps/desktop/src/styles.css")
+  });
+  await waitAnimationFrames(page, 1);
+  await pushInitialTimelineItems(page, 100);
+
+  const container = page.locator("[data-testid=timeline-view]");
+  await expect(container.locator("[data-item-id]")).toHaveCount(100);
+  await container.evaluate((node) => {
+    node.scrollTop = 1_500;
+    node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -40 }));
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+
+  const anchorBefore = await container.evaluate((node) => {
+    const top = node.getBoundingClientRect().top;
+    for (const row of node.querySelectorAll<HTMLElement>("[data-item-id]")) {
+      if (row.getBoundingClientRect().bottom > top) {
+        return {
+          itemId: row.dataset["itemId"] ?? "",
+          offsetTop: row.getBoundingClientRect().top - top
+        };
+      }
+    }
+    return null;
+  });
+  expect(anchorBefore).not.toBeNull();
+
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          ItemsUpdated: {
+            key,
+            generation: 1,
+            batch_id: 1,
+            diffs: items.map((item) => ({ PushFront: { item } }))
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: Array.from({ length: 4 }, (_, index) =>
+        makeImageItem(`$deferred-old${index}`)
+      )
+    }
+  );
+
+  await waitAnimationFrames(page, 1);
+  expect(await container.locator('[data-item-id^="$deferred-old"]').count()).toBe(0);
+  await expect
+    .poll(() => container.locator('[data-item-id^="$deferred-old"]').count())
+    .toBe(4);
+
+  const anchorAfter = await container.evaluate((node, anchorId) => {
+    const row = node.querySelector<HTMLElement>(`[data-item-id="${anchorId}"]`);
+    return row
+      ? row.getBoundingClientRect().top - node.getBoundingClientRect().top
+      : null;
+  }, anchorBefore!.itemId);
+  expect(anchorAfter).not.toBeNull();
+  expect(Math.abs(anchorAfter! - anchorBefore!.offsetTop)).toBeLessThanOrEqual(
+    ANCHOR_PIXEL_TOLERANCE
+  );
 });
 
 test("timeline keeps SDK diff order and ignores duplicate update batches", async ({ page }) => {

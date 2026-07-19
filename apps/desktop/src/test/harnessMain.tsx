@@ -253,6 +253,7 @@ renderTimeline = () => {
       timelineKey={roomTimelineKey(ACCOUNT_KEY, ROOM_ID)}
       transport={transport}
       autoLoadOlderMessages={autoLoadOlderMessages}
+      continuity={{ kind: "healthy", generation: 1, authoritative_start: true }}
       mediaDownloads={mediaDownloads}
       onReply={(roomId, eventId) => {
         void ipc.invoke("set_composer_reply_target", { roomId, eventId });

@@ -59,7 +59,7 @@ Run:
 
 ```bash
 npm --prefix apps/desktop run test -- --run src/components/TimelineView.test.tsx
-npm --prefix apps/desktop exec -- playwright test e2e/timeline-scrollback.spec.ts -g "missing-dimension media|pending link previews" --workers=1
+npm --prefix apps/desktop exec -- playwright test --config apps/desktop/playwright.config.ts apps/desktop/e2e/timeline-scrollback.spec.ts -g "missing-dimension media|pending link previews" --workers=1
 ```
 
 Expected: fallback geometry returns `null`, and at least one real-DOM row-height assertion exceeds the 2-pixel tolerance.
@@ -187,7 +187,7 @@ test("active upward input defers prepend until idle", async ({ page }) => {
 Run:
 
 ```bash
-npm --prefix apps/desktop exec -- playwright test e2e/timeline-scrollback.spec.ts \
+npm --prefix apps/desktop exec -- playwright test --config apps/desktop/playwright.config.ts apps/desktop/e2e/timeline-scrollback.spec.ts \
   -g "measurement commit compensates|active upward input defers" --workers=1
 ```
 
@@ -239,7 +239,7 @@ diagnostic delta/write assertions are non-zero and same-commit.
 Run:
 
 ```bash
-npm --prefix apps/desktop exec -- playwright test e2e/timeline-scrollback.spec.ts --workers=1
+npm --prefix apps/desktop exec -- playwright test --config apps/desktop/playwright.config.ts apps/desktop/e2e/timeline-scrollback.spec.ts --workers=1
 ```
 
 Expected: all scrollback tests pass with no retries.

@@ -408,19 +408,34 @@ function captureFreeScrollAnchor(container: HTMLElement): ScrollAnchor | null {
   });
 }
 
-/** Restore the anchor by adjusting scrollTop; true if the anchor was found. */
-function restoreAnchor(container: HTMLElement, anchor: ScrollAnchor): boolean {
+/** Restore the anchor by its local pixel delta and report the applied delta. */
+function restoreAnchorWithDelta(
+  container: HTMLElement,
+  anchor: ScrollAnchor
+): number | null {
   const node = container.querySelector<HTMLElement>(
     `[data-item-id="${cssEscape(anchor.itemId)}"]`
   );
   if (!node) {
-    return false;
+    return null;
   }
   const containerTop = container.getBoundingClientRect().top;
   const currentOffset = node.getBoundingClientRect().top - containerTop;
-  container.scrollTop += currentOffset - anchor.offsetTop;
-  return true;
+  const delta = currentOffset - anchor.offsetTop;
+  container.scrollTop += delta;
+  return delta;
 }
+
+/** Restore the anchor by adjusting scrollTop; true if the anchor was found. */
+function restoreAnchor(container: HTMLElement, anchor: ScrollAnchor): boolean {
+  return restoreAnchorWithDelta(container, anchor) !== null;
+}
+
+type PendingHeightModelCommit = {
+  timelineKeyHash: string;
+  anchor: ScrollAnchor;
+  changedRows: number;
+};
 
 type CapturedTimelineScrollAnchor = {
   event_id: string;
@@ -2359,9 +2374,17 @@ export const TimelineView = memo(function TimelineView({
   const rangeModelEpochRef = useRef(0);
   const virtualItemHeight = TIMELINE_ESTIMATED_ITEM_HEIGHT_PX;
   const [measuredHeightVersion, setMeasuredHeightVersion] = useState(0);
+  const [, setDeferredPrependReleaseVersion] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const itemHeightByDomIdRef = useRef<Map<string, number>>(new Map());
+  const committedVisibleRowsRef = useRef<{
+    timelineKeyHash: string;
+    rows: readonly TimelineDisplayRow[];
+  } | null>(null);
+  const deferredPrependPendingRef = useRef(false);
+  const pendingHeightModelCommitRef = useRef<PendingHeightModelCommit | null>(null);
+  const heightCompensationRecordedVersionRef = useRef<number | null>(null);
   const openMediaViewer = useCallback((item: TimelineMediaViewerItem) => {
     const activeElement =
       typeof document !== "undefined" && document.activeElement instanceof HTMLElement
@@ -2385,9 +2408,8 @@ export const TimelineView = memo(function TimelineView({
   /**
    * Last first-visible anchor captured while in free-scroll. Because
    * `.timeline-view` uses `overflow-anchor: none`, the browser no longer
-   * corrects scroll position when an above-viewport row resizes (image load,
-   * deferred measurement, CSS growth). This anchor lets the ResizeObserver
-   * restore the viewport so the visible row stays put — Koushi-owned anchoring.
+   * corrects scroll position when an above-viewport row resizes. The height
+   * model commit consumes this stable local anchor before paint.
    */
   const freeScrollAnchorRef = useRef<ScrollAnchor | null>(null);
   /**
@@ -2690,6 +2712,19 @@ export const TimelineView = memo(function TimelineView({
     timelineViewportSessionMemory.set(timelineKeyHash, { mode: "live-edge" });
   }, [timelineKeyHash]);
 
+  const releaseDeferredPrepend = useCallback((): boolean => {
+    if (!deferredPrependPendingRef.current) {
+      return false;
+    }
+    const container = containerRef.current;
+    const anchor = container ? captureFreeScrollAnchor(container) : null;
+    pendingAnchorRef.current = anchor;
+    anchorRestorePendingRef.current = anchor !== null;
+    deferredPrependPendingRef.current = false;
+    setDeferredPrependReleaseVersion((current) => current + 1);
+    return true;
+  }, []);
+
   const flushPendingMeasurements = useCallback(
     (reason: "idle" | "maxDefer") => {
       const pending = pendingMeasuredHeightsRef.current;
@@ -2697,6 +2732,7 @@ export const TimelineView = memo(function TimelineView({
         clearMeasurementTimers();
         scrollActivityRef.current = "idle";
         clearPendingMeasurementDiagnostics();
+        releaseDeferredPrepend();
         return;
       }
 
@@ -2759,6 +2795,7 @@ export const TimelineView = memo(function TimelineView({
       pending.clear();
       clearMeasurementTimers();
       scrollActivityRef.current = "idle";
+      releaseDeferredPrepend();
 
       if (changedRows === 0) {
         clearPendingMeasurementDiagnostics();
@@ -2771,6 +2808,18 @@ export const TimelineView = memo(function TimelineView({
       if (measuredAtBottom) {
         setViewportIntentToLiveEdge();
       }
+
+      const heightAnchor =
+        container &&
+        viewportIntentRef.current.kind === "free-scroll" &&
+        !jumpViewportControlRef.current &&
+        !anchorRestorePendingRef.current &&
+        !roomScrollAnchorRestorePendingRef.current
+          ? freeScrollAnchorRef.current
+          : null;
+      pendingHeightModelCommitRef.current = heightAnchor
+        ? { timelineKeyHash: timelineKeyHashRef.current, anchor: heightAnchor, changedRows }
+        : null;
 
       itemHeightByDomIdRef.current = nextHeights;
       updateScrollDiagnostics((current) =>
@@ -2792,6 +2841,7 @@ export const TimelineView = memo(function TimelineView({
       clearMeasurementTimers,
       clearPendingMeasurementDiagnostics,
       emitDiagnosticLog,
+      releaseDeferredPrepend,
       setViewportIntentToLiveEdge,
       updateScrollDiagnostics
     ]
@@ -3108,7 +3158,10 @@ export const TimelineView = memo(function TimelineView({
         }
         if (batchContainsPrepend(event.ItemsUpdated.diffs)) {
           const container = containerRef.current;
-          if (container) {
+          if (scrollActivityRef.current === "active") {
+            deferredPrependPendingRef.current = true;
+            anchorRestorePendingRef.current = true;
+          } else if (container) {
             pendingAnchorRef.current = captureAnchor(container);
             anchorRestorePendingRef.current = true;
           }
@@ -3214,6 +3267,10 @@ export const TimelineView = memo(function TimelineView({
     anchorAsyncGenerationRef.current += 1;
     pendingAnchorRef.current = null;
     anchorRestorePendingRef.current = false;
+    deferredPrependPendingRef.current = false;
+    committedVisibleRowsRef.current = null;
+    pendingHeightModelCommitRef.current = null;
+    heightCompensationRecordedVersionRef.current = null;
     roomScrollAnchorRestorePendingRef.current = false;
     freeScrollAnchorRef.current = null;
     jumpViewportControlRef.current = false;
@@ -3262,6 +3319,10 @@ export const TimelineView = memo(function TimelineView({
     stickToBottomAfterMeasurementRef.current = false;
     resetActiveMeasurementDeferral({ clearMountedIds: true });
     itemHeightByDomIdRef.current = new Map();
+    committedVisibleRowsRef.current = null;
+    deferredPrependPendingRef.current = false;
+    pendingHeightModelCommitRef.current = null;
+    heightCompensationRecordedVersionRef.current = null;
     avatarRequestRangeRef.current = EMPTY_TIMELINE_ITEM_INDEX_RANGE;
     setAvatarRequestRange(EMPTY_TIMELINE_ITEM_INDEX_RANGE);
     linkPreviewRequestRangeRef.current = EMPTY_TIMELINE_ITEM_INDEX_RANGE;
@@ -3314,6 +3375,10 @@ export const TimelineView = memo(function TimelineView({
     () => () => {
       anchorAsyncGenerationRef.current += 1;
       anchorRestorePendingRef.current = false;
+      deferredPrependPendingRef.current = false;
+      committedVisibleRowsRef.current = null;
+      pendingHeightModelCommitRef.current = null;
+      heightCompensationRecordedVersionRef.current = null;
       roomScrollAnchorRestorePendingRef.current = false;
       suppressScrollAnchorCaptureRef.current = false;
       viewportIntentRef.current = { kind: "free-scroll" };
@@ -3360,7 +3425,7 @@ export const TimelineView = memo(function TimelineView({
   const visibleItems = useMemo(() => items.filter((item) => !item.is_hidden), [items]);
   // The SDK-owned store stays canonical. Only these presentation rows feed
   // rendering, measuring, and virtualization for an opt-in Room projection.
-  const visibleRows = useMemo(() => {
+  const projectedVisibleRows = useMemo(() => {
     const itemsWithGaps = insertTimelineGapItems(
       items,
       timelineKeyState?.gapPositions ?? [],
@@ -3373,6 +3438,33 @@ export const TimelineView = memo(function TimelineView({
       threadRootProjections
     ).filter((row) => !row.item.is_hidden);
   }, [items, threadRootOrder, threadRootProjections, timelineKey, timelineKeyState]);
+  const committedProjection =
+    committedVisibleRowsRef.current?.timelineKeyHash === timelineKeyHash
+      ? committedVisibleRowsRef.current.rows
+      : projectedVisibleRows;
+  const deferPurePrepend =
+    scrollActivityRef.current === "active" &&
+    timelineRowsArePurePrepend(
+      committedProjection.map((row) => row.row_id),
+      projectedVisibleRows.map((row) => row.row_id)
+    );
+  const visibleRows = deferPurePrepend ? committedProjection : projectedVisibleRows;
+  useLayoutEffect(() => {
+    if (deferPurePrepend) {
+      deferredPrependPendingRef.current = true;
+      anchorRestorePendingRef.current = true;
+      return;
+    }
+    if (deferredPrependPendingRef.current) {
+      deferredPrependPendingRef.current = false;
+      pendingAnchorRef.current = null;
+      anchorRestorePendingRef.current = false;
+    }
+    committedVisibleRowsRef.current = {
+      timelineKeyHash,
+      rows: projectedVisibleRows
+    };
+  }, [deferPurePrepend, projectedVisibleRows, timelineKeyHash]);
   const projectionSnapshot = useMemo<TimelineProjectionSnapshot>(
     () => ({
       timelineKeyHash,
@@ -3518,7 +3610,67 @@ export const TimelineView = memo(function TimelineView({
   useLayoutEffect(() => {
     commitVirtualRangeForMetrics(readViewportMetrics());
   }, [commitVirtualRangeForMetrics, readViewportMetrics]);
+  useLayoutEffect(() => {
+    const transaction = pendingHeightModelCommitRef.current;
+    if (transaction === null || transaction.timelineKeyHash !== timelineKeyHash) {
+      return;
+    }
+    pendingHeightModelCommitRef.current = null;
+    const container = containerRef.current;
+    if (
+      !container ||
+      viewportIntentRef.current.kind !== "free-scroll" ||
+      jumpViewportControlRef.current ||
+      anchorRestorePendingRef.current ||
+      roomScrollAnchorRestorePendingRef.current
+    ) {
+      return;
+    }
+    let delta: number | null = null;
+    runWithScrollWriteReason("backfillCompensation", () => {
+      delta = restoreAnchorWithDelta(container, transaction.anchor);
+    });
+    if (delta === null) {
+      return;
+    }
+    heightCompensationRecordedVersionRef.current = measuredHeightVersion;
+    const userInputPending =
+      pendingScrollFrameUserInputRef.current || userScrollInputPendingRef.current;
+    updateScrollDiagnostics((current) =>
+      recordTimelineScrollFrame(current, {
+        scrollActivity: scrollActivityRef.current,
+        viewportIntent: "freeScroll",
+        userInputPending,
+        virtualized: virtualWindow.virtualized,
+        startIndex: virtualWindow.startIndex,
+        endIndex: virtualWindow.endIndex,
+        paddingTop: virtualWindow.paddingTop,
+        paddingBottom: virtualWindow.paddingBottom,
+        changedMeasuredRowCount: transaction.changedRows,
+        heightDeltaAboveViewportPx: delta ?? 0,
+        heightDeltaInsideViewportPx: 0,
+        heightDeltaBelowViewportPx: 0,
+        anchorTopDeltaPx: delta ?? 0
+      })
+    );
+    freeScrollAnchorRef.current = captureFreeScrollAnchor(container);
+    updateViewportMetrics();
+  }, [
+    measuredHeightVersion,
+    runWithScrollWriteReason,
+    timelineKeyHash,
+    updateScrollDiagnostics,
+    updateViewportMetrics,
+    virtualWindow.endIndex,
+    virtualWindow.paddingBottom,
+    virtualWindow.paddingTop,
+    virtualWindow.startIndex,
+    virtualWindow.virtualized
+  ]);
   useEffect(() => {
+    if (heightCompensationRecordedVersionRef.current === measuredHeightVersion) {
+      return;
+    }
     const intentKind: TimelineViewportIntentKind =
       viewportIntentRef.current.kind === "live-edge" ? "liveEdge" : "freeScroll";
     updateScrollDiagnostics((current) =>
@@ -3539,6 +3691,7 @@ export const TimelineView = memo(function TimelineView({
       })
     );
   }, [
+    measuredHeightVersion,
     updateScrollDiagnostics,
     virtualWindow.endIndex,
     virtualWindow.paddingBottom,
@@ -3942,32 +4095,9 @@ export const TimelineView = memo(function TimelineView({
         });
         return;
       }
-      // Free-scroll: `.timeline-view` is `overflow-anchor: none`, so the browser
-      // no longer corrects scroll position when an above-viewport row resizes.
-      // Restore the last captured first-visible anchor so the visible row stays
-      // put. Prepend restoration owns its own correction, so defer while pending.
-      const container = containerRef.current;
-      const anchor = freeScrollAnchorRef.current;
-      if (
-        !container ||
-        !anchor ||
-        anchorRestorePendingRef.current ||
-        roomScrollAnchorRestorePendingRef.current ||
-        jumpViewportControlRef.current
-      ) {
-        return;
-      }
-      if (viewportIntentResizeFrameRef.current !== null) {
-        viewportIntentResizeFrameRef.current.cancel();
-      }
-      viewportIntentResizeFrameRef.current = scheduleTimelineFrame(() => {
-        viewportIntentResizeFrameRef.current = null;
-        runWithScrollWriteReason("backfillCompensation", () => {
-          restoreAnchor(container, anchor);
-        });
-        updateViewportMetrics();
-        reportViewportObservation();
-      });
+      // Free-scroll height changes are corrected synchronously with the height
+      // model commit below. ResizeObserver is notification-only here; a queued
+      // frame would allow a visible jump and race the committed model.
     });
 
     observer.observe(list);
@@ -3981,7 +4111,6 @@ export const TimelineView = memo(function TimelineView({
   }, [
     applyViewportIntent,
     reportViewportObservation,
-    runWithScrollWriteReason,
     timelineKeyHash,
     updateViewportMetrics
   ]);
@@ -4468,10 +4597,12 @@ export const TimelineView = memo(function TimelineView({
     const nextHeights = new Map(itemHeightByDomIdRef.current);
     const visibleDomIds = visibleItemDomIdsRef.current;
     let changed = false;
+    let changedRows = 0;
     for (const domId of nextHeights.keys()) {
       if (!visibleDomIds.has(domId)) {
         nextHeights.delete(domId);
         changed = true;
+        changedRows += 1;
       }
     }
     const nodes = Array.from(list.querySelectorAll<HTMLElement>(".timeline-item-frame"));
@@ -4494,6 +4625,7 @@ export const TimelineView = memo(function TimelineView({
       }
       nextHeights.set(domId, height);
       changed = true;
+      changedRows += 1;
     }
     mountedItemDomIdsRef.current = mountedDomIds;
     if (!changed) {
@@ -4536,6 +4668,21 @@ export const TimelineView = memo(function TimelineView({
     if (measuredAtBottom) {
       setViewportIntentToLiveEdge();
     }
+    const heightAnchor =
+      container &&
+      viewportIntentRef.current.kind === "free-scroll" &&
+      !jumpViewportControlRef.current &&
+      !anchorRestorePendingRef.current &&
+      !roomScrollAnchorRestorePendingRef.current
+        ? freeScrollAnchorRef.current
+        : null;
+    pendingHeightModelCommitRef.current = heightAnchor
+      ? {
+          timelineKeyHash: timelineKeyHashRef.current,
+          anchor: heightAnchor,
+          changedRows
+        }
+      : null;
     itemHeightByDomIdRef.current = nextHeights;
     updateScrollDiagnostics((current) =>
       recordTimelineScrollHeightCommit(current, "initial")
