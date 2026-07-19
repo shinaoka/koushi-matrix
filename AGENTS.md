@@ -31,6 +31,24 @@ When an operational note here hardens into a durable rule, promote it to
 `REPOSITORY_RULES.md` or `docs/policies/engineering-rules.md` and keep only the
 local how-to detail here.
 
+## Matrix SDK Submodule
+
+The root workspace compiles all Matrix SDK crates directly from
+`vendor/matrix-rust-sdk`. Do not replace those path dependencies with a Git URL
+or fixed `rev`: the submodule gitlink is the only SDK revision pin. After
+updating or switching worktrees, initialize the exact gitlink and run the
+guard before compiling:
+
+```bash
+git submodule update --init --recursive vendor/matrix-rust-sdk
+node scripts/check-sdk-submodule.mjs
+```
+
+If the guard rejects `Cargo.toml`, restore the five exact submodule path
+dependencies. If it rejects submodule status, update the checkout to the
+recorded gitlink; do not work around the failure by adding a remote SDK
+revision.
+
 ## Signed macOS DMG
 
 Build signed, notarized macOS artifacts only in an attended `zsh` session on a

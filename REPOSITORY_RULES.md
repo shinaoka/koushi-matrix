@@ -6,7 +6,7 @@ glue. Vendored upstream code must keep its original license and copyright
 notices; local changes to vendored code must remain easy to upstream or
 revert.
 
-Last amended: 2026-07-16.
+Last amended: 2026-07-19.
 
 ## Read Order And Authority
 
@@ -92,6 +92,15 @@ conflict is being resolved.
 
 ## Architecture And Ownership
 
+- The checked-out `vendor/matrix-rust-sdk` submodule is the authoritative
+  Matrix Rust SDK source for this workspace. Every root workspace Matrix SDK
+  dependency (`matrix-sdk`, `matrix-sdk-base`, `matrix-sdk-search`,
+  `matrix-sdk-test`, and `matrix-sdk-ui`) must use its exact path beneath that
+  submodule; root `Cargo.toml` declarations using `git` or `rev` are
+  prohibited. The submodule gitlink is the single SDK revision pin. Update the
+  gitlink and local SDK code together, and keep
+  `scripts/check-sdk-submodule.mjs` green so builds cannot silently compile an
+  older remote revision instead of the code under review.
 - New Matrix behavior is headless-first and local-server-first. It lands in
   `koushi-core` / `koushi-state`, is verified through
   `CoreCommand` / `CoreEvent` against disposable local Conduit/Tuwunel QA,
