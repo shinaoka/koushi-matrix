@@ -8,6 +8,7 @@ use matrix_sdk::media::{MediaFormat, MediaRequestParameters};
 use matrix_sdk::ruma::MxcUri;
 use matrix_sdk::ruma::events::room::MediaSource as SdkMediaSource;
 use regex::Regex;
+use url::Url;
 
 use crate::event::{LinkPreview, LinkPreviewImage, LinkPreviewState, TimelineLinkRange};
 use crate::event::{TimelineFormattedBody, TimelineMediaSource};
@@ -23,6 +24,17 @@ fn url_regex() -> &'static Regex {
 fn href_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r#"href=["'](https?://[^"']+)["']"#).expect("valid href regex"))
+}
+
+fn is_link_preview_candidate(url: &str) -> bool {
+    let is_matrix_permalink = Url::parse(url).is_ok_and(|parsed| {
+        matches!(parsed.scheme(), "http" | "https")
+            && parsed
+                .host_str()
+                .is_some_and(|host| host.eq_ignore_ascii_case("matrix.to"))
+            && parsed.port().is_none()
+    });
+    !is_matrix_permalink
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -228,7 +240,7 @@ pub fn extract_urls(body: Option<&str>, formatted: Option<&TimelineFormattedBody
 
     let mut collect = |text: &str| {
         for range in extract_link_ranges(text) {
-            if seen.insert(range.url.clone()) {
+            if is_link_preview_candidate(&range.url) && seen.insert(range.url.clone()) {
                 urls.push(range.url);
             }
         }
@@ -244,7 +256,7 @@ pub fn extract_urls(body: Option<&str>, formatted: Option<&TimelineFormattedBody
         for cap in href_re.captures_iter(&formatted.html) {
             if let Some(url) = cap.get(1) {
                 let url = url.as_str();
-                if seen.insert(url.to_owned()) {
+                if is_link_preview_candidate(url) && seen.insert(url.to_owned()) {
                     urls.push(url.to_owned());
                 }
             }

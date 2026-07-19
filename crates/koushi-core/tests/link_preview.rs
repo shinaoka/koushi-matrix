@@ -1,4 +1,9 @@
-use koushi_core::link_preview::extract_link_ranges;
+use koushi_core::{
+    event::TimelineFormattedBody,
+    link_preview::{
+        LinkPreviewContext, extract_link_ranges, extract_urls, link_previews_for_message,
+    },
+};
 
 fn urls(text: &str) -> Vec<String> {
     extract_link_ranges(text)
@@ -46,12 +51,57 @@ fn link_preview_url_policy_returns_distinct_ranges_for_repeated_url() {
 
 #[test]
 fn extract_urls_returns_unique_preview_urls() {
-    use koushi_core::link_preview::extract_urls;
-
     let text = "https://example.com/a and https://example.com/a again";
     assert_eq!(
         extract_urls(Some(text), None),
         vec!["https://example.com/a"]
+    );
+}
+
+#[test]
+fn matrix_permalinks_are_not_link_preview_candidates() {
+    let mention_url = "https://matrix.to/#/%40junya%3Aexample.invalid";
+    let formatted = TimelineFormattedBody {
+        html: r#"<a href="https://matrix.to/#/@junya:example.invalid">Junya Ito</a>: see <a href="https://example.com/paper">the paper</a>"#.to_owned(),
+        plain_text: "Junya Ito: see the paper".to_owned(),
+        code_blocks: Vec::new(),
+    };
+
+    assert_eq!(
+        extract_urls(None, Some(&formatted)),
+        vec!["https://example.com/paper"]
+    );
+    assert!(extract_urls(Some(mention_url), None).is_empty());
+    assert!(extract_urls(Some("https://matrix.to/#/%23paper%3Aexample.invalid"), None).is_empty());
+    assert!(extract_urls(Some("https://MATRIX.TO/#/@junya:example.invalid"), None).is_empty());
+    assert!(extract_urls(Some("https://matrix.to:443/#/@junya:example.invalid"), None).is_empty());
+    assert!(extract_urls(Some("http://matrix.to:80/#/@junya:example.invalid"), None).is_empty());
+
+    for previewable in [
+        "https://www.matrix.to/#/@junya:example.invalid",
+        "https://matrix.to:8448/#/@junya:example.invalid",
+        "http://matrix.to:443/#/@junya:example.invalid",
+        "https://matrix.to.example/paper",
+        "https://matrix.to@evil.example/paper",
+    ] {
+        assert_eq!(extract_urls(Some(previewable), None), vec![previewable]);
+    }
+
+    assert_eq!(
+        urls(mention_url),
+        vec![mention_url],
+        "permalink exclusion must not remove the clickable link range"
+    );
+    assert_eq!(
+        link_previews_for_message(
+            Some(mention_url),
+            None,
+            "$mention",
+            false,
+            &LinkPreviewContext::default(),
+        ),
+        None,
+        "a mention-only message must not reserve a preview skeleton"
     );
 }
 
