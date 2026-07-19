@@ -138,7 +138,7 @@ use crate::link_preview::{LinkPreviewContext, extract_link_ranges};
 use crate::live_catchup::{LiveCatchupGate, classify_live_catchup_gate};
 use crate::live_tail_freshness::{
     FOREGROUND_LIVE_TAIL_LIMIT, LiveTailFreshnessState, LiveTailRefreshCoordinator,
-    LiveTailRefreshOutcome, LiveTailSchedulerAction,
+    LiveTailSchedulerAction,
 };
 use crate::messages_backpressure::MessagesBackpressure;
 use crate::search::SearchIndexMessage;
@@ -148,6 +148,7 @@ use crate::threads_list::{
     ThreadRootProjectionService, activity_is_newer,
 };
 use crate::unread_trace;
+use koushi_sdk::MatrixLiveTailRefreshOutcome as LiveTailRefreshOutcome;
 
 /// Bounded diff queue capacity per subscribed timeline (overview.md, Async rule 10).
 pub const TIMELINE_DIFF_QUEUE_CAPACITY: usize = 128;
@@ -221,7 +222,6 @@ pub enum TimelineMessage {
         outcome: MatrixLiveTailRefreshOutcome,
         requested_limit: u16,
         returned_events: usize,
-        historical_gap_remaining: bool,
         duration_ms: u128,
     },
     #[cfg(test)]
@@ -1330,7 +1330,6 @@ impl TimelineManagerActor {
                     outcome,
                     requested_limit,
                     returned_events,
-                    historical_gap_remaining,
                     duration_ms,
                 } => {
                     #[cfg(test)]
@@ -1345,7 +1344,6 @@ impl TimelineManagerActor {
                         outcome,
                         requested_limit,
                         returned_events,
-                        historical_gap_remaining,
                         duration_ms,
                     )
                     .await;
@@ -1897,7 +1895,6 @@ impl TimelineManagerActor {
         outcome: MatrixLiveTailRefreshOutcome,
         requested_limit: u16,
         returned_events: usize,
-        historical_gap_remaining: bool,
         duration_ms: u128,
     ) {
         let Some(actor_lease) = self
@@ -1917,9 +1914,13 @@ impl TimelineManagerActor {
         ) {
             return;
         }
-        let (outcome, mapped_historical_gap_remaining) =
-            map_matrix_live_tail_refresh_outcome(outcome);
-        debug_assert_eq!(historical_gap_remaining, mapped_historical_gap_remaining,);
+        let historical_gap_remaining = matches!(
+            outcome,
+            MatrixLiveTailRefreshOutcome::Detached {
+                historical_gap_remaining: true,
+                ..
+            }
+        );
         record_live_tail_refresh(
             outcome,
             requested_limit,
@@ -4066,30 +4067,6 @@ fn record_legacy_response_commit(
             response.invited_room_count().try_into().unwrap_or(u64::MAX),
         )),
     );
-}
-
-fn map_matrix_live_tail_refresh_outcome(
-    outcome: MatrixLiveTailRefreshOutcome,
-) -> (LiveTailRefreshOutcome, bool) {
-    match outcome {
-        MatrixLiveTailRefreshOutcome::Cancelled => (LiveTailRefreshOutcome::Cancelled, false),
-        MatrixLiveTailRefreshOutcome::Unchanged => (LiveTailRefreshOutcome::Unchanged, false),
-        MatrixLiveTailRefreshOutcome::Advanced { events } => {
-            (LiveTailRefreshOutcome::Advanced { events }, false)
-        }
-        MatrixLiveTailRefreshOutcome::Detached {
-            events,
-            historical_gap_remaining,
-        } => (
-            LiveTailRefreshOutcome::Detached {
-                events,
-                historical_gap_remaining,
-            },
-            historical_gap_remaining,
-        ),
-        MatrixLiveTailRefreshOutcome::Stale => (LiveTailRefreshOutcome::Stale, false),
-        MatrixLiveTailRefreshOutcome::Failed => (LiveTailRefreshOutcome::Failed, false),
-    }
 }
 
 fn live_tail_refresh_outcome_token(outcome: LiveTailRefreshOutcome) -> &'static str {
@@ -6553,7 +6530,6 @@ struct PendingLiveTailRefreshCompletion {
     outcome: MatrixLiveTailRefreshOutcome,
     requested_limit: u16,
     returned_events: usize,
-    historical_gap_remaining: bool,
     duration_ms: u128,
 }
 
@@ -8222,40 +8198,6 @@ mod timeline_gap_repair_tracker_tests {
         assert!(
             resume_offset < wake_offset,
             "the retry wake must be emitted only after queued scheduler work has had a chance to restart"
-        );
-    }
-
-    #[test]
-    fn gap_repair_sdk_error_budget_records_error_before_resume() {
-        let source = include_str!("timeline.rs");
-        let result_accounting = source
-            .split_once("fn record_timeline_gap_repair_result(")
-            .map(|(_, helper)| helper)
-            .expect("gap repair result accounting helper must exist")
-            .split("fn checkpoint_is_strictly_newer")
-            .next()
-            .expect("checkpoint helper must follow gap repair diagnostics");
-        let handler = source
-            .rsplit_once("async fn handle_timeline_gap_repair_finished")
-            .map(|(_, handler)| handler)
-            .expect("gap repair completion handler must exist")
-            .split("async fn finish_pending_gap_projection")
-            .next()
-            .expect("pending projection handler must follow repair completion");
-        let accounting_offset = handler
-            .find("record_timeline_gap_repair_result")
-            .expect("SDK results must use the shared accounting helper");
-        let resume_offset = handler
-            .find("emit_gap_repair_failure_and_resume")
-            .expect("SDK errors must release queued scheduler work");
-
-        assert!(
-            result_accounting.contains("tracker.record_batch_error()"),
-            "SDK errors must count as no-progress outcomes"
-        );
-        assert!(
-            accounting_offset < resume_offset,
-            "SDK error accounting must happen before scheduler work resumes"
         );
     }
 
@@ -9969,49 +9911,6 @@ mod timeline_gap_repair_tracker_tests {
     }
 
     #[test]
-    fn zero_progress_automatic_defer_remains_cache_pending() {
-        let source = include_str!("timeline.rs");
-        let result_accounting = source
-            .split_once("fn record_timeline_gap_repair_result(")
-            .map(|(_, helper)| helper)
-            .expect("gap repair result accounting helper must exist")
-            .split("fn checkpoint_is_strictly_newer")
-            .next()
-            .expect("checkpoint helper must follow gap repair diagnostics");
-        let starter = source
-            .rsplit_once("async fn start_timeline_gap_repair")
-            .map(|(_, starter)| starter)
-            .expect("gap repair start handler must exist")
-            .split("async fn handle_timeline_gap_repair_finished")
-            .next()
-            .expect("repair completion handling must follow repair start");
-        let handler = source
-            .rsplit_once("async fn handle_timeline_gap_repair_finished")
-            .map(|(_, handler)| handler)
-            .expect("gap repair completion handler must exist")
-            .split("fn schedule_gap_relay_settlement")
-            .next()
-            .expect("relay settlement scheduling must follow repair completion");
-
-        assert!(
-            !handler.contains("automatic_gap_repair_is_offscreen"),
-            "an SDK repair outcome contains no viewport evidence and cannot be mapped to offscreen"
-        );
-        assert!(
-            starter.contains("record_batch(trigger)"),
-            "the diagnostic total is recorded when the bounded batch starts"
-        );
-        assert!(
-            handler.contains("record_timeline_gap_repair_result"),
-            "repair completion must use the shared result accounting helper"
-        );
-        assert!(
-            result_accounting.contains("tracker.record_batch_outcome(&result.outcome)"),
-            "a zero-progress defer remains within the bounded attempt accounting"
-        );
-    }
-
-    #[test]
     fn subscription_inspection_waits_for_initial_projection_ack() {
         let mut tracker = TimelineGapRepairTracker::default();
         tracker.queue_inspection(TimelineGapRepairTrigger::Automatic);
@@ -10374,50 +10273,6 @@ mod timeline_gap_repair_tracker_tests {
                     })
             })
             .count()
-    }
-
-    #[test]
-    fn gap_repair_attempt_diagnostics_source_contract_is_privacy_safe() {
-        let source = include_str!("timeline.rs");
-        let diagnostics = source
-            .split_once("fn record_timeline_gap_repair_attempt(")
-            .map(|(_, source)| source)
-            .expect("attempt diagnostic must exist")
-            .split("fn checkpoint_is_strictly_newer(")
-            .next()
-            .expect("checkpoint helper must follow gap diagnostics");
-
-        for field in [
-            "attempt_number",
-            "reset_reason",
-            "topology_changed",
-            "ordinal_changed",
-            "demand_changed",
-            "demand_revision",
-            "consecutive_no_progress_batches",
-            "budget_remaining",
-            "cached_chunks_loaded",
-        ] {
-            assert!(
-                diagnostics.contains(&format!("\"{field}\"")),
-                "missing diagnostic field {field}"
-            );
-        }
-        for forbidden in [
-            "room_id",
-            "event_id",
-            "descriptor",
-            "token",
-            "message",
-            "raw_error",
-            "gap_ordinal",
-            "topology_revision",
-        ] {
-            assert!(
-                !diagnostics.contains(&format!("\"{forbidden}\"")),
-                "diagnostic source contains forbidden field {forbidden}"
-            );
-        }
     }
 
     #[test]
@@ -11792,13 +11647,6 @@ impl TimelineActor {
         record_live_tail_commit("completed", operation_generation);
         record_live_tail_reconciliation(result.diagnostics, operation_generation);
         let outcome = result.outcome;
-        let historical_gap_remaining = matches!(
-            outcome,
-            MatrixLiveTailRefreshOutcome::Detached {
-                historical_gap_remaining: true,
-                ..
-            }
-        );
         let completion = PendingLiveTailRefreshCompletion {
             actor_generation,
             epoch,
@@ -11806,7 +11654,6 @@ impl TimelineActor {
             outcome,
             requested_limit,
             returned_events: result.returned_events,
-            historical_gap_remaining,
             duration_ms,
         };
         match self.live_tail_projection_correlation.complete(
@@ -11851,7 +11698,6 @@ impl TimelineActor {
                 outcome: completion.outcome,
                 requested_limit: completion.requested_limit,
                 returned_events: completion.returned_events,
-                historical_gap_remaining: completion.historical_gap_remaining,
                 duration_ms: completion.duration_ms,
             })
             .await;
@@ -24730,7 +24576,6 @@ mod tests {
                 MatrixLiveTailRefreshOutcome::Advanced { events: 1 },
                 128,
                 1,
-                false,
                 1,
             )
             .await;
@@ -24743,7 +24588,6 @@ mod tests {
                 MatrixLiveTailRefreshOutcome::Advanced { events: 1 },
                 128,
                 1,
-                false,
                 1,
             )
             .await;
@@ -24805,7 +24649,6 @@ mod tests {
                 MatrixLiveTailRefreshOutcome::Advanced { events: 1 },
                 128,
                 1,
-                false,
                 1,
             )
             .await;

@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 
+use koushi_sdk::MatrixLiveTailRefreshOutcome as LiveTailRefreshOutcome;
+
 use crate::causal_projection::next_causal_projection_serial;
 
 pub(crate) const FOREGROUND_LIVE_TAIL_LIMIT: u16 = 128;
@@ -35,21 +37,6 @@ impl LiveTailFreshnessState {
             | Self::Retryable { epoch } => epoch,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum LiveTailRefreshOutcome {
-    Cancelled,
-    Unchanged,
-    Advanced {
-        events: usize,
-    },
-    Detached {
-        events: usize,
-        historical_gap_remaining: bool,
-    },
-    Stale,
-    Failed,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -1,9 +1,10 @@
 use koushi_sdk::{
     MatrixCommittedRoomTimelineBackend, MatrixCommittedRoomTimelineCheckpoint,
     MatrixCommittedRoomTimelineOrigin, MatrixCommittedRoomUpdatesResponse,
-    MatrixLiveTailRefreshCancellation, MatrixLiveTailRefreshOutcome, MatrixLiveTailRefreshResult,
-    MatrixRoomSubscriptionCheckpoint, MatrixTimelineContinuity, MatrixTimelineGapError,
-    MatrixTimelineGapHandle, MatrixTimelineGapRepairOutcome, PersistableMatrixSession,
+    MatrixLiveTailRefreshCancellation, MatrixLiveTailRefreshDiagnostics,
+    MatrixLiveTailRefreshOutcome, MatrixLiveTailRefreshResult, MatrixRoomSubscriptionCheckpoint,
+    MatrixTimelineContinuity, MatrixTimelineGapError, MatrixTimelineGapHandle,
+    MatrixTimelineGapRepairOutcome, PersistableMatrixSession,
 };
 
 #[test]
@@ -45,6 +46,7 @@ fn live_tail_refresh_invalid_and_unavailable_rooms_fail_coarsely() {
         let failed = MatrixLiveTailRefreshResult {
             outcome: MatrixLiveTailRefreshOutcome::Failed,
             returned_events: 0,
+            diagnostics: MatrixLiveTailRefreshDiagnostics::default(),
             last_projection_batch: None,
         };
 

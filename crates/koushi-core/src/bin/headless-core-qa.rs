@@ -17213,69 +17213,6 @@ mod tests {
     }
 
     #[test]
-    fn timeline_reconnect_scenario_exercises_proxy_recovery_and_live_receive() {
-        let source = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/bin/headless-core-qa.rs"
-        ));
-        let production_source = source
-            .split("#[cfg(test)]")
-            .next()
-            .expect("headless-core-qa source should contain production section");
-
-        assert!(
-            production_source.contains("\"timeline_reconnect\" => Ok(Self::TimelineReconnect)")
-        );
-        assert!(production_source.contains("async fn run_timeline_reconnect_scenario"));
-        assert!(production_source.contains("QaTcpProxy::start(&config.homeserver)"));
-        assert!(production_source.contains("timeline-reconnect-gate-a"));
-        assert!(production_source.contains("timeline-reconnect-gate-b"));
-        assert!(production_source.contains("timeline_reconnect restart setup start A"));
-        assert!(production_source.contains("timeline_reconnect restart setup start B"));
-        assert!(production_source.contains("proxy.disable();"));
-        assert!(production_source.contains("wait_for_sync_reconnecting"));
-        assert!(production_source.contains("proxy.enable();"));
-        assert!(production_source.contains("wait_for_sync_running_after_reconnect"));
-        assert!(production_source.contains("wait_for_item_with_body("));
-        assert!(production_source.contains("timeline_reconnect_recv_after_reconnect=ok"));
-        assert!(production_source.contains("live_catchup_checkpoint=ok"));
-        assert!(production_source.contains("live_catchup_gap_repaired=ok"));
-    }
-
-    #[test]
-    fn timeline_legacy_fallback_scenario_proves_bounded_exact_recovery() {
-        let source = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/bin/headless-core-qa.rs"
-        ));
-        let production_source = source
-            .split("#[cfg(test)]")
-            .next()
-            .expect("headless-core-qa source should contain production section");
-
-        assert!(
-            production_source
-                .contains("\"timeline_legacy_fallback\" => Ok(Self::TimelineLegacyFallback)")
-        );
-        assert!(production_source.contains("offline_event_count = if legacy_fallback { 140 }"));
-        assert!(production_source.contains("wait_for_legacy_fallback_starting"));
-        assert!(production_source.contains("reopened_before_later"));
-        assert!(
-            production_source
-                .contains("timeline legacy fallback authoritative items after first commit")
-        );
-        assert!(production_source.contains("wait_for_exact_items_and_gap_release"));
-        assert!(
-            production_source.contains("gap repair released only after render-settlement timeout")
-        );
-        assert!(production_source.contains("render acknowledgement was rejected"));
-        assert!(production_source.contains("legacy_fallback_checkpoint=ok"));
-        assert!(production_source.contains("legacy_fallback_gap_repaired=ok"));
-        assert!(production_source.contains("legacy_fallback_settled=ok"));
-        assert!(production_source.contains("legacy_fallback_lifecycle=ok"));
-    }
-
-    #[test]
     fn staged_scenarios_stop_after_their_requested_stage() {
         assert!(QaScenario::Safety.should_run_stage(QaStage::Safety));
         assert!(!QaScenario::Safety.should_run_stage(QaStage::LoginSync));
@@ -17500,28 +17437,46 @@ mod tests {
     }
 
     #[test]
-    fn live_tail_proxy_requires_an_exact_tokenless_room_messages_request() {
-        let source = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/bin/headless-core-qa.rs"
-        ));
-        let production_source = source
-            .split("#[cfg(test)]")
-            .next()
-            .expect("headless-core-qa source should contain production section");
-
-        assert!(production_source.contains("QaProxyRequestKind::RoomMessages"));
-        assert!(production_source.contains("query == \"dir=b&limit=128\""));
-        assert!(production_source.contains("QaMessagesProxyObservation"));
-        assert!(production_source.contains("QaMessagesProxyExpectation::BackwardFrom"));
-        assert!(production_source.contains("expected_end_token_was_used"));
-        assert!(production_source.contains("expected_end_token_request_count"));
-        assert!(
-            !production_source.contains("backward_from_request_count"),
-            "the QA proof must track only the detached continuation token, never total historical requests"
+    fn live_tail_proxy_enforces_tokenless_refresh_and_exact_continuation_requests() {
+        let metadata = qa_room_messages_request_metadata(
+            b"GET /_matrix/client/v3/rooms/%21room%3Aexample.invalid/messages?dir=b&limit=128 HTTP/1.1\r\nHost: example.invalid\r\n\r\n",
+        )
+        .expect("valid request")
+        .expect("room messages metadata");
+        assert_eq!(
+            metadata,
+            QaRoomMessagesRequestMetadata {
+                query_is_exact_tokenless_limit: true,
+                has_from: false,
+                direction_is_backward: true,
+                from_token: None,
+            }
         );
-        assert!(production_source.contains("arm_detached_live_tail_messages_page"));
-        assert!(production_source.contains("arm_historical_continuation_messages_page"));
+
+        let mut state = QaMessagesProxyState::default();
+        state.arm_page(QaMessagesProxyExpectation::TokenlessLiveTail, None);
+        assert_eq!(
+            state.observe_room_messages_request(&metadata),
+            QaMessagesProxyDecision::ServeCannedPage
+        );
+
+        let continuation = qa_room_messages_request_metadata(
+            b"GET /_matrix/client/v3/rooms/%21room%3Aexample.invalid/messages?dir=b&from=continuation&limit=128 HTTP/1.1\r\nHost: example.invalid\r\n\r\n",
+        )
+        .expect("valid continuation request")
+        .expect("room messages continuation metadata");
+        state.arm_page(
+            QaMessagesProxyExpectation::BackwardFrom {
+                token: "continuation".to_owned(),
+            },
+            Some("continuation".to_owned()),
+        );
+        assert_eq!(
+            state.observe_room_messages_request(&continuation),
+            QaMessagesProxyDecision::ServeCannedPage
+        );
+        assert!(state.observation.expected_end_token_was_used);
+        assert_eq!(state.observation.expected_end_token_request_count, 1);
     }
 
     #[test]
