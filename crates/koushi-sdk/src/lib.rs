@@ -2978,10 +2978,22 @@ pub enum MatrixLiveTailRefreshOutcome {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MatrixLiveTailRefreshDiagnostics {
+    pub cached_suffix_events: usize,
+    pub response_events_with_ids: usize,
+    pub newest_cached_response_index: Option<usize>,
+    pub older_anchor_response_index: Option<usize>,
+    pub in_memory_duplicates: usize,
+    pub in_store_duplicates: usize,
+    pub new_events: usize,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MatrixLiveTailRefreshResult {
     pub outcome: MatrixLiveTailRefreshOutcome,
     pub returned_events: usize,
+    pub diagnostics: MatrixLiveTailRefreshDiagnostics,
     pub last_projection_batch: Option<u32>,
 }
 
@@ -3010,6 +3022,7 @@ fn failed_live_tail_refresh_result() -> MatrixLiveTailRefreshResult {
     MatrixLiveTailRefreshResult {
         outcome: MatrixLiveTailRefreshOutcome::Failed,
         returned_events: 0,
+        diagnostics: MatrixLiveTailRefreshDiagnostics::default(),
         last_projection_batch: None,
     }
 }
@@ -3041,6 +3054,15 @@ fn map_live_tail_refresh_result(
     MatrixLiveTailRefreshResult {
         outcome,
         returned_events: result.returned_events,
+        diagnostics: MatrixLiveTailRefreshDiagnostics {
+            cached_suffix_events: result.diagnostics.cached_suffix_events,
+            response_events_with_ids: result.diagnostics.response_events_with_ids,
+            newest_cached_response_index: result.diagnostics.newest_cached_response_index,
+            older_anchor_response_index: result.diagnostics.older_anchor_response_index,
+            in_memory_duplicates: result.diagnostics.in_memory_duplicates,
+            in_store_duplicates: result.diagnostics.in_store_duplicates,
+            new_events: result.diagnostics.new_events,
+        },
         last_projection_batch: result.last_projection_batch,
     }
 }
@@ -3049,8 +3071,8 @@ fn map_live_tail_refresh_result(
 mod matrix_live_tail_refresh_mapping_tests {
     use super::*;
     use matrix_sdk::event_cache::{
-        EventCacheError, RoomLiveTailRefreshOutcome as SdkOutcome,
-        RoomLiveTailRefreshResult as SdkResult,
+        EventCacheError, RoomLiveTailRefreshDiagnostics as SdkDiagnostics,
+        RoomLiveTailRefreshOutcome as SdkOutcome, RoomLiveTailRefreshResult as SdkResult,
     };
 
     #[test]
@@ -3086,6 +3108,15 @@ mod matrix_live_tail_refresh_mapping_tests {
             let mapped = map_live_tail_refresh_result(Ok(SdkResult {
                 outcome: sdk_outcome,
                 returned_events: 9,
+                diagnostics: SdkDiagnostics {
+                    cached_suffix_events: 7,
+                    response_events_with_ids: 9,
+                    newest_cached_response_index: Some(0),
+                    older_anchor_response_index: Some(4),
+                    in_memory_duplicates: 3,
+                    in_store_duplicates: 2,
+                    new_events: 4,
+                },
                 last_projection_batch: Some(1),
             }));
 
@@ -3094,6 +3125,15 @@ mod matrix_live_tail_refresh_mapping_tests {
                 MatrixLiveTailRefreshResult {
                     outcome: expected_outcome,
                     returned_events: 9,
+                    diagnostics: MatrixLiveTailRefreshDiagnostics {
+                        cached_suffix_events: 7,
+                        response_events_with_ids: 9,
+                        newest_cached_response_index: Some(0),
+                        older_anchor_response_index: Some(4),
+                        in_memory_duplicates: 3,
+                        in_store_duplicates: 2,
+                        new_events: 4,
+                    },
                     last_projection_batch: Some(1),
                 }
             );
@@ -3112,6 +3152,7 @@ mod matrix_live_tail_refresh_mapping_tests {
             MatrixLiveTailRefreshResult {
                 outcome: MatrixLiveTailRefreshOutcome::Failed,
                 returned_events: 0,
+                diagnostics: MatrixLiveTailRefreshDiagnostics::default(),
                 last_projection_batch: None,
             }
         );

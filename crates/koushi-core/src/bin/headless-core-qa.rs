@@ -4305,7 +4305,7 @@ async fn run_timeline_reconnect_scenario_impl(
         wait_for_sync_running_after_reconnect(&mut conn_a, "timeline_reconnect A recovered")
             .await?;
     }
-    let newest_persisted_gap_bodies = if restart_with_persisted_gap {
+    let newest_persisted_gap = if restart_with_persisted_gap {
         proxy.disable();
         wait_for_sync_reconnecting(
             &mut conn_a,
@@ -4315,6 +4315,7 @@ async fn run_timeline_reconnect_scenario_impl(
         let bodies = (0..30)
             .map(|index| format!("QA timeline persisted newest gap {index:03}"))
             .collect::<Vec<_>>();
+        let mut newest_known_event_id = None;
         for (index, body) in bodies.iter().enumerate() {
             let txn = format!("qa-timeline-persisted-newest-{index:03}");
             let send_b_id = conn_b.next_request_id();
@@ -4330,7 +4331,7 @@ async fn run_timeline_reconnect_scenario_impl(
                 .map_err(|e| {
                     format!("timeline legacy persisted gap: submit second batch failed: {e}")
                 })?;
-            wait_for_send_flow_completion(
+            let outcome = wait_for_send_flow_completion(
                 &mut conn_b,
                 send_b_id,
                 &key_b,
@@ -4339,6 +4340,9 @@ async fn run_timeline_reconnect_scenario_impl(
                 "timeline legacy persisted gap second offline batch",
             )
             .await?;
+            if index + 1 == bodies.len() {
+                newest_known_event_id = Some(outcome.event_id);
+            }
         }
 
         proxy.enable();
@@ -4347,7 +4351,11 @@ async fn run_timeline_reconnect_scenario_impl(
             "timeline legacy persisted gap second limited reconnect committed",
         )
         .await?;
-        Some(bodies)
+        Some((
+            bodies,
+            newest_known_event_id
+                .expect("persisted newest-gap batch must contain a newest event"),
+        ))
     } else {
         None
     };
@@ -4459,12 +4467,20 @@ async fn run_timeline_reconnect_scenario_impl(
     };
     let live_tail_recent_body = "QA timeline live tail refreshed recent";
     if restart_with_persisted_gap {
+        let (newest_known_bodies, newest_known_event_id) = newest_persisted_gap
+            .as_ref()
+            .expect("persisted-gap live-tail refresh requires a known newest event");
+        let newest_known_body = newest_known_bodies
+            .last()
+            .expect("persisted newest-gap batch must not be empty");
         proxy.arm_first_live_tail_messages_page(
+            newest_known_event_id.clone(),
+            newest_known_body.clone(),
+            "$qa-live-tail-refreshed:example.invalid".to_owned(),
+            live_tail_recent_body.to_owned(),
             seed_outcome.event_id.clone(),
             user_b_full_id.clone(),
             seed_body.to_owned(),
-            "$qa-live-tail-refreshed:example.invalid".to_owned(),
-            live_tail_recent_body.to_owned(),
         )?;
     }
     let reopened_before_later = if legacy_fallback {
@@ -4755,7 +4771,9 @@ async fn run_timeline_reconnect_scenario_impl(
         .await?;
         return Ok(());
     }
-    let mut expected_bodies = newest_persisted_gap_bodies.unwrap_or(offline_bodies.clone());
+    let mut expected_bodies = newest_persisted_gap
+        .map(|(bodies, _)| bodies)
+        .unwrap_or(offline_bodies.clone());
     if legacy_fallback {
         let later_body = "QA timeline legacy fallback later live event".to_owned();
         let later_txn = "qa-timeline-legacy-fallback-later";
@@ -11557,25 +11575,33 @@ struct QaCannedMessagesPage {
 }
 
 impl QaCannedMessagesPage {
-    fn overlapping(
-        overlap_event_id: String,
+    fn anchored_silent_gap(
+        newest_known_event_id: String,
+        newest_known_body: String,
+        missing_event_id: String,
+        missing_body: String,
+        older_anchor_event_id: String,
         sender: String,
-        overlap_body: String,
-        recent_event_id: String,
-        recent_body: String,
+        older_anchor_body: String,
     ) -> Self {
         Self {
             events: vec![
                 QaCannedTimelineEvent {
-                    event_id: recent_event_id,
+                    event_id: newest_known_event_id,
                     sender: sender.clone(),
-                    body: recent_body,
-                    origin_server_ts: 1_900_000_000_000,
+                    body: newest_known_body,
+                    origin_server_ts: 1_900_000_000_002,
                 },
                 QaCannedTimelineEvent {
-                    event_id: overlap_event_id,
+                    event_id: missing_event_id,
+                    sender: sender.clone(),
+                    body: missing_body,
+                    origin_server_ts: 1_900_000_000_001,
+                },
+                QaCannedTimelineEvent {
+                    event_id: older_anchor_event_id,
                     sender,
-                    body: overlap_body,
+                    body: older_anchor_body,
                     origin_server_ts: 1,
                 },
             ],
@@ -11746,20 +11772,24 @@ impl QaTcpProxy {
 
     fn arm_first_live_tail_messages_page(
         &self,
-        overlap_event_id: String,
+        newest_known_event_id: String,
+        newest_known_body: String,
+        missing_event_id: String,
+        missing_body: String,
+        older_anchor_event_id: String,
         sender: String,
-        overlap_body: String,
-        recent_event_id: String,
-        recent_body: String,
+        older_anchor_body: String,
     ) -> Result<(), String> {
         self.arm_messages_page(
             QaMessagesProxyExpectation::TokenlessLiveTail,
-            QaCannedMessagesPage::overlapping(
-                overlap_event_id,
+            QaCannedMessagesPage::anchored_silent_gap(
+                newest_known_event_id,
+                newest_known_body,
+                missing_event_id,
+                missing_body,
+                older_anchor_event_id,
                 sender,
-                overlap_body,
-                recent_event_id,
-                recent_body,
+                older_anchor_body,
             ),
             None,
         )
@@ -17494,13 +17524,15 @@ mod tests {
     }
 
     #[test]
-    fn canned_live_tail_messages_page_has_the_required_start_token() {
-        let body = QaCannedMessagesPage::overlapping(
-            "$overlap:example.invalid".to_owned(),
+    fn canned_live_tail_messages_page_reproduces_a_gap_before_the_known_latest_event() {
+        let body = QaCannedMessagesPage::anchored_silent_gap(
+            "$latest:example.invalid".to_owned(),
+            "known latest".to_owned(),
+            "$missing:example.invalid".to_owned(),
+            "missing before latest".to_owned(),
+            "$older:example.invalid".to_owned(),
             "@sender:example.invalid".to_owned(),
-            "cached edge".to_owned(),
-            "$recent:example.invalid".to_owned(),
-            "recent live tail".to_owned(),
+            "known older anchor".to_owned(),
         )
         .response_body()
         .expect("canned /messages response should serialize");
@@ -17512,6 +17544,20 @@ mod tests {
             Some("qa-live-tail-start")
         );
         assert!(response.get("end").is_none());
+        let ids = response["chunk"]
+            .as_array()
+            .expect("canned chunk")
+            .iter()
+            .map(|event| event["event_id"].as_str().expect("event id"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            [
+                "$latest:example.invalid",
+                "$missing:example.invalid",
+                "$older:example.invalid",
+            ]
+        );
     }
 
     #[test]
