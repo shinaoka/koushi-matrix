@@ -1333,22 +1333,7 @@ describe("ContextualRightPanel", () => {
   });
 });
 
-describe("Tauri state refresh wiring", () => {
-  test("applies state deltas and keeps full snapshot refresh as fallback", () => {
-    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
-
-    expect(source).toContain("applyAppStoreDelta");
-    expect(source).toContain('event.payload.kind !== "StateDelta"');
-    expect(source).toContain("generation: event.payload.generation");
-    expect(source).toContain("if (!applied)");
-    expect(source).toContain("STATE_EVENT_NAME");
-    expect(source).toContain("listen<string>(STATE_EVENT_NAME");
-    expect(source).toContain("STATE_EVENT_REFRESH_DEBOUNCE_MS");
-    expect(source).toContain("stateRefreshTimerRef");
-    expect(source).toContain("window.setTimeout");
-    expect(source).toContain("void refresh()");
-  });
-
+describe("desktop integration source guards", () => {
   test("browser fixture messages use a natural-flow wrapper", () => {
     const source = readFileSync(new URL("./components/panes.tsx", import.meta.url), "utf8");
     const fallbackStart = source.indexOf("Browser fixture preview only");

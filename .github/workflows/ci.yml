@@ -111,6 +111,8 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target-windows-overlay
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: Install Rust toolchain (1.96.0)
         uses: dtolnay/rust-toolchain@1.96.0
       - uses: Swatinem/rust-cache@v2
