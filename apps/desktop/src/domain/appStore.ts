@@ -90,40 +90,51 @@ export type DesktopSnapshotChangedSlices = StateDeltaChangedSlices;
 export type AppStateChangedSlices = NonNullable<StateDeltaChangedSlices["state"]>;
 
 export function applyAppStoreDelta(delta: DesktopSnapshotDelta): boolean {
+  return applyAppStoreDeltas([delta]);
+}
+
+export function applyAppStoreDeltas(deltas: readonly DesktopSnapshotDelta[]): boolean {
   const current = useAppStore.getState();
-  if (current.snapshot === null) {
+  let snapshot = current.snapshot;
+  let stateGeneration = current.stateGeneration;
+  let changed = false;
+  if (snapshot === null) {
     return false;
   }
-  if (current.stateGeneration !== null) {
+  for (const delta of deltas) {
+    if (stateGeneration !== null) {
     // Already-applied / duplicate delta: the current state (advanced by a
     // newer delta or a full command-response/refresh snapshot) already
     // subsumes it, so ignore it as handled. Returning false here would make
     // the caller refresh, which lands a still-newer generation and turns the
     // next trailing background delta stale too — a self-amplifying refresh
     // storm under large-account sync volume.
-    if (delta.generation <= current.stateGeneration) {
-      deltaStats.staleIgnored += 1;
-      return true;
-    }
+      if (delta.generation <= stateGeneration) {
+        deltaStats.staleIgnored += 1;
+        continue;
+      }
     // Genuine forward gap: a delta was missed, so the caller must resync from
     // a full snapshot before later deltas can apply contiguously.
-    if (delta.generation !== current.stateGeneration + 1) {
-      deltaStats.gapRefreshRequested += 1;
+      if (delta.generation !== stateGeneration + 1) {
+        deltaStats.gapRefreshRequested += 1;
+        if (changed) {
+          useAppStore.setState({ snapshot, stateGeneration });
+        }
+        return false;
+      }
+    }
+    deltaStats.applied += 1;
+    const nextSnapshot = applyDeltaToState(snapshot, delta);
+    if (nextSnapshot === null) {
       return false;
     }
+    changed ||= !Object.is(snapshot, nextSnapshot) || stateGeneration !== delta.generation;
+    snapshot = nextSnapshot;
+    stateGeneration = delta.generation;
   }
-  deltaStats.applied += 1;
-  const snapshot = applyDeltaToState(current.snapshot, delta);
-  if (snapshot === null) {
-    return false;
+  if (changed) {
+    useAppStore.setState({ snapshot, stateGeneration });
   }
-  if (
-    Object.is(current.snapshot, snapshot) &&
-    current.stateGeneration === delta.generation
-  ) {
-    return true;
-  }
-  useAppStore.setState({ snapshot, stateGeneration: delta.generation });
   return true;
 }
 
