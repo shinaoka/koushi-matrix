@@ -3671,9 +3671,38 @@ button:disabled {
 
 .message-media-figure .message-media-image {
   display: block;
-  max-inline-size: 100%;
-  max-block-size: var(--media-image-max-block);
+  inline-size: 100%;
+  block-size: 100%;
   object-fit: contain;
+}
+
+.message-media-image-placeholder {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  inline-size: 100%;
+  block-size: 100%;
+  gap: 6px;
+  padding: 16px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.message-media-placeholder-title {
+  overflow: hidden;
+  max-inline-size: 100%;
+  font-size: 13px;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-media-placeholder-meta {
+  overflow: hidden;
+  max-inline-size: 100%;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .message-media-hover-actions {
@@ -7116,6 +7145,9 @@ kbd {
 .link-preview-card {
   display: block;
   position: relative;
+  box-sizing: border-box;
+  block-size: 122px;
+  overflow: hidden;
   max-width: 32rem;
   border: 1px solid var(--line, var(--color-border, #e3e8f0));
   border-radius: 0.5rem;
@@ -7123,6 +7155,8 @@ kbd {
 
 .link-preview-main {
   display: flex;
+  box-sizing: border-box;
+  block-size: 100%;
   gap: 0.75rem;
   padding: 0.75rem;
   color: inherit;
@@ -7137,6 +7171,15 @@ kbd {
   flex-shrink: 0;
 }
 
+.link-preview-image-placeholder,
+.link-preview-skeleton-image {
+  inline-size: 6rem;
+  block-size: 6rem;
+  flex: 0 0 6rem;
+  border-radius: 0.25rem;
+  background: var(--surface-hover);
+}
+
 .link-preview-text {
   display: flex;
   flex-direction: column;
@@ -7145,7 +7188,10 @@ kbd {
 }
 
 .link-preview-title {
+  overflow: hidden;
   font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .link-preview-description {
@@ -7173,6 +7219,42 @@ kbd {
   border: none;
   cursor: pointer;
   color: var(--text-muted, var(--color-text-secondary, #5b6b82));
+}
+
+.link-preview-skeleton {
+  pointer-events: none;
+}
+
+.link-preview-skeleton-image,
+.link-preview-skeleton-text > span {
+  background: linear-gradient(
+    90deg,
+    var(--surface-hover),
+    var(--surface),
+    var(--surface-hover)
+  );
+  background-size: 200% 100%;
+}
+
+.link-preview-skeleton-text {
+  display: grid;
+  align-content: center;
+  flex: 1;
+  gap: 9px;
+}
+
+.link-preview-skeleton-text > span {
+  display: block;
+  block-size: 12px;
+  border-radius: 999px;
+}
+
+.link-preview-skeleton-text > span:nth-child(2) {
+  inline-size: 88%;
+}
+
+.link-preview-skeleton-text > span:nth-child(3) {
+  inline-size: 62%;
 }
 
 .timeline-gap-row {

@@ -408,19 +408,34 @@ function captureFreeScrollAnchor(container: HTMLElement): ScrollAnchor | null {
   });
 }
 
-/** Restore the anchor by adjusting scrollTop; true if the anchor was found. */
-function restoreAnchor(container: HTMLElement, anchor: ScrollAnchor): boolean {
+/** Restore the anchor by its local pixel delta and report the applied delta. */
+function restoreAnchorWithDelta(
+  container: HTMLElement,
+  anchor: ScrollAnchor
+): number | null {
   const node = container.querySelector<HTMLElement>(
     `[data-item-id="${cssEscape(anchor.itemId)}"]`
   );
   if (!node) {
-    return false;
+    return null;
   }
   const containerTop = container.getBoundingClientRect().top;
   const currentOffset = node.getBoundingClientRect().top - containerTop;
-  container.scrollTop += currentOffset - anchor.offsetTop;
-  return true;
+  const delta = currentOffset - anchor.offsetTop;
+  container.scrollTop += delta;
+  return delta;
 }
+
+/** Restore the anchor by adjusting scrollTop; true if the anchor was found. */
+function restoreAnchor(container: HTMLElement, anchor: ScrollAnchor): boolean {
+  return restoreAnchorWithDelta(container, anchor) !== null;
+}
+
+type PendingHeightModelCommit = {
+  timelineKeyHash: string;
+  anchor: ScrollAnchor;
+  changedRows: number;
+};
 
 type CapturedTimelineScrollAnchor = {
   event_id: string;
@@ -816,7 +831,7 @@ function reactionPickerLayoutForControl(control: HTMLElement): ReactionPickerLay
 
 /** Distance (px) from the top edge that triggers automatic backfill. */
 const AUTO_BACKFILL_THRESHOLD_PX = 80;
-const AUTO_BACKFILL_PREFETCH_ITEMS = 100;
+const AUTO_BACKFILL_VIEWPORTS = 2;
 const SCROLL_EDGE_TOLERANCE_PX = 2;
 const TIMELINE_VIRTUALIZATION_THRESHOLD = 600;
 const TIMELINE_VIRTUAL_OVERSCAN_ITEMS = 60;
@@ -833,6 +848,32 @@ const REACTION_PICKER_GAP_PX = 6;
 
 const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "noop";
 const ignoreSendQueueAction = () => undefined;
+
+function timelineRowsArePurePrepend(
+  previousIds: readonly string[],
+  nextIds: readonly string[]
+): boolean {
+  const added = nextIds.length - previousIds.length;
+  return (
+    added > 0 &&
+    previousIds.length > 0 &&
+    previousIds.every((id, index) => nextIds[added + index] === id)
+  );
+}
+
+export const timelineRowsArePurePrependForTests = timelineRowsArePurePrepend;
+
+function timelineBackfillThreshold(clientHeight: number, enabled: boolean): number {
+  if (!enabled) {
+    return 0;
+  }
+  return Math.max(
+    AUTO_BACKFILL_THRESHOLD_PX,
+    Math.max(0, clientHeight) * AUTO_BACKFILL_VIEWPORTS
+  );
+}
+
+export const timelineBackfillThresholdForTests = timelineBackfillThreshold;
 
 const LazyEmojiPicker = lazy(() =>
   import("./EmojiPicker").then((module) => ({ default: module.EmojiPicker }))
@@ -2333,9 +2374,17 @@ export const TimelineView = memo(function TimelineView({
   const rangeModelEpochRef = useRef(0);
   const virtualItemHeight = TIMELINE_ESTIMATED_ITEM_HEIGHT_PX;
   const [measuredHeightVersion, setMeasuredHeightVersion] = useState(0);
+  const [, setDeferredPrependReleaseVersion] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const itemHeightByDomIdRef = useRef<Map<string, number>>(new Map());
+  const committedVisibleRowsRef = useRef<{
+    timelineKeyHash: string;
+    rows: readonly TimelineDisplayRow[];
+  } | null>(null);
+  const deferredPrependPendingRef = useRef(false);
+  const pendingHeightModelCommitRef = useRef<PendingHeightModelCommit | null>(null);
+  const heightCompensationRecordedVersionRef = useRef<number | null>(null);
   const openMediaViewer = useCallback((item: TimelineMediaViewerItem) => {
     const activeElement =
       typeof document !== "undefined" && document.activeElement instanceof HTMLElement
@@ -2359,9 +2408,8 @@ export const TimelineView = memo(function TimelineView({
   /**
    * Last first-visible anchor captured while in free-scroll. Because
    * `.timeline-view` uses `overflow-anchor: none`, the browser no longer
-   * corrects scroll position when an above-viewport row resizes (image load,
-   * deferred measurement, CSS growth). This anchor lets the ResizeObserver
-   * restore the viewport so the visible row stays put — Koushi-owned anchoring.
+   * corrects scroll position when an above-viewport row resizes. The height
+   * model commit consumes this stable local anchor before paint.
    */
   const freeScrollAnchorRef = useRef<ScrollAnchor | null>(null);
   /**
@@ -2664,6 +2712,19 @@ export const TimelineView = memo(function TimelineView({
     timelineViewportSessionMemory.set(timelineKeyHash, { mode: "live-edge" });
   }, [timelineKeyHash]);
 
+  const releaseDeferredPrepend = useCallback((): boolean => {
+    if (!deferredPrependPendingRef.current) {
+      return false;
+    }
+    const container = containerRef.current;
+    const anchor = container ? captureFreeScrollAnchor(container) : null;
+    pendingAnchorRef.current = anchor;
+    anchorRestorePendingRef.current = anchor !== null;
+    deferredPrependPendingRef.current = false;
+    setDeferredPrependReleaseVersion((current) => current + 1);
+    return true;
+  }, []);
+
   const flushPendingMeasurements = useCallback(
     (reason: "idle" | "maxDefer") => {
       const pending = pendingMeasuredHeightsRef.current;
@@ -2671,6 +2732,7 @@ export const TimelineView = memo(function TimelineView({
         clearMeasurementTimers();
         scrollActivityRef.current = "idle";
         clearPendingMeasurementDiagnostics();
+        releaseDeferredPrepend();
         return;
       }
 
@@ -2733,6 +2795,7 @@ export const TimelineView = memo(function TimelineView({
       pending.clear();
       clearMeasurementTimers();
       scrollActivityRef.current = "idle";
+      releaseDeferredPrepend();
 
       if (changedRows === 0) {
         clearPendingMeasurementDiagnostics();
@@ -2745,6 +2808,18 @@ export const TimelineView = memo(function TimelineView({
       if (measuredAtBottom) {
         setViewportIntentToLiveEdge();
       }
+
+      const heightAnchor =
+        container &&
+        viewportIntentRef.current.kind === "free-scroll" &&
+        !jumpViewportControlRef.current &&
+        !anchorRestorePendingRef.current &&
+        !roomScrollAnchorRestorePendingRef.current
+          ? freeScrollAnchorRef.current
+          : null;
+      pendingHeightModelCommitRef.current = heightAnchor
+        ? { timelineKeyHash: timelineKeyHashRef.current, anchor: heightAnchor, changedRows }
+        : null;
 
       itemHeightByDomIdRef.current = nextHeights;
       updateScrollDiagnostics((current) =>
@@ -2766,6 +2841,7 @@ export const TimelineView = memo(function TimelineView({
       clearMeasurementTimers,
       clearPendingMeasurementDiagnostics,
       emitDiagnosticLog,
+      releaseDeferredPrepend,
       setViewportIntentToLiveEdge,
       updateScrollDiagnostics
     ]
@@ -3082,7 +3158,10 @@ export const TimelineView = memo(function TimelineView({
         }
         if (batchContainsPrepend(event.ItemsUpdated.diffs)) {
           const container = containerRef.current;
-          if (container) {
+          if (scrollActivityRef.current === "active") {
+            deferredPrependPendingRef.current = true;
+            anchorRestorePendingRef.current = true;
+          } else if (container) {
             pendingAnchorRef.current = captureAnchor(container);
             anchorRestorePendingRef.current = true;
           }
@@ -3188,6 +3267,10 @@ export const TimelineView = memo(function TimelineView({
     anchorAsyncGenerationRef.current += 1;
     pendingAnchorRef.current = null;
     anchorRestorePendingRef.current = false;
+    deferredPrependPendingRef.current = false;
+    committedVisibleRowsRef.current = null;
+    pendingHeightModelCommitRef.current = null;
+    heightCompensationRecordedVersionRef.current = null;
     roomScrollAnchorRestorePendingRef.current = false;
     freeScrollAnchorRef.current = null;
     jumpViewportControlRef.current = false;
@@ -3236,6 +3319,10 @@ export const TimelineView = memo(function TimelineView({
     stickToBottomAfterMeasurementRef.current = false;
     resetActiveMeasurementDeferral({ clearMountedIds: true });
     itemHeightByDomIdRef.current = new Map();
+    committedVisibleRowsRef.current = null;
+    deferredPrependPendingRef.current = false;
+    pendingHeightModelCommitRef.current = null;
+    heightCompensationRecordedVersionRef.current = null;
     avatarRequestRangeRef.current = EMPTY_TIMELINE_ITEM_INDEX_RANGE;
     setAvatarRequestRange(EMPTY_TIMELINE_ITEM_INDEX_RANGE);
     linkPreviewRequestRangeRef.current = EMPTY_TIMELINE_ITEM_INDEX_RANGE;
@@ -3288,6 +3375,10 @@ export const TimelineView = memo(function TimelineView({
     () => () => {
       anchorAsyncGenerationRef.current += 1;
       anchorRestorePendingRef.current = false;
+      deferredPrependPendingRef.current = false;
+      committedVisibleRowsRef.current = null;
+      pendingHeightModelCommitRef.current = null;
+      heightCompensationRecordedVersionRef.current = null;
       roomScrollAnchorRestorePendingRef.current = false;
       suppressScrollAnchorCaptureRef.current = false;
       viewportIntentRef.current = { kind: "free-scroll" };
@@ -3334,7 +3425,7 @@ export const TimelineView = memo(function TimelineView({
   const visibleItems = useMemo(() => items.filter((item) => !item.is_hidden), [items]);
   // The SDK-owned store stays canonical. Only these presentation rows feed
   // rendering, measuring, and virtualization for an opt-in Room projection.
-  const visibleRows = useMemo(() => {
+  const projectedVisibleRows = useMemo(() => {
     const itemsWithGaps = insertTimelineGapItems(
       items,
       timelineKeyState?.gapPositions ?? [],
@@ -3347,6 +3438,33 @@ export const TimelineView = memo(function TimelineView({
       threadRootProjections
     ).filter((row) => !row.item.is_hidden);
   }, [items, threadRootOrder, threadRootProjections, timelineKey, timelineKeyState]);
+  const committedProjection =
+    committedVisibleRowsRef.current?.timelineKeyHash === timelineKeyHash
+      ? committedVisibleRowsRef.current.rows
+      : projectedVisibleRows;
+  const deferPurePrepend =
+    scrollActivityRef.current === "active" &&
+    timelineRowsArePurePrepend(
+      committedProjection.map((row) => row.row_id),
+      projectedVisibleRows.map((row) => row.row_id)
+    );
+  const visibleRows = deferPurePrepend ? committedProjection : projectedVisibleRows;
+  useLayoutEffect(() => {
+    if (deferPurePrepend) {
+      deferredPrependPendingRef.current = true;
+      anchorRestorePendingRef.current = true;
+      return;
+    }
+    if (deferredPrependPendingRef.current) {
+      deferredPrependPendingRef.current = false;
+      pendingAnchorRef.current = null;
+      anchorRestorePendingRef.current = false;
+    }
+    committedVisibleRowsRef.current = {
+      timelineKeyHash,
+      rows: projectedVisibleRows
+    };
+  }, [deferPurePrepend, projectedVisibleRows, timelineKeyHash]);
   const projectionSnapshot = useMemo<TimelineProjectionSnapshot>(
     () => ({
       timelineKeyHash,
@@ -3492,7 +3610,67 @@ export const TimelineView = memo(function TimelineView({
   useLayoutEffect(() => {
     commitVirtualRangeForMetrics(readViewportMetrics());
   }, [commitVirtualRangeForMetrics, readViewportMetrics]);
+  useLayoutEffect(() => {
+    const transaction = pendingHeightModelCommitRef.current;
+    if (transaction === null || transaction.timelineKeyHash !== timelineKeyHash) {
+      return;
+    }
+    pendingHeightModelCommitRef.current = null;
+    const container = containerRef.current;
+    if (
+      !container ||
+      viewportIntentRef.current.kind !== "free-scroll" ||
+      jumpViewportControlRef.current ||
+      anchorRestorePendingRef.current ||
+      roomScrollAnchorRestorePendingRef.current
+    ) {
+      return;
+    }
+    let delta: number | null = null;
+    runWithScrollWriteReason("backfillCompensation", () => {
+      delta = restoreAnchorWithDelta(container, transaction.anchor);
+    });
+    if (delta === null) {
+      return;
+    }
+    heightCompensationRecordedVersionRef.current = measuredHeightVersion;
+    const userInputPending =
+      pendingScrollFrameUserInputRef.current || userScrollInputPendingRef.current;
+    updateScrollDiagnostics((current) =>
+      recordTimelineScrollFrame(current, {
+        scrollActivity: scrollActivityRef.current,
+        viewportIntent: "freeScroll",
+        userInputPending,
+        virtualized: virtualWindow.virtualized,
+        startIndex: virtualWindow.startIndex,
+        endIndex: virtualWindow.endIndex,
+        paddingTop: virtualWindow.paddingTop,
+        paddingBottom: virtualWindow.paddingBottom,
+        changedMeasuredRowCount: transaction.changedRows,
+        heightDeltaAboveViewportPx: delta ?? 0,
+        heightDeltaInsideViewportPx: 0,
+        heightDeltaBelowViewportPx: 0,
+        anchorTopDeltaPx: delta ?? 0
+      })
+    );
+    freeScrollAnchorRef.current = captureFreeScrollAnchor(container);
+    updateViewportMetrics();
+  }, [
+    measuredHeightVersion,
+    runWithScrollWriteReason,
+    timelineKeyHash,
+    updateScrollDiagnostics,
+    updateViewportMetrics,
+    virtualWindow.endIndex,
+    virtualWindow.paddingBottom,
+    virtualWindow.paddingTop,
+    virtualWindow.startIndex,
+    virtualWindow.virtualized
+  ]);
   useEffect(() => {
+    if (heightCompensationRecordedVersionRef.current === measuredHeightVersion) {
+      return;
+    }
     const intentKind: TimelineViewportIntentKind =
       viewportIntentRef.current.kind === "live-edge" ? "liveEdge" : "freeScroll";
     updateScrollDiagnostics((current) =>
@@ -3513,6 +3691,7 @@ export const TimelineView = memo(function TimelineView({
       })
     );
   }, [
+    measuredHeightVersion,
     updateScrollDiagnostics,
     virtualWindow.endIndex,
     virtualWindow.paddingBottom,
@@ -3916,32 +4095,9 @@ export const TimelineView = memo(function TimelineView({
         });
         return;
       }
-      // Free-scroll: `.timeline-view` is `overflow-anchor: none`, so the browser
-      // no longer corrects scroll position when an above-viewport row resizes.
-      // Restore the last captured first-visible anchor so the visible row stays
-      // put. Prepend restoration owns its own correction, so defer while pending.
-      const container = containerRef.current;
-      const anchor = freeScrollAnchorRef.current;
-      if (
-        !container ||
-        !anchor ||
-        anchorRestorePendingRef.current ||
-        roomScrollAnchorRestorePendingRef.current ||
-        jumpViewportControlRef.current
-      ) {
-        return;
-      }
-      if (viewportIntentResizeFrameRef.current !== null) {
-        viewportIntentResizeFrameRef.current.cancel();
-      }
-      viewportIntentResizeFrameRef.current = scheduleTimelineFrame(() => {
-        viewportIntentResizeFrameRef.current = null;
-        runWithScrollWriteReason("backfillCompensation", () => {
-          restoreAnchor(container, anchor);
-        });
-        updateViewportMetrics();
-        reportViewportObservation();
-      });
+      // Free-scroll height changes are corrected synchronously with the height
+      // model commit below. ResizeObserver is notification-only here; a queued
+      // frame would allow a visible jump and race the committed model.
     });
 
     observer.observe(list);
@@ -3955,7 +4111,6 @@ export const TimelineView = memo(function TimelineView({
   }, [
     applyViewportIntent,
     reportViewportObservation,
-    runWithScrollWriteReason,
     timelineKeyHash,
     updateViewportMetrics
   ]);
@@ -4442,10 +4597,12 @@ export const TimelineView = memo(function TimelineView({
     const nextHeights = new Map(itemHeightByDomIdRef.current);
     const visibleDomIds = visibleItemDomIdsRef.current;
     let changed = false;
+    let changedRows = 0;
     for (const domId of nextHeights.keys()) {
       if (!visibleDomIds.has(domId)) {
         nextHeights.delete(domId);
         changed = true;
+        changedRows += 1;
       }
     }
     const nodes = Array.from(list.querySelectorAll<HTMLElement>(".timeline-item-frame"));
@@ -4468,6 +4625,7 @@ export const TimelineView = memo(function TimelineView({
       }
       nextHeights.set(domId, height);
       changed = true;
+      changedRows += 1;
     }
     mountedItemDomIdsRef.current = mountedDomIds;
     if (!changed) {
@@ -4510,6 +4668,21 @@ export const TimelineView = memo(function TimelineView({
     if (measuredAtBottom) {
       setViewportIntentToLiveEdge();
     }
+    const heightAnchor =
+      container &&
+      viewportIntentRef.current.kind === "free-scroll" &&
+      !jumpViewportControlRef.current &&
+      !anchorRestorePendingRef.current &&
+      !roomScrollAnchorRestorePendingRef.current
+        ? freeScrollAnchorRef.current
+        : null;
+    pendingHeightModelCommitRef.current = heightAnchor
+      ? {
+          timelineKeyHash: timelineKeyHashRef.current,
+          anchor: heightAnchor,
+          changedRows
+        }
+      : null;
     itemHeightByDomIdRef.current = nextHeights;
     updateScrollDiagnostics((current) =>
       recordTimelineScrollHeightCommit(current, "initial")
@@ -4595,18 +4768,8 @@ export const TimelineView = memo(function TimelineView({
       const scrollHeight = Math.round(container.scrollHeight);
       const scrollTop = Math.round(container.scrollTop);
       const projectedContentHeight = Math.round(timelineHeightModel.totalHeight);
-      const desiredBackfillThreshold = autoLoadOlderMessages
-        ? Math.max(
-            AUTO_BACKFILL_THRESHOLD_PX,
-            virtualItemHeight * AUTO_BACKFILL_PREFETCH_ITEMS
-          )
-        : 0;
       const maxScrollTop = Math.max(0, scrollHeight - clientHeight);
-      const threshold = autoLoadOlderMessages
-        ? maxScrollTop > desiredBackfillThreshold
-          ? desiredBackfillThreshold
-          : AUTO_BACKFILL_THRESHOLD_PX
-        : 0;
+      const threshold = timelineBackfillThreshold(clientHeight, autoLoadOlderMessages);
       const projectionSettled =
         pendingProjectionLayoutRef.current === null &&
         projectionLayoutFrameRef.current === null;
@@ -6094,37 +6257,56 @@ export function TimelineItemRow({
           <div className="link-preview-cards">
             {item.link_previews.map((preview) => {
               const previewUrl = toExternalHttpUrl(preview.url);
+              const previewPending =
+                preview.state === "pending" || preview.state === "loading";
               return (
-                <div key={preview.url} className="link-preview-card">
-                  <a
-                    className="link-preview-main"
-                    href={previewUrl || undefined}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={(event) => {
-                      event.preventDefault();
-                      if (previewUrl) {
-                        void openExternalHttpUrl(previewUrl);
-                      }
-                    }}
-                  >
-                    {preview.image?.thumbnail && thumbnailSourceUrl(preview.image.thumbnail) ? (
-                      <img
-                        src={thumbnailSourceUrl(preview.image.thumbnail) ?? undefined}
-                        alt={""}
-                        className="link-preview-image"
-                      />
-                    ) : null}
-                    <div className="link-preview-text">
-                      {preview.title ? (
-                        <div className="link-preview-title">{preview.title}</div>
-                      ) : null}
-                      {preview.description ? (
-                        <div className="link-preview-description">{preview.description}</div>
-                      ) : null}
-                      <div className="link-preview-url">{preview.url}</div>
+                <div
+                  key={preview.url}
+                  className="link-preview-card"
+                  data-link-preview-state={preview.state}
+                >
+                  {previewPending ? (
+                    <div className="link-preview-main link-preview-skeleton" aria-hidden="true">
+                      <span className="link-preview-skeleton-image" />
+                      <span className="link-preview-skeleton-text">
+                        <span />
+                        <span />
+                        <span />
+                      </span>
                     </div>
-                  </a>
+                  ) : (
+                    <a
+                      className="link-preview-main"
+                      href={previewUrl || undefined}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        if (previewUrl) {
+                          void openExternalHttpUrl(previewUrl);
+                        }
+                      }}
+                    >
+                      {preview.image?.thumbnail && thumbnailSourceUrl(preview.image.thumbnail) ? (
+                        <img
+                          src={thumbnailSourceUrl(preview.image.thumbnail) ?? undefined}
+                          alt={""}
+                          className="link-preview-image"
+                        />
+                      ) : (
+                        <span className="link-preview-image-placeholder" aria-hidden="true" />
+                      )}
+                      <div className="link-preview-text">
+                        {preview.title ? (
+                          <div className="link-preview-title">{preview.title}</div>
+                        ) : null}
+                        {preview.description ? (
+                          <div className="link-preview-description">{preview.description}</div>
+                        ) : null}
+                        <div className="link-preview-url">{preview.url}</div>
+                      </div>
+                    </a>
+                  )}
                   <button
                     type="button"
                     className="link-preview-hide"
@@ -7162,20 +7344,10 @@ function TimelineMediaAttachment({
   const downloadProgressPercent = uploadProgressPercent(downloadProgress);
   const Icon = media.kind === "Image" ? ImageIcon : FileText;
   const displayBox = timelineMediaDisplayBox(media.width, media.height);
-  const readyDisplayBox =
-    downloadState?.kind === "ready"
-      ? timelineMediaDisplayBox(
-          downloadState.width ?? media.width,
-          downloadState.height ?? media.height
-        )
-      : displayBox;
-  const mediaFrameStyle =
-    readyDisplayBox === null
-      ? undefined
-      : ({
-          inlineSize: `${readyDisplayBox.inlineSize}px`,
-          blockSize: `${readyDisplayBox.blockSize}px`
-        } satisfies CSSProperties);
+  const mediaFrameStyle = {
+    inlineSize: `${displayBox.inlineSize}px`,
+    blockSize: `${displayBox.blockSize}px`
+  } satisfies CSSProperties;
   const readyImageDownload =
     downloadState?.kind === "ready" && media.kind === "Image" ? downloadState : null;
   const readyImagePreview =
@@ -7217,11 +7389,10 @@ function TimelineMediaAttachment({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [detailsOpen]);
 
-  // #163: a ready image is rendered image-first. The preview is the primary
-  // block; filename/metadata are not laid out over it, and actions appear on
-  // hover/focus as an overlay. The encrypted badge stays visible as a security
-  // signal.
-  if (readyImagePreview && readyImageDownload) {
+  // #277: every image state owns the same figure box. Event metadata (or the
+  // fixed fallback) determines its size before download starts; ready-state
+  // metadata may describe the pixels but must never resize the timeline row.
+  if (media.kind === "Image") {
     return (
       <div
         className="message-media message-media-image-ready"
@@ -7230,26 +7401,45 @@ function TimelineMediaAttachment({
         data-download-state={downloadState?.kind ?? "notRequested"}
       >
         <div className="message-media-figure" style={mediaFrameStyle}>
-          <button
-            className="message-media-open"
-            type="button"
-            aria-label={t("timeline.mediaOpenFile")}
-            onClick={() => {
-              if (readyImageViewerItem) {
-                onOpenMediaViewer(readyImageViewerItem);
-              }
-            }}
-          >
-            <img
-              className="message-media-image"
-              src={readyImagePreview.sourceUrl}
-              alt={media.filename}
-              title={media.filename}
-              width={readyImagePreview.width ?? undefined}
-              height={readyImagePreview.height ?? undefined}
-              loading="lazy"
-            />
-          </button>
+          {readyImagePreview && readyImageDownload ? (
+            <button
+              className="message-media-open"
+              type="button"
+              aria-label={t("timeline.mediaOpenFile")}
+              onClick={() => {
+                if (readyImageViewerItem) {
+                  onOpenMediaViewer(readyImageViewerItem);
+                }
+              }}
+            >
+              <img
+                className="message-media-image"
+                src={readyImagePreview.sourceUrl}
+                alt={media.filename}
+                title={media.filename}
+                width={readyImagePreview.width ?? undefined}
+                height={readyImagePreview.height ?? undefined}
+                loading="lazy"
+              />
+            </button>
+          ) : (
+            <div className="message-media-image-placeholder" aria-hidden="true">
+              <Icon className="message-media-icon" size={28} />
+              <span className="message-media-placeholder-title" dir="auto">
+                {media.filename}
+              </span>
+              {metadata.length > 0 ? (
+                <span className="message-media-placeholder-meta">
+                  {metadata.join(" · ")}
+                </span>
+              ) : null}
+              {downloadState?.kind === "failed" ? (
+                <span className="message-media-error">
+                  {t("timeline.mediaDownloadFailed")}
+                </span>
+              ) : null}
+            </div>
+          )}
           {media.source.encrypted ? (
             <span className="message-media-image-badge">{t("timeline.encryptedMedia")}</span>
           ) : null}
@@ -7267,7 +7457,19 @@ function TimelineMediaAttachment({
             >
               <Info size={16} />
             </button>
-            {canDownload ? (
+            {canDownload && downloadState?.kind === "failed" ? (
+              <button
+                className="message-media-hover-action"
+                type="button"
+                aria-label={t("timeline.mediaDownloadRetry")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onDownload();
+                }}
+              >
+                <RefreshCw size={16} />
+              </button>
+            ) : canDownload && readyImageDownload && readyImagePreview ? (
               <button
                 className="message-media-hover-action"
                 type="button"
@@ -7280,6 +7482,19 @@ function TimelineMediaAttachment({
                     media.filename,
                     onSaveMediaFile
                   );
+                }}
+              >
+                <Download size={16} />
+              </button>
+            ) : canDownload ? (
+              <button
+                className="message-media-hover-action"
+                type="button"
+                disabled={downloadState?.kind === "pending"}
+                aria-label={t("timeline.downloadMedia", { filename: media.filename })}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onDownload();
                 }}
               >
                 <Download size={16} />
@@ -7334,17 +7549,7 @@ function TimelineMediaAttachment({
       data-media-encrypted={media.source.encrypted || undefined}
       data-download-state={downloadState?.kind ?? "notRequested"}
     >
-      {media.kind === "Image" && displayBox ? (
-        <span
-          className="message-media-image-frame message-media-image-frame-reserved"
-          style={mediaFrameStyle}
-          aria-hidden="true"
-        >
-          <Icon className="message-media-icon" size={22} aria-hidden="true" />
-        </span>
-      ) : (
-        <Icon className="message-media-icon" size={18} aria-hidden="true" />
-      )}
+      <Icon className="message-media-icon" size={18} aria-hidden="true" />
       <div className="message-media-main">
         <div className="message-media-title" dir="auto">
           {media.filename}
@@ -7709,13 +7914,17 @@ function formatDimensions(width: number | null, height: number | null): string |
 
 const TIMELINE_MEDIA_MAX_INLINE_PX = 420;
 const TIMELINE_MEDIA_MAX_BLOCK_PX = 260;
+const TIMELINE_MEDIA_FALLBACK_BOX = {
+  inlineSize: 347,
+  blockSize: TIMELINE_MEDIA_MAX_BLOCK_PX
+} as const;
 
 function timelineMediaDisplayBox(
   width: number | null | undefined,
   height: number | null | undefined
-): { inlineSize: number; blockSize: number } | null {
+): { inlineSize: number; blockSize: number } {
   if (!width || !height || width <= 0 || height <= 0) {
-    return null;
+    return TIMELINE_MEDIA_FALLBACK_BOX;
   }
   const scale = Math.min(
     TIMELINE_MEDIA_MAX_INLINE_PX / width,
