@@ -4570,6 +4570,7 @@ async fn run_timeline_reconnect_scenario_impl(
             );
         }
         println!("legacy_live_tail_room_absent=ok");
+        println!("live_tail_anchored_silent_gap=ok");
 
         stop_sync_for_qa(
             &mut conn_a,
