@@ -4403,6 +4403,53 @@ fn record_timeline_gap_projection(
     );
 }
 
+fn record_timeline_gap_projection_boundary(
+    stage: &'static str,
+    outcome: &'static str,
+    actor_generation: u64,
+    timeline_generation: TimelineGeneration,
+    operation: CausalProjectionOperationId,
+    projection_batch: Option<u32>,
+    timeline_batch_id: Option<TimelineBatchId>,
+    expected_projection_batch: Option<u32>,
+    observed_projection_count: usize,
+) {
+    let domain = match operation.domain {
+        CausalProjectionDomain::HistoricalGap => "historical_gap",
+        CausalProjectionDomain::LiveTail => "live_tail",
+    };
+    koushi_diagnostics::record_and_stderr(
+        DiagnosticEvent::new(DiagnosticLevel::Info, "core.timeline_gap_projection", stage)
+            .field(DiagnosticField::token("outcome", outcome))
+            .field(DiagnosticField::token("domain", domain))
+            .field(DiagnosticField::count("actor_generation", actor_generation))
+            .field(DiagnosticField::count(
+                "timeline_generation",
+                timeline_generation.0,
+            ))
+            .field(DiagnosticField::count(
+                "operation_generation",
+                operation.serial,
+            ))
+            .field(DiagnosticField::count(
+                "projection_batch",
+                projection_batch.map_or(u64::MAX, u64::from),
+            ))
+            .field(DiagnosticField::count(
+                "timeline_batch_id",
+                timeline_batch_id.map_or(u64::MAX, |batch_id| batch_id.0),
+            ))
+            .field(DiagnosticField::count(
+                "expected_projection_batch",
+                expected_projection_batch.map_or(u64::MAX, u64::from),
+            ))
+            .field(DiagnosticField::count(
+                "observed_projection_count",
+                observed_projection_count.try_into().unwrap_or(u64::MAX),
+            )),
+    );
+}
+
 fn record_timeline_gap_demand(
     foreground_demand_epoch: u64,
     projected_gap_count: usize,
@@ -7860,6 +7907,55 @@ mod timeline_gap_repair_tracker_tests {
             ] {
                 assert!(!debug.contains(forbidden), "{source} leaked {forbidden}");
             }
+        }
+    }
+
+    #[test]
+    fn gap_projection_boundary_diagnostics_correlate_without_private_identifiers() {
+        record_timeline_gap_projection_boundary(
+            "relay_received",
+            "accepted",
+            41,
+            TimelineGeneration(7),
+            historical_causal_projection_operation(13),
+            Some(3),
+            Some(TimelineBatchId(19)),
+            Some(3),
+            1,
+        );
+
+        let event = koushi_diagnostics::snapshot()
+            .records
+            .into_iter()
+            .rev()
+            .find(|record| {
+                record.event.source == "core.timeline_gap_projection"
+                    && record.event.stage == "relay_received"
+            })
+            .expect("projection boundary diagnostic")
+            .event;
+        let keys = event
+            .fields
+            .iter()
+            .map(|field| field.key)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            vec![
+                "outcome",
+                "domain",
+                "actor_generation",
+                "timeline_generation",
+                "operation_generation",
+                "projection_batch",
+                "timeline_batch_id",
+                "expected_projection_batch",
+                "observed_projection_count",
+            ]
+        );
+        let debug = format!("{event:?}");
+        for forbidden in ["room_id", "event_id", "user_id", "gap_id", "message"] {
+            assert!(!debug.contains(forbidden));
         }
     }
 
@@ -11822,6 +11918,19 @@ impl TimelineActor {
                         historical_causal_projection_operation(repair_generation),
                     ))
                 {
+                    let operation = historical_causal_projection_operation(repair_generation);
+                    record_timeline_gap_projection_boundary(
+                        "relay_timeout",
+                        "authoritative_replay",
+                        actor_generation,
+                        self.generation,
+                        operation,
+                        None,
+                        None,
+                        self.gap_projection_correlation
+                            .expected_last_projection_batch,
+                        self.gap_projection_correlation.observed_batches.len(),
+                    );
                     if let Some(task) = self.gap_relay_settlement_task.take() {
                         task.abort();
                     }
@@ -12990,6 +13099,7 @@ impl TimelineActor {
         let actor_tx = self.msg_tx.clone();
         let budget = timeline_gap_repair_budget(trigger);
         let actor_generation = self.actor_generation;
+        let timeline_generation = self.generation;
         let projection_operation = historical_causal_projection_operation(serial);
         self.gap_projection_correlation
             .begin(actor_generation, projection_operation);
@@ -13009,7 +13119,7 @@ impl TimelineActor {
                 .ok()
                 .and_then(|result| result.last_projection_batch)
             {
-                match wait_for_gap_repair_projection_with_timeout(
+                let settlement = wait_for_gap_repair_projection_with_timeout(
                     TIMELINE_GAP_OBSERVABLE_SETTLEMENT_TIMEOUT,
                     timeline.wait_for_gap_repair_projection(
                         CausalProjectionId {
@@ -13020,8 +13130,24 @@ impl TimelineActor {
                         .encode_transport(),
                     ),
                 )
-                .await
-                {
+                .await;
+                let settlement_outcome = match settlement {
+                    TimelineGapObservableSettlement::Observable => "observable",
+                    TimelineGapObservableSettlement::NoProjection => "no_projection",
+                    TimelineGapObservableSettlement::TimedOut => "timed_out",
+                };
+                record_timeline_gap_projection_boundary(
+                    "sdk_settled",
+                    settlement_outcome,
+                    actor_generation,
+                    timeline_generation,
+                    projection_operation,
+                    Some(projection_batch),
+                    None,
+                    Some(projection_batch),
+                    0,
+                );
+                match settlement {
                     TimelineGapObservableSettlement::Observable => {}
                     TimelineGapObservableSettlement::NoProjection => {
                         if let Ok(result) = &mut result {
@@ -13131,11 +13257,30 @@ impl TimelineActor {
         }
         let continuation_trigger =
             gap_repair_continuation_trigger(trigger, repaired_live_edge_fallback, &result.outcome);
-        match self.gap_projection_correlation.complete(
+        let operation = historical_causal_projection_operation(serial);
+        let observed_projection_count = self.gap_projection_correlation.observed_batches.len();
+        let completion = self.gap_projection_correlation.complete(
             self.actor_generation,
-            historical_causal_projection_operation(serial),
+            operation,
             result.last_projection_batch,
-        ) {
+        );
+        let (completion_outcome, timeline_batch_id) = match completion {
+            TimelineGapProjectionCompletion::Ready(batch_id) => ("ready", Some(batch_id)),
+            TimelineGapProjectionCompletion::Pending => ("pending", None),
+            TimelineGapProjectionCompletion::NoDiff => ("no_diff", None),
+        };
+        record_timeline_gap_projection_boundary(
+            "actor_completed",
+            completion_outcome,
+            self.actor_generation,
+            self.generation,
+            operation,
+            result.last_projection_batch,
+            timeline_batch_id,
+            result.last_projection_batch,
+            observed_projection_count,
+        );
+        match completion {
             TimelineGapProjectionCompletion::Ready(batch_id) => {
                 self.pending_gap_projection = Some(PendingTimelineGapProjection {
                     trigger: continuation_trigger,
@@ -15623,6 +15768,23 @@ impl TimelineActor {
             // is still advanced so later non-restore emits remain monotonic.
             self.next_batch_id = TimelineBatchId(self.next_batch_id.0 + 1);
             self.restore_emit_buffer.extend(core_diffs);
+            for projection in &gap_repair_projections {
+                let correlation = match projection.operation.domain {
+                    CausalProjectionDomain::HistoricalGap => &self.gap_projection_correlation,
+                    CausalProjectionDomain::LiveTail => &self.live_tail_projection_correlation,
+                };
+                record_timeline_gap_projection_boundary(
+                    "actor_received",
+                    "buffered_restore",
+                    projection.actor_generation,
+                    self.generation,
+                    projection.operation,
+                    Some(projection.projection_batch),
+                    None,
+                    correlation.expected_last_projection_batch,
+                    correlation.observed_batches.len(),
+                );
+            }
             self.restore_causal_projections
                 .buffer_batch(gap_repair_projections);
             // Hydration Pending must be emitted only after this buffer's final
@@ -15657,6 +15819,28 @@ impl TimelineActor {
                 let mut ready_gap_projection_batch = None;
                 let mut live_tail_projection_ready = false;
                 for projection in gap_repair_projections {
+                    let correlation = match projection.operation.domain {
+                        CausalProjectionDomain::HistoricalGap => &self.gap_projection_correlation,
+                        CausalProjectionDomain::LiveTail => &self.live_tail_projection_correlation,
+                    };
+                    let accepts = correlation.accepts(projection);
+                    let expected_projection_batch = correlation.expected_last_projection_batch;
+                    let observed_projection_count = correlation.observed_batches.len();
+                    record_timeline_gap_projection_boundary(
+                        "actor_received",
+                        if accepts {
+                            "accepted"
+                        } else {
+                            "rejected_operation"
+                        },
+                        projection.actor_generation,
+                        self.generation,
+                        projection.operation,
+                        Some(projection.projection_batch),
+                        Some(emitted_batch_id),
+                        expected_projection_batch,
+                        observed_projection_count,
+                    );
                     let observation = observe_causal_projection(
                         &mut self.gap_projection_correlation,
                         &mut self.live_tail_projection_correlation,
@@ -15678,6 +15862,24 @@ impl TimelineActor {
                         self.finish_pending_live_tail_projection().await;
                 }
                 self.maybe_hydrate_missing_thread_roots().await;
+            } else {
+                for projection in gap_repair_projections {
+                    let correlation = match projection.operation.domain {
+                        CausalProjectionDomain::HistoricalGap => &self.gap_projection_correlation,
+                        CausalProjectionDomain::LiveTail => &self.live_tail_projection_correlation,
+                    };
+                    record_timeline_gap_projection_boundary(
+                        "actor_received",
+                        "display_emit_rejected",
+                        projection.actor_generation,
+                        self.generation,
+                        projection.operation,
+                        Some(projection.projection_batch),
+                        Some(emitted_batch_id),
+                        correlation.expected_last_projection_batch,
+                        correlation.observed_batches.len(),
+                    );
+                }
             }
         }
         if let Some(trigger) = post_diff_gap_inspection_trigger(
@@ -17468,6 +17670,19 @@ async fn run_diff_relay(
 
         let thread_attention_provenance = ThreadAttentionBatchProvenance::from_sdk_diffs(&diffs);
         let gap_repair_projections = gap_repair_projections_from_sdk_diffs(&diffs);
+        for projection in &gap_repair_projections {
+            record_timeline_gap_projection_boundary(
+                "relay_received",
+                "queued",
+                projection.actor_generation,
+                generation,
+                projection.operation,
+                Some(projection.projection_batch),
+                None,
+                None,
+                gap_repair_projections.len(),
+            );
+        }
         match actor_tx.try_send(TimelineRelayBatch {
             generation,
             diffs,
@@ -17475,7 +17690,20 @@ async fn run_diff_relay(
             gap_repair_projections,
         }) {
             Ok(_) => {}
-            Err(mpsc::error::TrySendError::Full(_)) => {
+            Err(mpsc::error::TrySendError::Full(batch)) => {
+                for projection in &batch.gap_repair_projections {
+                    record_timeline_gap_projection_boundary(
+                        "relay_received",
+                        "queue_full",
+                        projection.actor_generation,
+                        generation,
+                        projection.operation,
+                        Some(projection.projection_batch),
+                        None,
+                        None,
+                        batch.gap_repair_projections.len(),
+                    );
+                }
                 // Overflow control must not compete for capacity with data.
                 // Once delivered, this generation is terminal; the actor
                 // resubscribes and owns the replacement relay task.
