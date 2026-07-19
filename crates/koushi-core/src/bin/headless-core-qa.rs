@@ -54,8 +54,8 @@ use koushi_core::event::{
     AccountEvent, ActivityEvent, CoreEvent, E2eeTrustEvent, LinkPreviewState, LiveSignalsEvent,
     LocalEncryptionEvent, PaginationDirection, PaginationState, RoomEvent, SearchEvent,
     SyncBackendKind, SyncEvent, TimelineAnchorRestoreStatus, TimelineDiff, TimelineEvent,
-    TimelineItem, TimelineItemId, TimelineMessageActions, TimelineSendState,
-    TimelineUnreadPosition, TimelineViewportObservation,
+    TimelineGapId, TimelineGapPosition, TimelineItem, TimelineItemId, TimelineMessageActions,
+    TimelineSendState, TimelineUnreadPosition, TimelineViewportObservation,
 };
 use koushi_core::failure::{CoreFailure, RoomFailureKind};
 use koushi_core::ids::{AccountKey, RequestId, TimelineKey, TimelineKind};
@@ -176,6 +176,7 @@ enum QaScenario {
     Timeline,
     TimelineReconnect,
     TimelineLegacyFallback,
+    TimelineLegacyPersistedGap,
     TimelineStress,
     Activity,
     Composer,
@@ -209,6 +210,7 @@ enum QaStage {
     Timeline,
     TimelineReconnect,
     TimelineLegacyFallback,
+    TimelineLegacyPersistedGap,
     TimelineStress,
     Activity,
     Composer,
@@ -327,6 +329,7 @@ impl QaScenario {
             "timeline" => Ok(Self::Timeline),
             "timeline_reconnect" => Ok(Self::TimelineReconnect),
             "timeline_legacy_fallback" => Ok(Self::TimelineLegacyFallback),
+            "timeline_legacy_persisted_gap" => Ok(Self::TimelineLegacyPersistedGap),
             "timeline_stress" => Ok(Self::TimelineStress),
             "activity" => Ok(Self::Activity),
             "composer" => Ok(Self::Composer),
@@ -342,7 +345,7 @@ impl QaScenario {
             "link_preview" => Ok(Self::LinkPreview),
             "cache_restore" => Ok(Self::CacheRestore),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, credential_health, native_attention, e2ee_trust, invites_dm, room_space, directory, room_management, timeline, timeline_reconnect, timeline_legacy_fallback, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, search_crawler, scheduled_send, restore_cleanup, link_preview, cache_restore; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, credential_health, native_attention, e2ee_trust, invites_dm, room_space, directory, room_management, timeline, timeline_reconnect, timeline_legacy_fallback, timeline_legacy_persisted_gap, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, search_crawler, scheduled_send, restore_cleanup, link_preview, cache_restore; got {other}"
             )),
         }
     }
@@ -353,6 +356,7 @@ impl QaScenario {
                 stage,
                 QaStage::TimelineReconnect
                     | QaStage::TimelineLegacyFallback
+                    | QaStage::TimelineLegacyPersistedGap
                     | QaStage::TimelineStress
             ),
             Self::Safety => matches!(stage, QaStage::Safety),
@@ -405,6 +409,9 @@ impl QaScenario {
             }
             Self::TimelineLegacyFallback => {
                 matches!(stage, QaStage::Safety | QaStage::TimelineLegacyFallback)
+            }
+            Self::TimelineLegacyPersistedGap => {
+                matches!(stage, QaStage::Safety | QaStage::TimelineLegacyPersistedGap)
             }
             Self::TimelineStress => matches!(
                 stage,
@@ -602,6 +609,12 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "legacy_fallback_gap_repaired=ok",
             "legacy_fallback_settled=ok",
             "legacy_fallback_lifecycle=ok",
+        ],
+        QaStage::TimelineLegacyPersistedGap => &[
+            "legacy_live_tail_room_absent=ok",
+            "live_tail_anchored_silent_gap=ok",
+            "live_tail_detached_gap=ok",
+            "live_tail_historical_continuation=ok",
         ],
         QaStage::TimelineStress => &[
             "timeline_stress=ok",
@@ -805,6 +818,9 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
         QaScenario::TimelineLegacyFallback => {
             vec![QaStage::Safety, QaStage::TimelineLegacyFallback]
         }
+        QaScenario::TimelineLegacyPersistedGap => {
+            vec![QaStage::Safety, QaStage::TimelineLegacyPersistedGap]
+        }
         QaScenario::TimelineStress => vec![
             QaStage::Safety,
             QaStage::LoginSync,
@@ -972,6 +988,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
         }
         QaScenario::TimelineReconnect
         | QaScenario::TimelineLegacyFallback
+        | QaScenario::TimelineLegacyPersistedGap
         | QaScenario::CacheRestore
         | QaScenario::GateRestore
         | QaScenario::GateNegative
@@ -3956,22 +3973,31 @@ async fn unsubscribe_timeline_for_qa(
 }
 
 async fn run_timeline_reconnect_scenario(config: &QaConfig) -> Result<(), String> {
-    run_timeline_reconnect_scenario_impl(config, false).await
+    run_timeline_reconnect_scenario_impl(config, false, false).await
 }
 
 async fn run_timeline_legacy_fallback_scenario(config: &QaConfig) -> Result<(), String> {
-    run_timeline_reconnect_scenario_impl(config, true).await
+    run_timeline_reconnect_scenario_impl(config, true, false).await
+}
+
+async fn run_timeline_legacy_persisted_gap_scenario(config: &QaConfig) -> Result<(), String> {
+    run_timeline_reconnect_scenario_impl(config, true, true).await
 }
 
 async fn run_timeline_reconnect_scenario_impl(
     config: &QaConfig,
     legacy_fallback: bool,
+    restart_with_persisted_gap: bool,
 ) -> Result<(), String> {
     let proxy = QaTcpProxy::start(&config.homeserver)?;
-    let data_dir_a = qa_data_dir("timeline_reconnect_a");
+    let data_dir_a = qa_data_dir(if restart_with_persisted_gap {
+        "timeline_legacy_persisted_gap_a"
+    } else {
+        "timeline_reconnect_a"
+    });
     let data_dir_b = qa_data_dir("timeline_reconnect_b");
 
-    let runtime_a = CoreRuntime::start_with_data_dir(data_dir_a);
+    let runtime_a = CoreRuntime::start_with_data_dir(data_dir_a.clone());
     let mut conn_a = runtime_a.attach();
     let login_a_id = conn_a.next_request_id();
     conn_a
@@ -4053,36 +4079,97 @@ async fn run_timeline_reconnect_scenario_impl(
         "timeline_reconnect sync start B",
     )?;
 
-    let room_id = create_room_for_qa(
-        &mut conn_a,
-        "QA Timeline Reconnect Room",
-        false,
-        "timeline_reconnect create room",
-    )
-    .await?;
-    sync_once_for_qa(&mut conn_a, "timeline_reconnect sync A after room create").await?;
-    wait_for_room_in_room_list(&mut conn_a, &room_id, "timeline_reconnect A room list").await?;
-
     let user_b_full_id = format!("@{}:{}", config.user_b, config.server_name);
-    invite_user_for_qa(
-        &mut conn_a,
-        &room_id,
-        &user_b_full_id,
-        "timeline_reconnect invite B",
-    )
-    .await?;
-    sync_once_for_qa(&mut conn_b, "timeline_reconnect sync B for invite").await?;
-    wait_for_invite_in_snapshot(
-        &mut conn_b,
-        &room_id,
-        Some(false),
-        "timeline_reconnect B sees invite",
-    )
-    .await?;
-    accept_invite_for_qa(&mut conn_b, &room_id, "timeline_reconnect B accepts invite").await?;
-    sync_once_for_qa(&mut conn_b, "timeline_reconnect sync B after accept").await?;
-    wait_for_room_in_room_list(&mut conn_b, &room_id, "timeline_reconnect B room list").await?;
-    sync_once_for_qa(&mut conn_a, "timeline_reconnect sync A after B accepts").await?;
+    let room_id = if restart_with_persisted_gap {
+        let room_id = start_direct_message_for_qa(
+            &mut conn_a,
+            &user_b_full_id,
+            "timeline legacy persisted gap start direct message",
+        )
+        .await?;
+        sync_once_for_qa(
+            &mut conn_a,
+            "timeline legacy persisted gap sync A after DM create",
+        )
+        .await?;
+        wait_for_dm_room_in_room_list(
+            &mut conn_a,
+            &room_id,
+            "timeline legacy persisted gap A DM room list",
+        )
+        .await?;
+        sync_once_for_qa(
+            &mut conn_b,
+            "timeline legacy persisted gap sync B for DM invite",
+        )
+        .await?;
+        wait_for_invite_in_snapshot(
+            &mut conn_b,
+            &room_id,
+            None,
+            "timeline legacy persisted gap B sees DM invite",
+        )
+        .await?;
+        accept_invite_for_qa(
+            &mut conn_b,
+            &room_id,
+            "timeline legacy persisted gap B accepts DM invite",
+        )
+        .await?;
+        sync_once_for_qa(
+            &mut conn_b,
+            "timeline legacy persisted gap sync B after DM accept",
+        )
+        .await?;
+        wait_for_room_in_room_list(
+            &mut conn_b,
+            &room_id,
+            "timeline legacy persisted gap B room list",
+        )
+        .await?;
+        sync_once_for_qa(
+            &mut conn_a,
+            "timeline legacy persisted gap sync A after DM accept",
+        )
+        .await?;
+        wait_for_dm_room_in_room_list(
+            &mut conn_a,
+            &room_id,
+            "timeline legacy persisted gap A confirms direct message",
+        )
+        .await?;
+        room_id
+    } else {
+        let room_id = create_room_for_qa(
+            &mut conn_a,
+            "QA Timeline Reconnect Room",
+            false,
+            "timeline_reconnect create room",
+        )
+        .await?;
+        sync_once_for_qa(&mut conn_a, "timeline_reconnect sync A after room create").await?;
+        wait_for_room_in_room_list(&mut conn_a, &room_id, "timeline_reconnect A room list").await?;
+        invite_user_for_qa(
+            &mut conn_a,
+            &room_id,
+            &user_b_full_id,
+            "timeline_reconnect invite B",
+        )
+        .await?;
+        sync_once_for_qa(&mut conn_b, "timeline_reconnect sync B for invite").await?;
+        wait_for_invite_in_snapshot(
+            &mut conn_b,
+            &room_id,
+            Some(false),
+            "timeline_reconnect B sees invite",
+        )
+        .await?;
+        accept_invite_for_qa(&mut conn_b, &room_id, "timeline_reconnect B accepts invite").await?;
+        sync_once_for_qa(&mut conn_b, "timeline_reconnect sync B after accept").await?;
+        wait_for_room_in_room_list(&mut conn_b, &room_id, "timeline_reconnect B room list").await?;
+        sync_once_for_qa(&mut conn_a, "timeline_reconnect sync A after B accepts").await?;
+        room_id
+    };
 
     // Rebuild both SyncService instances after the room membership is stable.
     // The subsequent timeline subscription then exercises a room present in
@@ -4121,7 +4208,7 @@ async fn run_timeline_reconnect_scenario_impl(
         }))
         .await
         .map_err(|e| format!("timeline_reconnect: submit seed failed: {e}"))?;
-    wait_for_send_flow_completion(
+    let seed_outcome = wait_for_send_flow_completion(
         &mut conn_b,
         seed_send_id,
         &key_b,
@@ -4130,7 +4217,7 @@ async fn run_timeline_reconnect_scenario_impl(
         "timeline_reconnect seed known anchor",
     )
     .await?;
-    wait_for_item_with_body(
+    wait_for_item_with_body_with_sync(
         &mut conn_a,
         &key_a,
         seed_body,
@@ -4138,6 +4225,14 @@ async fn run_timeline_reconnect_scenario_impl(
     )
     .await?;
     if legacy_fallback {
+        if restart_with_persisted_gap {
+            unsubscribe_timeline_for_qa(
+                &mut conn_a,
+                &key_a,
+                "timeline legacy persisted gap unsubscribe before first response",
+            )
+            .await?;
+        }
         stop_sync_for_qa(&mut conn_a, "timeline legacy fallback stop A").await?;
     } else {
         unsubscribe_timeline_for_qa(
@@ -4211,6 +4306,183 @@ async fn run_timeline_reconnect_scenario_impl(
         wait_for_sync_running_after_reconnect(&mut conn_a, "timeline_reconnect A recovered")
             .await?;
     }
+    let newest_persisted_gap = if restart_with_persisted_gap {
+        proxy.disable();
+        wait_for_sync_reconnecting(
+            &mut conn_a,
+            "timeline legacy persisted gap disconnect before second limited response",
+        )
+        .await?;
+        let bodies = (0..30)
+            .map(|index| format!("QA timeline persisted newest gap {index:03}"))
+            .collect::<Vec<_>>();
+        let mut newest_known_event_id = None;
+        for (index, body) in bodies.iter().enumerate() {
+            let txn = format!("qa-timeline-persisted-newest-{index:03}");
+            let send_b_id = conn_b.next_request_id();
+            conn_b
+                .command(CoreCommand::Timeline(TimelineCommand::SendText {
+                    request_id: send_b_id,
+                    key: key_b.clone(),
+                    transaction_id: txn.clone(),
+                    body: body.clone(),
+                    mentions: MentionIntent::default(),
+                }))
+                .await
+                .map_err(|e| {
+                    format!("timeline legacy persisted gap: submit second batch failed: {e}")
+                })?;
+            let outcome = wait_for_send_flow_completion(
+                &mut conn_b,
+                send_b_id,
+                &key_b,
+                &txn,
+                body,
+                "timeline legacy persisted gap second offline batch",
+            )
+            .await?;
+            if index + 1 == bodies.len() {
+                newest_known_event_id = Some(outcome.event_id);
+            }
+        }
+
+        proxy.enable();
+        wait_for_sync_running_after_reconnect(
+            &mut conn_a,
+            "timeline legacy persisted gap second limited reconnect committed",
+        )
+        .await?;
+        Some((
+            bodies,
+            newest_known_event_id.expect("persisted newest-gap batch must contain a newest event"),
+        ))
+    } else {
+        None
+    };
+    let (runtime_a, mut conn_a, room_absent_checkpoint_baseline) = if restart_with_persisted_gap {
+        stop_sync_for_qa(
+            &mut conn_b,
+            "timeline legacy persisted gap stop B before room-absent proof",
+        )
+        .await?;
+        stop_sync_for_qa(
+            &mut conn_a,
+            "timeline legacy persisted gap stop before restart",
+        )
+        .await?;
+        drop(conn_a);
+        tokio::time::timeout(EVENT_TIMEOUT, runtime_a.shutdown())
+            .await
+            .map_err(|_| {
+                "timeline legacy persisted gap timed out shutting down before restart".to_owned()
+            })?;
+        let room_absent_checkpoint_baseline = koushi_diagnostics::snapshot()
+            .records
+            .iter()
+            .filter(|record| {
+                record.event.source == "core.live_catchup"
+                    && record.event.stage == "checkpoint"
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "checkpoint_origin"
+                            && field.value
+                                == koushi_diagnostics::DiagnosticValue::Token("room_absent")
+                    })
+            })
+            .count();
+
+        let restarted_runtime = CoreRuntime::start_with_data_dir(data_dir_a.clone());
+        let mut restarted_conn = restarted_runtime.attach();
+        let restore_id = restarted_conn.next_request_id();
+        restarted_conn
+            .command(CoreCommand::Account(AccountCommand::RestoreSession {
+                request_id: restore_id,
+                account_key: account_key_a.clone(),
+            }))
+            .await
+            .map_err(|e| format!("timeline legacy persisted gap: submit restore A failed: {e}"))?;
+        wait_for_session_restored(
+            &mut restarted_conn,
+            restore_id,
+            &account_key_a,
+            "timeline legacy persisted gap restore A",
+        )
+        .await?;
+        wait_for_ready_snapshot(
+            &mut restarted_conn,
+            "timeline legacy persisted gap restored session A Ready",
+        )
+        .await?;
+
+        proxy.arm_legacy_fallback()?;
+        let restart_sync_id = restarted_conn.next_request_id();
+        restarted_conn
+            .command(CoreCommand::Sync(SyncCommand::Start {
+                request_id: restart_sync_id,
+            }))
+            .await
+            .map_err(|e| {
+                format!("timeline legacy persisted gap: submit restarted sync A failed: {e}")
+            })?;
+        let selected = wait_for_sync_started(
+            &mut restarted_conn,
+            restart_sync_id,
+            "timeline legacy persisted gap restart selects SyncService",
+        )
+        .await?;
+        if selected != SyncBackendKind::SyncService {
+            return Err(
+                "timeline legacy persisted gap restart did not initially select SyncService"
+                    .to_owned(),
+            );
+        }
+        wait_for_legacy_fallback_starting(
+            &mut restarted_conn,
+            "timeline legacy persisted gap fallback starting",
+        )
+        .await?;
+        proxy.wait_for_legacy_request_held(EVENT_TIMEOUT)?;
+        prove_legacy_stays_starting(
+            &mut restarted_conn,
+            "timeline legacy persisted gap lifecycle barrier",
+        )
+        .await?;
+        proxy.release_legacy()?;
+        wait_for_sync_running_after_reconnect(
+            &mut restarted_conn,
+            "timeline legacy persisted gap room-absent response committed",
+        )
+        .await?;
+        (
+            restarted_runtime,
+            restarted_conn,
+            Some(room_absent_checkpoint_baseline),
+        )
+    } else {
+        (runtime_a, conn_a, None)
+    };
+    let initial_live_tail_snapshot_baseline = if restart_with_persisted_gap {
+        Some(live_tail_snapshot_completion_count_for_qa())
+    } else {
+        None
+    };
+    let live_tail_recent_body = "QA timeline live tail refreshed recent";
+    if restart_with_persisted_gap {
+        let (newest_known_bodies, newest_known_event_id) = newest_persisted_gap
+            .as_ref()
+            .expect("persisted-gap live-tail refresh requires a known newest event");
+        let newest_known_body = newest_known_bodies
+            .last()
+            .expect("persisted newest-gap batch must not be empty");
+        proxy.arm_first_live_tail_messages_page(
+            newest_known_event_id.clone(),
+            newest_known_body.clone(),
+            "$qa-live-tail-refreshed:example.invalid".to_owned(),
+            live_tail_recent_body.to_owned(),
+            seed_outcome.event_id.clone(),
+            user_b_full_id.clone(),
+            seed_body.to_owned(),
+        )?;
+    }
     let reopened_before_later = if legacy_fallback {
         Some(
             subscribe_and_ack_active_timeline_projection_for_qa(
@@ -4223,7 +4495,286 @@ async fn run_timeline_reconnect_scenario_impl(
     } else {
         None
     };
-    let mut expected_bodies = offline_bodies.clone();
+    if let Some(baseline) = room_absent_checkpoint_baseline {
+        let initial_live_tail_snapshot_baseline = initial_live_tail_snapshot_baseline
+            .expect("persisted-gap live-tail snapshot baseline must be armed before refresh");
+        tokio::time::timeout(EVENT_TIMEOUT, async {
+            loop {
+                let count = koushi_diagnostics::snapshot()
+                    .records
+                    .iter()
+                    .filter(|record| {
+                        record.event.source == "core.live_catchup"
+                            && record.event.stage == "checkpoint"
+                            && record.event.fields.iter().any(|field| {
+                                field.key == "checkpoint_origin"
+                                    && field.value
+                                        == koushi_diagnostics::DiagnosticValue::Token(
+                                            "room_absent",
+                                        )
+                            })
+                    })
+                    .count();
+                if count > baseline {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .map_err(|_| {
+            "timeline legacy persisted gap did not observe a new room_absent checkpoint after restart"
+                .to_owned()
+        })?;
+        let recent_live_tail_render = wait_for_item_with_body(
+            &mut conn_a,
+            &key_a,
+            live_tail_recent_body,
+            "timeline legacy persisted gap renders tokenless live-tail refresh",
+        )
+        .await;
+        let observation = proxy.live_tail_messages_observation()?;
+        if recent_live_tail_render.is_err() {
+            return Err(format!(
+                "timeline legacy persisted gap did not render canned live-tail event \
+                 (requests={}, exact_tokenless_limit={}, had_from={}, served={})",
+                observation.room_messages_request_count,
+                observation.first_request_was_exact_tokenless_limit,
+                observation.first_request_had_from,
+                observation.freshness_page_served,
+            ));
+        }
+        if observation.room_messages_request_count != 1
+            || !observation.first_request_was_exact_tokenless_limit
+            || observation.first_request_had_from
+            || !observation.freshness_page_served
+        {
+            return Err(format!(
+                "timeline legacy persisted gap expected one exact tokenless live-tail request \
+                 (requests={}, exact_tokenless_limit={}, had_from={}, served={})",
+                observation.room_messages_request_count,
+                observation.first_request_was_exact_tokenless_limit,
+                observation.first_request_had_from,
+                observation.freshness_page_served,
+            ));
+        }
+        let initial_live_tail_gap_count = wait_for_live_tail_snapshot_gap_count_for_qa(
+            &conn_a,
+            initial_live_tail_snapshot_baseline,
+            "timeline legacy persisted gap initial live-tail snapshot",
+        )
+        .await?;
+        if initial_live_tail_gap_count == 0 {
+            return Err(
+                "timeline legacy persisted gap initial live-tail snapshot did not retain a continuity gap"
+                    .to_owned(),
+            );
+        }
+        println!("legacy_live_tail_room_absent=ok");
+        println!("live_tail_anchored_silent_gap=ok");
+
+        stop_sync_for_qa(
+            &mut conn_a,
+            "timeline legacy persisted gap stop before detached tail restart",
+        )
+        .await?;
+        drop(conn_a);
+        tokio::time::timeout(EVENT_TIMEOUT, runtime_a.shutdown())
+            .await
+            .map_err(|_| {
+                "timeline legacy persisted gap timed out shutting down before detached restart"
+                    .to_owned()
+            })?;
+
+        let detached_runtime = CoreRuntime::start_with_data_dir(data_dir_a.clone());
+        let mut detached_conn = detached_runtime.attach();
+        let detached_restore_id = detached_conn.next_request_id();
+        detached_conn
+            .command(CoreCommand::Account(AccountCommand::RestoreSession {
+                request_id: detached_restore_id,
+                account_key: account_key_a.clone(),
+            }))
+            .await
+            .map_err(|e| {
+                format!("timeline legacy persisted gap: submit detached restore A failed: {e}")
+            })?;
+        wait_for_session_restored(
+            &mut detached_conn,
+            detached_restore_id,
+            &account_key_a,
+            "timeline legacy persisted gap detached restore A",
+        )
+        .await?;
+        wait_for_ready_snapshot(
+            &mut detached_conn,
+            "timeline legacy persisted gap detached restored session A Ready",
+        )
+        .await?;
+
+        proxy.arm_legacy_fallback()?;
+        let detached_sync_start_id = detached_conn.next_request_id();
+        detached_conn
+            .command(CoreCommand::Sync(SyncCommand::Start {
+                request_id: detached_sync_start_id,
+            }))
+            .await
+            .map_err(|e| {
+                format!("timeline legacy persisted gap: submit detached sync A failed: {e}")
+            })?;
+        let detached_selected = wait_for_sync_started(
+            &mut detached_conn,
+            detached_sync_start_id,
+            "timeline legacy persisted gap detached restart selects SyncService",
+        )
+        .await?;
+        if detached_selected != SyncBackendKind::SyncService {
+            return Err(
+                "timeline legacy persisted gap detached restart did not initially select SyncService"
+                    .to_owned(),
+            );
+        }
+        wait_for_legacy_fallback_starting(
+            &mut detached_conn,
+            "timeline legacy persisted gap detached fallback starting",
+        )
+        .await?;
+        proxy.wait_for_legacy_request_held(EVENT_TIMEOUT)?;
+        prove_legacy_stays_starting(
+            &mut detached_conn,
+            "timeline legacy persisted gap detached lifecycle barrier",
+        )
+        .await?;
+        proxy.release_legacy()?;
+        wait_for_sync_running_after_reconnect(
+            &mut detached_conn,
+            "timeline legacy persisted gap detached room-absent response committed",
+        )
+        .await?;
+
+        let detached_newest_body = "QA timeline detached live tail 127";
+        let detached_end_token = "qa-live-tail-detached-end".to_owned();
+        proxy.arm_detached_live_tail_messages_page(
+            qa_detached_live_tail_events(&user_b_full_id),
+            detached_end_token.clone(),
+        )?;
+        let detached_items = subscribe_and_ack_active_timeline_projection_for_qa(
+            &mut detached_conn,
+            &key_a,
+            "timeline legacy persisted gap detached live tail subscription",
+        )
+        .await?;
+        let (detached_items, visible_gap, initial_gap_projection, detached_gap_count) =
+            wait_for_projected_gap_and_item_for_qa(
+                &mut detached_conn,
+                &key_a,
+                detached_items,
+                detached_newest_body,
+                "timeline legacy persisted gap projects detached visible gap",
+            )
+            .await?;
+        let detached_observation = proxy.live_tail_messages_observation()?;
+        if detached_observation.room_messages_request_count != 1
+            || !detached_observation.first_request_was_exact_tokenless_limit
+            || detached_observation.first_request_had_from
+            || !detached_observation.freshness_page_served
+        {
+            return Err(format!(
+                "timeline legacy persisted gap expected one exact tokenless detached request \
+                 (requests={}, exact_tokenless_limit={}, had_from={}, served={})",
+                detached_observation.room_messages_request_count,
+                detached_observation.first_request_was_exact_tokenless_limit,
+                detached_observation.first_request_had_from,
+                detached_observation.freshness_page_served,
+            ));
+        }
+        let detached_observation = proxy.live_tail_messages_observation()?;
+        if detached_observation.expected_end_token_request_count != 0 {
+            return Err(format!(
+                "timeline legacy persisted gap detached tail consumed its continuation token before explicit viewport demand \
+                 (detached_end_token_requests={})",
+                detached_observation.expected_end_token_request_count,
+            ));
+        }
+        println!("live_tail_detached_gap=ok");
+
+        let historical_continuation_body = "QA timeline detached historical continuation";
+        proxy.arm_historical_continuation_messages_page(
+            detached_end_token,
+            qa_detached_historical_continuation_events(&user_b_full_id),
+        )?;
+        let visible_gap_request_id = detached_conn.next_request_id();
+        detached_conn
+            .command(CoreCommand::Timeline(TimelineCommand::ObserveViewport {
+                request_id: visible_gap_request_id,
+                key: key_a.clone(),
+                observation: TimelineViewportObservation {
+                    first_visible_event_id: visible_gap.first_visible_event_id.clone(),
+                    last_visible_event_id: visible_gap.last_visible_event_id.clone(),
+                    visible_gap_ids: vec![visible_gap.id],
+                    at_bottom: false,
+                },
+            }))
+            .await
+            .map_err(|e| {
+                format!("timeline legacy persisted gap: submit visible gap observation failed: {e}")
+            })?;
+        wait_for_exact_items_and_gap_release(
+            &mut detached_conn,
+            &key_a,
+            detached_items,
+            &[historical_continuation_body.to_owned()],
+            Some(initial_gap_projection),
+            Some(visible_gap.id),
+            "timeline legacy persisted gap visible continuation repair",
+        )
+        .await?;
+        let historical_observation = proxy.live_tail_messages_observation()?;
+        if !historical_observation.first_request_had_from
+            || !historical_observation.expected_end_token_was_used
+            || historical_observation.expected_end_token_request_count != 1
+            || !historical_observation.freshness_page_served
+        {
+            return Err(format!(
+                "timeline legacy persisted gap expected one historical continuation request \
+                 (had_from={}, exact_end={}, exact_end_requests={}, served={})",
+                historical_observation.first_request_had_from,
+                historical_observation.expected_end_token_was_used,
+                historical_observation.expected_end_token_request_count,
+                historical_observation.freshness_page_served,
+            ));
+        }
+        wait_for_timeline_gap_count_for_qa(
+            &detached_conn,
+            detached_gap_count.saturating_sub(1),
+            "timeline legacy persisted gap detached continuation closes its added gap",
+        )
+        .await?;
+        println!("live_tail_historical_continuation=ok");
+
+        start_sync_for_qa(
+            &mut conn_b,
+            "timeline legacy persisted gap resume B after room-absent proof",
+        )
+        .await?;
+        cleanup_logged_in_runtime(
+            conn_b,
+            runtime_b,
+            account_key_b,
+            "timeline legacy persisted gap detached live-tail cleanup B",
+        )
+        .await?;
+        cleanup_logged_in_runtime(
+            detached_conn,
+            detached_runtime,
+            account_key_a,
+            "timeline legacy persisted gap detached live-tail cleanup A",
+        )
+        .await?;
+        return Ok(());
+    }
+    let mut expected_bodies = newest_persisted_gap
+        .map(|(bodies, _)| bodies)
+        .unwrap_or(offline_bodies.clone());
     if legacy_fallback {
         let later_body = "QA timeline legacy fallback later live event".to_owned();
         let later_txn = "qa-timeline-legacy-fallback-later";
@@ -4266,9 +4817,23 @@ async fn run_timeline_reconnect_scenario_impl(
             &key_a,
             reopened_items,
             &expected_bodies,
+            None,
+            None,
             "timeline legacy fallback exact recovery",
         )
         .await?;
+        if restart_with_persisted_gap {
+            match conn_a.snapshot().timeline.continuity {
+                koushi_state::TimelineContinuityState::Incomplete { gap_count: 1, .. } => {
+                    println!("legacy_persisted_gap_unrelated_gap_retained=ok");
+                }
+                ref continuity => {
+                    return Err(format!(
+                        "timeline legacy persisted gap expected one unrelated older gap after newest repair, got {continuity:?}"
+                    ));
+                }
+            }
+        }
         let settled_body = "QA timeline legacy fallback settled live event";
         let settled_txn = "qa-timeline-legacy-fallback-settled";
         let settled_send_id = conn_b.next_request_id();
@@ -4298,10 +4863,16 @@ async fn run_timeline_reconnect_scenario_impl(
             "timeline legacy fallback receives after repair settlement",
         )
         .await?;
-        println!("legacy_fallback_checkpoint=ok");
-        println!("legacy_fallback_gap_repaired=ok");
-        println!("legacy_fallback_settled=ok");
-        println!("legacy_fallback_lifecycle=ok");
+        if restart_with_persisted_gap {
+            println!("legacy_persisted_gap_fence=ok");
+            println!("legacy_persisted_gap_repaired=ok");
+            println!("legacy_persisted_gap_settled=ok");
+        } else {
+            println!("legacy_fallback_checkpoint=ok");
+            println!("legacy_fallback_gap_repaired=ok");
+            println!("legacy_fallback_settled=ok");
+            println!("legacy_fallback_lifecycle=ok");
+        }
     } else {
         wait_for_all_items_with_bodies(
             &mut conn_a,
@@ -4331,6 +4902,367 @@ async fn run_timeline_reconnect_scenario_impl(
     )
     .await?;
     Ok(())
+}
+
+fn timeline_gap_count_for_qa(conn: &CoreConnection) -> u32 {
+    match conn.snapshot().timeline.continuity {
+        koushi_state::TimelineContinuityState::Inspecting {
+            known_gap_count, ..
+        } => known_gap_count,
+        koushi_state::TimelineContinuityState::Incomplete { gap_count, .. }
+        | koushi_state::TimelineContinuityState::Repairing { gap_count, .. }
+        | koushi_state::TimelineContinuityState::FailedIncomplete { gap_count, .. } => gap_count,
+        koushi_state::TimelineContinuityState::Unknown
+        | koushi_state::TimelineContinuityState::Healthy { .. } => 0,
+    }
+}
+
+fn live_tail_snapshot_completion_count_for_qa() -> usize {
+    koushi_diagnostics::snapshot()
+        .records
+        .iter()
+        .filter(|record| {
+            record.event.source == "core.timeline_gap_repair"
+                && record.event.stage == "inspection"
+                && record.event.fields.iter().any(|field| {
+                    field.key == "trigger"
+                        && field.value
+                            == koushi_diagnostics::DiagnosticValue::Token("live_tail_snapshot")
+                })
+                && record.event.fields.iter().any(|field| {
+                    field.key == "outcome"
+                        && matches!(
+                            field.value,
+                            koushi_diagnostics::DiagnosticValue::Token(
+                                "unknown" | "incomplete" | "healthy"
+                            )
+                        )
+                })
+        })
+        .count()
+}
+
+async fn wait_for_live_tail_snapshot_gap_count_for_qa(
+    conn: &CoreConnection,
+    completion_baseline: usize,
+    label: &str,
+) -> Result<u32, String> {
+    tokio::time::timeout(EVENT_TIMEOUT, async {
+        let mut previous_gap_count = None;
+        let mut stable_samples = 0_u8;
+        loop {
+            let snapshot_completed =
+                live_tail_snapshot_completion_count_for_qa() > completion_baseline;
+            let continuity_is_inspecting = matches!(
+                conn.snapshot().timeline.continuity,
+                koushi_state::TimelineContinuityState::Inspecting { .. }
+            );
+            let gap_count = timeline_gap_count_for_qa(conn);
+            if snapshot_completed && !continuity_is_inspecting {
+                if previous_gap_count == Some(gap_count) {
+                    stable_samples = stable_samples.saturating_add(1);
+                } else {
+                    previous_gap_count = Some(gap_count);
+                    stable_samples = 0;
+                }
+                if stable_samples >= 1 {
+                    break gap_count;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        format!(
+            "{label}: did not settle a completed live-tail snapshot (snapshots={}, observed={})",
+            live_tail_snapshot_completion_count_for_qa(),
+            timeline_gap_count_for_qa(conn),
+        )
+    })
+}
+
+async fn wait_for_projected_gap_and_item_for_qa(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    mut items: Vec<TimelineItem>,
+    expected_body: &str,
+    label: &str,
+) -> Result<(Vec<TimelineItem>, QaVisibleGapSelection, (u64, u64), u32), String> {
+    let mut capture = QaVisibleGapCapture::default();
+    loop {
+        capture.observe_items(&items, expected_body, label)?;
+        if let Some((visible_gap, initial_gap_projection)) = capture.projected_gap()
+            && let Some(settled_gap_count) =
+                settled_nonzero_timeline_gap_count_for_qa(conn, initial_gap_projection.1)
+        {
+            return Ok((
+                items,
+                visible_gap.clone(),
+                *initial_gap_projection,
+                settled_gap_count,
+            ));
+        }
+
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for a projected visible gap"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+        match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: ref event_key,
+                items: replacement,
+                ..
+            }) if event_key == key => items = replacement,
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref event_key,
+                diffs,
+                ..
+            }) if event_key == key => {
+                for diff in &diffs {
+                    apply_timeline_diff(&mut items, diff);
+                }
+            }
+            CoreEvent::Timeline(TimelineEvent::GapPositionsUpdated {
+                key: ref event_key,
+                actor_generation,
+                generation,
+                positions,
+                ..
+            }) if event_key == key && !positions.is_empty() => {
+                capture.observe_gap_positions(
+                    &items,
+                    actor_generation,
+                    generation,
+                    &positions,
+                    label,
+                )?;
+            }
+            _ => {}
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct QaVisibleGapSelection {
+    id: TimelineGapId,
+    first_visible_event_id: Option<String>,
+    last_visible_event_id: Option<String>,
+}
+
+#[derive(Default)]
+struct QaVisibleGapCapture {
+    exact_body_present: bool,
+    projected_gap: Option<(QaVisibleGapSelection, (u64, u64))>,
+}
+
+impl QaVisibleGapCapture {
+    fn observe_items(
+        &mut self,
+        items: &[TimelineItem],
+        expected_body: &str,
+        label: &str,
+    ) -> Result<(), String> {
+        let body_count = items
+            .iter()
+            .filter(|item| item.body.as_deref() == Some(expected_body))
+            .count();
+        if body_count > 1 {
+            return Err(format!(
+                "{label}: detached live-tail row was projected twice"
+            ));
+        }
+
+        let exact_body_present = body_count == 1;
+        if !exact_body_present || !self.exact_body_present {
+            self.projected_gap = None;
+        }
+        self.exact_body_present = exact_body_present;
+        Ok(())
+    }
+
+    fn observe_gap_positions(
+        &mut self,
+        items: &[TimelineItem],
+        actor_generation: u64,
+        generation: u64,
+        positions: &[TimelineGapPosition],
+        label: &str,
+    ) -> Result<(), String> {
+        if !self.exact_body_present {
+            self.projected_gap = None;
+            return Ok(());
+        }
+
+        let visible_gap = select_visible_gap_for_qa(items, positions)
+            .map_err(|error| format!("{label}: {error}"))?;
+        if let Some((existing_gap, (existing_actor, _))) = self.projected_gap.as_ref()
+            && (existing_gap.id != visible_gap.id || *existing_actor != actor_generation)
+        {
+            return Err(format!(
+                "{label}: projected visible gap identity changed before viewport demand"
+            ));
+        }
+        self.projected_gap = Some((visible_gap, (actor_generation, generation)));
+        Ok(())
+    }
+
+    fn projected_gap(&self) -> Option<&(QaVisibleGapSelection, (u64, u64))> {
+        self.projected_gap.as_ref()
+    }
+}
+
+fn select_visible_gap_for_qa(
+    items: &[TimelineItem],
+    positions: &[TimelineGapPosition],
+) -> Result<QaVisibleGapSelection, String> {
+    let bracketed = positions
+        .iter()
+        .filter_map(|position| {
+            let first_visible_event_id = items
+                .get(..position.before_item_index)?
+                .iter()
+                .rev()
+                .find_map(|item| match &item.id {
+                    TimelineItemId::Event { event_id } => Some(event_id.clone()),
+                    TimelineItemId::Transaction { .. } | TimelineItemId::Synthetic { .. } => None,
+                })?;
+            let last_visible_event_id =
+                items
+                    .get(position.before_item_index..)?
+                    .iter()
+                    .find_map(|item| match &item.id {
+                        TimelineItemId::Event { event_id } => Some(event_id.clone()),
+                        TimelineItemId::Transaction { .. } | TimelineItemId::Synthetic { .. } => {
+                            None
+                        }
+                    })?;
+            Some((
+                position.before_item_index,
+                position.id,
+                QaVisibleGapSelection {
+                    id: position.id,
+                    first_visible_event_id: Some(first_visible_event_id),
+                    last_visible_event_id: Some(last_visible_event_id),
+                },
+            ))
+        })
+        .max_by_key(|(before_item_index, id, _)| {
+            (*before_item_index, id.topology_revision, id.ordinal)
+        })
+        .map(|(_, _, selection)| selection);
+    if let Some(selection) = bracketed {
+        return Ok(selection);
+    }
+
+    if let Some(position) = positions
+        .iter()
+        .filter(|position| position.before_item_index == 0)
+        .max_by_key(|position| (position.id.topology_revision, position.id.ordinal))
+    {
+        return Ok(QaVisibleGapSelection {
+            id: position.id,
+            first_visible_event_id: None,
+            last_visible_event_id: None,
+        });
+    }
+
+    let min_before_item_index = positions
+        .iter()
+        .map(|position| position.before_item_index)
+        .min()
+        .map_or_else(|| "none".to_owned(), |index| index.to_string());
+    let max_before_item_index = positions
+        .iter()
+        .map(|position| position.before_item_index)
+        .max()
+        .map_or_else(|| "none".to_owned(), |index| index.to_string());
+    Err(format!(
+        "visible gap selection found no bracketed or top-row position \
+         (item_count={}, position_count={}, min_before_item_index={}, \
+         max_before_item_index={})",
+        items.len(),
+        positions.len(),
+        min_before_item_index,
+        max_before_item_index,
+    ))
+}
+
+fn settled_nonzero_timeline_gap_count_for_qa(
+    conn: &CoreConnection,
+    projection_generation: u64,
+) -> Option<u32> {
+    // The position event and Incomplete state share one inspection serial.
+    // Starting repair allocates a newer serial, which FailedIncomplete retains.
+    let gap_count = match conn.snapshot().timeline.continuity {
+        koushi_state::TimelineContinuityState::Incomplete {
+            generation,
+            gap_count,
+        } if generation == projection_generation => gap_count,
+        koushi_state::TimelineContinuityState::Repairing {
+            generation,
+            gap_count,
+            ..
+        }
+        | koushi_state::TimelineContinuityState::FailedIncomplete {
+            generation,
+            gap_count,
+            ..
+        } if generation >= projection_generation => gap_count,
+        koushi_state::TimelineContinuityState::Unknown
+        | koushi_state::TimelineContinuityState::Inspecting { .. }
+        | koushi_state::TimelineContinuityState::Healthy { .. }
+        | koushi_state::TimelineContinuityState::Incomplete { .. }
+        | koushi_state::TimelineContinuityState::Repairing { .. }
+        | koushi_state::TimelineContinuityState::FailedIncomplete { .. } => return None,
+    };
+    (gap_count > 0).then_some(gap_count)
+}
+
+async fn wait_for_timeline_gap_count_for_qa(
+    conn: &CoreConnection,
+    expected_gap_count: u32,
+    label: &str,
+) -> Result<(), String> {
+    let result = tokio::time::timeout(EVENT_TIMEOUT, async {
+        loop {
+            if timeline_gap_count_for_qa(conn) == expected_gap_count {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    match result {
+        Ok(()) => Ok(()),
+        Err(_) => Err(format!(
+            "{label}: did not settle at the expected coarse gap count \
+             (expected={}, observed={})",
+            expected_gap_count,
+            timeline_gap_count_for_qa(conn),
+        )),
+    }
+}
+
+fn qa_detached_live_tail_events(sender: &str) -> Vec<QaCannedTimelineEvent> {
+    (0..128)
+        .rev()
+        .map(|index| QaCannedTimelineEvent {
+            event_id: format!("$qa-live-tail-detached-{index:03}:example.invalid"),
+            sender: sender.to_owned(),
+            body: format!("QA timeline detached live tail {index:03}"),
+            origin_server_ts: 1_900_000_100_000 + index as u64,
+        })
+        .collect()
+}
+
+fn qa_detached_historical_continuation_events(sender: &str) -> Vec<QaCannedTimelineEvent> {
+    vec![QaCannedTimelineEvent {
+        event_id: "$qa-live-tail-detached-historical:example.invalid".to_owned(),
+        sender: sender.to_owned(),
+        body: "QA timeline detached historical continuation".to_owned(),
+        origin_server_ts: 1_900_000_099_999,
+    }]
 }
 
 async fn cleanup_after_full_flow(
@@ -4469,6 +5401,11 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     if scenario == QaScenario::TimelineLegacyFallback {
         println!("safety=ok");
         run_timeline_legacy_fallback_scenario(&config).await?;
+        return Ok(scenario_report(&config.server_kind, scenario));
+    }
+    if scenario == QaScenario::TimelineLegacyPersistedGap {
+        println!("safety=ok");
+        run_timeline_legacy_persisted_gap_scenario(&config).await?;
         return Ok(scenario_report(&config.server_kind, scenario));
     }
     if scenario == QaScenario::GateNoProof {
@@ -5016,6 +5953,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
             observation: TimelineViewportObservation {
                 first_visible_event_id: Some(event1_id.clone()),
                 last_visible_event_id: Some(event1_id.clone()),
+                visible_gap_ids: Vec::new(),
                 at_bottom: false,
             },
         }))
@@ -9593,14 +10531,14 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
     .await?;
     println!("e2ee_unverified_peer_send_nonblocking=ok");
 
-    wait_for_item_with_body_or_decryption_failure_with_sync(
+    wait_for_item_with_body_with_sync(
         conn_a2,
         &key_a2,
         E2EE_MULTI_USER_MULTI_DEVICE_BODY,
         "e2ee multi-device A2 receive",
     )
     .await?;
-    wait_for_item_with_body_or_decryption_failure_with_sync(
+    wait_for_item_with_body_with_sync(
         &mut conn_b,
         &key_b,
         E2EE_MULTI_USER_MULTI_DEVICE_BODY,
@@ -9651,7 +10589,7 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
         E2EE_EVENT_TIMEOUT,
     )
     .await?;
-    wait_for_item_with_body_or_decryption_failure_with_sync(
+    wait_for_item_with_body_with_sync(
         &mut conn_b,
         &key_b,
         blocked_body,
@@ -9684,7 +10622,7 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
     cleanup_logged_in_runtime(conn_b3, runtime_b3, account_key_b3, "e2ee cleanup B3").await?;
 
     if let Some((runtime_b2, mut conn_b2, account_key_b2, key_b2)) = maybe_recipient_second_device {
-        wait_for_item_with_body_or_decryption_failure_with_sync(
+        wait_for_item_with_body_with_sync(
             &mut conn_b2,
             &key_b2,
             E2EE_MULTI_USER_MULTI_DEVICE_BODY,
@@ -9882,6 +10820,49 @@ impl<'a> BodyWaitObserver<'a> {
                 self.expected_body
             )
         }
+    }
+}
+
+enum BodyWithSyncEventOutcome {
+    Found(TimelineItem),
+    RequestNextSync,
+    Continue,
+}
+
+fn observe_body_with_sync_event(
+    observer: &mut BodyWaitObserver<'_>,
+    key: &TimelineKey,
+    sync_request_id: RequestId,
+    event: CoreEvent,
+    label: &str,
+) -> Result<BodyWithSyncEventOutcome, String> {
+    match event {
+        CoreEvent::Timeline(TimelineEvent::InitialItems {
+            key: ref event_key,
+            items,
+            ..
+        }) if event_key == key => Ok(observer.observe_items(&items).map_or(
+            BodyWithSyncEventOutcome::Continue,
+            BodyWithSyncEventOutcome::Found,
+        )),
+        CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+            key: ref event_key,
+            diffs,
+            ..
+        }) if event_key == key => Ok(observer.observe_diffs(&diffs)?.map_or(
+            BodyWithSyncEventOutcome::Continue,
+            BodyWithSyncEventOutcome::Found,
+        )),
+        CoreEvent::Sync(SyncEvent::Stopped {
+            request_id: Some(event_request_id),
+        }) if event_request_id == sync_request_id => Ok(BodyWithSyncEventOutcome::RequestNextSync),
+        CoreEvent::OperationFailed {
+            request_id: event_request_id,
+            failure,
+        } if event_request_id == sync_request_id => {
+            Err(format!("{label}: SyncOnce failed: {failure:?}"))
+        }
+        _ => Ok(BodyWithSyncEventOutcome::Continue),
     }
 }
 
@@ -10419,6 +11400,7 @@ struct QaTcpProxy {
     running: Arc<AtomicBool>,
     active_streams: Arc<Mutex<Vec<TcpStream>>>,
     fallback_control: Arc<(Mutex<QaFallbackProxyState>, Condvar)>,
+    messages_control: Arc<Mutex<QaMessagesProxyControl>>,
     accept_thread: Option<JoinHandle<()>>,
 }
 
@@ -10453,14 +11435,215 @@ enum QaProxyRequestKind {
     Versions,
     SyncService,
     LegacySync,
+    RoomMessages,
     Other,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum QaProxyRequestAction {
     Forward,
     FailClosed,
     HoldLegacy,
+    ServeCannedMessages(Vec<u8>),
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct QaMessagesProxyObservation {
+    room_messages_request_count: u32,
+    first_request_was_exact_tokenless_limit: bool,
+    first_request_had_from: bool,
+    freshness_page_served: bool,
+    expected_end_token_was_used: bool,
+    expected_end_token_request_count: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum QaMessagesProxyExpectation {
+    TokenlessLiveTail,
+    BackwardFrom { token: String },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QaMessagesProxyPhase {
+    Open,
+    Armed,
+    Served,
+    Rejected,
+}
+
+impl Default for QaMessagesProxyPhase {
+    fn default() -> Self {
+        Self::Open
+    }
+}
+
+struct QaMessagesProxyState {
+    phase: QaMessagesProxyPhase,
+    expectation: Option<QaMessagesProxyExpectation>,
+    tracked_end_token: Option<String>,
+    observation: QaMessagesProxyObservation,
+}
+
+impl Default for QaMessagesProxyState {
+    fn default() -> Self {
+        Self {
+            phase: QaMessagesProxyPhase::Open,
+            expectation: None,
+            tracked_end_token: None,
+            observation: QaMessagesProxyObservation::default(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QaMessagesProxyDecision {
+    Forward,
+    FailClosed,
+    ServeCannedPage,
+}
+
+impl QaMessagesProxyState {
+    fn arm_page(
+        &mut self,
+        expectation: QaMessagesProxyExpectation,
+        tracked_end_token: Option<String>,
+    ) {
+        self.phase = QaMessagesProxyPhase::Armed;
+        self.expectation = Some(expectation);
+        self.tracked_end_token = tracked_end_token;
+        self.observation = QaMessagesProxyObservation::default();
+    }
+
+    fn observe_room_messages_request(
+        &mut self,
+        metadata: &QaRoomMessagesRequestMetadata,
+    ) -> QaMessagesProxyDecision {
+        self.observation.room_messages_request_count = self
+            .observation
+            .room_messages_request_count
+            .saturating_add(1);
+        if metadata.direction_is_backward
+            && self
+                .tracked_end_token
+                .as_deref()
+                .is_some_and(|token| metadata.from_token.as_deref() == Some(token))
+        {
+            self.observation.expected_end_token_request_count = self
+                .observation
+                .expected_end_token_request_count
+                .saturating_add(1);
+        }
+        if self.phase != QaMessagesProxyPhase::Armed {
+            return QaMessagesProxyDecision::Forward;
+        }
+
+        self.observation.first_request_was_exact_tokenless_limit =
+            metadata.query_is_exact_tokenless_limit;
+        self.observation.first_request_had_from = metadata.has_from;
+        let expected_request_matched = match self.expectation.as_ref() {
+            Some(QaMessagesProxyExpectation::TokenlessLiveTail) => {
+                metadata.query_is_exact_tokenless_limit && !metadata.has_from
+            }
+            Some(QaMessagesProxyExpectation::BackwardFrom { token }) => {
+                let matched = metadata.direction_is_backward
+                    && metadata.from_token.as_deref() == Some(token.as_str());
+                self.observation.expected_end_token_was_used = matched;
+                matched
+            }
+            None => false,
+        };
+        if expected_request_matched {
+            self.phase = QaMessagesProxyPhase::Served;
+            self.observation.freshness_page_served = true;
+            QaMessagesProxyDecision::ServeCannedPage
+        } else {
+            self.phase = QaMessagesProxyPhase::Rejected;
+            QaMessagesProxyDecision::FailClosed
+        }
+    }
+}
+
+struct QaCannedTimelineEvent {
+    event_id: String,
+    sender: String,
+    body: String,
+    origin_server_ts: u64,
+}
+
+struct QaCannedMessagesPage {
+    events: Vec<QaCannedTimelineEvent>,
+    end: Option<String>,
+}
+
+impl QaCannedMessagesPage {
+    fn anchored_silent_gap(
+        newest_known_event_id: String,
+        newest_known_body: String,
+        missing_event_id: String,
+        missing_body: String,
+        older_anchor_event_id: String,
+        sender: String,
+        older_anchor_body: String,
+    ) -> Self {
+        Self {
+            events: vec![
+                QaCannedTimelineEvent {
+                    event_id: newest_known_event_id,
+                    sender: sender.clone(),
+                    body: newest_known_body,
+                    origin_server_ts: 1_900_000_000_002,
+                },
+                QaCannedTimelineEvent {
+                    event_id: missing_event_id,
+                    sender: sender.clone(),
+                    body: missing_body,
+                    origin_server_ts: 1_900_000_000_001,
+                },
+                QaCannedTimelineEvent {
+                    event_id: older_anchor_event_id,
+                    sender,
+                    body: older_anchor_body,
+                    origin_server_ts: 1,
+                },
+            ],
+            end: None,
+        }
+    }
+
+    fn response_body(&self) -> io::Result<Vec<u8>> {
+        let chunk = self
+            .events
+            .iter()
+            .map(|event| {
+                serde_json::json!({
+                    "type": "m.room.message",
+                    "event_id": event.event_id,
+                    "sender": event.sender,
+                    "origin_server_ts": event.origin_server_ts,
+                    "content": {
+                        "msgtype": "m.text",
+                        "body": event.body,
+                    },
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut response = serde_json::json!({
+            "start": "qa-live-tail-start",
+            "chunk": chunk,
+            "state": [],
+        });
+        if let Some(end) = &self.end {
+            response["end"] = serde_json::Value::String(end.clone());
+        }
+        serde_json::to_vec(&response)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
+}
+
+#[derive(Default)]
+struct QaMessagesProxyControl {
+    state: QaMessagesProxyState,
+    canned_page: Option<QaCannedMessagesPage>,
 }
 
 impl QaTcpProxy {
@@ -10479,11 +11662,13 @@ impl QaTcpProxy {
         let active_streams = Arc::new(Mutex::new(Vec::new()));
         let fallback_control =
             Arc::new((Mutex::new(QaFallbackProxyState::default()), Condvar::new()));
+        let messages_control = Arc::new(Mutex::new(QaMessagesProxyControl::default()));
 
         let thread_enabled = enabled.clone();
         let thread_running = running.clone();
         let thread_streams = active_streams.clone();
         let thread_fallback_control = fallback_control.clone();
+        let thread_messages_control = messages_control.clone();
         let accept_thread = thread::spawn(move || {
             while thread_running.load(Ordering::SeqCst) {
                 match listener.accept() {
@@ -10497,6 +11682,7 @@ impl QaTcpProxy {
                             target,
                             thread_streams.clone(),
                             thread_fallback_control.clone(),
+                            thread_messages_control.clone(),
                         );
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -10517,6 +11703,7 @@ impl QaTcpProxy {
             running,
             active_streams,
             fallback_control,
+            messages_control,
             accept_thread: Some(accept_thread),
         })
     }
@@ -10583,6 +11770,82 @@ impl QaTcpProxy {
         changed.notify_all();
         Ok(())
     }
+
+    fn arm_first_live_tail_messages_page(
+        &self,
+        newest_known_event_id: String,
+        newest_known_body: String,
+        missing_event_id: String,
+        missing_body: String,
+        older_anchor_event_id: String,
+        sender: String,
+        older_anchor_body: String,
+    ) -> Result<(), String> {
+        self.arm_messages_page(
+            QaMessagesProxyExpectation::TokenlessLiveTail,
+            QaCannedMessagesPage::anchored_silent_gap(
+                newest_known_event_id,
+                newest_known_body,
+                missing_event_id,
+                missing_body,
+                older_anchor_event_id,
+                sender,
+                older_anchor_body,
+            ),
+            None,
+        )
+    }
+
+    fn arm_detached_live_tail_messages_page(
+        &self,
+        events: Vec<QaCannedTimelineEvent>,
+        end_token: String,
+    ) -> Result<(), String> {
+        let tracked_end_token = end_token.clone();
+        self.arm_messages_page(
+            QaMessagesProxyExpectation::TokenlessLiveTail,
+            QaCannedMessagesPage {
+                events,
+                end: Some(end_token),
+            },
+            Some(tracked_end_token),
+        )
+    }
+
+    fn arm_historical_continuation_messages_page(
+        &self,
+        end_token: String,
+        events: Vec<QaCannedTimelineEvent>,
+    ) -> Result<(), String> {
+        let tracked_end_token = end_token.clone();
+        self.arm_messages_page(
+            QaMessagesProxyExpectation::BackwardFrom { token: end_token },
+            QaCannedMessagesPage { events, end: None },
+            Some(tracked_end_token),
+        )
+    }
+
+    fn arm_messages_page(
+        &self,
+        expectation: QaMessagesProxyExpectation,
+        page: QaCannedMessagesPage,
+        tracked_end_token: Option<String>,
+    ) -> Result<(), String> {
+        let mut control = self
+            .messages_control
+            .lock()
+            .map_err(|_| "timeline messages proxy state lock was poisoned".to_owned())?;
+        control.state.arm_page(expectation, tracked_end_token);
+        control.canned_page = Some(page);
+        Ok(())
+    }
+
+    fn live_tail_messages_observation(&self) -> Result<QaMessagesProxyObservation, String> {
+        self.messages_control
+            .lock()
+            .map(|control| control.state.observation)
+            .map_err(|_| "timeline messages proxy state lock was poisoned".to_owned())
+    }
 }
 
 impl Drop for QaTcpProxy {
@@ -10620,9 +11883,16 @@ fn spawn_proxy_pair(
     target: SocketAddr,
     active_streams: Arc<Mutex<Vec<TcpStream>>>,
     fallback_control: Arc<(Mutex<QaFallbackProxyState>, Condvar)>,
+    messages_control: Arc<Mutex<QaMessagesProxyControl>>,
 ) {
     thread::spawn(move || {
-        let _ = proxy_single_http_request(&mut client, target, active_streams, fallback_control);
+        let _ = proxy_single_http_request(
+            &mut client,
+            target,
+            active_streams,
+            fallback_control,
+            messages_control,
+        );
         let _ = client.shutdown(Shutdown::Both);
     });
 }
@@ -10632,6 +11902,7 @@ fn proxy_single_http_request(
     target: SocketAddr,
     active_streams: Arc<Mutex<Vec<TcpStream>>>,
     fallback_control: Arc<(Mutex<QaFallbackProxyState>, Condvar)>,
+    messages_control: Arc<Mutex<QaMessagesProxyControl>>,
 ) -> io::Result<()> {
     let mut request_head = Vec::new();
     {
@@ -10666,7 +11937,10 @@ fn proxy_single_http_request(
         }
     }
 
-    match fallback_proxy_action(&fallback_control, qa_proxy_request_kind(&request_head)?)? {
+    let request_kind = qa_proxy_request_kind(&request_head)?;
+    let action = qa_messages_proxy_action(&messages_control, request_kind, &request_head)?
+        .unwrap_or(fallback_proxy_action(&fallback_control, request_kind)?);
+    match action {
         QaProxyRequestAction::Forward => {}
         QaProxyRequestAction::FailClosed => {
             return Err(io::Error::new(
@@ -10690,6 +11964,10 @@ fn proxy_single_http_request(
                     "QA fallback proxy stopped before legacy release",
                 ));
             }
+        }
+        QaProxyRequestAction::ServeCannedMessages(body) => {
+            write_qa_json_response(client, &body)?;
+            return Ok(());
         }
     }
 
@@ -10742,8 +12020,117 @@ fn qa_proxy_request_kind(request: &[u8]) -> io::Result<QaProxyRequestKind> {
         (_, "/_matrix/client/v3/sync" | "/_matrix/client/r0/sync") => {
             QaProxyRequestKind::LegacySync
         }
+        (_, path)
+            if path.starts_with("/_matrix/client/")
+                && path.contains("/rooms/")
+                && path.ends_with("/messages") =>
+        {
+            QaProxyRequestKind::RoomMessages
+        }
         _ => QaProxyRequestKind::Other,
     })
+}
+
+fn qa_messages_proxy_action(
+    control: &Arc<Mutex<QaMessagesProxyControl>>,
+    request_kind: QaProxyRequestKind,
+    request: &[u8],
+) -> io::Result<Option<QaProxyRequestAction>> {
+    if request_kind != QaProxyRequestKind::RoomMessages {
+        return Ok(None);
+    }
+    let metadata = qa_room_messages_request_metadata(request)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "room messages proxy received a non-room-messages request",
+        )
+    })?;
+    let mut control = control
+        .lock()
+        .map_err(|_| io::Error::other("QA messages proxy state lock was poisoned"))?;
+    match control.state.observe_room_messages_request(&metadata) {
+        QaMessagesProxyDecision::Forward => Ok(None),
+        QaMessagesProxyDecision::FailClosed => Ok(Some(QaProxyRequestAction::FailClosed)),
+        QaMessagesProxyDecision::ServeCannedPage => {
+            let page = control.canned_page.take().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "QA messages proxy armed without a canned messages page",
+                )
+            })?;
+            Ok(Some(QaProxyRequestAction::ServeCannedMessages(
+                page.response_body()?,
+            )))
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct QaRoomMessagesRequestMetadata {
+    query_is_exact_tokenless_limit: bool,
+    has_from: bool,
+    direction_is_backward: bool,
+    from_token: Option<String>,
+}
+
+fn qa_room_messages_request_metadata(
+    request: &[u8],
+) -> io::Result<Option<QaRoomMessagesRequestMetadata>> {
+    let header_end = find_http_header_end(request)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing HTTP headers"))?;
+    let head = String::from_utf8_lossy(&request[..header_end]);
+    let line = head
+        .lines()
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing HTTP request line"))?;
+    let mut fields = line.split_ascii_whitespace();
+    let _method = fields
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing HTTP method"))?;
+    let target = fields
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing HTTP target"))?;
+    let version = fields
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing HTTP version"))?;
+    if fields.next().is_some() || !version.starts_with("HTTP/") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid HTTP request line",
+        ));
+    }
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    if !path.starts_with("/_matrix/client/")
+        || !path.contains("/rooms/")
+        || !path.ends_with("/messages")
+    {
+        return Ok(None);
+    }
+    let mut direction_is_backward = false;
+    let mut from_token = None;
+    for field in query.split('&') {
+        let (name, value) = field.split_once('=').unwrap_or((field, ""));
+        match name {
+            "dir" => direction_is_backward = value == "b",
+            "from" => from_token = Some(value.to_owned()),
+            _ => {}
+        }
+    }
+    Ok(Some(QaRoomMessagesRequestMetadata {
+        query_is_exact_tokenless_limit: query == "dir=b&limit=128",
+        has_from: from_token.is_some(),
+        direction_is_backward,
+        from_token,
+    }))
+}
+
+fn write_qa_json_response(client: &mut TcpStream, body: &[u8]) -> io::Result<()> {
+    let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    io::Write::write_all(client, headers.as_bytes())?;
+    io::Write::write_all(client, body)
 }
 
 fn fallback_proxy_action(
@@ -12871,14 +14258,21 @@ async fn wait_for_exact_items_and_gap_release(
     key: &TimelineKey,
     mut items: Vec<TimelineItem>,
     expected_bodies: &[String],
+    initial_gap_projection: Option<(u64, u64)>,
+    expected_closed_gap: Option<TimelineGapId>,
     label: &str,
 ) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
     let mut released = false;
-    let mut gap_actor_generation = None;
+    let mut expected_gap_absent = expected_closed_gap.is_none();
+    let mut saw_post_demand_gap_positions = false;
+    let mut closure_projection = None;
+    let mut gap_actor_generation =
+        initial_gap_projection.map(|(actor_generation, _)| actor_generation);
     let mut pending_render_ack = None;
     let mut render_ack_request_id = None;
     let mut render_ack_sent_at: Option<tokio::time::Instant> = None;
+    let mut render_ack_actor_generation = None;
     loop {
         let counts = expected_bodies
             .iter()
@@ -12889,7 +14283,7 @@ async fn wait_for_exact_items_and_gap_release(
                     .count()
             })
             .collect::<Vec<_>>();
-        if released && counts.iter().all(|count| *count == 1) {
+        if released && expected_gap_absent && counts.iter().all(|count| *count == 1) {
             return Ok(());
         }
         if counts.iter().any(|count| *count > 1) {
@@ -12903,7 +14297,15 @@ async fn wait_for_exact_items_and_gap_release(
             .map_err(|_| {
                 let missing_count = counts.iter().filter(|count| **count == 0).count();
                 format!(
-                    "{label}: timed out with {missing_count} rows missing; gap release={released}"
+                    "{label}: timed out with {missing_count} rows missing; gap_release={released}; \
+                     expected_gap_absent={expected_gap_absent}; \
+                     post_demand_gap_positions={saw_post_demand_gap_positions}; \
+                     closure_projection={}; render_ack_sent={}; render_ack_same_actor={}",
+                    closure_projection.is_some(),
+                    render_ack_sent_at.is_some(),
+                    closure_projection.is_some_and(|(actor_generation, _)| {
+                        render_ack_actor_generation == Some(actor_generation)
+                    }),
                 )
             })?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
@@ -12930,12 +14332,45 @@ async fn wait_for_exact_items_and_gap_release(
             CoreEvent::Timeline(TimelineEvent::GapPositionsUpdated {
                 key: ref event_key,
                 actor_generation,
+                generation,
+                positions,
                 ..
-            }) if event_key == key => gap_actor_generation = Some(actor_generation),
+            }) if event_key == key => {
+                if expected_closed_gap.is_none()
+                    || initial_gap_projection
+                        .is_some_and(|(initial_actor, _)| initial_actor == actor_generation)
+                {
+                    gap_actor_generation = Some(actor_generation);
+                }
+                saw_post_demand_gap_positions = true;
+                if let (Some(expected_gap), Some((initial_actor, initial_generation))) =
+                    (expected_closed_gap, initial_gap_projection)
+                    && actor_generation == initial_actor
+                    && generation > initial_generation
+                {
+                    expected_gap_absent =
+                        positions.iter().all(|position| position.id != expected_gap);
+                    closure_projection =
+                        expected_gap_absent.then_some((actor_generation, generation));
+                }
+            }
             CoreEvent::Timeline(TimelineEvent::GapRepairReleased {
-                key: ref event_key, ..
-            }) if event_key == key && counts.iter().all(|count| *count == 1) => {
+                key: ref event_key,
+                actor_generation,
+                generation,
+            }) if event_key == key => {
+                let release_projection = (actor_generation, generation);
+                if expected_closed_gap.is_some()
+                    && (closure_projection != Some(release_projection)
+                        || render_ack_actor_generation != Some(actor_generation)
+                        || render_ack_request_id.is_none())
+                {
+                    continue;
+                }
                 let Some(sent_at) = render_ack_sent_at else {
+                    if expected_closed_gap.is_some() {
+                        continue;
+                    }
                     return Err(format!(
                         "{label}: gap repair released without a correlated render acknowledgement"
                     ));
@@ -12979,6 +14414,7 @@ async fn wait_for_exact_items_and_gap_release(
             .map_err(|error| format!("{label}: render acknowledgement failed: {error}"))?;
             render_ack_request_id = Some(request_id);
             render_ack_sent_at = Some(tokio::time::Instant::now());
+            render_ack_actor_generation = Some(actor_generation);
             pending_render_ack = None;
         }
     }
@@ -13142,7 +14578,7 @@ async fn wait_for_item_with_body_or_decryption_failure(
     }
 }
 
-async fn wait_for_item_with_body_or_decryption_failure_with_sync(
+async fn wait_for_item_with_body_with_sync(
     conn: &mut CoreConnection,
     key: &TimelineKey,
     expected_body: &str,
@@ -13170,38 +14606,18 @@ async fn wait_for_item_with_body_or_decryption_failure_with_sync(
             .await
             .map_err(|_| observer.timeout_message(label))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
-
-        match event {
-            CoreEvent::Timeline(TimelineEvent::InitialItems {
-                key: ref ev_key,
-                items,
-                ..
-            }) if ev_key == key => {
-                if let Some(item) = observer.observe_items(&items) {
-                    return Ok(item);
-                }
-            }
-            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
-                key: ref ev_key,
-                diffs,
-                ..
-            }) if ev_key == key => {
-                if let Some(item) = observer.observe_diffs(&diffs)? {
-                    return Ok(item);
-                }
-            }
-            CoreEvent::Sync(SyncEvent::Stopped {
-                request_id: Some(ev_id),
-            }) if Some(ev_id) == sync_request_id => {
-                sync_request_id = None;
-            }
-            CoreEvent::OperationFailed {
-                request_id: ev_id,
-                failure,
-            } if Some(ev_id) == sync_request_id => {
-                return Err(format!("{label}: SyncOnce failed: {failure:?}"));
-            }
-            _ => {}
+        let active_sync_request_id =
+            sync_request_id.expect("a SyncOnce request is active while waiting for events");
+        match observe_body_with_sync_event(
+            &mut observer,
+            key,
+            active_sync_request_id,
+            event,
+            label,
+        )? {
+            BodyWithSyncEventOutcome::Found(item) => return Ok(item),
+            BodyWithSyncEventOutcome::RequestNextSync => sync_request_id = None,
+            BodyWithSyncEventOutcome::Continue => {}
         }
     }
 }
@@ -14424,7 +15840,225 @@ async fn wait_for_search_result(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koushi_core::event::{ThreadSummaryDto, TimelineMessageActions};
+    use koushi_core::event::{ThreadSummaryDto, TimelineGapPosition, TimelineMessageActions};
+
+    #[test]
+    fn visible_gap_selector_prefers_internal_gap_and_returns_nearest_event_bounds() {
+        let mut synthetic = projection_timeline_item("$synthetic-placeholder:test", false);
+        synthetic.id = TimelineItemId::Synthetic {
+            synthetic_id: "placeholder".to_owned(),
+        };
+        let items = vec![
+            projection_timeline_item("$far-left:test", false),
+            projection_timeline_item("$near-left:test", false),
+            synthetic,
+            projection_timeline_item("$near-right:test", false),
+            projection_timeline_item("$far-right:test", false),
+        ];
+        let top_row_id = TimelineGapId {
+            topology_revision: 10,
+            ordinal: 0,
+        };
+        let bracketed_id = TimelineGapId {
+            topology_revision: 10,
+            ordinal: 1,
+        };
+
+        let selected = select_visible_gap_for_qa(
+            &items,
+            &[
+                TimelineGapPosition {
+                    id: top_row_id,
+                    before_item_index: 0,
+                },
+                TimelineGapPosition {
+                    id: bracketed_id,
+                    before_item_index: 3,
+                },
+            ],
+        )
+        .expect("an internally bracketed gap should be visible");
+
+        assert_eq!(selected.id, bracketed_id);
+        assert_eq!(
+            selected.first_visible_event_id.as_deref(),
+            Some("$near-left:test")
+        );
+        assert_eq!(
+            selected.last_visible_event_id.as_deref(),
+            Some("$near-right:test")
+        );
+    }
+
+    #[test]
+    fn visible_gap_selector_chooses_newest_internal_gap_from_reversed_positions() {
+        let items = vec![
+            projection_timeline_item("$event-0:test", false),
+            projection_timeline_item("$event-1:test", false),
+            projection_timeline_item("$event-2:test", false),
+            projection_timeline_item("$event-3:test", false),
+            projection_timeline_item("$event-4:test", false),
+        ];
+        let older_gap_id = TimelineGapId {
+            topology_revision: 20,
+            ordinal: 0,
+        };
+        let newest_gap_id = TimelineGapId {
+            topology_revision: 21,
+            ordinal: 1,
+        };
+
+        let selected = select_visible_gap_for_qa(
+            &items,
+            &[
+                TimelineGapPosition {
+                    id: newest_gap_id,
+                    before_item_index: 4,
+                },
+                TimelineGapPosition {
+                    id: older_gap_id,
+                    before_item_index: 2,
+                },
+            ],
+        )
+        .expect("the newest internally bracketed gap should be visible");
+
+        assert_eq!(selected.id, newest_gap_id);
+        assert_eq!(
+            selected.first_visible_event_id.as_deref(),
+            Some("$event-3:test")
+        );
+        assert_eq!(
+            selected.last_visible_event_id.as_deref(),
+            Some("$event-4:test")
+        );
+    }
+
+    #[test]
+    fn visible_gap_selector_chooses_newest_top_row_gap_without_event_bounds() {
+        let older_gap_id = TimelineGapId {
+            topology_revision: 11,
+            ordinal: 0,
+        };
+        let newest_gap_id = TimelineGapId {
+            topology_revision: 12,
+            ordinal: 1,
+        };
+        let selected = select_visible_gap_for_qa(
+            &[projection_timeline_item("$first:test", false)],
+            &[
+                TimelineGapPosition {
+                    id: newest_gap_id,
+                    before_item_index: 0,
+                },
+                TimelineGapPosition {
+                    id: older_gap_id,
+                    before_item_index: 0,
+                },
+            ],
+        )
+        .expect("a top-row gap should support a gap-only viewport");
+
+        assert_eq!(selected.id, newest_gap_id);
+        assert_eq!(selected.first_visible_event_id, None);
+        assert_eq!(selected.last_visible_event_id, None);
+    }
+
+    #[test]
+    fn visible_gap_selector_rejects_unbracketed_non_top_gaps_privately() {
+        let mut synthetic = projection_timeline_item("$synthetic-placeholder:test", false);
+        synthetic.id = TimelineItemId::Synthetic {
+            synthetic_id: "placeholder".to_owned(),
+        };
+        let error = select_visible_gap_for_qa(
+            &[projection_timeline_item("$left:test", false), synthetic],
+            &[
+                TimelineGapPosition {
+                    id: TimelineGapId {
+                        topology_revision: 12,
+                        ordinal: 0,
+                    },
+                    before_item_index: 1,
+                },
+                TimelineGapPosition {
+                    id: TimelineGapId {
+                        topology_revision: 12,
+                        ordinal: 1,
+                    },
+                    before_item_index: 3,
+                },
+            ],
+        )
+        .expect_err("offscreen non-top gaps should not be reported as visible");
+
+        assert!(error.contains("item_count=2"));
+        assert!(error.contains("position_count=2"));
+        assert!(error.contains("min_before_item_index=1"));
+        assert!(error.contains("max_before_item_index=3"));
+        assert!(!error.contains("$left:test"));
+    }
+
+    #[test]
+    fn visible_gap_capture_requires_a_post_body_projection() {
+        let expected_body = "detached live-tail body";
+        let pre_body_items = vec![
+            projection_timeline_item("$old-left:test", false),
+            projection_timeline_item("$old-right:test", false),
+        ];
+        let old_gap_id = TimelineGapId {
+            topology_revision: 30,
+            ordinal: 0,
+        };
+        let new_gap_id = TimelineGapId {
+            topology_revision: 31,
+            ordinal: 0,
+        };
+        let mut capture = QaVisibleGapCapture::default();
+
+        capture
+            .observe_items(&pre_body_items, expected_body, "ordering test")
+            .unwrap();
+        capture
+            .observe_gap_positions(
+                &pre_body_items,
+                7,
+                40,
+                &[TimelineGapPosition {
+                    id: old_gap_id,
+                    before_item_index: 1,
+                }],
+                "ordering test",
+            )
+            .unwrap();
+        assert!(capture.projected_gap().is_none());
+
+        let mut body_item = projection_timeline_item("$new-right:test", false);
+        body_item.body = Some(expected_body.to_owned());
+        let post_body_items = vec![projection_timeline_item("$new-left:test", false), body_item];
+        capture
+            .observe_items(&post_body_items, expected_body, "ordering test")
+            .unwrap();
+        assert!(capture.projected_gap().is_none());
+
+        capture
+            .observe_gap_positions(
+                &post_body_items,
+                7,
+                41,
+                &[TimelineGapPosition {
+                    id: new_gap_id,
+                    before_item_index: 1,
+                }],
+                "ordering test",
+            )
+            .unwrap();
+        let (selected, (actor_generation, projection_generation)) = capture
+            .projected_gap()
+            .expect("the post-body projection should be captured");
+        assert_eq!(selected.id, new_gap_id);
+        assert_eq!(*actor_generation, 7);
+        assert_eq!(*projection_generation, 41);
+    }
 
     #[test]
     fn stale_gate_failure_is_not_attributed_to_a_fresh_sas_flow() {
@@ -14515,6 +16149,10 @@ mod tests {
         assert_eq!(
             QaScenario::from_env_value("timeline_legacy_fallback").unwrap(),
             QaScenario::TimelineLegacyFallback
+        );
+        assert_eq!(
+            QaScenario::from_env_value("timeline_legacy_persisted_gap").unwrap(),
+            QaScenario::TimelineLegacyPersistedGap
         );
         assert_eq!(
             QaScenario::from_env_value("activity").unwrap(),
@@ -15126,6 +16764,108 @@ mod tests {
     }
 
     #[test]
+    fn body_with_sync_event_observer_returns_found_before_matching_stop() {
+        let key = TimelineKey::room(
+            AccountKey("@alice:test".to_owned()),
+            "!room:test".to_owned(),
+        );
+        let sync_request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 10,
+        };
+        let delivered = synthetic_timeline_item(
+            "$delivered:test",
+            Some("delivered exact body"),
+            None,
+            None,
+            None,
+        );
+        let mut observer = BodyWaitObserver::new("delivered exact body");
+        let events = [
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: key.clone(),
+                generation: koushi_core::ids::TimelineGeneration(1),
+                batch_id: koushi_core::ids::TimelineBatchId(1),
+                diffs: vec![TimelineDiff::PushBack { item: delivered }],
+            }),
+            CoreEvent::Sync(SyncEvent::Stopped {
+                request_id: Some(sync_request_id),
+            }),
+        ];
+        let mut found = None;
+        let mut requested_next_sync = false;
+        for event in events {
+            match observe_body_with_sync_event(
+                &mut observer,
+                &key,
+                sync_request_id,
+                event,
+                "body with sync test",
+            )
+            .unwrap()
+            {
+                BodyWithSyncEventOutcome::Found(item) => {
+                    found = Some(item);
+                    break;
+                }
+                BodyWithSyncEventOutcome::RequestNextSync => {
+                    requested_next_sync = true;
+                    break;
+                }
+                BodyWithSyncEventOutcome::Continue => {}
+            }
+        }
+
+        let found = found.expect("target ItemsUpdated must win before SyncStopped");
+        assert_eq!(found.body.as_deref(), Some("delivered exact body"));
+        assert!(!requested_next_sync);
+    }
+
+    #[test]
+    fn body_with_sync_event_observer_repeats_only_for_matching_stop() {
+        let key = TimelineKey::room(
+            AccountKey("@alice:test".to_owned()),
+            "!room:test".to_owned(),
+        );
+        let sync_request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 20,
+        };
+        let other_request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 21,
+        };
+        let mut observer = BodyWaitObserver::new("missing body");
+
+        assert!(matches!(
+            observe_body_with_sync_event(
+                &mut observer,
+                &key,
+                sync_request_id,
+                CoreEvent::Sync(SyncEvent::Stopped {
+                    request_id: Some(other_request_id),
+                }),
+                "body with sync test",
+            )
+            .unwrap(),
+            BodyWithSyncEventOutcome::Continue
+        ));
+        assert!(matches!(
+            observe_body_with_sync_event(
+                &mut observer,
+                &key,
+                sync_request_id,
+                CoreEvent::Sync(SyncEvent::Stopped {
+                    request_id: Some(sync_request_id),
+                }),
+                "body with sync test",
+            )
+            .unwrap(),
+            BodyWithSyncEventOutcome::RequestNextSync
+        ));
+    }
+
+    #[test]
     fn find_timeline_item_with_body_finds_thread_reply_in_one_batch() {
         let items = vec![koushi_core::event::TimelineItem {
             id: koushi_core::event::TimelineItemId::Synthetic {
@@ -15418,7 +17158,6 @@ mod tests {
             .split("#[cfg(test)]")
             .next()
             .expect("headless-core-qa source should contain production section");
-
         assert!(production_source.contains("init_headless_qa_tracing_from_env();"));
         assert!(production_source.contains("tracing_subscriber::EnvFilter"));
     }
@@ -15474,69 +17213,6 @@ mod tests {
     }
 
     #[test]
-    fn timeline_reconnect_scenario_exercises_proxy_recovery_and_live_receive() {
-        let source = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/bin/headless-core-qa.rs"
-        ));
-        let production_source = source
-            .split("#[cfg(test)]")
-            .next()
-            .expect("headless-core-qa source should contain production section");
-
-        assert!(
-            production_source.contains("\"timeline_reconnect\" => Ok(Self::TimelineReconnect)")
-        );
-        assert!(production_source.contains("async fn run_timeline_reconnect_scenario"));
-        assert!(production_source.contains("QaTcpProxy::start(&config.homeserver)"));
-        assert!(production_source.contains("timeline-reconnect-gate-a"));
-        assert!(production_source.contains("timeline-reconnect-gate-b"));
-        assert!(production_source.contains("timeline_reconnect restart setup start A"));
-        assert!(production_source.contains("timeline_reconnect restart setup start B"));
-        assert!(production_source.contains("proxy.disable();"));
-        assert!(production_source.contains("wait_for_sync_reconnecting"));
-        assert!(production_source.contains("proxy.enable();"));
-        assert!(production_source.contains("wait_for_sync_running_after_reconnect"));
-        assert!(production_source.contains("wait_for_item_with_body("));
-        assert!(production_source.contains("timeline_reconnect_recv_after_reconnect=ok"));
-        assert!(production_source.contains("live_catchup_checkpoint=ok"));
-        assert!(production_source.contains("live_catchup_gap_repaired=ok"));
-    }
-
-    #[test]
-    fn timeline_legacy_fallback_scenario_proves_bounded_exact_recovery() {
-        let source = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/bin/headless-core-qa.rs"
-        ));
-        let production_source = source
-            .split("#[cfg(test)]")
-            .next()
-            .expect("headless-core-qa source should contain production section");
-
-        assert!(
-            production_source
-                .contains("\"timeline_legacy_fallback\" => Ok(Self::TimelineLegacyFallback)")
-        );
-        assert!(production_source.contains("offline_event_count = if legacy_fallback { 140 }"));
-        assert!(production_source.contains("wait_for_legacy_fallback_starting"));
-        assert!(production_source.contains("reopened_before_later"));
-        assert!(
-            production_source
-                .contains("timeline legacy fallback authoritative items after first commit")
-        );
-        assert!(production_source.contains("wait_for_exact_items_and_gap_release"));
-        assert!(
-            production_source.contains("gap repair released only after render-settlement timeout")
-        );
-        assert!(production_source.contains("render acknowledgement was rejected"));
-        assert!(production_source.contains("legacy_fallback_checkpoint=ok"));
-        assert!(production_source.contains("legacy_fallback_gap_repaired=ok"));
-        assert!(production_source.contains("legacy_fallback_settled=ok"));
-        assert!(production_source.contains("legacy_fallback_lifecycle=ok"));
-    }
-
-    #[test]
     fn staged_scenarios_stop_after_their_requested_stage() {
         assert!(QaScenario::Safety.should_run_stage(QaStage::Safety));
         assert!(!QaScenario::Safety.should_run_stage(QaStage::LoginSync));
@@ -15575,6 +17251,16 @@ mod tests {
             QaScenario::TimelineLegacyFallback.should_run_stage(QaStage::TimelineLegacyFallback)
         );
         assert!(!QaScenario::TimelineLegacyFallback.should_run_stage(QaStage::LoginSync));
+
+        assert!(QaScenario::TimelineLegacyPersistedGap.should_run_stage(QaStage::Safety));
+        assert!(
+            QaScenario::TimelineLegacyPersistedGap
+                .should_run_stage(QaStage::TimelineLegacyPersistedGap)
+        );
+        assert!(
+            !QaScenario::TimelineLegacyPersistedGap
+                .should_run_stage(QaStage::TimelineLegacyFallback)
+        );
 
         assert!(QaScenario::TimelineStress.should_run_stage(QaStage::LoginSync));
         assert!(QaScenario::TimelineStress.should_run_stage(QaStage::RoomSpace));
@@ -15747,6 +17433,86 @@ mod tests {
             )
             .unwrap(),
             QaProxyRequestKind::LegacySync,
+        );
+    }
+
+    #[test]
+    fn live_tail_proxy_enforces_tokenless_refresh_and_exact_continuation_requests() {
+        let metadata = qa_room_messages_request_metadata(
+            b"GET /_matrix/client/v3/rooms/%21room%3Aexample.invalid/messages?dir=b&limit=128 HTTP/1.1\r\nHost: example.invalid\r\n\r\n",
+        )
+        .expect("valid request")
+        .expect("room messages metadata");
+        assert_eq!(
+            metadata,
+            QaRoomMessagesRequestMetadata {
+                query_is_exact_tokenless_limit: true,
+                has_from: false,
+                direction_is_backward: true,
+                from_token: None,
+            }
+        );
+
+        let mut state = QaMessagesProxyState::default();
+        state.arm_page(QaMessagesProxyExpectation::TokenlessLiveTail, None);
+        assert_eq!(
+            state.observe_room_messages_request(&metadata),
+            QaMessagesProxyDecision::ServeCannedPage
+        );
+
+        let continuation = qa_room_messages_request_metadata(
+            b"GET /_matrix/client/v3/rooms/%21room%3Aexample.invalid/messages?dir=b&from=continuation&limit=128 HTTP/1.1\r\nHost: example.invalid\r\n\r\n",
+        )
+        .expect("valid continuation request")
+        .expect("room messages continuation metadata");
+        state.arm_page(
+            QaMessagesProxyExpectation::BackwardFrom {
+                token: "continuation".to_owned(),
+            },
+            Some("continuation".to_owned()),
+        );
+        assert_eq!(
+            state.observe_room_messages_request(&continuation),
+            QaMessagesProxyDecision::ServeCannedPage
+        );
+        assert!(state.observation.expected_end_token_was_used);
+        assert_eq!(state.observation.expected_end_token_request_count, 1);
+    }
+
+    #[test]
+    fn canned_live_tail_messages_page_reproduces_a_gap_before_the_known_latest_event() {
+        let body = QaCannedMessagesPage::anchored_silent_gap(
+            "$latest:example.invalid".to_owned(),
+            "known latest".to_owned(),
+            "$missing:example.invalid".to_owned(),
+            "missing before latest".to_owned(),
+            "$older:example.invalid".to_owned(),
+            "@sender:example.invalid".to_owned(),
+            "known older anchor".to_owned(),
+        )
+        .response_body()
+        .expect("canned /messages response should serialize");
+        let response: serde_json::Value =
+            serde_json::from_slice(&body).expect("canned /messages response should be JSON");
+
+        assert_eq!(
+            response.get("start").and_then(serde_json::Value::as_str),
+            Some("qa-live-tail-start")
+        );
+        assert!(response.get("end").is_none());
+        let ids = response["chunk"]
+            .as_array()
+            .expect("canned chunk")
+            .iter()
+            .map(|event| event["event_id"].as_str().expect("event id"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            [
+                "$latest:example.invalid",
+                "$missing:example.invalid",
+                "$older:example.invalid",
+            ]
         );
     }
 
@@ -16339,6 +18105,16 @@ mod tests {
                 "legacy_fallback_gap_repaired=ok",
                 "legacy_fallback_settled=ok",
                 "legacy_fallback_lifecycle=ok",
+            ]
+        );
+        assert_eq!(
+            final_tokens_for_scenario(QaScenario::TimelineLegacyPersistedGap),
+            [
+                "safety=ok",
+                "legacy_live_tail_room_absent=ok",
+                "live_tail_anchored_silent_gap=ok",
+                "live_tail_detached_gap=ok",
+                "live_tail_historical_continuation=ok",
             ]
         );
         assert_eq!(

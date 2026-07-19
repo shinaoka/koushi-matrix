@@ -31,6 +31,24 @@ When an operational note here hardens into a durable rule, promote it to
 `REPOSITORY_RULES.md` or `docs/policies/engineering-rules.md` and keep only the
 local how-to detail here.
 
+## Matrix SDK Submodule
+
+The root workspace compiles all Matrix SDK crates directly from
+`vendor/matrix-rust-sdk`. Do not replace those path dependencies with a Git URL
+or fixed `rev`: the submodule gitlink is the only SDK revision pin. After
+updating or switching worktrees, initialize the exact gitlink and run the
+guard before compiling:
+
+```bash
+git submodule update --init --recursive vendor/matrix-rust-sdk
+node scripts/check-sdk-submodule.mjs
+```
+
+If the guard rejects `Cargo.toml`, restore the five exact submodule path
+dependencies. If it rejects submodule status, update the checkout to the
+recorded gitlink; do not work around the failure by adding a remote SDK
+revision.
+
 ## Signed macOS DMG
 
 Build signed, notarized macOS artifacts only in an attended `zsh` session on a
@@ -183,6 +201,14 @@ reverse.
   Example: use `cargo test -p koushi-state --test search_state`, not
   `cargo test -p koushi-state search`, because the latter launches every
   integration-test binary and then filters inside each one.
+- Do not run a long-duration end-to-end or homeserver scenario after every
+  small implementation edit. First complete the coherent assertion-driven
+  flow, using compile checks, focused unit/integration tests, and short
+  fail-fast checkpoints while iterating. Remove superseded fixture paths and
+  review the finished diff, then run the long scenario once as the integrated
+  gate. Re-run it only when its own evidence identifies a necessary change or
+  after the final reviewed fix; do not spend the full timeout to discover one
+  incomplete phase at a time.
 - Cooperate with the external auditor (codex) for independent root-cause
   verification and diff review (see the recipe below). A subagent's "gates
   passed" claim is not evidence — re-run the gate yourself.

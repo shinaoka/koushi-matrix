@@ -7,7 +7,7 @@ build gates. AGENTS.md remains the operational how-to (permissions, install
 caveats, recovery steps); durable rules discovered there are promoted to
 REPOSITORY_RULES.md or this document.
 
-Last amended: 2026-07-16.
+Last amended: 2026-07-17.
 
 ## Secrets and Private Data
 
@@ -355,24 +355,31 @@ Rules:
    remains queued across active work and projection/render ACK fences.
    Candidate-driven automatic repair keeps a zero cached-chunk budget.
    Room-entry live-edge repair is a separate bounded intent. On SyncService and
-   legacy sync it must wait for the matching committed-room response and may
-   select only the opaque persisted gap introduced by that response. It must
-   not acquire repair ownership while provenance is pending, reuse a baseline
-   observation for an empty response, or fall back to another historical gap
-   when the committed-response gap is absent. Routing must match backend
-   instance epoch, room key, actor generation, and backend-local response or
-   subscription generation. Timeline build, initial projection, and ACK remain
-   non-blocking while provenance is pending. Explicit no-update/no-gap closes
-   the intent; a stale descriptor permits one authoritative re-inspection,
-   then closes and clears that checkpoint so a later committed response can
-   be admitted, but never permits arbitrary gap selection. While that bounded
+   legacy sync it must wait for committed backend provenance. When the current
+   response contains the room, repair may select only the opaque persisted gap
+   introduced by that response; an explicit no-update/no-gap closes the intent.
+   Legacy event-cache publication also supplies a global response-commit fence
+   after all room topology mutation. Only when that fence proves an active room
+   was omitted from the incremental response may repair inspect authoritative
+   persisted topology and select its newest gap as one bounded live-edge chain.
+   It must not acquire repair ownership while provenance is pending, reuse a
+   baseline observation for an empty response, infer omission from a timeout or
+   pre-commit broadcast, or select any older persisted gap. Routing must match
+   backend instance epoch, room key, actor generation, and backend-local
+   response or subscription generation. Timeline build, initial projection,
+   and ACK remain non-blocking while provenance is pending. A stale descriptor
+   permits one authoritative re-inspection, then closes and clears that
+   checkpoint so a later committed response can be admitted, but never permits
+   arbitrary gap selection. While that bounded
    attempt is unsettled, retain the latest newer checkpoint separately and
    promote it immediately after close/admission; delivery is at-most-once and
    another room update may never arrive to replay it. SyncService response
    identity combines subscription generation with the room event-cache
    observation sequence; one subscription generation spans many responses.
    The SDK serializes process-local response sequence assignment and room
-   update publication in one critical section. Legacy promotion carries the
+   update publication in one critical section, then advances the retained
+   global commit fence only after event-cache handling completes. Legacy
+   promotion carries the
    first successful response sequence
    and accepts only observations from that response or a later one; retained
    values from an earlier backend response and duplicate per-room commit
@@ -701,6 +708,14 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
    and all notarization credentials without requiring unrelated Windows
    credentials; post-build signature, notarization-ticket, and platform trust
    checks remain mandatory release evidence.
+10. Long-duration end-to-end and homeserver scenarios are integrated gates,
+   not inner-loop probes. Complete the coherent assertion-driven scenario
+   first, using compile checks, focused unit/integration tests, and bounded
+   fail-fast checkpoints during implementation. Remove superseded fixture
+   paths and review the finished diff before running the long scenario. Re-run
+   that scenario only when its own evidence requires a change or after the
+   final reviewed fix; repeatedly consuming the full timeout to discover one
+   unfinished phase at a time is prohibited.
 
 ## Documentation
 

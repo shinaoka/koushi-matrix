@@ -2518,10 +2518,82 @@ pub enum MatrixCommittedRoomTimelineBackend {
     LegacySync,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixCommittedRoomTimelineOrigin {
+    RoomUpdate,
+    RoomAbsent,
+}
+
+/// Token-free summary of one SDK room-updates response after event-cache
+/// topology mutation has committed.
+#[derive(Clone, Eq, PartialEq)]
+pub struct MatrixCommittedRoomUpdatesResponse {
+    inner: matrix_sdk::event_cache::CommittedRoomUpdatesResponse,
+}
+
+impl MatrixCommittedRoomUpdatesResponse {
+    pub fn from_sdk(response: &matrix_sdk::event_cache::CommittedRoomUpdatesResponse) -> Self {
+        Self {
+            inner: response.clone(),
+        }
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.inner.response_sequence()
+    }
+
+    pub fn joined_room_count(&self) -> usize {
+        self.inner.joined_room_count()
+    }
+
+    pub fn left_room_count(&self) -> usize {
+        self.inner.left_room_count()
+    }
+
+    pub fn invited_room_count(&self) -> usize {
+        self.inner.invited_room_count()
+    }
+
+    /// Return token-free provenance for one room in this exact committed
+    /// response. Only a genuinely omitted room receives a RoomAbsent
+    /// checkpoint; left, invited, and joined updates that failed before commit
+    /// do not authorize fallback repair.
+    pub fn room_checkpoint(
+        &self,
+        room_id: &matrix_sdk::ruma::RoomId,
+    ) -> Option<MatrixCommittedRoomTimelineCheckpoint> {
+        use matrix_sdk::event_cache::CommittedRoomUpdateMembership;
+
+        match self.inner.room_membership(room_id) {
+            CommittedRoomUpdateMembership::Joined => self
+                .inner
+                .room_timeline_observation(room_id)
+                .map(MatrixCommittedRoomTimelineCheckpoint::from_committed_observation),
+            CommittedRoomUpdateMembership::Absent => {
+                MatrixCommittedRoomTimelineCheckpoint::from_legacy_room_absent(self, room_id)
+            }
+            CommittedRoomUpdateMembership::Left | CommittedRoomUpdateMembership::Invited => None,
+        }
+    }
+}
+
+impl std::fmt::Debug for MatrixCommittedRoomUpdatesResponse {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MatrixCommittedRoomUpdatesResponse")
+            .field("generation", &self.generation())
+            .field("joined_room_count", &self.joined_room_count())
+            .field("left_room_count", &self.left_room_count())
+            .field("invited_room_count", &self.invited_room_count())
+            .finish()
+    }
+}
+
 /// Backend-neutral, token-free room timeline provenance committed by the SDK.
 #[derive(Clone)]
 pub struct MatrixCommittedRoomTimelineCheckpoint {
     backend: MatrixCommittedRoomTimelineBackend,
+    origin: MatrixCommittedRoomTimelineOrigin,
     generation: u64,
     observation_sequence: Option<u64>,
     room_id: matrix_sdk::ruma::OwnedRoomId,
@@ -2536,6 +2608,7 @@ impl MatrixCommittedRoomTimelineCheckpoint {
         let timeline = checkpoint.timeline();
         Self {
             backend: MatrixCommittedRoomTimelineBackend::SyncService,
+            origin: MatrixCommittedRoomTimelineOrigin::RoomUpdate,
             generation: checkpoint.subscription_generation().get(),
             observation_sequence: timeline.map(|observation| observation.sequence()),
             room_id: checkpoint.room_id().to_owned(),
@@ -2549,12 +2622,33 @@ impl MatrixCommittedRoomTimelineCheckpoint {
     ) -> Self {
         Self {
             backend: MatrixCommittedRoomTimelineBackend::LegacySync,
+            origin: MatrixCommittedRoomTimelineOrigin::RoomUpdate,
             generation: observation.response_sequence(),
             observation_sequence: Some(observation.sequence()),
             room_id: observation.room_id().to_owned(),
             has_timeline_update: observation.has_timeline_update(),
             inserted_gap: observation.inserted_gap().cloned(),
         }
+    }
+
+    pub fn from_legacy_room_absent(
+        response: &MatrixCommittedRoomUpdatesResponse,
+        room_id: &matrix_sdk::ruma::RoomId,
+    ) -> Option<Self> {
+        if response.inner.room_membership(room_id)
+            != matrix_sdk::event_cache::CommittedRoomUpdateMembership::Absent
+        {
+            return None;
+        }
+        Some(Self {
+            backend: MatrixCommittedRoomTimelineBackend::LegacySync,
+            origin: MatrixCommittedRoomTimelineOrigin::RoomAbsent,
+            generation: response.generation(),
+            observation_sequence: None,
+            room_id: room_id.to_owned(),
+            has_timeline_update: false,
+            inserted_gap: None,
+        })
     }
 
     #[cfg(feature = "test-hooks")]
@@ -2566,6 +2660,7 @@ impl MatrixCommittedRoomTimelineCheckpoint {
     ) -> Self {
         Self {
             backend: MatrixCommittedRoomTimelineBackend::SyncService,
+            origin: MatrixCommittedRoomTimelineOrigin::RoomUpdate,
             generation,
             observation_sequence: Some(observation_sequence),
             room_id: gap.room_id.clone(),
@@ -2579,6 +2674,7 @@ impl MatrixCommittedRoomTimelineCheckpoint {
     pub fn from_legacy_gap_for_testing(generation: u64, gap: &MatrixTimelineGapHandle) -> Self {
         Self {
             backend: MatrixCommittedRoomTimelineBackend::LegacySync,
+            origin: MatrixCommittedRoomTimelineOrigin::RoomUpdate,
             generation,
             observation_sequence: Some(generation),
             room_id: gap.room_id.clone(),
@@ -2587,8 +2683,33 @@ impl MatrixCommittedRoomTimelineCheckpoint {
         }
     }
 
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn from_legacy_room_absent_for_testing(
+        generation: u64,
+        room_id: &matrix_sdk::ruma::RoomId,
+    ) -> Self {
+        Self {
+            backend: MatrixCommittedRoomTimelineBackend::LegacySync,
+            origin: MatrixCommittedRoomTimelineOrigin::RoomAbsent,
+            generation,
+            observation_sequence: None,
+            room_id: room_id.to_owned(),
+            has_timeline_update: false,
+            inserted_gap: None,
+        }
+    }
+
     pub fn backend(&self) -> MatrixCommittedRoomTimelineBackend {
         self.backend
+    }
+
+    pub fn origin(&self) -> MatrixCommittedRoomTimelineOrigin {
+        self.origin
+    }
+
+    pub fn is_room_absent(&self) -> bool {
+        self.origin == MatrixCommittedRoomTimelineOrigin::RoomAbsent
     }
 
     pub fn generation(&self) -> u64 {
@@ -2626,6 +2747,7 @@ impl MatrixCommittedRoomTimelineCheckpoint {
 
     pub fn same_response_as(&self, other: &Self) -> bool {
         self.backend == other.backend
+            && self.origin == other.origin
             && self.generation == other.generation
             && self.room_id == other.room_id
             && (self.backend == MatrixCommittedRoomTimelineBackend::LegacySync
@@ -2638,10 +2760,51 @@ impl std::fmt::Debug for MatrixCommittedRoomTimelineCheckpoint {
         formatter
             .debug_struct("MatrixCommittedRoomTimelineCheckpoint")
             .field("backend", &self.backend)
+            .field("origin", &self.origin)
             .field("generation", &self.generation)
             .field("has_timeline_update", &self.has_timeline_update)
             .field("has_inserted_gap", &self.inserted_gap.is_some())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod committed_room_timeline_checkpoint_tests {
+    use super::*;
+
+    #[test]
+    fn room_absent_checkpoint_is_debugged_without_private_data() {
+        let room_id = matrix_sdk::ruma::room_id!("!private-room:example.org");
+        let checkpoint = MatrixCommittedRoomTimelineCheckpoint {
+            backend: MatrixCommittedRoomTimelineBackend::LegacySync,
+            origin: MatrixCommittedRoomTimelineOrigin::RoomAbsent,
+            generation: 41,
+            observation_sequence: None,
+            room_id: room_id.to_owned(),
+            has_timeline_update: false,
+            inserted_gap: None,
+        };
+
+        assert_eq!(
+            checkpoint.backend(),
+            MatrixCommittedRoomTimelineBackend::LegacySync
+        );
+        assert_eq!(
+            checkpoint.origin(),
+            MatrixCommittedRoomTimelineOrigin::RoomAbsent
+        );
+        assert!(checkpoint.is_room_absent());
+        assert_eq!(checkpoint.generation(), 41);
+        assert_eq!(checkpoint.room_id(), room_id.as_str());
+        assert!(!checkpoint.has_timeline_update());
+        assert!(!checkpoint.has_inserted_gap());
+        let debug = format!("{checkpoint:?}");
+        assert!(debug.contains("origin: RoomAbsent"));
+        assert!(debug.contains("generation: 41"));
+        assert!(debug.contains("has_timeline_update: false"));
+        assert!(debug.contains("has_inserted_gap: false"));
+        assert!(!debug.contains(room_id.as_str()));
+        assert!(!debug.contains("private-token"));
     }
 }
 
@@ -2800,6 +2963,205 @@ pub struct MatrixTimelineGapRepairResult {
     pub last_projection_batch: Option<u32>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixLiveTailRefreshOutcome {
+    Cancelled,
+    Unchanged,
+    Advanced {
+        events: usize,
+    },
+    Detached {
+        events: usize,
+        historical_gap_remaining: bool,
+    },
+    Stale,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MatrixLiveTailRefreshDiagnostics {
+    pub cached_suffix_events: usize,
+    pub response_events_with_ids: usize,
+    pub newest_cached_response_index: Option<usize>,
+    pub older_anchor_response_index: Option<usize>,
+    pub in_memory_duplicates: usize,
+    pub in_store_duplicates: usize,
+    pub new_events: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MatrixLiveTailRefreshResult {
+    pub outcome: MatrixLiveTailRefreshOutcome,
+    pub returned_events: usize,
+    pub diagnostics: MatrixLiveTailRefreshDiagnostics,
+    pub last_projection_batch: Option<u32>,
+}
+
+#[derive(Clone, Default)]
+pub struct MatrixLiveTailRefreshCancellation {
+    inner: matrix_sdk::event_cache::RoomLiveTailRefreshCancellation,
+}
+
+impl MatrixLiveTailRefreshCancellation {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.inner.cancel();
+    }
+}
+
+impl std::fmt::Debug for MatrixLiveTailRefreshCancellation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("MatrixLiveTailRefreshCancellation(..)")
+    }
+}
+
+fn failed_live_tail_refresh_result() -> MatrixLiveTailRefreshResult {
+    MatrixLiveTailRefreshResult {
+        outcome: MatrixLiveTailRefreshOutcome::Failed,
+        returned_events: 0,
+        diagnostics: MatrixLiveTailRefreshDiagnostics::default(),
+        last_projection_batch: None,
+    }
+}
+
+fn map_live_tail_refresh_result(
+    result: matrix_sdk::event_cache::Result<matrix_sdk::event_cache::RoomLiveTailRefreshResult>,
+) -> MatrixLiveTailRefreshResult {
+    use matrix_sdk::event_cache::RoomLiveTailRefreshOutcome;
+
+    let Ok(result) = result else {
+        return failed_live_tail_refresh_result();
+    };
+    let outcome = match result.outcome {
+        RoomLiveTailRefreshOutcome::Cancelled => MatrixLiveTailRefreshOutcome::Cancelled,
+        RoomLiveTailRefreshOutcome::Unchanged => MatrixLiveTailRefreshOutcome::Unchanged,
+        RoomLiveTailRefreshOutcome::Advanced { events } => {
+            MatrixLiveTailRefreshOutcome::Advanced { events }
+        }
+        RoomLiveTailRefreshOutcome::Detached {
+            events,
+            historical_gap_remaining,
+        } => MatrixLiveTailRefreshOutcome::Detached {
+            events,
+            historical_gap_remaining,
+        },
+        RoomLiveTailRefreshOutcome::Stale => MatrixLiveTailRefreshOutcome::Stale,
+        RoomLiveTailRefreshOutcome::Failed => MatrixLiveTailRefreshOutcome::Failed,
+    };
+    MatrixLiveTailRefreshResult {
+        outcome,
+        returned_events: result.returned_events,
+        diagnostics: MatrixLiveTailRefreshDiagnostics {
+            cached_suffix_events: result.diagnostics.cached_suffix_events,
+            response_events_with_ids: result.diagnostics.response_events_with_ids,
+            newest_cached_response_index: result.diagnostics.newest_cached_response_index,
+            older_anchor_response_index: result.diagnostics.older_anchor_response_index,
+            in_memory_duplicates: result.diagnostics.in_memory_duplicates,
+            in_store_duplicates: result.diagnostics.in_store_duplicates,
+            new_events: result.diagnostics.new_events,
+        },
+        last_projection_batch: result.last_projection_batch,
+    }
+}
+
+#[cfg(test)]
+mod matrix_live_tail_refresh_mapping_tests {
+    use super::*;
+    use matrix_sdk::event_cache::{
+        EventCacheError, RoomLiveTailRefreshDiagnostics as SdkDiagnostics,
+        RoomLiveTailRefreshOutcome as SdkOutcome, RoomLiveTailRefreshResult as SdkResult,
+    };
+
+    #[test]
+    fn sdk_live_tail_outcomes_map_one_for_one_with_projection_metadata() {
+        let cases = [
+            (
+                SdkOutcome::Cancelled,
+                MatrixLiveTailRefreshOutcome::Cancelled,
+            ),
+            (
+                SdkOutcome::Unchanged,
+                MatrixLiveTailRefreshOutcome::Unchanged,
+            ),
+            (
+                SdkOutcome::Advanced { events: 3 },
+                MatrixLiveTailRefreshOutcome::Advanced { events: 3 },
+            ),
+            (
+                SdkOutcome::Detached {
+                    events: 5,
+                    historical_gap_remaining: true,
+                },
+                MatrixLiveTailRefreshOutcome::Detached {
+                    events: 5,
+                    historical_gap_remaining: true,
+                },
+            ),
+            (SdkOutcome::Stale, MatrixLiveTailRefreshOutcome::Stale),
+            (SdkOutcome::Failed, MatrixLiveTailRefreshOutcome::Failed),
+        ];
+
+        for (sdk_outcome, expected_outcome) in cases {
+            let mapped = map_live_tail_refresh_result(Ok(SdkResult {
+                outcome: sdk_outcome,
+                returned_events: 9,
+                diagnostics: SdkDiagnostics {
+                    cached_suffix_events: 7,
+                    response_events_with_ids: 9,
+                    newest_cached_response_index: Some(0),
+                    older_anchor_response_index: Some(4),
+                    in_memory_duplicates: 3,
+                    in_store_duplicates: 2,
+                    new_events: 4,
+                },
+                last_projection_batch: Some(1),
+            }));
+
+            assert_eq!(
+                mapped,
+                MatrixLiveTailRefreshResult {
+                    outcome: expected_outcome,
+                    returned_events: 9,
+                    diagnostics: MatrixLiveTailRefreshDiagnostics {
+                        cached_suffix_events: 7,
+                        response_events_with_ids: 9,
+                        newest_cached_response_index: Some(0),
+                        older_anchor_response_index: Some(4),
+                        in_memory_duplicates: 3,
+                        in_store_duplicates: 2,
+                        new_events: 4,
+                    },
+                    last_projection_batch: Some(1),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn sdk_live_tail_errors_map_to_private_data_free_failure() {
+        let mapped =
+            map_live_tail_refresh_result(Err(EventCacheError::InvalidLinkedChunkMetadata {
+                details: "raw token for !private-room:example.invalid".to_owned(),
+            }));
+
+        assert_eq!(
+            mapped,
+            MatrixLiveTailRefreshResult {
+                outcome: MatrixLiveTailRefreshOutcome::Failed,
+                returned_events: 0,
+                diagnostics: MatrixLiveTailRefreshDiagnostics::default(),
+                last_projection_batch: None,
+            }
+        );
+        let debug = format!("{mapped:?}");
+        assert!(!debug.contains("raw token"));
+        assert!(!debug.contains("!private-room"));
+    }
+}
+
 impl MatrixClientSession {
     #[cfg(feature = "test-hooks")]
     #[doc(hidden)]
@@ -2903,6 +3265,38 @@ impl MatrixClientSession {
             outcome,
             last_projection_batch: result.last_projection_batch,
         })
+    }
+
+    pub async fn refresh_room_live_tail(
+        &self,
+        room_id: &str,
+        event_limit: u16,
+        actor_generation: u64,
+        operation_generation: u64,
+        cancellation: MatrixLiveTailRefreshCancellation,
+    ) -> MatrixLiveTailRefreshResult {
+        let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(room_id) else {
+            return failed_live_tail_refresh_result();
+        };
+        let Some(room) = self.client.get_room(&room_id) else {
+            return failed_live_tail_refresh_result();
+        };
+        let Ok((cache, _drop_handles)) = room.event_cache().await else {
+            return failed_live_tail_refresh_result();
+        };
+        map_live_tail_refresh_result(
+            cache
+                .pagination()
+                .refresh_live_tail_with_projection(
+                    event_limit,
+                    matrix_sdk::event_cache::RoomTimelineGapProjectionId {
+                        actor_generation,
+                        repair_generation: operation_generation,
+                    },
+                    cancellation.inner,
+                )
+                .await,
+        )
     }
 
     pub fn persistable_session(&self) -> Result<PersistableMatrixSession, PasswordLoginError> {

@@ -5,7 +5,7 @@ Dated specs and plans under `docs/superpowers/` are implementation guides
 toward this document and must not contradict it. Amend this document first
 when a design change is needed, then update or supersede the affected specs.
 
-Last amended: 2026-07-16.
+Last amended: 2026-07-17.
 
 ## Product Scope
 
@@ -885,6 +885,15 @@ is an aggregated relation with no standalone row. This intent reveals at most
 one cached chunk per request, has a small actor-generation batch ceiling, and
 stops on unchanged topology or zero progress. It never invents a gap row or
 causes unrelated historical gaps to become ordinary automatic work.
+Legacy sync supplies both retained per-room commit observations and a retained
+global response-commit fence published after event-cache topology mutation.
+When the current response contains an active room, room-entry repair may admit
+only that response's exact opaque gap. When the global fence proves that an
+active room was omitted from the incremental response, Core may authoritatively
+inspect persisted topology and admit only its newest gap as the same bounded
+live-edge intent. An explicit update for the room with no timeline gap still
+closes the intent; omission is not inferred from a timeout or pre-commit room
+update broadcast.
 When that intent first selects a projected descriptor, it remains live-edge
 work after the exact render fence. It downgrades to ordinary automatic repair
 only after a joined/start-reached descriptor was actually selected by the

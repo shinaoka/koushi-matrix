@@ -21,15 +21,16 @@ test("root workspace owns the desktop Tauri crate and the only lockfile", () => 
   assert.equal(existsSync(join(repoRoot, "apps/desktop/src-tauri/Cargo.lock")), false);
 });
 
-test("vendored Matrix SDK crates are consumed as one rev-pinned git source", () => {
+test("vendored Matrix SDK crates are consumed through root submodule paths", () => {
   const rootCargo = readRepoFile("Cargo.toml");
   const sdkCargo = readRepoFile("crates/koushi-sdk/Cargo.toml");
   const coreCargo = readRepoFile("crates/koushi-core/Cargo.toml");
   const gitmodules = readRepoFile(".gitmodules");
 
   assert.match(rootCargo, /^\[workspace\.dependencies\]$/m);
-  assert.match(rootCargo, /matrix-sdk = \{ git = "https:\/\/github\.com\/shinaoka\/matrix-rust-sdk-work\.git", rev = "18cdc0ceab8aacce1a57953f897d7f7a3e88834e"/);
-  assert.match(rootCargo, /matrix-sdk-ui = \{ git = "https:\/\/github\.com\/shinaoka\/matrix-rust-sdk-work\.git", rev = "18cdc0ceab8aacce1a57953f897d7f7a3e88834e"/);
+  assert.match(rootCargo, /matrix-sdk = \{ path = "vendor\/matrix-rust-sdk\/crates\/matrix-sdk"/);
+  assert.match(rootCargo, /matrix-sdk-ui = \{ path = "vendor\/matrix-rust-sdk\/crates\/matrix-sdk-ui"/);
+  assert.doesNotMatch(rootCargo, /^matrix-sdk(?:-[a-z]+)?\s*=\s*\{[^}]*\b(?:git|rev)\s*=/m);
   assert.match(gitmodules, /url = https:\/\/github\.com\/shinaoka\/matrix-rust-sdk-work\.git/);
   assert.doesNotMatch(gitmodules, /^\s*branch\s*=/m);
   assert.doesNotMatch(sdkCargo, /vendor\/matrix-rust-sdk/);

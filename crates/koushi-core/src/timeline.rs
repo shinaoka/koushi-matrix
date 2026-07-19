@@ -60,6 +60,8 @@ use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel};
 use koushi_sdk::{
     MatrixClientSession, MatrixCommittedRoomTimelineBackend,
     MatrixCommittedRoomTimelineCheckpoint as MatrixRoomSubscriptionCheckpoint,
+    MatrixCommittedRoomUpdatesResponse, MatrixLiveTailRefreshCancellation,
+    MatrixLiveTailRefreshDiagnostics, MatrixLiveTailRefreshOutcome, MatrixLiveTailRefreshResult,
     MatrixTimelineContinuity, MatrixTimelineGapError, MatrixTimelineGapHandle,
     MatrixTimelineGapInspection, MatrixTimelineGapRepairBudget, MatrixTimelineGapRepairOutcome,
     MatrixTimelineGapRepairResult,
@@ -106,6 +108,12 @@ use matrix_sdk_ui::timeline::{
 };
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
+#[cfg(test)]
+use crate::causal_projection::{CAUSAL_PROJECTION_DOMAIN_BIT, CAUSAL_PROJECTION_SERIAL_MAX};
+use crate::causal_projection::{
+    CausalProjectionDomain, CausalProjectionId, CausalProjectionOperationId,
+    next_causal_projection_serial,
+};
 use crate::command::{
     MediaDownloadSelection, TimelineCommand, UploadMediaKind, UploadMediaRequest,
 };
@@ -113,7 +121,7 @@ use crate::event::{
     CoreEvent, LinkPreview, LinkPreviewState, LiveSignalsEvent, PaginationDirection,
     PaginationState, ReactionGroup, ThreadRootProjectionDto, ThreadRootProjectionSourceDto,
     ThreadRootProjectionStateDto, ThreadSummaryDto, TimelineAnchorRestoreStatus, TimelineDiff,
-    TimelineEvent, TimelineGapPosition, TimelineItem, TimelineItemId, TimelineMedia,
+    TimelineEvent, TimelineGapId, TimelineGapPosition, TimelineItem, TimelineItemId, TimelineMedia,
     TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineMessageActions,
     TimelineMessageKind, TimelineMessageSource, TimelineNavigationSnapshot, TimelineNoticeI18n,
     TimelineNoticeI18nKey, TimelineResyncReason, TimelineSendFailureReason, TimelineSendState,
@@ -128,6 +136,10 @@ use crate::ids::{
 };
 use crate::link_preview::{LinkPreviewContext, extract_link_ranges};
 use crate::live_catchup::{LiveCatchupGate, classify_live_catchup_gate};
+use crate::live_tail_freshness::{
+    FOREGROUND_LIVE_TAIL_LIMIT, LiveTailFreshnessState, LiveTailRefreshCoordinator,
+    LiveTailSchedulerAction,
+};
 use crate::messages_backpressure::MessagesBackpressure;
 use crate::search::SearchIndexMessage;
 use crate::startup_trace::{self, StartupPhase};
@@ -136,6 +148,7 @@ use crate::threads_list::{
     ThreadRootProjectionService, activity_is_newer,
 };
 use crate::unread_trace;
+use koushi_sdk::MatrixLiveTailRefreshOutcome as LiveTailRefreshOutcome;
 
 /// Bounded diff queue capacity per subscribed timeline (overview.md, Async rule 10).
 pub const TIMELINE_DIFF_QUEUE_CAPACITY: usize = 128;
@@ -196,6 +209,26 @@ pub enum TimelineMessage {
     RoomSubscriptionCheckpoint {
         service_epoch: u64,
         checkpoint: MatrixRoomSubscriptionCheckpoint,
+    },
+    LegacyResponseCommitted {
+        service_epoch: u64,
+        response: MatrixCommittedRoomUpdatesResponse,
+    },
+    LiveTailRefreshCompleted {
+        key: TimelineKey,
+        actor_generation: u64,
+        epoch: u64,
+        operation_generation: u64,
+        outcome: MatrixLiveTailRefreshOutcome,
+        requested_limit: u16,
+        returned_events: usize,
+        duration_ms: u128,
+    },
+    #[cfg(test)]
+    TestLiveTailDispatchState {
+        key: TimelineKey,
+        epoch: u64,
+        response: oneshot::Sender<(bool, usize)>,
     },
     IgnoredUsersUpdated {
         user_ids: std::collections::BTreeSet<String>,
@@ -1076,7 +1109,7 @@ pub struct TimelineManagerActor {
     room_list_service: Option<Arc<matrix_sdk_ui::room_list_service::RoomListService>>,
     room_subscription_checkpoint_task: Option<executor::JoinHandle<()>>,
     room_subscription_service_epoch: u64,
-    legacy_committed_checkpoints: HashMap<String, MatrixRoomSubscriptionCheckpoint>,
+    legacy_committed_response: Option<MatrixCommittedRoomUpdatesResponse>,
     timelines: HashMap<TimelineKey, TimelineActorHandle>,
     accepted_submissions: SubmissionAdmissionLedger,
     action_tx: mpsc::Sender<Vec<AppAction>>,
@@ -1103,18 +1136,19 @@ pub struct TimelineManagerActor {
     /// Serializes ownership transfer between replacement actors before either
     /// generation may touch the shared replay-known registry.
     timeline_actor_generations: Arc<TimelineActorGenerationGate>,
+    live_tail_refreshes: LiveTailRefreshCoordinator<TimelineKey>,
     #[cfg(test)]
     test_session_available: bool,
 }
 
-fn accepts_legacy_committed_observation(
+fn accepts_legacy_committed_response(
     committed_from_response_sequence: u64,
-    last_delivered_commit_sequence: Option<u64>,
+    last_delivered_response_sequence: Option<u64>,
     observed_response_sequence: u64,
-    observed_commit_sequence: u64,
 ) -> bool {
     observed_response_sequence >= committed_from_response_sequence
-        && last_delivered_commit_sequence.is_none_or(|sequence| observed_commit_sequence > sequence)
+        && last_delivered_response_sequence
+            .is_none_or(|sequence| observed_response_sequence > sequence)
 }
 
 const MAX_SUBMISSION_TOMBSTONES: usize = 128;
@@ -1181,7 +1215,7 @@ impl TimelineManagerActor {
             room_list_service: None,
             room_subscription_checkpoint_task: None,
             room_subscription_service_epoch: 0,
-            legacy_committed_checkpoints: HashMap::new(),
+            legacy_committed_response: None,
             timelines: HashMap::new(),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
@@ -1201,6 +1235,7 @@ impl TimelineManagerActor {
                 ReplayKnownThreadRootProjectionRegistry::default(),
             )),
             timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
+            live_tail_refreshes: LiveTailRefreshCoordinator::new(),
             #[cfg(test)]
             test_session_available: false,
         };
@@ -1225,7 +1260,7 @@ impl TimelineManagerActor {
             room_list_service: None,
             room_subscription_checkpoint_task: None,
             room_subscription_service_epoch: 0,
-            legacy_committed_checkpoints: HashMap::new(),
+            legacy_committed_response: None,
             timelines: HashMap::new(),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
@@ -1245,6 +1280,7 @@ impl TimelineManagerActor {
                 ReplayKnownThreadRootProjectionRegistry::default(),
             )),
             timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
+            live_tail_refreshes: LiveTailRefreshCoordinator::new(),
             #[cfg(test)]
             test_session_available: false,
         };
@@ -1254,6 +1290,8 @@ impl TimelineManagerActor {
 
     async fn run(mut self) {
         let mut shutdown_acknowledgement = None;
+        #[cfg(test)]
+        let mut live_tail_completion_dispatches = 0;
         while let Some(msg) = self.msg_rx.recv().await {
             match msg {
                 TimelineMessage::Shutdown { acknowledged } => {
@@ -1276,6 +1314,51 @@ impl TimelineManagerActor {
                 } => {
                     self.handle_room_subscription_checkpoint(service_epoch, checkpoint)
                         .await;
+                }
+                TimelineMessage::LegacyResponseCommitted {
+                    service_epoch,
+                    response,
+                } => {
+                    self.handle_legacy_response_committed(service_epoch, response)
+                        .await;
+                }
+                TimelineMessage::LiveTailRefreshCompleted {
+                    key,
+                    actor_generation,
+                    epoch,
+                    operation_generation,
+                    outcome,
+                    requested_limit,
+                    returned_events,
+                    duration_ms,
+                } => {
+                    #[cfg(test)]
+                    {
+                        live_tail_completion_dispatches += 1;
+                    }
+                    self.handle_live_tail_refresh_completed(
+                        key,
+                        actor_generation,
+                        epoch,
+                        operation_generation,
+                        outcome,
+                        requested_limit,
+                        returned_events,
+                        duration_ms,
+                    )
+                    .await;
+                }
+                #[cfg(test)]
+                TimelineMessage::TestLiveTailDispatchState {
+                    key,
+                    epoch,
+                    response,
+                } => {
+                    let _ = response.send((
+                        self.live_tail_refreshes.freshness(&key)
+                            == Some(LiveTailFreshnessState::Fresh { epoch }),
+                        live_tail_completion_dispatches,
+                    ));
                 }
                 TimelineMessage::IgnoredUsersUpdated { user_ids } => {
                     self.handle_ignored_users_updated(user_ids).await;
@@ -1493,55 +1576,59 @@ impl TimelineManagerActor {
         if let Some(task) = self.room_subscription_checkpoint_task.take() {
             task.abort();
         }
-        self.legacy_committed_checkpoints.clear();
+        self.legacy_committed_response = None;
         self.room_list_service = room_list_service.clone();
+        let replacement_starts = self
+            .invalidate_live_tail_epoch_for_existing_rooms(service_epoch)
+            .await;
         let Some(service) = room_list_service else {
             let Some(committed_from_response_sequence) = legacy_committed_from_response_sequence
             else {
+                self.apply_live_tail_scheduler_actions(replacement_starts)
+                    .await;
                 return;
             };
             let Some(session) = self.session.clone() else {
+                self.apply_live_tail_scheduler_actions(replacement_starts)
+                    .await;
                 return;
             };
-            let mut observations = session
+            let mut responses = session
                 .client()
                 .event_cache()
-                .subscribe_to_committed_room_timeline_observations();
+                .subscribe_to_committed_room_updates_responses();
             let manager_tx = self.msg_tx.clone();
             self.room_subscription_checkpoint_task = Some(executor::spawn(async move {
-                let mut delivered = HashMap::<matrix_sdk::ruma::OwnedRoomId, u64>::new();
+                let mut delivered_response_sequence = None;
                 loop {
-                    let retained = observations.borrow_and_update().clone();
-                    for observation in retained.values() {
-                        if !accepts_legacy_committed_observation(
+                    let retained_response = responses.borrow_and_update().clone();
+                    if let Some(response) = retained_response.filter(|response| {
+                        accepts_legacy_committed_response(
                             committed_from_response_sequence,
-                            delivered.get(observation.room_id()).copied(),
-                            observation.response_sequence(),
-                            observation.sequence(),
-                        ) {
-                            continue;
-                        }
+                            delivered_response_sequence,
+                            response.response_sequence(),
+                        )
+                    }) {
                         if manager_tx
-                            .send(TimelineMessage::RoomSubscriptionCheckpoint {
+                            .send(TimelineMessage::LegacyResponseCommitted {
                                 service_epoch,
-                                checkpoint:
-                                    MatrixRoomSubscriptionCheckpoint::from_committed_observation(
-                                        observation,
-                                    ),
+                                response: MatrixCommittedRoomUpdatesResponse::from_sdk(&response),
                             })
                             .await
                             .is_err()
                         {
                             return;
                         }
-                        delivered.insert(observation.room_id().to_owned(), observation.sequence());
+                        delivered_response_sequence = Some(response.response_sequence());
                     }
-                    if observations.changed().await.is_err() {
+                    if responses.changed().await.is_err() {
                         return;
                     }
                 }
             }));
             self.rebuild_existing_room_timelines_after_sync_started()
+                .await;
+            self.apply_live_tail_scheduler_actions(replacement_starts)
                 .await;
             return;
         };
@@ -1574,6 +1661,87 @@ impl TimelineManagerActor {
         self.subscribe_existing_timeline_rooms(&service).await;
         self.rebuild_existing_room_timelines_after_sync_started()
             .await;
+        self.apply_live_tail_scheduler_actions(replacement_starts)
+            .await;
+    }
+
+    async fn invalidate_live_tail_epoch_for_existing_rooms(
+        &mut self,
+        service_epoch: u64,
+    ) -> Vec<LiveTailSchedulerAction<TimelineKey>> {
+        let keys = self
+            .timelines
+            .keys()
+            .filter(|key| matches!(key.kind, TimelineKind::Room { .. }))
+            .filter(|key| self.live_tail_refreshes.freshness(key).is_some())
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut pending_start = None;
+        for key in keys {
+            let from = self.live_tail_refreshes.freshness(&key);
+            let actions = self
+                .live_tail_refreshes
+                .invalidate_epoch(key.clone(), service_epoch);
+            record_live_tail_state(
+                from,
+                self.live_tail_refreshes.freshness(&key),
+                service_epoch,
+            );
+            record_live_tail_queue("foreground", &actions);
+            for action in actions {
+                match action {
+                    LiveTailSchedulerAction::Start { .. } => {
+                        debug_assert!(pending_start.is_none());
+                        pending_start = Some(action);
+                    }
+                    LiveTailSchedulerAction::CancelNetwork {
+                        key,
+                        operation_generation,
+                    } => {
+                        let cancels_pending = pending_start.as_ref().is_some_and(|pending| {
+                            matches!(
+                                pending,
+                                LiveTailSchedulerAction::Start {
+                                    key: pending_key,
+                                    operation_generation: pending_operation,
+                                    ..
+                                } if pending_key == &key
+                                    && *pending_operation == operation_generation
+                            )
+                        });
+                        if cancels_pending {
+                            pending_start = None;
+                        } else {
+                            self.apply_live_tail_scheduler_actions(vec![
+                                LiveTailSchedulerAction::CancelNetwork {
+                                    key,
+                                    operation_generation,
+                                },
+                            ])
+                            .await;
+                        }
+                    }
+                }
+            }
+        }
+        pending_start
+            .filter(|pending| {
+                matches!(
+                    pending,
+                    LiveTailSchedulerAction::Start {
+                        key,
+                        epoch,
+                        operation_generation,
+                        ..
+                    } if self.live_tail_refreshes.freshness(key)
+                        == Some(LiveTailFreshnessState::Refreshing {
+                            epoch: *epoch,
+                            operation_generation: *operation_generation,
+                        })
+                )
+            })
+            .into_iter()
+            .collect()
     }
 
     async fn handle_room_subscription_checkpoint(
@@ -1584,22 +1752,40 @@ impl TimelineManagerActor {
         if service_epoch != self.room_subscription_service_epoch {
             return;
         }
-        if checkpoint.backend() == MatrixCommittedRoomTimelineBackend::LegacySync {
-            self.legacy_committed_checkpoints
-                .insert(checkpoint.room_id().to_owned(), checkpoint.clone());
-        }
-        for (key, handle) in &self.timelines {
-            if matches!(key.kind, TimelineKind::Room { .. })
-                && key.room_id() == checkpoint.room_id()
-                && match checkpoint.backend() {
-                    MatrixCommittedRoomTimelineBackend::SyncService => {
-                        handle.subscription_generation == Some(checkpoint.generation())
+        let matching_keys = self
+            .timelines
+            .iter()
+            .filter(|(key, handle)| {
+                matches!(key.kind, TimelineKind::Room { .. })
+                    && key.room_id() == checkpoint.room_id()
+                    && match checkpoint.backend() {
+                        MatrixCommittedRoomTimelineBackend::SyncService => {
+                            handle.subscription_generation == Some(checkpoint.generation())
+                        }
+                        MatrixCommittedRoomTimelineBackend::LegacySync => {
+                            handle.subscription_generation.is_none()
+                        }
                     }
-                    MatrixCommittedRoomTimelineBackend::LegacySync => {
-                        handle.subscription_generation.is_none()
-                    }
-                }
-            {
+            })
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        for key in matching_keys {
+            let from = self.live_tail_refreshes.freshness(&key);
+            let actions = if checkpoint.is_room_absent() {
+                self.live_tail_refreshes
+                    .mark_unproven(key.clone(), service_epoch)
+            } else {
+                self.live_tail_refreshes
+                    .mark_fresh(key.clone(), service_epoch)
+            };
+            record_live_tail_state(
+                from,
+                self.live_tail_refreshes.freshness(&key),
+                service_epoch,
+            );
+            record_live_tail_queue("foreground", &actions);
+            self.apply_live_tail_scheduler_actions(actions).await;
+            if let Some(handle) = self.timelines.get(&key) {
                 let _ = handle
                     .send(TimelineActorMessage::RoomSubscriptionCheckpoint(
                         checkpoint.clone(),
@@ -1609,15 +1795,160 @@ impl TimelineManagerActor {
         }
     }
 
+    async fn handle_legacy_response_committed(
+        &mut self,
+        service_epoch: u64,
+        response: MatrixCommittedRoomUpdatesResponse,
+    ) {
+        if service_epoch != self.room_subscription_service_epoch
+            || self
+                .legacy_committed_response
+                .as_ref()
+                .is_some_and(|current| current.generation() >= response.generation())
+        {
+            return;
+        }
+
+        self.legacy_committed_response = Some(response.clone());
+        let active_timeline_count = self
+            .timelines
+            .iter()
+            .filter(|(key, handle)| {
+                matches!(key.kind, TimelineKind::Room { .. })
+                    && handle.subscription_generation.is_none()
+            })
+            .count();
+        let mut rooms_updated_count = 0;
+        let checkpoints = self
+            .timelines
+            .iter()
+            .filter(|(key, handle)| {
+                matches!(key.kind, TimelineKind::Room { .. })
+                    && handle.subscription_generation.is_none()
+            })
+            .filter_map(|(key, _)| {
+                let room_id = matrix_sdk::ruma::RoomId::parse(key.room_id()).ok()?;
+                Some((key.clone(), response.room_checkpoint(&room_id)?))
+            })
+            .collect::<Vec<_>>();
+        for (_, checkpoint) in checkpoints {
+            if !checkpoint.is_room_absent() {
+                rooms_updated_count += 1;
+            }
+            self.handle_room_subscription_checkpoint(service_epoch, checkpoint)
+                .await;
+        }
+        record_legacy_response_commit(&response, active_timeline_count, rooms_updated_count);
+    }
+
+    async fn apply_live_tail_scheduler_actions(
+        &mut self,
+        actions: Vec<LiveTailSchedulerAction<TimelineKey>>,
+    ) {
+        for action in actions {
+            match action {
+                LiveTailSchedulerAction::CancelNetwork {
+                    key,
+                    operation_generation,
+                } => {
+                    let Some(handle) = self.timelines.get(&key) else {
+                        continue;
+                    };
+                    let (acknowledged, acknowledgement) = oneshot::channel();
+                    if handle
+                        .send(TimelineActorMessage::CancelLiveTailNetwork {
+                            operation_generation,
+                            acknowledged,
+                        })
+                        .await
+                    {
+                        let _ = acknowledgement.await;
+                    }
+                }
+                LiveTailSchedulerAction::Start {
+                    key,
+                    epoch,
+                    operation_generation,
+                    limit,
+                } => {
+                    debug_assert_eq!(limit, FOREGROUND_LIVE_TAIL_LIMIT);
+                    if let Some(handle) = self.timelines.get(&key) {
+                        let _ = handle
+                            .send(TimelineActorMessage::StartLiveTailRefresh {
+                                epoch,
+                                operation_generation,
+                                limit,
+                            })
+                            .await;
+                    }
+                }
+            }
+        }
+    }
+
+    async fn handle_live_tail_refresh_completed(
+        &mut self,
+        key: TimelineKey,
+        actor_generation: u64,
+        epoch: u64,
+        operation_generation: u64,
+        outcome: MatrixLiveTailRefreshOutcome,
+        requested_limit: u16,
+        returned_events: usize,
+        duration_ms: u128,
+    ) {
+        let Some(actor_lease) = self
+            .timeline_actor_generations
+            .try_acquire(&key, actor_generation)
+        else {
+            return;
+        };
+        drop(actor_lease);
+        let from = self.live_tail_refreshes.freshness(&key);
+        if !matches!(
+            from,
+            Some(LiveTailFreshnessState::Refreshing {
+                epoch: running_epoch,
+                operation_generation: running_operation,
+            }) if running_epoch == epoch && running_operation == operation_generation
+        ) {
+            return;
+        }
+        let historical_gap_remaining = matches!(
+            outcome,
+            MatrixLiveTailRefreshOutcome::Detached {
+                historical_gap_remaining: true,
+                ..
+            }
+        );
+        record_live_tail_refresh(
+            outcome,
+            requested_limit,
+            returned_events,
+            historical_gap_remaining,
+            operation_generation,
+            duration_ms,
+        );
+        let actions =
+            self.live_tail_refreshes
+                .finish(key.clone(), epoch, operation_generation, outcome);
+        record_live_tail_state(from, self.live_tail_refreshes.freshness(&key), epoch);
+        record_live_tail_queue("delayed", &actions);
+        self.apply_live_tail_scheduler_actions(actions).await;
+    }
+
     async fn replay_retained_room_subscription_checkpoint(&mut self, key: &TimelineKey) {
         if !matches!(key.kind, TimelineKind::Room { .. }) {
             return;
         }
         let Some(service) = self.room_list_service.clone() else {
             let checkpoint = self
-                .legacy_committed_checkpoints
-                .get(key.room_id())
-                .cloned();
+                .legacy_committed_response
+                .as_ref()
+                .and_then(|response| {
+                    let room_id = matrix_sdk::ruma::RoomId::parse(key.room_id()).ok()?;
+                    response.room_checkpoint(&room_id)
+                });
             if let Some(checkpoint) = checkpoint {
                 self.handle_room_subscription_checkpoint(
                     self.room_subscription_service_epoch,
@@ -1697,6 +2028,7 @@ impl TimelineManagerActor {
             Ok(handle) => {
                 self.emit_timeline_subscribed_action(&key).await;
                 self.timelines.insert(key.clone(), handle);
+                self.restore_foreground_gap_demand(&key).await;
                 self.replay_retained_room_subscription_checkpoint(&key)
                     .await;
             }
@@ -1717,6 +2049,82 @@ impl TimelineManagerActor {
         }
     }
 
+    async fn handle_committed_room_selection(
+        &mut self,
+        request_id: RequestId,
+        key: TimelineKey,
+        replay_existing: bool,
+    ) {
+        let previous_foreground = self
+            .live_tail_refreshes
+            .active_key()
+            .filter(|active| *active != &key)
+            .cloned();
+        let from = self.live_tail_refreshes.freshness(&key);
+        let actions = self
+            .live_tail_refreshes
+            .activate(key.clone(), self.room_subscription_service_epoch);
+        if let Some(previous) = previous_foreground {
+            if let Some(handle) = self.timelines.get(&previous) {
+                let _ = handle.send(TimelineActorMessage::EndGapRepairDemand).await;
+            }
+        }
+        record_live_tail_state(
+            from,
+            self.live_tail_refreshes.freshness(&key),
+            self.room_subscription_service_epoch,
+        );
+        record_live_tail_queue("foreground", &actions);
+        let mut starts = Vec::new();
+        for action in actions {
+            if matches!(action, LiveTailSchedulerAction::Start { .. }) {
+                starts.push(action);
+            } else {
+                self.apply_live_tail_scheduler_actions(vec![action]).await;
+            }
+        }
+
+        self.handle_subscribe(request_id, key.clone(), replay_existing)
+            .await;
+        if let Some(handle) = self.timelines.get(&key) {
+            let _ = handle
+                .send(TimelineActorMessage::BeginGapRepairDemand)
+                .await;
+            self.apply_live_tail_scheduler_actions(starts).await;
+            return;
+        }
+        for action in starts {
+            if let LiveTailSchedulerAction::Start {
+                epoch,
+                operation_generation,
+                ..
+            } = action
+            {
+                let from = self.live_tail_refreshes.freshness(&key);
+                let follow_up = self.live_tail_refreshes.finish(
+                    key.clone(),
+                    epoch,
+                    operation_generation,
+                    LiveTailRefreshOutcome::Failed,
+                );
+                record_live_tail_state(from, self.live_tail_refreshes.freshness(&key), epoch);
+                record_live_tail_queue("delayed", &follow_up);
+                self.apply_live_tail_scheduler_actions(follow_up).await;
+            }
+        }
+    }
+
+    async fn restore_foreground_gap_demand(&self, key: &TimelineKey) {
+        if self.live_tail_refreshes.active_key() != Some(key) {
+            return;
+        }
+        if let Some(handle) = self.timelines.get(key) {
+            let _ = handle
+                .send(TimelineActorMessage::BeginGapRepairDemand)
+                .await;
+        }
+    }
+
     async fn handle_command(&mut self, command: TimelineCommand) {
         match command {
             TimelineCommand::Subscribe { request_id, key } => {
@@ -1729,8 +2137,13 @@ impl TimelineManagerActor {
                 replay_existing,
             } => {
                 trace_timeline_route("manager_received", "ensure_subscribed", request_id, &key);
-                self.handle_subscribe(request_id, key, replay_existing)
-                    .await;
+                if matches!(key.kind, TimelineKind::Room { .. }) {
+                    self.handle_committed_room_selection(request_id, key, replay_existing)
+                        .await;
+                } else {
+                    self.handle_subscribe(request_id, key, replay_existing)
+                        .await;
+                }
             }
             TimelineCommand::ReplaySubscribed { request_id } => {
                 self.handle_replay_subscribed(request_id).await;
@@ -3072,8 +3485,32 @@ fn ruma_mentions_from_intent(intent: &MentionIntent) -> Option<Mentions> {
 // Individual TimelineActor
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+struct TestGapRepairCompletionPause {
+    reached: oneshot::Sender<()>,
+    release: oneshot::Receiver<()>,
+    forwarded: oneshot::Sender<bool>,
+}
+
 enum TimelineActorMessage {
     RoomSubscriptionCheckpoint(MatrixRoomSubscriptionCheckpoint),
+    StartLiveTailRefresh {
+        epoch: u64,
+        operation_generation: u64,
+        limit: u16,
+    },
+    CancelLiveTailNetwork {
+        operation_generation: u64,
+        acknowledged: oneshot::Sender<()>,
+    },
+    LiveTailRefreshFinished {
+        actor_generation: u64,
+        epoch: u64,
+        operation_generation: u64,
+        requested_limit: u16,
+        result: MatrixLiveTailRefreshResult,
+        duration_ms: u128,
+    },
     InspectTimelineGaps {
         trigger: TimelineGapRepairTrigger,
     },
@@ -3128,6 +3565,8 @@ enum TimelineActorMessage {
     ObserveViewport {
         observation: TimelineViewportObservation,
     },
+    BeginGapRepairDemand,
+    EndGapRepairDemand,
     SendText {
         request_id: RequestId,
         submission_id: Option<koushi_state::SubmissionId>,
@@ -3271,6 +3710,27 @@ enum TimelineActorMessage {
         batch_id: TimelineBatchId,
     },
     #[cfg(test)]
+    TestBeginRestore {
+        request_id: RequestId,
+        event_id: String,
+        acknowledged: oneshot::Sender<()>,
+    },
+    #[cfg(test)]
+    TestInjectRestoreDiff {
+        diffs: Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>,
+        projections: BTreeSet<CausalProjectionId>,
+        acknowledged: oneshot::Sender<()>,
+    },
+    #[cfg(test)]
+    TestRestoreCausalState(oneshot::Sender<(bool, bool, usize, BTreeSet<CausalProjectionId>)>),
+    #[cfg(test)]
+    TestFlushRestore(oneshot::Sender<bool>),
+    #[cfg(test)]
+    TestArmGapRepairCompletionPause {
+        pause: TestGapRepairCompletionPause,
+        acknowledged: oneshot::Sender<()>,
+    },
+    #[cfg(test)]
     Barrier(oneshot::Sender<()>),
 }
 
@@ -3386,7 +3846,7 @@ struct TimelineRelayBatch {
     generation: TimelineGeneration,
     diffs: Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>,
     thread_attention_provenance: ThreadAttentionBatchProvenance,
-    gap_repair_projections: BTreeSet<GapRepairProjectionId>,
+    gap_repair_projections: BTreeSet<CausalProjectionId>,
 }
 
 fn timeline_key_trace_kind(key: &TimelineKey) -> &'static str {
@@ -3435,6 +3895,7 @@ fn timeline_stage_token(value: &str) -> &'static str {
         "spawn_done" => "spawn_done",
         "initial_emitted" => "initial_emitted",
         "replay_initial_emitted" => "replay_initial_emitted",
+        "legacy_response_commit" => "legacy_response_commit",
         _ => "other",
     }
 }
@@ -3566,18 +4027,283 @@ fn record_timeline_gap_repair(
     );
 }
 
+fn record_legacy_response_commit(
+    response: &MatrixCommittedRoomUpdatesResponse,
+    active_timeline_count: usize,
+    rooms_updated_count: usize,
+) {
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "core.timeline",
+            "legacy_response_commit",
+        )
+        .field(DiagnosticField::count(
+            "response_sequence",
+            response.generation(),
+        ))
+        .field(DiagnosticField::count(
+            "commit_fence_sequence",
+            response.generation(),
+        ))
+        .field(DiagnosticField::count(
+            "active_timeline_count",
+            active_timeline_count.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "rooms_updated_count",
+            rooms_updated_count.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "joined_room_count",
+            response.joined_room_count().try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "left_room_count",
+            response.left_room_count().try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "invited_room_count",
+            response.invited_room_count().try_into().unwrap_or(u64::MAX),
+        )),
+    );
+}
+
+fn live_tail_refresh_outcome_token(outcome: LiveTailRefreshOutcome) -> &'static str {
+    match outcome {
+        LiveTailRefreshOutcome::Cancelled => "cancelled",
+        LiveTailRefreshOutcome::Unchanged => "unchanged",
+        LiveTailRefreshOutcome::Advanced { .. } => "advanced",
+        LiveTailRefreshOutcome::Detached { .. } => "detached",
+        LiveTailRefreshOutcome::Stale => "stale",
+        LiveTailRefreshOutcome::Failed => "failed",
+    }
+}
+
+fn live_tail_freshness_token(state: Option<LiveTailFreshnessState>) -> &'static str {
+    match state {
+        None => "none",
+        Some(LiveTailFreshnessState::Unproven { .. }) => "unproven",
+        Some(LiveTailFreshnessState::Refreshing { .. }) => "refreshing",
+        Some(LiveTailFreshnessState::Fresh { .. }) => "fresh",
+        Some(LiveTailFreshnessState::Deferred { .. }) => "deferred",
+        Some(LiveTailFreshnessState::Retryable { .. }) => "retryable",
+    }
+}
+
+fn record_live_tail_state(
+    from: Option<LiveTailFreshnessState>,
+    to: Option<LiveTailFreshnessState>,
+    sync_epoch: u64,
+) {
+    if from == to {
+        return;
+    }
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "core.timeline",
+            "timeline_live_tail_state",
+        )
+        .field(DiagnosticField::token(
+            "from",
+            live_tail_freshness_token(from),
+        ))
+        .field(DiagnosticField::token("to", live_tail_freshness_token(to)))
+        .field(DiagnosticField::count("sync_epoch", sync_epoch)),
+    );
+}
+
+fn record_live_tail_queue(
+    priority: &'static str,
+    actions: &[LiveTailSchedulerAction<TimelineKey>],
+) {
+    if actions.is_empty() {
+        return;
+    }
+    let queue_depth = actions
+        .iter()
+        .filter(|action| matches!(action, LiveTailSchedulerAction::Start { .. }))
+        .count();
+    let preempted = actions
+        .iter()
+        .any(|action| matches!(action, LiveTailSchedulerAction::CancelNetwork { .. }));
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "core.timeline",
+            "timeline_live_tail_queue",
+        )
+        .field(DiagnosticField::token("priority", priority))
+        .field(DiagnosticField::count(
+            "queue_depth",
+            queue_depth.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::boolean("preempted", preempted)),
+    );
+}
+
+fn record_live_tail_refresh(
+    outcome: LiveTailRefreshOutcome,
+    requested_limit: u16,
+    returned_events: usize,
+    historical_gap_remaining: bool,
+    operation_generation: u64,
+    duration_ms: u128,
+) {
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "core.timeline",
+            "timeline_live_tail_refresh",
+        )
+        .field(DiagnosticField::token(
+            "outcome",
+            live_tail_refresh_outcome_token(outcome),
+        ))
+        .field(DiagnosticField::count(
+            "requested_limit",
+            requested_limit.into(),
+        ))
+        .field(DiagnosticField::count(
+            "returned_events",
+            returned_events.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::boolean(
+            "historical_gap_remaining",
+            historical_gap_remaining,
+        ))
+        .field(DiagnosticField::count(
+            "operation_generation",
+            operation_generation,
+        ))
+        .field(DiagnosticField::milliseconds("duration_ms", duration_ms)),
+    );
+}
+
+fn record_live_tail_reconciliation(
+    diagnostics: MatrixLiveTailRefreshDiagnostics,
+    operation_generation: u64,
+) {
+    let optional_index = |key, value: Option<usize>| {
+        DiagnosticField::count(
+            key,
+            value
+                .and_then(|index| u64::try_from(index).ok())
+                .unwrap_or(u64::MAX),
+        )
+    };
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "core.timeline",
+            "timeline_live_tail_reconciliation",
+        )
+        .field(DiagnosticField::count(
+            "cached_suffix_events",
+            diagnostics
+                .cached_suffix_events
+                .try_into()
+                .unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "response_events_with_ids",
+            diagnostics
+                .response_events_with_ids
+                .try_into()
+                .unwrap_or(u64::MAX),
+        ))
+        .field(optional_index(
+            "newest_cached_response_index",
+            diagnostics.newest_cached_response_index,
+        ))
+        .field(optional_index(
+            "older_anchor_response_index",
+            diagnostics.older_anchor_response_index,
+        ))
+        .field(DiagnosticField::count(
+            "in_memory_duplicates",
+            diagnostics
+                .in_memory_duplicates
+                .try_into()
+                .unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "in_store_duplicates",
+            diagnostics
+                .in_store_duplicates
+                .try_into()
+                .unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "new_events",
+            diagnostics.new_events.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "operation_generation",
+            operation_generation,
+        )),
+    );
+}
+
+fn record_live_tail_commit(phase: &'static str, operation_generation: u64) {
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Debug,
+            "core.timeline",
+            "timeline_live_tail_commit",
+        )
+        .field(DiagnosticField::token("phase", phase))
+        .field(DiagnosticField::count(
+            "operation_generation",
+            operation_generation,
+        )),
+    );
+}
+
 fn record_live_catchup_gate(
     gate: LiveCatchupGate,
     expected_generation: Option<u64>,
     checkpoint: Option<&MatrixRoomSubscriptionCheckpoint>,
+    scheduler_phase: &'static str,
+    batches_processed: u32,
 ) {
+    let checkpoint_origin = checkpoint.map_or("none", |checkpoint| {
+        if checkpoint.is_room_absent() {
+            "room_absent"
+        } else {
+            "room_update"
+        }
+    });
+    let candidate = match gate {
+        LiveCatchupGate::RepairCheckpointGap => "exact_response_gap",
+        LiveCatchupGate::ProveLiveTailFreshness => "none",
+        LiveCatchupGate::AwaitingCheckpoint
+        | LiveCatchupGate::Stale
+        | LiveCatchupGate::NoTimelineUpdate
+        | LiveCatchupGate::NoGap => "none",
+    };
     koushi_diagnostics::record(
         DiagnosticEvent::new(DiagnosticLevel::Info, "core.live_catchup", "checkpoint")
             .field(DiagnosticField::token("decision", gate.token()))
+            .field(DiagnosticField::token(
+                "checkpoint_origin",
+                checkpoint_origin,
+            ))
+            .field(DiagnosticField::token("candidate", candidate))
+            .field(DiagnosticField::token("scheduler_phase", scheduler_phase))
+            .field(DiagnosticField::count(
+                "batches_processed",
+                batches_processed.into(),
+            ))
             .field(DiagnosticField::boolean("supported_backend", true))
             .field(DiagnosticField::count(
                 "subscription_generation",
                 expected_generation.unwrap_or_default(),
+            ))
+            .field(DiagnosticField::count(
+                "checkpoint_generation",
+                checkpoint.map_or(0, MatrixRoomSubscriptionCheckpoint::generation),
             ))
             .field(DiagnosticField::boolean(
                 "timeline_update",
@@ -3594,6 +4320,8 @@ fn record_live_catchup_gate(
 fn record_timeline_gap_repair_evaluation(
     decision: &'static str,
     projected_gap_count: usize,
+    visible_gap_count: usize,
+    visible_gap_validated: bool,
     candidate_changed: bool,
     scheduler_phase: &'static str,
 ) {
@@ -3609,11 +4337,166 @@ fn record_timeline_gap_repair_evaluation(
             "projected_gap_count",
             projected_gap_count.try_into().unwrap_or(u64::MAX),
         ))
+        .field(DiagnosticField::count(
+            "visible_gap_count",
+            visible_gap_count.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::boolean(
+            "visible_gap_validated",
+            visible_gap_validated,
+        ))
         .field(DiagnosticField::boolean(
             "candidate_changed",
             candidate_changed,
         ))
         .field(DiagnosticField::token("scheduler_phase", scheduler_phase)),
+    );
+}
+
+fn record_timeline_gap_projection(
+    gap_count: usize,
+    counts: GapBoundaryPresenceCounts,
+    navigation_event_count: usize,
+    foreground_demand_active: bool,
+    foreground_demand_epoch: u64,
+    scheduler_phase: &'static str,
+) {
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "core.timeline_gap_projection",
+            "inspection",
+        )
+        .field(DiagnosticField::count(
+            "gap_count",
+            gap_count.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "projected_count",
+            counts.projected.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "boundary_both_count",
+            counts.both.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "boundary_one_count",
+            counts.one.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "boundary_none_count",
+            counts.none.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "navigation_event_count",
+            navigation_event_count.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::boolean(
+            "foreground_demand_active",
+            foreground_demand_active,
+        ))
+        .field(DiagnosticField::count(
+            "foreground_demand_epoch",
+            foreground_demand_epoch,
+        ))
+        .field(DiagnosticField::token("scheduler_phase", scheduler_phase)),
+    );
+}
+
+fn record_timeline_gap_demand(
+    foreground_demand_epoch: u64,
+    projected_gap_count: usize,
+    visible_gap_count: usize,
+    inspection_requested: bool,
+    reason: &'static str,
+    scheduler_phase: &'static str,
+) {
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "core.timeline_gap_demand",
+            "activate",
+        )
+        .field(DiagnosticField::count(
+            "foreground_demand_epoch",
+            foreground_demand_epoch,
+        ))
+        .field(DiagnosticField::boolean("foreground_demand_active", true))
+        .field(DiagnosticField::count(
+            "projected_gap_count",
+            projected_gap_count.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "visible_gap_count",
+            visible_gap_count.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::boolean(
+            "inspection_requested",
+            inspection_requested,
+        ))
+        .field(DiagnosticField::token("reason", reason))
+        .field(DiagnosticField::token("scheduler_phase", scheduler_phase)),
+    );
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TimelineGapSelectionDiagnostic {
+    trigger: &'static str,
+    decision: &'static str,
+    repair_started: bool,
+    gap_count: usize,
+    projected_gap_count: usize,
+    visible_gap_count: usize,
+    foreground_demand_active: bool,
+    foreground_demand_epoch: u64,
+    has_live_edge_target: bool,
+    scheduler_phase: &'static str,
+}
+
+fn record_timeline_gap_selection(diagnostic: TimelineGapSelectionDiagnostic) {
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "core.timeline_gap_selection",
+            "evaluation",
+        )
+        .field(DiagnosticField::token("trigger", diagnostic.trigger))
+        .field(DiagnosticField::token("decision", diagnostic.decision))
+        .field(DiagnosticField::boolean(
+            "repair_started",
+            diagnostic.repair_started,
+        ))
+        .field(DiagnosticField::count(
+            "gap_count",
+            diagnostic.gap_count.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "projected_gap_count",
+            diagnostic
+                .projected_gap_count
+                .try_into()
+                .unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "visible_gap_count",
+            diagnostic.visible_gap_count.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::boolean(
+            "foreground_demand_active",
+            diagnostic.foreground_demand_active,
+        ))
+        .field(DiagnosticField::count(
+            "foreground_demand_epoch",
+            diagnostic.foreground_demand_epoch,
+        ))
+        .field(DiagnosticField::boolean(
+            "has_live_edge_target",
+            diagnostic.has_live_edge_target,
+        ))
+        .field(DiagnosticField::token(
+            "scheduler_phase",
+            diagnostic.scheduler_phase,
+        )),
     );
 }
 
@@ -5424,6 +6307,37 @@ const TIMELINE_GAP_OBSERVABLE_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs
 const TIMELINE_GAP_RELAY_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(5);
 const TIMELINE_GAP_RENDER_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(5);
 
+fn historical_causal_projection_operation(serial: u64) -> CausalProjectionOperationId {
+    CausalProjectionOperationId::new(CausalProjectionDomain::HistoricalGap, serial)
+        .expect("historical projection serial must stay within its 63-bit domain")
+}
+
+fn live_tail_causal_projection_operation(serial: u64) -> CausalProjectionOperationId {
+    CausalProjectionOperationId::new(CausalProjectionDomain::LiveTail, serial)
+        .expect("live-tail projection serial must stay within its 63-bit domain")
+}
+
+impl CausalProjectionId {
+    /// Decode the SDK/UI transport tag once, at the relay boundary. Downstream
+    /// Core code routes only this typed identity and never reinterprets the
+    /// raw numeric generation.
+    fn decode_transport(projection: GapRepairProjectionId) -> Self {
+        Self {
+            actor_generation: projection.actor_generation,
+            operation: CausalProjectionOperationId::decode_transport(projection.repair_generation),
+            projection_batch: projection.projection_batch,
+        }
+    }
+
+    fn encode_transport(self) -> GapRepairProjectionId {
+        GapRepairProjectionId {
+            actor_generation: self.actor_generation,
+            repair_generation: self.operation.encode_transport(),
+            projection_batch: self.projection_batch,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TimelineGapObservableSettlement {
     Observable,
@@ -5449,6 +6363,9 @@ where
 enum TimelineGapRepairTrigger {
     Automatic,
     LiveEdge,
+    /// Publish the current gap topology after a detached live-tail refresh
+    /// without consuming its continuation token through automatic repair.
+    LiveTailSnapshot,
     Manual,
 }
 
@@ -5469,14 +6386,14 @@ enum TimelineGapProjectionCompletion {
 
 #[derive(Debug, Default)]
 struct TimelineGapProjectionCorrelation {
-    operation: Option<(u64, u64)>,
+    operation: Option<(u64, CausalProjectionOperationId)>,
     observed_batches: BTreeMap<u32, TimelineBatchId>,
     expected_last_projection_batch: Option<u32>,
 }
 
 impl TimelineGapProjectionCorrelation {
-    fn begin(&mut self, actor_generation: u64, repair_generation: u64) {
-        self.operation = Some((actor_generation, repair_generation));
+    fn begin(&mut self, actor_generation: u64, operation: CausalProjectionOperationId) {
+        self.operation = Some((actor_generation, operation));
         self.observed_batches.clear();
         self.expected_last_projection_batch = None;
     }
@@ -5484,19 +6401,19 @@ impl TimelineGapProjectionCorrelation {
     fn complete(
         &mut self,
         actor_generation: u64,
-        repair_generation: u64,
+        operation: CausalProjectionOperationId,
         last_projection_batch: Option<u32>,
     ) -> TimelineGapProjectionCompletion {
-        if self.operation != Some((actor_generation, repair_generation)) {
+        if self.operation != Some((actor_generation, operation)) {
             return TimelineGapProjectionCompletion::NoDiff;
         }
         let Some(expected) = last_projection_batch else {
-            self.clear(actor_generation, repair_generation);
+            self.clear(actor_generation, operation);
             return TimelineGapProjectionCompletion::NoDiff;
         };
         self.expected_last_projection_batch = Some(expected);
         if let Some(batch_id) = self.observed_batches.get(&expected).copied() {
-            self.clear(actor_generation, repair_generation);
+            self.clear(actor_generation, operation);
             TimelineGapProjectionCompletion::Ready(batch_id)
         } else {
             TimelineGapProjectionCompletion::Pending
@@ -5505,10 +6422,10 @@ impl TimelineGapProjectionCorrelation {
 
     fn observe(
         &mut self,
-        projection: GapRepairProjectionId,
+        projection: CausalProjectionId,
         batch_id: TimelineBatchId,
     ) -> Option<TimelineBatchId> {
-        if self.operation != Some((projection.actor_generation, projection.repair_generation)) {
+        if self.operation != Some((projection.actor_generation, projection.operation)) {
             return None;
         }
         self.observed_batches
@@ -5516,12 +6433,12 @@ impl TimelineGapProjectionCorrelation {
         if self.expected_last_projection_batch != Some(projection.projection_batch) {
             return None;
         }
-        self.clear(projection.actor_generation, projection.repair_generation);
+        self.clear(projection.actor_generation, projection.operation);
         Some(batch_id)
     }
 
-    fn clear(&mut self, actor_generation: u64, repair_generation: u64) {
-        if self.operation == Some((actor_generation, repair_generation)) {
+    fn clear(&mut self, actor_generation: u64, operation: CausalProjectionOperationId) {
+        if self.operation == Some((actor_generation, operation)) {
             self.operation = None;
             self.observed_batches.clear();
             self.expected_last_projection_batch = None;
@@ -5532,8 +6449,68 @@ impl TimelineGapProjectionCorrelation {
         self.operation.is_some()
     }
 
-    fn accepts(&self, projection: GapRepairProjectionId) -> bool {
-        self.operation == Some((projection.actor_generation, projection.repair_generation))
+    fn accepts(&self, projection: CausalProjectionId) -> bool {
+        self.operation == Some((projection.actor_generation, projection.operation))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct CausalProjectionObservation {
+    historical_gap_batch_id: Option<TimelineBatchId>,
+    live_tail_batch_id: Option<TimelineBatchId>,
+}
+
+fn observe_causal_projection(
+    historical_gap: &mut TimelineGapProjectionCorrelation,
+    live_tail: &mut TimelineGapProjectionCorrelation,
+    projection: CausalProjectionId,
+    batch_id: TimelineBatchId,
+) -> CausalProjectionObservation {
+    match projection.operation.domain {
+        CausalProjectionDomain::HistoricalGap => CausalProjectionObservation {
+            historical_gap_batch_id: historical_gap.observe(projection, batch_id),
+            live_tail_batch_id: None,
+        },
+        CausalProjectionDomain::LiveTail => CausalProjectionObservation {
+            historical_gap_batch_id: None,
+            live_tail_batch_id: live_tail.observe(projection, batch_id),
+        },
+    }
+}
+
+#[derive(Debug, Default)]
+struct RestoreCausalProjectionBuffer {
+    projections: BTreeSet<CausalProjectionId>,
+}
+
+impl RestoreCausalProjectionBuffer {
+    fn buffer_batch(&mut self, projections: BTreeSet<CausalProjectionId>) {
+        self.projections.extend(projections);
+    }
+
+    fn observe_after_publication(
+        &mut self,
+        historical_gap: &mut TimelineGapProjectionCorrelation,
+        live_tail: &mut TimelineGapProjectionCorrelation,
+        published_batch_id: TimelineBatchId,
+    ) -> CausalProjectionObservation {
+        std::mem::take(&mut self.projections).into_iter().fold(
+            CausalProjectionObservation::default(),
+            |mut ready, projection| {
+                let observation = observe_causal_projection(
+                    historical_gap,
+                    live_tail,
+                    projection,
+                    published_batch_id,
+                );
+                ready.historical_gap_batch_id = ready
+                    .historical_gap_batch_id
+                    .or(observation.historical_gap_batch_id);
+                ready.live_tail_batch_id =
+                    ready.live_tail_batch_id.or(observation.live_tail_batch_id);
+                ready
+            },
+        )
     }
 }
 
@@ -5545,6 +6522,17 @@ struct PendingTimelineGapProjection {
     batches_processed: u32,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct PendingLiveTailRefreshCompletion {
+    actor_generation: u64,
+    epoch: u64,
+    operation_generation: u64,
+    outcome: MatrixLiveTailRefreshOutcome,
+    requested_limit: u16,
+    returned_events: usize,
+    duration_ms: u128,
+}
+
 fn recover_obsolete_gap_settlement(
     correlation: &mut TimelineGapProjectionCorrelation,
     pending_projection: &mut Option<PendingTimelineGapProjection>,
@@ -5553,10 +6541,11 @@ fn recover_obsolete_gap_settlement(
     repair_generation: u64,
     trigger: TimelineGapRepairTrigger,
 ) -> bool {
-    if correlation.operation != Some((actor_generation, repair_generation)) {
+    let operation = historical_causal_projection_operation(repair_generation);
+    if correlation.operation != Some((actor_generation, operation)) {
         return false;
     }
-    correlation.clear(actor_generation, repair_generation);
+    correlation.clear(actor_generation, operation);
     if pending_projection
         .as_ref()
         .is_some_and(|pending| pending.repair_generation == repair_generation)
@@ -5572,8 +6561,10 @@ fn timeline_gap_repair_budget(trigger: TimelineGapRepairTrigger) -> MatrixTimeli
     MatrixTimelineGapRepairBudget {
         event_limit: 64,
         cached_chunk_limit: match trigger {
-            TimelineGapRepairTrigger::Automatic => 0,
-            TimelineGapRepairTrigger::LiveEdge | TimelineGapRepairTrigger::Manual => 1,
+            TimelineGapRepairTrigger::LiveTailSnapshot => 0,
+            TimelineGapRepairTrigger::Automatic
+            | TimelineGapRepairTrigger::LiveEdge
+            | TimelineGapRepairTrigger::Manual => 1,
         },
     }
 }
@@ -5582,11 +6573,43 @@ fn timeline_gap_repair_trigger_token(trigger: TimelineGapRepairTrigger) -> &'sta
     match trigger {
         TimelineGapRepairTrigger::Automatic => "cache_gap",
         TimelineGapRepairTrigger::LiveEdge => "live_edge",
+        TimelineGapRepairTrigger::LiveTailSnapshot => "live_tail_snapshot",
         TimelineGapRepairTrigger::Manual => "manual",
     }
 }
 
-fn live_edge_repair_made_progress(outcome: &MatrixTimelineGapRepairOutcome) -> bool {
+/// Pick the only inspection that may follow one published SDK diff batch.
+///
+/// Live-tail refreshes can publish several causally tagged batches. They are
+/// not historical-gap repairs: intermediate batches must not wake automatic
+/// or live-edge repair, and only the exact final batch that released the
+/// refresh completion may publish the observe-only snapshot.
+fn post_diff_gap_inspection_trigger(
+    has_live_tail_projection: bool,
+    live_tail_completion_published: bool,
+    live_edge_target_changed: bool,
+) -> Option<TimelineGapRepairTrigger> {
+    if live_tail_completion_published {
+        Some(TimelineGapRepairTrigger::LiveTailSnapshot)
+    } else if has_live_tail_projection {
+        None
+    } else if live_edge_target_changed {
+        Some(TimelineGapRepairTrigger::LiveEdge)
+    } else {
+        Some(TimelineGapRepairTrigger::Automatic)
+    }
+}
+
+fn live_tail_completion_requires_snapshot(outcome: MatrixLiveTailRefreshOutcome) -> bool {
+    matches!(
+        outcome,
+        MatrixLiveTailRefreshOutcome::Unchanged
+            | MatrixLiveTailRefreshOutcome::Advanced { .. }
+            | MatrixLiveTailRefreshOutcome::Detached { .. }
+    )
+}
+
+fn timeline_gap_repair_made_progress(outcome: &MatrixTimelineGapRepairOutcome) -> bool {
     match outcome {
         MatrixTimelineGapRepairOutcome::Deferred {
             cached_chunks_loaded,
@@ -5598,11 +6621,235 @@ fn live_edge_repair_made_progress(outcome: &MatrixTimelineGapRepairOutcome) -> b
     }
 }
 
-fn should_replace_unsettled_live_gap_checkpoint(
-    current_has_gap: Option<bool>,
-    incoming_has_gap: bool,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TimelineGapRepairResultDiagnostic {
+    outcome: &'static str,
+    events: usize,
+    cached_chunks_loaded: usize,
+    has_projection_batch: bool,
+    made_progress: bool,
+}
+
+fn timeline_gap_repair_result_diagnostic(
+    result: &Result<MatrixTimelineGapRepairResult, MatrixTimelineGapError>,
+) -> TimelineGapRepairResultDiagnostic {
+    let (outcome, events, cached_chunks_loaded, made_progress) = match result {
+        Ok(result) => match result.outcome {
+            MatrixTimelineGapRepairOutcome::Deferred {
+                cached_chunks_loaded,
+            } => (
+                "deferred",
+                0,
+                cached_chunks_loaded,
+                cached_chunks_loaded > 0,
+            ),
+            MatrixTimelineGapRepairOutcome::Progress { events } => {
+                ("progress", events, 0, events > 0)
+            }
+            MatrixTimelineGapRepairOutcome::BoundariesJoined { events } => {
+                ("boundaries_joined", events, 0, true)
+            }
+            MatrixTimelineGapRepairOutcome::StartReached { events } => {
+                ("start_reached", events, 0, true)
+            }
+            MatrixTimelineGapRepairOutcome::Stale => ("stale", 0, 0, false),
+            MatrixTimelineGapRepairOutcome::Failed => ("failed", 0, 0, false),
+        },
+        Err(_) => ("error", 0, 0, false),
+    };
+    TimelineGapRepairResultDiagnostic {
+        outcome,
+        events,
+        cached_chunks_loaded,
+        has_projection_batch: result
+            .as_ref()
+            .is_ok_and(|result| result.last_projection_batch.is_some()),
+        made_progress,
+    }
+}
+
+fn record_timeline_gap_repair_attempt(
+    admission: TimelineGapAttemptAdmission,
+    demand_revision: u64,
+) {
+    koushi_diagnostics::record_and_stderr(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "core.timeline_gap_repair",
+            "attempt_admitted",
+        )
+        .field(DiagnosticField::count(
+            "attempt_number",
+            admission.attempt_number,
+        ))
+        .field(DiagnosticField::token(
+            "reset_reason",
+            admission.reason.as_str(),
+        ))
+        .field(DiagnosticField::boolean(
+            "topology_changed",
+            admission.topology_changed,
+        ))
+        .field(DiagnosticField::boolean(
+            "ordinal_changed",
+            admission.ordinal_changed,
+        ))
+        .field(DiagnosticField::boolean(
+            "demand_changed",
+            admission.demand_changed,
+        ))
+        .field(DiagnosticField::count("demand_revision", demand_revision)),
+    );
+}
+
+fn admit_and_record_timeline_gap_repair_attempt(
+    tracker: &mut TimelineGapRepairTracker,
+    id: TimelineGapId,
+    demand_revision: u64,
 ) -> bool {
-    current_has_gap.is_none_or(|current_has_gap| !current_has_gap && incoming_has_gap)
+    let Some(admission) = tracker.admit_gap_attempt(id, demand_revision) else {
+        return false;
+    };
+    record_timeline_gap_repair_attempt(admission, demand_revision);
+    true
+}
+
+fn record_timeline_gap_repair_budget(
+    attempt_number: u64,
+    demand_revision: u64,
+    consecutive_no_progress_batches: u32,
+    cached_chunks_loaded: usize,
+) {
+    let budget_remaining =
+        MAX_TIMELINE_GAP_REPAIR_BATCHES.saturating_sub(consecutive_no_progress_batches);
+    koushi_diagnostics::record_and_stderr(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "core.timeline_gap_repair",
+            "budget_updated",
+        )
+        .field(DiagnosticField::count("attempt_number", attempt_number))
+        .field(DiagnosticField::count("demand_revision", demand_revision))
+        .field(DiagnosticField::count(
+            "consecutive_no_progress_batches",
+            consecutive_no_progress_batches.into(),
+        ))
+        .field(DiagnosticField::count(
+            "budget_remaining",
+            budget_remaining.into(),
+        ))
+        .field(DiagnosticField::count(
+            "cached_chunks_loaded",
+            cached_chunks_loaded.try_into().unwrap_or(u64::MAX),
+        )),
+    );
+}
+
+fn record_timeline_gap_repair_result(
+    tracker: &mut TimelineGapRepairTracker,
+    serial: u64,
+    trigger: TimelineGapRepairTrigger,
+    result: &Result<MatrixTimelineGapRepairResult, MatrixTimelineGapError>,
+) {
+    let diagnostic = timeline_gap_repair_result_diagnostic(result);
+    koushi_diagnostics::record_and_stderr(
+        DiagnosticEvent::new(DiagnosticLevel::Info, "core.timeline_gap_repair", "result")
+            .field(DiagnosticField::token(
+                "trigger",
+                timeline_gap_repair_trigger_token(trigger),
+            ))
+            .field(DiagnosticField::count("generation", serial))
+            .field(DiagnosticField::token("outcome", diagnostic.outcome))
+            .field(DiagnosticField::count(
+                "events",
+                diagnostic.events.try_into().unwrap_or(u64::MAX),
+            ))
+            .field(DiagnosticField::count(
+                "cached_chunks_loaded",
+                diagnostic
+                    .cached_chunks_loaded
+                    .try_into()
+                    .unwrap_or(u64::MAX),
+            ))
+            .field(DiagnosticField::boolean(
+                "has_projection_batch",
+                diagnostic.has_projection_batch,
+            ))
+            .field(DiagnosticField::boolean(
+                "made_progress",
+                diagnostic.made_progress,
+            )),
+    );
+    let cached_chunks_loaded = match result {
+        Ok(result) => {
+            tracker.record_batch_outcome(&result.outcome);
+            match result.outcome {
+                MatrixTimelineGapRepairOutcome::Deferred {
+                    cached_chunks_loaded,
+                } => cached_chunks_loaded,
+                MatrixTimelineGapRepairOutcome::Progress { .. }
+                | MatrixTimelineGapRepairOutcome::BoundariesJoined { .. }
+                | MatrixTimelineGapRepairOutcome::StartReached { .. }
+                | MatrixTimelineGapRepairOutcome::Stale
+                | MatrixTimelineGapRepairOutcome::Failed => 0,
+            }
+        }
+        Err(_) => {
+            tracker.record_batch_error();
+            0
+        }
+    };
+    record_timeline_gap_repair_budget(
+        tracker.attempt_number,
+        tracker
+            .attempt_demand_revision
+            .unwrap_or(tracker.demand_revision),
+        tracker.consecutive_no_progress_batches,
+        cached_chunks_loaded,
+    );
+}
+
+fn checkpoint_is_strictly_newer(
+    incoming: &MatrixRoomSubscriptionCheckpoint,
+    existing: &MatrixRoomSubscriptionCheckpoint,
+) -> bool {
+    if incoming.same_response_as(existing) {
+        return false;
+    }
+    match (incoming.backend(), existing.backend()) {
+        (
+            MatrixCommittedRoomTimelineBackend::LegacySync,
+            MatrixCommittedRoomTimelineBackend::LegacySync,
+        ) => incoming.generation() > existing.generation(),
+        _ => true,
+    }
+}
+
+fn retain_room_subscription_checkpoint(
+    current: &mut Option<MatrixRoomSubscriptionCheckpoint>,
+    deferred: &mut Option<MatrixRoomSubscriptionCheckpoint>,
+    incoming: MatrixRoomSubscriptionCheckpoint,
+) -> bool {
+    if let Some(existing) = current.as_ref() {
+        if !checkpoint_is_strictly_newer(&incoming, existing) {
+            return false;
+        }
+        if existing.has_inserted_gap() {
+            if deferred
+                .as_ref()
+                .is_none_or(|pending| checkpoint_is_strictly_newer(&incoming, pending))
+            {
+                *deferred = Some(incoming);
+            }
+            return false;
+        }
+    }
+
+    *current = Some(incoming);
+    // Any deferred checkpoint arrived before the new current checkpoint. It
+    // must never be promoted after the newer current checkpoint is consumed.
+    *deferred = None;
+    true
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -5626,15 +6873,26 @@ fn missing_committed_gap_decision(
     }
 }
 
-fn promote_deferred_checkpoint<T>(current: &mut Option<T>, deferred: &mut Option<T>) -> bool {
-    if current.is_some() {
+fn consume_room_subscription_checkpoint(
+    current: &mut Option<MatrixRoomSubscriptionCheckpoint>,
+    deferred: &mut Option<MatrixRoomSubscriptionCheckpoint>,
+    consumed: &MatrixRoomSubscriptionCheckpoint,
+) -> bool {
+    if !current
+        .as_ref()
+        .is_some_and(|checkpoint| checkpoint.same_response_as(consumed))
+    {
         return false;
     }
-    let Some(next) = deferred.take() else {
-        return false;
-    };
-    *current = Some(next);
-    true
+    *current = None;
+    if let Some(next) = deferred
+        .take()
+        .filter(|next| checkpoint_is_strictly_newer(next, consumed))
+    {
+        *current = Some(next);
+        return true;
+    }
+    false
 }
 
 fn gap_repair_continuation_trigger(
@@ -5656,19 +6914,6 @@ fn gap_repair_continuation_trigger(
     }
 }
 
-fn automatic_gap_repair_is_offscreen(
-    trigger: TimelineGapRepairTrigger,
-    outcome: &MatrixTimelineGapRepairOutcome,
-) -> bool {
-    matches!(trigger, TimelineGapRepairTrigger::Automatic)
-        && matches!(
-            outcome,
-            MatrixTimelineGapRepairOutcome::Deferred {
-                cached_chunks_loaded: 0
-            }
-        )
-}
-
 fn projected_gap_insertion_index(
     newer_position: Option<usize>,
     older_position: Option<usize>,
@@ -5676,14 +6921,49 @@ fn projected_gap_insertion_index(
     newer_position.or_else(|| older_position.map(|index| index.saturating_add(1)))
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct GapBoundaryPresenceCounts {
+    both: usize,
+    one: usize,
+    none: usize,
+    projected: usize,
+}
+
+fn summarize_gap_boundary_presence(
+    boundary_presence: impl IntoIterator<Item = (bool, bool)>,
+) -> GapBoundaryPresenceCounts {
+    boundary_presence.into_iter().fold(
+        GapBoundaryPresenceCounts::default(),
+        |mut counts, (newer_present, older_present)| {
+            match (newer_present, older_present) {
+                (true, true) => counts.both += 1,
+                (true, false) | (false, true) => counts.one += 1,
+                (false, false) => counts.none += 1,
+            }
+            if newer_present || older_present {
+                counts.projected += 1;
+            }
+            counts
+        },
+    )
+}
+
+fn projected_gap_id(topology_revision: u64, ordinal: usize) -> TimelineGapId {
+    TimelineGapId {
+        topology_revision,
+        ordinal: ordinal.try_into().unwrap_or(u32::MAX),
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ProjectedGapCandidate {
-    ordinal: usize,
+    id: TimelineGapId,
     relation: ProjectedGapRelation,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProjectedGapRelation {
+    ExplicitVisible,
     IntersectsViewport,
     NearestLiveEdge,
 }
@@ -5691,6 +6971,7 @@ enum ProjectedGapRelation {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GapRepairViewportWakeDecision {
     Wake { candidate: ProjectedGapCandidate },
+    WakeStaleVisibleDemand,
     IdleNoCandidate,
     IdleUnchangedCandidate { candidate: ProjectedGapCandidate },
 }
@@ -5699,8 +6980,17 @@ enum GapRepairViewportWakeDecision {
 struct GapRepairEvaluationDiagnosticSignature {
     decision: &'static str,
     projected_gap_count: usize,
+    visible_gap_count: usize,
+    visible_gap_validated: bool,
     candidate_changed: bool,
     scheduler_phase: &'static str,
+}
+
+fn projected_gaps_contain_id(
+    projected: &[(usize, TimelineGapPosition)],
+    id: TimelineGapId,
+) -> bool {
+    projected.iter().any(|(_, position)| position.id == id)
 }
 
 fn should_record_gap_repair_evaluation(
@@ -5717,22 +7007,33 @@ fn should_record_gap_repair_evaluation(
 fn select_projected_gap_candidate(
     projected: &[(usize, TimelineGapPosition)],
     viewport_range: Option<(usize, usize)>,
+    visible_gap_ids: &[TimelineGapId],
 ) -> Option<ProjectedGapCandidate> {
+    if !visible_gap_ids.is_empty() {
+        return projected
+            .iter()
+            .filter(|(_, position)| visible_gap_ids.contains(&position.id))
+            .map(|(_, position)| ProjectedGapCandidate {
+                id: position.id,
+                relation: ProjectedGapRelation::ExplicitVisible,
+            })
+            .next_back();
+    }
     let in_viewport = viewport_range.and_then(|(first, last)| {
         let start = first.min(last);
         let end = first.max(last).saturating_add(1);
         projected
             .iter()
             .filter(|(_, position)| (start..=end).contains(&position.before_item_index))
-            .map(|(ordinal, _)| ProjectedGapCandidate {
-                ordinal: *ordinal,
+            .map(|(_, position)| ProjectedGapCandidate {
+                id: position.id,
                 relation: ProjectedGapRelation::IntersectsViewport,
             })
             .next_back()
     });
     in_viewport.or_else(|| {
-        projected.last().map(|(ordinal, _)| ProjectedGapCandidate {
-            ordinal: *ordinal,
+        projected.last().map(|(_, position)| ProjectedGapCandidate {
+            id: position.id,
             relation: ProjectedGapRelation::NearestLiveEdge,
         })
     })
@@ -5741,9 +7042,18 @@ fn select_projected_gap_candidate(
 fn evaluate_gap_repair_viewport_wake(
     projected: &[(usize, TimelineGapPosition)],
     viewport_range: Option<(usize, usize)>,
+    visible_gap_ids: &[TimelineGapId],
     previous: Option<ProjectedGapCandidate>,
 ) -> GapRepairViewportWakeDecision {
-    let Some(candidate) = select_projected_gap_candidate(projected, viewport_range) else {
+    if visible_gap_ids
+        .iter()
+        .any(|visible_id| !projected_gaps_contain_id(projected, *visible_id))
+    {
+        return GapRepairViewportWakeDecision::WakeStaleVisibleDemand;
+    }
+    let Some(candidate) =
+        select_projected_gap_candidate(projected, viewport_range, visible_gap_ids)
+    else {
         return GapRepairViewportWakeDecision::IdleNoCandidate;
     };
     if previous == Some(candidate) {
@@ -5753,31 +7063,127 @@ fn evaluate_gap_repair_viewport_wake(
     }
 }
 
-fn select_projected_gap_ordinal(
+#[cfg(test)]
+fn select_projected_gap_id(
     projected: &[(usize, TimelineGapPosition)],
     viewport_range: Option<(usize, usize)>,
-) -> Option<usize> {
-    select_projected_gap_candidate(projected, viewport_range).map(|candidate| candidate.ordinal)
+) -> Option<TimelineGapId> {
+    select_projected_gap_candidate(projected, viewport_range, &[]).map(|candidate| candidate.id)
+}
+
+fn projected_gap_identity_matches_descriptor(
+    id: TimelineGapId,
+    descriptor_ordinal: usize,
+    descriptor_topology_revision: u64,
+) -> bool {
+    usize::try_from(id.ordinal).ok() == Some(descriptor_ordinal)
+        && id.topology_revision == descriptor_topology_revision
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GapRepairSelection {
     None,
-    Projected { ordinal: usize },
+    Projected {
+        id: TimelineGapId,
+    },
     DirectCommittedResponse,
-    LiveEdgeFallback { ordinal: usize },
-    ManualFallback { ordinal: usize },
+    Unprojected {
+        ordinal: usize,
+        reason: UnprojectedGapReason,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UnprojectedGapReason {
+    LiveEdge,
+    Foreground,
+    Manual,
+}
+
+fn gap_selection_diagnostic_decision(
+    selection: GapRepairSelection,
+    projected_candidate: Option<ProjectedGapCandidate>,
+    foreground_demand_active: bool,
+    gap_count: usize,
+    projected_gap_count: usize,
+) -> &'static str {
+    if let GapRepairSelection::Projected { id } = selection {
+        return match projected_candidate.filter(|candidate| candidate.id == id) {
+            Some(ProjectedGapCandidate {
+                relation: ProjectedGapRelation::ExplicitVisible,
+                ..
+            }) => "explicit_visible",
+            Some(ProjectedGapCandidate {
+                relation: ProjectedGapRelation::IntersectsViewport,
+                ..
+            }) => "viewport",
+            Some(ProjectedGapCandidate {
+                relation: ProjectedGapRelation::NearestLiveEdge,
+                ..
+            }) => "nearest_live_edge",
+            None => "blocked",
+        };
+    }
+    if matches!(
+        selection,
+        GapRepairSelection::DirectCommittedResponse | GapRepairSelection::Unprojected { .. }
+    ) {
+        return "nearest_live_edge";
+    }
+    if foreground_demand_active && gap_count > 0 && projected_gap_count == 0 {
+        "foreground_unlocated"
+    } else {
+        "blocked"
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UnlocatedGapAction {
+    None,
+    QueueAutomatic,
+    RepairNewest { ordinal: usize },
+}
+
+fn unlocated_gap_action(
+    foreground_demand_active: bool,
+    trigger: TimelineGapRepairTrigger,
+    gap_count: usize,
+    projected_gap_count: usize,
+) -> UnlocatedGapAction {
+    if !foreground_demand_active || projected_gap_count > 0 {
+        return UnlocatedGapAction::None;
+    }
+    let Some(ordinal) = gap_count.checked_sub(1) else {
+        return UnlocatedGapAction::None;
+    };
+    match trigger {
+        TimelineGapRepairTrigger::Automatic => UnlocatedGapAction::RepairNewest { ordinal },
+        TimelineGapRepairTrigger::LiveTailSnapshot => UnlocatedGapAction::QueueAutomatic,
+        TimelineGapRepairTrigger::LiveEdge | TimelineGapRepairTrigger::Manual => {
+            UnlocatedGapAction::None
+        }
+    }
 }
 
 fn select_gap_repair_candidate(
     trigger: TimelineGapRepairTrigger,
     projected: &[(usize, TimelineGapPosition)],
     viewport_range: Option<(usize, usize)>,
+    visible_gap_ids: &[TimelineGapId],
     gap_count: usize,
     has_live_edge_target: bool,
 ) -> GapRepairSelection {
-    if let Some(ordinal) = select_projected_gap_ordinal(projected, viewport_range) {
-        return GapRepairSelection::Projected { ordinal };
+    if matches!(trigger, TimelineGapRepairTrigger::LiveTailSnapshot) {
+        return GapRepairSelection::None;
+    }
+    if let Some(candidate) =
+        select_projected_gap_candidate(projected, viewport_range, visible_gap_ids)
+    {
+        let id = candidate.id;
+        return GapRepairSelection::Projected { id };
+    }
+    if !visible_gap_ids.is_empty() && matches!(trigger, TimelineGapRepairTrigger::Automatic) {
+        return GapRepairSelection::None;
     }
     let Some(ordinal) = gap_count.checked_sub(1) else {
         return GapRepairSelection::None;
@@ -5785,10 +7191,17 @@ fn select_gap_repair_candidate(
     match trigger {
         TimelineGapRepairTrigger::Automatic => GapRepairSelection::None,
         TimelineGapRepairTrigger::LiveEdge if has_live_edge_target => {
-            GapRepairSelection::LiveEdgeFallback { ordinal }
+            GapRepairSelection::Unprojected {
+                ordinal,
+                reason: UnprojectedGapReason::LiveEdge,
+            }
         }
         TimelineGapRepairTrigger::LiveEdge => GapRepairSelection::None,
-        TimelineGapRepairTrigger::Manual => GapRepairSelection::ManualFallback { ordinal },
+        TimelineGapRepairTrigger::LiveTailSnapshot => GapRepairSelection::None,
+        TimelineGapRepairTrigger::Manual => GapRepairSelection::Unprojected {
+            ordinal,
+            reason: UnprojectedGapReason::Manual,
+        },
     }
 }
 
@@ -5811,6 +7224,34 @@ fn rendered_live_edge_target(items: &[TimelineItem]) -> Option<String> {
     })
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TimelineGapAttemptResetReason {
+    Initial,
+    Topology,
+    Ordinal,
+    Demand,
+}
+
+impl TimelineGapAttemptResetReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Initial => "initial",
+            Self::Topology => "topology",
+            Self::Ordinal => "ordinal",
+            Self::Demand => "demand",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TimelineGapAttemptAdmission {
+    attempt_number: u64,
+    reason: TimelineGapAttemptResetReason,
+    topology_changed: bool,
+    ordinal_changed: bool,
+    demand_changed: bool,
+}
+
 #[derive(Default)]
 struct TimelineGapRepairTracker {
     next_serial: u64,
@@ -5818,7 +7259,12 @@ struct TimelineGapRepairTracker {
     pending_trigger: Option<TimelineGapRepairTrigger>,
     awaiting_projection: Option<TimelineGapRenderFence>,
     gap_count: u32,
+    attempt_gap_id: Option<TimelineGapId>,
+    attempt_demand_revision: Option<u64>,
+    attempt_number: u64,
+    demand_revision: u64,
     batches_processed: u32,
+    consecutive_no_progress_batches: u32,
     projected_gaps: Vec<(usize, TimelineGapPosition)>,
     last_projected_candidate: Option<ProjectedGapCandidate>,
     live_edge_target: Option<String>,
@@ -5849,9 +7295,10 @@ impl TimelineGapRepairTracker {
         &mut self,
         projected_gaps: Vec<(usize, TimelineGapPosition)>,
         viewport_range: Option<(usize, usize)>,
+        visible_gap_ids: &[TimelineGapId],
     ) {
         self.last_projected_candidate =
-            select_projected_gap_candidate(&projected_gaps, viewport_range);
+            select_projected_gap_candidate(&projected_gaps, viewport_range, visible_gap_ids);
         self.projected_gaps = projected_gaps;
     }
 
@@ -5889,20 +7336,45 @@ impl TimelineGapRepairTracker {
     fn evaluate_viewport_wake(
         &mut self,
         viewport_range: Option<(usize, usize)>,
+        visible_gap_ids: &[TimelineGapId],
     ) -> GapRepairViewportWakeDecision {
         let decision = evaluate_gap_repair_viewport_wake(
             &self.projected_gaps,
             viewport_range,
+            visible_gap_ids,
             self.last_projected_candidate,
         );
+        if matches!(
+            decision,
+            GapRepairViewportWakeDecision::Wake {
+                candidate: ProjectedGapCandidate {
+                    relation: ProjectedGapRelation::ExplicitVisible,
+                    ..
+                }
+            }
+        ) {
+            self.advance_demand_revision();
+        }
         self.last_projected_candidate = match decision {
             GapRepairViewportWakeDecision::Wake { candidate }
             | GapRepairViewportWakeDecision::IdleUnchangedCandidate { candidate } => {
                 Some(candidate)
             }
-            GapRepairViewportWakeDecision::IdleNoCandidate => None,
+            GapRepairViewportWakeDecision::WakeStaleVisibleDemand
+            | GapRepairViewportWakeDecision::IdleNoCandidate => None,
         };
         decision
+    }
+
+    fn begin_explicit_demand(&mut self) -> u64 {
+        let revision = self.advance_demand_revision();
+        self.last_projected_candidate = None;
+        revision
+    }
+
+    fn advance_demand_revision(&mut self) -> u64 {
+        self.demand_revision = self.demand_revision.wrapping_add(1);
+        self.demand_revision
     }
 
     fn begin_pending_inspection(
@@ -5962,7 +7434,7 @@ impl TimelineGapRepairTracker {
         if self.active_serial.is_some() {
             return None;
         }
-        self.next_serial = self.next_serial.wrapping_add(1);
+        self.next_serial = next_causal_projection_serial(self.next_serial)?;
         self.active_serial = Some(self.next_serial);
         Some(self.next_serial)
     }
@@ -5975,19 +7447,75 @@ impl TimelineGapRepairTracker {
         true
     }
 
+    fn admit_gap_attempt(
+        &mut self,
+        id: TimelineGapId,
+        demand_revision: u64,
+    ) -> Option<TimelineGapAttemptAdmission> {
+        if self.attempt_gap_id == Some(id) && self.attempt_demand_revision == Some(demand_revision)
+        {
+            return None;
+        }
+        let topology_changed = self
+            .attempt_gap_id
+            .is_some_and(|previous| previous.topology_revision != id.topology_revision);
+        let ordinal_changed = self
+            .attempt_gap_id
+            .is_some_and(|previous| previous.ordinal != id.ordinal);
+        let demand_changed = self
+            .attempt_demand_revision
+            .is_some_and(|previous| previous != demand_revision);
+        let reason = if self.attempt_gap_id.is_none() {
+            TimelineGapAttemptResetReason::Initial
+        } else if topology_changed {
+            TimelineGapAttemptResetReason::Topology
+        } else if ordinal_changed {
+            TimelineGapAttemptResetReason::Ordinal
+        } else {
+            TimelineGapAttemptResetReason::Demand
+        };
+        self.attempt_number = self.attempt_number.saturating_add(1);
+        self.attempt_gap_id = Some(id);
+        self.attempt_demand_revision = Some(demand_revision);
+        self.batches_processed = 0;
+        self.consecutive_no_progress_batches = 0;
+        self.live_edge_batches_processed = 0;
+        self.last_live_edge_selection = None;
+        Some(TimelineGapAttemptAdmission {
+            attempt_number: self.attempt_number,
+            reason,
+            topology_changed,
+            ordinal_changed,
+            demand_changed,
+        })
+    }
+
     fn record_batch(&mut self, trigger: TimelineGapRepairTrigger) -> Option<u32> {
         if !self.can_start_batch(trigger) {
             return None;
         }
-        self.batches_processed += 1;
+        self.batches_processed = self.batches_processed.saturating_add(1);
         if matches!(trigger, TimelineGapRepairTrigger::LiveEdge) {
-            self.live_edge_batches_processed += 1;
+            self.live_edge_batches_processed = self.live_edge_batches_processed.saturating_add(1);
         }
         Some(self.batches_processed)
     }
 
+    fn record_batch_error(&mut self) {
+        self.consecutive_no_progress_batches =
+            self.consecutive_no_progress_batches.saturating_add(1);
+    }
+
+    fn record_batch_outcome(&mut self, outcome: &MatrixTimelineGapRepairOutcome) {
+        if timeline_gap_repair_made_progress(outcome) {
+            self.consecutive_no_progress_batches = 0;
+        } else {
+            self.record_batch_error();
+        }
+    }
+
     fn can_start_batch(&self, trigger: TimelineGapRepairTrigger) -> bool {
-        self.batches_processed < MAX_TIMELINE_GAP_REPAIR_BATCHES
+        self.consecutive_no_progress_batches < MAX_TIMELINE_GAP_REPAIR_BATCHES
             && (!matches!(trigger, TimelineGapRepairTrigger::LiveEdge)
                 || self.live_edge_batches_processed < MAX_LIVE_EDGE_GAP_REPAIR_BATCHES)
     }
@@ -6003,25 +7531,35 @@ mod timeline_gap_repair_tracker_tests {
     };
 
     #[test]
-    fn unsettled_gap_checkpoint_survives_later_no_gap_responses() {
-        assert!(should_replace_unsettled_live_gap_checkpoint(None, false));
-        assert!(should_replace_unsettled_live_gap_checkpoint(None, true));
-        assert!(!should_replace_unsettled_live_gap_checkpoint(
-            Some(false),
-            false
+    fn newer_room_absent_checkpoint_replaces_current_and_discards_older_deferred() {
+        let room_id = matrix_sdk::ruma::room_id!("!checkpoint-order:example.org");
+        let checkpoint = |generation| {
+            MatrixRoomSubscriptionCheckpoint::from_legacy_room_absent_for_testing(
+                generation, room_id,
+            )
+        };
+        let mut current = None;
+        let mut deferred = None;
+
+        assert!(retain_room_subscription_checkpoint(
+            &mut current,
+            &mut deferred,
+            checkpoint(10),
         ));
-        assert!(should_replace_unsettled_live_gap_checkpoint(
-            Some(false),
-            true
+        deferred = Some(checkpoint(9));
+        assert!(retain_room_subscription_checkpoint(
+            &mut current,
+            &mut deferred,
+            checkpoint(12),
         ));
-        assert!(!should_replace_unsettled_live_gap_checkpoint(
-            Some(true),
-            false
+        assert_eq!(current.as_ref().map(|value| value.generation()), Some(12));
+        assert!(deferred.is_none());
+        assert!(!retain_room_subscription_checkpoint(
+            &mut current,
+            &mut deferred,
+            checkpoint(11),
         ));
-        assert!(!should_replace_unsettled_live_gap_checkpoint(
-            Some(true),
-            true
-        ));
+        assert_eq!(current.as_ref().map(|value| value.generation()), Some(12));
     }
 
     #[test]
@@ -6042,14 +7580,39 @@ mod timeline_gap_repair_tracker_tests {
     }
 
     #[test]
-    fn stale_close_promotes_the_latest_deferred_checkpoint_without_another_response() {
-        let mut current = Some(1_u64);
-        let mut deferred = Some(2_u64);
+    fn checkpoint_consumption_is_one_shot_and_promotes_only_newer_provenance() {
+        let room_id = matrix_sdk::ruma::room_id!("!checkpoint-consume:example.org");
+        let checkpoint = |generation| {
+            MatrixRoomSubscriptionCheckpoint::from_legacy_room_absent_for_testing(
+                generation, room_id,
+            )
+        };
+        let mut current = Some(checkpoint(12));
+        let mut deferred = Some(checkpoint(13));
 
-        current.take();
-        assert!(promote_deferred_checkpoint(&mut current, &mut deferred));
-        assert_eq!(current, Some(2));
-        assert_eq!(deferred, None);
+        assert!(!consume_room_subscription_checkpoint(
+            &mut current,
+            &mut deferred,
+            &checkpoint(11),
+        ));
+        assert_eq!(current.as_ref().map(|value| value.generation()), Some(12));
+        assert!(consume_room_subscription_checkpoint(
+            &mut current,
+            &mut deferred,
+            &checkpoint(12),
+        ));
+        assert_eq!(current.as_ref().map(|value| value.generation()), Some(13));
+        assert!(!consume_room_subscription_checkpoint(
+            &mut current,
+            &mut deferred,
+            &checkpoint(13),
+        ));
+        assert!(current.is_none());
+        assert!(!consume_room_subscription_checkpoint(
+            &mut current,
+            &mut deferred,
+            &checkpoint(13),
+        ));
     }
     use matrix_sdk_base::event_cache::Gap;
     use matrix_sdk_test::{ALICE, event_factory::EventFactory};
@@ -6111,6 +7674,17 @@ mod timeline_gap_repair_tracker_tests {
         );
     }
 
+    fn projected_gap_position(
+        topology_revision: u64,
+        ordinal: usize,
+        before_item_index: usize,
+    ) -> TimelineGapPosition {
+        TimelineGapPosition {
+            id: projected_gap_id(topology_revision, ordinal),
+            before_item_index,
+        }
+    }
+
     #[test]
     fn unlocated_gap_has_no_projection_position() {
         assert_eq!(projected_gap_insertion_index(None, None), None);
@@ -6119,64 +7693,289 @@ mod timeline_gap_repair_tracker_tests {
     }
 
     #[test]
-    fn automatic_repair_prefers_a_gap_intersecting_the_viewport() {
-        let projected = vec![
-            (
-                0,
-                TimelineGapPosition {
-                    ordinal: 0,
-                    before_item_index: 3,
-                },
-            ),
-            (
-                1,
-                TimelineGapPosition {
-                    ordinal: 1,
-                    before_item_index: 18,
-                },
-            ),
-            (
-                2,
-                TimelineGapPosition {
-                    ordinal: 2,
-                    before_item_index: 40,
-                },
-            ),
-        ];
+    fn projected_gap_identity_is_stable_only_within_the_same_topology_revision() {
+        let select = |topology_revision| {
+            let projected = [(1, projected_gap_position(topology_revision, 1, 18))];
+            select_projected_gap_candidate(&projected, Some((15, 20)), &[])
+                .expect("the projected gap intersects the viewport")
+        };
+
+        let first = select(7);
+        let repeated = select(7);
+        let revised = select(8);
+
+        assert_eq!(first.id, repeated.id);
+        assert_ne!(first.id, revised.id);
+    }
+
+    #[test]
+    fn timeline_gap_id_wire_preserves_full_range_projected_identity() {
+        let id = projected_gap_id(14_695_981_039_346_656_037, 1);
+
+        let encoded = serde_json::to_string(&id).expect("projected gap id serializes");
         assert_eq!(
-            select_projected_gap_ordinal(&projected, Some((15, 20))),
-            Some(1)
+            encoded,
+            r#"{"topology_revision":"14695981039346656037","ordinal":1}"#
         );
         assert_eq!(
-            select_projected_gap_ordinal(&projected, Some((25, 30))),
-            Some(2)
+            serde_json::from_str::<TimelineGapId>(&encoded).expect("projected gap id deserializes"),
+            id
+        );
+    }
+
+    #[test]
+    fn projected_gap_identity_validates_revision_and_ordinal_before_descriptor_lookup() {
+        let selected = projected_gap_id(7, 1);
+
+        assert!(projected_gap_identity_matches_descriptor(selected, 1, 7));
+        assert!(!projected_gap_identity_matches_descriptor(selected, 1, 8));
+        assert!(!projected_gap_identity_matches_descriptor(selected, 0, 7));
+    }
+
+    #[test]
+    fn gap_projection_counts_unlocated_sdk_descriptors() {
+        let counts = summarize_gap_boundary_presence([
+            (false, false),
+            (false, false),
+            (false, false),
+            (false, false),
+        ]);
+
+        assert_eq!(
+            counts,
+            GapBoundaryPresenceCounts {
+                both: 0,
+                one: 0,
+                none: 4,
+                projected: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn foreground_unlocated_selection_is_distinguished_from_blocked_selection() {
+        assert_eq!(
+            gap_selection_diagnostic_decision(GapRepairSelection::None, None, true, 4, 0,),
+            "foreground_unlocated"
+        );
+        assert_eq!(
+            gap_selection_diagnostic_decision(GapRepairSelection::None, None, false, 4, 0,),
+            "blocked"
+        );
+    }
+
+    #[test]
+    fn foreground_unlocated_gap_has_one_action_policy() {
+        assert_eq!(
+            unlocated_gap_action(true, TimelineGapRepairTrigger::Automatic, 2, 0),
+            UnlocatedGapAction::RepairNewest { ordinal: 1 }
+        );
+        assert_eq!(
+            unlocated_gap_action(true, TimelineGapRepairTrigger::LiveTailSnapshot, 4, 0),
+            UnlocatedGapAction::QueueAutomatic
+        );
+        for action in [
+            unlocated_gap_action(false, TimelineGapRepairTrigger::Automatic, 2, 0),
+            unlocated_gap_action(false, TimelineGapRepairTrigger::LiveTailSnapshot, 4, 0),
+            unlocated_gap_action(true, TimelineGapRepairTrigger::LiveTailSnapshot, 0, 0),
+            unlocated_gap_action(true, TimelineGapRepairTrigger::Automatic, 4, 1),
+            unlocated_gap_action(true, TimelineGapRepairTrigger::LiveTailSnapshot, 4, 1),
+        ] {
+            assert_eq!(action, UnlocatedGapAction::None);
+        }
+    }
+
+    #[test]
+    fn projected_selection_diagnostic_preserves_candidate_relation() {
+        let id = projected_gap_id(7, 1);
+        for (relation, expected) in [
+            (ProjectedGapRelation::ExplicitVisible, "explicit_visible"),
+            (ProjectedGapRelation::IntersectsViewport, "viewport"),
+            (ProjectedGapRelation::NearestLiveEdge, "nearest_live_edge"),
+        ] {
+            assert_eq!(
+                gap_selection_diagnostic_decision(
+                    GapRepairSelection::Projected { id },
+                    Some(ProjectedGapCandidate { id, relation }),
+                    true,
+                    1,
+                    1,
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn unlocated_gap_diagnostics_are_private_safe() {
+        record_timeline_gap_projection(
+            4,
+            GapBoundaryPresenceCounts {
+                both: 0,
+                one: 0,
+                none: 4,
+                projected: 0,
+            },
+            19,
+            true,
+            3,
+            "idle",
+        );
+        record_timeline_gap_demand(3, 0, 0, false, "room_selected", "idle");
+        record_timeline_gap_selection(TimelineGapSelectionDiagnostic {
+            trigger: "cache_gap",
+            decision: "foreground_unlocated",
+            repair_started: false,
+            gap_count: 4,
+            projected_gap_count: 0,
+            visible_gap_count: 0,
+            foreground_demand_active: true,
+            foreground_demand_epoch: 3,
+            has_live_edge_target: false,
+            scheduler_phase: "idle",
+        });
+
+        let snapshot = koushi_diagnostics::snapshot();
+        for source in [
+            "core.timeline_gap_projection",
+            "core.timeline_gap_demand",
+            "core.timeline_gap_selection",
+        ] {
+            let event = &snapshot
+                .records
+                .iter()
+                .rev()
+                .find(|record| record.event.source == source)
+                .expect("new gap diagnostic")
+                .event;
+            let debug = format!("{event:?}");
+            for forbidden in [
+                "room_id",
+                "event_id",
+                "user_id",
+                "gap_id",
+                "transaction_id",
+                "message",
+                "ordinal",
+            ] {
+                assert!(!debug.contains(forbidden), "{source} leaked {forbidden}");
+            }
+        }
+    }
+
+    #[test]
+    fn automatic_repair_prefers_a_gap_intersecting_the_viewport() {
+        let projected = vec![
+            (0, projected_gap_position(7, 0, 3)),
+            (1, projected_gap_position(7, 1, 18)),
+            (2, projected_gap_position(7, 2, 40)),
+        ];
+        assert_eq!(
+            select_projected_gap_id(&projected, Some((15, 20))),
+            Some(projected_gap_id(7, 1))
+        );
+        assert_eq!(
+            select_projected_gap_id(&projected, Some((25, 30))),
+            Some(projected_gap_id(7, 2))
+        );
+    }
+
+    #[test]
+    fn visible_gap_demand_is_preferred_over_inferred_event_bounds() {
+        let projected = vec![
+            (0, projected_gap_position(7, 0, 3)),
+            (1, projected_gap_position(7, 1, 18)),
+        ];
+        let visible_gap_id = projected_gap_id(7, 0);
+
+        assert_eq!(
+            select_gap_repair_candidate(
+                TimelineGapRepairTrigger::Automatic,
+                &projected,
+                Some((15, 20)),
+                &[visible_gap_id],
+                2,
+                false,
+            ),
+            GapRepairSelection::Projected { id: visible_gap_id }
+        );
+    }
+
+    #[test]
+    fn visible_gap_without_event_bounds_wakes_foreground_repair() {
+        let projected = vec![(0, projected_gap_position(7, 0, 3))];
+        let visible_gap_id = projected_gap_id(7, 0);
+
+        assert_eq!(
+            evaluate_gap_repair_viewport_wake(&projected, None, &[visible_gap_id], None,),
+            GapRepairViewportWakeDecision::Wake {
+                candidate: ProjectedGapCandidate {
+                    id: visible_gap_id,
+                    relation: ProjectedGapRelation::ExplicitVisible,
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn stale_visible_gap_is_ignored_and_requests_fresh_inspection() {
+        let projected = vec![(0, projected_gap_position(7, 0, 3))];
+        let stale_visible_gap_id = projected_gap_id(8, 0);
+
+        assert_eq!(
+            evaluate_gap_repair_viewport_wake(
+                &projected,
+                Some((1, 5)),
+                &[stale_visible_gap_id],
+                None,
+            ),
+            GapRepairViewportWakeDecision::WakeStaleVisibleDemand
+        );
+        assert_eq!(
+            select_gap_repair_candidate(
+                TimelineGapRepairTrigger::Automatic,
+                &projected,
+                Some((1, 5)),
+                &[stale_visible_gap_id],
+                1,
+                false,
+            ),
+            GapRepairSelection::None
+        );
+    }
+
+    #[test]
+    fn stale_visible_gap_does_not_suppress_independent_live_edge_fallback() {
+        let projected = vec![(0, projected_gap_position(7, 0, 3))];
+
+        assert_eq!(
+            select_gap_repair_candidate(
+                TimelineGapRepairTrigger::LiveEdge,
+                &projected,
+                Some((1, 5)),
+                &[projected_gap_id(8, 0)],
+                2,
+                true,
+            ),
+            GapRepairSelection::Unprojected {
+                ordinal: 1,
+                reason: UnprojectedGapReason::LiveEdge,
+            }
         );
     }
 
     #[test]
     fn viewport_wake_requests_inspection_when_projected_candidate_changes() {
         let projected = vec![
-            (
-                0,
-                TimelineGapPosition {
-                    ordinal: 0,
-                    before_item_index: 3,
-                },
-            ),
-            (
-                1,
-                TimelineGapPosition {
-                    ordinal: 1,
-                    before_item_index: 18,
-                },
-            ),
+            (0, projected_gap_position(7, 0, 3)),
+            (1, projected_gap_position(7, 1, 18)),
         ];
 
         assert_eq!(
-            evaluate_gap_repair_viewport_wake(&projected, Some((15, 20)), None),
+            evaluate_gap_repair_viewport_wake(&projected, Some((15, 20)), &[], None),
             GapRepairViewportWakeDecision::Wake {
                 candidate: ProjectedGapCandidate {
-                    ordinal: 1,
+                    id: projected_gap_id(7, 1),
                     relation: ProjectedGapRelation::IntersectsViewport,
                 },
             }
@@ -6185,20 +7984,14 @@ mod timeline_gap_repair_tracker_tests {
 
     #[test]
     fn viewport_wake_ignores_repeated_observation_for_same_candidate() {
-        let projected = vec![(
-            0,
-            TimelineGapPosition {
-                ordinal: 0,
-                before_item_index: 8,
-            },
-        )];
+        let projected = vec![(0, projected_gap_position(7, 0, 8))];
         let previous = ProjectedGapCandidate {
-            ordinal: 0,
+            id: projected_gap_id(7, 0),
             relation: ProjectedGapRelation::IntersectsViewport,
         };
 
         assert_eq!(
-            evaluate_gap_repair_viewport_wake(&projected, Some((5, 10)), Some(previous)),
+            evaluate_gap_repair_viewport_wake(&projected, Some((5, 10)), &[], Some(previous)),
             GapRepairViewportWakeDecision::IdleUnchangedCandidate {
                 candidate: previous,
             }
@@ -6208,31 +8001,19 @@ mod timeline_gap_repair_tracker_tests {
     #[test]
     fn viewport_wake_requests_again_when_viewport_selects_another_gap() {
         let projected = vec![
-            (
-                0,
-                TimelineGapPosition {
-                    ordinal: 0,
-                    before_item_index: 3,
-                },
-            ),
-            (
-                1,
-                TimelineGapPosition {
-                    ordinal: 1,
-                    before_item_index: 18,
-                },
-            ),
+            (0, projected_gap_position(7, 0, 3)),
+            (1, projected_gap_position(7, 1, 18)),
         ];
         let previous = ProjectedGapCandidate {
-            ordinal: 1,
+            id: projected_gap_id(7, 1),
             relation: ProjectedGapRelation::IntersectsViewport,
         };
 
         assert_eq!(
-            evaluate_gap_repair_viewport_wake(&projected, Some((1, 5)), Some(previous)),
+            evaluate_gap_repair_viewport_wake(&projected, Some((1, 5)), &[], Some(previous)),
             GapRepairViewportWakeDecision::Wake {
                 candidate: ProjectedGapCandidate {
-                    ordinal: 0,
+                    id: projected_gap_id(7, 0),
                     relation: ProjectedGapRelation::IntersectsViewport,
                 },
             }
@@ -6241,13 +8022,7 @@ mod timeline_gap_repair_tracker_tests {
 
     #[test]
     fn viewport_wake_preserves_pending_trigger_while_render_ack_is_outstanding() {
-        let projected = vec![(
-            0,
-            TimelineGapPosition {
-                ordinal: 0,
-                before_item_index: 8,
-            },
-        )];
+        let projected = vec![(0, projected_gap_position(7, 0, 8))];
         let mut tracker = TimelineGapRepairTracker::default();
         tracker.await_projection(TimelineGapRenderFence {
             actor_generation: 9,
@@ -6256,7 +8031,7 @@ mod timeline_gap_repair_tracker_tests {
             minimum_batch_id: TimelineBatchId(5),
         });
 
-        let decision = evaluate_gap_repair_viewport_wake(&projected, Some((5, 10)), None);
+        let decision = evaluate_gap_repair_viewport_wake(&projected, Some((5, 10)), &[], None);
         assert!(matches!(
             decision,
             GapRepairViewportWakeDecision::Wake { .. }
@@ -6270,33 +8045,21 @@ mod timeline_gap_repair_tracker_tests {
     #[test]
     fn observe_viewport_wakes_only_after_projected_candidate_changes() {
         let projected = vec![
-            (
-                0,
-                TimelineGapPosition {
-                    ordinal: 0,
-                    before_item_index: 3,
-                },
-            ),
-            (
-                1,
-                TimelineGapPosition {
-                    ordinal: 1,
-                    before_item_index: 18,
-                },
-            ),
+            (0, projected_gap_position(7, 0, 3)),
+            (1, projected_gap_position(7, 1, 18)),
         ];
         let mut tracker = TimelineGapRepairTracker::default();
-        tracker.replace_projected_gaps(projected, Some((15, 20)));
+        tracker.replace_projected_gaps(projected, Some((15, 20)), &[]);
 
         assert!(matches!(
-            tracker.evaluate_viewport_wake(Some((15, 20))),
+            tracker.evaluate_viewport_wake(Some((15, 20)), &[]),
             GapRepairViewportWakeDecision::IdleUnchangedCandidate { .. }
         ));
         assert_eq!(
-            tracker.evaluate_viewport_wake(Some((1, 5))),
+            tracker.evaluate_viewport_wake(Some((1, 5)), &[]),
             GapRepairViewportWakeDecision::Wake {
                 candidate: ProjectedGapCandidate {
-                    ordinal: 0,
+                    id: projected_gap_id(7, 0),
                     relation: ProjectedGapRelation::IntersectsViewport,
                 }
             }
@@ -6305,7 +8068,7 @@ mod timeline_gap_repair_tracker_tests {
 
     #[test]
     fn viewport_wake_evaluation_diagnostics_are_private_safe() {
-        record_timeline_gap_repair_evaluation("wake", 2, true, "awaiting_render_ack");
+        record_timeline_gap_repair_evaluation("wake", 2, 1, true, true, "awaiting_render_ack");
 
         let record = koushi_diagnostics::snapshot()
             .records
@@ -6328,6 +8091,8 @@ mod timeline_gap_repair_tracker_tests {
                 "trigger",
                 "decision",
                 "projected_gap_count",
+                "visible_gap_count",
+                "visible_gap_validated",
                 "candidate_changed",
                 "scheduler_phase",
             ]
@@ -6341,26 +8106,14 @@ mod timeline_gap_repair_tracker_tests {
     #[test]
     fn gap_repair_wake_is_retained_across_ack_and_inspection_order() {
         let projected = vec![
-            (
-                0,
-                TimelineGapPosition {
-                    ordinal: 0,
-                    before_item_index: 3,
-                },
-            ),
-            (
-                1,
-                TimelineGapPosition {
-                    ordinal: 1,
-                    before_item_index: 18,
-                },
-            ),
+            (0, projected_gap_position(7, 0, 3)),
+            (1, projected_gap_position(7, 1, 18)),
         ];
         let mut tracker = TimelineGapRepairTracker::default();
-        tracker.replace_projected_gaps(projected, Some((15, 20)));
+        tracker.replace_projected_gaps(projected, Some((15, 20)), &[]);
 
         assert!(matches!(
-            tracker.evaluate_viewport_wake(Some((1, 5))),
+            tracker.evaluate_viewport_wake(Some((1, 5)), &[]),
             GapRepairViewportWakeDecision::Wake { .. }
         ));
         tracker.queue_inspection(TimelineGapRepairTrigger::Automatic);
@@ -6370,7 +8123,7 @@ mod timeline_gap_repair_tracker_tests {
             .expect("projection ACK releases the queued viewport wake");
 
         assert!(matches!(
-            tracker.evaluate_viewport_wake(Some((15, 20))),
+            tracker.evaluate_viewport_wake(Some((15, 20)), &[]),
             GapRepairViewportWakeDecision::Wake { .. }
         ));
         tracker.queue_inspection(TimelineGapRepairTrigger::Automatic);
@@ -6389,7 +8142,7 @@ mod timeline_gap_repair_tracker_tests {
         };
         tracker.await_projection(fence);
         assert!(matches!(
-            tracker.evaluate_viewport_wake(Some((1, 5))),
+            tracker.evaluate_viewport_wake(Some((1, 5)), &[]),
             GapRepairViewportWakeDecision::Wake { .. }
         ));
         tracker.queue_inspection(TimelineGapRepairTrigger::Automatic);
@@ -6398,12 +8151,12 @@ mod timeline_gap_repair_tracker_tests {
         assert!(tracker.begin_pending_inspection(true).is_some());
 
         assert!(matches!(
-            tracker.evaluate_viewport_wake(Some((1, 5))),
+            tracker.evaluate_viewport_wake(Some((1, 5)), &[]),
             GapRepairViewportWakeDecision::IdleUnchangedCandidate { .. }
         ));
         assert_eq!(
             timeline_gap_repair_budget(TimelineGapRepairTrigger::Automatic).cached_chunk_limit,
-            0
+            1
         );
     }
 
@@ -6429,8 +8182,8 @@ mod timeline_gap_repair_tracker_tests {
             handler
                 .matches("emit_gap_repair_failure_and_resume")
                 .count()
-                >= 4,
-            "SDK failure, failed outcome, offscreen deferral, and batch exhaustion must all release queued work"
+                >= 3,
+            "SDK failure, failed outcome, and batch exhaustion must all release queued work"
         );
         assert!(
             helper.contains("start_pending_timeline_gap_inspection().await"),
@@ -6474,29 +8227,17 @@ mod timeline_gap_repair_tracker_tests {
     #[test]
     fn candidate_wake_queued_during_repair_is_available_after_terminal_release() {
         let projected = vec![
-            (
-                0,
-                TimelineGapPosition {
-                    ordinal: 0,
-                    before_item_index: 3,
-                },
-            ),
-            (
-                1,
-                TimelineGapPosition {
-                    ordinal: 1,
-                    before_item_index: 18,
-                },
-            ),
+            (0, projected_gap_position(7, 0, 3)),
+            (1, projected_gap_position(7, 1, 18)),
         ];
         let mut tracker = TimelineGapRepairTracker::default();
-        tracker.replace_projected_gaps(projected, Some((1, 5)));
+        tracker.replace_projected_gaps(projected, Some((1, 5)), &[]);
         let repair_serial = tracker
             .begin_repair(2)
             .expect("the initial repair should own the scheduler");
 
         assert!(matches!(
-            tracker.evaluate_viewport_wake(Some((15, 20))),
+            tracker.evaluate_viewport_wake(Some((15, 20)), &[]),
             GapRepairViewportWakeDecision::Wake { .. }
         ));
         tracker.queue_inspection(TimelineGapRepairTrigger::Automatic);
@@ -6511,6 +8252,8 @@ mod timeline_gap_repair_tracker_tests {
         let signature = GapRepairEvaluationDiagnosticSignature {
             decision: "idle_unchanged",
             projected_gap_count: 2,
+            visible_gap_count: 1,
+            visible_gap_validated: true,
             candidate_changed: false,
             scheduler_phase: "idle",
         };
@@ -6539,7 +8282,7 @@ mod timeline_gap_repair_tracker_tests {
             timeline_gap_repair_budget(TimelineGapRepairTrigger::Automatic),
             MatrixTimelineGapRepairBudget {
                 event_limit: 64,
-                cached_chunk_limit: 0,
+                cached_chunk_limit: 1,
             }
         );
         assert_eq!(
@@ -6575,21 +8318,108 @@ mod timeline_gap_repair_tracker_tests {
             tracker.begin_pending_inspection(true),
             Some((_, TimelineGapRepairTrigger::Manual))
         ));
+
+        let mut tracker = TimelineGapRepairTracker::default();
+        tracker.queue_inspection(TimelineGapRepairTrigger::LiveEdge);
+        tracker.queue_inspection(TimelineGapRepairTrigger::LiveTailSnapshot);
+        assert!(matches!(
+            tracker.begin_pending_inspection(true),
+            Some((_, TimelineGapRepairTrigger::LiveTailSnapshot))
+        ));
+
+        let mut tracker = TimelineGapRepairTracker::default();
+        tracker.queue_inspection(TimelineGapRepairTrigger::LiveTailSnapshot);
+        tracker.queue_inspection(TimelineGapRepairTrigger::Manual);
+        assert!(matches!(
+            tracker.begin_pending_inspection(true),
+            Some((_, TimelineGapRepairTrigger::Manual))
+        ));
+    }
+
+    #[test]
+    fn live_tail_snapshot_observes_projected_gaps_without_repairing_them() {
+        let projected = vec![(0, projected_gap_position(7, 0, 0))];
+        assert_eq!(
+            select_gap_repair_candidate(
+                TimelineGapRepairTrigger::LiveTailSnapshot,
+                &projected,
+                Some((0, 0)),
+                &[],
+                1,
+                true,
+            ),
+            GapRepairSelection::None,
+        );
+    }
+
+    #[test]
+    fn final_live_tail_projection_batch_queues_one_snapshot_instead_of_live_edge() {
+        assert_eq!(
+            post_diff_gap_inspection_trigger(true, true, true),
+            Some(TimelineGapRepairTrigger::LiveTailSnapshot),
+            "the exact final live-tail batch must publish one observation instead of leaving a repair-capable LiveEdge request behind"
+        );
+        assert_eq!(
+            post_diff_gap_inspection_trigger(true, false, true),
+            None,
+            "an intermediate live-tail batch must not queue automatic or live-edge repair",
+        );
+        assert_eq!(
+            post_diff_gap_inspection_trigger(
+                true,
+                live_tail_completion_requires_snapshot(MatrixLiveTailRefreshOutcome::Failed),
+                true,
+            ),
+            None,
+            "a failed live-tail completion must not create an observation snapshot",
+        );
+        assert_eq!(
+            post_diff_gap_inspection_trigger(false, false, true),
+            Some(TimelineGapRepairTrigger::LiveEdge),
+        );
+        assert_eq!(
+            post_diff_gap_inspection_trigger(false, false, false),
+            Some(TimelineGapRepairTrigger::Automatic),
+        );
     }
 
     #[test]
     fn live_edge_fallback_selects_only_the_newest_unprojected_gap() {
         assert_eq!(
-            select_gap_repair_candidate(TimelineGapRepairTrigger::Automatic, &[], None, 4, true,),
+            select_gap_repair_candidate(
+                TimelineGapRepairTrigger::Automatic,
+                &[],
+                None,
+                &[],
+                4,
+                true,
+            ),
             GapRepairSelection::None,
         );
         assert_eq!(
-            select_gap_repair_candidate(TimelineGapRepairTrigger::LiveEdge, &[], None, 4, false,),
+            select_gap_repair_candidate(
+                TimelineGapRepairTrigger::LiveEdge,
+                &[],
+                None,
+                &[],
+                4,
+                false,
+            ),
             GapRepairSelection::None,
         );
         assert_eq!(
-            select_gap_repair_candidate(TimelineGapRepairTrigger::LiveEdge, &[], None, 4, true,),
-            GapRepairSelection::LiveEdgeFallback { ordinal: 3 },
+            select_gap_repair_candidate(
+                TimelineGapRepairTrigger::LiveEdge,
+                &[],
+                None,
+                &[],
+                4,
+                true,
+            ),
+            GapRepairSelection::Unprojected {
+                ordinal: 3,
+                reason: UnprojectedGapReason::LiveEdge,
+            },
         );
     }
 
@@ -6644,7 +8474,7 @@ mod timeline_gap_repair_tracker_tests {
             },
             MatrixTimelineGapRepairOutcome::Progress { events: 0 },
         ] {
-            assert!(!live_edge_repair_made_progress(&outcome));
+            assert!(!timeline_gap_repair_made_progress(&outcome));
         }
         for outcome in [
             MatrixTimelineGapRepairOutcome::Deferred {
@@ -6654,7 +8484,75 @@ mod timeline_gap_repair_tracker_tests {
             MatrixTimelineGapRepairOutcome::BoundariesJoined { events: 0 },
             MatrixTimelineGapRepairOutcome::StartReached { events: 0 },
         ] {
-            assert!(live_edge_repair_made_progress(&outcome));
+            assert!(timeline_gap_repair_made_progress(&outcome));
+        }
+    }
+
+    #[test]
+    fn gap_repair_result_diagnostics_preserve_sdk_outcome_and_progress_counts() {
+        let cases = [
+            (
+                Ok(MatrixTimelineGapRepairResult {
+                    outcome: MatrixTimelineGapRepairOutcome::Deferred {
+                        cached_chunks_loaded: 3,
+                    },
+                    last_projection_batch: Some(2),
+                }),
+                ("deferred", 0, 3, true, true),
+            ),
+            (
+                Ok(MatrixTimelineGapRepairResult {
+                    outcome: MatrixTimelineGapRepairOutcome::Progress { events: 17 },
+                    last_projection_batch: Some(1),
+                }),
+                ("progress", 17, 0, true, true),
+            ),
+            (
+                Ok(MatrixTimelineGapRepairResult {
+                    outcome: MatrixTimelineGapRepairOutcome::BoundariesJoined { events: 5 },
+                    last_projection_batch: None,
+                }),
+                ("boundaries_joined", 5, 0, false, true),
+            ),
+            (
+                Ok(MatrixTimelineGapRepairResult {
+                    outcome: MatrixTimelineGapRepairOutcome::StartReached { events: 4 },
+                    last_projection_batch: None,
+                }),
+                ("start_reached", 4, 0, false, true),
+            ),
+            (
+                Ok(MatrixTimelineGapRepairResult {
+                    outcome: MatrixTimelineGapRepairOutcome::Stale,
+                    last_projection_batch: None,
+                }),
+                ("stale", 0, 0, false, false),
+            ),
+            (
+                Ok(MatrixTimelineGapRepairResult {
+                    outcome: MatrixTimelineGapRepairOutcome::Failed,
+                    last_projection_batch: None,
+                }),
+                ("failed", 0, 0, false, false),
+            ),
+            (
+                Err(MatrixTimelineGapError::Sdk),
+                ("error", 0, 0, false, false),
+            ),
+        ];
+
+        for (result, expected) in cases {
+            let diagnostic = timeline_gap_repair_result_diagnostic(&result);
+            assert_eq!(
+                (
+                    diagnostic.outcome,
+                    diagnostic.events,
+                    diagnostic.cached_chunks_loaded,
+                    diagnostic.has_projection_batch,
+                    diagnostic.made_progress,
+                ),
+                expected,
+            );
         }
     }
 
@@ -6722,14 +8620,19 @@ mod timeline_gap_repair_tracker_tests {
                 trigger,
                 &projected_relation_boundaries,
                 None,
+                &[],
                 3,
                 tracker.has_live_edge_target(),
             ),
-            GapRepairSelection::LiveEdgeFallback { ordinal: 2 },
+            GapRepairSelection::Unprojected {
+                ordinal: 2,
+                reason: UnprojectedGapReason::LiveEdge,
+            },
         );
 
         let repair_serial = tracker.begin_repair(3).expect("repair owns scheduler");
-        correlation.begin(actor_generation, repair_serial);
+        let repair_operation = historical_causal_projection_operation(repair_serial);
+        correlation.begin(actor_generation, repair_operation);
 
         // Model the SDK relay publication carrying the repair correlation tag.
         // A duplicate delivery is included deliberately: the same display
@@ -6749,9 +8652,9 @@ mod timeline_gap_repair_tracker_tests {
         );
         assert_eq!(
             correlation.observe(
-                GapRepairProjectionId {
+                CausalProjectionId {
                     actor_generation,
-                    repair_generation: repair_serial,
+                    operation: repair_operation,
                     projection_batch,
                 },
                 rendered_batch_id,
@@ -6760,7 +8663,7 @@ mod timeline_gap_repair_tracker_tests {
             "publication alone cannot continue before SDK completion"
         );
         assert_eq!(
-            correlation.complete(actor_generation, repair_serial, Some(projection_batch)),
+            correlation.complete(actor_generation, repair_operation, Some(projection_batch)),
             TimelineGapProjectionCompletion::Ready(rendered_batch_id),
         );
         assert!(tracker.finish_work(repair_serial));
@@ -6804,6 +8707,7 @@ mod timeline_gap_repair_tracker_tests {
                 continuation,
                 &projected_relation_boundaries,
                 None,
+                &[],
                 2,
                 true,
             ),
@@ -6820,6 +8724,826 @@ mod timeline_gap_repair_tracker_tests {
             1,
             "the repaired interval is projected exactly once"
         );
+    }
+
+    #[tokio::test]
+    async fn legacy_room_absent_refreshes_active_live_tail_not_persisted_gap() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = matrix_sdk::ruma::room_id!("!private:example.org");
+        let other_room_id = matrix_sdk::ruma::room_id!("!room-present:example.org");
+        let historical_id = matrix_sdk::ruma::event_id!("$room-absent-historical");
+        let older_id = matrix_sdk::ruma::event_id!("$room-absent-older");
+        let middle_one_id = matrix_sdk::ruma::event_id!("$room-absent-middle-one");
+        let middle_two_id = matrix_sdk::ruma::event_id!("$room-absent-middle-two");
+        let newer_id = matrix_sdk::ruma::event_id!("$room-absent-newer");
+        let missing_id = matrix_sdk::ruma::event_id!("$event:example.org");
+        let factory = EventFactory::new().room(room_id).sender(&ALICE);
+
+        {
+            let store = client
+                .event_cache_store()
+                .lock()
+                .await
+                .expect("cache store");
+            store
+                .as_clean()
+                .expect("clean cache store")
+                .handle_linked_chunk_updates(
+                    LinkedChunkId::Room(room_id),
+                    vec![
+                        Update::NewItemsChunk {
+                            previous: None,
+                            new: ChunkIdentifier::new(0),
+                            next: None,
+                        },
+                        Update::PushItems {
+                            at: Position::new(ChunkIdentifier::new(0), 0),
+                            items: vec![
+                                factory
+                                    .text_msg("historical")
+                                    .event_id(historical_id)
+                                    .into_event(),
+                            ],
+                        },
+                        Update::NewGapChunk {
+                            previous: Some(ChunkIdentifier::new(0)),
+                            new: ChunkIdentifier::new(1),
+                            next: None,
+                            gap: Gap {
+                                token: "room-absent-unrelated-token".to_owned(),
+                            },
+                        },
+                        Update::NewItemsChunk {
+                            previous: Some(ChunkIdentifier::new(1)),
+                            new: ChunkIdentifier::new(2),
+                            next: None,
+                        },
+                        Update::PushItems {
+                            at: Position::new(ChunkIdentifier::new(2), 0),
+                            items: vec![factory.text_msg("older").event_id(older_id).into_event()],
+                        },
+                        Update::NewGapChunk {
+                            previous: Some(ChunkIdentifier::new(2)),
+                            new: ChunkIdentifier::new(3),
+                            next: None,
+                            gap: Gap {
+                                token: "token-secret".to_owned(),
+                            },
+                        },
+                        Update::NewItemsChunk {
+                            previous: Some(ChunkIdentifier::new(3)),
+                            new: ChunkIdentifier::new(4),
+                            next: None,
+                        },
+                        Update::PushItems {
+                            at: Position::new(ChunkIdentifier::new(4), 0),
+                            items: vec![
+                                factory
+                                    .text_msg("middle one")
+                                    .event_id(middle_one_id)
+                                    .into_event(),
+                            ],
+                        },
+                        Update::NewGapChunk {
+                            previous: Some(ChunkIdentifier::new(4)),
+                            new: ChunkIdentifier::new(5),
+                            next: None,
+                            gap: Gap {
+                                token: "room-absent-historical-token-two".to_owned(),
+                            },
+                        },
+                        Update::NewItemsChunk {
+                            previous: Some(ChunkIdentifier::new(5)),
+                            new: ChunkIdentifier::new(6),
+                            next: None,
+                        },
+                        Update::PushItems {
+                            at: Position::new(ChunkIdentifier::new(6), 0),
+                            items: vec![
+                                factory
+                                    .text_msg("middle two")
+                                    .event_id(middle_two_id)
+                                    .into_event(),
+                            ],
+                        },
+                        Update::NewGapChunk {
+                            previous: Some(ChunkIdentifier::new(6)),
+                            new: ChunkIdentifier::new(7),
+                            next: None,
+                            gap: Gap {
+                                token: "room-absent-historical-token-three".to_owned(),
+                            },
+                        },
+                        Update::NewItemsChunk {
+                            previous: Some(ChunkIdentifier::new(7)),
+                            new: ChunkIdentifier::new(8),
+                            next: None,
+                        },
+                        Update::PushItems {
+                            at: Position::new(ChunkIdentifier::new(8), 0),
+                            items: vec![factory.text_msg("newer").event_id(newer_id).into_event()],
+                        },
+                    ],
+                )
+                .await
+                .expect("seed persisted room-absent gaps");
+        }
+
+        client
+            .event_cache()
+            .subscribe()
+            .expect("event cache subscribe");
+        server.sync_joined_room(&client, room_id).await;
+        server.sync_joined_room(&client, other_room_id).await;
+        const DIAGNOSTIC_RESPONSE_SEQUENCE: u64 = 41;
+        while client.latest_room_updates_response_sequence() < DIAGNOSTIC_RESPONSE_SEQUENCE - 1 {
+            server.sync_joined_room(&client, other_room_id).await;
+        }
+        server
+            .mock_room_messages()
+            .match_limit(128)
+            .ok(RoomMessagesResponseTemplate::default().events(vec![
+                factory.text_msg("message-secret").event_id(missing_id),
+                factory.text_msg("stale edge").event_id(newer_id),
+            ]))
+            .expect(1)
+            .named("manager-room-absent-tokenless-live-tail-refresh")
+            .mount()
+            .await;
+        for (name, token) in [
+            (
+                "manager-must-not-repair-unrelated-gap",
+                "room-absent-unrelated-token",
+            ),
+            (
+                "manager-must-not-repair-former-live-edge-gap",
+                "token-secret",
+            ),
+            (
+                "manager-must-not-repair-historical-gap-two",
+                "room-absent-historical-token-two",
+            ),
+            (
+                "manager-must-not-repair-historical-gap-three",
+                "room-absent-historical-token-three",
+            ),
+        ] {
+            server
+                .mock_room_messages()
+                .match_from(token)
+                .ok(RoomMessagesResponseTemplate::default())
+                .expect(0)
+                .named(name)
+                .mount()
+                .await;
+        }
+
+        let session = Arc::new(MatrixClientSession::from_client_for_testing(
+            client.clone(),
+            koushi_state::SessionInfo {
+                homeserver: "http://example.invalid".to_owned(),
+                user_id: ALICE.to_string(),
+                device_id: "DEVICE".to_owned(),
+            },
+        ));
+        let gap_topology = |inspection: &MatrixTimelineGapInspection| {
+            inspection
+                .gaps
+                .iter()
+                .map(|gap| {
+                    (
+                        gap.topology_revision(),
+                        gap.older_boundary_event_id().map(str::to_owned),
+                        gap.newer_boundary_event_id().map(str::to_owned),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let seeded_gap_topology = gap_topology(
+            &session
+                .inspect_room_timeline_gaps(room_id.as_str())
+                .await
+                .expect("seeded gap inspection"),
+        );
+        assert_eq!(
+            seeded_gap_topology.len(),
+            4,
+            "the fixture starts with exactly four unrelated persisted gaps",
+        );
+        let (action_tx, _action_rx) = mpsc::channel(64);
+        let (event_tx, mut event_rx) = broadcast::channel(128);
+        let (search_index_tx, _search_index_rx) = mpsc::channel(16);
+        let manager = TimelineManagerActor::spawn_with_session(
+            session.clone(),
+            action_tx,
+            event_tx,
+            search_index_tx,
+            None,
+            LinkPreviewContext::default(),
+            MessagesBackpressure::default(),
+        );
+        let committed_from_response_sequence = client
+            .latest_room_updates_response_sequence()
+            .wrapping_add(1);
+        assert_eq!(
+            committed_from_response_sequence, DIAGNOSTIC_RESPONSE_SEQUENCE,
+            "the diagnostic regression uses a unique committed response generation",
+        );
+        assert!(
+            manager
+                .send(TimelineMessage::SyncStarted {
+                    room_list_service: None,
+                    legacy_committed_from_response_sequence: Some(
+                        committed_from_response_sequence,
+                    ),
+                })
+                .await
+        );
+
+        let key = TimelineKey::room(
+            AccountKey("room-absent-fixture".to_owned()),
+            room_id.to_string(),
+        );
+        let projection_request_id = RequestId {
+            connection_id: RuntimeConnectionId(17),
+            sequence: 1,
+        };
+        assert!(
+            manager
+                .send(TimelineMessage::Command(
+                    TimelineCommand::EnsureSubscribed {
+                        request_id: projection_request_id,
+                        key: key.clone(),
+                        replay_existing: true,
+                    }
+                ))
+                .await
+        );
+        let (mut rendered, _actor_generation, timeline_generation) = loop {
+            match event_rx.recv().await.expect("initial timeline event") {
+                CoreEvent::Timeline(TimelineEvent::InitialItems {
+                    request_id: Some(request_id),
+                    actor_generation,
+                    generation,
+                    items,
+                    ..
+                }) if request_id == projection_request_id => {
+                    break (items, actor_generation, generation);
+                }
+                _ => continue,
+            }
+        };
+        assert!(!event_ids(&rendered).contains(&missing_id.as_str()));
+        let (projection_ack_tx, projection_ack_rx) = oneshot::channel();
+        assert!(
+            manager
+                .send(TimelineMessage::AcknowledgeProjection {
+                    projection_request_id,
+                    key: key.clone(),
+                    generation: timeline_generation,
+                    response: projection_ack_tx,
+                })
+                .await
+        );
+        assert!(projection_ack_rx.await.expect("projection ACK response"));
+        let live_tail_snapshot_diagnostics_baseline = koushi_diagnostics::snapshot().records.len();
+        server
+            .sync_room(
+                &client,
+                matrix_sdk_test::JoinedRoomBuilder::new(other_room_id),
+            )
+            .await;
+
+        let mut observed_live_tail_gap_snapshot = false;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match event_rx.recv().await {
+                    Ok(CoreEvent::Timeline(TimelineEvent::ItemsUpdated { diffs, .. })) => {
+                        apply_timeline_diffs_to_display_items(&mut rendered, &diffs);
+                    }
+                    Ok(CoreEvent::Timeline(TimelineEvent::GapPositionsUpdated {
+                        key: event_key,
+                        positions,
+                        ..
+                    })) if event_key == key && !positions.is_empty() => {
+                        observed_live_tail_gap_snapshot = true;
+                    }
+                    _ => {}
+                }
+                let current_topology = gap_topology(
+                    &session
+                        .inspect_room_timeline_gaps(room_id.as_str())
+                        .await
+                        .expect("post-refresh inspection"),
+                );
+                if event_ids(&rendered).contains(&missing_id.as_str())
+                    && current_topology == seeded_gap_topology
+                    && observed_live_tail_gap_snapshot
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("room-absent live-tail refresh completed");
+
+        let ids = event_ids(&rendered);
+        assert_eq!(
+            ids.iter().filter(|id| **id == missing_id.as_str()).count(),
+            1,
+            "the recent event is projected exactly once",
+        );
+        assert!(
+            ids.iter().position(|id| *id == newer_id.as_str())
+                < ids.iter().position(|id| *id == missing_id.as_str()),
+            "the tokenless refresh appends the recent event after the stale rendered edge",
+        );
+        assert_eq!(
+            gap_topology(
+                &session
+                    .inspect_room_timeline_gaps(room_id.as_str())
+                    .await
+                    .expect("settled gap inspection"),
+            ),
+            seeded_gap_topology,
+            "tokenless refresh must preserve all four seeded persisted gaps exactly",
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let records = koushi_diagnostics::snapshot().records;
+                let refresh_finished = records.iter().any(|record| {
+                    record.event.source == "core.timeline"
+                        && record.event.stage == "timeline_live_tail_refresh"
+                        && record.event.fields.iter().any(|field| {
+                            field.key == "returned_events"
+                                && field.value == koushi_diagnostics::DiagnosticValue::Count(2)
+                        })
+                });
+                let fresh = records.iter().any(|record| {
+                    record.event.source == "core.timeline"
+                        && record.event.stage == "timeline_live_tail_state"
+                        && record.event.fields.iter().any(|field| {
+                            field.key == "to"
+                                && field.value
+                                    == koushi_diagnostics::DiagnosticValue::Token("fresh")
+                        })
+                        && record.event.fields.iter().any(|field| {
+                            field.key == "sync_epoch"
+                                && field.value == koushi_diagnostics::DiagnosticValue::Count(1)
+                        })
+                });
+                if refresh_finished && fresh {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first same-epoch refresh committed Fresh");
+
+        server
+            .sync_room(
+                &client,
+                matrix_sdk_test::JoinedRoomBuilder::new(other_room_id),
+            )
+            .await;
+        let repeated_room_absent_sequence = client.latest_room_updates_response_sequence();
+        assert_eq!(
+            repeated_room_absent_sequence,
+            committed_from_response_sequence + 1,
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if koushi_diagnostics::snapshot().records.iter().any(|record| {
+                    record.event.source == "core.timeline"
+                        && record.event.stage == "legacy_response_commit"
+                        && record.event.fields.iter().any(|field| {
+                            field.key == "response_sequence"
+                                && field.value
+                                    == koushi_diagnostics::DiagnosticValue::Count(
+                                        repeated_room_absent_sequence,
+                                    )
+                        })
+                        && record.event.fields.iter().any(|field| {
+                            field.key == "rooms_updated_count"
+                                && field.value == koushi_diagnostics::DiagnosticValue::Count(0)
+                        })
+                }) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("second same-epoch RoomAbsent committed without another refresh");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            gap_topology(
+                &session
+                    .inspect_room_timeline_gaps(room_id.as_str())
+                    .await
+                    .expect("repeat RoomAbsent gap inspection"),
+            ),
+            seeded_gap_topology,
+            "repeat RoomAbsent must preserve the exact four-gap topology",
+        );
+        let diagnostic_records = koushi_diagnostics::snapshot().records;
+        diagnostic_records
+            .iter()
+            .skip(live_tail_snapshot_diagnostics_baseline)
+            .find(|record| {
+                record.event.source == "core.timeline_gap_repair"
+                    && record.event.stage == "inspection"
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "trigger"
+                            && field.value
+                                == koushi_diagnostics::DiagnosticValue::Token("live_tail_snapshot")
+                    })
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "gap_count"
+                            && field.value == koushi_diagnostics::DiagnosticValue::Count(4)
+                    })
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "outcome"
+                            && field.value
+                                == koushi_diagnostics::DiagnosticValue::Token("incomplete")
+                    })
+            })
+            .expect("observe-only live-tail gap snapshot diagnostic");
+        let expected_response_fields = [
+            (
+                "active_timeline_count",
+                koushi_diagnostics::DiagnosticValue::Count(1),
+            ),
+            (
+                "rooms_updated_count",
+                koushi_diagnostics::DiagnosticValue::Count(0),
+            ),
+            (
+                "joined_room_count",
+                koushi_diagnostics::DiagnosticValue::Count(1),
+            ),
+            (
+                "left_room_count",
+                koushi_diagnostics::DiagnosticValue::Count(0),
+            ),
+            (
+                "invited_room_count",
+                koushi_diagnostics::DiagnosticValue::Count(0),
+            ),
+        ];
+        let response_diagnostic = diagnostic_records
+            .iter()
+            .find(|record| {
+                record.event.source == "core.timeline"
+                    && record.event.stage == "legacy_response_commit"
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "response_sequence"
+                            && field.value
+                                == koushi_diagnostics::DiagnosticValue::Count(
+                                    committed_from_response_sequence,
+                                )
+                    })
+                    && expected_response_fields.iter().all(|(key, expected)| {
+                        record
+                            .event
+                            .fields
+                            .iter()
+                            .any(|field| field.key == *key && field.value == *expected)
+                    })
+            })
+            .expect("legacy response commit diagnostic");
+        for (key, expected) in expected_response_fields {
+            assert_eq!(
+                response_diagnostic
+                    .event
+                    .fields
+                    .iter()
+                    .find(|field| field.key == key)
+                    .map(|field| &field.value),
+                Some(&expected),
+                "unexpected response diagnostic field {key}",
+            );
+        }
+        let response_sequence = response_diagnostic
+            .event
+            .fields
+            .iter()
+            .find_map(|field| (field.key == "response_sequence").then_some(&field.value))
+            .and_then(|value| match value {
+                koushi_diagnostics::DiagnosticValue::Count(value) => Some(*value),
+                _ => None,
+            })
+            .expect("response sequence diagnostic value");
+        assert_eq!(
+            response_diagnostic
+                .event
+                .fields
+                .iter()
+                .find(|field| field.key == "commit_fence_sequence")
+                .map(|field| &field.value),
+            Some(&koushi_diagnostics::DiagnosticValue::Count(
+                response_sequence
+            )),
+        );
+        let checkpoint_diagnostic = diagnostic_records
+            .iter()
+            .find(|record| {
+                record.event.source == "core.live_catchup"
+                    && record.event.stage == "checkpoint"
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "checkpoint_origin"
+                            && field.value
+                                == koushi_diagnostics::DiagnosticValue::Token("room_absent")
+                    })
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "checkpoint_generation"
+                            && field.value
+                                == koushi_diagnostics::DiagnosticValue::Count(response_sequence)
+                    })
+            })
+            .expect("room-absent checkpoint diagnostic");
+        for (key, expected) in [
+            (
+                "decision",
+                koushi_diagnostics::DiagnosticValue::Token("prove_live_tail_freshness"),
+            ),
+            (
+                "checkpoint_origin",
+                koushi_diagnostics::DiagnosticValue::Token("room_absent"),
+            ),
+            (
+                "candidate",
+                koushi_diagnostics::DiagnosticValue::Token("none"),
+            ),
+            (
+                "batches_processed",
+                koushi_diagnostics::DiagnosticValue::Count(0),
+            ),
+        ] {
+            assert_eq!(
+                checkpoint_diagnostic
+                    .event
+                    .fields
+                    .iter()
+                    .find(|field| field.key == key)
+                    .map(|field| &field.value),
+                Some(&expected),
+                "unexpected checkpoint diagnostic field {key}",
+            );
+        }
+        let refresh_diagnostic = diagnostic_records
+            .iter()
+            .find(|record| {
+                record.event.source == "core.timeline"
+                    && record.event.stage == "timeline_live_tail_refresh"
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "outcome"
+                            && field.value == koushi_diagnostics::DiagnosticValue::Token("detached")
+                    })
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "returned_events"
+                            && field.value == koushi_diagnostics::DiagnosticValue::Count(2)
+                    })
+            })
+            .expect("live-tail refresh diagnostic");
+        for (key, expected) in [
+            (
+                "requested_limit",
+                koushi_diagnostics::DiagnosticValue::Count(128),
+            ),
+            (
+                "returned_events",
+                koushi_diagnostics::DiagnosticValue::Count(2),
+            ),
+            (
+                "historical_gap_remaining",
+                koushi_diagnostics::DiagnosticValue::Boolean(false),
+            ),
+        ] {
+            assert_eq!(
+                refresh_diagnostic
+                    .event
+                    .fields
+                    .iter()
+                    .find(|field| field.key == key)
+                    .map(|field| &field.value),
+                Some(&expected),
+                "unexpected live-tail refresh diagnostic field {key}",
+            );
+        }
+        let operation_generation = refresh_diagnostic
+            .event
+            .fields
+            .iter()
+            .find_map(|field| match (field.key, &field.value) {
+                ("operation_generation", koushi_diagnostics::DiagnosticValue::Count(value))
+                    if *value > 0 =>
+                {
+                    Some(*value)
+                }
+                _ => None,
+            })
+            .expect("live-tail operation generation diagnostic");
+        assert_eq!(
+            refresh_diagnostic
+                .event
+                .fields
+                .iter()
+                .map(|field| field.key)
+                .collect::<Vec<_>>(),
+            [
+                "outcome",
+                "requested_limit",
+                "returned_events",
+                "historical_gap_remaining",
+                "operation_generation",
+                "duration_ms",
+            ],
+        );
+        let state_diagnostic = diagnostic_records
+            .iter()
+            .find(|record| {
+                record.event.source == "core.timeline"
+                    && record.event.stage == "timeline_live_tail_state"
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "to"
+                            && field.value == koushi_diagnostics::DiagnosticValue::Token("fresh")
+                    })
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "sync_epoch"
+                            && field.value == koushi_diagnostics::DiagnosticValue::Count(1)
+                    })
+            })
+            .expect("fresh live-tail state diagnostic");
+        assert_eq!(
+            state_diagnostic
+                .event
+                .fields
+                .iter()
+                .map(|field| field.key)
+                .collect::<Vec<_>>(),
+            ["from", "to", "sync_epoch"],
+        );
+        assert!(state_diagnostic.event.fields.iter().any(|field| {
+            field.key == "sync_epoch"
+                && field.value == koushi_diagnostics::DiagnosticValue::Count(1)
+        }));
+        let queue_diagnostic = diagnostic_records
+            .iter()
+            .find(|record| {
+                record.event.source == "core.timeline"
+                    && record.event.stage == "timeline_live_tail_queue"
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "priority"
+                            && field.value
+                                == koushi_diagnostics::DiagnosticValue::Token("foreground")
+                    })
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "queue_depth"
+                            && field.value == koushi_diagnostics::DiagnosticValue::Count(1)
+                    })
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "preempted"
+                            && field.value == koushi_diagnostics::DiagnosticValue::Boolean(false)
+                    })
+            })
+            .expect("foreground live-tail queue diagnostic");
+        assert_eq!(
+            queue_diagnostic
+                .event
+                .fields
+                .iter()
+                .map(|field| field.key)
+                .collect::<Vec<_>>(),
+            ["priority", "queue_depth", "preempted"],
+        );
+        for (key, expected) in [
+            ("queue_depth", koushi_diagnostics::DiagnosticValue::Count(1)),
+            (
+                "preempted",
+                koushi_diagnostics::DiagnosticValue::Boolean(false),
+            ),
+        ] {
+            assert!(
+                queue_diagnostic
+                    .event
+                    .fields
+                    .iter()
+                    .any(|field| field.key == key && field.value == expected)
+            );
+        }
+        let commit_diagnostics = ["started", "completed"].map(|phase| {
+            diagnostic_records
+                .iter()
+                .find(|record| {
+                    record.event.source == "core.timeline"
+                        && record.event.stage == "timeline_live_tail_commit"
+                        && record.event.fields.iter().any(|field| {
+                            field.key == "phase"
+                                && field.value == koushi_diagnostics::DiagnosticValue::Token(phase)
+                        })
+                        && record.event.fields.iter().any(|field| {
+                            field.key == "operation_generation"
+                                && field.value
+                                    == koushi_diagnostics::DiagnosticValue::Count(
+                                        operation_generation,
+                                    )
+                        })
+                })
+                .unwrap_or_else(|| panic!("{phase} live-tail commit diagnostic"))
+        });
+        for commit in &commit_diagnostics {
+            assert_eq!(
+                commit
+                    .event
+                    .fields
+                    .iter()
+                    .map(|field| field.key)
+                    .collect::<Vec<_>>(),
+                ["phase", "operation_generation"],
+            );
+        }
+        let diagnostics_json = serde_json::to_string(&(
+            &response_diagnostic.event,
+            &checkpoint_diagnostic.event,
+            &state_diagnostic.event,
+            &queue_diagnostic.event,
+            &refresh_diagnostic.event,
+            &commit_diagnostics[0].event,
+            &commit_diagnostics[1].event,
+        ))
+        .expect("diagnostics serialize");
+        for private_value in [
+            "!private",
+            "$event",
+            "token-secret",
+            "message-secret",
+            other_room_id.as_str(),
+        ] {
+            assert!(
+                !diagnostics_json.contains(private_value),
+                "diagnostics leaked private test data",
+            );
+        }
+
+        server
+            .sync_room(&client, matrix_sdk_test::LeftRoomBuilder::new(room_id))
+            .await;
+        let left_response_sequence = client.latest_room_updates_response_sequence();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let left_fence_committed =
+                    koushi_diagnostics::snapshot().records.iter().any(|record| {
+                        record.event.source == "core.timeline"
+                            && record.event.stage == "legacy_response_commit"
+                            && record.event.fields.iter().any(|field| {
+                                field.key == "response_sequence"
+                                    && matches!(
+                                        field.value,
+                                        koushi_diagnostics::DiagnosticValue::Count(value)
+                                            if value == left_response_sequence
+                                    )
+                            })
+                            && record.event.fields.iter().any(|field| {
+                                field.key == "left_room_count"
+                                    && field.value == koushi_diagnostics::DiagnosticValue::Count(1)
+                            })
+                    });
+                if left_fence_committed {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("left-room response fence committed");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !koushi_diagnostics::snapshot().records.iter().any(|record| {
+                record.event.source == "core.live_catchup"
+                    && record.event.stage == "checkpoint"
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "checkpoint_generation"
+                            && field.value
+                                == koushi_diagnostics::DiagnosticValue::Count(
+                                    left_response_sequence,
+                                )
+                    })
+            }),
+            "a left-room update is present in the response and must not be routed as RoomAbsent"
+        );
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        assert!(
+            manager
+                .send(TimelineMessage::Shutdown {
+                    acknowledged: Some(shutdown_tx),
+                })
+                .await
+        );
+        shutdown_rx.await.expect("manager shutdown acknowledgement");
     }
 
     #[tokio::test]
@@ -6967,6 +9691,46 @@ mod timeline_gap_repair_tracker_tests {
             .expect("seeded live-edge gap");
         let subscription_checkpoint =
             MatrixRoomSubscriptionCheckpoint::from_legacy_gap_for_testing(7, &checkpoint_gap);
+        let mut ordered_current = Some(subscription_checkpoint.clone());
+        let mut ordered_deferred = None;
+        assert!(!retain_room_subscription_checkpoint(
+            &mut ordered_current,
+            &mut ordered_deferred,
+            MatrixRoomSubscriptionCheckpoint::from_legacy_room_absent_for_testing(8, room_id),
+        ));
+        let exact_generation_nine =
+            MatrixRoomSubscriptionCheckpoint::from_legacy_gap_for_testing(9, &checkpoint_gap);
+        assert!(!retain_room_subscription_checkpoint(
+            &mut ordered_current,
+            &mut ordered_deferred,
+            exact_generation_nine.clone(),
+        ));
+        assert_eq!(
+            ordered_deferred
+                .as_ref()
+                .map(|checkpoint| checkpoint.generation()),
+            Some(9),
+            "a newer exact response must replace an older deferred RoomAbsent checkpoint",
+        );
+        assert!(consume_room_subscription_checkpoint(
+            &mut ordered_current,
+            &mut ordered_deferred,
+            &subscription_checkpoint,
+        ));
+        assert!(
+            ordered_current
+                .as_ref()
+                .is_some_and(|checkpoint| checkpoint.same_response_as(&exact_generation_nine))
+        );
+        assert!(!retain_room_subscription_checkpoint(
+            &mut ordered_current,
+            &mut ordered_deferred,
+            MatrixRoomSubscriptionCheckpoint::from_legacy_room_absent_for_testing(8, room_id),
+        ));
+        assert!(
+            ordered_deferred.is_none(),
+            "stale provenance must not be retained"
+        );
         let sync_service_g1 =
             MatrixRoomSubscriptionCheckpoint::from_gap_for_testing(7, 1, &checkpoint_gap);
         let sync_service_g2 =
@@ -7140,30 +9904,10 @@ mod timeline_gap_repair_tracker_tests {
 
     #[test]
     fn legacy_committed_observation_rejects_prior_response_and_duplicate_commits() {
-        assert!(!accepts_legacy_committed_observation(12, None, 11, 99));
-        assert!(accepts_legacy_committed_observation(12, None, 12, 1));
-        assert!(!accepts_legacy_committed_observation(12, Some(1), 12, 1));
-        assert!(accepts_legacy_committed_observation(12, Some(1), 13, 2));
-    }
-
-    #[test]
-    fn zero_budget_automatic_defer_stops_instead_of_spinning() {
-        assert!(automatic_gap_repair_is_offscreen(
-            TimelineGapRepairTrigger::Automatic,
-            &MatrixTimelineGapRepairOutcome::Deferred {
-                cached_chunks_loaded: 0,
-            }
-        ));
-        assert!(!automatic_gap_repair_is_offscreen(
-            TimelineGapRepairTrigger::Manual,
-            &MatrixTimelineGapRepairOutcome::Deferred {
-                cached_chunks_loaded: 0,
-            }
-        ));
-        assert!(!automatic_gap_repair_is_offscreen(
-            TimelineGapRepairTrigger::Automatic,
-            &MatrixTimelineGapRepairOutcome::Stale
-        ));
+        assert!(!accepts_legacy_committed_response(12, None, 11));
+        assert!(accepts_legacy_committed_response(12, None, 12));
+        assert!(!accepts_legacy_committed_response(12, Some(12), 12));
+        assert!(accepts_legacy_committed_response(12, Some(12), 13));
     }
 
     #[test]
@@ -7228,7 +9972,10 @@ mod timeline_gap_repair_tracker_tests {
         let mut tracker = TimelineGapRepairTracker::default();
         let repair_generation = tracker.begin_repair(1).expect("repair owns scheduler");
         let mut correlation = TimelineGapProjectionCorrelation::default();
-        correlation.begin(actor_generation, repair_generation);
+        correlation.begin(
+            actor_generation,
+            historical_causal_projection_operation(repair_generation),
+        );
         let mut pending = Some(PendingTimelineGapProjection {
             trigger: TimelineGapRepairTrigger::LiveEdge,
             repair_generation,
@@ -7267,37 +10014,480 @@ mod timeline_gap_repair_tracker_tests {
     }
 
     #[test]
-    fn timeline_gap_repair_tracker_bounds_batches() {
+    fn historical_projection_serial_exhaustion_never_reuses_one() {
+        let actor_generation = 9;
+        let mut correlation = TimelineGapProjectionCorrelation::default();
+        let prior_operation = historical_causal_projection_operation(CAUSAL_PROJECTION_SERIAL_MAX);
+        correlation.begin(actor_generation, prior_operation);
+        assert_eq!(
+            correlation.complete(actor_generation, prior_operation, Some(1)),
+            TimelineGapProjectionCompletion::Pending,
+        );
+
+        let mut tracker = TimelineGapRepairTracker {
+            next_serial: CAUSAL_PROJECTION_SERIAL_MAX,
+            ..TimelineGapRepairTracker::default()
+        };
+        assert_eq!(tracker.begin_repair(1), None);
+        assert_eq!(tracker.begin_repair(1), None, "exhaustion cannot busy-loop");
+        assert!(tracker.active_serial.is_none());
+        assert_eq!(tracker.next_serial, CAUSAL_PROJECTION_SERIAL_MAX);
+        assert_eq!(
+            correlation.observe(
+                CausalProjectionId {
+                    actor_generation,
+                    operation: historical_causal_projection_operation(1),
+                    projection_batch: 1,
+                },
+                TimelineBatchId(8),
+            ),
+            None,
+            "serial one from a hypothetical wrap cannot cross-complete the prior identity",
+        );
+        assert!(correlation.is_pending());
+    }
+
+    #[test]
+    fn gap_repair_progress_budget_allows_cache_reveal_beyond_total_batch_count() {
         let mut tracker = TimelineGapRepairTracker::default();
+        let id = projected_gap_id(7, 1);
+        let demand_revision = 11;
+        assert!(tracker.admit_gap_attempt(id, demand_revision).is_some());
+
+        for expected in 1..=MAX_TIMELINE_GAP_REPAIR_BATCHES + 1 {
+            let outcome = MatrixTimelineGapRepairOutcome::Deferred {
+                cached_chunks_loaded: 1,
+            };
+            assert!(timeline_gap_repair_made_progress(&outcome));
+            assert_eq!(tracker.attempt_gap_id, Some(id));
+            assert_eq!(tracker.attempt_demand_revision, Some(demand_revision));
+            assert!(
+                tracker.can_start_batch(TimelineGapRepairTrigger::Automatic),
+                "cache reveal batch {expected} must remain admissible"
+            );
+            assert_eq!(
+                tracker.record_batch(TimelineGapRepairTrigger::Automatic),
+                Some(expected)
+            );
+            tracker.record_batch_outcome(&outcome);
+            assert_eq!(tracker.consecutive_no_progress_batches, 0);
+        }
+        assert_eq!(
+            tracker.batches_processed,
+            MAX_TIMELINE_GAP_REPAIR_BATCHES + 1
+        );
+    }
+
+    #[test]
+    fn gap_repair_attempt_diagnostics_classify_attempt_resets() {
+        let mut tracker = TimelineGapRepairTracker::default();
+
+        let initial = tracker
+            .admit_gap_attempt(projected_gap_id(7, 1), 11)
+            .expect("initial gap attempt is admitted");
+        assert_eq!(initial.attempt_number, 1);
+        assert_eq!(initial.reason, TimelineGapAttemptResetReason::Initial);
+        assert!(!initial.topology_changed);
+        assert!(!initial.ordinal_changed);
+        assert!(!initial.demand_changed);
+        assert_eq!(initial.reason.as_str(), "initial");
+
+        let topology = tracker
+            .admit_gap_attempt(projected_gap_id(8, 1), 11)
+            .expect("topology change is admitted");
+        assert_eq!(topology.attempt_number, 2);
+        assert_eq!(topology.reason, TimelineGapAttemptResetReason::Topology);
+        assert!(topology.topology_changed);
+        assert!(!topology.ordinal_changed);
+        assert!(!topology.demand_changed);
+        assert_eq!(topology.reason.as_str(), "topology");
+
+        let ordinal = tracker
+            .admit_gap_attempt(projected_gap_id(8, 2), 11)
+            .expect("ordinal change is admitted");
+        assert_eq!(ordinal.attempt_number, 3);
+        assert_eq!(ordinal.reason, TimelineGapAttemptResetReason::Ordinal);
+        assert!(!ordinal.topology_changed);
+        assert!(ordinal.ordinal_changed);
+        assert!(!ordinal.demand_changed);
+        assert_eq!(ordinal.reason.as_str(), "ordinal");
+
+        let demand = tracker
+            .admit_gap_attempt(projected_gap_id(8, 2), 12)
+            .expect("explicit demand change is admitted");
+        assert_eq!(demand.attempt_number, 4);
+        assert_eq!(demand.reason, TimelineGapAttemptResetReason::Demand);
+        assert!(!demand.topology_changed);
+        assert!(!demand.ordinal_changed);
+        assert!(demand.demand_changed);
+        assert_eq!(demand.reason.as_str(), "demand");
+
+        assert!(
+            tracker
+                .admit_gap_attempt(projected_gap_id(8, 2), 12)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn gap_repair_attempt_diagnostics_emit_once_per_changed_admission() {
+        let diagnostic_start = koushi_diagnostics::snapshot().records.len();
+        let demand_revision = 9_004_001;
+        let mut tracker = TimelineGapRepairTracker::default();
+
+        assert!(admit_and_record_timeline_gap_repair_attempt(
+            &mut tracker,
+            projected_gap_id(7, 1),
+            demand_revision,
+        ));
+        assert!(admit_and_record_timeline_gap_repair_attempt(
+            &mut tracker,
+            projected_gap_id(8, 1),
+            demand_revision,
+        ));
+        assert!(admit_and_record_timeline_gap_repair_attempt(
+            &mut tracker,
+            projected_gap_id(8, 2),
+            demand_revision,
+        ));
+        assert!(admit_and_record_timeline_gap_repair_attempt(
+            &mut tracker,
+            projected_gap_id(8, 2),
+            demand_revision + 1,
+        ));
+        assert!(!admit_and_record_timeline_gap_repair_attempt(
+            &mut tracker,
+            projected_gap_id(8, 2),
+            demand_revision + 1,
+        ));
+
+        let records = koushi_diagnostics::snapshot().records;
+        let admissions = records[diagnostic_start..]
+            .iter()
+            .filter(|record| {
+                record.event.source == "core.timeline_gap_repair"
+                    && record.event.stage == "attempt_admitted"
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "demand_revision"
+                            && matches!(
+                                field.value,
+                                koushi_diagnostics::DiagnosticValue::Count(value)
+                                    if value == demand_revision || value == demand_revision + 1
+                            )
+                    })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(admissions.len(), 4);
+        for reason in ["initial", "topology", "ordinal", "demand"] {
+            assert_eq!(
+                admissions
+                    .iter()
+                    .filter(|record| {
+                        record.event.fields.iter().any(|field| {
+                            field.key == "reset_reason"
+                                && field.value == koushi_diagnostics::DiagnosticValue::Token(reason)
+                        })
+                    })
+                    .count(),
+                1,
+                "changed admission must emit reset reason {reason} exactly once",
+            );
+        }
+    }
+
+    #[test]
+    fn gap_repair_attempt_diagnostics_emit_one_budget_update_per_sdk_result() {
+        let diagnostic_start = koushi_diagnostics::snapshot().records.len();
+        let demand_revision = 9_004_101;
+        let mut tracker = TimelineGapRepairTracker::default();
+        tracker
+            .admit_gap_attempt(projected_gap_id(7, 1), demand_revision)
+            .expect("initial gap attempt is admitted");
+        let outcomes = [
+            MatrixTimelineGapRepairOutcome::Stale,
+            MatrixTimelineGapRepairOutcome::Deferred {
+                cached_chunks_loaded: 0,
+            },
+            MatrixTimelineGapRepairOutcome::Deferred {
+                cached_chunks_loaded: 1,
+            },
+            MatrixTimelineGapRepairOutcome::Failed,
+            MatrixTimelineGapRepairOutcome::Progress { events: 0 },
+            MatrixTimelineGapRepairOutcome::Progress { events: 1 },
+            MatrixTimelineGapRepairOutcome::BoundariesJoined { events: 0 },
+            MatrixTimelineGapRepairOutcome::StartReached { events: 0 },
+        ];
+
+        for (index, outcome) in outcomes.into_iter().enumerate() {
+            record_timeline_gap_repair_result(
+                &mut tracker,
+                index as u64 + 1,
+                TimelineGapRepairTrigger::Automatic,
+                &Ok(MatrixTimelineGapRepairResult {
+                    outcome,
+                    last_projection_batch: None,
+                }),
+            );
+            assert_eq!(
+                timeline_gap_repair_diagnostic_count_since(
+                    diagnostic_start,
+                    "budget_updated",
+                    demand_revision,
+                ),
+                index + 1,
+                "each successful SDK result must emit exactly one budget update",
+            );
+        }
+
+        record_timeline_gap_repair_result(
+            &mut tracker,
+            outcomes.len() as u64 + 1,
+            TimelineGapRepairTrigger::Automatic,
+            &Err(MatrixTimelineGapError::Sdk),
+        );
+        assert_eq!(
+            timeline_gap_repair_diagnostic_count_since(
+                diagnostic_start,
+                "budget_updated",
+                demand_revision,
+            ),
+            outcomes.len() + 1,
+            "the SDK error result must emit exactly one budget update",
+        );
+    }
+
+    fn timeline_gap_repair_diagnostic_count_since(
+        diagnostic_start: usize,
+        stage: &str,
+        demand_revision: u64,
+    ) -> usize {
+        koushi_diagnostics::snapshot().records[diagnostic_start..]
+            .iter()
+            .filter(|record| {
+                record.event.source == "core.timeline_gap_repair"
+                    && record.event.stage == stage
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "demand_revision"
+                            && field.value
+                                == koushi_diagnostics::DiagnosticValue::Count(demand_revision)
+                    })
+            })
+            .count()
+    }
+
+    #[test]
+    fn gap_repair_progress_budget_rejects_thirty_third_consecutive_noop() {
+        let mut tracker = TimelineGapRepairTracker::default();
+        let id = projected_gap_id(7, 1);
+        let demand_revision = 11;
+        assert!(tracker.admit_gap_attempt(id, demand_revision).is_some());
+
         for expected in 1..=MAX_TIMELINE_GAP_REPAIR_BATCHES {
+            let outcome = MatrixTimelineGapRepairOutcome::Deferred {
+                cached_chunks_loaded: 0,
+            };
+            assert!(!timeline_gap_repair_made_progress(&outcome));
             assert!(tracker.can_start_batch(TimelineGapRepairTrigger::Automatic));
             assert_eq!(
                 tracker.record_batch(TimelineGapRepairTrigger::Automatic),
                 Some(expected)
             );
+            tracker.record_batch_outcome(&outcome);
+            assert_eq!(tracker.consecutive_no_progress_batches, expected);
         }
         assert!(!tracker.can_start_batch(TimelineGapRepairTrigger::Automatic));
         assert_eq!(
             tracker.record_batch(TimelineGapRepairTrigger::Automatic),
             None
         );
+        assert_eq!(tracker.attempt_gap_id, Some(id));
+        assert_eq!(tracker.attempt_demand_revision, Some(demand_revision));
+        assert_eq!(
+            tracker.consecutive_no_progress_batches,
+            MAX_TIMELINE_GAP_REPAIR_BATCHES
+        );
+    }
+
+    #[test]
+    fn gap_repair_sdk_error_budget_rejects_thirty_third_consecutive_error() {
+        let mut tracker = TimelineGapRepairTracker::default();
+        let id = projected_gap_id(7, 1);
+        let demand_revision = 11;
+        assert!(tracker.admit_gap_attempt(id, demand_revision).is_some());
+
+        for expected in 1..=MAX_TIMELINE_GAP_REPAIR_BATCHES {
+            assert_eq!(
+                tracker.record_batch(TimelineGapRepairTrigger::Automatic),
+                Some(expected)
+            );
+            tracker.record_batch_error();
+            assert_eq!(tracker.consecutive_no_progress_batches, expected);
+        }
+        assert_eq!(
+            tracker.record_batch(TimelineGapRepairTrigger::Automatic),
+            None
+        );
+        assert_eq!(tracker.attempt_gap_id, Some(id));
+        assert_eq!(tracker.attempt_demand_revision, Some(demand_revision));
+
+        assert!(
+            tracker
+                .admit_gap_attempt(projected_gap_id(8, 1), demand_revision)
+                .is_some()
+        );
+        tracker.batches_processed = u32::MAX;
+        assert_eq!(
+            tracker.record_batch(TimelineGapRepairTrigger::Automatic),
+            Some(u32::MAX)
+        );
+        assert_eq!(tracker.batches_processed, u32::MAX);
+    }
+
+    #[test]
+    fn gap_repair_budget_is_scoped_without_resetting_repeated_demand() {
+        let mut tracker = TimelineGapRepairTracker::default();
+        let id = projected_gap_id(7, 1);
+
+        assert!(tracker.admit_gap_attempt(id, 11).is_some());
+        assert_eq!(
+            tracker.record_batch(TimelineGapRepairTrigger::Automatic),
+            Some(1)
+        );
+
+        assert!(tracker.admit_gap_attempt(id, 11).is_none());
+        assert_eq!(tracker.attempt_gap_id, Some(id));
+        assert_eq!(tracker.batches_processed, 1);
+    }
+
+    #[test]
+    fn gap_repair_budget_is_scoped_to_topology_revision() {
+        let mut tracker = TimelineGapRepairTracker::default();
+        let first = projected_gap_id(7, 1);
+        let revised = projected_gap_id(8, 1);
+
+        assert!(tracker.admit_gap_attempt(first, 11).is_some());
+        assert!(
+            tracker
+                .record_batch(TimelineGapRepairTrigger::LiveEdge)
+                .is_some()
+        );
+
+        assert!(tracker.admit_gap_attempt(revised, 11).is_some());
+        assert_eq!(tracker.attempt_gap_id, Some(revised));
+        assert_eq!(tracker.batches_processed, 0);
+        assert_eq!(tracker.live_edge_batches_processed, 0);
+    }
+
+    #[test]
+    fn gap_repair_budget_is_scoped_to_gap_ordinal() {
+        let mut tracker = TimelineGapRepairTracker::default();
+        let first = projected_gap_id(7, 1);
+        let another = projected_gap_id(7, 2);
+
+        assert!(tracker.admit_gap_attempt(first, 11).is_some());
+        assert!(
+            tracker
+                .record_batch(TimelineGapRepairTrigger::Automatic)
+                .is_some()
+        );
+
+        assert!(tracker.admit_gap_attempt(another, 11).is_some());
+        assert_eq!(tracker.attempt_gap_id, Some(another));
+        assert_eq!(tracker.batches_processed, 0);
+    }
+
+    #[test]
+    fn gap_repair_budget_is_scoped_to_explicit_demand_revision() {
+        let mut tracker = TimelineGapRepairTracker::default();
+        let id = projected_gap_id(7, 1);
+
+        assert!(tracker.admit_gap_attempt(id, 11).is_some());
+        assert!(
+            tracker
+                .record_batch(TimelineGapRepairTrigger::Automatic)
+                .is_some()
+        );
+
+        assert!(tracker.admit_gap_attempt(id, 12).is_some());
+        assert_eq!(tracker.attempt_gap_id, Some(id));
+        assert_eq!(tracker.batches_processed, 0);
+    }
+
+    #[test]
+    fn gap_repair_budget_is_scoped_to_room_reselection_demand() {
+        let projected = vec![(0, projected_gap_position(7, 1, 8))];
+        let id = projected_gap_id(7, 1);
+        let mut tracker = TimelineGapRepairTracker::default();
+        tracker.replace_projected_gaps(projected, Some((5, 10)), &[id]);
+        let initial_demand = tracker.begin_explicit_demand();
+        assert!(tracker.admit_gap_attempt(id, initial_demand).is_some());
+        assert_eq!(
+            tracker.record_batch(TimelineGapRepairTrigger::Automatic),
+            Some(1)
+        );
+
+        let reselection_demand = tracker.begin_explicit_demand();
+
+        assert_ne!(initial_demand, reselection_demand);
+        assert_eq!(tracker.batches_processed, 1);
+        assert!(matches!(
+            tracker.evaluate_viewport_wake(Some((5, 10)), &[id]),
+            GapRepairViewportWakeDecision::Wake { .. }
+        ));
+        assert!(tracker.admit_gap_attempt(id, reselection_demand).is_some());
+        assert_eq!(tracker.batches_processed, 0);
+    }
+
+    #[test]
+    fn gap_repair_budget_is_scoped_to_newly_visible_demand() {
+        let projected = vec![(0, projected_gap_position(7, 1, 8))];
+        let id = projected_gap_id(7, 1);
+        let mut tracker = TimelineGapRepairTracker::default();
+        let initial_demand = tracker.begin_explicit_demand();
+        tracker.replace_projected_gaps(projected, None, &[]);
+        assert!(tracker.admit_gap_attempt(id, initial_demand).is_some());
+        assert_eq!(
+            tracker.record_batch(TimelineGapRepairTrigger::Automatic),
+            Some(1)
+        );
+
+        assert!(matches!(
+            tracker.evaluate_viewport_wake(None, &[id]),
+            GapRepairViewportWakeDecision::Wake {
+                candidate: ProjectedGapCandidate {
+                    relation: ProjectedGapRelation::ExplicitVisible,
+                    ..
+                }
+            }
+        ));
+        let visible_demand = tracker.demand_revision;
+
+        assert_ne!(initial_demand, visible_demand);
+        assert!(tracker.admit_gap_attempt(id, visible_demand).is_some());
+        assert_eq!(tracker.batches_processed, 0);
+        assert!(matches!(
+            tracker.evaluate_viewport_wake(None, &[id]),
+            GapRepairViewportWakeDecision::IdleUnchangedCandidate { .. }
+        ));
+        assert_eq!(tracker.demand_revision, visible_demand);
     }
 
     #[test]
     fn repair_projection_waits_for_the_exact_tagged_batch() {
         let mut correlation = TimelineGapProjectionCorrelation::default();
-        correlation.begin(9, 11);
+        let operation = historical_causal_projection_operation(11);
+        correlation.begin(9, operation);
 
         // An unrelated live diff can consume batch 5 without satisfying the repair.
         assert_eq!(
-            correlation.complete(9, 11, Some(1)),
+            correlation.complete(9, operation, Some(1)),
             TimelineGapProjectionCompletion::Pending
         );
         assert_eq!(
             correlation.observe(
-                GapRepairProjectionId {
+                CausalProjectionId {
                     actor_generation: 9,
-                    repair_generation: 10,
+                    operation: historical_causal_projection_operation(10),
                     projection_batch: 1,
                 },
                 TimelineBatchId(5),
@@ -7306,9 +10496,9 @@ mod timeline_gap_repair_tracker_tests {
         );
         assert_eq!(
             correlation.observe(
-                GapRepairProjectionId {
+                CausalProjectionId {
                     actor_generation: 9,
-                    repair_generation: 11,
+                    operation,
                     projection_batch: 1,
                 },
                 TimelineBatchId(6),
@@ -7320,12 +10510,13 @@ mod timeline_gap_repair_tracker_tests {
     #[test]
     fn repair_projection_uses_the_last_sdk_projection_batch() {
         let mut correlation = TimelineGapProjectionCorrelation::default();
-        correlation.begin(4, 7);
+        let operation = historical_causal_projection_operation(7);
+        correlation.begin(4, operation);
         assert_eq!(
             correlation.observe(
-                GapRepairProjectionId {
+                CausalProjectionId {
                     actor_generation: 4,
-                    repair_generation: 7,
+                    operation,
                     projection_batch: 1,
                 },
                 TimelineBatchId(20),
@@ -7333,14 +10524,14 @@ mod timeline_gap_repair_tracker_tests {
             None
         );
         assert_eq!(
-            correlation.complete(4, 7, Some(2)),
+            correlation.complete(4, operation, Some(2)),
             TimelineGapProjectionCompletion::Pending
         );
         assert_eq!(
             correlation.observe(
-                GapRepairProjectionId {
+                CausalProjectionId {
                     actor_generation: 4,
-                    repair_generation: 7,
+                    operation,
                     projection_batch: 2,
                 },
                 TimelineBatchId(21),
@@ -7352,9 +10543,10 @@ mod timeline_gap_repair_tracker_tests {
     #[test]
     fn gap_only_cache_reveal_requires_no_render_fence() {
         let mut correlation = TimelineGapProjectionCorrelation::default();
-        correlation.begin(2, 3);
+        let operation = historical_causal_projection_operation(3);
+        correlation.begin(2, operation);
         assert_eq!(
-            correlation.complete(2, 3, None),
+            correlation.complete(2, operation, None),
             TimelineGapProjectionCompletion::NoDiff
         );
         assert!(!correlation.is_pending());
@@ -7462,6 +10654,9 @@ struct TimelineActor {
     /// (Found/EndReached/BudgetExhausted/Failed/Superseded), so React receives
     /// a single settled update rather than O(chunks) intermediate renders.
     restore_emit_buffer: Vec<TimelineDiff>,
+    /// Causal SDK projection tags for the diffs above. They must be observed
+    /// only after the coalesced restore batch is published to the UI.
+    restore_causal_projections: RestoreCausalProjectionBuffer,
     /// `maybe_hydrate_missing_thread_roots` is deliberately deferred until a
     /// buffered restore window has emitted its final canonical `ItemsUpdated`.
     /// Otherwise a newly observed Pending projection is pruned by the store
@@ -7473,10 +10668,26 @@ struct TimelineActor {
     gap_repair: TimelineGapRepairTracker,
     gap_projection_correlation: TimelineGapProjectionCorrelation,
     pending_gap_projection: Option<PendingTimelineGapProjection>,
+    /// Historical projection released by a coalesced restore publication.
+    /// The synchronous flush records the exact published batch; the actor loop
+    /// performs the existing async scheduler handoff immediately afterwards.
+    ready_restore_gap_projection_batch: Option<TimelineBatchId>,
+    live_tail_projection_correlation: TimelineGapProjectionCorrelation,
+    pending_live_tail_projection: Option<PendingLiveTailRefreshCompletion>,
+    live_tail_refresh: Option<(
+        u64,
+        MatrixLiveTailRefreshCancellation,
+        executor::JoinHandle<()>,
+    )>,
     gap_work_task: Option<executor::JoinHandle<()>>,
     gap_relay_settlement_task: Option<executor::JoinHandle<()>>,
     gap_render_settlement_task: Option<executor::JoinHandle<()>>,
+    #[cfg(test)]
+    test_gap_repair_completion_pause: Option<TestGapRepairCompletionPause>,
     last_gap_repair_evaluation_diagnostic: Option<GapRepairEvaluationDiagnosticSignature>,
+    /// Diagnostic-only evidence that this actor received foreground repair demand.
+    /// It deliberately does not affect repair admission or actor lifecycle.
+    foreground_gap_demand_active: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -7519,14 +10730,14 @@ struct ThreadAttentionBatchProvenance {
 
 fn gap_repair_projections_from_sdk_diffs(
     diffs: &[eyeball_im::VectorDiff<Arc<SdkTimelineItem>>],
-) -> BTreeSet<GapRepairProjectionId> {
+) -> BTreeSet<CausalProjectionId> {
     let mut projections = BTreeSet::new();
     let mut observe = |item: &Arc<SdkTimelineItem>| {
         if let Some(projection) = item
             .as_event()
             .and_then(EventTimelineItem::gap_repair_projection)
         {
-            projections.insert(projection);
+            projections.insert(CausalProjectionId::decode_transport(projection));
         }
     };
     for diff in diffs {
@@ -7848,6 +11059,10 @@ impl Drop for TimelineActor {
         }
         if let Some(task) = self.gap_render_settlement_task.take() {
             task.abort();
+        }
+        if let Some((_, cancellation, task)) = self.live_tail_refresh.take() {
+            cancellation.cancel();
+            drop(task);
         }
     }
 }
@@ -8226,15 +11441,23 @@ impl TimelineActor {
             restore_anchor: None,
             next_restore_anchor_serial: 0,
             restore_emit_buffer: Vec::new(),
+            restore_causal_projections: RestoreCausalProjectionBuffer::default(),
             hydrate_after_restore_flush: false,
             diff_batch_seq: 0,
             gap_repair,
             gap_projection_correlation: TimelineGapProjectionCorrelation::default(),
             pending_gap_projection: None,
+            ready_restore_gap_projection_batch: None,
+            live_tail_projection_correlation: TimelineGapProjectionCorrelation::default(),
+            pending_live_tail_projection: None,
+            live_tail_refresh: None,
             gap_work_task: None,
             gap_relay_settlement_task: None,
             gap_render_settlement_task: None,
+            #[cfg(test)]
+            test_gap_repair_completion_pause: None,
             last_gap_repair_evaluation_diagnostic: None,
+            foreground_gap_demand_active: false,
         };
 
         actor
@@ -8292,6 +11515,21 @@ impl TimelineActor {
                     self.handle_msg(msg).await;
                 }
             }
+            self.finish_ready_causal_projection_handoffs().await;
+        }
+    }
+
+    async fn finish_ready_causal_projection_handoffs(&mut self) {
+        if let Some(batch_id) = self.ready_restore_gap_projection_batch.take() {
+            self.finish_pending_gap_projection(batch_id).await;
+        }
+        if self.pending_live_tail_projection.is_some()
+            && !self.live_tail_projection_correlation.is_pending()
+        {
+            if self.finish_pending_live_tail_projection().await {
+                self.request_timeline_gap_inspection(TimelineGapRepairTrigger::LiveTailSnapshot)
+                    .await;
+            }
         }
     }
 
@@ -8339,8 +11577,171 @@ impl TimelineActor {
         ));
     }
 
+    fn start_live_tail_refresh(&mut self, epoch: u64, operation_generation: u64, limit: u16) {
+        if !matches!(self.key.kind, TimelineKind::Room { .. })
+            || self
+                .live_tail_refresh
+                .as_ref()
+                .is_some_and(|(current, _, _)| *current == operation_generation)
+        {
+            return;
+        }
+        if let Some((_, cancellation, task)) = self.live_tail_refresh.take() {
+            cancellation.cancel();
+            drop(task);
+        }
+
+        let cancellation = MatrixLiveTailRefreshCancellation::new();
+        let task_cancellation = cancellation.clone();
+        let session = self.session.clone();
+        let actor_tx = self.msg_tx.clone();
+        let room_id = self.key.room_id().to_owned();
+        let actor_generation = self.actor_generation;
+        let projection_operation = live_tail_causal_projection_operation(operation_generation);
+        self.live_tail_projection_correlation
+            .begin(actor_generation, projection_operation);
+        record_live_tail_commit("started", operation_generation);
+        let task = executor::spawn(async move {
+            let started = Instant::now();
+            let result = session
+                .refresh_room_live_tail(
+                    &room_id,
+                    limit,
+                    actor_generation,
+                    projection_operation.encode_transport(),
+                    task_cancellation,
+                )
+                .await;
+            let _ = actor_tx
+                .send(TimelineActorMessage::LiveTailRefreshFinished {
+                    actor_generation,
+                    epoch,
+                    operation_generation,
+                    requested_limit: limit,
+                    result,
+                    duration_ms: started.elapsed().as_millis(),
+                })
+                .await;
+        });
+        self.live_tail_refresh = Some((operation_generation, cancellation, task));
+    }
+
+    async fn handle_live_tail_refresh_finished(
+        &mut self,
+        actor_generation: u64,
+        epoch: u64,
+        operation_generation: u64,
+        requested_limit: u16,
+        result: MatrixLiveTailRefreshResult,
+        duration_ms: u128,
+    ) {
+        if actor_generation != self.actor_generation
+            || !self
+                .live_tail_refresh
+                .as_ref()
+                .is_some_and(|(current, _, _)| *current == operation_generation)
+        {
+            return;
+        }
+        let _ = self.live_tail_refresh.take();
+        record_live_tail_commit("completed", operation_generation);
+        record_live_tail_reconciliation(result.diagnostics, operation_generation);
+        let outcome = result.outcome;
+        let completion = PendingLiveTailRefreshCompletion {
+            actor_generation,
+            epoch,
+            operation_generation,
+            outcome,
+            requested_limit,
+            returned_events: result.returned_events,
+            duration_ms,
+        };
+        match self.live_tail_projection_correlation.complete(
+            actor_generation,
+            live_tail_causal_projection_operation(operation_generation),
+            result.last_projection_batch,
+        ) {
+            TimelineGapProjectionCompletion::NoDiff | TimelineGapProjectionCompletion::Ready(_) => {
+                if self.publish_live_tail_refresh_completion(completion).await {
+                    self.request_timeline_gap_inspection(
+                        TimelineGapRepairTrigger::LiveTailSnapshot,
+                    )
+                    .await;
+                }
+            }
+            TimelineGapProjectionCompletion::Pending => {
+                self.pending_live_tail_projection = Some(completion);
+            }
+        }
+    }
+
+    async fn finish_pending_live_tail_projection(&mut self) -> bool {
+        if let Some(completion) = self.pending_live_tail_projection.take() {
+            self.publish_live_tail_refresh_completion(completion).await
+        } else {
+            false
+        }
+    }
+
+    async fn publish_live_tail_refresh_completion(
+        &self,
+        completion: PendingLiveTailRefreshCompletion,
+    ) -> bool {
+        let snapshot_required = live_tail_completion_requires_snapshot(completion.outcome);
+        let _ = self
+            .manager_tx
+            .send(TimelineMessage::LiveTailRefreshCompleted {
+                key: self.key.clone(),
+                actor_generation: completion.actor_generation,
+                epoch: completion.epoch,
+                operation_generation: completion.operation_generation,
+                outcome: completion.outcome,
+                requested_limit: completion.requested_limit,
+                returned_events: completion.returned_events,
+                duration_ms: completion.duration_ms,
+            })
+            .await;
+        snapshot_required
+    }
+
     async fn handle_msg(&mut self, msg: TimelineActorMessage) {
         match msg {
+            TimelineActorMessage::StartLiveTailRefresh {
+                epoch,
+                operation_generation,
+                limit,
+            } => {
+                self.start_live_tail_refresh(epoch, operation_generation, limit);
+            }
+            TimelineActorMessage::CancelLiveTailNetwork {
+                operation_generation,
+                acknowledged,
+            } => {
+                if let Some((current_generation, cancellation, _)) = self.live_tail_refresh.as_ref()
+                    && *current_generation == operation_generation
+                {
+                    cancellation.cancel();
+                }
+                let _ = acknowledged.send(());
+            }
+            TimelineActorMessage::LiveTailRefreshFinished {
+                actor_generation,
+                epoch,
+                operation_generation,
+                requested_limit,
+                result,
+                duration_ms,
+            } => {
+                self.handle_live_tail_refresh_finished(
+                    actor_generation,
+                    epoch,
+                    operation_generation,
+                    requested_limit,
+                    result,
+                    duration_ms,
+                )
+                .await;
+            }
             TimelineActorMessage::RoomSubscriptionCheckpoint(checkpoint) => {
                 if self.key.room_id() == checkpoint.room_id()
                     && match checkpoint.backend() {
@@ -8352,26 +11753,11 @@ impl TimelineActor {
                         }
                     }
                 {
-                    let should_replace = should_replace_unsettled_live_gap_checkpoint(
-                        self.room_subscription_checkpoint
-                            .as_ref()
-                            .map(|current| current.has_inserted_gap()),
-                        checkpoint.has_inserted_gap(),
+                    let changed = retain_room_subscription_checkpoint(
+                        &mut self.room_subscription_checkpoint,
+                        &mut self.deferred_room_subscription_checkpoint,
+                        checkpoint,
                     );
-                    let is_new_response = self
-                        .room_subscription_checkpoint
-                        .as_ref()
-                        .is_none_or(|current| !current.same_response_as(&checkpoint));
-                    let changed = should_replace && is_new_response;
-                    if should_replace {
-                        self.room_subscription_checkpoint = Some(checkpoint);
-                    } else if is_new_response {
-                        // The current committed gap owns one bounded admission
-                        // attempt. Retain only the latest response that arrives
-                        // while it is unsettled so stale-close cannot lose the
-                        // sole delivery of newer provenance.
-                        self.deferred_room_subscription_checkpoint = Some(checkpoint);
-                    }
                     if changed
                         && self
                             .room_subscription_checkpoint
@@ -8385,11 +11771,16 @@ impl TimelineActor {
                         self.live_catchup_gate(),
                         self.subscription_generation,
                         self.room_subscription_checkpoint.as_ref(),
+                        self.gap_repair_scheduler_phase(),
+                        self.gap_repair.batches_processed,
                     );
                     self.start_pending_timeline_gap_inspection().await;
                 }
             }
             TimelineActorMessage::InspectTimelineGaps { trigger } => {
+                if matches!(trigger, TimelineGapRepairTrigger::Manual) {
+                    self.gap_repair.begin_explicit_demand();
+                }
                 self.request_timeline_gap_inspection(trigger).await;
             }
             TimelineActorMessage::TimelineGapInspectionFinished {
@@ -8426,7 +11817,10 @@ impl TimelineActor {
                 trigger,
             } => {
                 if self.gap_projection_correlation.operation
-                    == Some((actor_generation, repair_generation))
+                    == Some((
+                        actor_generation,
+                        historical_causal_projection_operation(repair_generation),
+                    ))
                 {
                     if let Some(task) = self.gap_relay_settlement_task.take() {
                         task.abort();
@@ -8493,11 +11887,23 @@ impl TimelineActor {
                 self.maybe_fetch_visible_reply_details();
                 self.emit_navigation_if_changed();
                 let viewport_range = self.viewport_item_range();
-                let decision = self.gap_repair.evaluate_viewport_wake(viewport_range);
+                let decision = self.gap_repair.evaluate_viewport_wake(
+                    viewport_range,
+                    &self.viewport_observation.visible_gap_ids,
+                );
                 let projected_gap_count = self.gap_repair.projected_gaps.len();
+                let visible_gap_count = self.viewport_observation.visible_gap_ids.len();
+                let visible_gap_validated = self
+                    .viewport_observation
+                    .visible_gap_ids
+                    .iter()
+                    .any(|id| projected_gaps_contain_id(&self.gap_repair.projected_gaps, *id));
                 let scheduler_phase = self.gap_repair_scheduler_phase();
                 let (decision_token, candidate_changed) = match decision {
                     GapRepairViewportWakeDecision::Wake { .. } => ("wake", true),
+                    GapRepairViewportWakeDecision::WakeStaleVisibleDemand => {
+                        ("wake_stale_visible", false)
+                    }
                     GapRepairViewportWakeDecision::IdleNoCandidate => ("idle_no_candidate", false),
                     GapRepairViewportWakeDecision::IdleUnchangedCandidate { .. } => {
                         ("idle_unchanged", false)
@@ -8506,6 +11912,8 @@ impl TimelineActor {
                 let diagnostic_signature = GapRepairEvaluationDiagnosticSignature {
                     decision: decision_token,
                     projected_gap_count,
+                    visible_gap_count,
+                    visible_gap_validated,
                     candidate_changed,
                     scheduler_phase,
                 };
@@ -8516,14 +11924,46 @@ impl TimelineActor {
                     record_timeline_gap_repair_evaluation(
                         decision_token,
                         projected_gap_count,
+                        visible_gap_count,
+                        visible_gap_validated,
                         candidate_changed,
                         scheduler_phase,
                     );
                 }
-                if matches!(decision, GapRepairViewportWakeDecision::Wake { .. }) {
+                if matches!(
+                    decision,
+                    GapRepairViewportWakeDecision::Wake { .. }
+                        | GapRepairViewportWakeDecision::WakeStaleVisibleDemand
+                ) {
                     self.request_timeline_gap_inspection(TimelineGapRepairTrigger::Automatic)
                         .await;
                 }
+            }
+            TimelineActorMessage::BeginGapRepairDemand => {
+                let reason = if self.foreground_gap_demand_active {
+                    "room_reselected"
+                } else {
+                    "room_selected"
+                };
+                let foreground_demand_epoch = self.gap_repair.begin_explicit_demand();
+                self.foreground_gap_demand_active = true;
+                let inspection_requested = !self.viewport_observation.visible_gap_ids.is_empty();
+                record_timeline_gap_demand(
+                    foreground_demand_epoch,
+                    self.gap_repair.projected_gaps.len(),
+                    self.viewport_observation.visible_gap_ids.len(),
+                    inspection_requested,
+                    reason,
+                    self.gap_repair_scheduler_phase(),
+                );
+                if inspection_requested {
+                    self.request_timeline_gap_inspection(TimelineGapRepairTrigger::Automatic)
+                        .await;
+                }
+            }
+            TimelineActorMessage::EndGapRepairDemand => {
+                self.foreground_gap_demand_active = false;
+                self.gap_repair.pending_trigger = None;
             }
             TimelineActorMessage::SendText {
                 request_id,
@@ -8791,6 +12231,56 @@ impl TimelineActor {
                 }
             }
             #[cfg(test)]
+            TimelineActorMessage::TestBeginRestore {
+                request_id,
+                event_id,
+                acknowledged,
+            } => {
+                self.restore_anchor = Some(RestoreTimelineAnchorState {
+                    request_id,
+                    event_id,
+                    max_batches_remaining: 1,
+                    event_count: 1,
+                    in_flight: false,
+                    awaiting_diff_batch: false,
+                    continuation_scheduled: false,
+                    continuation_serial: None,
+                    anchor_relay_wait: None,
+                });
+                let _ = acknowledged.send(());
+            }
+            #[cfg(test)]
+            TimelineActorMessage::TestInjectRestoreDiff {
+                diffs,
+                projections,
+                acknowledged,
+            } => {
+                let provenance = ThreadAttentionBatchProvenance::from_sdk_diffs(&diffs);
+                self.handle_diff_batch(diffs, provenance, projections).await;
+                let _ = acknowledged.send(());
+            }
+            #[cfg(test)]
+            TimelineActorMessage::TestRestoreCausalState(response) => {
+                let _ = response.send((
+                    self.live_tail_projection_correlation.is_pending(),
+                    self.pending_live_tail_projection.is_some(),
+                    self.restore_emit_buffer.len(),
+                    self.restore_causal_projections.projections.clone(),
+                ));
+            }
+            #[cfg(test)]
+            TimelineActorMessage::TestFlushRestore(response) => {
+                let _ = response.send(self.flush_restore_emit_buffer());
+            }
+            #[cfg(test)]
+            TimelineActorMessage::TestArmGapRepairCompletionPause {
+                pause,
+                acknowledged,
+            } => {
+                self.test_gap_repair_completion_pause = Some(pause);
+                let _ = acknowledged.send(());
+            }
+            #[cfg(test)]
             TimelineActorMessage::Barrier(response) => {
                 let _ = response.send(());
             }
@@ -8836,6 +12326,28 @@ impl TimelineActor {
         }
     }
 
+    fn record_gap_selection_diagnostic(
+        &self,
+        trigger: TimelineGapRepairTrigger,
+        decision: &'static str,
+        repair_started: bool,
+        gap_count: usize,
+        projected_gap_count: usize,
+    ) {
+        record_timeline_gap_selection(TimelineGapSelectionDiagnostic {
+            trigger: timeline_gap_repair_trigger_token(trigger),
+            decision,
+            repair_started,
+            gap_count,
+            projected_gap_count,
+            visible_gap_count: self.viewport_observation.visible_gap_ids.len(),
+            foreground_demand_active: self.foreground_gap_demand_active,
+            foreground_demand_epoch: self.gap_repair.demand_revision,
+            has_live_edge_target: self.gap_repair.has_live_edge_target(),
+            scheduler_phase: self.gap_repair_scheduler_phase(),
+        });
+    }
+
     async fn request_timeline_gap_inspection(&mut self, trigger: TimelineGapRepairTrigger) {
         if !matches!(self.key.kind, TimelineKind::Room { .. }) {
             return;
@@ -8857,13 +12369,17 @@ impl TimelineActor {
             Some(TimelineGapRepairTrigger::LiveEdge)
         ) && matches!(
             self.live_catchup_gate(),
-            LiveCatchupGate::AwaitingCheckpoint | LiveCatchupGate::Stale
+            LiveCatchupGate::AwaitingCheckpoint
+                | LiveCatchupGate::Stale
+                | LiveCatchupGate::ProveLiveTailFreshness
         ) && self.gap_repair.live_edge_batches_processed == 0
         {
             record_live_catchup_gate(
                 self.live_catchup_gate(),
                 self.subscription_generation,
                 self.room_subscription_checkpoint.as_ref(),
+                self.gap_repair_scheduler_phase(),
+                self.gap_repair.batches_processed,
             );
             return;
         }
@@ -8921,6 +12437,7 @@ impl TimelineActor {
                         checkpoint.generation(),
                         checkpoint.has_timeline_update(),
                         checkpoint.has_inserted_gap(),
+                        checkpoint.is_room_absent(),
                     )
                 }),
         )
@@ -8966,8 +12483,11 @@ impl TimelineActor {
                 );
                 let projected_gaps = self.emit_gap_positions(serial, &inspection.gaps);
                 let viewport_range = self.viewport_item_range();
-                self.gap_repair
-                    .replace_projected_gaps(projected_gaps.clone(), viewport_range);
+                self.gap_repair.replace_projected_gaps(
+                    projected_gaps.clone(),
+                    viewport_range,
+                    &self.viewport_observation.visible_gap_ids,
+                );
                 let known_gap_count = inspection.gaps.len().try_into().unwrap_or(u32::MAX);
                 let state_inspection = match inspection.continuity {
                     MatrixTimelineContinuity::Unknown => TimelineContinuityInspection::Unknown,
@@ -8987,7 +12507,8 @@ impl TimelineActor {
                     MatrixTimelineContinuity::Gapped => {
                         self.gap_repair.gap_count = known_gap_count;
                         let mut committed_descriptor = None;
-                        let selection = if matches!(trigger, TimelineGapRepairTrigger::LiveEdge) {
+                        let mut selection = if matches!(trigger, TimelineGapRepairTrigger::LiveEdge)
+                        {
                             match self.live_catchup_gate() {
                                 LiveCatchupGate::RepairCheckpointGap => {
                                     committed_descriptor = self
@@ -9015,10 +12536,17 @@ impl TimelineActor {
                                         trigger,
                                         &projected_gaps,
                                         viewport_range,
+                                        &self.viewport_observation.visible_gap_ids,
                                         inspection.gaps.len(),
                                         true,
                                     )
                                 }
+                                LiveCatchupGate::ProveLiveTailFreshness
+                                    if self.gap_repair.live_edge_batches_processed > 0 =>
+                                {
+                                    GapRepairSelection::None
+                                }
+                                LiveCatchupGate::ProveLiveTailFreshness => GapRepairSelection::None,
                                 LiveCatchupGate::AwaitingCheckpoint
                                 | LiveCatchupGate::Stale
                                 | LiveCatchupGate::NoTimelineUpdate
@@ -9029,12 +12557,58 @@ impl TimelineActor {
                                 trigger,
                                 &projected_gaps,
                                 viewport_range,
+                                &self.viewport_observation.visible_gap_ids,
                                 inspection.gaps.len(),
                                 self.gap_repair.has_live_edge_target(),
                             )
                         };
+                        let unlocated_action = unlocated_gap_action(
+                            self.foreground_gap_demand_active,
+                            trigger,
+                            inspection.gaps.len(),
+                            projected_gaps.len(),
+                        );
+                        if let UnlocatedGapAction::RepairNewest { ordinal } = unlocated_action {
+                            selection = GapRepairSelection::Unprojected {
+                                ordinal,
+                                reason: UnprojectedGapReason::Foreground,
+                            };
+                            record_timeline_gap_repair(
+                                "selection",
+                                timeline_gap_repair_trigger_token(trigger),
+                                serial,
+                                known_gap_count,
+                                self.gap_repair.batches_processed,
+                                "foreground_unlocated_repair",
+                            );
+                        }
+                        let projected_candidate = select_projected_gap_candidate(
+                            &projected_gaps,
+                            viewport_range,
+                            &self.viewport_observation.visible_gap_ids,
+                        );
+                        let selection_decision = gap_selection_diagnostic_decision(
+                            selection,
+                            projected_candidate,
+                            self.foreground_gap_demand_active,
+                            inspection.gaps.len(),
+                            projected_gaps.len(),
+                        );
+                        let selected_projected_gap_id = match selection {
+                            GapRepairSelection::Projected { id } => Some(id),
+                            GapRepairSelection::None
+                            | GapRepairSelection::DirectCommittedResponse
+                            | GapRepairSelection::Unprojected { .. } => None,
+                        };
                         let (ordinal, outcome, repaired_live_edge_fallback) = match selection {
                             GapRepairSelection::None => {
+                                self.record_gap_selection_diagnostic(
+                                    trigger,
+                                    selection_decision,
+                                    false,
+                                    inspection.gaps.len(),
+                                    projected_gaps.len(),
+                                );
                                 if let Some(checkpoint) = committed_response.as_ref() {
                                     let retry_key = (checkpoint.backend(), checkpoint.generation());
                                     match missing_committed_gap_decision(
@@ -9052,10 +12626,10 @@ impl TimelineActor {
                                         }
                                         MissingCommittedGapDecision::CloseStale => {
                                             self.missing_committed_response_retry = None;
-                                            self.room_subscription_checkpoint = None;
-                                            if promote_deferred_checkpoint(
+                                            if consume_room_subscription_checkpoint(
                                                 &mut self.room_subscription_checkpoint,
                                                 &mut self.deferred_room_subscription_checkpoint,
+                                                checkpoint,
                                             ) {
                                                 self.gap_repair.queue_inspection(
                                                     TimelineGapRepairTrigger::LiveEdge,
@@ -9073,31 +12647,53 @@ impl TimelineActor {
                                     self.gap_repair.batches_processed,
                                     "offscreen",
                                 );
+                                if matches!(unlocated_action, UnlocatedGapAction::QueueAutomatic) {
+                                    self.gap_repair
+                                        .queue_inspection(TimelineGapRepairTrigger::Automatic);
+                                }
                                 self.start_pending_timeline_gap_inspection().await;
                                 self.emit_gap_repair_released_if_idle(serial);
                                 return;
                             }
-                            GapRepairSelection::Projected { ordinal } => {
-                                (Some(ordinal), "projected", false)
+                            GapRepairSelection::Projected { id } => {
+                                (usize::try_from(id.ordinal).ok(), "projected", false)
                             }
                             GapRepairSelection::DirectCommittedResponse => {
                                 self.missing_committed_response_retry = None;
-                                self.room_subscription_checkpoint = None;
-                                if promote_deferred_checkpoint(
-                                    &mut self.room_subscription_checkpoint,
-                                    &mut self.deferred_room_subscription_checkpoint,
-                                ) {
-                                    self.gap_repair
-                                        .queue_inspection(TimelineGapRepairTrigger::LiveEdge);
+                                if let Some(checkpoint) = committed_response.as_ref() {
+                                    if consume_room_subscription_checkpoint(
+                                        &mut self.room_subscription_checkpoint,
+                                        &mut self.deferred_room_subscription_checkpoint,
+                                        checkpoint,
+                                    ) {
+                                        self.gap_repair
+                                            .queue_inspection(TimelineGapRepairTrigger::LiveEdge);
+                                    }
                                 }
                                 (None, "committed_response", true)
                             }
-                            GapRepairSelection::LiveEdgeFallback { ordinal } => {
-                                (Some(ordinal), "live_edge_fallback", true)
-                            }
-                            GapRepairSelection::ManualFallback { ordinal } => {
-                                (Some(ordinal), "manual_fallback", false)
-                            }
+                            GapRepairSelection::Unprojected { ordinal, reason } => match reason {
+                                UnprojectedGapReason::LiveEdge => {
+                                    if let Some(checkpoint) = committed_response
+                                        .as_ref()
+                                        .filter(|value| value.is_room_absent())
+                                    {
+                                        if consume_room_subscription_checkpoint(
+                                            &mut self.room_subscription_checkpoint,
+                                            &mut self.deferred_room_subscription_checkpoint,
+                                            checkpoint,
+                                        ) {
+                                            self.gap_repair.queue_inspection(
+                                                TimelineGapRepairTrigger::LiveEdge,
+                                            );
+                                        }
+                                    }
+                                    (Some(ordinal), "live_edge_fallback", true)
+                                }
+                                UnprojectedGapReason::Foreground | UnprojectedGapReason::Manual => {
+                                    (Some(ordinal), "manual_fallback", false)
+                                }
+                            },
                         };
                         record_timeline_gap_repair(
                             "selection",
@@ -9110,18 +12706,68 @@ impl TimelineActor {
                         let descriptor = if let Some(descriptor) = committed_descriptor.take() {
                             descriptor
                         } else {
-                            let Some(descriptor) = ordinal
-                                .and_then(|ordinal| inspection.gaps.get(ordinal))
-                                .cloned()
+                            let projected_descriptor = selected_projected_gap_id.and_then(|id| {
+                                inspection
+                                    .gaps
+                                    .iter()
+                                    .enumerate()
+                                    .find(|(ordinal, descriptor)| {
+                                        projected_gap_identity_matches_descriptor(
+                                            id,
+                                            *ordinal,
+                                            descriptor.topology_revision(),
+                                        )
+                                    })
+                                    .map(|(_, descriptor)| descriptor)
+                            });
+                            let fallback_descriptor = selected_projected_gap_id
+                                .is_none()
+                                .then(|| ordinal.and_then(|ordinal| inspection.gaps.get(ordinal)))
+                                .flatten();
+                            let Some(descriptor) =
+                                projected_descriptor.or(fallback_descriptor).cloned()
                             else {
+                                self.record_gap_selection_diagnostic(
+                                    trigger,
+                                    selection_decision,
+                                    false,
+                                    inspection.gaps.len(),
+                                    projected_gaps.len(),
+                                );
                                 self.start_pending_timeline_gap_inspection().await;
                                 self.emit_gap_repair_released_if_idle(serial);
                                 return;
                             };
                             descriptor
                         };
+                        let selected_gap_id = selected_projected_gap_id.or_else(|| {
+                            let ordinal = ordinal.or_else(|| {
+                                committed_response.as_ref().and_then(|checkpoint| {
+                                    inspection
+                                        .gaps
+                                        .iter()
+                                        .position(|gap| checkpoint.matches_gap(gap))
+                                })
+                            })?;
+                            Some(projected_gap_id(descriptor.topology_revision(), ordinal))
+                        });
+                        if let Some(id) = selected_gap_id {
+                            let demand_revision = self.gap_repair.demand_revision;
+                            admit_and_record_timeline_gap_repair_attempt(
+                                &mut self.gap_repair,
+                                id,
+                                demand_revision,
+                            );
+                        }
                         if matches!(trigger, TimelineGapRepairTrigger::LiveEdge) {
                             if !self.gap_repair.can_start_batch(trigger) {
+                                self.record_gap_selection_diagnostic(
+                                    trigger,
+                                    selection_decision,
+                                    false,
+                                    inspection.gaps.len(),
+                                    projected_gaps.len(),
+                                );
                                 record_timeline_gap_repair(
                                     "selection",
                                     timeline_gap_repair_trigger_token(trigger),
@@ -9142,6 +12788,13 @@ impl TimelineActor {
                                 self.gap_repair.evaluate_live_edge_selection(fingerprint),
                                 LiveEdgeSelectionDecision::NoProgress
                             ) {
+                                self.record_gap_selection_diagnostic(
+                                    trigger,
+                                    selection_decision,
+                                    false,
+                                    inspection.gaps.len(),
+                                    projected_gaps.len(),
+                                );
                                 record_timeline_gap_repair(
                                     "selection",
                                     timeline_gap_repair_trigger_token(trigger),
@@ -9155,6 +12808,13 @@ impl TimelineActor {
                                 return;
                             }
                         }
+                        self.record_gap_selection_diagnostic(
+                            trigger,
+                            selection_decision,
+                            true,
+                            inspection.gaps.len(),
+                            projected_gaps.len(),
+                        );
                         self.start_timeline_gap_repair(
                             trigger,
                             repaired_live_edge_fallback,
@@ -9165,7 +12825,6 @@ impl TimelineActor {
                     }
                     MatrixTimelineContinuity::Unknown | MatrixTimelineContinuity::Complete => {
                         self.gap_repair.gap_count = 0;
-                        self.gap_repair.batches_processed = 0;
                         self.gap_repair.live_edge_batches_processed = 0;
                         self.gap_repair.last_live_edge_selection = None;
                     }
@@ -9223,6 +12882,19 @@ impl TimelineActor {
         generation: u64,
         gaps: &[MatrixTimelineGapHandle],
     ) -> Vec<(usize, TimelineGapPosition)> {
+        let boundary_presence = gaps
+            .iter()
+            .map(|gap| {
+                let newer_present = gap
+                    .newer_boundary_event_id()
+                    .is_some_and(|event_id| self.timeline_event_position(event_id).is_some());
+                let older_present = gap
+                    .older_boundary_event_id()
+                    .is_some_and(|event_id| self.timeline_event_position(event_id).is_some());
+                (newer_present, older_present)
+            })
+            .collect::<Vec<_>>();
+        let boundary_counts = summarize_gap_boundary_presence(boundary_presence.iter().copied());
         let projected = gaps
             .iter()
             .enumerate()
@@ -9238,7 +12910,7 @@ impl TimelineActor {
                         (
                             ordinal,
                             TimelineGapPosition {
-                                ordinal: ordinal.try_into().unwrap_or(u32::MAX),
+                                id: projected_gap_id(gap.topology_revision(), ordinal),
                                 before_item_index,
                             },
                         )
@@ -9246,6 +12918,22 @@ impl TimelineActor {
                 )
             })
             .collect::<Vec<_>>();
+        debug_assert_eq!(boundary_counts.projected, projected.len());
+        if !gaps.is_empty() {
+            let navigation_event_count = self
+                .navigation_items
+                .iter()
+                .filter(|item| matches!(&item.id, TimelineItemId::Event { .. }))
+                .count();
+            record_timeline_gap_projection(
+                gaps.len(),
+                boundary_counts,
+                navigation_event_count,
+                self.foreground_gap_demand_active,
+                self.gap_repair.demand_revision,
+                self.gap_repair_scheduler_phase(),
+            );
+        }
         let positions = projected.iter().map(|(_, position)| *position).collect();
         self.emit(CoreEvent::Timeline(TimelineEvent::GapPositionsUpdated {
             key: self.key.clone(),
@@ -9284,7 +12972,7 @@ impl TimelineActor {
             self.gap_repair.finish_work(serial);
             return;
         }
-        if !self.gap_repair.can_start_batch(trigger) {
+        if self.gap_repair.record_batch(trigger).is_none() {
             self.gap_repair.finish_work(serial);
             let _ = self
                 .emit_action_reliable(AppAction::TimelineGapRepairFailed {
@@ -9302,11 +12990,19 @@ impl TimelineActor {
         let actor_tx = self.msg_tx.clone();
         let budget = timeline_gap_repair_budget(trigger);
         let actor_generation = self.actor_generation;
+        let projection_operation = historical_causal_projection_operation(serial);
         self.gap_projection_correlation
-            .begin(actor_generation, serial);
+            .begin(actor_generation, projection_operation);
+        #[cfg(test)]
+        let completion_pause = self.test_gap_repair_completion_pause.take();
         self.gap_work_task = Some(executor::spawn(async move {
             let mut result = session
-                .repair_room_timeline_gap(&descriptor, budget, actor_generation, serial)
+                .repair_room_timeline_gap(
+                    &descriptor,
+                    budget,
+                    actor_generation,
+                    projection_operation.encode_transport(),
+                )
                 .await;
             if let Some(projection_batch) = result
                 .as_ref()
@@ -9315,11 +13011,14 @@ impl TimelineActor {
             {
                 match wait_for_gap_repair_projection_with_timeout(
                     TIMELINE_GAP_OBSERVABLE_SETTLEMENT_TIMEOUT,
-                    timeline.wait_for_gap_repair_projection(GapRepairProjectionId {
-                        actor_generation,
-                        repair_generation: serial,
-                        projection_batch,
-                    }),
+                    timeline.wait_for_gap_repair_projection(
+                        CausalProjectionId {
+                            actor_generation,
+                            operation: projection_operation,
+                            projection_batch,
+                        }
+                        .encode_transport(),
+                    ),
                 )
                 .await
                 {
@@ -9334,14 +13033,32 @@ impl TimelineActor {
                     }
                 }
             }
-            let _ = actor_tx
+            #[cfg(test)]
+            let forwarded = if let Some(TestGapRepairCompletionPause {
+                reached,
+                release,
+                forwarded,
+            }) = completion_pause
+            {
+                let _ = reached.send(());
+                let _ = release.await;
+                Some(forwarded)
+            } else {
+                None
+            };
+            let _completion_forwarded = actor_tx
                 .send(TimelineActorMessage::TimelineGapRepairFinished {
                     serial,
                     trigger,
                     repaired_live_edge_fallback,
                     result,
                 })
-                .await;
+                .await
+                .is_ok();
+            #[cfg(test)]
+            if let Some(forwarded) = forwarded {
+                let _ = forwarded.send(_completion_forwarded);
+            }
         }));
     }
 
@@ -9358,9 +13075,12 @@ impl TimelineActor {
         self.gap_work_task = None;
         let room_id = self.key.room_id().to_owned();
         let gap_count = self.gap_repair.gap_count;
+        record_timeline_gap_repair_result(&mut self.gap_repair, serial, trigger, &result);
         let Ok(result) = result else {
-            self.gap_projection_correlation
-                .clear(self.actor_generation, serial);
+            self.gap_projection_correlation.clear(
+                self.actor_generation,
+                historical_causal_projection_operation(serial),
+            );
             self.emit_gap_repair_failure_and_resume(
                 room_id,
                 serial,
@@ -9370,9 +13090,12 @@ impl TimelineActor {
             .await;
             return;
         };
+        let batches_processed = self.gap_repair.batches_processed;
         if result.outcome == MatrixTimelineGapRepairOutcome::Failed {
-            self.gap_projection_correlation
-                .clear(self.actor_generation, serial);
+            self.gap_projection_correlation.clear(
+                self.actor_generation,
+                historical_causal_projection_operation(serial),
+            );
             self.emit_gap_repair_failure_and_resume(
                 room_id,
                 serial,
@@ -9382,31 +13105,13 @@ impl TimelineActor {
             .await;
             return;
         }
-        if automatic_gap_repair_is_offscreen(trigger, &result.outcome) {
-            self.gap_projection_correlation
-                .clear(self.actor_generation, serial);
-            record_timeline_gap_repair(
-                "repair",
-                timeline_gap_repair_trigger_token(trigger),
-                serial,
-                gap_count,
-                self.gap_repair.batches_processed,
-                "offscreen",
-            );
-            self.emit_gap_repair_failure_and_resume(
-                room_id,
-                serial,
-                gap_count,
-                TimelineGapRepairFailureKind::UnsupportedAnchor,
-            )
-            .await;
-            return;
-        }
         if matches!(trigger, TimelineGapRepairTrigger::LiveEdge)
-            && !live_edge_repair_made_progress(&result.outcome)
+            && !timeline_gap_repair_made_progress(&result.outcome)
         {
-            self.gap_projection_correlation
-                .clear(self.actor_generation, serial);
+            self.gap_projection_correlation.clear(
+                self.actor_generation,
+                historical_causal_projection_operation(serial),
+            );
             record_timeline_gap_repair(
                 "repair",
                 timeline_gap_repair_trigger_token(trigger),
@@ -9426,21 +13131,9 @@ impl TimelineActor {
         }
         let continuation_trigger =
             gap_repair_continuation_trigger(trigger, repaired_live_edge_fallback, &result.outcome);
-        let Some(batches_processed) = self.gap_repair.record_batch(trigger) else {
-            self.gap_projection_correlation
-                .clear(self.actor_generation, serial);
-            self.emit_gap_repair_failure_and_resume(
-                room_id,
-                serial,
-                gap_count,
-                TimelineGapRepairFailureKind::Timeout,
-            )
-            .await;
-            return;
-        };
         match self.gap_projection_correlation.complete(
             self.actor_generation,
-            serial,
+            historical_causal_projection_operation(serial),
             result.last_projection_batch,
         ) {
             TimelineGapProjectionCompletion::Ready(batch_id) => {
@@ -11823,7 +15516,7 @@ impl TimelineActor {
         &mut self,
         diffs: Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>,
         thread_attention_provenance: ThreadAttentionBatchProvenance,
-        gap_repair_projections: BTreeSet<GapRepairProjectionId>,
+        gap_repair_projections: BTreeSet<CausalProjectionId>,
     ) {
         if diffs.is_empty() {
             return;
@@ -11831,7 +15524,12 @@ impl TimelineActor {
         // Advance the diff-batch sequence counter on every non-empty batch so
         // settle ticks can detect when the final async DiffBatch has landed.
         self.diff_batch_seq = self.diff_batch_seq.wrapping_add(1);
-        let is_gap_repair_projection = !gap_repair_projections.is_empty();
+        let has_historical_gap_repair_projection = gap_repair_projections
+            .iter()
+            .any(|projection| projection.operation.domain == CausalProjectionDomain::HistoricalGap);
+        let has_live_tail_projection = gap_repair_projections
+            .iter()
+            .any(|projection| projection.operation.domain == CausalProjectionDomain::LiveTail);
 
         for diff in &diffs {
             self.apply_media_cache_diff(diff);
@@ -11899,7 +15597,7 @@ impl TimelineActor {
         }
         apply_timeline_diffs_to_items(&mut self.navigation_items, &core_diffs);
         let live_edge_target_changed = matches!(self.key.kind, TimelineKind::Room { .. })
-            && !is_gap_repair_projection
+            && !has_historical_gap_repair_projection
             && self
                 .gap_repair
                 .observe_live_edge_target(rendered_live_edge_target(&self.navigation_items));
@@ -11916,6 +15614,7 @@ impl TimelineActor {
         self.emit_media_gallery_if_changed().await;
 
         let restore_diff_is_relevant = timeline_diffs_include_prepend(&core_diffs);
+        let mut live_tail_completion_published = false;
 
         if self.restore_anchor.is_some() {
             // While a restore walk is in-flight, buffer this batch's diffs
@@ -11924,6 +15623,8 @@ impl TimelineActor {
             // is still advanced so later non-restore emits remain monotonic.
             self.next_batch_id = TimelineBatchId(self.next_batch_id.0 + 1);
             self.restore_emit_buffer.extend(core_diffs);
+            self.restore_causal_projections
+                .buffer_batch(gap_repair_projections);
             // Hydration Pending must be emitted only after this buffer's final
             // canonical ItemsUpdated group, otherwise the desktop store prunes
             // it before the reply item which keeps it active is present.
@@ -11953,23 +15654,39 @@ impl TimelineActor {
             let emitted = self.emit_items_updated_and_reconcile_replay_known(core_diffs);
             self.emit_navigation_if_changed();
             if emitted {
-                let ready_projection_batch =
-                    gap_repair_projections.into_iter().find_map(|projection| {
-                        self.gap_projection_correlation
-                            .observe(projection, emitted_batch_id)
-                    });
-                if let Some(batch_id) = ready_projection_batch {
+                let mut ready_gap_projection_batch = None;
+                let mut live_tail_projection_ready = false;
+                for projection in gap_repair_projections {
+                    let observation = observe_causal_projection(
+                        &mut self.gap_projection_correlation,
+                        &mut self.live_tail_projection_correlation,
+                        projection,
+                        emitted_batch_id,
+                    );
+                    if observation.live_tail_batch_id.is_some() {
+                        live_tail_projection_ready = true;
+                    }
+                    if ready_gap_projection_batch.is_none() {
+                        ready_gap_projection_batch = observation.historical_gap_batch_id;
+                    }
+                }
+                if let Some(batch_id) = ready_gap_projection_batch {
                     self.finish_pending_gap_projection(batch_id).await;
+                }
+                if live_tail_projection_ready {
+                    live_tail_completion_published =
+                        self.finish_pending_live_tail_projection().await;
                 }
                 self.maybe_hydrate_missing_thread_roots().await;
             }
         }
-        self.request_timeline_gap_inspection(if live_edge_target_changed {
-            TimelineGapRepairTrigger::LiveEdge
-        } else {
-            TimelineGapRepairTrigger::Automatic
-        })
-        .await;
+        if let Some(trigger) = post_diff_gap_inspection_trigger(
+            has_live_tail_projection,
+            live_tail_completion_published,
+            live_edge_target_changed,
+        ) {
+            self.request_timeline_gap_inspection(trigger).await;
+        }
     }
 
     /// Detect Room thread replies whose root is not present in the canonical
@@ -13151,7 +16868,11 @@ impl TimelineActor {
                 item.as_event()
                     .and_then(EventTimelineItem::gap_repair_projection)
             })
-            .filter(|projection| self.gap_projection_correlation.accepts(*projection))
+            .map(CausalProjectionId::decode_transport)
+            .filter(|projection| {
+                self.gap_projection_correlation.accepts(*projection)
+                    || self.live_tail_projection_correlation.accepts(*projection)
+            })
             .collect::<BTreeSet<_>>();
         let diff_stream = prepared.stream;
         let old_window_event_ids = self
@@ -13222,28 +16943,41 @@ impl TimelineActor {
         if !snapshot_gap_repair_projections.is_empty() {
             let recovery_batch_id = self.next_batch_id;
             if self.emit_items_updated_and_reconcile_replay_known(Vec::new()) {
-                if let Some(batch_id) =
-                    snapshot_gap_repair_projections
-                        .into_iter()
-                        .find_map(|projection| {
-                            self.gap_projection_correlation
-                                .observe(projection, recovery_batch_id)
-                        })
-                {
+                let mut ready_gap_projection_batch = None;
+                let mut live_tail_projection_ready = false;
+                for projection in snapshot_gap_repair_projections {
+                    let observation = observe_causal_projection(
+                        &mut self.gap_projection_correlation,
+                        &mut self.live_tail_projection_correlation,
+                        projection,
+                        recovery_batch_id,
+                    );
+                    ready_gap_projection_batch =
+                        ready_gap_projection_batch.or(observation.historical_gap_batch_id);
+                    live_tail_projection_ready |= observation.live_tail_batch_id.is_some();
+                }
+                if let Some(batch_id) = ready_gap_projection_batch {
                     self.finish_pending_gap_projection(batch_id).await;
+                }
+                if live_tail_projection_ready {
+                    if self.finish_pending_live_tail_projection().await {
+                        self.request_timeline_gap_inspection(
+                            TimelineGapRepairTrigger::LiveTailSnapshot,
+                        )
+                        .await;
+                    }
                 }
             }
         }
-        if let Some((actor_generation, repair_generation)) =
-            self.gap_projection_correlation.operation
-        {
+        if let Some((actor_generation, operation)) = self.gap_projection_correlation.operation {
             let trigger = self
                 .pending_gap_projection
                 .as_ref()
                 .map_or(TimelineGapRepairTrigger::Automatic, |pending| {
                     pending.trigger
                 });
-            self.release_gap_relay_settlement(actor_generation, repair_generation, trigger)
+            debug_assert_eq!(operation.domain, CausalProjectionDomain::HistoricalGap);
+            self.release_gap_relay_settlement(actor_generation, operation.serial, trigger)
                 .await;
         }
         if let Some(fence) = self.gap_repair.awaiting_projection {
@@ -13308,15 +17042,25 @@ impl TimelineActor {
     fn flush_restore_emit_buffer(&mut self) -> bool {
         if !self.restore_emit_buffer.is_empty() {
             let diffs = std::mem::take(&mut self.restore_emit_buffer);
+            let published_batch_id = self.next_batch_id;
             // A restore has deliberately deferred its UI diffs. Reconcile only
             // now, immediately beside the one settled ItemsUpdated emission,
             // so a replacement actor can never observe a replay transition
             // without the canonical batch that caused it.
             let emitted = self.emit_items_updated_and_reconcile_replay_known(diffs);
             self.emit_navigation_if_changed();
+            if emitted {
+                let observation = self.restore_causal_projections.observe_after_publication(
+                    &mut self.gap_projection_correlation,
+                    &mut self.live_tail_projection_correlation,
+                    published_batch_id,
+                );
+                self.ready_restore_gap_projection_batch = observation.historical_gap_batch_id;
+            }
             return emitted;
         } else {
             self.restore_emit_buffer.clear();
+            self.restore_causal_projections = RestoreCausalProjectionBuffer::default();
         }
         self.emit_navigation_if_changed();
         false
@@ -18143,7 +21887,7 @@ mod tests {
             room_list_service: None,
             room_subscription_checkpoint_task: None,
             room_subscription_service_epoch: 0,
-            legacy_committed_checkpoints: HashMap::new(),
+            legacy_committed_response: None,
             timelines: HashMap::from([(key.clone(), test_timeline_actor_handle())]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
@@ -18159,6 +21903,7 @@ mod tests {
             thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
             replay_known_thread_root_projections: replay_known_thread_root_projections.clone(),
             timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
+            live_tail_refreshes: LiveTailRefreshCoordinator::new(),
             #[cfg(test)]
             test_session_available: false,
         };
@@ -19494,7 +23239,7 @@ mod tests {
             room_list_service: None,
             room_subscription_checkpoint_task: None,
             room_subscription_service_epoch: 0,
-            legacy_committed_checkpoints: HashMap::new(),
+            legacy_committed_response: None,
             timelines: HashMap::from([(key.clone(), test_timeline_actor_handle())]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
@@ -19512,6 +23257,7 @@ mod tests {
             thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
             replay_known_thread_root_projections: replay_known_thread_root_projections.clone(),
             timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
+            live_tail_refreshes: LiveTailRefreshCoordinator::new(),
             #[cfg(test)]
             test_session_available: false,
         };
@@ -19583,6 +23329,7 @@ mod tests {
                 at_bottom: false,
                 first_visible_event_id: Some("$event-10:test".to_owned()),
                 last_visible_event_id: Some("$event-20:test".to_owned()),
+                visible_gap_ids: Vec::new(),
             },
         );
 
@@ -19717,6 +23464,7 @@ mod tests {
             &TimelineViewportObservation {
                 first_visible_event_id: Some("$first-visible:test".to_owned()),
                 last_visible_event_id: Some("$already-requested:test".to_owned()),
+                visible_gap_ids: Vec::new(),
                 at_bottom: false,
             },
             &requested,
@@ -19964,6 +23712,971 @@ mod tests {
         }
     }
 
+    fn live_tail_test_actor_handle(
+        label: &'static str,
+        log: Arc<Mutex<Vec<String>>>,
+    ) -> TimelineActorHandle {
+        let (tx, mut rx) = mpsc::channel(8);
+        let task = executor::spawn(async move {
+            let mut operation_epochs = HashMap::new();
+            while let Some(message) = rx.recv().await {
+                match message {
+                    TimelineActorMessage::StartLiveTailRefresh {
+                        epoch,
+                        operation_generation,
+                        limit,
+                    } => {
+                        operation_epochs.insert(operation_generation, epoch);
+                        log.lock()
+                            .expect("live-tail log lock")
+                            .push(format!("start:{label}:epoch={epoch}:limit={limit}"));
+                    }
+                    TimelineActorMessage::CancelLiveTailNetwork {
+                        operation_generation,
+                        acknowledged,
+                    } => {
+                        let epoch = operation_epochs
+                            .get(&operation_generation)
+                            .copied()
+                            .expect("cancelled operation was started");
+                        log.lock()
+                            .expect("live-tail log lock")
+                            .push(format!("cancel-network:{label}:epoch={epoch}"));
+                        let _ = acknowledged.send(());
+                    }
+                    _ => {}
+                }
+            }
+        });
+        TimelineActorHandle {
+            tx,
+            task,
+            auxiliary_tasks: Vec::new(),
+            subscription_generation: None,
+        }
+    }
+
+    fn live_tail_replacement_test_actor_handle(
+        key: TimelineKey,
+        labels: Arc<Mutex<HashMap<TimelineKey, &'static str>>>,
+        log: Arc<Mutex<Vec<String>>>,
+    ) -> TimelineActorHandle {
+        let (tx, mut rx) = mpsc::channel(8);
+        let task = executor::spawn(async move {
+            while let Some(message) = rx.recv().await {
+                let label = labels
+                    .lock()
+                    .expect("live-tail replacement labels lock")
+                    .get(&key)
+                    .copied()
+                    .expect("replacement actor label");
+                match message {
+                    TimelineActorMessage::StartLiveTailRefresh {
+                        epoch,
+                        operation_generation,
+                        limit,
+                    } => log.lock().expect("live-tail replacement log lock").push(format!(
+                        "start:{label}:epoch={epoch}:operation={operation_generation}:limit={limit}"
+                    )),
+                    TimelineActorMessage::CancelLiveTailNetwork {
+                        operation_generation,
+                        acknowledged,
+                    } => {
+                        log.lock().expect("live-tail replacement log lock").push(format!(
+                            "cancel-network:{label}:operation={operation_generation}"
+                        ));
+                        let _ = acknowledged.send(());
+                    }
+                    _ => {}
+                }
+            }
+        });
+        TimelineActorHandle {
+            tx,
+            task,
+            auxiliary_tasks: Vec::new(),
+            subscription_generation: None,
+        }
+    }
+
+    fn gap_demand_test_actor_handle(
+        label: &'static str,
+        log: Arc<Mutex<Vec<String>>>,
+    ) -> TimelineActorHandle {
+        let (tx, mut rx) = mpsc::channel(8);
+        let task = executor::spawn(async move {
+            while let Some(message) = rx.recv().await {
+                match message {
+                    TimelineActorMessage::BeginGapRepairDemand => log
+                        .lock()
+                        .expect("gap demand log lock")
+                        .push(format!("begin:{label}")),
+                    TimelineActorMessage::EndGapRepairDemand => log
+                        .lock()
+                        .expect("gap demand log lock")
+                        .push(format!("end:{label}")),
+                    TimelineActorMessage::CancelLiveTailNetwork { acknowledged, .. } => {
+                        let _ = acknowledged.send(());
+                    }
+                    _ => {}
+                }
+            }
+        });
+        TimelineActorHandle {
+            tx,
+            task,
+            auxiliary_tasks: Vec::new(),
+            subscription_generation: None,
+        }
+    }
+
+    fn live_tail_test_manager(
+        timelines: HashMap<TimelineKey, TimelineActorHandle>,
+    ) -> TimelineManagerActor {
+        let (action_tx, _action_rx) = mpsc::channel(8);
+        let (event_tx, _event_rx) = broadcast::channel(8);
+        let (msg_tx, msg_rx) = mpsc::channel(8);
+        TimelineManagerActor {
+            session: None,
+            room_list_service: None,
+            room_subscription_checkpoint_task: None,
+            room_subscription_service_epoch: 0,
+            legacy_committed_response: None,
+            timelines,
+            accepted_submissions: SubmissionAdmissionLedger::default(),
+            action_tx,
+            event_tx,
+            msg_tx,
+            msg_rx,
+            search_index_tx: None,
+            ignored_user_ids: Default::default(),
+            data_dir: None,
+            link_preview_policy: LinkPreviewContext::default(),
+            messages_backpressure: MessagesBackpressure::default(),
+            thread_root_projection_service: Arc::new(Mutex::new(
+                ThreadRootProjectionService::default(),
+            )),
+            thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
+            replay_known_thread_root_projections: Arc::new(Mutex::new(
+                ReplayKnownThreadRootProjectionRegistry::default(),
+            )),
+            timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
+            live_tail_refreshes: LiveTailRefreshCoordinator::new(),
+            test_session_available: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn live_tail_preemption_cancels_network_before_new_active_room_starts() {
+        let account = AccountKey("@a:test".to_owned());
+        let room_a = TimelineKey::room(account.clone(), "!a:test");
+        let room_b = TimelineKey::room(account, "!b:test");
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut manager = live_tail_test_manager(HashMap::from([
+            (
+                room_a.clone(),
+                live_tail_test_actor_handle("A", log.clone()),
+            ),
+            (
+                room_b.clone(),
+                live_tail_test_actor_handle("B", log.clone()),
+            ),
+        ]));
+
+        manager.room_subscription_service_epoch = 7;
+        manager
+            .handle_committed_room_selection(fake_rid(1), room_a, false)
+            .await;
+        manager.room_subscription_service_epoch = 9;
+        manager
+            .handle_committed_room_selection(fake_rid(2), room_b, false)
+            .await;
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if log.lock().expect("live-tail log lock").len() == 3 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("preemption log completed");
+        assert_eq!(
+            *log.lock().expect("live-tail log lock"),
+            [
+                "start:A:epoch=7:limit=128",
+                "cancel-network:A:epoch=7",
+                "start:B:epoch=9:limit=128",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn foreground_gap_demand_moves_to_the_newly_selected_room() {
+        let account = AccountKey("@gap-owner:test".to_owned());
+        let room_a = TimelineKey::room(account.clone(), "!gap-a:test");
+        let room_b = TimelineKey::room(account, "!gap-b:test");
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut manager = live_tail_test_manager(HashMap::from([
+            (
+                room_a.clone(),
+                gap_demand_test_actor_handle("A", log.clone()),
+            ),
+            (
+                room_b.clone(),
+                gap_demand_test_actor_handle("B", log.clone()),
+            ),
+        ]));
+
+        manager
+            .handle_committed_room_selection(fake_rid(1), room_a, false)
+            .await;
+        manager
+            .handle_committed_room_selection(fake_rid(2), room_b, false)
+            .await;
+        tokio::task::yield_now().await;
+
+        assert_eq!(
+            *log.lock().expect("gap demand log lock"),
+            ["begin:A", "end:A", "begin:B"],
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_replacement_restores_foreground_gap_demand_to_the_new_actor() {
+        let room = TimelineKey::room(AccountKey("@gap-owner:test".to_owned()), "!gap:test");
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut manager = live_tail_test_manager(HashMap::from([(
+            room.clone(),
+            gap_demand_test_actor_handle("old", log.clone()),
+        )]));
+        manager
+            .handle_committed_room_selection(fake_rid(1), room.clone(), false)
+            .await;
+        manager.timelines.insert(
+            room.clone(),
+            gap_demand_test_actor_handle("replacement", log.clone()),
+        );
+
+        manager.restore_foreground_gap_demand(&room).await;
+        tokio::task::yield_now().await;
+
+        assert_eq!(
+            *log.lock().expect("gap demand log lock"),
+            ["begin:replacement"],
+        );
+    }
+
+    #[tokio::test]
+    async fn live_tail_epoch_replacement_folds_stale_pending_starts_before_dispatch() {
+        let account = AccountKey("@replacement:test".to_owned());
+        let candidates = ["!one:test", "!two:test", "!three:test"]
+            .map(|room_id| TimelineKey::room(account.clone(), room_id));
+        let labels = Arc::new(Mutex::new(HashMap::new()));
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut manager = live_tail_test_manager(
+            candidates
+                .iter()
+                .cloned()
+                .map(|key| {
+                    (
+                        key.clone(),
+                        live_tail_replacement_test_actor_handle(key, labels.clone(), log.clone()),
+                    )
+                })
+                .collect(),
+        );
+        let ordered = manager.timelines.keys().cloned().collect::<Vec<_>>();
+        let [room_b, room_c, room_a] = ordered.as_slice() else {
+            panic!("three replacement rooms");
+        };
+        let (room_b, room_c, room_a) = (room_b.clone(), room_c.clone(), room_a.clone());
+        labels
+            .lock()
+            .expect("live-tail replacement labels lock")
+            .extend([
+                (room_b.clone(), "B"),
+                (room_c.clone(), "C"),
+                (room_a.clone(), "A"),
+            ]);
+
+        let prepare = || {
+            let mut coordinator = LiveTailRefreshCoordinator::new();
+            assert_eq!(
+                coordinator.activate(room_a.clone(), 7),
+                vec![LiveTailSchedulerAction::Start {
+                    key: room_a.clone(),
+                    epoch: 7,
+                    operation_generation: 1,
+                    limit: 128,
+                }]
+            );
+            assert!(coordinator.mark_unproven(room_b.clone(), 7).is_empty());
+            assert!(coordinator.mark_unproven(room_c.clone(), 7).is_empty());
+            let start_b =
+                coordinator.finish(room_a.clone(), 7, 1, LiveTailRefreshOutcome::Unchanged);
+            (coordinator, start_b)
+        };
+
+        let (mut evidence, _) = prepare();
+        let logical_actions = [room_b.clone(), room_c.clone(), room_a.clone()]
+            .into_iter()
+            .flat_map(|key| evidence.invalidate_epoch(key, 8))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            logical_actions,
+            vec![
+                LiveTailSchedulerAction::CancelNetwork {
+                    key: room_b.clone(),
+                    operation_generation: 2,
+                },
+                LiveTailSchedulerAction::Start {
+                    key: room_c.clone(),
+                    epoch: 7,
+                    operation_generation: 3,
+                    limit: 128,
+                },
+                LiveTailSchedulerAction::CancelNetwork {
+                    key: room_c.clone(),
+                    operation_generation: 3,
+                },
+                LiveTailSchedulerAction::Start {
+                    key: room_b.clone(),
+                    epoch: 8,
+                    operation_generation: 4,
+                    limit: 128,
+                },
+                LiveTailSchedulerAction::CancelNetwork {
+                    key: room_b.clone(),
+                    operation_generation: 4,
+                },
+                LiveTailSchedulerAction::Start {
+                    key: room_a.clone(),
+                    epoch: 8,
+                    operation_generation: 5,
+                    limit: 128,
+                },
+            ],
+            "the coordinator cancellation stream must remain causal",
+        );
+
+        let (coordinator, start_b) = prepare();
+        manager.live_tail_refreshes = coordinator;
+        manager.apply_live_tail_scheduler_actions(start_b).await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !log
+                    .lock()
+                    .expect("live-tail replacement log lock")
+                    .is_empty()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("initial delayed B start");
+        log.lock().expect("live-tail replacement log lock").clear();
+
+        let starts = manager
+            .invalidate_live_tail_epoch_for_existing_rooms(8)
+            .await;
+        manager.apply_live_tail_scheduler_actions(starts).await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if log
+                    .lock()
+                    .expect("live-tail replacement log lock")
+                    .iter()
+                    .any(|entry| entry.starts_with("start:A:epoch=8:"))
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("final replacement start");
+        tokio::task::yield_now().await;
+        assert_eq!(
+            *log.lock().expect("live-tail replacement log lock"),
+            [
+                "cancel-network:B:operation=2",
+                "start:A:epoch=8:operation=5:limit=128",
+            ],
+            "only the already-dispatched network and final coordinator start reach actors",
+        );
+    }
+
+    #[test]
+    fn causal_projection_domains_route_equal_raw_serial_without_collision() {
+        let actor_generation = 4;
+        let raw_serial = 1;
+        let projection_batch = 1;
+        let published_batch_id = TimelineBatchId(21);
+        let historical_operation =
+            CausalProjectionOperationId::new(CausalProjectionDomain::HistoricalGap, raw_serial)
+                .expect("historical serial fits the transport envelope");
+        let live_tail_operation =
+            CausalProjectionOperationId::new(CausalProjectionDomain::LiveTail, raw_serial)
+                .expect("live-tail serial fits the transport envelope");
+
+        assert_eq!(historical_operation.encode_transport(), raw_serial);
+        assert_eq!(
+            live_tail_operation.encode_transport(),
+            CAUSAL_PROJECTION_DOMAIN_BIT | raw_serial,
+        );
+        assert!(
+            CausalProjectionOperationId::new(
+                CausalProjectionDomain::HistoricalGap,
+                CAUSAL_PROJECTION_DOMAIN_BIT,
+            )
+            .is_none(),
+            "raw serials must never consume the operation-domain bit",
+        );
+        assert_eq!(
+            next_causal_projection_serial(CAUSAL_PROJECTION_SERIAL_MAX),
+            None,
+            "exhaustion is terminal while the same domain owns a pending identity",
+        );
+        assert_eq!(
+            next_causal_projection_serial(CAUSAL_PROJECTION_SERIAL_MAX),
+            None,
+            "one actor generation never wraps even when no operation is pending",
+        );
+
+        let mut historical = TimelineGapProjectionCorrelation::default();
+        historical.begin(actor_generation, historical_operation);
+        assert_eq!(
+            historical.complete(
+                actor_generation,
+                historical_operation,
+                Some(projection_batch),
+            ),
+            TimelineGapProjectionCompletion::Pending,
+        );
+        let mut live_tail = TimelineGapProjectionCorrelation::default();
+        live_tail.begin(actor_generation, live_tail_operation);
+        assert_eq!(
+            live_tail.complete(
+                actor_generation,
+                live_tail_operation,
+                Some(projection_batch),
+            ),
+            TimelineGapProjectionCompletion::Pending,
+        );
+
+        let historical_projection = CausalProjectionId::decode_transport(GapRepairProjectionId {
+            actor_generation,
+            repair_generation: historical_operation.encode_transport(),
+            projection_batch,
+        });
+        let historical_observation = observe_causal_projection(
+            &mut historical,
+            &mut live_tail,
+            historical_projection,
+            published_batch_id,
+        );
+        assert_eq!(
+            historical_observation.historical_gap_batch_id,
+            Some(published_batch_id),
+        );
+        assert_eq!(historical_observation.live_tail_batch_id, None);
+        assert!(
+            live_tail.is_pending(),
+            "historical tag cannot prove live-tail freshness"
+        );
+
+        // Re-arm the historical correlation to prove the reverse isolation on
+        // the same actor/raw serial/batch collision.
+        historical.begin(actor_generation, historical_operation);
+        assert_eq!(
+            historical.complete(
+                actor_generation,
+                historical_operation,
+                Some(projection_batch),
+            ),
+            TimelineGapProjectionCompletion::Pending,
+        );
+        let live_tail_projection = CausalProjectionId::decode_transport(GapRepairProjectionId {
+            actor_generation,
+            repair_generation: live_tail_operation.encode_transport(),
+            projection_batch,
+        });
+        let live_tail_observation = observe_causal_projection(
+            &mut historical,
+            &mut live_tail,
+            live_tail_projection,
+            TimelineBatchId(22),
+        );
+        assert_eq!(live_tail_observation.historical_gap_batch_id, None);
+        assert_eq!(
+            live_tail_observation.live_tail_batch_id,
+            Some(TimelineBatchId(22)),
+        );
+        assert!(
+            historical.is_pending(),
+            "live-tail tag cannot release historical repair"
+        );
+
+        assert_eq!(
+            observe_causal_projection(
+                &mut historical,
+                &mut live_tail,
+                live_tail_projection,
+                TimelineBatchId(23),
+            ),
+            CausalProjectionObservation::default(),
+            "one live-tail projection can complete only once",
+        );
+    }
+
+    #[tokio::test]
+    async fn live_tail_restore_actor_flush_hands_completion_to_manager_once() {
+        use matrix_sdk::test_utils::mocks::{MatrixMockServer, RoomMessagesResponseTemplate};
+        use matrix_sdk_test::{ALICE, JoinedRoomBuilder, event_factory::EventFactory};
+
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        client
+            .event_cache()
+            .subscribe()
+            .expect("event cache subscription");
+        let sdk_room_id = matrix_sdk::ruma::room_id!("!restore-live-tail:example.org");
+        let stale_edge_id = matrix_sdk::ruma::event_id!("$stale-edge:example.org");
+        let refreshed_id = matrix_sdk::ruma::event_id!("$refreshed:example.org");
+        let room = server.sync_joined_room(&client, sdk_room_id).await;
+        let factory = EventFactory::new().room(sdk_room_id).sender(&ALICE);
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(sdk_room_id).add_timeline_event(
+                    factory
+                        .text_msg("stale edge")
+                        .event_id(stale_edge_id)
+                        .into_raw_sync(),
+                ),
+            )
+            .await;
+        let timeline = Arc::new(
+            koushi_timeline_builder(
+                &room,
+                TimelineFocus::Live {
+                    hide_threaded_events: false,
+                },
+            )
+            .build()
+            .await
+            .expect("room timeline"),
+        );
+        let (initial_sdk_items, _fixture_stream) = timeline.subscribe().await;
+        let real_sdk_item = initial_sdk_items
+            .iter()
+            .find(|item| item.as_event().and_then(|event| event.event_id()) == Some(stale_edge_id))
+            .cloned()
+            .expect("real SDK timeline item for the wrong-tag restore batch");
+        server
+            .mock_room_messages()
+            .match_limit(u32::from(FOREGROUND_LIVE_TAIL_LIMIT))
+            .ok(RoomMessagesResponseTemplate::default()
+                .events(vec![
+                    factory.text_msg("refreshed").event_id(refreshed_id),
+                    factory.text_msg("stale edge").event_id(stale_edge_id),
+                ])
+                .with_delay(Duration::from_millis(500)))
+            .expect(1)
+            .named("restore-live-tail-production-refresh")
+            .mount()
+            .await;
+
+        let session = Arc::new(MatrixClientSession::from_client_for_testing(
+            client,
+            SessionInfo {
+                homeserver: "http://example.invalid".to_owned(),
+                user_id: ALICE.to_string(),
+                device_id: "DEVICE".to_owned(),
+            },
+        ));
+        let account = AccountKey("@restore:test".to_owned());
+        let room_a = TimelineKey::room(account.clone(), sdk_room_id.to_string());
+        let room_b = TimelineKey::room(account, "!delayed:example.org");
+        let delayed_log = Arc::new(Mutex::new(Vec::new()));
+        let mut manager = live_tail_test_manager(HashMap::from([(
+            room_b.clone(),
+            live_tail_test_actor_handle("B", delayed_log.clone()),
+        )]));
+        let mut event_rx = manager.event_tx.subscribe();
+        let actor_generation = manager
+            .timeline_actor_generations
+            .activate_after_quiescence(&room_a)
+            .await
+            .generation;
+        let projection_request_id = fake_rid(40);
+        let actor_handle = TimelineActor::spawn(
+            room_a.clone(),
+            timeline,
+            session,
+            projection_request_id,
+            manager.action_tx.clone(),
+            manager.event_tx.clone(),
+            None,
+            Default::default(),
+            None,
+            LinkPreviewContext::default(),
+            manager.messages_backpressure.clone(),
+            Arc::clone(&manager.thread_root_projection_service),
+            Arc::clone(&manager.replay_known_thread_root_projections),
+            Arc::clone(&manager.timeline_actor_generations),
+            actor_generation,
+            None,
+            manager.msg_tx.clone(),
+        )
+        .await;
+        manager.timelines.insert(room_a.clone(), actor_handle);
+        loop {
+            if matches!(
+                event_rx.recv().await.expect("initial actor event"),
+                CoreEvent::Timeline(TimelineEvent::InitialItems { key, .. }) if key == room_a
+            ) {
+                break;
+            }
+        }
+
+        let (restore_tx, restore_rx) = oneshot::channel();
+        assert!(
+            manager
+                .timelines
+                .get(&room_a)
+                .expect("room A actor")
+                .send(TimelineActorMessage::TestBeginRestore {
+                    request_id: fake_rid(41),
+                    event_id: "$anchor-not-in-window:example.org".to_owned(),
+                    acknowledged: restore_tx,
+                })
+                .await
+        );
+        restore_rx.await.expect("restore fixture acknowledged");
+
+        let starts = manager.live_tail_refreshes.activate(room_a.clone(), 7);
+        assert!(
+            manager
+                .live_tail_refreshes
+                .mark_unproven(room_b.clone(), 7)
+                .is_empty()
+        );
+        manager.apply_live_tail_scheduler_actions(starts).await;
+        let operation = live_tail_causal_projection_operation(1);
+        let wrong_projections = BTreeSet::from([
+            CausalProjectionId {
+                actor_generation: actor_generation + 1,
+                operation,
+                projection_batch: 1,
+            },
+            CausalProjectionId {
+                actor_generation,
+                operation: live_tail_causal_projection_operation(9),
+                projection_batch: 1,
+            },
+            CausalProjectionId {
+                actor_generation,
+                operation,
+                projection_batch: u32::MAX,
+            },
+        ]);
+        let (inject_tx, inject_rx) = oneshot::channel();
+        assert!(
+            manager
+                .timelines
+                .get(&room_a)
+                .expect("room A actor")
+                .send(TimelineActorMessage::TestInjectRestoreDiff {
+                    diffs: vec![eyeball_im::VectorDiff::PushBack {
+                        value: real_sdk_item,
+                    }],
+                    projections: wrong_projections.clone(),
+                    acknowledged: inject_tx,
+                })
+                .await
+        );
+        inject_rx.await.expect("wrong-tag diff handled");
+
+        let snapshot = |manager: &TimelineManagerActor, key: &TimelineKey| {
+            let (response, state) = oneshot::channel();
+            let handle = manager.timelines.get(key).expect("room A actor");
+            (handle.tx.clone(), response, state)
+        };
+        let (actor_tx, state_tx, state_rx) = snapshot(&manager, &room_a);
+        actor_tx
+            .send(TimelineActorMessage::TestRestoreCausalState(state_tx))
+            .await
+            .expect("snapshot request");
+        let (pending, completion_waiting, buffered_diff_count, buffered_projections) =
+            state_rx.await.expect("wrong-tag snapshot");
+        assert!(pending);
+        assert!(!completion_waiting);
+        assert_eq!(buffered_diff_count, 1);
+        assert_eq!(buffered_projections, wrong_projections);
+        assert_eq!(
+            manager.live_tail_refreshes.freshness(&room_a),
+            Some(LiveTailFreshnessState::Refreshing {
+                epoch: 7,
+                operation_generation: 1,
+            }),
+            "wrong actor, operation, and batch identities cannot prove freshness",
+        );
+
+        let matching_projection = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let (actor_tx, state_tx, state_rx) = snapshot(&manager, &room_a);
+                actor_tx
+                    .send(TimelineActorMessage::TestRestoreCausalState(state_tx))
+                    .await
+                    .expect("snapshot request");
+                let (pending, completion_waiting, buffered_diff_count, projections) =
+                    state_rx.await.expect("matching-tag snapshot");
+                if let Some(projection) = projections.iter().copied().find(|projection| {
+                    projection.actor_generation == actor_generation
+                        && projection.operation == operation
+                        && projection.projection_batch != u32::MAX
+                }) && completion_waiting
+                    && buffered_diff_count > 1
+                {
+                    assert!(
+                        pending,
+                        "matching metadata remains pending until publication"
+                    );
+                    break projection;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("real tagged SDK diff reached the restore buffer");
+        assert_ne!(matching_projection.projection_batch, u32::MAX);
+
+        let manager_tx = manager.msg_tx.clone();
+        let actor_tx = manager
+            .timelines
+            .get(&room_a)
+            .expect("room A actor")
+            .tx
+            .clone();
+        let _manager_task = executor::spawn(manager.run());
+
+        let (flush_tx, flush_rx) = oneshot::channel();
+        actor_tx
+            .send(TimelineActorMessage::TestFlushRestore(flush_tx))
+            .await
+            .expect("flush request");
+        assert!(flush_rx.await.expect("production restore flush result"));
+
+        let (freshness, completion_dispatches) =
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let (state_tx, state_rx) = oneshot::channel();
+                    manager_tx
+                        .send(TimelineMessage::TestLiveTailDispatchState {
+                            key: room_a.clone(),
+                            epoch: 7,
+                            response: state_tx,
+                        })
+                        .await
+                        .expect("manager state request");
+                    let state = state_rx.await.expect("manager state response");
+                    if state.0 && !delayed_log.lock().expect("delayed start log").is_empty() {
+                        break state;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("production manager dispatch completed live-tail refresh");
+        assert!(freshness, "room A becomes Fresh for epoch 7");
+        assert_eq!(
+            completion_dispatches, 1,
+            "the production manager loop dispatches exactly one completion",
+        );
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !delayed_log.lock().expect("delayed start log").is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("manager scheduled delayed room B");
+        assert_eq!(
+            *delayed_log.lock().expect("delayed start log"),
+            ["start:B:epoch=7:limit=128"],
+        );
+
+        let mut items_updated_count = 0;
+        while let Ok(event) = event_rx.try_recv() {
+            if matches!(
+                event,
+                CoreEvent::Timeline(TimelineEvent::ItemsUpdated { .. })
+            ) {
+                items_updated_count += 1;
+            }
+        }
+        assert_eq!(
+            items_updated_count, 1,
+            "restore publishes one coalesced batch"
+        );
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        manager_tx
+            .send(TimelineMessage::Shutdown {
+                acknowledged: Some(shutdown_tx),
+            })
+            .await
+            .expect("manager shutdown request");
+        shutdown_rx.await.expect("manager shutdown acknowledged");
+    }
+
+    #[tokio::test]
+    async fn live_tail_replacement_ignores_old_epoch_actor_and_projection_completion() {
+        let room = TimelineKey::room(AccountKey("@a:test".to_owned()), "!a:test");
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut manager = live_tail_test_manager(HashMap::from([(
+            room.clone(),
+            live_tail_test_actor_handle("A", log.clone()),
+        )]));
+        let actor_generation = manager
+            .timeline_actor_generations
+            .activate_after_quiescence(&room)
+            .await
+            .generation;
+
+        manager.room_subscription_service_epoch = 7;
+        manager
+            .handle_committed_room_selection(fake_rid(1), room.clone(), false)
+            .await;
+        manager.handle_sync_started(None, None).await;
+
+        assert_eq!(
+            manager.live_tail_refreshes.freshness(&room),
+            Some(
+                crate::live_tail_freshness::LiveTailFreshnessState::Refreshing {
+                    epoch: 8,
+                    operation_generation: 2,
+                }
+            ),
+            "the replacement sync run must fence epoch 7 before an old completion can arrive",
+        );
+        manager
+            .handle_live_tail_refresh_completed(
+                room.clone(),
+                actor_generation,
+                7,
+                1,
+                MatrixLiveTailRefreshOutcome::Advanced { events: 1 },
+                128,
+                1,
+                1,
+            )
+            .await;
+        manager
+            .handle_live_tail_refresh_completed(
+                room.clone(),
+                actor_generation.saturating_sub(1),
+                8,
+                2,
+                MatrixLiveTailRefreshOutcome::Advanced { events: 1 },
+                128,
+                1,
+                1,
+            )
+            .await;
+        assert_eq!(
+            manager.live_tail_refreshes.freshness(&room),
+            Some(
+                crate::live_tail_freshness::LiveTailFreshnessState::Refreshing {
+                    epoch: 8,
+                    operation_generation: 2,
+                }
+            ),
+        );
+
+        let mut projection = TimelineGapProjectionCorrelation::default();
+        let operation = live_tail_causal_projection_operation(2);
+        projection.begin(actor_generation, operation);
+        assert_eq!(
+            projection.complete(actor_generation, operation, Some(2)),
+            TimelineGapProjectionCompletion::Pending
+        );
+        for stale in [
+            CausalProjectionId {
+                actor_generation: actor_generation.saturating_sub(1),
+                operation,
+                projection_batch: 2,
+            },
+            CausalProjectionId {
+                actor_generation,
+                operation: live_tail_causal_projection_operation(1),
+                projection_batch: 2,
+            },
+            CausalProjectionId {
+                actor_generation,
+                operation,
+                projection_batch: 1,
+            },
+        ] {
+            assert_eq!(projection.observe(stale, TimelineBatchId(9)), None);
+            assert!(projection.is_pending());
+        }
+        assert_eq!(
+            projection.observe(
+                CausalProjectionId {
+                    actor_generation,
+                    operation,
+                    projection_batch: 2,
+                },
+                TimelineBatchId(10),
+            ),
+            Some(TimelineBatchId(10))
+        );
+
+        manager
+            .handle_live_tail_refresh_completed(
+                room.clone(),
+                actor_generation,
+                8,
+                2,
+                MatrixLiveTailRefreshOutcome::Advanced { events: 1 },
+                128,
+                1,
+                1,
+            )
+            .await;
+        assert_eq!(
+            manager.live_tail_refreshes.freshness(&room),
+            Some(crate::live_tail_freshness::LiveTailFreshnessState::Fresh { epoch: 8 }),
+        );
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if log.lock().expect("live-tail log lock").len() == 3 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("replacement epoch log completed");
+        assert_eq!(
+            *log.lock().expect("live-tail log lock"),
+            [
+                "start:A:epoch=7:limit=128",
+                "cancel-network:A:epoch=7",
+                "start:A:epoch=8:limit=128",
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn duplicate_submission_routes_one_actor_message() {
         let key = room_key();
@@ -19977,7 +24690,7 @@ mod tests {
             room_list_service: None,
             room_subscription_checkpoint_task: None,
             room_subscription_service_epoch: 0,
-            legacy_committed_checkpoints: HashMap::new(),
+            legacy_committed_response: None,
             timelines: HashMap::from([(
                 key.clone(),
                 TimelineActorHandle {
@@ -20005,6 +24718,7 @@ mod tests {
                 ReplayKnownThreadRootProjectionRegistry::default(),
             )),
             timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
+            live_tail_refreshes: LiveTailRefreshCoordinator::new(),
             test_session_available: true,
         };
         let submission_id = SubmissionId::new("opaque-submission");
@@ -20176,7 +24890,7 @@ mod tests {
             room_list_service: None,
             room_subscription_checkpoint_task: None,
             room_subscription_service_epoch: 0,
-            legacy_committed_checkpoints: HashMap::new(),
+            legacy_committed_response: None,
             timelines: HashMap::from([(
                 key.clone(),
                 TimelineActorHandle {
@@ -20204,6 +24918,7 @@ mod tests {
                 ReplayKnownThreadRootProjectionRegistry::default(),
             )),
             timeline_actor_generations: generations.clone(),
+            live_tail_refreshes: LiveTailRefreshCoordinator::new(),
             test_session_available: true,
         };
         let run = executor::spawn(async move { manager.run().await });
@@ -20249,7 +24964,7 @@ mod tests {
             room_list_service: None,
             room_subscription_checkpoint_task: None,
             room_subscription_service_epoch: 0,
-            legacy_committed_checkpoints: HashMap::new(),
+            legacy_committed_response: None,
             timelines: HashMap::from([(
                 key.clone(),
                 TimelineActorHandle {
@@ -20277,6 +24992,7 @@ mod tests {
                 ReplayKnownThreadRootProjectionRegistry::default(),
             )),
             timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
+            live_tail_refreshes: LiveTailRefreshCoordinator::new(),
             test_session_available: true,
         };
         let submission_id = SubmissionId::new("paused-admission");
@@ -20518,6 +25234,7 @@ mod tests {
             &TimelineViewportObservation {
                 first_visible_event_id: Some("$unread:test".to_owned()),
                 last_visible_event_id: Some("$newer:test".to_owned()),
+                visible_gap_ids: Vec::new(),
                 at_bottom: true,
             },
             Some("@me:test"),
@@ -20551,6 +25268,7 @@ mod tests {
             &TimelineViewportObservation {
                 first_visible_event_id: Some("$read:test".to_owned()),
                 last_visible_event_id: Some("$visible:test".to_owned()),
+                visible_gap_ids: Vec::new(),
                 at_bottom: false,
             },
             Some("@me:test"),
@@ -20588,6 +25306,7 @@ mod tests {
             &TimelineViewportObservation {
                 first_visible_event_id: Some("$visible:test".to_owned()),
                 last_visible_event_id: Some("$visible:test".to_owned()),
+                visible_gap_ids: Vec::new(),
                 at_bottom: false,
             },
             Some("@me:test"),
@@ -20612,6 +25331,7 @@ mod tests {
             &TimelineViewportObservation {
                 first_visible_event_id: Some("$visible:test".to_owned()),
                 last_visible_event_id: Some("$visible:test".to_owned()),
+                visible_gap_ids: Vec::new(),
                 at_bottom: false,
             },
             Some("@me:test"),
@@ -20651,6 +25371,7 @@ mod tests {
             &TimelineViewportObservation {
                 first_visible_event_id: Some("$read:test".to_owned()),
                 last_visible_event_id: Some("$remote:test".to_owned()),
+                visible_gap_ids: Vec::new(),
                 at_bottom: true,
             },
             Some("@me:test"),
@@ -21481,7 +26202,7 @@ mod tests {
             room_list_service: None,
             room_subscription_checkpoint_task: None,
             room_subscription_service_epoch: 0,
-            legacy_committed_checkpoints: HashMap::new(),
+            legacy_committed_response: None,
             timelines: HashMap::from([(
                 key.clone(),
                 TimelineActorHandle {
@@ -21509,6 +26230,7 @@ mod tests {
                 ReplayKnownThreadRootProjectionRegistry::default(),
             )),
             timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
+            live_tail_refreshes: LiveTailRefreshCoordinator::new(),
             test_session_available: true,
         };
 
@@ -21660,7 +26382,7 @@ mod tests {
             room_list_service: None,
             room_subscription_checkpoint_task: None,
             room_subscription_service_epoch: 0,
-            legacy_committed_checkpoints: HashMap::new(),
+            legacy_committed_response: None,
             timelines: HashMap::from([(
                 key.clone(),
                 TimelineActorHandle {
@@ -21688,6 +26410,7 @@ mod tests {
                 ReplayKnownThreadRootProjectionRegistry::default(),
             )),
             timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
+            live_tail_refreshes: LiveTailRefreshCoordinator::new(),
             test_session_available: true,
         };
 
@@ -22355,6 +27078,298 @@ mod tests {
         assert!(
             !registry.take_completion("!room:test", "$root:test"),
             "a completion queued before unsubscribe must not publish a stale terminal state"
+        );
+    }
+
+    #[tokio::test]
+    async fn gap_repair_room_switch_cancels_completion() {
+        use matrix_sdk::{
+            linked_chunk::{ChunkIdentifier, LinkedChunkId, Position, Update},
+            test_utils::mocks::{MatrixMockServer, RoomMessagesResponseTemplate},
+        };
+        use matrix_sdk_base::event_cache::Gap;
+        use matrix_sdk_test::{ALICE, event_factory::EventFactory};
+
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = matrix_sdk::ruma::room_id!("!cancel-gap:example.org");
+        let older_id = matrix_sdk::ruma::event_id!("$cancel-older:example.org");
+        let newer_id = matrix_sdk::ruma::event_id!("$cancel-newer:example.org");
+        let missing_id = matrix_sdk::ruma::event_id!("$cancel-missing:example.org");
+        let factory = EventFactory::new().room(room_id).sender(&ALICE);
+        {
+            let store = client
+                .event_cache_store()
+                .lock()
+                .await
+                .expect("cache store");
+            store
+                .as_clean()
+                .expect("clean cache store")
+                .handle_linked_chunk_updates(
+                    LinkedChunkId::Room(room_id),
+                    vec![
+                        Update::NewItemsChunk {
+                            previous: None,
+                            new: ChunkIdentifier::new(0),
+                            next: None,
+                        },
+                        Update::PushItems {
+                            at: Position::new(ChunkIdentifier::new(0), 0),
+                            items: vec![factory.text_msg("older").event_id(older_id).into_event()],
+                        },
+                        Update::NewGapChunk {
+                            previous: Some(ChunkIdentifier::new(0)),
+                            new: ChunkIdentifier::new(1),
+                            next: None,
+                            gap: Gap {
+                                token: "cancel-gap-token".to_owned(),
+                            },
+                        },
+                        Update::NewItemsChunk {
+                            previous: Some(ChunkIdentifier::new(1)),
+                            new: ChunkIdentifier::new(2),
+                            next: None,
+                        },
+                        Update::PushItems {
+                            at: Position::new(ChunkIdentifier::new(2), 0),
+                            items: vec![factory.text_msg("newer").event_id(newer_id).into_event()],
+                        },
+                    ],
+                )
+                .await
+                .expect("seed persisted gap");
+        }
+        client
+            .event_cache()
+            .subscribe()
+            .expect("event cache subscribe");
+        server.sync_joined_room(&client, room_id).await;
+        server
+            .mock_room_messages()
+            .match_from("cancel-gap-token")
+            .match_limit(64)
+            .ok(RoomMessagesResponseTemplate::default().events(vec![
+                factory.text_msg("missing").event_id(missing_id),
+                factory.text_msg("older").event_id(older_id),
+            ]))
+            .expect(1)
+            .named("old-actor-real-gap-repair")
+            .mount()
+            .await;
+
+        let session = Arc::new(MatrixClientSession::from_client_for_testing(
+            client,
+            SessionInfo {
+                homeserver: "http://example.invalid".to_owned(),
+                user_id: ALICE.to_string(),
+                device_id: "DEVICE".to_owned(),
+            },
+        ));
+        let key = TimelineKey::room(
+            AccountKey("@cancel-gap:example.org".to_owned()),
+            room_id.to_string(),
+        );
+        let projection_request_id = fake_rid(27_500);
+        let (action_tx, mut action_rx) = mpsc::channel(128);
+        let (event_tx, mut event_rx) = broadcast::channel(128);
+        let (manager_tx, _manager_rx) = mpsc::channel(16);
+        let mut manager = live_tail_test_manager(HashMap::new());
+        manager.session = Some(session);
+        manager.action_tx = action_tx;
+        manager.event_tx = event_tx;
+        manager.msg_tx = manager_tx;
+        manager.test_session_available = false;
+        manager
+            .handle_subscribe(projection_request_id, key.clone(), true)
+            .await;
+
+        let (old_actor_generation, timeline_generation) =
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if let CoreEvent::Timeline(TimelineEvent::InitialItems {
+                        request_id: Some(request_id),
+                        key: emitted_key,
+                        actor_generation,
+                        generation,
+                        ..
+                    }) = event_rx.recv().await.expect("initial actor event")
+                        && request_id == projection_request_id
+                        && emitted_key == key
+                    {
+                        break (actor_generation, generation);
+                    }
+                }
+            })
+            .await
+            .expect("real actor initial projection");
+        let old_actor_tx = manager
+            .timelines
+            .get(&key)
+            .expect("old room actor")
+            .tx
+            .clone();
+
+        let (projection_ack_tx, projection_ack_rx) = oneshot::channel();
+        assert!(
+            manager
+                .timelines
+                .get(&key)
+                .expect("old room actor")
+                .send(TimelineActorMessage::AcknowledgeProjection {
+                    projection_request_id,
+                    generation: timeline_generation,
+                    response: projection_ack_tx,
+                })
+                .await
+        );
+        assert!(
+            projection_ack_rx
+                .await
+                .expect("initial projection acknowledgement")
+        );
+
+        let (reached_tx, reached_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let (forwarded_tx, forwarded_rx) = oneshot::channel();
+        let (armed_tx, armed_rx) = oneshot::channel();
+        assert!(
+            manager
+                .timelines
+                .get(&key)
+                .expect("old room actor")
+                .send(TimelineActorMessage::TestArmGapRepairCompletionPause {
+                    pause: TestGapRepairCompletionPause {
+                        reached: reached_tx,
+                        release: release_rx,
+                        forwarded: forwarded_tx,
+                    },
+                    acknowledged: armed_tx,
+                })
+                .await
+        );
+        armed_rx.await.expect("completion pause armed");
+        assert!(
+            manager
+                .timelines
+                .get(&key)
+                .expect("old room actor")
+                .send(TimelineActorMessage::InspectTimelineGaps {
+                    trigger: TimelineGapRepairTrigger::Manual,
+                })
+                .await
+        );
+
+        let started_generation = tokio::time::timeout(Duration::from_secs(5), async {
+            'started: loop {
+                for action in action_rx.recv().await.expect("gap repair action channel") {
+                    if let AppAction::TimelineGapRepairStarted {
+                        room_id: started_room_id,
+                        generation,
+                        ..
+                    } = action
+                        && started_room_id == room_id.as_str()
+                    {
+                        break 'started generation;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("real SDK gap repair started");
+        tokio::time::timeout(Duration::from_secs(5), reached_rx)
+            .await
+            .expect("real SDK repair reached the session-to-actor completion boundary")
+            .expect("completion pause sender");
+
+        let (old_barrier_tx, old_barrier_rx) = oneshot::channel();
+        assert!(
+            manager
+                .timelines
+                .get(&key)
+                .expect("old room actor")
+                .send(TimelineActorMessage::Barrier(old_barrier_tx))
+                .await
+        );
+        old_barrier_rx.await.expect("old actor pre-switch barrier");
+        while action_rx.try_recv().is_ok() {}
+        while event_rx.try_recv().is_ok() {}
+
+        manager
+            .handle_command(TimelineCommand::Unsubscribe {
+                request_id: fake_rid(27_501),
+                key: key.clone(),
+            })
+            .await;
+        assert!(!manager.timelines.contains_key(&key));
+        let replacement_generation = manager
+            .timeline_actor_generations
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
+        assert_ne!(old_actor_generation, replacement_generation);
+        while action_rx.try_recv().is_ok() {}
+        while event_rx.try_recv().is_ok() {}
+
+        let _ = release_tx.send(());
+        let completion_forwarded = match tokio::time::timeout(Duration::from_secs(1), forwarded_rx)
+            .await
+            .expect("paused repair worker must settle after old actor drop")
+        {
+            Ok(forwarded) => forwarded,
+            Err(_) => false,
+        };
+        let old_actor_closed =
+            tokio::time::timeout(Duration::from_millis(100), old_actor_tx.closed())
+                .await
+                .is_ok();
+        if !old_actor_closed {
+            let (barrier_tx, barrier_rx) = oneshot::channel();
+            if old_actor_tx
+                .send(TimelineActorMessage::Barrier(barrier_tx))
+                .await
+                .is_ok()
+            {
+                let _ = tokio::time::timeout(Duration::from_secs(1), barrier_rx).await;
+            }
+        }
+
+        let mut stale_actions = Vec::new();
+        while let Ok(actions) = action_rx.try_recv() {
+            for action in actions {
+                let label = match action {
+                    AppAction::TimelineGapRepairProgressed { .. } => Some("Progressed"),
+                    AppAction::TimelineGapRepairFailed { .. } => Some("Failed"),
+                    AppAction::TimelineContinuityInspectionStarted { .. } => {
+                        Some("inspection continuation")
+                    }
+                    _ => None,
+                };
+                if let Some(label) = label {
+                    stale_actions.push(label);
+                }
+            }
+        }
+        let mut stale_core_event_count = 0;
+        while event_rx.try_recv().is_ok() {
+            stale_core_event_count += 1;
+        }
+
+        assert!(
+            !completion_forwarded,
+            "the released old-generation repair completion reached its actor mailbox"
+        );
+        assert!(
+            old_actor_closed,
+            "the unsubscribed actor channel stayed open"
+        );
+        assert!(
+            stale_actions.is_empty(),
+            "old generation {old_actor_generation} published reducer work after replacement generation {replacement_generation}: {stale_actions:?}; repair generation {started_generation}"
+        );
+        assert_eq!(
+            stale_core_event_count, 0,
+            "old generation {old_actor_generation} published CoreEvent output after replacement generation {replacement_generation}"
         );
     }
 

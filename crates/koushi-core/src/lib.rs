@@ -10,6 +10,7 @@
 pub mod account;
 mod activity_resolution;
 pub(crate) mod cached_image;
+mod causal_projection;
 pub mod command;
 pub mod event;
 pub mod executor;
@@ -17,6 +18,7 @@ pub mod failure;
 pub mod ids;
 pub mod link_preview;
 mod live_catchup;
+mod live_tail_freshness;
 pub mod media_preparation;
 pub(crate) mod messages_backpressure;
 pub mod renderable_thumbnail;
@@ -47,10 +49,11 @@ pub use event::{
     IntentNoOpReason, IntentOutcome, LinkPreview, LinkPreviewImage, LinkPreviewState,
     LocalEncryptionEvent, NativeAttentionEvent, PaginationDirection, PaginationState,
     ReactionGroup, RoomEvent, SearchEvent, SearchResultItem, SyncBackendKind, SyncEvent,
-    TimelineDiff, TimelineEvent, TimelineGapPosition, TimelineItem, TimelineItemId, TimelineMedia,
-    TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineMessageKind,
-    TimelineNavigationSnapshot, TimelineResyncReason, TimelineSendFailureReason, TimelineSendState,
-    TimelineSpoilerSpan, TimelineUnreadPosition, TimelineViewportObservation,
+    TimelineDiff, TimelineEvent, TimelineGapId, TimelineGapPosition, TimelineItem, TimelineItemId,
+    TimelineMedia, TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
+    TimelineMessageKind, TimelineNavigationSnapshot, TimelineResyncReason,
+    TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan, TimelineUnreadPosition,
+    TimelineViewportObservation,
 };
 pub use failure::{
     CoreFailure, LoginFailureKind, ProfileFailureKind, RecoveryFailureKind, RoomFailureKind,

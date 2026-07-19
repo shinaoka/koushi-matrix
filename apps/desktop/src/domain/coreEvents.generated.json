@@ -1259,7 +1259,10 @@
         "positions": [
           {
             "before_item_index": 2,
-            "ordinal": 0
+            "id": {
+              "ordinal": 0,
+              "topology_revision": "14695981039346656037"
+            }
           }
         ]
       }

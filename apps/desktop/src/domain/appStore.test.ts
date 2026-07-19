@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import {
   applyAppStoreDelta,
+  applyAppStoreDeltas,
   applyDeltaToState,
   applySnapshotToState,
   clearAppStoreSnapshot,
@@ -336,6 +337,32 @@ describe("appStore projection cache", () => {
     expect(recovered?.state.domain.sync).toBe("running");
     expect(recovered?.state.ui).toBe(snapshot.state.ui);
     expect(recovered?.sidebar).toBe(snapshot.sidebar);
+  });
+
+  test("publishes a contiguous state-delta burst once", () => {
+    setAppStoreSnapshot(makeSnapshot());
+    const listener = vi.fn();
+    const unsubscribe = useAppStore.subscribe((state) => state.snapshot, listener);
+    listener.mockClear();
+
+    const deltas = Array.from({ length: 100 }, (_, index) => ({
+      generation: index + 1,
+      changed: {
+        state: {
+          domain: {
+            search_crawler: {
+              rooms: {},
+              last_active: null
+            }
+          }
+        }
+      }
+    }));
+
+    expect(applyAppStoreDeltas(deltas)).toBe(true);
+    expect(useAppStore.getState().stateGeneration).toBe(100);
+    expect(listener).toHaveBeenCalledTimes(1);
+    unsubscribe();
   });
 
   test("delta-applied snapshots match equivalent full snapshots", () => {

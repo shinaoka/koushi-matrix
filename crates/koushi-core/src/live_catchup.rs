@@ -5,6 +5,7 @@ pub(crate) enum LiveCatchupGate {
     NoTimelineUpdate,
     NoGap,
     RepairCheckpointGap,
+    ProveLiveTailFreshness,
 }
 
 impl LiveCatchupGate {
@@ -15,19 +16,23 @@ impl LiveCatchupGate {
             Self::NoTimelineUpdate => "no_timeline_update",
             Self::NoGap => "checkpoint_anchored",
             Self::RepairCheckpointGap => "checkpoint_gap_matches_selection",
+            Self::ProveLiveTailFreshness => "prove_live_tail_freshness",
         }
     }
 }
 
 pub(crate) fn classify_live_catchup_gate(
     expected_generation: Option<u64>,
-    checkpoint: Option<(u64, bool, bool)>,
+    checkpoint: Option<(u64, bool, bool, bool)>,
 ) -> LiveCatchupGate {
-    let Some((checkpoint_generation, has_timeline, has_gap)) = checkpoint else {
+    let Some((checkpoint_generation, has_timeline, has_gap, room_absent)) = checkpoint else {
         return LiveCatchupGate::AwaitingCheckpoint;
     };
     if expected_generation.is_some_and(|expected| checkpoint_generation != expected) {
         return LiveCatchupGate::Stale;
+    }
+    if room_absent {
+        return LiveCatchupGate::ProveLiveTailFreshness;
     }
     if !has_timeline {
         return LiveCatchupGate::NoTimelineUpdate;
@@ -49,19 +54,19 @@ mod tests {
             LiveCatchupGate::AwaitingCheckpoint,
         );
         assert_eq!(
-            classify_live_catchup_gate(Some(7), Some((6, true, true))),
+            classify_live_catchup_gate(Some(7), Some((6, true, true, false))),
             LiveCatchupGate::Stale,
         );
         assert_eq!(
-            classify_live_catchup_gate(Some(7), Some((7, false, false))),
+            classify_live_catchup_gate(Some(7), Some((7, false, false, false))),
             LiveCatchupGate::NoTimelineUpdate,
         );
         assert_eq!(
-            classify_live_catchup_gate(Some(7), Some((7, true, false))),
+            classify_live_catchup_gate(Some(7), Some((7, true, false, false))),
             LiveCatchupGate::NoGap,
         );
         assert_eq!(
-            classify_live_catchup_gate(Some(7), Some((7, true, true))),
+            classify_live_catchup_gate(Some(7), Some((7, true, true, false))),
             LiveCatchupGate::RepairCheckpointGap,
         );
         assert_eq!(
@@ -77,8 +82,16 @@ mod tests {
             LiveCatchupGate::AwaitingCheckpoint,
         );
         assert_eq!(
-            classify_live_catchup_gate(None, Some((19, true, true))),
+            classify_live_catchup_gate(None, Some((19, true, true, false))),
             LiveCatchupGate::RepairCheckpointGap,
+        );
+        assert_eq!(
+            classify_live_catchup_gate(None, Some((19, false, false, true))),
+            LiveCatchupGate::ProveLiveTailFreshness,
+        );
+        assert_eq!(
+            classify_live_catchup_gate(None, Some((19, false, false, false))),
+            LiveCatchupGate::NoTimelineUpdate,
         );
     }
 }

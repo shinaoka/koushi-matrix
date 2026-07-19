@@ -1,8 +1,74 @@
 use koushi_sdk::{
     MatrixCommittedRoomTimelineBackend, MatrixCommittedRoomTimelineCheckpoint,
-    MatrixRoomSubscriptionCheckpoint, MatrixTimelineContinuity, MatrixTimelineGapError,
-    MatrixTimelineGapHandle, MatrixTimelineGapRepairOutcome,
+    MatrixCommittedRoomTimelineOrigin, MatrixCommittedRoomUpdatesResponse,
+    MatrixLiveTailRefreshCancellation, MatrixLiveTailRefreshDiagnostics,
+    MatrixLiveTailRefreshOutcome, MatrixLiveTailRefreshResult, MatrixRoomSubscriptionCheckpoint,
+    MatrixTimelineContinuity, MatrixTimelineGapError, MatrixTimelineGapHandle,
+    MatrixTimelineGapRepairOutcome, PersistableMatrixSession,
 };
+
+#[test]
+fn live_tail_refresh_debug_is_privacy_safe() {
+    let cancellation = MatrixLiveTailRefreshCancellation::new();
+    let debug = format!("{cancellation:?}");
+    assert_eq!(debug, "MatrixLiveTailRefreshCancellation(..)");
+    assert!(!debug.contains("!room"));
+    assert!(!debug.contains("token"));
+}
+
+#[test]
+fn live_tail_refresh_outcomes_are_token_free_and_coarse() {
+    let outcome = MatrixLiveTailRefreshOutcome::Detached {
+        events: 128,
+        historical_gap_remaining: true,
+    };
+    assert_eq!(
+        format!("{outcome:?}"),
+        "Detached { events: 128, historical_gap_remaining: true }"
+    );
+}
+
+#[test]
+fn live_tail_refresh_invalid_and_unavailable_rooms_fail_coarsely() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime should build");
+
+    runtime.block_on(async {
+        let persistable = PersistableMatrixSession::from_json(
+            r#"{"homeserver":"https://matrix.example.invalid","user_id":"@alice:example.invalid","device_id":"ALICEDEVICE","access_token":"synthetic-access"}"#,
+        )
+        .expect("synthetic session should deserialize");
+        let session = koushi_sdk::restore_session(&persistable)
+            .await
+            .expect("synthetic session should restore");
+        let failed = MatrixLiveTailRefreshResult {
+            outcome: MatrixLiveTailRefreshOutcome::Failed,
+            returned_events: 0,
+            diagnostics: MatrixLiveTailRefreshDiagnostics::default(),
+            last_projection_batch: None,
+        };
+
+        for room_id in ["not-a-room-id", "!missing-room:example.invalid"] {
+            let result = session
+                .refresh_room_live_tail(
+                    room_id,
+                    64,
+                    7,
+                    11,
+                    MatrixLiveTailRefreshCancellation::new(),
+                )
+                .await;
+
+            assert_eq!(result, failed);
+            let debug = format!("{result:?}");
+            assert!(!debug.contains(room_id));
+            assert!(!debug.contains("synthetic-access"));
+            assert!(!debug.contains("error"));
+        }
+    });
+}
 
 #[test]
 fn public_gap_contract_is_token_free_and_coarse() {
@@ -43,6 +109,19 @@ fn committed_room_checkpoint_contract_is_backend_neutral_and_closed() {
         &matrix_sdk::event_cache::CommittedRoomTimelineObservation,
     ) -> MatrixCommittedRoomTimelineCheckpoint =
         MatrixCommittedRoomTimelineCheckpoint::from_committed_observation;
+    let response_from_sdk: fn(
+        &matrix_sdk::event_cache::CommittedRoomUpdatesResponse,
+    ) -> MatrixCommittedRoomUpdatesResponse = MatrixCommittedRoomUpdatesResponse::from_sdk;
+    let from_absent: fn(
+        &MatrixCommittedRoomUpdatesResponse,
+        &matrix_sdk::ruma::RoomId,
+    ) -> Option<MatrixCommittedRoomTimelineCheckpoint> =
+        MatrixCommittedRoomTimelineCheckpoint::from_legacy_room_absent;
+    let response_room_checkpoint: fn(
+        &MatrixCommittedRoomUpdatesResponse,
+        &matrix_sdk::ruma::RoomId,
+    ) -> Option<MatrixCommittedRoomTimelineCheckpoint> =
+        MatrixCommittedRoomUpdatesResponse::room_checkpoint;
     let backend: fn(&MatrixCommittedRoomTimelineCheckpoint) -> MatrixCommittedRoomTimelineBackend =
         MatrixCommittedRoomTimelineCheckpoint::backend;
     let generation: fn(&MatrixCommittedRoomTimelineCheckpoint) -> u64 =
@@ -57,9 +136,24 @@ fn committed_room_checkpoint_contract_is_backend_neutral_and_closed() {
         MatrixCommittedRoomTimelineCheckpoint::inserted_gap_handle;
     let matches_gap: fn(&MatrixCommittedRoomTimelineCheckpoint, &MatrixTimelineGapHandle) -> bool =
         MatrixCommittedRoomTimelineCheckpoint::matches_gap;
+    let origin: fn(&MatrixCommittedRoomTimelineCheckpoint) -> MatrixCommittedRoomTimelineOrigin =
+        MatrixCommittedRoomTimelineCheckpoint::origin;
+    let is_room_absent: fn(&MatrixCommittedRoomTimelineCheckpoint) -> bool =
+        MatrixCommittedRoomTimelineCheckpoint::is_room_absent;
+    let response_generation: fn(&MatrixCommittedRoomUpdatesResponse) -> u64 =
+        MatrixCommittedRoomUpdatesResponse::generation;
+    let joined_room_count: fn(&MatrixCommittedRoomUpdatesResponse) -> usize =
+        MatrixCommittedRoomUpdatesResponse::joined_room_count;
+    let left_room_count: fn(&MatrixCommittedRoomUpdatesResponse) -> usize =
+        MatrixCommittedRoomUpdatesResponse::left_room_count;
+    let invited_room_count: fn(&MatrixCommittedRoomUpdatesResponse) -> usize =
+        MatrixCommittedRoomUpdatesResponse::invited_room_count;
     let _ = (
         from_subscription,
         from_legacy,
+        response_from_sdk,
+        from_absent,
+        response_room_checkpoint,
         backend,
         generation,
         room_id,
@@ -67,6 +161,12 @@ fn committed_room_checkpoint_contract_is_backend_neutral_and_closed() {
         has_gap,
         gap_handle,
         matches_gap,
+        origin,
+        is_room_absent,
+        response_generation,
+        joined_room_count,
+        left_room_count,
+        invited_room_count,
     );
 }
 

@@ -63,6 +63,7 @@ const checks = [
   "scenario restore_cleanup",
   "scenario cache_restore",
   "scenario timeline_legacy_fallback",
+  "scenario timeline_legacy_persisted_gap",
   "verify installed Conduit binary",
   "verify installed Tuwunel binary",
   "verify local Synapse Docker runtime when --server=synapse",
@@ -145,15 +146,22 @@ async function run() {
   if (scenarios.includes("timeline_stress") && !runCoreQa) {
     throw new Error("--scenario=timeline_stress requires --core because it validates Core state");
   }
-  if (scenarios.includes("timeline_legacy_fallback")) {
+  const legacyFallbackScenarios = [
+    "timeline_legacy_fallback",
+    "timeline_legacy_persisted_gap"
+  ];
+  const selectedLegacyFallbackScenario = legacyFallbackScenarios.find((scenario) =>
+    scenarios.includes(scenario)
+  );
+  if (selectedLegacyFallbackScenario) {
     if (!runCoreQa) {
       throw new Error(
-        "--scenario=timeline_legacy_fallback requires --core because it validates Core fallback state"
+        `--scenario=${selectedLegacyFallbackScenario} requires --core because it validates Core fallback state`
       );
     }
     if (coreBackendOption !== "probed") {
       throw new Error(
-        "--scenario=timeline_legacy_fallback requires --core-backend=probed"
+        `--scenario=${selectedLegacyFallbackScenario} requires --core-backend=probed`
       );
     }
   }
@@ -608,7 +616,7 @@ function defaultCoreBackendForScenario(value, cargoProfile) {
     return "probed";
   }
   const scenarios = selectedScenarios(value);
-  if (scenarios.some((scenario) => ["all", "e2ee_trust", "gate_restore", "gate_negative", "gate_no_proof", "timeline_stress", "timeline_legacy_fallback"].includes(scenario))) {
+  if (scenarios.some((scenario) => ["all", "e2ee_trust", "gate_restore", "gate_negative", "gate_no_proof", "timeline_stress", "timeline_legacy_fallback", "timeline_legacy_persisted_gap"].includes(scenario))) {
     return "probed";
   }
   return "both";
@@ -666,7 +674,7 @@ function safeTimestamp() {
 
 function printUsage() {
   console.log(
-    "Usage: desktop-headless-local-qa.mjs --run [--server=conduit|tuwunel|synapse|matrixorg|both|all] [--scenario=all|timeline_reconnect|timeline_legacy_fallback|timeline_stress|directory|room_management|activity|composer|credential_health|native_attention|send_queue|live_signals|link_preview[,scenario...]] [--core] [--core-backend=probed|legacy|both] [--cargo-profile=dev|release] [--fixture-run=<local-run-dir>] [--e2ee-recipient-second-device] [--e2ee-pause-sync-before-multi-device-send]"
+    "Usage: desktop-headless-local-qa.mjs --run [--server=conduit|tuwunel|synapse|matrixorg|both|all] [--scenario=all|timeline_reconnect|timeline_legacy_fallback|timeline_legacy_persisted_gap|timeline_stress|directory|room_management|activity|composer|credential_health|native_attention|send_queue|live_signals|link_preview[,scenario...]] [--core] [--core-backend=probed|legacy|both] [--cargo-profile=dev|release] [--fixture-run=<local-run-dir>] [--e2ee-recipient-second-device] [--e2ee-pause-sync-before-multi-device-send]"
   );
   console.log("Starts a disposable local homeserver and runs non-GUI Matrix SDK QA.");
   console.log("  --server=synapse/matrixorg  Runs local Synapse in Docker.");

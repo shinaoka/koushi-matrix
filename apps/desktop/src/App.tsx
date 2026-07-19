@@ -23,6 +23,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 
 import { createDesktopApi } from "./backend/client";
+import type { TimelineGapId } from "./domain/coreEvents";
 import {
   classifySubmissionFailure,
   createComposerSubmissionControllerRegistry,
@@ -159,6 +160,7 @@ import type {
 } from "./domain/types";
 import { stageAttachmentFiles } from "./domain/attachmentIngestion";
 import { createLatestAsyncOperationQueue } from "./domain/latestAsyncResult";
+import { createOrderedEventBatcher } from "./domain/orderedEventBatcher";
 import { SNAPSHOT_SCHEMA_VERSION } from "./domain/types";
 import {
   type DisplayDensity,
@@ -171,7 +173,7 @@ import {
   writeDisplayDensity
 } from "./app/localPresentation";
 import {
-  applyAppStoreDelta,
+  applyAppStoreDeltas,
   getAppStoreDeltaStats,
   selectSnapshot,
   setAppStoreSnapshot,
@@ -377,12 +379,14 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
         roomId: string,
         firstVisibleEventId: string | null,
         lastVisibleEventId: string | null,
+        visibleGapIds: TimelineGapId[],
         atBottom: boolean
       ) {
         await invoke("observe_timeline_viewport", {
           roomId,
           firstVisibleEventId,
           lastVisibleEventId,
+          visibleGapIds,
           atBottom
         });
       },
@@ -1644,17 +1648,24 @@ export function App() {
 
     let disposed = false;
     let unlisten: (() => void) | null = null;
+    const deltaBatcher = createOrderedEventBatcher<
+      Extract<CoreEventPayload, { kind: "StateDelta" }>
+    >((deltas) => {
+      const applied = applyAppStoreDeltas(
+        deltas.map((delta) => ({
+          generation: delta.generation,
+          changed: delta.changed
+        }))
+      );
+      if (!applied) {
+        void refresh();
+      }
+    });
     void listen<CoreEventPayload>(CORE_EVENT_NAME, (event) => {
       if (event.payload.kind !== "StateDelta") {
         return;
       }
-      const applied = applyAppStoreDelta({
-        generation: event.payload.generation,
-        changed: event.payload.changed
-      });
-      if (!applied) {
-        void refresh();
-      }
+      deltaBatcher.enqueue(event.payload);
     }).then((dispose) => {
       if (disposed) {
         dispose();
@@ -1665,6 +1676,7 @@ export function App() {
 
     return () => {
       disposed = true;
+      deltaBatcher.dispose();
       unlisten?.();
     };
   }, []);
@@ -1678,46 +1690,56 @@ export function App() {
     }
 
     let disposed = false;
+    const eventBatcher = createOrderedEventBatcher<CoreEventPayload>((payloads) => {
+      if (disposed) {
+        return;
+      }
+      setTimelineStore((current) => {
+        let next = current;
+        for (const payload of payloads) {
+          if (payload.kind === "ResyncMarker") {
+            next = pruneTimelineStore(
+              applyGlobalResync(next),
+              retainedTimelineKeyIdsRef.current
+            );
+            continue;
+          }
+          if (payload.kind !== "Timeline") {
+            continue;
+          }
+          const applied = applyTimelineEventWithProjectionResultAndRetention(
+            next,
+            payload.event,
+            retainedTimelineKeyIdsRef.current
+          );
+          if (
+            applied.projection.kind === "applied" &&
+            ("Focused" in applied.projection.key.kind ||
+              "Thread" in applied.projection.key.kind)
+          ) {
+            // The Core command is idempotent because React may replay updater
+            // functions in development. Store application always precedes ACK.
+            void api.acknowledgeTimelineProjection(
+              applied.projection.requestId,
+              applied.projection.key,
+              applied.projection.generation
+            );
+          }
+          next = applied.store;
+        }
+        return next;
+      });
+    });
     const unsubscribe = appTimelineTransport.listenCoreEvents((payload) => {
       if (disposed) {
         return;
       }
-      if (payload.kind === "ResyncMarker") {
-        setTimelineStore((current) =>
-          pruneTimelineStore(
-            applyGlobalResync(current),
-            retainedTimelineKeyIdsRef.current
-          )
-        );
-        return;
-      }
-      if (payload.kind !== "Timeline") {
-        return;
-      }
-      setTimelineStore((current) => {
-        const applied = applyTimelineEventWithProjectionResultAndRetention(
-          current,
-          payload.event,
-          retainedTimelineKeyIdsRef.current
-        );
-        if (
-          applied.projection.kind === "applied" &&
-          ("Focused" in applied.projection.key.kind || "Thread" in applied.projection.key.kind)
-        ) {
-          // The Core command is idempotent because React may replay updater
-          // functions in development. Store application always precedes ACK.
-          void api.acknowledgeTimelineProjection(
-            applied.projection.requestId,
-            applied.projection.key,
-            applied.projection.generation
-          );
-        }
-        return applied.store;
-      });
+      eventBatcher.enqueue(payload);
     });
 
     return () => {
       disposed = true;
+      eventBatcher.dispose();
       unsubscribe();
     };
   }, [appTimelineTransport]);

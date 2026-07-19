@@ -8,6 +8,7 @@
 
 import type {
   ThreadRootProjectionDto,
+  TimelineGapId,
   TimelineGapPosition,
   TimelineItem,
   TimelineKey
@@ -24,6 +25,8 @@ export type TimelineDisplayRow = {
   content_event_id: string | null;
   /** Event identity for activity placement and viewport facts. */
   activity_event_id: string | null;
+  /** Stable projected-gap identity; null for every non-gap row. */
+  gap_id: TimelineGapId | null;
   /** Timestamp rendered in the message heading. */
   content_timestamp_ms: number | null;
   /** Timestamp used for presentation placement and date grouping. */
@@ -48,14 +51,24 @@ export function insertTimelineGapItems(
   const result = [...items];
   for (const gap of [...positions].sort((left, right) => right.before_item_index - left.before_item_index)) {
     const insertionIndex = Math.min(gap.before_item_index, result.length);
-    result.splice(insertionIndex, 0, timelineGapPlaceholderItem(generation, gap.ordinal));
+    result.splice(insertionIndex, 0, timelineGapPlaceholderItem(generation, gap.id));
   }
   return result;
 }
 
-function timelineGapPlaceholderItem(generation: number, ordinal: number): TimelineItem {
+type TimelineGapPlaceholderItem = TimelineItem & { gap_id: TimelineGapId };
+
+function timelineGapPlaceholderItem(
+  generation: number,
+  gapId: TimelineGapId
+): TimelineGapPlaceholderItem {
   return {
-    id: { Synthetic: { synthetic_id: `timeline-gap-${generation}-${ordinal}` } },
+    id: {
+      Synthetic: {
+        synthetic_id: `timeline-gap-${generation}-${gapId.topology_revision}-${gapId.ordinal}`
+      }
+    },
+    gap_id: gapId,
     sender: null,
     body: null,
     timestamp_ms: null,
@@ -413,6 +426,7 @@ function canonicalRow(item: TimelineItem): TimelineDisplayRow {
       kind: "timelineGap",
       content_event_id: null,
       activity_event_id: null,
+      gap_id: timelineGapIdForPlaceholder(item),
       content_timestamp_ms: null,
       display_timestamp_ms: null
     };
@@ -424,6 +438,7 @@ function canonicalRow(item: TimelineItem): TimelineDisplayRow {
       kind: "dateDivider",
       content_event_id: null,
       activity_event_id: null,
+      gap_id: null,
       content_timestamp_ms: null,
       display_timestamp_ms: finiteTimestamp(item.timestamp_ms)
     };
@@ -438,6 +453,7 @@ function canonicalRow(item: TimelineItem): TimelineDisplayRow {
     kind: root ? "threadRoot" : "event",
     content_event_id: eventId,
     activity_event_id: eventId,
+    gap_id: null,
     content_timestamp_ms: timestampMs,
     display_timestamp_ms: timestampMs
   };
@@ -451,6 +467,7 @@ function rootAtOriginRow(root: ThreadRoot): TimelineDisplayRow {
     kind: "threadRoot",
     content_event_id: root.eventId,
     activity_event_id: root.eventId,
+    gap_id: null,
     content_timestamp_ms: timestampMs,
     display_timestamp_ms: timestampMs
   };
@@ -463,6 +480,7 @@ function movedRootRow(candidate: MoveCandidate): TimelineDisplayRow {
     kind: "threadRoot",
     content_event_id: candidate.root.eventId,
     activity_event_id: candidate.activityEventId,
+    gap_id: null,
     content_timestamp_ms: finiteTimestamp(candidate.root.item.timestamp_ms),
     display_timestamp_ms: candidate.displayTimestampMs
   };
@@ -475,6 +493,7 @@ function summaryOnlyRootRow(root: ThreadRoot, displayTimestampMs: number): Timel
     kind: "threadRoot",
     content_event_id: root.eventId,
     activity_event_id: root.latestEventId,
+    gap_id: null,
     content_timestamp_ms: finiteTimestamp(root.item.timestamp_ms),
     display_timestamp_ms: displayTimestampMs
   };
@@ -497,6 +516,7 @@ function hydratedRootRow(
           : "threadRoot",
     content_event_id: projection.root_event_id,
     activity_event_id: projection.activity_event_id,
+    gap_id: null,
     content_timestamp_ms: finiteTimestamp(item.timestamp_ms),
     display_timestamp_ms: displayTimestampMs
   };
@@ -628,6 +648,7 @@ function dateDividerRow(timestampMs: number, ordinal: number): TimelineDisplayRo
     kind: "dateDivider",
     content_event_id: null,
     activity_event_id: null,
+    gap_id: null,
     content_timestamp_ms: null,
     display_timestamp_ms: timestampMs
   };
@@ -663,6 +684,13 @@ function isCanonicalDateDivider(item: TimelineItem): boolean {
 
 function isTimelineGapPlaceholder(item: TimelineItem): boolean {
   return "Synthetic" in item.id && item.id.Synthetic.synthetic_id.startsWith("timeline-gap-");
+}
+
+function timelineGapIdForPlaceholder(item: TimelineItem): TimelineGapId | null {
+  if (!isTimelineGapPlaceholder(item) || !("gap_id" in item)) {
+    return null;
+  }
+  return (item as TimelineGapPlaceholderItem).gap_id;
 }
 
 function eventIdFor(item: TimelineItem): string | null {

@@ -187,7 +187,7 @@ describe("timeline store — diff application", () => {
         key: KEY,
         actor_generation: 1,
         generation: 99,
-        positions: [{ ordinal: 0, before_item_index: 1 }]
+        positions: [{ id: { topology_revision: "7", ordinal: 0 }, before_item_index: 1 }]
       }
     });
     expect(getKeyState(store, KEY)?.gapGeneration).toBe(99);
@@ -221,7 +221,7 @@ describe("timeline store — diff application", () => {
         key: KEY,
         actor_generation: 1,
         generation: 100,
-        positions: [{ ordinal: 0, before_item_index: 0 }]
+        positions: [{ id: { topology_revision: "7", ordinal: 0 }, before_item_index: 0 }]
       }
     });
 

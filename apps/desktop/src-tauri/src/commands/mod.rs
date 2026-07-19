@@ -24,8 +24,9 @@ use koushi_core::{
     IntentOutcome, MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand, RoomEvent,
     RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand, SearchEvent, SearchScope,
     SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SetAvatarRequest, SyncCommand,
-    TimelineBatchId, TimelineCommand, TimelineEvent, TimelineGeneration, TimelineKey, TimelineKind,
-    TimelineViewportObservation, UploadMediaKind, UploadMediaRequest, UploadMediaThumbnail,
+    TimelineBatchId, TimelineCommand, TimelineEvent, TimelineGapId, TimelineGeneration,
+    TimelineKey, TimelineKind, TimelineViewportObservation, UploadMediaKind, UploadMediaRequest,
+    UploadMediaThumbnail,
 };
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_state::{
@@ -1587,6 +1588,7 @@ pub(crate) fn build_observe_timeline_viewport_command(
     room_id: String,
     first_visible_event_id: Option<String>,
     last_visible_event_id: Option<String>,
+    visible_gap_ids: Vec<TimelineGapId>,
     at_bottom: bool,
 ) -> CoreCommand {
     CoreCommand::Timeline(TimelineCommand::ObserveViewport {
@@ -1595,6 +1597,7 @@ pub(crate) fn build_observe_timeline_viewport_command(
         observation: TimelineViewportObservation {
             first_visible_event_id,
             last_visible_event_id,
+            visible_gap_ids,
             at_bottom,
         },
     })
@@ -4545,6 +4548,7 @@ mod tests {
             room_id.clone(),
             Some("$first-visible".to_owned()),
             Some("$last-visible".to_owned()),
+            Vec::new(),
             false,
         ) {
             CoreCommand::Timeline(TimelineCommand::ObserveViewport {
@@ -4568,6 +4572,7 @@ mod tests {
                     observation.last_visible_event_id.as_deref(),
                     Some("$last-visible")
                 );
+                assert!(observation.visible_gap_ids.is_empty());
                 assert!(!observation.at_bottom);
             }
             other => panic!("unexpected command: {other:?}"),
@@ -6788,6 +6793,10 @@ mod tests {
             "!room:example.org".to_owned(),
             Some("$first".to_owned()),
             Some("$last".to_owned()),
+            vec![koushi_core::TimelineGapId {
+                topology_revision: 7,
+                ordinal: 2,
+            }],
             false,
         );
         let debug = format!("{command:?}");
@@ -6814,10 +6823,49 @@ mod tests {
                     Some("$first")
                 );
                 assert_eq!(observation.last_visible_event_id.as_deref(), Some("$last"));
+                assert_eq!(
+                    observation.visible_gap_ids,
+                    vec![koushi_core::TimelineGapId {
+                        topology_revision: 7,
+                        ordinal: 2,
+                    }]
+                );
                 assert!(!observation.at_bottom);
             }
             other => panic!("unexpected command: {other:?}"),
         }
+    }
+
+    #[test]
+    fn observe_timeline_viewport_parses_full_range_topology_revision() {
+        let visible_gap_ids: Vec<koushi_core::TimelineGapId> =
+            serde_json::from_value(serde_json::json!([{
+                "topology_revision": "14695981039346656037",
+                "ordinal": 0,
+            }]))
+            .expect("Tauri viewport gap ids parse from their JSON wire shape");
+
+        let command = build_observe_timeline_viewport_command(
+            fake_request_id(42),
+            AccountKey("@alice:example.org".to_owned()),
+            "!room:example.org".to_owned(),
+            None,
+            None,
+            visible_gap_ids,
+            false,
+        );
+
+        let CoreCommand::Timeline(TimelineCommand::ObserveViewport { observation, .. }) = command
+        else {
+            panic!("expected observe viewport command");
+        };
+        assert_eq!(
+            observation.visible_gap_ids,
+            vec![koushi_core::TimelineGapId {
+                topology_revision: 14_695_981_039_346_656_037,
+                ordinal: 0,
+            }]
+        );
     }
 
     #[test]
