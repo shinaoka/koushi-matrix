@@ -4353,8 +4353,7 @@ async fn run_timeline_reconnect_scenario_impl(
         .await?;
         Some((
             bodies,
-            newest_known_event_id
-                .expect("persisted newest-gap batch must contain a newest event"),
+            newest_known_event_id.expect("persisted newest-gap batch must contain a newest event"),
         ))
     } else {
         None
