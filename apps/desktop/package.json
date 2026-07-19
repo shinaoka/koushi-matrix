@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "dev:tauri": "vite --host 127.0.0.1 --mode tauri",
+    "guard:sdk": "node ../../scripts/check-sdk-submodule.mjs",
     "build": "tsc --noEmit && vite build",
     "build:dmg": "node ../../scripts/desktop-build-dmg.mjs",
     "build:dmg:signed": "node ../../scripts/desktop-build-dmg.mjs --signed",
