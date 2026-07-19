@@ -612,6 +612,7 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
         ],
         QaStage::TimelineLegacyPersistedGap => &[
             "legacy_live_tail_room_absent=ok",
+            "live_tail_anchored_silent_gap=ok",
             "live_tail_detached_gap=ok",
             "live_tail_historical_continuation=ok",
         ],
@@ -18156,6 +18157,7 @@ mod tests {
             [
                 "safety=ok",
                 "legacy_live_tail_room_absent=ok",
+                "live_tail_anchored_silent_gap=ok",
                 "live_tail_detached_gap=ok",
                 "live_tail_historical_continuation=ok",
             ]

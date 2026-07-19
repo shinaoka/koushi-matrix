@@ -393,7 +393,7 @@ git diff --check
 Run the repository's configured local homeserver scenario:
 
 ```bash
-node scripts/desktop-headless-local-qa.mjs --run --server=conduit --scenario=timeline_legacy_persisted_gap --core --core-backend=legacy
+node scripts/desktop-headless-local-qa.mjs --run --server=conduit --scenario=timeline_legacy_persisted_gap --core --core-backend=probed
 ```
 
 Expected tokens include:
