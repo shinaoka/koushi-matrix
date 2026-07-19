@@ -4445,7 +4445,9 @@ fn test_only() {
       "utf8"
     );
 
-    expect(tauriConfig.build.beforeDevCommand).toBe("npm run dev:tauri");
+    expect(tauriConfig.build.beforeDevCommand).toBe(
+      "npm run guard:sdk && npm run dev:tauri"
+    );
     expect(packageJson.scripts["dev:tauri"]).toContain("--mode tauri");
     expect(viteConfig).toContain('mode === "tauri"');
     expect(viteConfig).toContain("hmr: false");

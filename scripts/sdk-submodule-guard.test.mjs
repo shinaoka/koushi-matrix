@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
@@ -141,4 +141,34 @@ test("check-sdk-submodule CLI rejects a Git-backed manifest without printing its
   assert.match(result.stderr, /must resolve from vendor Matrix SDK submodule paths/);
   assert.doesNotMatch(result.stderr, /private\.invalid/);
   assert.doesNotMatch(result.stderr, /01234567/);
+});
+
+test("ordinary Tauri dev and build entrypoints run the shared SDK guard first", () => {
+  const packageJson = JSON.parse(
+    readFileSync(join(repoRoot, "apps", "desktop", "package.json"), "utf8"),
+  );
+  const tauriConfig = JSON.parse(
+    readFileSync(
+      join(repoRoot, "apps", "desktop", "src-tauri", "tauri.conf.json"),
+      "utf8",
+    ),
+  );
+  const runScript = readFileSync(join(repoRoot, "scripts", "run.sh"), "utf8");
+
+  assert.equal(
+    packageJson.scripts["guard:sdk"],
+    "node ../../scripts/check-sdk-submodule.mjs",
+  );
+  assert.equal(
+    tauriConfig.build.beforeDevCommand,
+    "npm run guard:sdk && npm run dev:tauri",
+  );
+  assert.equal(
+    tauriConfig.build.beforeBuildCommand,
+    "npm run guard:sdk && npm run build",
+  );
+  assert.match(
+    runScript,
+    /\bnpm\s+--prefix\s+apps\/desktop\s+run\s+tauri\s+--\s+dev(?:\s|$)/,
+  );
 });

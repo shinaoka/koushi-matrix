@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "chat.koushi.desktop",
   "build": {
-    "beforeDevCommand": "npm run dev:tauri",
+    "beforeDevCommand": "npm run guard:sdk && npm run dev:tauri",
     "devUrl": "http://127.0.0.1:5173",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run guard:sdk && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
