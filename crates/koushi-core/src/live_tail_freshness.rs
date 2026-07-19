@@ -103,6 +103,10 @@ where
         self.states.get(key).copied()
     }
 
+    pub(crate) fn active_key(&self) -> Option<&K> {
+        self.active.as_ref()
+    }
+
     pub(crate) fn activate(&mut self, key: K, epoch: u64) -> Vec<LiveTailSchedulerAction<K>> {
         if self.known_epoch_is_newer(&key, epoch) {
             return Vec::new();
