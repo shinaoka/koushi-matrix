@@ -370,6 +370,11 @@ export type TimelineEvent =
         generation: number;
         /** TimelineBatchId newtype → number. */
         batch_id: number;
+        /**
+         * All numeric TimelineDiff indices are relative to the desktop display
+         * sequence immediately before that operation, never to Core's full
+         * navigation sequence.
+         */
         diffs: TimelineDiff[];
       };
     }

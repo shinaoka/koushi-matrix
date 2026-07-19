@@ -908,6 +908,9 @@ pub enum TimelineEvent {
         key: TimelineKey,
         generation: TimelineGeneration,
         batch_id: TimelineBatchId,
+        /// All numeric `TimelineDiff` indices are relative to the desktop
+        /// display sequence immediately before that operation, never to
+        /// Core's full navigation sequence.
         diffs: Vec<TimelineDiff>,
     },
     PaginationStateChanged {
