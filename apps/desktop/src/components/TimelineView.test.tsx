@@ -432,8 +432,14 @@ describe("TimelineView", () => {
       inlineSize: 130,
       blockSize: 260
     });
-    expect(timelineMediaDisplayBoxForTests(null, 1600)).toBeNull();
-    expect(timelineMediaDisplayBoxForTests(800, null)).toBeNull();
+    expect(timelineMediaDisplayBoxForTests(null, 1600)).toEqual({
+      inlineSize: 347,
+      blockSize: 260
+    });
+    expect(timelineMediaDisplayBoxForTests(800, null)).toEqual({
+      inlineSize: 347,
+      blockSize: 260
+    });
   });
 
   it("keeps the reaction emoji picker attached to its message row", async () => {

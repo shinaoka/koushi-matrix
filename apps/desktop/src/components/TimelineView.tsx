@@ -6094,37 +6094,56 @@ export function TimelineItemRow({
           <div className="link-preview-cards">
             {item.link_previews.map((preview) => {
               const previewUrl = toExternalHttpUrl(preview.url);
+              const previewPending =
+                preview.state === "pending" || preview.state === "loading";
               return (
-                <div key={preview.url} className="link-preview-card">
-                  <a
-                    className="link-preview-main"
-                    href={previewUrl || undefined}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={(event) => {
-                      event.preventDefault();
-                      if (previewUrl) {
-                        void openExternalHttpUrl(previewUrl);
-                      }
-                    }}
-                  >
-                    {preview.image?.thumbnail && thumbnailSourceUrl(preview.image.thumbnail) ? (
-                      <img
-                        src={thumbnailSourceUrl(preview.image.thumbnail) ?? undefined}
-                        alt={""}
-                        className="link-preview-image"
-                      />
-                    ) : null}
-                    <div className="link-preview-text">
-                      {preview.title ? (
-                        <div className="link-preview-title">{preview.title}</div>
-                      ) : null}
-                      {preview.description ? (
-                        <div className="link-preview-description">{preview.description}</div>
-                      ) : null}
-                      <div className="link-preview-url">{preview.url}</div>
+                <div
+                  key={preview.url}
+                  className="link-preview-card"
+                  data-link-preview-state={preview.state}
+                >
+                  {previewPending ? (
+                    <div className="link-preview-main link-preview-skeleton" aria-hidden="true">
+                      <span className="link-preview-skeleton-image" />
+                      <span className="link-preview-skeleton-text">
+                        <span />
+                        <span />
+                        <span />
+                      </span>
                     </div>
-                  </a>
+                  ) : (
+                    <a
+                      className="link-preview-main"
+                      href={previewUrl || undefined}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        if (previewUrl) {
+                          void openExternalHttpUrl(previewUrl);
+                        }
+                      }}
+                    >
+                      {preview.image?.thumbnail && thumbnailSourceUrl(preview.image.thumbnail) ? (
+                        <img
+                          src={thumbnailSourceUrl(preview.image.thumbnail) ?? undefined}
+                          alt={""}
+                          className="link-preview-image"
+                        />
+                      ) : (
+                        <span className="link-preview-image-placeholder" aria-hidden="true" />
+                      )}
+                      <div className="link-preview-text">
+                        {preview.title ? (
+                          <div className="link-preview-title">{preview.title}</div>
+                        ) : null}
+                        {preview.description ? (
+                          <div className="link-preview-description">{preview.description}</div>
+                        ) : null}
+                        <div className="link-preview-url">{preview.url}</div>
+                      </div>
+                    </a>
+                  )}
                   <button
                     type="button"
                     className="link-preview-hide"
@@ -7162,20 +7181,10 @@ function TimelineMediaAttachment({
   const downloadProgressPercent = uploadProgressPercent(downloadProgress);
   const Icon = media.kind === "Image" ? ImageIcon : FileText;
   const displayBox = timelineMediaDisplayBox(media.width, media.height);
-  const readyDisplayBox =
-    downloadState?.kind === "ready"
-      ? timelineMediaDisplayBox(
-          downloadState.width ?? media.width,
-          downloadState.height ?? media.height
-        )
-      : displayBox;
-  const mediaFrameStyle =
-    readyDisplayBox === null
-      ? undefined
-      : ({
-          inlineSize: `${readyDisplayBox.inlineSize}px`,
-          blockSize: `${readyDisplayBox.blockSize}px`
-        } satisfies CSSProperties);
+  const mediaFrameStyle = {
+    inlineSize: `${displayBox.inlineSize}px`,
+    blockSize: `${displayBox.blockSize}px`
+  } satisfies CSSProperties;
   const readyImageDownload =
     downloadState?.kind === "ready" && media.kind === "Image" ? downloadState : null;
   const readyImagePreview =
@@ -7217,11 +7226,10 @@ function TimelineMediaAttachment({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [detailsOpen]);
 
-  // #163: a ready image is rendered image-first. The preview is the primary
-  // block; filename/metadata are not laid out over it, and actions appear on
-  // hover/focus as an overlay. The encrypted badge stays visible as a security
-  // signal.
-  if (readyImagePreview && readyImageDownload) {
+  // #277: every image state owns the same figure box. Event metadata (or the
+  // fixed fallback) determines its size before download starts; ready-state
+  // metadata may describe the pixels but must never resize the timeline row.
+  if (media.kind === "Image") {
     return (
       <div
         className="message-media message-media-image-ready"
@@ -7230,26 +7238,45 @@ function TimelineMediaAttachment({
         data-download-state={downloadState?.kind ?? "notRequested"}
       >
         <div className="message-media-figure" style={mediaFrameStyle}>
-          <button
-            className="message-media-open"
-            type="button"
-            aria-label={t("timeline.mediaOpenFile")}
-            onClick={() => {
-              if (readyImageViewerItem) {
-                onOpenMediaViewer(readyImageViewerItem);
-              }
-            }}
-          >
-            <img
-              className="message-media-image"
-              src={readyImagePreview.sourceUrl}
-              alt={media.filename}
-              title={media.filename}
-              width={readyImagePreview.width ?? undefined}
-              height={readyImagePreview.height ?? undefined}
-              loading="lazy"
-            />
-          </button>
+          {readyImagePreview && readyImageDownload ? (
+            <button
+              className="message-media-open"
+              type="button"
+              aria-label={t("timeline.mediaOpenFile")}
+              onClick={() => {
+                if (readyImageViewerItem) {
+                  onOpenMediaViewer(readyImageViewerItem);
+                }
+              }}
+            >
+              <img
+                className="message-media-image"
+                src={readyImagePreview.sourceUrl}
+                alt={media.filename}
+                title={media.filename}
+                width={readyImagePreview.width ?? undefined}
+                height={readyImagePreview.height ?? undefined}
+                loading="lazy"
+              />
+            </button>
+          ) : (
+            <div className="message-media-image-placeholder" aria-hidden="true">
+              <Icon className="message-media-icon" size={28} />
+              <span className="message-media-placeholder-title" dir="auto">
+                {media.filename}
+              </span>
+              {metadata.length > 0 ? (
+                <span className="message-media-placeholder-meta">
+                  {metadata.join(" · ")}
+                </span>
+              ) : null}
+              {downloadState?.kind === "failed" ? (
+                <span className="message-media-error">
+                  {t("timeline.mediaDownloadFailed")}
+                </span>
+              ) : null}
+            </div>
+          )}
           {media.source.encrypted ? (
             <span className="message-media-image-badge">{t("timeline.encryptedMedia")}</span>
           ) : null}
@@ -7267,7 +7294,19 @@ function TimelineMediaAttachment({
             >
               <Info size={16} />
             </button>
-            {canDownload ? (
+            {canDownload && downloadState?.kind === "failed" ? (
+              <button
+                className="message-media-hover-action"
+                type="button"
+                aria-label={t("timeline.mediaDownloadRetry")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onDownload();
+                }}
+              >
+                <RefreshCw size={16} />
+              </button>
+            ) : canDownload && readyImageDownload && readyImagePreview ? (
               <button
                 className="message-media-hover-action"
                 type="button"
@@ -7280,6 +7319,19 @@ function TimelineMediaAttachment({
                     media.filename,
                     onSaveMediaFile
                   );
+                }}
+              >
+                <Download size={16} />
+              </button>
+            ) : canDownload ? (
+              <button
+                className="message-media-hover-action"
+                type="button"
+                disabled={downloadState?.kind === "pending"}
+                aria-label={t("timeline.downloadMedia", { filename: media.filename })}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onDownload();
                 }}
               >
                 <Download size={16} />
@@ -7334,17 +7386,7 @@ function TimelineMediaAttachment({
       data-media-encrypted={media.source.encrypted || undefined}
       data-download-state={downloadState?.kind ?? "notRequested"}
     >
-      {media.kind === "Image" && displayBox ? (
-        <span
-          className="message-media-image-frame message-media-image-frame-reserved"
-          style={mediaFrameStyle}
-          aria-hidden="true"
-        >
-          <Icon className="message-media-icon" size={22} aria-hidden="true" />
-        </span>
-      ) : (
-        <Icon className="message-media-icon" size={18} aria-hidden="true" />
-      )}
+      <Icon className="message-media-icon" size={18} aria-hidden="true" />
       <div className="message-media-main">
         <div className="message-media-title" dir="auto">
           {media.filename}
@@ -7709,13 +7751,17 @@ function formatDimensions(width: number | null, height: number | null): string |
 
 const TIMELINE_MEDIA_MAX_INLINE_PX = 420;
 const TIMELINE_MEDIA_MAX_BLOCK_PX = 260;
+const TIMELINE_MEDIA_FALLBACK_BOX = {
+  inlineSize: 347,
+  blockSize: TIMELINE_MEDIA_MAX_BLOCK_PX
+} as const;
 
 function timelineMediaDisplayBox(
   width: number | null | undefined,
   height: number | null | undefined
-): { inlineSize: number; blockSize: number } | null {
+): { inlineSize: number; blockSize: number } {
   if (!width || !height || width <= 0 || height <= 0) {
-    return null;
+    return TIMELINE_MEDIA_FALLBACK_BOX;
   }
   const scale = Math.min(
     TIMELINE_MEDIA_MAX_INLINE_PX / width,

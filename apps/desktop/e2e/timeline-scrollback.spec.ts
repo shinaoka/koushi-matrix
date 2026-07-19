@@ -36,6 +36,8 @@ function makeItem(id: string, body: string) {
     body,
     timestamp_ms: 1_800_000_000_000,
     in_reply_to_event_id: null,
+    thread_root: null,
+    thread_summary: null,
     can_react: false,
     is_redacted: false,
     is_hidden: false,
@@ -63,6 +65,29 @@ function makeImageItem(id: string) {
       height: 1188,
       thumbnail: null
     }
+  };
+}
+
+function makeImageItemWithoutDimensions(id: string) {
+  return {
+    ...makeImageItem(id),
+    media: {
+      ...makeImageItem(id).media,
+      width: null,
+      height: null
+    }
+  };
+}
+
+function makePendingLinkPreviewItem(id: string) {
+  return {
+    ...makeItem(id, "See https://example.invalid/preview"),
+    link_previews: [
+      {
+        url: "https://example.invalid/preview",
+        state: "pending"
+      }
+    ]
   };
 }
 
@@ -960,6 +985,7 @@ test("known-dimension media keeps row height stable across download completion",
   await page.addStyleTag({
     path: path.join(process.cwd(), "apps/desktop/src/styles.css")
   });
+  await waitAnimationFrames(page, 1);
 
   await page.evaluate(
     ({ key, items }) => {
@@ -973,13 +999,13 @@ test("known-dimension media keeps row height stable across download completion",
     },
     {
       key: timelineKey(),
-      items: Array.from({ length: 650 }, (_, index) =>
-        index === 620 ? makeImageItem("$image620") : makeItem(`$m${index}`, `message ${index}`)
+      items: Array.from({ length: 100 }, (_, index) =>
+        index === 70 ? makeImageItem("$image70") : makeItem(`$m${index}`, `message ${index}`)
       )
     }
   );
 
-  const frame = page.locator('[data-frame-item-id="$image620"]');
+  const frame = page.locator('[data-frame-item-id="$image70"]');
   await expect(frame).toBeVisible();
   const beforeHeight = await frame.evaluate((node) => node.getBoundingClientRect().height);
 
@@ -991,7 +1017,7 @@ test("known-dimension media keeps row height stable across download completion",
           MediaDownloadCompleted: {
             request_id: "media-request",
             key,
-            event_id: "$image620",
+            event_id: "$image70",
             source_url: "appmedia://synthetic-image",
             byte_count: 12345,
             mimetype: "image/png",
@@ -1006,7 +1032,7 @@ test("known-dimension media keeps row height stable across download completion",
   );
 
   await page.evaluate(() =>
-    window.__harness.setMediaDownloadState("$image620", {
+    window.__harness.setMediaDownloadState("$image70", {
       kind: "ready",
       source_url: "appmedia://synthetic-image",
       width: 2048,
@@ -1021,7 +1047,7 @@ test("known-dimension media keeps row height stable across download completion",
   // #163: image-first layout — the image is the open link; the download is a
   // hover/focus overlay action.
   await expect(media.locator(".message-media-open")).toBeVisible();
-  await expect(media.locator(".message-media-hover-action")).toBeVisible();
+  await expect(media.locator(".message-media-hover-action").first()).toBeVisible();
   await expect
     .poll(() => media.evaluate((node) => getComputedStyle(node).display))
     .toBe("inline-grid");
@@ -1032,6 +1058,152 @@ test("known-dimension media keeps row height stable across download completion",
     .toBe(3);
   const afterHeight = await frame.evaluate((node) => node.getBoundingClientRect().height);
   expect(Math.abs(afterHeight - beforeHeight)).toBeLessThanOrEqual(1);
+});
+
+test("missing-dimension media keeps row height stable across download completion", async ({
+  page
+}) => {
+  await page.goto("/harness.html");
+  await page.waitForSelector("[data-testid=timeline-view]");
+  await page.addStyleTag({
+    path: path.join(process.cwd(), "apps/desktop/src/styles.css")
+  });
+  await waitAnimationFrames(page, 1);
+
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          InitialItems: { request_id: null, key, generation: 1, items }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: Array.from({ length: 100 }, (_, index) =>
+        index === 70
+          ? makeImageItemWithoutDimensions("$image-missing70")
+          : makeItem(`$m${index}`, `message ${index}`)
+      )
+    }
+  );
+
+  const frame = page.locator('[data-frame-item-id="$image-missing70"]');
+  await expect(frame).toBeVisible();
+  const beforeHeight = await frame.evaluate((node) => node.getBoundingClientRect().height);
+
+  await page.evaluate(
+    ({ key }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          MediaDownloadCompleted: {
+            request_id: "media-missing-request",
+            key,
+            event_id: "$image-missing70",
+            source_url: "appmedia://synthetic-image-missing",
+            byte_count: 12345,
+            mimetype: "image/png",
+            width: 2048,
+            height: 1188
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    { key: timelineKey() }
+  );
+  await page.evaluate(() =>
+    window.__harness.setMediaDownloadState("$image-missing70", {
+      kind: "ready",
+      source_url: "appmedia://synthetic-image-missing",
+      width: 2048,
+      height: 1188,
+      mime_type: "image/png"
+    })
+  );
+
+  await waitAnimationFrames(page, 3);
+  await expect(frame.locator(".message-media")).toHaveAttribute("data-download-state", "ready");
+  const afterHeight = await frame.evaluate((node) => node.getBoundingClientRect().height);
+  expect(Math.abs(afterHeight - beforeHeight)).toBeLessThanOrEqual(
+    ANCHOR_PIXEL_TOLERANCE
+  );
+});
+
+test("pending link previews reserve the ready card height", async ({ page }) => {
+  await page.goto("/harness.html");
+  await page.waitForSelector("[data-testid=timeline-view]");
+  await page.addStyleTag({
+    path: path.join(process.cwd(), "apps/desktop/src/styles.css")
+  });
+  await waitAnimationFrames(page, 1);
+
+  const pendingItem = makePendingLinkPreviewItem("$preview70");
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          InitialItems: { request_id: null, key, generation: 1, items }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: Array.from({ length: 100 }, (_, index) =>
+        index === 70 ? pendingItem : makeItem(`$m${index}`, `message ${index}`)
+      )
+    }
+  );
+
+  const frame = page.locator('[data-frame-item-id="$preview70"]');
+  const card = frame.locator(".link-preview-card");
+  await expect(card).toHaveAttribute("data-link-preview-state", "pending");
+  const beforeHeight = await frame.evaluate((node) => node.getBoundingClientRect().height);
+  const cardBeforeHeight = await card.evaluate((node) => node.getBoundingClientRect().height);
+
+  await page.evaluate(
+    ({ key, readyItem }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          ItemsUpdated: {
+            key,
+            generation: 1,
+            batch_id: 1,
+            diffs: [{ Set: { index: 70, item: readyItem } }]
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      readyItem: {
+        ...pendingItem,
+        link_previews: [
+          {
+            url: "https://example.invalid/preview",
+            title: "Reserved preview title",
+            description: "Two lines of synthetic preview text must stay inside the reserved card.",
+            state: "ready"
+          }
+        ]
+      }
+    }
+  );
+
+  await expect(card).toHaveAttribute("data-link-preview-state", "ready");
+  const afterHeight = await frame.evaluate((node) => node.getBoundingClientRect().height);
+  const cardAfterHeight = await card.evaluate((node) => node.getBoundingClientRect().height);
+  expect(Math.abs(afterHeight - beforeHeight)).toBeLessThanOrEqual(
+    ANCHOR_PIXEL_TOLERANCE
+  );
+  expect(Math.abs(cardAfterHeight - cardBeforeHeight)).toBeLessThanOrEqual(1);
 });
 
 test("active scroll inside mounted overscan does not recompose the virtual window", async ({ page }) => {
