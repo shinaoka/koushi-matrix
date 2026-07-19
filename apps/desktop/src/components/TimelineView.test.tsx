@@ -31,7 +31,9 @@ import {
   MessageSourceDialog,
   TimelineView,
   clearTimelineViewportSessionMemoryForTests,
+  timelineBackfillThresholdForTests,
   timelineMediaDisplayBoxForTests,
+  timelineRowsArePurePrependForTests,
   type TimelineTransport
 } from "./TimelineView";
 import type { LiveSignalsState, TimelineContinuityState } from "../domain/types";
@@ -440,6 +442,18 @@ describe("TimelineView", () => {
       inlineSize: 347,
       blockSize: 260
     });
+  });
+
+  it("classifies only stable suffix growth as a pure prepend", () => {
+    expect(timelineRowsArePurePrependForTests(["b", "c"], ["a", "b", "c"])).toBe(true);
+    expect(timelineRowsArePurePrependForTests(["b", "c"], ["b", "x", "c"])).toBe(false);
+    expect(timelineRowsArePurePrependForTests([], ["a"])).toBe(false);
+  });
+
+  it("bounds near-top prefetch to two viewport heights", () => {
+    expect(timelineBackfillThresholdForTests(900, true)).toBe(1800);
+    expect(timelineBackfillThresholdForTests(20, true)).toBe(80);
+    expect(timelineBackfillThresholdForTests(900, false)).toBe(0);
   });
 
   it("keeps the reaction emoji picker attached to its message row", async () => {

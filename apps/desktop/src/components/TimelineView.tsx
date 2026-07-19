@@ -816,7 +816,7 @@ function reactionPickerLayoutForControl(control: HTMLElement): ReactionPickerLay
 
 /** Distance (px) from the top edge that triggers automatic backfill. */
 const AUTO_BACKFILL_THRESHOLD_PX = 80;
-const AUTO_BACKFILL_PREFETCH_ITEMS = 100;
+const AUTO_BACKFILL_VIEWPORTS = 2;
 const SCROLL_EDGE_TOLERANCE_PX = 2;
 const TIMELINE_VIRTUALIZATION_THRESHOLD = 600;
 const TIMELINE_VIRTUAL_OVERSCAN_ITEMS = 60;
@@ -833,6 +833,32 @@ const REACTION_PICKER_GAP_PX = 6;
 
 const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "noop";
 const ignoreSendQueueAction = () => undefined;
+
+function timelineRowsArePurePrepend(
+  previousIds: readonly string[],
+  nextIds: readonly string[]
+): boolean {
+  const added = nextIds.length - previousIds.length;
+  return (
+    added > 0 &&
+    previousIds.length > 0 &&
+    previousIds.every((id, index) => nextIds[added + index] === id)
+  );
+}
+
+export const timelineRowsArePurePrependForTests = timelineRowsArePurePrepend;
+
+function timelineBackfillThreshold(clientHeight: number, enabled: boolean): number {
+  if (!enabled) {
+    return 0;
+  }
+  return Math.max(
+    AUTO_BACKFILL_THRESHOLD_PX,
+    Math.max(0, clientHeight) * AUTO_BACKFILL_VIEWPORTS
+  );
+}
+
+export const timelineBackfillThresholdForTests = timelineBackfillThreshold;
 
 const LazyEmojiPicker = lazy(() =>
   import("./EmojiPicker").then((module) => ({ default: module.EmojiPicker }))
@@ -4595,18 +4621,8 @@ export const TimelineView = memo(function TimelineView({
       const scrollHeight = Math.round(container.scrollHeight);
       const scrollTop = Math.round(container.scrollTop);
       const projectedContentHeight = Math.round(timelineHeightModel.totalHeight);
-      const desiredBackfillThreshold = autoLoadOlderMessages
-        ? Math.max(
-            AUTO_BACKFILL_THRESHOLD_PX,
-            virtualItemHeight * AUTO_BACKFILL_PREFETCH_ITEMS
-          )
-        : 0;
       const maxScrollTop = Math.max(0, scrollHeight - clientHeight);
-      const threshold = autoLoadOlderMessages
-        ? maxScrollTop > desiredBackfillThreshold
-          ? desiredBackfillThreshold
-          : AUTO_BACKFILL_THRESHOLD_PX
-        : 0;
+      const threshold = timelineBackfillThreshold(clientHeight, autoLoadOlderMessages);
       const projectionSettled =
         pendingProjectionLayoutRef.current === null &&
         projectionLayoutFrameRef.current === null;
