@@ -739,3 +739,69 @@ The focused lifecycle test then passed. The complete headless Core QA binary
 suite passed with 70 tests, and the `qa-bin` binary check completed
 successfully. No additional long homeserver lane, push, or PR operation was
 included in this follow-up.
+
+## COMMON SAME-DATA-DIR REOPEN SHUTDOWN — 2026-07-20
+
+The latest 20-minute log ended at `sync_a=stopped`. Static routing confirmed
+that this token came from `cleanup_after_full_flow`, not the dedicated
+SendQueue restart block. That common cleanup still dropped `runtime_a`, slept
+for a blind 500 milliseconds, and reopened the same data directory. Updating
+only the dedicated SendQueue restart therefore could not protect this later
+common restore boundary.
+
+Strict RED added a shared source contract for the remaining direct same-data-
+directory reopen paths. It failed first with
+`cleanup_after_full_flow: ordered runtime shutdown is required`. The contract
+requires connection drop, awaited runtime shutdown, and then reopen, while
+rejecting both runtime drop and the restart-only 500ms sleep in the bounded
+restart slice.
+
+The minimal QA-only fix replaces the obsolete drop/sleep sequence with
+`runtime.shutdown().await` in `cleanup_after_full_flow`, the equivalent inline
+`All` restore, and cache-restore Connect 1. Previously corrected SendQueue,
+gate, login-sync, and persisted-gap reopen paths already used the ordered
+barrier. A static scan leaves one drop/sleep in `cleanup_logged_in_runtime`,
+which does not reopen that data directory and is therefore outside this reopen
+contract. Product `CoreRuntime::shutdown` was not changed.
+
+The focused lifecycle contract passed. The complete headless Core QA binary
+suite passed with 71 tests, and the `qa-bin` binary check completed
+successfully. No long homeserver lane was run after this fix.
+
+### Focused SendQueue QA acceleration assessment
+
+The current `SendQueue` scenario statically selects `Safety`, `LoginSync`,
+`RoomSpace`, `Timeline`, and `SendQueue`. Its dedicated stage is not called
+until after room/space creation, user B login/sync/join, two-user timeline
+subscribe/send/receive, back-pagination, navigation, edit/redact, and timeline
+unsubscribe. Those operations do not provide preconditions used by
+`run_send_queue_stage`; that stage creates its own proxy, data directory, sync,
+room, timeline, and cleanup lifecycle.
+
+A safe future fast route is therefore feasible, but was deliberately not
+implemented here. The smallest design is:
+
+1. create user A's identity once with `BootstrapNewIdentity` and retain the
+   returned recovery secret;
+2. close that bootstrap runtime with the ordered shutdown barrier;
+3. call the existing `run_send_queue_stage`, which logs the standalone device
+   through `RecoverExistingIdentity`, starts sync, creates its private QA room,
+   and runs offline/resend/FIFO/cancel/restart coverage; and
+4. return a SendQueue-specific report without constructing user B or the
+   generic room/space/timeline fixture.
+
+The existing `complete_new_identity_gate_for_qa`, typed
+`QaParticipantLoginGate`, `login_synced_participant_for_qa`,
+`run_send_queue_stage`, and cleanup helpers provide the required boundaries.
+The login helper currently discards the bootstrap secret, so a future refactor
+must return a typed bootstrap outcome or keep a very small primary-bootstrap
+wrapper; it must not reintroduce a boolean gate.
+
+The focused lane should normally finish in roughly 3–6 minutes, with the
+dedicated 300-second reconnect/backoff wait defining the dominant exceptional
+budget. It needs only user A's new-identity bootstrap gate followed by the
+standalone device's existing-identity recovery gate. The full E2E/`All` lane
+must retain room/space projection, user B login/join, two-user delivery,
+pagination/navigation, edit/redact/hide-redacted behavior, cross-stage
+integration, and final restore/logout cleanup. This split would make SendQueue
+failures local without reducing that broader coverage.

@@ -3446,8 +3446,7 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
     // Clean shutdown of Connect 1.
     stop_sync_for_qa(&mut conn, "cache_restore stop sync before restart").await?;
     drop(conn);
-    drop(runtime);
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    runtime.shutdown().await;
 
     // -----------------------------------------------------------------------
     // Connect 2: restart over the same data dir, BLOCK the network, then drive
@@ -5284,11 +5283,7 @@ async fn cleanup_after_full_flow(
     println!("sync_a=stopped");
 
     drop(conn_a);
-    drop(runtime_a);
-    // Store-lock release after dropping the runtime is a filesystem event with
-    // no observable Core signal to wait on; this brief bounded wait avoids
-    // store-lock contention when the same data dir is reopened below.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    runtime_a.shutdown().await;
 
     let runtime_a2 = CoreRuntime::start_with_data_dir(data_dir_a);
     let mut conn_a2 = runtime_a2.attach();
@@ -6558,11 +6553,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     println!("sync_a=stopped");
 
     drop(conn_a);
-    drop(runtime_a);
-    // Store-lock release after dropping the runtime is a filesystem event with
-    // no observable Core signal to wait on; this brief bounded wait avoids
-    // store-lock contention when the same data dir is reopened on restore.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    runtime_a.shutdown().await;
 
     let runtime_a2 = CoreRuntime::start_with_data_dir(data_dir_a);
     let mut conn_a2 = runtime_a2.attach();
@@ -18062,6 +18053,78 @@ mod tests {
         );
         assert!(!restart_slice.contains("drop(runtime)"));
         assert!(!restart_slice.contains("Duration::from_millis(500)"));
+    }
+
+    #[test]
+    fn same_data_dir_reopen_paths_use_ordered_runtime_shutdown() {
+        fn assert_ordered_reopen(
+            label: &str,
+            restart_slice: &str,
+            drop_connection: &str,
+            shutdown_runtime: &str,
+            reopen_runtime: &str,
+        ) {
+            let drop_connection = restart_slice
+                .find(drop_connection)
+                .unwrap_or_else(|| panic!("{label}: connection must be dropped before shutdown"));
+            let shutdown = restart_slice
+                .find(shutdown_runtime)
+                .unwrap_or_else(|| panic!("{label}: ordered runtime shutdown is required"));
+            let reopen = restart_slice
+                .find(reopen_runtime)
+                .unwrap_or_else(|| panic!("{label}: same data directory must be reopened"));
+
+            assert!(drop_connection < shutdown, "{label}: drop connection first");
+            assert!(shutdown < reopen, "{label}: shutdown must precede reopen");
+            assert!(
+                !restart_slice.contains("drop(runtime"),
+                "{label}: dropping a runtime is not a shutdown barrier"
+            );
+            assert!(
+                !restart_slice.contains("Duration::from_millis(500)"),
+                "{label}: blind store-lock sleeps are forbidden"
+            );
+        }
+
+        let source = include_str!("headless-core-qa.rs");
+        let cleanup = source
+            .split("async fn cleanup_after_full_flow")
+            .nth(1)
+            .and_then(|rest| rest.split("let mut conn_a2 = runtime_a2.attach();").next())
+            .expect("full-flow cleanup restart slice");
+        assert_ordered_reopen(
+            "cleanup_after_full_flow",
+            cleanup,
+            "drop(conn_a)",
+            "runtime_a.shutdown().await",
+            "CoreRuntime::start_with_data_dir(data_dir_a)",
+        );
+
+        let all_flow = source
+            .split("// --- Sync stop A + store-backed restore A + logout A ---")
+            .nth(1)
+            .and_then(|rest| rest.split("let mut conn_a2 = runtime_a2.attach();").next())
+            .expect("All-scenario restore restart slice");
+        assert_ordered_reopen(
+            "run_async All restore",
+            all_flow,
+            "drop(conn_a)",
+            "runtime_a.shutdown().await",
+            "CoreRuntime::start_with_data_dir(data_dir_a)",
+        );
+
+        let cache_restore = source
+            .split("async fn run_cache_restore_scenario")
+            .nth(1)
+            .and_then(|rest| rest.split("let mut conn2 = runtime2.attach();").next())
+            .expect("cache restore restart slice");
+        assert_ordered_reopen(
+            "cache restore",
+            cache_restore,
+            "drop(conn)",
+            "runtime.shutdown().await",
+            "CoreRuntime::start_with_data_dir(data_dir)",
+        );
     }
 
     #[test]
