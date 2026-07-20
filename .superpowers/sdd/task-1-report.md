@@ -682,3 +682,29 @@ The focused predicate test then passed. The complete headless Core QA binary
 suite passed with 70 tests, and the `qa-bin` binary check completed
 successfully. No long homeserver lane, product change, push, or PR operation was
 included in this review fix.
+
+## SENDQUEUE RECONNECT/BACKOFF WAIT BUDGET — 2026-07-20
+
+The latest 20-minute Conduit run passed typed ExistingIdentity recovery, the
+generic timeline path, and the offline `send_fail` assertion. It then timed out
+inside `wait_for_send_completions_in_order` after the dedicated 90-second wait,
+with `first_completed=false` and no received event. The immediately preceding
+run on the same product code passed resend, FIFO ordering, cancellation, and
+restart coverage. Together these runs identify a nondeterministic SDK
+reconnect/backoff delay after local proxy teardown, not a demonstrated ordering
+or failure-correlation defect.
+
+Strict RED changed the focused timeout contract to compare the constant value
+directly with 300 seconds. It failed exactly with `left: 90s` and `right: 300s`.
+This direct comparison also removed a false-positive risk in the previous
+source-text assertion, which could match its own expected string.
+
+The minimal implementation changes only `SEND_QUEUE_EVENT_TIMEOUT` from 90 to
+300 seconds and documents the local-proxy reconnect/backoff rationale. The
+generic `EVENT_TIMEOUT` remains 30 seconds, the outer final-run budget remains
+1200 seconds, and the ordered waiter and failure correlation are unchanged.
+
+The focused test then passed. The complete headless Core QA binary suite passed
+with 70 tests, and the `qa-bin` binary check completed successfully. No long
+homeserver lane, product change, push, or PR operation was included in this
+follow-up.

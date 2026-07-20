@@ -112,7 +112,9 @@ const LOGIN_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
 const ROOM_LIST_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
 const TIMELINE_INITIAL_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
 const E2EE_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
-const SEND_QUEUE_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
+// Local proxy teardown can leave the SDK in reconnect/backoff before queued
+// sends resume, so this lane needs a wider budget than generic event waits.
+const SEND_QUEUE_EVENT_TIMEOUT: Duration = Duration::from_secs(300);
 const TIMELINE_UNSUBSCRIBE_SETTLE_TIMEOUT: Duration = Duration::from_secs(2);
 const DEVICE_LIST_SETTLE_SYNC_TIMEOUT: Duration = Duration::from_secs(5);
 const THREAD_REPLY_BODY: &str = "Phase 11 QA thread reply from B";
@@ -17999,9 +18001,10 @@ mod tests {
             })
             .expect("send queue FIFO wait body");
 
-        assert!(
-            source.contains("const SEND_QUEUE_EVENT_TIMEOUT: Duration = Duration::from_secs(90);"),
-            "offline send retry can need longer than the generic event timeout after local proxy reconnection"
+        assert_eq!(
+            SEND_QUEUE_EVENT_TIMEOUT,
+            Duration::from_secs(300),
+            "SendQueue reconnect timeout must be 300 seconds, independently of the generic event timeout"
         );
         assert!(
             body.contains("tokio::time::timeout(SEND_QUEUE_EVENT_TIMEOUT, conn.recv_event())"),
