@@ -18572,6 +18572,13 @@ struct DisplayMembershipNode {
     visible_len: usize,
 }
 
+struct PendingDisplayMembershipNode {
+    cell: Option<DisplayMembershipCell>,
+    left: Option<usize>,
+    right: Option<usize>,
+    priority: u64,
+}
+
 impl DisplayMembershipNode {
     fn new(cell: DisplayMembershipCell, priority: u64) -> Box<Self> {
         let canonical_len = cell.canonical_len();
@@ -18654,7 +18661,8 @@ impl DisplayMembershipRope {
         display_state: &mut DisplayProjectionState,
     ) -> (Self, bool) {
         let slots = std::mem::take(&mut display_state.slots);
-        let mut rope = Self::empty(slots.len());
+        let payload_visits = slots.len();
+        let mut cells = Vec::with_capacity(slots.len().saturating_mul(2).saturating_add(1));
         let mut cursor = 0;
         let mut ambiguous = false;
         for slot in slots {
@@ -18662,14 +18670,14 @@ impl DisplayMembershipRope {
                 ambiguous = true;
                 continue;
             }
-            rope.append(DisplayMembershipCell::Gap(slot.canonical_index - cursor));
-            rope.append(DisplayMembershipCell::Slot(slot.item));
+            cells.push(DisplayMembershipCell::Gap(slot.canonical_index - cursor));
+            cells.push(DisplayMembershipCell::Slot(slot.item));
             cursor = slot.canonical_index + 1;
         }
-        rope.append(DisplayMembershipCell::Gap(
+        cells.push(DisplayMembershipCell::Gap(
             canonical_len.saturating_sub(cursor),
         ));
-        (rope, ambiguous)
+        (Self::from_cells(cells, payload_visits), ambiguous)
     }
 
     fn from_canonical_window(
@@ -18678,13 +18686,13 @@ impl DisplayMembershipRope {
     ) -> Self {
         let start = window.start.min(canonical_items.len());
         let end = window.end.min(canonical_items.len()).max(start);
-        let mut rope = Self::empty(end - start);
-        rope.append(DisplayMembershipCell::Gap(start));
+        let mut cells = Vec::with_capacity(end.saturating_sub(start).saturating_add(2));
+        cells.push(DisplayMembershipCell::Gap(start));
         for item in canonical_items[start..end].iter().cloned() {
-            rope.append(DisplayMembershipCell::Slot(item));
+            cells.push(DisplayMembershipCell::Slot(item));
         }
-        rope.append(DisplayMembershipCell::Gap(canonical_items.len() - end));
-        rope
+        cells.push(DisplayMembershipCell::Gap(canonical_items.len() - end));
+        Self::from_cells(cells, end - start)
     }
 
     fn canonical_len(&self) -> usize {
@@ -18708,12 +18716,59 @@ impl DisplayMembershipRope {
         Some(DisplayMembershipNode::new(cell, self.next_priority()))
     }
 
-    fn append(&mut self, cell: DisplayMembershipCell) {
-        if matches!(cell, DisplayMembershipCell::Gap(0)) {
-            return;
+    /// Build the initial implicit treap in one Cartesian-tree pass. Repeated
+    /// `merge` appends would add an avoidable `W log W` construction term.
+    fn from_cells(cells: Vec<DisplayMembershipCell>, display_payload_visits: usize) -> Self {
+        let mut rope = Self::empty(display_payload_visits);
+        let mut pending = Vec::<PendingDisplayMembershipNode>::with_capacity(cells.len());
+        let mut stack = Vec::<usize>::with_capacity(cells.len());
+        for cell in cells {
+            if matches!(cell, DisplayMembershipCell::Gap(0)) {
+                continue;
+            }
+            let priority = rope.next_priority();
+            let mut left = None;
+            while stack
+                .last()
+                .is_some_and(|index| pending[*index].priority < priority)
+            {
+                left = stack.pop();
+            }
+            let index = pending.len();
+            pending.push(PendingDisplayMembershipNode {
+                cell: Some(cell),
+                left,
+                right: None,
+                priority,
+            });
+            if let Some(parent) = stack.last().copied() {
+                pending[parent].right = Some(index);
+            }
+            stack.push(index);
         }
-        let node = self.node(cell);
-        self.root = merge_display_membership(self.root.take(), node);
+
+        fn build(
+            index: usize,
+            pending: &mut [PendingDisplayMembershipNode],
+        ) -> Box<DisplayMembershipNode> {
+            let left = pending[index].left;
+            let right = pending[index].right;
+            let priority = pending[index].priority;
+            let cell = pending[index]
+                .cell
+                .take()
+                .expect("Cartesian membership node is materialized once");
+            let mut node = DisplayMembershipNode::new(cell, priority);
+            node.left = left.map(|child| build(child, pending));
+            node.right = right.map(|child| build(child, pending));
+            node.refresh();
+            node
+        }
+
+        if let Some(root) = stack.first().copied() {
+            rope.root = Some(build(root, &mut pending));
+        }
+        rope
     }
 
     fn split(
