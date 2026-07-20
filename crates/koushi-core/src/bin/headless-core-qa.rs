@@ -3870,6 +3870,7 @@ async fn run_send_queue_stage(
 
     proxy.enable();
     let room_send_forwarded_before_retry = proxy.room_send_forwarded_count();
+    let room_send_responses_completed_before_retry = proxy.room_send_responses_completed_count();
     let retry_id = retry_send_queue_item(
         &mut conn,
         &key,
@@ -3888,10 +3889,14 @@ async fn run_send_queue_stage(
     .await
     .map_err(|error| {
         format!(
-            "{error} room_send_forwarded_after_retry={}",
+            "{error} room_send_forwarded_after_retry={} \
+             room_send_responses_completed_after_retry={}",
             proxy
                 .room_send_forwarded_count()
-                .saturating_sub(room_send_forwarded_before_retry)
+                .saturating_sub(room_send_forwarded_before_retry),
+            proxy
+                .room_send_responses_completed_count()
+                .saturating_sub(room_send_responses_completed_before_retry)
         )
     })?;
     println!("resend=ok");
@@ -11512,6 +11517,7 @@ struct QaTcpProxy {
     listen_addr: SocketAddr,
     enabled: Arc<AtomicBool>,
     room_send_forwarded: Arc<AtomicUsize>,
+    room_send_responses_completed: Arc<AtomicUsize>,
     running: Arc<AtomicBool>,
     active_streams: Arc<Mutex<Vec<TcpStream>>>,
     fallback_control: Arc<(Mutex<QaFallbackProxyState>, Condvar)>,
@@ -11775,6 +11781,7 @@ impl QaTcpProxy {
             .map_err(|e| format!("send_queue proxy local_addr failed: {e}"))?;
         let enabled = Arc::new(AtomicBool::new(true));
         let room_send_forwarded = Arc::new(AtomicUsize::new(0));
+        let room_send_responses_completed = Arc::new(AtomicUsize::new(0));
         let running = Arc::new(AtomicBool::new(true));
         let active_streams = Arc::new(Mutex::new(Vec::new()));
         let fallback_control =
@@ -11783,6 +11790,7 @@ impl QaTcpProxy {
 
         let thread_enabled = enabled.clone();
         let thread_room_send_forwarded = room_send_forwarded.clone();
+        let thread_room_send_responses_completed = room_send_responses_completed.clone();
         let thread_running = running.clone();
         let thread_streams = active_streams.clone();
         let thread_fallback_control = fallback_control.clone();
@@ -11802,6 +11810,7 @@ impl QaTcpProxy {
                             thread_fallback_control.clone(),
                             thread_messages_control.clone(),
                             thread_room_send_forwarded.clone(),
+                            thread_room_send_responses_completed.clone(),
                         );
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -11820,6 +11829,7 @@ impl QaTcpProxy {
             listen_addr,
             enabled,
             room_send_forwarded,
+            room_send_responses_completed,
             running,
             active_streams,
             fallback_control,
@@ -11843,6 +11853,10 @@ impl QaTcpProxy {
 
     fn room_send_forwarded_count(&self) -> usize {
         self.room_send_forwarded.load(Ordering::SeqCst)
+    }
+
+    fn room_send_responses_completed_count(&self) -> usize {
+        self.room_send_responses_completed.load(Ordering::SeqCst)
     }
 
     fn arm_legacy_fallback(&self) -> Result<(), String> {
@@ -12009,6 +12023,7 @@ fn spawn_proxy_pair(
     fallback_control: Arc<(Mutex<QaFallbackProxyState>, Condvar)>,
     messages_control: Arc<Mutex<QaMessagesProxyControl>>,
     room_send_forwarded: Arc<AtomicUsize>,
+    room_send_responses_completed: Arc<AtomicUsize>,
 ) {
     thread::spawn(move || {
         let _ = proxy_single_http_request(
@@ -12018,6 +12033,7 @@ fn spawn_proxy_pair(
             fallback_control,
             messages_control,
             room_send_forwarded,
+            room_send_responses_completed,
         );
         let _ = client.shutdown(Shutdown::Both);
     });
@@ -12030,6 +12046,7 @@ fn proxy_single_http_request(
     fallback_control: Arc<(Mutex<QaFallbackProxyState>, Condvar)>,
     messages_control: Arc<Mutex<QaMessagesProxyControl>>,
     room_send_forwarded: Arc<AtomicUsize>,
+    room_send_responses_completed: Arc<AtomicUsize>,
 ) -> io::Result<()> {
     let mut request_head = Vec::new();
     {
@@ -12116,6 +12133,9 @@ fn proxy_single_http_request(
     }
     io::Write::write_all(&mut server, &request)?;
     io::copy(&mut server, client)?;
+    if count_forwarded_room_send {
+        room_send_responses_completed.fetch_add(1, Ordering::SeqCst);
+    }
     Ok(())
 }
 
@@ -12917,9 +12937,10 @@ async fn cancel_send_queue_item(
     Ok(request_id)
 }
 
-fn send_queue_not_sent_reason(
+fn observe_send_queue_retry_item_state(
     item: &TimelineItem,
     sdk_transaction_id: &str,
+    first_left_not_sent_after_retry: &mut bool,
 ) -> Option<&'static str> {
     if timeline_item_transaction_id(item) != Some(sdk_transaction_id) {
         return None;
@@ -12927,14 +12948,17 @@ fn send_queue_not_sent_reason(
     match item.send_state.as_ref() {
         Some(TimelineSendState::NotSent {
             reason: koushi_core::event::TimelineSendFailureReason::Recoverable,
-        }) => Some("recoverable"),
+        }) if *first_left_not_sent_after_retry => Some("recoverable"),
         Some(TimelineSendState::NotSent {
             reason: koushi_core::event::TimelineSendFailureReason::Unrecoverable,
-        }) => Some("unrecoverable"),
+        }) if *first_left_not_sent_after_retry => Some("unrecoverable"),
+        Some(TimelineSendState::NotSent { .. }) | None => None,
         Some(
             TimelineSendState::Sending | TimelineSendState::Cancelled | TimelineSendState::Sent,
-        )
-        | None => None,
+        ) => {
+            *first_left_not_sent_after_retry = true;
+            None
+        }
     }
 }
 
@@ -12947,6 +12971,7 @@ async fn wait_for_send_completions_in_order(
     label: &str,
 ) -> Result<(), String> {
     let mut first_completed = false;
+    let mut first_left_not_sent_after_retry = false;
     loop {
         let event = tokio::time::timeout(SEND_QUEUE_EVENT_TIMEOUT, conn.recv_event())
             .await
@@ -12964,10 +12989,13 @@ async fn wait_for_send_completions_in_order(
                 items,
                 ..
             }) if ev_key == key => {
-                if let Some(reason) = items
-                    .iter()
-                    .find_map(|item| send_queue_not_sent_reason(item, &first.sdk_transaction_id))
-                {
+                if let Some(reason) = items.iter().find_map(|item| {
+                    observe_send_queue_retry_item_state(
+                        item,
+                        &first.sdk_transaction_id,
+                        &mut first_left_not_sent_after_retry,
+                    )
+                }) {
                     return Err(format!(
                         "{label}: first queued send returned to NotSent reason={reason}"
                     ));
@@ -12979,9 +13007,11 @@ async fn wait_for_send_completions_in_order(
                 ..
             }) if ev_key == key => {
                 visit_timeline_diff_items(&diffs, |item| {
-                    if let Some(reason) =
-                        send_queue_not_sent_reason(item, &first.sdk_transaction_id)
-                    {
+                    if let Some(reason) = observe_send_queue_retry_item_state(
+                        item,
+                        &first.sdk_transaction_id,
+                        &mut first_left_not_sent_after_retry,
+                    ) {
                         return Err(format!(
                             "{label}: first queued send returned to NotSent reason={reason}"
                         ));
@@ -12996,9 +13026,7 @@ async fn wait_for_send_completions_in_order(
                 ..
             }) if ev_key == key && request_id == first.request_id => {
                 if transaction_id != first.client_transaction_id {
-                    return Err(format!(
-                        "{label}: first completion transaction mismatch: {transaction_id}"
-                    ));
+                    return Err(format!("{label}: first completion transaction mismatch"));
                 }
                 first_completed = true;
             }
@@ -13014,20 +13042,17 @@ async fn wait_for_send_completions_in_order(
                     ));
                 }
                 if transaction_id != second.client_transaction_id {
-                    return Err(format!(
-                        "{label}: second completion transaction mismatch: {transaction_id}"
-                    ));
+                    return Err(format!("{label}: second completion transaction mismatch"));
                 }
                 return Ok(());
             }
-            CoreEvent::OperationFailed {
-                request_id,
-                failure,
-            } if request_id == retry_request_id
-                || request_id == first.request_id
-                || request_id == second.request_id =>
+            CoreEvent::OperationFailed { request_id, .. } if request_id == retry_request_id => {
+                return Err(format!("{label}: retry operation failed"));
+            }
+            CoreEvent::OperationFailed { request_id, .. }
+                if request_id == first.request_id || request_id == second.request_id =>
             {
-                return Err(format!("{label}: operation failed: {failure:?}"));
+                return Err(format!("{label}: queued send operation failed"));
             }
             _ => {}
         }

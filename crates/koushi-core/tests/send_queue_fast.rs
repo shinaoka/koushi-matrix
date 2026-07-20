@@ -1449,7 +1449,7 @@ fn send_queue_stage_uses_active_replay_waiter_for_both_subscriptions() {
 }
 
 #[test]
-fn headless_send_queue_diagnostic_contract_classifies_and_counts_forwarded_room_sends() {
+fn headless_send_queue_diagnostic_contract_counts_forwarded_and_completed_room_sends() {
     let source = include_str!("../src/bin/headless-core-qa.rs");
     let classifier = source
         .split("\nfn qa_proxy_request_kind(")
@@ -1487,12 +1487,24 @@ fn headless_send_queue_diagnostic_contract_classifies_and_counts_forwarded_room_
         counter_increment < upstream_write,
         "RoomSend counter must increment immediately before its upstream write"
     );
+    let upstream_copy = proxy_request
+        .find("io::copy(&mut server, client)?;")
+        .expect("QA proxy successful response copy");
+    let completed_increment = proxy_request
+        .find("room_send_responses_completed.fetch_add(1, Ordering::SeqCst);")
+        .expect("completed forwarded RoomSend response counter increment");
+    assert!(
+        upstream_copy < completed_increment,
+        "completed RoomSend counter must increment only after response copy succeeds"
+    );
     assert!(source.contains("room_send_forwarded: Arc<AtomicUsize>"));
     assert!(source.contains("fn room_send_forwarded_count(&self) -> usize"));
+    assert!(source.contains("room_send_responses_completed: Arc<AtomicUsize>"));
+    assert!(source.contains("fn room_send_responses_completed_count(&self) -> usize"));
 }
 
 #[test]
-fn headless_send_queue_diagnostic_contract_wraps_fifo_failure_with_forward_count() {
+fn headless_send_queue_diagnostic_contract_wraps_fifo_failure_with_proxy_deltas() {
     let source = include_str!("../src/bin/headless-core-qa.rs");
     let send_queue_stage = source
         .split("\nasync fn run_send_queue_stage(")
@@ -1508,33 +1520,46 @@ fn headless_send_queue_diagnostic_contract_wraps_fifo_failure_with_forward_count
         .split("    println!(\"resend=ok\");")
         .next()
         .expect("FIFO retry stage end");
+    let compact_retry_stage = retry_stage.split_whitespace().collect::<Vec<_>>().join(" ");
 
-    let baseline = retry_stage
+    let baseline = compact_retry_stage
         .find("let room_send_forwarded_before_retry = proxy.room_send_forwarded_count();")
         .expect("RoomSend baseline immediately before FIFO retry");
-    let retry = retry_stage
+    let completed_baseline = compact_retry_stage
+        .find("let room_send_responses_completed_before_retry = proxy.room_send_responses_completed_count();")
+        .expect("completed RoomSend response baseline immediately before FIFO retry");
+    let retry = compact_retry_stage
         .find("let retry_id = retry_send_queue_item(")
         .expect("first FIFO retry command");
     assert!(baseline < retry, "RoomSend baseline must precede the retry");
+    assert!(
+        completed_baseline < retry,
+        "completed response baseline must precede the retry"
+    );
     assert!(retry_stage.contains("room_send_forwarded_after_retry={}"));
+    assert!(retry_stage.contains("room_send_responses_completed_after_retry={}"));
     assert!(retry_stage.contains("saturating_sub(room_send_forwarded_before_retry)"));
+    assert!(retry_stage.contains("saturating_sub(room_send_responses_completed_before_retry)"));
 }
 
 #[test]
-fn headless_send_queue_diagnostic_contract_fails_early_on_private_safe_not_sent() {
+fn headless_send_queue_diagnostic_contract_arms_before_private_safe_not_sent_failure() {
     let source = include_str!("../src/bin/headless-core-qa.rs");
-    let reason_helper = source
-        .split("\nfn send_queue_not_sent_reason(")
+    let observer = source
+        .split("\nfn observe_send_queue_retry_item_state(")
         .nth(1)
-        .expect("private-safe SendQueue NotSent observer")
+        .expect("causally fenced private-safe SendQueue state observer")
         .split("\nasync fn wait_for_send_completions_in_order(")
         .next()
-        .expect("private-safe SendQueue NotSent observer end");
-    assert!(reason_helper.contains("TimelineSendFailureReason::Recoverable"));
-    assert!(reason_helper.contains("Some(\"recoverable\")"));
-    assert!(reason_helper.contains("TimelineSendFailureReason::Unrecoverable"));
-    assert!(reason_helper.contains("Some(\"unrecoverable\")"));
-    assert!(!reason_helper.contains("format!("));
+        .expect("causally fenced private-safe SendQueue state observer end");
+    assert!(observer.contains("first_left_not_sent_after_retry: &mut bool"));
+    assert!(observer.contains("if *first_left_not_sent_after_retry"));
+    assert!(observer.contains("*first_left_not_sent_after_retry = true;"));
+    assert!(observer.contains("TimelineSendFailureReason::Recoverable"));
+    assert!(observer.contains("Some(\"recoverable\")"));
+    assert!(observer.contains("TimelineSendFailureReason::Unrecoverable"));
+    assert!(observer.contains("Some(\"unrecoverable\")"));
+    assert!(!observer.contains("format!("));
 
     let waiter = source
         .split("\nasync fn wait_for_send_completions_in_order(")
@@ -1546,7 +1571,14 @@ fn headless_send_queue_diagnostic_contract_fails_early_on_private_safe_not_sent(
     assert!(waiter.contains("TimelineEvent::InitialItems"));
     assert!(waiter.contains("TimelineEvent::ItemsUpdated"));
     assert!(waiter.contains("visit_timeline_diff_items(&diffs"));
-    assert!(waiter.contains("send_queue_not_sent_reason(item, &first.sdk_transaction_id)"));
+    assert!(waiter.contains("let mut first_left_not_sent_after_retry = false;"));
+    assert_eq!(
+        waiter
+            .matches("observe_send_queue_retry_item_state(")
+            .count(),
+        2,
+        "InitialItems and ItemsUpdated must share the causally fenced observer"
+    );
     assert_eq!(
         waiter
             .matches("\"{label}: first queued send returned to NotSent reason={reason}\"")
@@ -1554,6 +1586,11 @@ fn headless_send_queue_diagnostic_contract_fails_early_on_private_safe_not_sent(
         2,
         "InitialItems and ItemsUpdated must use the same private-safe fixed-token diagnostic"
     );
+    assert!(waiter.contains("request_id == retry_request_id"));
+    assert!(waiter.contains("\"{label}: retry operation failed\""));
+    assert!(waiter.contains("\"{label}: queued send operation failed\""));
+    assert!(!waiter.contains("{failure:?}"));
+    assert!(!waiter.contains("{transaction_id}"));
     assert!(!waiter.contains("sdk_transaction_id}"));
 }
 
