@@ -418,6 +418,12 @@ impl SendEnqueueWorkerSupervisor {
             terminal_ingress,
         }
     }
+
+    fn abort_all(&self) {
+        for task in self.tasks.iter() {
+            task.abort();
+        }
+    }
 }
 
 impl Drop for SendEnqueueWorkerSupervisor {
@@ -426,9 +432,7 @@ impl Drop for SendEnqueueWorkerSupervisor {
         // admission first so registration Drop fails closed, then abort every
         // owned task instead of detaching raw Tokio JoinHandles.
         self.terminal_ingress.stop_accepting();
-        for task in self.tasks.iter() {
-            task.abort();
-        }
+        self.abort_all();
     }
 }
 
@@ -1730,6 +1734,21 @@ pub struct TimelineManagerActor {
     live_tail_refreshes: LiveTailRefreshCoordinator<TimelineKey>,
     #[cfg(test)]
     test_session_available: bool,
+}
+
+impl Drop for TimelineManagerActor {
+    fn drop(&mut self) {
+        // Ordered shutdown has already joined workers and taken/awaited the
+        // observer. Cancellation or panic cannot await, so close admission
+        // before aborting every manager-owned send task. Aborting a raw Tokio
+        // JoinHandle before it is dropped prevents detach-on-drop ownership
+        // leaks while preserving the normal shutdown ordering in `run`.
+        self.terminal_ingress.stop_accepting();
+        if let Some(observer) = &self.global_send_completion_observer_task {
+            observer.abort();
+        }
+        self.send_enqueue_workers.abort_all();
+    }
 }
 
 fn accepts_legacy_committed_response(
@@ -32850,6 +32869,13 @@ mod tests {
             worker_join < observer_stop && observer_stop < actor_drain,
             "shutdown must join enqueue workers while the global observer is live, then stop presentation actors"
         );
+        let supervisor_impl = production
+            .split("impl SendEnqueueWorkerSupervisor")
+            .nth(1)
+            .expect("enqueue worker supervisor implementation should exist")
+            .split("impl Drop for SendEnqueueWorkerSupervisor")
+            .next()
+            .expect("enqueue worker supervisor Drop should follow its methods");
         let supervisor_drop = production
             .split("impl Drop for SendEnqueueWorkerSupervisor")
             .nth(1)
@@ -32858,10 +32884,26 @@ mod tests {
             .next()
             .expect("enqueue runner should follow the supervisor");
         assert!(
-            supervisor_drop.contains("self.terminal_ingress.stop_accepting()")
-                && supervisor_drop.contains("self.tasks.iter()")
-                && supervisor_drop.contains("task.abort()"),
+            supervisor_impl.contains("fn abort_all(&self)")
+                && supervisor_impl.contains("self.tasks.iter()")
+                && supervisor_impl.contains("task.abort()")
+                && supervisor_drop.contains("self.terminal_ingress.stop_accepting()")
+                && supervisor_drop.contains("self.abort_all()"),
             "abnormal manager drop must close terminal admission and abort every owned worker"
+        );
+        let manager_drop = production
+            .split("impl Drop for TimelineManagerActor")
+            .nth(1)
+            .expect("timeline manager must have an abnormal-drop fallback")
+            .split("fn accepts_legacy_committed_response")
+            .next()
+            .expect("legacy response helper should follow manager Drop");
+        assert!(
+            manager_drop.contains("self.terminal_ingress.stop_accepting()")
+                && manager_drop.contains("self.global_send_completion_observer_task")
+                && manager_drop.contains("observer.abort()")
+                && manager_drop.contains("self.send_enqueue_workers.abort_all()"),
+            "manager Drop must close terminal admission before aborting observer and enqueue workers"
         );
     }
 
@@ -33884,16 +33926,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn manager_drop_aborts_owned_send_enqueue_workers() {
-        struct WorkerDropFlag(Arc<AtomicBool>);
+    async fn manager_drop_aborts_owned_observer_and_send_enqueue_workers() {
+        struct OwnedTaskDropFlag(Arc<AtomicBool>);
 
-        impl Drop for WorkerDropFlag {
+        impl Drop for OwnedTaskDropFlag {
             fn drop(&mut self) {
                 self.0.store(false, Ordering::SeqCst);
             }
         }
 
         let mut manager = live_tail_test_manager(HashMap::new());
+        let observer_alive = Arc::new(AtomicBool::new(true));
+        let (observer_started, observer_ready) = oneshot::channel();
+        manager.global_send_completion_observer_task = Some(executor::spawn({
+            let observer_alive = Arc::clone(&observer_alive);
+            async move {
+                let _drop = OwnedTaskDropFlag(observer_alive);
+                let _ = observer_started.send(());
+                futures_util::future::pending::<()>().await;
+            }
+        }));
         let mut registration = SendCompletionRegistration::begin(
             Arc::clone(&manager.send_completion),
             manager.terminal_ingress.clone(),
@@ -33904,28 +33956,34 @@ mod tests {
             true,
         );
         registration.activate();
-        let alive = Arc::new(AtomicBool::new(true));
-        let (started, worker_started) = oneshot::channel();
+        let worker_alive = Arc::new(AtomicBool::new(true));
+        let (worker_started, worker_ready) = oneshot::channel();
         manager.spawn_send_enqueue_future(registration, {
-            let alive = Arc::clone(&alive);
+            let worker_alive = Arc::clone(&worker_alive);
             async move {
-                let _drop = WorkerDropFlag(alive);
-                let _ = started.send(());
+                let _drop = OwnedTaskDropFlag(worker_alive);
+                let _ = worker_started.send(());
                 futures_util::future::pending::<Result<SendEnqueueSuccess, TimelineFailureKind>>()
                     .await
             }
         });
-        worker_started.await.expect("manager worker started");
+        observer_ready.await.expect("manager observer started");
+        worker_ready.await.expect("manager worker started");
 
         drop(manager);
 
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while alive.load(Ordering::SeqCst) {
+        let quiesced = tokio::time::timeout(Duration::from_secs(1), async {
+            while observer_alive.load(Ordering::SeqCst) || worker_alive.load(Ordering::SeqCst) {
                 tokio::task::yield_now().await;
             }
         })
-        .await
-        .expect("dropping the manager aborts its owned enqueue workers");
+        .await;
+        assert!(
+            quiesced.is_ok(),
+            "unexpected manager drop must quiesce observer={} worker={}",
+            !observer_alive.load(Ordering::SeqCst),
+            !worker_alive.load(Ordering::SeqCst),
+        );
     }
 
     #[test]
