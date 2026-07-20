@@ -1554,26 +1554,22 @@ async fn run_invites_dm_stage(
     conn_a: &mut CoreConnection,
     data_dir_b: std::path::PathBuf,
 ) -> Result<(), String> {
-    let runtime_b = CoreRuntime::start_with_data_dir(data_dir_b);
-    let mut conn_b = runtime_b.attach();
-
-    let login_b_id = conn_b.next_request_id();
-    conn_b
-        .command(CoreCommand::Account(AccountCommand::LoginPassword {
-            request_id: login_b_id,
-            request: koushi_state::LoginRequest {
-                homeserver: config.homeserver.clone(),
-                username: config.user_b.clone(),
-                password: AuthSecret::new(config.password_b.clone()),
-                device_display_name: Some(DEVICE_B.to_owned()),
-            },
-        }))
-        .await
-        .map_err(|e| format!("invites_dm: submit login B failed: {e}"))?;
-
-    let account_key_b = wait_for_logged_in(&mut conn_b, login_b_id, "invites_dm login B").await?;
-    wait_for_ready_snapshot(&mut conn_b, "invites_dm session B Ready").await?;
-    start_sync_for_qa(&mut conn_b, "invites_dm sync B").await?;
+    let QaParticipantLoginOutcome {
+        runtime: runtime_b,
+        conn: mut conn_b,
+        account_key: account_key_b,
+        bootstrap_recovery_secret: _,
+    } = login_synced_participant_for_qa(
+        &config.homeserver,
+        data_dir_b,
+        &config.user_b,
+        &config.password_b,
+        DEVICE_B,
+        "invites_dm login B",
+        "invites_dm bootstrap gate B",
+        QaParticipantLoginGate::BootstrapNewIdentity,
+    )
+    .await?;
 
     let user_b_full_id = format!("@{}:{}", config.user_b, config.server_name);
     let user_a_full_id = format!("@{}:{}", config.user_a, config.server_name);
@@ -5465,6 +5461,7 @@ fn should_bootstrap_new_identity_before_logged_in(scenario: QaScenario) -> bool 
     matches!(
         scenario,
         QaScenario::All
+            | QaScenario::InvitesDm
             | QaScenario::E2eeTrust
             | QaScenario::GateRestore
             | QaScenario::GateNegative
@@ -17891,6 +17888,32 @@ mod tests {
     }
 
     #[test]
+    fn invites_dm_primary_login_requires_new_identity_bootstrap() {
+        assert!(
+            should_bootstrap_new_identity_before_logged_in(QaScenario::InvitesDm),
+            "focused InvitesDm must bootstrap primary A before LoggedIn"
+        );
+    }
+
+    #[test]
+    fn invites_dm_secondary_login_uses_centralized_typed_bootstrap_gate() {
+        let source = include_str!("headless-core-qa.rs");
+        let stage = source
+            .split("async fn run_invites_dm_stage")
+            .nth(1)
+            .expect("InvitesDm stage should exist")
+            .split("async fn run_directory_stage")
+            .next()
+            .expect("directory stage should follow InvitesDm");
+
+        assert!(stage.contains("login_synced_participant_for_qa("));
+        assert!(stage.contains("QaParticipantLoginGate::BootstrapNewIdentity"));
+        assert!(!stage.contains("AccountCommand::LoginPassword"));
+        assert!(!stage.contains("wait_for_logged_in"));
+        assert!(!stage.contains("bootstrap_new_identity: bool"));
+    }
+
+    #[test]
     fn all_flow_retains_the_primary_recovery_secret_for_its_send_queue_stage() {
         assert!(QaScenario::All.should_run_stage(QaStage::SendQueue));
         assert!(
@@ -17919,6 +17942,29 @@ mod tests {
         assert!(!should_bootstrap_new_identity_before_logged_in(
             QaScenario::SendQueue
         ));
+
+        let source = include_str!("headless-core-qa.rs");
+        let all_send_queue_route = source
+            .split("if scenario.should_run_stage(QaStage::SendQueue)")
+            .nth(1)
+            .expect("All route should retain the SendQueue stage")
+            .split("if !scenario.should_run_stage(QaStage::EditRedactSearch)")
+            .next()
+            .expect("EditRedactSearch route should follow SendQueue");
+        assert!(all_send_queue_route.contains("bootstrap_recovery_secret_a"));
+        assert!(all_send_queue_route.contains("run_send_queue_stage(&config, recovery_secret)"));
+
+        let standalone_send_queue = source
+            .split("async fn run_send_queue_stage")
+            .nth(1)
+            .expect("standalone SendQueue stage")
+            .split("async fn unsubscribe_timeline_for_qa")
+            .next()
+            .expect("standalone SendQueue stage end");
+        assert!(
+            standalone_send_queue
+                .contains("QaParticipantLoginGate::RecoverExistingIdentity(recovery_secret)")
+        );
     }
 
     #[test]
