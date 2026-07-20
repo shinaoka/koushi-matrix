@@ -246,6 +246,9 @@ use zeroize::Zeroizing;
 const LOGIN_DISCOVERY_PATH: &str = "_matrix/client/v3/login";
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 const RESTRICTED_VERIFICATION_SYNC_SERVER_TIMEOUT: Duration = Duration::from_secs(3);
+const SYNC_INVITE_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+const SYNC_INVITE_PROBE_CONNECTION_ID: &str = "koushi-invite";
+const SYNC_INVITE_PROBE_LIST_KEY: &str = "koushi_invites";
 const MATRIX_ROOM_LIST_SNAPSHOT_LIMIT: usize = 4096;
 pub const LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE: &str = "app.koushi.local_aliases";
 
@@ -2522,6 +2525,14 @@ pub struct MatrixClientSession {
     pub info: SessionInfo,
 }
 
+/// Coarse result of the authenticated MSC4186 invite-list contract probe.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixSlidingSyncInviteListSupport {
+    Supported,
+    KnownIncomplete,
+    Unknown,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MatrixTimelineContinuity {
     Unknown,
@@ -4439,6 +4450,50 @@ struct RawLoginFlow {
 #[derive(Deserialize)]
 struct MatrixErrorResponse {
     error: Option<String>,
+}
+
+/// Run one bounded, read-only MSC4186 invite-list preflight operation before
+/// the authoritative sync owner starts. Any successful response cursor and
+/// room payload are intentionally discarded.
+pub async fn probe_sliding_sync_invite_list_support(
+    client: &matrix_sdk::Client,
+) -> MatrixSlidingSyncInviteListSupport {
+    use matrix_sdk::{
+        config::RequestConfig,
+        ruma::{api::client::sync::sync_events::v5 as http, assign, presence::PresenceState, uint},
+    };
+
+    let list = assign!(http::request::List::default(), {
+        ranges: vec![(uint!(0), uint!(0))],
+        room_details: assign!(http::request::RoomDetails::default(), {
+            timeline_limit: uint!(0),
+        }),
+        filters: Some(assign!(http::request::ListFilters::default(), {
+            is_invite: Some(true),
+        })),
+    });
+    let request = assign!(http::Request::new(), {
+        conn_id: Some(SYNC_INVITE_PROBE_CONNECTION_ID.to_owned()),
+        timeout: Some(Duration::ZERO),
+        set_presence: PresenceState::Offline,
+        lists: [(SYNC_INVITE_PROBE_LIST_KEY.to_owned(), list)].into_iter().collect(),
+    });
+    let request_config = RequestConfig::new()
+        .timeout(SYNC_INVITE_PROBE_TIMEOUT)
+        .disable_retry();
+
+    match tokio::time::timeout(
+        SYNC_INVITE_PROBE_TIMEOUT,
+        client.send(request).with_request_config(request_config),
+    )
+    .await
+    {
+        Ok(Ok(response)) if response.lists.contains_key(SYNC_INVITE_PROBE_LIST_KEY) => {
+            MatrixSlidingSyncInviteListSupport::Supported
+        }
+        Ok(Ok(_)) => MatrixSlidingSyncInviteListSupport::KnownIncomplete,
+        Ok(Err(_)) | Err(_) => MatrixSlidingSyncInviteListSupport::Unknown,
+    }
 }
 
 pub fn discover_login_flows(homeserver: &str) -> Result<LoginDiscovery, LoginDiscoveryError> {
@@ -7536,7 +7591,15 @@ fn matrix_error_message(body: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, path::PathBuf};
+    use std::{
+        collections::BTreeMap,
+        io::{Read, Write},
+        net::TcpListener,
+        path::PathBuf,
+        sync::mpsc,
+        thread,
+        time::Duration,
+    };
 
     use super::{
         LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE, MatrixConversationActivity,
@@ -7554,6 +7617,351 @@ mod tests {
         trace_sdk_conversation_activity, trace_sdk_unread_snapshot, update_room_member_power_level,
         update_room_setting,
     };
+
+    #[test]
+    fn sliding_sync_invite_probe_contract_is_typed_bounded_and_discards_cursor() {
+        let source = include_str!("lib.rs");
+        let body = source
+            .split("pub async fn probe_sliding_sync_invite_list_support")
+            .nth(1)
+            .and_then(|rest| rest.split("pub fn discover_login_flows").next())
+            .expect("typed invite-list support probe should precede login discovery");
+
+        assert!(body.contains(".send(request)"));
+        assert!(body.contains("with_request_config"));
+        assert!(body.contains("SYNC_INVITE_PROBE_TIMEOUT"));
+        assert!(body.contains("tokio::time::timeout("));
+        assert!(body.contains("disable_retry()"));
+        assert!(!body.contains(".sliding_sync("));
+        assert!(!body.contains("RoomListService::"));
+    }
+
+    #[derive(Clone, Copy)]
+    enum InviteProbeTestResponse {
+        Json(&'static [u8]),
+        HttpError,
+        Stall,
+    }
+
+    fn read_test_http_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("request read timeout");
+        let mut request = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        let header_end = loop {
+            let read = stream.read(&mut chunk).expect("read invite probe request");
+            assert!(read > 0, "request closed before its headers completed");
+            request.extend_from_slice(&chunk[..read]);
+            assert!(request.len() <= 16 * 1024, "synthetic request is bounded");
+            if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                break index + 4;
+            }
+        };
+        let head = String::from_utf8_lossy(&request[..header_end]);
+        let content_length = head
+            .lines()
+            .skip(1)
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.trim()
+                    .eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().expect("content length"))
+            })
+            .unwrap_or_default();
+        while request.len() < header_end + content_length {
+            let read = stream.read(&mut chunk).expect("read invite probe body");
+            assert!(read > 0, "request closed before its body completed");
+            request.extend_from_slice(&chunk[..read]);
+        }
+        request
+    }
+
+    fn spawn_invite_probe_server(
+        response: InviteProbeTestResponse,
+    ) -> (String, mpsc::Receiver<Vec<u8>>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("synthetic listener");
+        let address = listener.local_addr().expect("synthetic listener address");
+        let (request_tx, request_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            loop {
+                let (mut stream, _) = listener.accept().expect("invite probe request");
+                let request = read_test_http_request(&mut stream);
+                let request_line = String::from_utf8_lossy(&request)
+                    .lines()
+                    .next()
+                    .expect("request line")
+                    .to_owned();
+                if !request_line
+                    .contains("/_matrix/client/unstable/org.matrix.simplified_msc3575/sync")
+                {
+                    stream
+                        .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                        .expect("write background response");
+                    continue;
+                }
+                request_tx
+                    .send(request)
+                    .expect("capture invite probe request");
+                match response {
+                    InviteProbeTestResponse::Json(body) => {
+                        let head = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        stream.write_all(head.as_bytes()).expect("write response head");
+                        stream.write_all(body).expect("write response body");
+                    }
+                    InviteProbeTestResponse::HttpError => stream
+                        .write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                        .expect("write error response"),
+                    InviteProbeTestResponse::Stall => {
+                        thread::sleep(Duration::from_millis(2_250));
+                    }
+                }
+                break;
+            }
+        });
+        (format!("http://{address}"), request_rx, server)
+    }
+
+    async fn authenticated_probe_client(homeserver: String) -> matrix_sdk::Client {
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url(homeserver)
+            .server_versions([matrix_sdk::ruma::api::MatrixVersion::V1_12])
+            .build()
+            .await
+            .expect("synthetic client");
+        client
+            .matrix_auth()
+            .restore_session(
+                matrix_sdk::authentication::matrix::MatrixSession {
+                    meta: matrix_sdk_base::SessionMeta {
+                        user_id: matrix_sdk::ruma::owned_user_id!("@probe:example.invalid"),
+                        device_id: matrix_sdk::ruma::owned_device_id!("PROBEDEVICE"),
+                    },
+                    tokens: matrix_sdk::SessionTokens {
+                        access_token: "synthetic-probe-token".to_owned(), // secret-scan: allow
+                        refresh_token: None,
+                    },
+                },
+                matrix_sdk_base::store::RoomLoadSettings::default(),
+            )
+            .await
+            .expect("synthetic session restore");
+        client
+    }
+
+    fn spawn_refresh_stall_probe_server() -> (String, mpsc::Receiver<String>, thread::JoinHandle<()>)
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("synthetic refresh listener");
+        let address = listener
+            .local_addr()
+            .expect("synthetic refresh listener address");
+        let (request_tx, request_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            loop {
+                let (mut stream, _) = listener.accept().expect("refresh probe request");
+                let request = read_test_http_request(&mut stream);
+                let path = String::from_utf8_lossy(&request)
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_ascii_whitespace().nth(1))
+                    .expect("refresh probe request path")
+                    .to_owned();
+                if path.starts_with("/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?")
+                {
+                    request_tx.send(path).expect("capture invite probe path");
+                    let body =
+                        br#"{"errcode":"M_UNKNOWN_TOKEN","error":"expired","soft_logout":false}"#;
+                    let head = format!(
+                        "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    stream
+                        .write_all(head.as_bytes())
+                        .expect("write unknown-token head");
+                    stream.write_all(body).expect("write unknown-token body");
+                } else if path == "/_matrix/client/v3/refresh" {
+                    request_tx.send(path).expect("capture refresh path");
+                    thread::sleep(Duration::from_secs(3));
+                    break;
+                } else {
+                    stream
+                        .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                        .expect("write background response");
+                }
+            }
+        });
+        (format!("http://{address}"), request_rx, server)
+    }
+
+    async fn refresh_capable_probe_client(homeserver: String) -> matrix_sdk::Client {
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url(homeserver)
+            .server_versions([matrix_sdk::ruma::api::MatrixVersion::V1_12])
+            .handle_refresh_tokens()
+            .build()
+            .await
+            .expect("synthetic refresh-capable client");
+        client
+            .matrix_auth()
+            .restore_session(
+                matrix_sdk::authentication::matrix::MatrixSession {
+                    meta: matrix_sdk_base::SessionMeta {
+                        user_id: matrix_sdk::ruma::owned_user_id!("@probe:example.invalid"),
+                        device_id: matrix_sdk::ruma::owned_device_id!("PROBEDEVICE"),
+                    },
+                    tokens: matrix_sdk::SessionTokens {
+                        access_token: "expired-probe-token".to_owned(), // secret-scan: allow
+                        refresh_token: Some("synthetic-refresh-token".to_owned()),
+                    },
+                },
+                matrix_sdk_base::store::RoomLoadSettings::default(),
+            )
+            .await
+            .expect("synthetic refresh session restore");
+        client
+    }
+
+    #[tokio::test]
+    async fn sliding_sync_invite_probe_sends_exact_authenticated_request() {
+        let (homeserver, requests, server) =
+            spawn_invite_probe_server(InviteProbeTestResponse::Json(
+                br#"{"pos":"discarded","lists":{"koushi_invites":{"count":0}}}"#,
+            ));
+        let client = authenticated_probe_client(homeserver).await;
+
+        assert_eq!(
+            super::probe_sliding_sync_invite_list_support(&client).await,
+            super::MatrixSlidingSyncInviteListSupport::Supported
+        );
+        let request = requests
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured invite probe request");
+        let request = String::from_utf8(request).expect("ASCII HTTP request");
+        let (head, body) = request.split_once("\r\n\r\n").expect("HTTP request split");
+        let request_line = head.lines().next().expect("request line");
+        let target = request_line
+            .split_ascii_whitespace()
+            .nth(1)
+            .expect("request target");
+        let target = url::Url::parse(&format!("http://example.invalid{target}"))
+            .expect("request target URL");
+        let query = target.query_pairs().collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            target.path(),
+            "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync"
+        );
+        assert_eq!(query.get("timeout").map(|value| value.as_ref()), Some("0"));
+        assert_eq!(
+            query.get("set_presence").map(|value| value.as_ref()),
+            Some("offline")
+        );
+        assert_eq!(
+            query.len(),
+            2,
+            "probe query must contain no cursor or txn id"
+        );
+        assert!(
+            head.to_ascii_lowercase()
+                .contains("authorization: bearer synthetic-probe-token") // secret-scan: allow
+        );
+
+        let body: serde_json::Value = serde_json::from_str(body).expect("typed request JSON");
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "conn_id": "koushi-invite",
+                "lists": {
+                    "koushi_invites": {
+                        "ranges": [[0, 0]],
+                        "timeline_limit": 0,
+                        "filters": {"is_invite": true}
+                    }
+                }
+            })
+        );
+        assert!(
+            super::SYNC_INVITE_PROBE_CONNECTION_ID.len() <= 16,
+            "probe connection id must satisfy MSC4186's length bound"
+        );
+        server.join().expect("synthetic invite probe server");
+    }
+
+    #[tokio::test]
+    async fn sliding_sync_invite_probe_distinguishes_missing_list_from_supported_empty_list() {
+        for (body, expected) in [
+            (
+                br#"{"pos":"discarded","lists":{"koushi_invites":{"count":0}}}"#.as_slice(),
+                super::MatrixSlidingSyncInviteListSupport::Supported,
+            ),
+            (
+                br#"{"pos":"discarded","lists":{}}"#.as_slice(),
+                super::MatrixSlidingSyncInviteListSupport::KnownIncomplete,
+            ),
+        ] {
+            let (homeserver, _requests, server) =
+                spawn_invite_probe_server(InviteProbeTestResponse::Json(body));
+            let client = authenticated_probe_client(homeserver).await;
+            assert_eq!(
+                super::probe_sliding_sync_invite_list_support(&client).await,
+                expected
+            );
+            server.join().expect("synthetic invite probe server");
+        }
+    }
+
+    #[tokio::test]
+    async fn sliding_sync_invite_probe_maps_http_malformed_and_timeout_to_unknown() {
+        for response in [
+            InviteProbeTestResponse::HttpError,
+            InviteProbeTestResponse::Json(br#"malformed"#),
+            InviteProbeTestResponse::Stall,
+        ] {
+            let (homeserver, _requests, server) = spawn_invite_probe_server(response);
+            let client = authenticated_probe_client(homeserver).await;
+            assert_eq!(
+                super::probe_sliding_sync_invite_list_support(&client).await,
+                super::MatrixSlidingSyncInviteListSupport::Unknown
+            );
+            server.join().expect("synthetic invite probe server");
+        }
+    }
+
+    #[tokio::test]
+    async fn sliding_sync_invite_probe_bounds_unknown_token_refresh_end_to_end() {
+        let (homeserver, requests, server) = spawn_refresh_stall_probe_server();
+        let client = refresh_capable_probe_client(homeserver).await;
+        let started_at = tokio::time::Instant::now();
+
+        assert_eq!(
+            super::probe_sliding_sync_invite_list_support(&client).await,
+            super::MatrixSlidingSyncInviteListSupport::Unknown
+        );
+        let elapsed = started_at.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(1_500),
+            "the synthetic refresh endpoint should exercise the outer deadline: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_millis(2_750),
+            "the complete preflight, including token refresh, exceeded its two-second budget: {elapsed:?}"
+        );
+        assert!(
+            requests
+                .recv_timeout(Duration::from_secs(1))
+                .expect("invite probe request")
+                .starts_with("/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?")
+        );
+        assert_eq!(
+            requests
+                .recv_timeout(Duration::from_secs(1))
+                .expect("refresh request"),
+            "/_matrix/client/v3/refresh"
+        );
+        server.join().expect("synthetic refresh probe server");
+    }
 
     #[test]
     fn conversation_activity_classifies_messages_encryption_and_threads_only() {

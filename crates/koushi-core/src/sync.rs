@@ -8,10 +8,11 @@
 //!
 //! ## Backend selection
 //! On `SyncCommand::Start`, the actor calls
-//! `Client::available_sliding_sync_versions()`. A non-empty result means the
-//! server advertises `org.matrix.simplified_msc3575` in `/versions`
-//! `unstable_features` → select `SyncService` backend. Empty → `LegacySync`
-//! backend using `client.sync_stream`.
+//! `Client::available_sliding_sync_versions()`. Empty selects `LegacySync`.
+//! When MSC4186 is advertised, one bounded authenticated invite-only list
+//! request verifies the server contract before the authoritative sync owner
+//! starts. Only a present requested list selects `SyncService`; missing or
+//! indeterminate results fail closed to `LegacySync`.
 //!
 //! The selected backend kind is emitted in `SyncEvent::Started { backend }` so
 //! QA can assert server capability (canon, Async rule 9).
@@ -46,7 +47,7 @@ use std::sync::{
 use std::time::Duration;
 
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
-use koushi_sdk::MatrixClientSession;
+use koushi_sdk::{MatrixClientSession, MatrixSlidingSyncInviteListSupport};
 use koushi_state::{AppAction, SyncLifecycleStatus, SyncMode};
 use tokio::sync::{broadcast, mpsc};
 
@@ -211,6 +212,31 @@ enum ActiveBackend {
     None,
     SyncService,
     LegacySync,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BackendProbeReason {
+    ForcedLegacy,
+    SlidingSyncUnavailable,
+    InviteListSupported,
+    InviteListKnownIncomplete,
+    InviteListUnknown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BackendProbeResult {
+    backend: SyncBackendKind,
+    reason: BackendProbeReason,
+}
+
+fn backend_probe_reason_label(reason: BackendProbeReason) -> &'static str {
+    match reason {
+        BackendProbeReason::ForcedLegacy => "forced_legacy",
+        BackendProbeReason::SlidingSyncUnavailable => "sliding_sync_unavailable",
+        BackendProbeReason::InviteListSupported => "invite_list_supported",
+        BackendProbeReason::InviteListKnownIncomplete => "invite_list_known_incomplete",
+        BackendProbeReason::InviteListUnknown => "invite_list_unknown",
+    }
 }
 
 fn sync_once_admitted(
@@ -836,7 +862,8 @@ impl SyncActor {
 
         // Probe MSC4186 capability (Async rule 9).
         let client = self.session.client();
-        let backend_kind = probe_backend(&client).await;
+        let backend_probe = probe_backend(&client).await;
+        let backend_kind = backend_probe.backend;
         let mode = sync_mode_from_backend(backend_kind, false);
         trace_sync!(
             "probe_done",
@@ -847,10 +874,12 @@ impl SyncActor {
                     request_id.sequence
                 ),
                 DiagnosticField::token("backend", sync_backend_label(backend_kind)),
+                DiagnosticField::token("reason", backend_probe_reason_label(backend_probe.reason)),
             ],
-            "request_id={} backend={}",
+            "request_id={} backend={} reason={}",
             request_id_trace_label(Some(request_id)),
-            sync_backend_label(backend_kind)
+            sync_backend_label(backend_kind),
+            backend_probe_reason_label(backend_probe.reason)
         );
         self.reduce(vec![AppAction::SyncModeChanged { mode }]);
         self.active_start_request_id = Some(request_id);
@@ -1773,13 +1802,6 @@ async fn run_legacy_sync_loop(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Probe the server for MSC4186 (sliding sync / SyncService) availability.
-/// Returns `SyncService` if available, `LegacySync` otherwise.
-/// Never panics — network failures cause an empty result → LegacySync.
-///
-/// Debug/test builds honor `KOUSHI_QA_FORCE_SYNC_BACKEND=legacy`
-/// (skip the probe, select `LegacySync`); release builds compile the check
-/// out entirely and always probe.
 fn sync_mode_from_backend(backend: SyncBackendKind, failed: bool) -> SyncMode {
     if failed {
         return SyncMode::Failed {
@@ -1801,17 +1823,51 @@ fn should_fallback_to_legacy_after_sync_service_failure(
     backend == ActiveBackend::SyncService && kind == SyncFailureKind::Http && !already_attempted
 }
 
-pub(crate) async fn probe_backend(client: &matrix_sdk::Client) -> SyncBackendKind {
+fn backend_from_invite_list_support(
+    support: MatrixSlidingSyncInviteListSupport,
+) -> SyncBackendKind {
+    match support {
+        MatrixSlidingSyncInviteListSupport::Supported => SyncBackendKind::SyncService,
+        MatrixSlidingSyncInviteListSupport::KnownIncomplete
+        | MatrixSlidingSyncInviteListSupport::Unknown => SyncBackendKind::LegacySync,
+    }
+}
+
+/// Probe MSC4186 availability, then verify the authenticated invite-only list
+/// contract before any sync owner starts. Missing or indeterminate contract
+/// results fail closed to legacy sync.
+///
+/// Debug/test builds honor `KOUSHI_QA_FORCE_SYNC_BACKEND=legacy`
+/// (skip the probe, select `LegacySync`); release builds compile the check
+/// out entirely and always probe.
+async fn probe_backend(client: &matrix_sdk::Client) -> BackendProbeResult {
     #[cfg(any(debug_assertions, test))]
     if forced_legacy_backend() {
-        return SyncBackendKind::LegacySync;
+        return BackendProbeResult {
+            backend: SyncBackendKind::LegacySync,
+            reason: BackendProbeReason::ForcedLegacy,
+        };
     }
 
     let versions = client.available_sliding_sync_versions().await;
     if versions.is_empty() {
-        SyncBackendKind::LegacySync
-    } else {
-        SyncBackendKind::SyncService
+        return BackendProbeResult {
+            backend: SyncBackendKind::LegacySync,
+            reason: BackendProbeReason::SlidingSyncUnavailable,
+        };
+    }
+
+    let support = koushi_sdk::probe_sliding_sync_invite_list_support(client).await;
+    let reason = match support {
+        MatrixSlidingSyncInviteListSupport::Supported => BackendProbeReason::InviteListSupported,
+        MatrixSlidingSyncInviteListSupport::KnownIncomplete => {
+            BackendProbeReason::InviteListKnownIncomplete
+        }
+        MatrixSlidingSyncInviteListSupport::Unknown => BackendProbeReason::InviteListUnknown,
+    };
+    BackendProbeResult {
+        backend: backend_from_invite_list_support(support),
+        reason,
     }
 }
 
@@ -1884,6 +1940,13 @@ pub(crate) fn sync_failure_kind_label(kind: SyncFailureKind) -> &'static str {
 
 #[cfg(test)]
 pub mod tests {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::{Mutex, mpsc as std_mpsc},
+        thread,
+    };
+
     use koushi_state::SessionInfo;
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
     use tokio::sync::{broadcast, mpsc};
@@ -1891,6 +1954,98 @@ pub mod tests {
     use super::*;
     use crate::event::{CoreEvent, SyncBackendKind, SyncEvent};
     use crate::failure::SyncFailureKind;
+
+    static FORCE_BACKEND_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn spawn_backend_probe_server(
+        invite_list_body: &'static [u8],
+    ) -> (String, std_mpsc::Receiver<String>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("synthetic probe listener");
+        let address = listener.local_addr().expect("synthetic probe address");
+        let (request_tx, request_rx) = std_mpsc::channel();
+        let server = thread::spawn(move || {
+            loop {
+                let (mut stream, _) = listener.accept().expect("backend probe request");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("probe request read timeout");
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut chunk).expect("read backend probe request");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                    assert!(request.len() <= 8 * 1024, "synthetic request is bounded");
+                }
+                let request = String::from_utf8(request).expect("ASCII backend probe request");
+                let path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_ascii_whitespace().nth(1))
+                    .expect("backend probe request path")
+                    .to_owned();
+                let (status, body, relevant, finished) = if path == "/_matrix/client/versions" {
+                    (
+                        "200 OK",
+                        br#"{"versions":["v1.12"],"unstable_features":{"org.matrix.simplified_msc3575":true}}"#.as_slice(),
+                        true,
+                        false,
+                    )
+                } else if path
+                    .starts_with("/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?")
+                {
+                    ("200 OK", invite_list_body, true, true)
+                } else {
+                    ("404 Not Found", br#"{}"#.as_slice(), false, false)
+                };
+                if relevant {
+                    request_tx
+                        .send(path)
+                        .expect("capture backend probe request");
+                }
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream
+                    .write_all(head.as_bytes())
+                    .expect("write response head");
+                stream.write_all(body).expect("write response body");
+                if finished {
+                    break;
+                }
+            }
+        });
+        (format!("http://{address}"), request_rx, server)
+    }
+
+    async fn authenticated_backend_probe_client(homeserver: String) -> matrix_sdk::Client {
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url(homeserver)
+            .build()
+            .await
+            .expect("synthetic backend probe client");
+        client
+            .matrix_auth()
+            .restore_session(
+                matrix_sdk::authentication::matrix::MatrixSession {
+                    meta: matrix_sdk_base::SessionMeta {
+                        user_id: matrix_sdk::ruma::owned_user_id!("@probe:example.invalid"),
+                        device_id: matrix_sdk::ruma::owned_device_id!("PROBEDEVICE"),
+                    },
+                    tokens: matrix_sdk::SessionTokens {
+                        access_token: "synthetic-probe-token".to_owned(), // secret-scan: allow
+                        refresh_token: None,
+                    },
+                },
+                matrix_sdk_base::store::RoomLoadSettings::default(),
+            )
+            .await
+            .expect("synthetic session restore");
+        client
+    }
 
     #[test]
     fn sync_trace_preserves_typed_status_fields_without_environment_switch() {
@@ -2183,6 +2338,9 @@ pub mod tests {
 
     #[test]
     fn forced_backend_override_honors_legacy_only() {
+        let _guard = FORCE_BACKEND_ENV_LOCK
+            .lock()
+            .expect("backend environment lock");
         // Unset → no force.
         unsafe { std::env::remove_var(ENV_FORCE_SYNC_BACKEND) };
         assert!(!forced_legacy_backend());
@@ -2225,6 +2383,119 @@ pub mod tests {
             SyncBackendKind::SyncService
         };
         assert_eq!(backend, SyncBackendKind::SyncService);
+    }
+
+    #[test]
+    fn invite_list_decision_selects_sync_service_only_for_supported() {
+        assert_eq!(
+            backend_from_invite_list_support(MatrixSlidingSyncInviteListSupport::Supported),
+            SyncBackendKind::SyncService
+        );
+        for support in [
+            MatrixSlidingSyncInviteListSupport::KnownIncomplete,
+            MatrixSlidingSyncInviteListSupport::Unknown,
+        ] {
+            assert_eq!(
+                backend_from_invite_list_support(support),
+                SyncBackendKind::LegacySync
+            );
+        }
+    }
+
+    #[test]
+    fn invite_list_probe_reason_labels_are_private_safe_tokens() {
+        for reason in [
+            BackendProbeReason::ForcedLegacy,
+            BackendProbeReason::SlidingSyncUnavailable,
+            BackendProbeReason::InviteListSupported,
+            BackendProbeReason::InviteListKnownIncomplete,
+            BackendProbeReason::InviteListUnknown,
+        ] {
+            let label = backend_probe_reason_label(reason);
+            assert!(
+                label
+                    .chars()
+                    .all(|character| character.is_ascii_lowercase() || character == '_')
+            );
+            assert!(!label.contains("http"));
+            assert!(!label.contains("matrix"));
+        }
+    }
+
+    #[test]
+    fn backend_probe_consults_invite_list_only_after_available_versions() {
+        let source = include_str!("sync.rs");
+        let body = source
+            .split("async fn probe_backend")
+            .nth(1)
+            .and_then(|rest| rest.split("fn legacy_sync_settings").next())
+            .expect("probe_backend body");
+        let versions = body
+            .find("available_sliding_sync_versions().await")
+            .expect("versions capability probe");
+        let unavailable = body
+            .find("if versions.is_empty()")
+            .expect("unavailable versions branch");
+        let invite_list_probe = body
+            .find("probe_sliding_sync_invite_list_support")
+            .expect("typed invite-list contract probe");
+
+        assert!(versions < unavailable);
+        assert!(unavailable < invite_list_probe);
+        assert!(
+            body[unavailable..invite_list_probe].contains("SyncBackendKind::LegacySync"),
+            "unavailable versions must return before the invite-list probe"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn backend_probe_checks_invite_list_after_versions_and_fails_closed() {
+        let _guard = FORCE_BACKEND_ENV_LOCK
+            .lock()
+            .expect("backend environment lock");
+        unsafe { std::env::remove_var(ENV_FORCE_SYNC_BACKEND) };
+
+        for (body, expected) in [
+            (
+                br#"{"pos":"discarded","lists":{"koushi_invites":{"count":0}}}"#.as_slice(),
+                BackendProbeResult {
+                    backend: SyncBackendKind::SyncService,
+                    reason: BackendProbeReason::InviteListSupported,
+                },
+            ),
+            (
+                br#"{"pos":"discarded","lists":{}}"#.as_slice(),
+                BackendProbeResult {
+                    backend: SyncBackendKind::LegacySync,
+                    reason: BackendProbeReason::InviteListKnownIncomplete,
+                },
+            ),
+            (
+                br#"malformed"#.as_slice(),
+                BackendProbeResult {
+                    backend: SyncBackendKind::LegacySync,
+                    reason: BackendProbeReason::InviteListUnknown,
+                },
+            ),
+        ] {
+            let (homeserver, requests, server) = spawn_backend_probe_server(body);
+            let client = authenticated_backend_probe_client(homeserver).await;
+
+            assert_eq!(probe_backend(&client).await, expected);
+            assert_eq!(
+                requests
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("versions request"),
+                "/_matrix/client/versions"
+            );
+            assert!(
+                requests
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("invite-list request")
+                    .starts_with("/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?")
+            );
+            server.join().expect("synthetic backend probe server");
+        }
     }
 
     // --- SyncEvent shapes ---
