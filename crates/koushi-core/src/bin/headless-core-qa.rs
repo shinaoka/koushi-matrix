@@ -5381,7 +5381,8 @@ async fn cleanup_after_full_flow(
 fn should_bootstrap_new_identity_before_logged_in(scenario: QaScenario) -> bool {
     matches!(
         scenario,
-        QaScenario::E2eeTrust
+        QaScenario::All
+            | QaScenario::E2eeTrust
             | QaScenario::GateRestore
             | QaScenario::GateNegative
             | QaScenario::SendQueue
@@ -17573,6 +17574,11 @@ mod tests {
 
     #[test]
     fn send_queue_bootstraps_new_identity_before_waiting_for_logged_in() {
+        assert!(QaScenario::All.should_run_stage(QaStage::SendQueue));
+        assert!(
+            should_bootstrap_new_identity_before_logged_in(QaScenario::All),
+            "All must retain the primary recovery secret required by its SendQueue stage"
+        );
         assert!(should_bootstrap_new_identity_before_logged_in(
             QaScenario::SendQueue
         ));

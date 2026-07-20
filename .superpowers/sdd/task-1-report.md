@@ -660,3 +660,25 @@ QA binary unit suite passed with 70 tests, and
 `cargo check -p koushi-core --features qa-bin --bin headless-core-qa` completed
 successfully. No product code, product gate semantics, long homeserver lane,
 push, or PR operation was included in this follow-up.
+
+## ALL-SCENARIO SENDQUEUE RECOVERY ROUTING — 2026-07-20
+
+Review identified one deterministic routing omission after the typed recovery
+fix: `QaScenario::All` schedules `QaStage::SendQueue`, but the primary identity
+bootstrap predicate excluded `All`. Consequently its primary recovery secret
+would remain absent and `run_async` would fail before entering SendQueue.
+
+Strict RED extended the existing predicate contract to require both that `All`
+schedules SendQueue and that it bootstraps the primary identity. The focused
+test failed with the private-safe assertion `All must retain the primary
+recovery secret required by its SendQueue stage`.
+
+The minimal fix adds `QaScenario::All` to the existing primary bootstrap
+predicate. The explicit exclusions for `LoginSync`, `TimelineReconnect`, and
+`GateNoProof` remain asserted, while the specialized gate scenarios retain
+their previous behavior.
+
+The focused predicate test then passed. The complete headless Core QA binary
+suite passed with 70 tests, and the `qa-bin` binary check completed
+successfully. No long homeserver lane, product change, push, or PR operation was
+included in this review fix.
