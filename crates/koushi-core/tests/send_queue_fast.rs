@@ -2346,13 +2346,3 @@ async fn fast_send_queue_feedback_runs_production_runtime_without_homeserver() {
         "fast_send_queue exceeded the 60-second lane budget"
     );
 }
-
-#[tokio::test]
-async fn fast_send_queue_sync_started_replacement_preserves_original_completion_correlation() {
-    tokio::time::timeout(
-        FAST_SEND_QUEUE_TOTAL_TIMEOUT,
-        run_fast_send_queue_feedback(),
-    )
-    .await
-    .expect("fast_send_queue replacement regression timed out");
-}
