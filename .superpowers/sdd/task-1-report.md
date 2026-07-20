@@ -377,3 +377,44 @@ Fresh verification evidence:
 
 The long homeserver lane remains delegated to the root agent; this worker did
 not push or create a PR.
+
+## INTEGRATED QA EVIDENCE — 2026-07-20
+
+The exact implementation and diagnostic HEAD exercised by the integrated QA
+was `bdb3d80e157a91e85a26f5b40056b7c645b7bff2`.
+
+The official `qa:headless-core` attempt passed the SDK Conduit prelude. It then
+stopped in the generic Core `login_sync` stage: `normal_sync_started` was not
+observed before timeout because the existing new-identity gate expectation did
+not match the account state. This branch does not modify account or sync code,
+so this is an unrelated verification-gate failure. The official long lane must
+not be reported as GREEN.
+
+The targeted Conduit probed `timeline_reconnect` run after the `b8d564c`
+initial-snapshot seeding fix completed normal sync, timeline setup, disconnect,
+reconnect, and reopened-timeline observation. Its private-safe diagnostic
+reported exactly `missing_indices=[0]`. A repeated diagnostic produced the
+same oldest-index result. During those runs continuity remained
+`gap_count=0`, and no `display_projection_reset_fallback` diagnostic was
+observed.
+
+That repeated result confirms the pre-existing 20/21 boundary described above:
+the vendored SDK public timeline subscription exposes at most 20 initial items,
+the QA creates 21 offline messages, and Koushi does not automatically paginate
+a non-empty initial timeline merely because the SDK subscriber retained an
+older hidden prefix. The event cache can therefore be structurally gap-free
+while the oldest expected row remains outside the public subscriber window.
+This behavior is present at the merge base and is an SDK/QA/product-pagination
+boundary, not an issue-285 display-projection regression. The issue-285
+projection operates downstream on the already exposed canonical sequence, has
+a 120-row live-edge display bound, emitted no Reset fallback in the failing
+run, and cannot account for the exact repeated oldest item at the SDK's 20-item
+boundary.
+
+All non-homeserver verification remained GREEN at this HEAD: full Core timeline
+tests (218 passed, 1 intentionally ignored), TimelineStore (69 passed), desktop
+typecheck, Core checks with default and no-default features, the full headless
+QA binary test suite (64 passed), the QA binary check, package rustfmt, and
+`git diff --check`. The independent implementation review was approved. No
+production or test code was changed for this evidence update, and no scenario
+was rerun here.
