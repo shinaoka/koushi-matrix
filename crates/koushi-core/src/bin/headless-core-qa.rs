@@ -5392,6 +5392,10 @@ fn should_bootstrap_new_identity_before_logged_in(scenario: QaScenario) -> bool 
     )
 }
 
+fn should_bootstrap_secondary_identity_before_logged_in(scenario: QaScenario) -> bool {
+    scenario == QaScenario::SendQueue
+}
+
 async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, String> {
     if scenario == QaScenario::Safety {
         println!("safety=ok");
@@ -5739,6 +5743,11 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         }))
         .await
         .map_err(|e| format!("submit login B: {e}"))?;
+
+    if should_bootstrap_secondary_identity_before_logged_in(scenario) {
+        complete_new_identity_gate_for_qa(&mut conn_b, &config.password_b, "gate-bootstrap-b")
+            .await?;
+    }
 
     let account_key_b = wait_for_logged_in(&mut conn_b, login_b_id, "login B").await?;
     wait_for_ready_snapshot(&mut conn_b, "session B Ready").await?;
@@ -17489,6 +17498,27 @@ mod tests {
         assert!(!should_bootstrap_new_identity_before_logged_in(
             QaScenario::TimelineReconnect
         ));
+    }
+
+    #[test]
+    fn send_queue_bootstraps_secondary_identity_before_waiting_for_logged_in() {
+        assert!(should_bootstrap_secondary_identity_before_logged_in(
+            QaScenario::SendQueue
+        ));
+
+        for scenario in [
+            QaScenario::LoginSync,
+            QaScenario::TimelineReconnect,
+            QaScenario::GateNoProof,
+            QaScenario::E2eeTrust,
+            QaScenario::GateRestore,
+            QaScenario::GateNegative,
+        ] {
+            assert!(
+                !should_bootstrap_secondary_identity_before_logged_in(scenario),
+                "{scenario:?} must retain its existing primary or dedicated gate semantics"
+            );
+        }
     }
 
     #[test]

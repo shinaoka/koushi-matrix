@@ -452,3 +452,36 @@ No long scenario was run by this worker. The separate
 `timeline_reconnect missing_indices=[0]` result remains the pre-existing SDK
 20-item initial-window versus QA 21-offline-item pagination boundary described
 above; this SendQueue-only harness change does not address or alter it.
+
+### Secondary participant follow-up
+
+The next targeted Conduit SendQueue log proved that the primary A bootstrap
+succeeded and exposed a second harness-only omission. The generic room-flow
+participant B submits a separate `LoginPassword`; on a fresh account it stayed
+at `trust=unknown` / restricted catch-up because that direct login had no
+SendQueue identity bootstrap before its own `wait_for_logged_in`.
+
+Strict TDD added a separate network-free secondary-participant policy contract
+before production changes. Its RED result was the expected Rust compiler error
+`cannot find function should_bootstrap_secondary_identity_before_logged_in`.
+The contract requires true only for `SendQueue` and explicitly keeps
+`LoginSync`, `TimelineReconnect`, `GateNoProof`, `E2eeTrust`, `GateRestore`, and
+`GateNegative` out of this generic B policy so their unchanged or dedicated gate
+semantics cannot be broadened accidentally.
+
+The smallest harness fix adds that SendQueue-only predicate and calls the
+existing `complete_new_identity_gate_for_qa` immediately after participant B's
+`LoginPassword` submission succeeds and before `wait_for_logged_in`. No product
+account, sync, trust, or gate implementation changed.
+
+Fresh secondary-participant GREEN evidence:
+
+- Focused B bootstrap policy contract: 1 passed, 0 failed.
+- Full headless Core QA binary tests: 66 passed, 0 failed.
+- Headless Core QA binary check with `qa-bin`: passed without warnings.
+- `cargo fmt -p koushi-core -- --check`: passed.
+- `git diff --check`: passed.
+
+No long Conduit lane was run here. The root agent owns one targeted SendQueue
+rerun. The separate timeline-reconnect SDK 20/QA 21 pagination boundary remains
+unchanged.
