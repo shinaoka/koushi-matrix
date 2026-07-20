@@ -6960,7 +6960,8 @@ async fn verify_provisional_second_device_for_qa(
             "{label}: expected two distinct devices for one user"
         ));
     }
-    stop_sync_for_qa(conn_a, &format!("{label}: pause primary sync")).await?;
+    // Keep the primary's normal sync continuously running: it owns incoming
+    // to-device delivery for the entire SAS flow, including retry outcomes.
     let previous_primary_flow_id =
         verification_state_flow_id(&conn_a.snapshot().e2ee_trust.verification);
     let flow_request = conn_a2.next_request_id();
@@ -7045,7 +7046,6 @@ async fn verify_provisional_second_device_for_qa(
     }
     if outcome == SasQaOutcome::Timeout {
         wait_for_existing_identity_gate(conn_a2, &format!("{label}: timeout retryable")).await?;
-        start_sync_for_qa(conn_a, &format!("{label}: resume primary after timeout")).await?;
         return Ok(());
     }
     if outcome != SasQaOutcome::Success {
@@ -7072,7 +7072,6 @@ async fn verify_provisional_second_device_for_qa(
             .await
             .map_err(|error| format!("{label}: cancel primary after mismatch: {error}"))?;
         wait_for_existing_identity_gate(conn_a2, &format!("{label}: mismatch retryable")).await?;
-        start_sync_for_qa(conn_a, &format!("{label}: resume primary after mismatch")).await?;
         return Ok(());
     }
 
@@ -7100,7 +7099,6 @@ async fn verify_provisional_second_device_for_qa(
     let ready_deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
     loop {
         if matches!(conn_a2.snapshot().session, SessionState::Ready(_)) {
-            start_sync_for_qa(conn_a, &format!("{label}: resume primary sync")).await?;
             return Ok(());
         }
         if tokio::time::Instant::now() >= ready_deadline {
@@ -7108,7 +7106,6 @@ async fn verify_provisional_second_device_for_qa(
                 "{label}: timed out waiting for authoritative Ready"
             ));
         }
-        sync_once_for_qa(conn_a, &format!("{label}: drive completion")).await?;
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
@@ -18982,6 +18979,40 @@ mod tests {
             authenticated_session_info_from_state(&SessionState::SignedOut),
             None
         );
+    }
+
+    #[test]
+    fn provisional_self_verification_keeps_primary_normal_sync_running() {
+        let source = include_str!("headless-core-qa.rs");
+        let helper = source
+            .split("async fn verify_provisional_second_device_for_qa")
+            .nth(1)
+            .expect("provisional self-verification helper should exist")
+            .split("fn verification_closed_summary")
+            .next()
+            .expect("verification summary helper should follow provisional verification");
+
+        assert!(helper.contains("AccountCommand::StartOwnUserSas"));
+        assert!(helper.contains("primary incoming request"));
+        assert!(helper.contains("SasQaOutcome::Timeout"));
+        assert!(helper.contains("SasQaOutcome::Mismatch"));
+        assert!(helper.contains("AccountCommand::CancelVerification"));
+        assert!(helper.contains("AccountCommand::ConfirmSasVerification"));
+        assert!(helper.contains("timed out waiting for authoritative Ready"));
+
+        for forbidden in [
+            "stop_sync_for_qa(conn_a",
+            "start_sync_for_qa(conn_a",
+            "sync_once_for_qa(conn_a",
+        ] {
+            assert!(
+                !helper.contains(forbidden),
+                "primary normal sync must remain continuously owned during SAS: {forbidden}"
+            );
+        }
+
+        assert!(!helper.contains("stop_sync_for_qa(conn_a2"));
+        assert!(!helper.contains("start_sync_for_qa(conn_a2"));
     }
 
     #[test]
