@@ -1552,25 +1552,8 @@ async fn wait_for_saved_session_presence(
 async fn run_invites_dm_stage(
     config: &QaConfig,
     conn_a: &mut CoreConnection,
-    data_dir_b: std::path::PathBuf,
+    conn_b: &mut CoreConnection,
 ) -> Result<(), String> {
-    let QaParticipantLoginOutcome {
-        runtime: runtime_b,
-        conn: mut conn_b,
-        account_key: account_key_b,
-        bootstrap_recovery_secret: _,
-    } = login_synced_participant_for_qa(
-        &config.homeserver,
-        data_dir_b,
-        &config.user_b,
-        &config.password_b,
-        DEVICE_B,
-        "invites_dm login B",
-        "invites_dm bootstrap gate B",
-        QaParticipantLoginGate::BootstrapNewIdentity,
-    )
-    .await?;
-
     let user_b_full_id = format!("@{}:{}", config.user_b, config.server_name);
     let user_a_full_id = format!("@{}:{}", config.user_a, config.server_name);
 
@@ -1588,9 +1571,9 @@ async fn run_invites_dm_stage(
         "invites_dm invite B to room",
     )
     .await?;
-    sync_once_for_qa(&mut conn_b, "invites_dm sync B for room invite").await?;
+    sync_once_for_qa(conn_b, "invites_dm sync B for room invite").await?;
     wait_for_invite_in_snapshot(
-        &mut conn_b,
+        conn_b,
         &accept_room_id,
         Some(false),
         "invites_dm wait for room invite",
@@ -1598,25 +1581,17 @@ async fn run_invites_dm_stage(
     .await?;
     println!("invite_recv=ok");
 
-    accept_invite_for_qa(
-        &mut conn_b,
-        &accept_room_id,
-        "invites_dm accept room invite",
-    )
-    .await?;
-    sync_once_for_qa(&mut conn_b, "invites_dm sync B after room accept").await?;
+    accept_invite_for_qa(conn_b, &accept_room_id, "invites_dm accept room invite").await?;
+    sync_once_for_qa(conn_b, "invites_dm sync B after room accept").await?;
     wait_for_room_in_room_list(
-        &mut conn_b,
+        conn_b,
         &accept_room_id,
         "invites_dm room list after room accept",
     )
     .await?;
-    let accept_room_settings = load_room_settings_for_qa(
-        &mut conn_b,
-        &accept_room_id,
-        "invites_dm accepted room members",
-    )
-    .await?;
+    let accept_room_settings =
+        load_room_settings_for_qa(conn_b, &accept_room_id, "invites_dm accepted room members")
+            .await?;
     assert_room_settings_contains_members(
         &accept_room_settings,
         &[user_a_full_id.as_str(), user_b_full_id.as_str()],
@@ -1636,29 +1611,24 @@ async fn run_invites_dm_stage(
         "invites_dm invite B to space",
     )
     .await?;
-    sync_once_for_qa(&mut conn_b, "invites_dm sync B for space invite").await?;
+    sync_once_for_qa(conn_b, "invites_dm sync B for space invite").await?;
     wait_for_invite_in_snapshot(
-        &mut conn_b,
+        conn_b,
         &accept_space_id,
         Some(false),
         "invites_dm wait for space invite",
     )
     .await?;
-    accept_invite_for_qa(
-        &mut conn_b,
-        &accept_space_id,
-        "invites_dm accept space invite",
-    )
-    .await?;
-    sync_once_for_qa(&mut conn_b, "invites_dm sync B after space accept").await?;
+    accept_invite_for_qa(conn_b, &accept_space_id, "invites_dm accept space invite").await?;
+    sync_once_for_qa(conn_b, "invites_dm sync B after space accept").await?;
     wait_for_space_in_space_list(
-        &mut conn_b,
+        conn_b,
         &accept_space_id,
         "invites_dm space list after space accept",
     )
     .await?;
     let accept_space_settings = load_room_settings_for_qa(
-        &mut conn_b,
+        conn_b,
         &accept_space_id,
         "invites_dm accepted space members",
     )
@@ -1686,23 +1656,18 @@ async fn run_invites_dm_stage(
         "invites_dm invite B to decline room",
     )
     .await?;
-    sync_once_for_qa(&mut conn_b, "invites_dm sync B for decline invite").await?;
+    sync_once_for_qa(conn_b, "invites_dm sync B for decline invite").await?;
     wait_for_invite_in_snapshot(
-        &mut conn_b,
+        conn_b,
         &decline_room_id,
         Some(false),
         "invites_dm wait for decline invite",
     )
     .await?;
-    decline_invite_for_qa(
-        &mut conn_b,
-        &decline_room_id,
-        "invites_dm decline room invite",
-    )
-    .await?;
-    sync_once_for_qa(&mut conn_b, "invites_dm sync B after decline").await?;
+    decline_invite_for_qa(conn_b, &decline_room_id, "invites_dm decline room invite").await?;
+    sync_once_for_qa(conn_b, "invites_dm sync B after decline").await?;
     wait_for_invite_absent(
-        &mut conn_b,
+        conn_b,
         &decline_room_id,
         "invites_dm wait for declined invite removal",
     )
@@ -1715,9 +1680,9 @@ async fn run_invites_dm_stage(
     sync_once_for_qa(conn_a, "invites_dm sync A after DM start").await?;
     wait_for_dm_room_in_room_list(conn_a, &dm_room_id, "invites_dm A room list after DM start")
         .await?;
-    sync_once_for_qa(&mut conn_b, "invites_dm sync B for DM invite").await?;
+    sync_once_for_qa(conn_b, "invites_dm sync B for DM invite").await?;
     wait_for_invite_in_snapshot(
-        &mut conn_b,
+        conn_b,
         &dm_room_id,
         Some(true),
         "invites_dm wait for DM invite",
@@ -1743,11 +1708,14 @@ async fn run_invites_dm_stage(
         .await?;
     println!("dm_space_scope=ok");
 
-    cleanup_logged_in_runtime(conn_b, runtime_b, account_key_b, "invites_dm cleanup B").await?;
     Ok(())
 }
 
-async fn run_directory_stage(config: &QaConfig, conn_a: &mut CoreConnection) -> Result<(), String> {
+async fn run_directory_stage(
+    config: &QaConfig,
+    conn_a: &mut CoreConnection,
+    conn_b: &mut CoreConnection,
+) -> Result<(), String> {
     let directory_room_name = "Koushi Directory QA";
     let alias_localpart = format!("koushi-desktop-directory-qa-{}", std::process::id());
     let expected_alias = format!("#{alias_localpart}:{}", config.server_name);
@@ -1778,28 +1746,8 @@ async fn run_directory_stage(config: &QaConfig, conn_a: &mut CoreConnection) -> 
     }
     println!("directory_query=ok");
 
-    let runtime_b = CoreRuntime::start_with_data_dir(qa_data_dir("directory_b"));
-    let mut conn_b = runtime_b.attach();
-
-    let login_b_id = conn_b.next_request_id();
-    conn_b
-        .command(CoreCommand::Account(AccountCommand::LoginPassword {
-            request_id: login_b_id,
-            request: koushi_state::LoginRequest {
-                homeserver: config.homeserver.clone(),
-                username: config.user_b.clone(),
-                password: AuthSecret::new(config.password_b.clone()),
-                device_display_name: Some("Koushi Core QA Directory B".to_owned()),
-            },
-        }))
-        .await
-        .map_err(|e| format!("directory: submit login B failed: {e}"))?;
-
-    let account_key_b = wait_for_logged_in(&mut conn_b, login_b_id, "directory login B").await?;
-    wait_for_ready_snapshot(&mut conn_b, "directory session B Ready").await?;
-
     join_directory_room_for_qa(
-        &mut conn_b,
+        conn_b,
         &expected_alias,
         &config.server_name,
         &public_room_id,
@@ -1808,7 +1756,6 @@ async fn run_directory_stage(config: &QaConfig, conn_a: &mut CoreConnection) -> 
     .await?;
     println!("directory_join=ok");
 
-    cleanup_logged_in_runtime(conn_b, runtime_b, account_key_b, "directory cleanup B").await?;
     Ok(())
 }
 
@@ -2113,9 +2060,24 @@ async fn cleanup_logged_in_runtime(
     wait_for_logged_out(&mut conn, logout_id, &account_key, label).await?;
 
     drop(conn);
-    drop(runtime);
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    runtime.shutdown().await;
     Ok(())
+}
+
+async fn cleanup_normal_secondary_participant_for_qa(
+    normal_secondary: &mut Option<QaParticipantLoginOutcome>,
+    label: &str,
+) -> Result<(), String> {
+    let Some(participant) = normal_secondary.take() else {
+        return Ok(());
+    };
+    cleanup_logged_in_runtime(
+        participant.conn,
+        participant.runtime,
+        participant.account_key,
+        label,
+    )
+    .await
 }
 
 async fn run_timeline_stress_stage(
@@ -3748,6 +3710,7 @@ async fn run_focused_send_queue_scenario(config: &QaConfig) -> Result<(), String
         mut conn,
         account_key,
         bootstrap_recovery_secret,
+        sync_backend: _,
     } = login_synced_participant_for_qa(
         &config.homeserver,
         qa_data_dir("send_queue_bootstrap"),
@@ -3807,6 +3770,7 @@ async fn run_send_queue_stage(
         mut conn,
         account_key,
         bootstrap_recovery_secret: _,
+        sync_backend: _,
     } = login_synced_participant_for_qa(
         &proxy_homeserver,
         data_dir.clone(),
@@ -5451,7 +5415,7 @@ async fn cleanup_after_full_flow(
     }
 
     drop(conn_b);
-    drop(runtime_b);
+    runtime_b.shutdown().await;
 
     println!("restore_cleanup=ok");
     Ok("restore_cleanup=ok".to_owned())
@@ -5466,6 +5430,12 @@ fn should_bootstrap_new_identity_before_logged_in(scenario: QaScenario) -> bool 
             | QaScenario::GateRestore
             | QaScenario::GateNegative
     )
+}
+
+fn should_run_normal_secondary_participant(scenario: QaScenario) -> bool {
+    scenario.should_run_stage(QaStage::InvitesDm)
+        || scenario.should_run_stage(QaStage::Directory)
+        || scenario.should_run_stage(QaStage::RoomSpace)
 }
 
 fn should_run_focused_send_queue_route(scenario: QaScenario) -> bool {
@@ -5673,20 +5643,62 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         return Ok(scenario_report(&config.server_kind, scenario));
     }
 
+    let mut normal_secondary = if should_run_normal_secondary_participant(scenario) {
+        let participant = login_synced_participant_for_qa(
+            &config.homeserver,
+            data_dir_b.clone(),
+            &config.user_b,
+            &config.password_b,
+            DEVICE_B,
+            "normal secondary login B",
+            "normal secondary bootstrap gate B",
+            QaParticipantLoginGate::BootstrapNewIdentity,
+        )
+        .await?;
+        println!("sync_backend_b={:?}", participant.sync_backend);
+        assert_expected_backend(
+            config.expect_sync_backend.as_deref(),
+            participant.sync_backend,
+            "normal secondary sync start B",
+        )?;
+        println!("sync_b=running");
+        Some(participant)
+    } else {
+        None
+    };
+
     if scenario.should_run_stage(QaStage::InvitesDm) {
-        run_invites_dm_stage(&config, &mut conn_a, data_dir_b.clone()).await?;
+        let conn_b = &mut normal_secondary
+            .as_mut()
+            .ok_or_else(|| "InvitesDm requires the normal secondary participant".to_owned())?
+            .conn;
+        run_invites_dm_stage(&config, &mut conn_a, conn_b).await?;
     }
 
     if scenario == QaScenario::InvitesDm {
+        cleanup_normal_secondary_participant_for_qa(
+            &mut normal_secondary,
+            "InvitesDm normal secondary cleanup",
+        )
+        .await?;
         cleanup_after_login_sync(conn_a, runtime_a, data_dir_a, account_key_a).await?;
         return Ok(scenario_report(&config.server_kind, scenario));
     }
 
     if scenario.should_run_stage(QaStage::Directory) {
-        run_directory_stage(&config, &mut conn_a).await?;
+        let conn_b = &mut normal_secondary
+            .as_mut()
+            .ok_or_else(|| "Directory requires the normal secondary participant".to_owned())?
+            .conn;
+        run_directory_stage(&config, &mut conn_a, conn_b).await?;
     }
 
     if !scenario.should_run_stage(QaStage::RoomSpace) {
+        cleanup_normal_secondary_participant_for_qa(
+            &mut normal_secondary,
+            "pre-RoomSpace normal secondary cleanup",
+        )
+        .await?;
         cleanup_after_login_sync(conn_a, runtime_a, data_dir_a, account_key_a).await?;
         return Ok(scenario_report(&config.server_kind, scenario));
     }
@@ -5806,47 +5818,18 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     println!("room_list_a={room_list_a}");
 
     // -----------------------------------------------------------------------
-    // --- Login B + sync B + join room + join space ---
+    // --- Reuse centrally logged-in B + join room + join space ---
     // -----------------------------------------------------------------------
-    let runtime_b = CoreRuntime::start_with_data_dir(data_dir_b);
-    let mut conn_b = runtime_b.attach();
-
-    let login_b_id = conn_b.next_request_id();
-    conn_b
-        .command(CoreCommand::Account(AccountCommand::LoginPassword {
-            request_id: login_b_id,
-            request: koushi_state::LoginRequest {
-                homeserver: config.homeserver.clone(),
-                username: config.user_b.clone(),
-                password: AuthSecret::new(config.password_b.clone()),
-                device_display_name: Some(DEVICE_B.to_owned()),
-            },
-        }))
-        .await
-        .map_err(|e| format!("submit login B: {e}"))?;
-
-    let account_key_b = wait_for_logged_in(&mut conn_b, login_b_id, "login B").await?;
-    wait_for_ready_snapshot(&mut conn_b, "session B Ready").await?;
-
-    // Start sync B
-    let sync_start_b_id = conn_b.next_request_id();
-    conn_b
-        .command(CoreCommand::Sync(SyncCommand::Start {
-            request_id: sync_start_b_id,
-        }))
-        .await
-        .map_err(|e| format!("submit sync start B: {e}"))?;
-
-    let sync_backend_b =
-        wait_for_sync_started_and_running(&mut conn_b, sync_start_b_id, "sync start B").await?;
-    println!("sync_backend_b={sync_backend_b:?}");
-    assert_expected_backend(
-        config.expect_sync_backend.as_deref(),
-        sync_backend_b,
-        "sync start B",
-    )?;
-
-    println!("sync_b=running");
+    let normal_secondary = normal_secondary.take();
+    let normal_secondary = normal_secondary
+        .ok_or_else(|| "RoomSpace requires the normal secondary participant".to_owned())?;
+    let QaParticipantLoginOutcome {
+        runtime: runtime_b,
+        conn: mut conn_b,
+        account_key: account_key_b,
+        bootstrap_recovery_secret: _,
+        sync_backend: _,
+    } = normal_secondary;
 
     // B joins the room
     let join_room_id = conn_b.next_request_id();
@@ -6728,6 +6711,9 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     if !matches!(conn_b.snapshot().session, SessionState::SignedOut) {
         return Err("post-logout restore-last must leave the session SignedOut".to_owned());
     }
+
+    drop(conn_b);
+    runtime_b.shutdown().await;
 
     println!("restore_cleanup=ok");
     Ok(scenario_report(&config.server_kind, scenario))
@@ -8852,14 +8838,15 @@ async fn stop_sync_for_qa(conn: &mut CoreConnection, label: &str) -> Result<(), 
     wait_for_sync_stopped(conn, request_id, label).await
 }
 
-async fn start_sync_for_qa(conn: &mut CoreConnection, label: &str) -> Result<(), String> {
+async fn start_sync_for_qa(
+    conn: &mut CoreConnection,
+    label: &str,
+) -> Result<SyncBackendKind, String> {
     let request_id = conn.next_request_id();
     conn.command(CoreCommand::Sync(SyncCommand::Start { request_id }))
         .await
         .map_err(|e| format!("{label}: submit Sync start failed: {e}"))?;
-    wait_for_sync_started_and_running(conn, request_id, label)
-        .await
-        .map(|_| ())
+    wait_for_sync_started_and_running(conn, request_id, label).await
 }
 
 async fn wait_for_sync_reconnecting(conn: &mut CoreConnection, label: &str) -> Result<(), String> {
@@ -10460,6 +10447,7 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
         conn: mut conn_b,
         account_key: account_key_b,
         bootstrap_recovery_secret: _,
+        sync_backend: _,
     } = login_synced_participant_for_qa(
         &config.homeserver,
         qa_data_dir("e2ee-b"),
@@ -10774,6 +10762,7 @@ struct QaParticipantLoginOutcome {
     conn: CoreConnection,
     account_key: AccountKey,
     bootstrap_recovery_secret: Option<AuthSecret>,
+    sync_backend: SyncBackendKind,
 }
 
 async fn login_synced_participant_for_qa(
@@ -10821,13 +10810,14 @@ async fn login_synced_participant_for_qa(
     };
     let account_key = wait_for_logged_in(&mut conn, login_id, label).await?;
     wait_for_ready_snapshot(&mut conn, label).await?;
-    start_sync_for_qa(&mut conn, label).await?;
+    let sync_backend = start_sync_for_qa(&mut conn, label).await?;
 
     Ok(QaParticipantLoginOutcome {
         runtime,
         conn,
         account_key,
         bootstrap_recovery_secret,
+        sync_backend,
     })
 }
 
@@ -17896,21 +17886,155 @@ mod tests {
     }
 
     #[test]
-    fn invites_dm_secondary_login_uses_centralized_typed_bootstrap_gate() {
+    fn normal_secondary_participant_policy_covers_only_shared_b_stages() {
+        for scenario in [
+            QaScenario::All,
+            QaScenario::InvitesDm,
+            QaScenario::Directory,
+            QaScenario::RoomSpace,
+            QaScenario::Timeline,
+        ] {
+            assert!(
+                should_run_normal_secondary_participant(scenario),
+                "{scenario:?} needs the shared normal B session"
+            );
+        }
+
+        for scenario in [
+            QaScenario::Safety,
+            QaScenario::LoginSync,
+            QaScenario::CredentialHealth,
+            QaScenario::E2eeTrust,
+            QaScenario::GateRestore,
+            QaScenario::GateNegative,
+            QaScenario::SendQueue,
+        ] {
+            assert!(
+                !should_run_normal_secondary_participant(scenario),
+                "{scenario:?} must not create the shared normal B session"
+            );
+        }
+    }
+
+    #[test]
+    fn run_async_centrally_owns_one_normal_secondary_login() {
         let source = include_str!("headless-core-qa.rs");
-        let stage = source
+        let before_room_space = source
+            .split("async fn run_async")
+            .nth(1)
+            .expect("run_async should exist")
+            .split("// --- Phase 4: Room operations")
+            .next()
+            .expect("RoomSpace should follow shared stage setup");
+
+        assert!(before_room_space.contains(
+            "let mut normal_secondary = if should_run_normal_secondary_participant(scenario)"
+        ));
+        assert_eq!(
+            before_room_space
+                .matches("login_synced_participant_for_qa(")
+                .count(),
+            1,
+            "run_async must own exactly one normal B login"
+        );
+        assert!(before_room_space.contains("QaParticipantLoginGate::BootstrapNewIdentity"));
+        assert_eq!(
+            before_room_space
+                .matches("cleanup_normal_secondary_participant_for_qa(")
+                .count(),
+            2,
+            "focused InvitesDm and pre-RoomSpace exits each need one ordered cleanup path"
+        );
+    }
+
+    #[test]
+    fn invites_dm_and_directory_borrow_b_without_owning_its_lifecycle() {
+        let source = include_str!("headless-core-qa.rs");
+        let invites = source
             .split("async fn run_invites_dm_stage")
             .nth(1)
             .expect("InvitesDm stage should exist")
             .split("async fn run_directory_stage")
             .next()
             .expect("directory stage should follow InvitesDm");
+        let directory = source
+            .split("async fn run_directory_stage")
+            .nth(1)
+            .expect("directory stage should exist")
+            .split("async fn join_directory_room_for_qa")
+            .next()
+            .expect("directory join helper should follow directory stage");
 
-        assert!(stage.contains("login_synced_participant_for_qa("));
-        assert!(stage.contains("QaParticipantLoginGate::BootstrapNewIdentity"));
-        assert!(!stage.contains("AccountCommand::LoginPassword"));
-        assert!(!stage.contains("wait_for_logged_in"));
-        assert!(!stage.contains("bootstrap_new_identity: bool"));
+        for (label, stage) in [("InvitesDm", invites), ("Directory", directory)] {
+            assert!(
+                stage.contains("conn_b: &mut CoreConnection"),
+                "{label} must borrow the centrally owned B connection"
+            );
+            for forbidden in [
+                "CoreRuntime::",
+                "AccountCommand::LoginPassword",
+                "wait_for_logged_in",
+                "login_synced_participant_for_qa(",
+                "cleanup_logged_in_runtime",
+            ] {
+                assert!(
+                    !stage.contains(forbidden),
+                    "{label} must not own B lifecycle operation {forbidden}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn room_space_reuses_and_consumes_the_central_secondary_owner() {
+        let source = include_str!("headless-core-qa.rs");
+        let room_space = source
+            .split("// --- Phase 4: Room operations")
+            .nth(1)
+            .expect("RoomSpace stage should exist")
+            .split("// --- Phase 5: Timeline subscribe")
+            .next()
+            .expect("Timeline should follow RoomSpace");
+
+        assert!(room_space.contains("normal_secondary.take()"));
+        assert!(room_space.contains("let QaParticipantLoginOutcome"));
+        for forbidden in [
+            "CoreRuntime::start_with_data_dir(data_dir_b)",
+            "AccountCommand::LoginPassword",
+            "wait_for_logged_in",
+            "login_synced_participant_for_qa(",
+        ] {
+            assert!(
+                !room_space.contains(forbidden),
+                "RoomSpace must reuse B instead of performing {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn normal_secondary_cleanup_paths_use_one_ordered_runtime_shutdown() {
+        let source = include_str!("headless-core-qa.rs");
+        let focused_cleanup = source
+            .split("async fn cleanup_logged_in_runtime")
+            .nth(1)
+            .expect("logged-in runtime cleanup should exist")
+            .split("async fn cleanup_normal_secondary_participant_for_qa")
+            .next()
+            .expect("normal secondary cleanup should follow runtime cleanup");
+        assert!(focused_cleanup.contains("runtime.shutdown().await"));
+        assert!(!focused_cleanup.contains("drop(runtime)"));
+        assert!(!focused_cleanup.contains("tokio::time::sleep"));
+
+        let all_cleanup = source
+            .split("// --- Logout B ---")
+            .nth(1)
+            .expect("All should own a B cleanup section")
+            .split("async fn complete_new_identity_gate_for_qa")
+            .next()
+            .expect("All B cleanup should end with run_async");
+        assert_eq!(all_cleanup.matches("AccountCommand::Logout").count(), 1);
+        assert_eq!(all_cleanup.matches("runtime_b.shutdown().await").count(), 1);
+        assert!(!all_cleanup.contains("cleanup_normal_secondary_participant_for_qa"));
     }
 
     #[test]
@@ -18305,14 +18429,14 @@ mod tests {
     }
 
     #[test]
-    fn all_directory_stage_runs_before_room_space_b_sync() {
+    fn all_directory_stage_runs_before_room_space_operations() {
         let source = include_str!("headless-core-qa.rs");
         let run_async_body = source
             .split("async fn run_async")
             .nth(1)
             .and_then(|rest| rest.split("async fn cleanup_after_full_flow").next())
             .expect("run_async body");
-        let directory_call = "run_directory_stage(&config, &mut conn_a).await?";
+        let directory_call = "run_directory_stage(&config, &mut conn_a, conn_b).await?";
         let directory_index = run_async_body
             .find(directory_call)
             .expect("directory stage call in run_async");
@@ -18322,7 +18446,7 @@ mod tests {
 
         assert!(
             directory_index < room_space_index,
-            "All flow must run directory QA before starting the long-lived B sync"
+            "All flow must run directory QA before RoomSpace operations"
         );
         assert!(
             !run_async_body[room_space_index..].contains(directory_call),
