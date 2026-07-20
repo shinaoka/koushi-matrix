@@ -485,3 +485,49 @@ Fresh secondary-participant GREEN evidence:
 No long Conduit lane was run here. The root agent owns one targeted SendQueue
 rerun. The separate timeline-reconnect SDK 20/QA 21 pagination boundary remains
 unchanged.
+
+### Idempotent active-timeline replay follow-up
+
+The same single targeted Conduit run then reached `room_space=ok` for both
+participants. Core emitted a same-room replay (`replay_initial_emitted` with a
+count of 10), but QA timed out at `subscribe timeline A` because the generic
+waiter required the newly submitted Subscribe request id exactly.
+
+This is a second, distinct pre-existing QA contract mismatch. The room can
+already be auto-subscribed when generic phase 5 submits its explicit Subscribe.
+The actor's idempotent fast path intentionally ignores that new request id and
+re-emits `InitialItems` with the original unacknowledged
+`projection_request_id` (or no id after acknowledgement). Retaining that
+identity is correct: the frontend projection ACK must acknowledge the same
+delivery identity until the actor accepts it; substituting the newest
+idempotent Subscribe id would weaken lost-delivery replay and ACK correlation.
+No product timeline protocol or projection identity was changed.
+
+Strict TDD first added a network-free matcher contract. RED failed with the
+expected missing `InitialItemsWaitPolicy`, `InitialItemsWaitMatch`, and
+`match_initial_items_wait_event` symbols. GREEN proves:
+
+- the normal policy still accepts only the exact request id and key;
+- only the explicit active-key replay policy accepts the same key with an old
+  request id or no request id;
+- a wrong timeline key is always ignored; and
+- `OperationFailed` is still accepted only for the newly submitted exact
+  request id, while an old-request failure is ignored.
+
+The generic `subscribe timeline A` call alone now uses a dedicated
+`wait_for_initial_items_or_active_replay` waiter because that room may already
+be active. All other `wait_for_initial_items` calls, including the corresponding
+B subscription, remain exact; the log provided no evidence that B entered the
+idempotent path.
+
+Fresh short-gate evidence:
+
+- Focused idempotent replay matcher contract: 1 passed, 0 failed.
+- Full headless Core QA binary tests: 67 passed, 0 failed.
+- Headless Core QA binary check with `qa-bin`: passed without warnings.
+- `cargo fmt -p koushi-core -- --check`: passed.
+- `git diff --check`: passed.
+
+No long Conduit lane was rerun here. This harness-only change is independent of
+both issue-285 display projection and the separate timeline-reconnect SDK
+20/QA 21 pagination boundary.

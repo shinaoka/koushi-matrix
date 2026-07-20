@@ -5851,7 +5851,13 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .await
         .map_err(|e| format!("submit subscribe timeline A: {e}"))?;
 
-    wait_for_initial_items(&mut conn_a, &key_a, subscribe_a_id, "subscribe timeline A").await?;
+    wait_for_initial_items_or_active_replay(
+        &mut conn_a,
+        &key_a,
+        subscribe_a_id,
+        "subscribe timeline A",
+    )
+    .await?;
     println!("timeline_subscribed_a=ok");
 
     // A sends message 1 with a distinct client transaction id.
@@ -12306,28 +12312,94 @@ async fn wait_for_initial_items(
     request_id: koushi_core::ids::RequestId,
     label: &str,
 ) -> Result<Vec<koushi_core::event::TimelineItem>, String> {
+    wait_for_initial_items_with_policy(
+        conn,
+        key,
+        request_id,
+        label,
+        InitialItemsWaitPolicy::ExactRequest,
+    )
+    .await
+}
+
+/// Wait for the same-key `InitialItems` emitted by an idempotent active-room
+/// subscription. The actor deliberately retains the original unacknowledged
+/// projection request identity, so a replay may carry an older request id (or
+/// no request id after acknowledgement). Failures remain correlated exactly to
+/// the newly submitted request.
+async fn wait_for_initial_items_or_active_replay(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    request_id: koushi_core::ids::RequestId,
+    label: &str,
+) -> Result<Vec<koushi_core::event::TimelineItem>, String> {
+    wait_for_initial_items_with_policy(
+        conn,
+        key,
+        request_id,
+        label,
+        InitialItemsWaitPolicy::ActiveKeyReplay,
+    )
+    .await
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InitialItemsWaitPolicy {
+    ExactRequest,
+    ActiveKeyReplay,
+}
+
+enum InitialItemsWaitMatch {
+    Items(Vec<koushi_core::event::TimelineItem>),
+    Failure(CoreFailure),
+    Ignore,
+}
+
+fn match_initial_items_wait_event(
+    event: CoreEvent,
+    key: &TimelineKey,
+    request_id: koushi_core::ids::RequestId,
+    policy: InitialItemsWaitPolicy,
+) -> InitialItemsWaitMatch {
+    match event {
+        CoreEvent::Timeline(TimelineEvent::InitialItems {
+            request_id: event_request_id,
+            key: event_key,
+            items,
+            ..
+        }) if event_key == *key
+            && (event_request_id == Some(request_id)
+                || policy == InitialItemsWaitPolicy::ActiveKeyReplay) =>
+        {
+            InitialItemsWaitMatch::Items(items)
+        }
+        CoreEvent::OperationFailed {
+            request_id: event_request_id,
+            failure,
+        } if event_request_id == request_id => InitialItemsWaitMatch::Failure(failure),
+        _ => InitialItemsWaitMatch::Ignore,
+    }
+}
+
+async fn wait_for_initial_items_with_policy(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    request_id: koushi_core::ids::RequestId,
+    label: &str,
+    policy: InitialItemsWaitPolicy,
+) -> Result<Vec<koushi_core::event::TimelineItem>, String> {
     loop {
         let event = tokio::time::timeout(TIMELINE_INITIAL_EVENT_TIMEOUT, conn.recv_event())
             .await
             .map_err(|_| format!("{label}: timed out waiting for TimelineEvent::InitialItems"))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
-        match event {
-            CoreEvent::Timeline(TimelineEvent::InitialItems {
-                request_id: Some(ev_id),
-                key: ref ev_key,
-                items,
-                ..
-            }) if ev_id == request_id && ev_key == key => {
-                return Ok(items);
-            }
-            CoreEvent::OperationFailed {
-                request_id: ev_id,
-                failure,
-            } if ev_id == request_id => {
+        match match_initial_items_wait_event(event, key, request_id, policy) {
+            InitialItemsWaitMatch::Items(items) => return Ok(items),
+            InitialItemsWaitMatch::Failure(failure) => {
                 return Err(format!("{label} failed: {failure:?}"));
             }
-            _ => continue,
+            InitialItemsWaitMatch::Ignore => continue,
         }
     }
 }
@@ -17519,6 +17591,89 @@ mod tests {
                 "{scenario:?} must retain its existing primary or dedicated gate semantics"
             );
         }
+    }
+
+    #[test]
+    fn idempotent_initial_items_wait_accepts_only_same_key_replays() {
+        let request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 2,
+        };
+        let old_request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 1,
+        };
+        let key = TimelineKey::room(AccountKey("@qa:example.invalid".to_owned()), "!room:test");
+        let wrong_key =
+            TimelineKey::room(AccountKey("@qa:example.invalid".to_owned()), "!other:test");
+        let initial = |request_id, key: TimelineKey| {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id,
+                key,
+                actor_generation: 1,
+                generation: koushi_core::ids::TimelineGeneration(0),
+                items: Vec::new(),
+            })
+        };
+        let classify =
+            |event, policy| match_initial_items_wait_event(event, &key, request_id, policy);
+
+        assert!(matches!(
+            classify(
+                initial(Some(request_id), key.clone()),
+                InitialItemsWaitPolicy::ExactRequest
+            ),
+            InitialItemsWaitMatch::Items(_)
+        ));
+        assert!(matches!(
+            classify(
+                initial(Some(old_request_id), key.clone()),
+                InitialItemsWaitPolicy::ExactRequest
+            ),
+            InitialItemsWaitMatch::Ignore
+        ));
+        assert!(matches!(
+            classify(
+                initial(Some(old_request_id), key.clone()),
+                InitialItemsWaitPolicy::ActiveKeyReplay
+            ),
+            InitialItemsWaitMatch::Items(_)
+        ));
+        assert!(matches!(
+            classify(
+                initial(None, key.clone()),
+                InitialItemsWaitPolicy::ActiveKeyReplay
+            ),
+            InitialItemsWaitMatch::Items(_)
+        ));
+        assert!(matches!(
+            classify(
+                initial(Some(old_request_id), wrong_key),
+                InitialItemsWaitPolicy::ActiveKeyReplay
+            ),
+            InitialItemsWaitMatch::Ignore
+        ));
+
+        assert!(matches!(
+            classify(
+                CoreEvent::OperationFailed {
+                    request_id,
+                    failure: CoreFailure::SessionRequired,
+                },
+                InitialItemsWaitPolicy::ActiveKeyReplay
+            ),
+            InitialItemsWaitMatch::Failure(CoreFailure::SessionRequired)
+        ));
+        assert!(matches!(
+            classify(
+                CoreEvent::OperationFailed {
+                    request_id: old_request_id,
+                    failure: CoreFailure::SessionRequired,
+                },
+                InitialItemsWaitPolicy::ActiveKeyReplay
+            ),
+            InitialItemsWaitMatch::Ignore
+        ));
     }
 
     #[test]
