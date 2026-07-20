@@ -595,3 +595,38 @@ and trust-gate protocol out of QA-specific workarounds.
 
 This update records integration evidence only. No code or tests were changed or
 run, and no long lane, push, or PR operation was started by this worker.
+
+## CENTRALIZED IDENTITY-GATED QA LOGIN — 2026-07-20
+
+The standalone SendQueue failure after the fully GREEN generic timeline was
+removed without adding another per-call bootstrap sequence. The existing
+`login_synced_participant_for_qa` boundary already owns runtime creation,
+`LoginPassword`, optional new-identity completion, `LoggedIn`, `Ready`, and sync
+startup. It now accepts an explicit homeserver URL and an explicit private-safe
+gate label instead of depending on `QaConfig` and a hardcoded B label.
+
+Strict TDD first added a deterministic source contract for
+`run_send_queue_stage`. RED failed exactly at
+`stage.contains("login_synced_participant_for_qa(")` because the stage still
+constructed `LoginPassword` and waited for `LoggedIn` directly. GREEN requires
+the centralized helper, the proxy homeserver URL, and identity bootstrap, and
+forbids direct `LoginPassword` / `wait_for_logged_in` in that stage.
+
+The stage still starts the TCP proxy first. It then passes
+`proxy.homeserver_url()`, the SendQueue data-dir clone, account credentials,
+device label, private-safe gate label, and `bootstrap_new_identity=true` into
+the centralized helper. The returned runtime, connection, and account key keep
+the existing offline proxy, restart/restore, and cleanup ownership unchanged.
+The helper's existing E2EE caller was updated only to pass its previous
+homeserver and gate label explicitly. Specialized gate scenarios and all
+product account/sync/trust code remain untouched.
+
+Fresh short-gate evidence:
+
+- Focused centralized SendQueue login contract: 1 passed, 0 failed.
+- Full headless Core QA binary tests: 69 passed, 0 failed.
+- Headless Core QA binary check with `qa-bin`: passed without warnings.
+- `cargo fmt -p koushi-core -- --check`: passed.
+- `git diff --check`: passed.
+
+No long lane was run by this worker, and no push or PR was created.

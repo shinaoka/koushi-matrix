@@ -3756,25 +3756,18 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
 async fn run_send_queue_stage(config: &QaConfig) -> Result<(), String> {
     let proxy = QaTcpProxy::start(&config.homeserver)?;
     let data_dir = qa_data_dir("send_queue");
-    let runtime = CoreRuntime::start_with_data_dir(data_dir.clone());
-    let mut conn = runtime.attach();
-
-    let login_id = conn.next_request_id();
-    conn.command(CoreCommand::Account(AccountCommand::LoginPassword {
-        request_id: login_id,
-        request: koushi_state::LoginRequest {
-            homeserver: proxy.homeserver_url(),
-            username: config.user_a.clone(),
-            password: AuthSecret::new(config.password_a.clone()),
-            device_display_name: Some("Koushi Core QA Send Queue".to_owned()),
-        },
-    }))
-    .await
-    .map_err(|e| format!("send_queue: submit login failed: {e}"))?;
-
-    let account_key = wait_for_logged_in(&mut conn, login_id, "send_queue login").await?;
-    wait_for_ready_snapshot(&mut conn, "send_queue Ready").await?;
-    start_sync_for_qa(&mut conn, "send_queue sync").await?;
+    let proxy_homeserver = proxy.homeserver_url();
+    let (runtime, mut conn, account_key) = login_synced_participant_for_qa(
+        &proxy_homeserver,
+        data_dir.clone(),
+        &config.user_a,
+        &config.password_a,
+        "Koushi Core QA Send Queue",
+        "send_queue login",
+        "send_queue gate bootstrap",
+        true,
+    )
+    .await?;
 
     let room_id = create_room_for_qa(
         &mut conn,
@@ -10381,12 +10374,13 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
 ) -> Result<(), String> {
     let check_recipient_second_device = env_flag_enabled(ENV_E2EE_RECIPIENT_SECOND_DEVICE)?;
     let (runtime_b, mut conn_b, account_key_b) = login_synced_participant_for_qa(
-        config,
+        &config.homeserver,
         qa_data_dir("e2ee-b"),
         &config.user_b,
         &config.password_b,
         DEVICE_B,
         "e2ee login B",
+        "gate-bootstrap-b",
         true,
     )
     .await?;
@@ -10684,12 +10678,13 @@ async fn settle_e2ee_device_list_propagation_for_qa(
 }
 
 async fn login_synced_participant_for_qa(
-    config: &QaConfig,
+    homeserver: &str,
     data_dir: std::path::PathBuf,
     username: &str,
     password: &str,
     device_display_name: &str,
     label: &str,
+    gate_label: &str,
     bootstrap_new_identity: bool,
 ) -> Result<(CoreRuntime, CoreConnection, AccountKey), String> {
     let runtime = CoreRuntime::start_with_data_dir(data_dir);
@@ -10699,7 +10694,7 @@ async fn login_synced_participant_for_qa(
     conn.command(CoreCommand::Account(AccountCommand::LoginPassword {
         request_id: login_id,
         request: koushi_state::LoginRequest {
-            homeserver: config.homeserver.clone(),
+            homeserver: homeserver.to_owned(),
             username: username.to_owned(),
             password: AuthSecret::new(password.to_owned()),
             device_display_name: Some(device_display_name.to_owned()),
@@ -10708,7 +10703,7 @@ async fn login_synced_participant_for_qa(
     .await
     .map_err(|e| format!("{label}: submit login failed: {e}"))?;
     if bootstrap_new_identity {
-        complete_new_identity_gate_for_qa(&mut conn, password, "gate-bootstrap-b").await?;
+        complete_new_identity_gate_for_qa(&mut conn, password, gate_label).await?;
     }
     let account_key = wait_for_logged_in(&mut conn, login_id, label).await?;
     wait_for_ready_snapshot(&mut conn, label).await?;
@@ -17596,6 +17591,24 @@ mod tests {
                 "{scenario:?} must retain its existing primary or dedicated gate semantics"
             );
         }
+    }
+
+    #[test]
+    fn standalone_send_queue_login_uses_centralized_identity_bootstrap() {
+        let source = include_str!("headless-core-qa.rs");
+        let stage = source
+            .split("async fn run_send_queue_stage")
+            .nth(1)
+            .expect("standalone SendQueue stage")
+            .split("async fn unsubscribe_timeline_for_qa")
+            .next()
+            .expect("standalone SendQueue stage end");
+
+        assert!(stage.contains("login_synced_participant_for_qa("));
+        assert!(stage.contains("proxy.homeserver_url()"));
+        assert!(stage.contains("\n        true,"));
+        assert!(!stage.contains("AccountCommand::LoginPassword"));
+        assert!(!stage.contains("wait_for_logged_in"));
     }
 
     #[test]
