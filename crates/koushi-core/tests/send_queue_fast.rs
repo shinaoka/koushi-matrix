@@ -3,7 +3,7 @@
 use std::io;
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::{
-    Arc, Mutex,
+    Arc, Condvar, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::thread::{self, JoinHandle};
@@ -32,8 +32,63 @@ struct FastTcpProxy {
     accept_thread: Option<JoinHandle<()>>,
 }
 
+#[derive(Default)]
+struct FastProxyRegistrationGate {
+    state: Mutex<FastProxyRegistrationGateState>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct FastProxyRegistrationGateState {
+    reached: bool,
+    released: bool,
+}
+
+impl FastProxyRegistrationGate {
+    fn pause_before_registration(&self) {
+        let mut state = self.state.lock().expect("registration gate lock");
+        state.reached = true;
+        self.changed.notify_all();
+        while !state.released {
+            state = self
+                .changed
+                .wait(state)
+                .expect("registration gate wait lock");
+        }
+    }
+
+    fn wait_until_reached(&self, timeout: Duration) -> bool {
+        let state = self.state.lock().expect("registration gate lock");
+        let (state, _) = self
+            .changed
+            .wait_timeout_while(state, timeout, |state| !state.reached)
+            .expect("registration gate timed wait lock");
+        state.reached
+    }
+
+    fn release(&self) {
+        let mut state = self.state.lock().expect("registration gate lock");
+        state.released = true;
+        self.changed.notify_all();
+    }
+}
+
 impl FastTcpProxy {
     fn start(target_homeserver: &str) -> Result<Self, String> {
+        Self::start_inner(target_homeserver, None)
+    }
+
+    fn start_with_registration_gate(
+        target_homeserver: &str,
+        registration_gate: Arc<FastProxyRegistrationGate>,
+    ) -> Result<Self, String> {
+        Self::start_inner(target_homeserver, Some(registration_gate))
+    }
+
+    fn start_inner(
+        target_homeserver: &str,
+        registration_gate: Option<Arc<FastProxyRegistrationGate>>,
+    ) -> Result<Self, String> {
         let target = parse_http_homeserver_addr(target_homeserver)?;
         let listener = TcpListener::bind("127.0.0.1:0")
             .map_err(|error| format!("fast SendQueue proxy bind failed: {error}"))?;
@@ -51,6 +106,7 @@ impl FastTcpProxy {
         let thread_rejected = Arc::clone(&rejected_connections);
         let thread_running = Arc::clone(&running);
         let thread_streams = Arc::clone(&active_streams);
+        let thread_registration_gate = registration_gate.clone();
         let accept_thread = thread::spawn(move || {
             while thread_running.load(Ordering::SeqCst) {
                 match listener.accept() {
@@ -59,7 +115,14 @@ impl FastTcpProxy {
                         thread_rejected.fetch_add(1, Ordering::SeqCst);
                     }
                     Ok((client, _)) => {
-                        spawn_fast_proxy_pair(client, target, Arc::clone(&thread_streams));
+                        spawn_fast_proxy_pair(
+                            client,
+                            target,
+                            Arc::clone(&thread_streams),
+                            Arc::clone(&thread_enabled),
+                            Arc::clone(&thread_rejected),
+                            thread_registration_gate.clone(),
+                        );
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(10));
@@ -90,8 +153,9 @@ impl FastTcpProxy {
     }
 
     fn disable(&self) {
+        let mut streams = self.active_streams.lock().expect("active streams lock");
         self.enabled.store(false, Ordering::SeqCst);
-        shutdown_fast_proxy_streams(&self.active_streams);
+        shutdown_fast_proxy_streams(&mut streams);
     }
 
     fn enable(&self) {
@@ -102,7 +166,7 @@ impl FastTcpProxy {
 impl Drop for FastTcpProxy {
     fn drop(&mut self) {
         self.running.store(false, Ordering::SeqCst);
-        shutdown_fast_proxy_streams(&self.active_streams);
+        self.disable();
         let _ = TcpStream::connect(self.listen_addr);
         if let Some(thread) = self.accept_thread.take() {
             let _ = thread.join();
@@ -128,6 +192,9 @@ fn spawn_fast_proxy_pair(
     client: TcpStream,
     target: SocketAddr,
     active_streams: Arc<Mutex<Vec<TcpStream>>>,
+    enabled: Arc<AtomicBool>,
+    rejected_connections: Arc<AtomicUsize>,
+    registration_gate: Option<Arc<FastProxyRegistrationGate>>,
 ) {
     thread::spawn(move || {
         let Ok(upstream) = TcpStream::connect(target) else {
@@ -140,9 +207,25 @@ fn spawn_fast_proxy_pair(
         let Ok(upstream_guard) = upstream.try_clone() else {
             return;
         };
-        if let Ok(mut streams) = active_streams.lock() {
-            streams.push(client_guard);
-            streams.push(upstream_guard);
+        if let Some(registration_gate) = registration_gate {
+            registration_gate.pause_before_registration();
+        }
+        let registered = if let Ok(mut streams) = active_streams.lock() {
+            if enabled.load(Ordering::SeqCst) {
+                streams.push(client_guard);
+                streams.push(upstream_guard);
+                true
+            } else {
+                rejected_connections.fetch_add(1, Ordering::SeqCst);
+                false
+            }
+        } else {
+            false
+        };
+        if !registered {
+            let _ = client.shutdown(Shutdown::Both);
+            let _ = upstream.shutdown(Shutdown::Both);
+            return;
         }
         let Ok(mut client_reader) = client.try_clone() else {
             return;
@@ -162,11 +245,56 @@ fn spawn_fast_proxy_pair(
     });
 }
 
-fn shutdown_fast_proxy_streams(streams: &Arc<Mutex<Vec<TcpStream>>>) {
-    if let Ok(mut streams) = streams.lock() {
-        for stream in streams.drain(..) {
-            let _ = stream.shutdown(Shutdown::Both);
-        }
+#[test]
+fn fast_proxy_disable_rejects_connection_accepted_before_registration() {
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream_listener.local_addr().expect("upstream address");
+    let (payload_tx, payload_rx) = std::sync::mpsc::channel();
+    let upstream_thread = thread::spawn(move || {
+        let (mut upstream, _) = upstream_listener.accept().expect("upstream accept");
+        upstream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("upstream read timeout");
+        let mut payload = [0_u8; 128];
+        let read = io::Read::read(&mut upstream, &mut payload).unwrap_or(0);
+        let _ = payload_tx.send(payload[..read].to_vec());
+    });
+
+    let registration_gate = Arc::new(FastProxyRegistrationGate::default());
+    let proxy = FastTcpProxy::start_with_registration_gate(
+        &format!("http://{upstream_addr}"),
+        Arc::clone(&registration_gate),
+    )
+    .expect("proxy start");
+    let mut client = TcpStream::connect(proxy.listen_addr).expect("proxy client connect");
+    assert!(
+        registration_gate.wait_until_reached(Duration::from_secs(1)),
+        "accepted connection did not reach the pre-registration gate"
+    );
+
+    proxy.disable();
+    registration_gate.release();
+    let payload = b"GET /must-not-forward HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    let _ = io::Write::write_all(&mut client, payload);
+    let received = payload_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("upstream payload observation");
+    let _ = upstream_thread.join();
+
+    assert!(
+        received.is_empty(),
+        "connection accepted before disable forwarded payload after late registration"
+    );
+    assert_eq!(
+        proxy.rejected_connection_count(),
+        1,
+        "late registration rejection must be counted"
+    );
+}
+
+fn shutdown_fast_proxy_streams(streams: &mut Vec<TcpStream>) {
+    for stream in streams.drain(..) {
+        let _ = stream.shutdown(Shutdown::Both);
     }
 }
 
@@ -545,6 +673,97 @@ impl Drop for FastSendQueuePausedTime {
     }
 }
 
+async fn coordinate_fast_send_queue_paused_attempts<T>(
+    send: impl std::future::Future<Output = Result<T, String>>,
+    attempts: impl std::future::Future<Output = Result<(), String>>,
+) -> Result<T, String> {
+    let paused_time = FastSendQueuePausedTime::start();
+    tokio::pin!(send);
+    tokio::pin!(attempts);
+    tokio::select! {
+        attempts_result = &mut attempts => {
+            drop(paused_time);
+            attempts_result?;
+            tokio::time::timeout(FAST_SEND_QUEUE_PHASE_TIMEOUT, &mut send)
+                .await
+                .map_err(|_| {
+                    "fast_send_queue send timed out after retry attempts completed".to_owned()
+                })?
+        }
+        send_result = &mut send => {
+            let attempts_result = (&mut attempts).await;
+            drop(paused_time);
+            attempts_result?;
+            send_result
+        }
+    }
+}
+
+async fn fast_send_queue_wall_timeout<T>(
+    duration: Duration,
+    future: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    let (elapsed_tx, elapsed_rx) = tokio::sync::oneshot::channel();
+    thread::spawn(move || {
+        thread::sleep(duration);
+        let _ = elapsed_tx.send(());
+    });
+    tokio::pin!(future);
+    tokio::select! {
+        value = &mut future => Some(value),
+        _ = elapsed_rx => None,
+    }
+}
+
+struct FastPendingSendDropProbe {
+    dropped: Arc<AtomicBool>,
+}
+
+impl std::future::Future for FastPendingSendDropProbe {
+    type Output = Result<(), String>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::task::Poll::Pending
+    }
+}
+
+impl Drop for FastPendingSendDropProbe {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn fast_send_queue_attempt_error_cancels_pending_send_and_resumes_time() {
+    let send_dropped = Arc::new(AtomicBool::new(false));
+    let result = fast_send_queue_wall_timeout(
+        Duration::from_millis(100),
+        coordinate_fast_send_queue_paused_attempts(
+            FastPendingSendDropProbe {
+                dropped: Arc::clone(&send_dropped),
+            },
+            async { Err("attempt driver failed".to_owned()) },
+        ),
+    )
+    .await
+    .expect("attempt error must return without waiting for the pending send");
+    assert_eq!(result, Err("attempt driver failed".to_owned()));
+    assert!(
+        send_dropped.load(Ordering::SeqCst),
+        "pending send future must be cancelled before returning the attempt error"
+    );
+
+    fast_send_queue_wall_timeout(
+        Duration::from_millis(100),
+        tokio::time::sleep(Duration::from_millis(1)),
+    )
+    .await
+    .expect("Tokio time must resume before the attempt error is returned");
+}
+
 async fn fast_send_queue_phase<T>(
     label: &str,
     future: impl std::future::Future<Output = T>,
@@ -902,8 +1121,7 @@ async fn send_fast_send_queue_text_expect_recoverable_transport_failure(
     proxy: &FastTcpProxy,
 ) -> Result<SendQueueLocalEcho, String> {
     let baseline = proxy.rejected_connection_count();
-    let paused_time = FastSendQueuePausedTime::start();
-    let (send, attempts) = tokio::join!(
+    coordinate_fast_send_queue_paused_attempts(
         async {
             let send = send_fast_send_queue_text_expect_local_echo(
                 conn,
@@ -918,10 +1136,8 @@ async fn send_fast_send_queue_text_expect_recoverable_transport_failure(
             Ok::<_, String>(send)
         },
         drive_fast_send_queue_short_retry_attempts(proxy, baseline, attempt_phase),
-    );
-    drop(paused_time);
-    attempts?;
-    send
+    )
+    .await
 }
 
 async fn wait_for_fast_send_queue_completions_in_order(
