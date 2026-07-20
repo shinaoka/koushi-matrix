@@ -77,9 +77,8 @@ use koushi_state::{
     SessionInfo, SessionState, SettingsPatch, SettingsPersistenceState,
     StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind, TimelineMediaGalleryItem,
     TimelineMediaGalleryMedia, TimelineMediaGallerySource, TimelineMediaKind,
-    TrustOperationFailureKind, VerificationFlowState, VerificationTarget,
-    build_formatted_message_draft, compose_sidebar, native_attention_state_from_rooms, reduce,
-    resolve_composer_key_action,
+    VerificationFlowState, VerificationTarget, build_formatted_message_draft, compose_sidebar,
+    native_attention_state_from_rooms, reduce, resolve_composer_key_action,
 };
 
 const ENV_HOMESERVER: &str = "KOUSHI_LOCAL_QA_HOMESERVER";
@@ -10239,129 +10238,6 @@ fn identity_reset_observation(
     }
 }
 
-#[allow(dead_code)]
-async fn verify_second_device_for_qa(
-    conn_a: &mut CoreConnection,
-    conn_a2: &mut CoreConnection,
-    session_a: &SessionInfo,
-    session_a2: &SessionInfo,
-    label: &str,
-) -> Result<(), String> {
-    if session_a.user_id != session_a2.user_id {
-        return Err("E2EE verification proof requires two devices for one user".to_owned());
-    }
-    if session_a.device_id == session_a2.device_id {
-        return Err("E2EE verification proof requires distinct device ids".to_owned());
-    }
-
-    let target_a = VerificationTarget {
-        user_id: session_a.user_id.clone(),
-        device_id: session_a.device_id.clone(),
-    };
-    let target_a2 = VerificationTarget {
-        user_id: session_a2.user_id.clone(),
-        device_id: session_a2.device_id.clone(),
-    };
-
-    let request_label = format!("{label}: request secondary to primary");
-    let flow_id_a2 = request_device_verification_for_qa(conn_a2, target_a, &request_label).await?;
-    // Avoid overlapping continuous SyncService with manual SyncOnce delivery
-    // during SAS; overlapping paths reproduced pre-SAS key-mismatch flakes.
-    let pause_primary_label = format!("{label}: pause sync primary for verification");
-    let pause_secondary_label = format!("{label}: pause sync secondary for verification");
-    stop_sync_for_qa(conn_a, &pause_primary_label).await?;
-    stop_sync_for_qa(conn_a2, &pause_secondary_label).await?;
-    let incoming_label = format!("{label}: incoming verification request");
-    let flow_id_a =
-        wait_for_verification_requested_event_only(conn_a, Some(&target_a2), None, &incoming_label)
-            .await?;
-
-    let accept_a_id = conn_a.next_request_id();
-    conn_a
-        .command(CoreCommand::Account(AccountCommand::AcceptVerification {
-            request_id: accept_a_id,
-            flow_id: flow_id_a,
-        }))
-        .await
-        .map_err(|e| format!("{label}: accept verification primary failed to submit: {e}"))?;
-
-    let primary_accept_label = format!("{label}: primary accepts verification");
-    wait_for_verification_accepted(conn_a, flow_id_a, Some(accept_a_id), &primary_accept_label)
-        .await?;
-    let secondary_observes_accept_label = format!("{label}: secondary observes primary acceptance");
-    wait_for_verification_accepted_with_sync_once(
-        conn_a2,
-        flow_id_a2,
-        &secondary_observes_accept_label,
-    )
-    .await?;
-
-    // Let the requester start SAS. Starting from the accepting device has
-    // triggered m.key_mismatch on Tuwunel self-verification in local QA.
-    let start_sas_a2_id = conn_a2.next_request_id();
-    conn_a2
-        .command(CoreCommand::Account(AccountCommand::AcceptVerification {
-            request_id: start_sas_a2_id,
-            flow_id: flow_id_a2,
-        }))
-        .await
-        .map_err(|e| format!("{label}: start SAS from secondary failed to submit: {e}"))?;
-
-    let (emojis_a, emojis_a2) =
-        drive_until_both_verification_sas(conn_a, flow_id_a, conn_a2, flow_id_a2, label).await?;
-    if emojis_a != emojis_a2 {
-        return Err(format!("{label}: SAS emoji mismatch between devices"));
-    }
-
-    let confirm_a_id = conn_a.next_request_id();
-    conn_a
-        .command(CoreCommand::Account(
-            AccountCommand::ConfirmSasVerification {
-                request_id: confirm_a_id,
-                flow_id: flow_id_a,
-            },
-        ))
-        .await
-        .map_err(|e| format!("{label}: confirm SAS primary failed to submit: {e}"))?;
-
-    let confirm_a2_id = conn_a2.next_request_id();
-    conn_a2
-        .command(CoreCommand::Account(
-            AccountCommand::ConfirmSasVerification {
-                request_id: confirm_a2_id,
-                flow_id: flow_id_a2,
-            },
-        ))
-        .await
-        .map_err(|e| format!("{label}: confirm SAS secondary failed to submit: {e}"))?;
-
-    let sync_secondary_after_confirm_label = format!("{label}: sync secondary after SAS confirm");
-    let sync_primary_after_confirm_label =
-        format!("{label}: sync primary after secondary SAS confirm");
-    let sync_secondary_after_done_label = format!("{label}: sync secondary after SAS done");
-    sync_once_for_qa(conn_a2, &sync_secondary_after_confirm_label).await?;
-    sync_once_for_qa(conn_a, &sync_primary_after_confirm_label).await?;
-    sync_once_for_qa(conn_a2, &sync_secondary_after_done_label).await?;
-
-    let primary_done_label = format!("{label}: primary verification done");
-    wait_for_verification_done(conn_a, flow_id_a, Some(confirm_a_id), &primary_done_label).await?;
-    let secondary_done_label = format!("{label}: secondary verification done");
-    wait_for_verification_done(
-        conn_a2,
-        flow_id_a2,
-        Some(confirm_a2_id),
-        &secondary_done_label,
-    )
-    .await?;
-
-    let resume_primary_label = format!("{label}: resume sync primary after verification");
-    let resume_secondary_label = format!("{label}: resume sync secondary after verification");
-    start_sync_for_qa(conn_a, &resume_primary_label).await?;
-    start_sync_for_qa(conn_a2, &resume_secondary_label).await?;
-
-    Ok(())
-}
-
 async fn verify_second_device_room_key_delivery_for_qa(
     conn_a: &mut CoreConnection,
     conn_a2: &mut CoreConnection,
@@ -10995,103 +10871,16 @@ fn observe_body_with_sync_event(
     }
 }
 
-#[allow(dead_code)]
-enum VerificationRequestAttempt {
-    Requested(u64),
-    Failed(TrustOperationFailureKind),
-}
-
-#[allow(dead_code)]
-async fn request_device_verification_for_qa(
-    conn: &mut CoreConnection,
-    target: VerificationTarget,
+fn ensure_incoming_verification_receiver_sync_not_stopped(
+    sync: &koushi_state::SyncState,
     label: &str,
-) -> Result<u64, String> {
-    let mut last_failure = None;
-    for attempt in 1..=3 {
-        let request_id = conn.next_request_id();
-        conn.command(CoreCommand::Account(AccountCommand::RequestVerification {
-            request_id,
-            target: target.clone(),
-        }))
-        .await
-        .map_err(|e| format!("{label}: submit request verification failed: {e}"))?;
-
-        match wait_for_verification_requested_or_failed(conn, request_id, Some(&target), label)
-            .await?
-        {
-            VerificationRequestAttempt::Requested(flow_id) => return Ok(flow_id),
-            VerificationRequestAttempt::Failed(kind) => {
-                last_failure = Some(kind);
-                if attempt < 3 {
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                }
-            }
-        }
-    }
-
-    Err(format!(
-        "{label}: verification request did not start after retries; last failure={last_failure:?}"
-    ))
-}
-
-#[allow(dead_code)]
-async fn wait_for_verification_requested_or_failed(
-    conn: &mut CoreConnection,
-    request_id: RequestId,
-    expected_target: Option<&VerificationTarget>,
-    label: &str,
-) -> Result<VerificationRequestAttempt, String> {
-    loop {
-        let event = tokio::time::timeout(E2EE_EVENT_TIMEOUT, conn.recv_event())
-            .await
-            .map_err(|_| format!("{label}: timed out waiting for verification request"))?
-            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
-
-        match event {
-            CoreEvent::E2eeTrust(E2eeTrustEvent::VerificationProgress { state, .. }) => {
-                if verification_state_flow_id(&state) != Some(request_id.sequence)
-                    || !verification_state_matches_target(&state, expected_target)
-                {
-                    continue;
-                }
-                match state {
-                    VerificationFlowState::Failed { kind, .. } => {
-                        return Ok(VerificationRequestAttempt::Failed(kind));
-                    }
-                    VerificationFlowState::Requested { request_id, .. }
-                    | VerificationFlowState::Accepted { request_id, .. }
-                    | VerificationFlowState::SasPresented { request_id, .. }
-                    | VerificationFlowState::Confirming { request_id, .. }
-                    | VerificationFlowState::Done { request_id, .. } => {
-                        return Ok(VerificationRequestAttempt::Requested(request_id));
-                    }
-                    VerificationFlowState::Idle => {}
-                }
-            }
-            CoreEvent::StateChanged(AppState {
-                e2ee_trust:
-                    koushi_state::E2eeTrustState {
-                        verification:
-                            VerificationFlowState::Failed {
-                                request_id: failed_id,
-                                kind,
-                                ..
-                            },
-                        ..
-                    },
-                ..
-            }) if failed_id == request_id.sequence => {
-                return Ok(VerificationRequestAttempt::Failed(kind));
-            }
-            CoreEvent::OperationFailed {
-                request_id: ev_id,
-                failure,
-            } if ev_id == request_id => {
-                return Err(format!("{label} failed: {failure:?}"));
-            }
-            _ => {}
-        }
+) -> Result<(), String> {
+    if matches!(sync, koushi_state::SyncState::Stopped) {
+        Err(format!(
+            "{label}: receiver sync is stopped; cannot await an incoming verification request"
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -11101,6 +10890,7 @@ async fn wait_for_verification_requested_event_only(
     excluded_flow_id: Option<u64>,
     label: &str,
 ) -> Result<u64, String> {
+    ensure_incoming_verification_receiver_sync_not_stopped(&conn.snapshot().sync, label)?;
     let deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
 
     loop {
@@ -11203,33 +10993,6 @@ async fn wait_for_verification_accepted(
     }
 }
 
-#[allow(dead_code)]
-async fn wait_for_verification_accepted_with_sync_once(
-    conn: &mut CoreConnection,
-    flow_id: u64,
-    label: &str,
-) -> Result<(), String> {
-    let deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
-
-    loop {
-        if verification_state_is_at_least_accepted(
-            &conn.snapshot().e2ee_trust.verification,
-            flow_id,
-        )? {
-            return Ok(());
-        }
-
-        if tokio::time::Instant::now() >= deadline {
-            return Err(format!(
-                "{label}: timed out waiting for verification acceptance with SyncOnce"
-            ));
-        }
-
-        let sync_label = format!("{label}: sync while waiting for acceptance");
-        sync_once_for_qa(conn, &sync_label).await?;
-    }
-}
-
 fn verification_state_is_at_least_accepted(
     state: &VerificationFlowState,
     flow_id: u64,
@@ -11246,44 +11009,6 @@ fn verification_state_is_at_least_accepted(
             Err(format!("verification failed before acceptance: {kind:?}"))
         }
         VerificationFlowState::Idle | VerificationFlowState::Requested { .. } => Ok(false),
-    }
-}
-
-#[allow(dead_code)]
-async fn drive_until_both_verification_sas(
-    conn_a: &mut CoreConnection,
-    flow_id_a: u64,
-    conn_a2: &mut CoreConnection,
-    flow_id_a2: u64,
-    label: &str,
-) -> Result<(Vec<SasEmoji>, Vec<SasEmoji>), String> {
-    let deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
-
-    loop {
-        let emojis_a = verification_state_sas(
-            &conn_a.snapshot().e2ee_trust.verification,
-            flow_id_a,
-            &format!("{label}: primary SAS presented"),
-        )?;
-        let emojis_a2 = verification_state_sas(
-            &conn_a2.snapshot().e2ee_trust.verification,
-            flow_id_a2,
-            &format!("{label}: secondary SAS presented"),
-        )?;
-        if let (Some(emojis_a), Some(emojis_a2)) = (emojis_a, emojis_a2) {
-            return Ok((emojis_a, emojis_a2));
-        }
-
-        if tokio::time::Instant::now() >= deadline {
-            return Err(format!(
-                "{label}: timed out driving SAS presentation with SyncOnce"
-            ));
-        }
-
-        let primary_sync_label = format!("{label}: sync primary while waiting for SAS");
-        let secondary_sync_label = format!("{label}: sync secondary while waiting for SAS");
-        sync_once_for_qa(conn_a, &primary_sync_label).await?;
-        sync_once_for_qa(conn_a2, &secondary_sync_label).await?;
     }
 }
 
@@ -11307,66 +11032,6 @@ fn verification_state_sas(
         VerificationFlowState::Idle
         | VerificationFlowState::Requested { .. }
         | VerificationFlowState::Accepted { .. } => Ok(None),
-    }
-}
-
-#[allow(dead_code)]
-async fn wait_for_verification_done(
-    conn: &mut CoreConnection,
-    flow_id: u64,
-    command_request_id: Option<RequestId>,
-    label: &str,
-) -> Result<(), String> {
-    if verification_state_done(&conn.snapshot().e2ee_trust.verification, flow_id, label)? {
-        return Ok(());
-    }
-
-    loop {
-        let event = tokio::time::timeout(E2EE_EVENT_TIMEOUT, conn.recv_event())
-            .await
-            .map_err(|_| format!("{label}: timed out waiting for verification completion"))?
-            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
-
-        match event {
-            CoreEvent::E2eeTrust(E2eeTrustEvent::VerificationProgress { state, .. })
-            | CoreEvent::StateChanged(AppState {
-                e2ee_trust:
-                    koushi_state::E2eeTrustState {
-                        verification: state,
-                        ..
-                    },
-                ..
-            }) => {
-                if verification_state_done(&state, flow_id, label)? {
-                    return Ok(());
-                }
-            }
-            CoreEvent::OperationFailed {
-                request_id: ev_id,
-                failure,
-            } if command_request_id == Some(ev_id) => {
-                return Err(format!("{label} failed: {failure:?}"));
-            }
-            _ => {}
-        }
-    }
-}
-
-#[allow(dead_code)]
-fn verification_state_done(
-    state: &VerificationFlowState,
-    flow_id: u64,
-    label: &str,
-) -> Result<bool, String> {
-    if verification_state_flow_id(state) != Some(flow_id) {
-        return Ok(false);
-    }
-    match state {
-        VerificationFlowState::Done { .. } => Ok(true),
-        VerificationFlowState::Failed { kind, .. } => Err(format!(
-            "{label}: verification failed before completion: {kind:?}"
-        )),
-        _ => Ok(false),
     }
 }
 
@@ -16446,7 +16111,7 @@ mod tests {
         let stale = VerificationFlowState::Failed {
             request_id: 41,
             target: target.clone(),
-            kind: TrustOperationFailureKind::Cancelled,
+            kind: koushi_state::TrustOperationFailureKind::Cancelled,
         };
         let fresh = VerificationFlowState::Requested {
             request_id: 42,
@@ -17560,8 +17225,8 @@ mod tests {
 
         assert!(production_source.contains("e2ee gated self verification A/A2"));
         assert!(production_source.contains("e2ee recipient verification B/B2"));
-        assert!(production_source.contains("request secondary to primary"));
-        assert!(production_source.contains("incoming verification request"));
+        assert!(production_source.contains("primary incoming request"));
+        assert!(!production_source.contains("request secondary to primary"));
     }
 
     #[test]
@@ -19013,6 +18678,92 @@ mod tests {
 
         assert!(!helper.contains("stop_sync_for_qa(conn_a2"));
         assert!(!helper.contains("start_sync_for_qa(conn_a2"));
+    }
+
+    #[test]
+    fn incoming_verification_waiter_rejects_stopped_receiver_sync_at_entry() {
+        let label = "incoming verification receiver";
+        assert_eq!(
+            ensure_incoming_verification_receiver_sync_not_stopped(
+                &koushi_state::SyncState::Stopped,
+                label,
+            ),
+            Err(format!(
+                "{label}: receiver sync is stopped; cannot await an incoming verification request"
+            ))
+        );
+        for sync in [
+            koushi_state::SyncState::Running,
+            koushi_state::SyncState::Starting,
+            koushi_state::SyncState::Failed {
+                reason: "synthetic failure detail".to_owned(),
+            },
+            koushi_state::SyncState::Reconnecting {
+                reason: "synthetic reconnect detail".to_owned(),
+            },
+        ] {
+            assert_eq!(
+                ensure_incoming_verification_receiver_sync_not_stopped(&sync, label),
+                Ok(())
+            );
+        }
+
+        let source = include_str!("headless-core-qa.rs");
+        let guard = source
+            .split("fn ensure_incoming_verification_receiver_sync_not_stopped")
+            .nth(1)
+            .expect("incoming verification sync guard should exist")
+            .split("async fn wait_for_verification_requested_event_only")
+            .next()
+            .expect("incoming verification waiter should follow its sync guard");
+        assert!(guard.contains("koushi_state::SyncState::Stopped"));
+        assert!(
+            guard.contains(
+                "receiver sync is stopped; cannot await an incoming verification request"
+            )
+        );
+        assert!(!guard.contains("{sync:?}"));
+
+        let waiter = source
+            .split("async fn wait_for_verification_requested_event_only")
+            .nth(1)
+            .expect("incoming verification waiter should exist")
+            .split("fn requested_verification_flow_id")
+            .next()
+            .expect("verification flow classifier should follow incoming waiter");
+        let sync_guard = waiter
+            .find(
+                "ensure_incoming_verification_receiver_sync_not_stopped(&conn.snapshot().sync, label)?",
+            )
+            .expect("incoming waiter should fail fast on stopped receiver sync");
+        let deadline = waiter
+            .find("let deadline")
+            .expect("incoming waiter should retain its bounded deadline");
+        assert!(sync_guard < deadline);
+    }
+
+    #[test]
+    fn unused_manual_second_device_verification_cascade_is_absent() {
+        let source = include_str!("headless-core-qa.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production source should precede tests");
+        for unused in [
+            "async fn verify_second_device_for_qa",
+            "enum VerificationRequestAttempt",
+            "async fn request_device_verification_for_qa",
+            "async fn wait_for_verification_requested_or_failed",
+            "async fn wait_for_verification_accepted_with_sync_once",
+            "async fn drive_until_both_verification_sas",
+            "async fn wait_for_verification_done",
+            "fn verification_state_done",
+        ] {
+            assert!(
+                !production.contains(unused),
+                "obsolete zero-caller verification orchestration must be deleted: {unused}"
+            );
+        }
     }
 
     #[test]
