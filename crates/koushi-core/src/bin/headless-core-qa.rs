@@ -6292,7 +6292,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
             .await
             .map_err(|e| format!("submit refresh room timeline A: {e}"))?;
 
-        let refreshed_room_items = wait_for_initial_items(
+        let refreshed_room_items = wait_for_initial_items_or_active_replay(
             &mut conn_a,
             &key_a,
             refresh_room_a_id,
@@ -18143,6 +18143,10 @@ mod tests {
             connection_id: koushi_core::ids::RuntimeConnectionId(1),
             sequence: 1,
         };
+        let wrong_connection_request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(2),
+            sequence: request_id.sequence,
+        };
         let key = TimelineKey::room(AccountKey("@qa:example.invalid".to_owned()), "!room:test");
         let wrong_key =
             TimelineKey::room(AccountKey("@qa:example.invalid".to_owned()), "!other:test");
@@ -18214,6 +18218,31 @@ mod tests {
             ),
             InitialItemsWaitMatch::Ignore
         ));
+        assert!(matches!(
+            classify(
+                CoreEvent::OperationFailed {
+                    request_id: wrong_connection_request_id,
+                    failure: CoreFailure::SessionRequired,
+                },
+                InitialItemsWaitPolicy::ActiveKeyReplay
+            ),
+            InitialItemsWaitMatch::Ignore
+        ));
+    }
+
+    #[test]
+    fn active_room_thread_refresh_uses_the_idempotent_replay_waiter() {
+        let source = include_str!("headless-core-qa.rs");
+        let refresh = source
+            .split("let refresh_room_a_id = conn_a.next_request_id();")
+            .nth(1)
+            .expect("thread stage should refresh the active room timeline")
+            .split("wait_for_room_timeline_thread_summary")
+            .next()
+            .expect("thread summary wait should follow the room refresh");
+
+        assert!(refresh.contains("wait_for_initial_items_or_active_replay("));
+        assert!(!refresh.contains("wait_for_initial_items("));
     }
 
     #[test]
