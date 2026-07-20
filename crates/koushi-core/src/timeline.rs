@@ -780,6 +780,106 @@ fn emit_items_updated_and_reconcile_replay_known_with_lease(
     emit_timeline_events_with_lease(event_tx, lease, events);
 }
 
+/// The UI-visible terminal state of one anchor-restore walk.  Every member of
+/// this group is published while the same actor-generation lease is held so a
+/// replacement actor cannot expose an `ItemsUpdated` without its matching
+/// navigation/terminal state (or vice versa).
+struct RestoreSettlement {
+    navigation_snapshot: Option<TimelineNavigationSnapshot>,
+    terminal: Option<(RequestId, TimelineAnchorRestoreStatus)>,
+}
+
+/// Publish a restore terminal group for the current actor generation.
+///
+/// `None` means the actor was already stale and no state, buffer, batch id, or
+/// event was changed.  `Some(true)` means a coalesced `ItemsUpdated` batch was
+/// included; `Some(false)` means only navigation/terminal events were needed.
+fn publish_restore_settlement_for_generation(
+    restore_emit_buffer: &mut Vec<TimelineDiff>,
+    force_items_updated: bool,
+    next_batch_id: &mut TimelineBatchId,
+    event_tx: &broadcast::Sender<CoreEvent>,
+    registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
+    timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
+    key: &TimelineKey,
+    actor_generation: u64,
+    generation: TimelineGeneration,
+    navigation_items: &[TimelineItem],
+    display_items: &[TimelineItem],
+    settlement: RestoreSettlement,
+) -> Option<bool> {
+    let lease = timeline_actor_generations.try_acquire(key, actor_generation)?;
+    Some(publish_restore_settlement_with_lease(
+        restore_emit_buffer,
+        force_items_updated,
+        next_batch_id,
+        event_tx,
+        registry,
+        thread_root_projection_service,
+        &lease,
+        key,
+        generation,
+        navigation_items,
+        display_items,
+        settlement,
+    ))
+}
+
+fn publish_restore_settlement_with_lease(
+    restore_emit_buffer: &mut Vec<TimelineDiff>,
+    force_items_updated: bool,
+    next_batch_id: &mut TimelineBatchId,
+    event_tx: &broadcast::Sender<CoreEvent>,
+    registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
+    lease: &TimelineActorGenerationLease,
+    key: &TimelineKey,
+    generation: TimelineGeneration,
+    navigation_items: &[TimelineItem],
+    display_items: &[TimelineItem],
+    settlement: RestoreSettlement,
+) -> bool {
+    // A causal projection may correspond to a display no-op (for example a
+    // duplicate SDK slot collapsed by render identity).  It still needs an
+    // empty ItemsUpdated batch as the authoritative render fence.
+    let published_items = force_items_updated || !restore_emit_buffer.is_empty();
+    if published_items {
+        let batch_id = *next_batch_id;
+        let diffs = std::mem::take(restore_emit_buffer);
+        emit_items_updated_and_reconcile_replay_known_with_lease(
+            event_tx,
+            registry,
+            thread_root_projection_service,
+            lease,
+            key,
+            generation,
+            batch_id,
+            diffs,
+            navigation_items,
+            display_items,
+        );
+        *next_batch_id = TimelineBatchId(batch_id.0 + 1);
+    }
+
+    let mut terminal_events = Vec::with_capacity(2);
+    if let Some(snapshot) = settlement.navigation_snapshot {
+        terminal_events.push(TimelineEvent::NavigationUpdated {
+            key: key.clone(),
+            snapshot,
+        });
+    }
+    if let Some((request_id, status)) = settlement.terminal {
+        terminal_events.push(TimelineEvent::AnchorRestoreFinished {
+            request_id,
+            key: key.clone(),
+            status,
+        });
+    }
+    emit_timeline_events_with_lease(event_tx, lease, terminal_events);
+    published_items
+}
+
 /// Commits a fresh UI `InitialItems` window and its replay-known ownership
 /// transition under one shared synchronous boundary. The caller derives
 /// `replay_known_candidates` before entering this function; no fetch,
@@ -840,13 +940,47 @@ where
     let Some(lease) = timeline_actor_generations.try_acquire(key, actor_generation) else {
         return false;
     };
+    emit_initial_items_and_reconcile_replay_known_with_lease_after_initial(
+        event_tx,
+        registry,
+        thread_root_projection_service,
+        &lease,
+        key,
+        actor_generation,
+        request_id,
+        generation,
+        items,
+        replay_known_candidates,
+        Vec::new(),
+        after_initial,
+    );
+    true
+}
+
+fn emit_initial_items_and_reconcile_replay_known_with_lease_after_initial<F>(
+    event_tx: &broadcast::Sender<CoreEvent>,
+    registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
+    lease: &TimelineActorGenerationLease,
+    key: &TimelineKey,
+    actor_generation: u64,
+    request_id: Option<RequestId>,
+    generation: TimelineGeneration,
+    items: Vec<TimelineItem>,
+    replay_known_candidates: Vec<ThreadRootProjectionDto>,
+    prefix_events: Vec<TimelineEvent>,
+    after_initial: F,
+) where
+    F: FnOnce(),
+{
     let mut registry = registry
         .lock()
         .expect("replay-known root registry lock must not be poisoned");
     let replay_known_update = registry.replace(key, replay_known_candidates);
+    emit_timeline_events_with_lease(event_tx, lease, prefix_events);
     emit_timeline_events_with_lease(
         event_tx,
-        &lease,
+        lease,
         vec![TimelineEvent::InitialItems {
             request_id,
             key: key.clone(),
@@ -862,8 +996,93 @@ where
         thread_root_projection_service,
         replay_known_update,
     );
-    emit_timeline_events_with_lease(event_tx, &lease, events);
+    emit_timeline_events_with_lease(event_tx, lease, events);
+}
+
+struct PreparedInitialWindow {
+    display_projection: DisplayProjectionState,
+    navigation_items: Option<Vec<TimelineItem>>,
+    emitted_items: Vec<TimelineItem>,
+    replay_known_candidates: Vec<ThreadRootProjectionDto>,
+}
+
+fn commit_prepared_initial_window_for_generation(
+    navigation_items: &mut Vec<TimelineItem>,
+    display_projection: &mut DisplayProjectionState,
+    event_tx: &broadcast::Sender<CoreEvent>,
+    registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
+    timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
+    key: &TimelineKey,
+    actor_generation: u64,
+    request_id: Option<RequestId>,
+    generation: TimelineGeneration,
+    prefix_events: Vec<TimelineEvent>,
+    prepared: PreparedInitialWindow,
+) -> bool {
+    let Some(lease) = timeline_actor_generations.try_acquire(key, actor_generation) else {
+        return false;
+    };
+    commit_prepared_initial_window_with_lease(
+        navigation_items,
+        display_projection,
+        event_tx,
+        registry,
+        thread_root_projection_service,
+        &lease,
+        key,
+        actor_generation,
+        request_id,
+        generation,
+        prefix_events,
+        prepared,
+        || {},
+    );
     true
+}
+
+fn commit_prepared_initial_window_with_lease<F>(
+    navigation_items: &mut Vec<TimelineItem>,
+    display_projection: &mut DisplayProjectionState,
+    event_tx: &broadcast::Sender<CoreEvent>,
+    registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
+    lease: &TimelineActorGenerationLease,
+    key: &TimelineKey,
+    actor_generation: u64,
+    request_id: Option<RequestId>,
+    generation: TimelineGeneration,
+    prefix_events: Vec<TimelineEvent>,
+    prepared: PreparedInitialWindow,
+    commit_synchronous_candidates: F,
+) where
+    F: FnOnce(),
+{
+    let PreparedInitialWindow {
+        display_projection: candidate_display_projection,
+        navigation_items: candidate_navigation_items,
+        emitted_items,
+        replay_known_candidates,
+    } = prepared;
+    if let Some(candidate_navigation_items) = candidate_navigation_items {
+        *navigation_items = candidate_navigation_items;
+    }
+    *display_projection = candidate_display_projection;
+    commit_synchronous_candidates();
+    emit_initial_items_and_reconcile_replay_known_with_lease_after_initial(
+        event_tx,
+        registry,
+        thread_root_projection_service,
+        lease,
+        key,
+        actor_generation,
+        request_id,
+        generation,
+        emitted_items,
+        replay_known_candidates,
+        prefix_events,
+        || {},
+    );
 }
 
 #[cfg(test)]
@@ -15604,12 +15823,6 @@ impl TimelineActor {
     /// needs a fresh InitialItems batch so a re-mounted TimelineView is
     /// populated.
     fn handle_replay_initial_items(&mut self, _request_id: RequestId) {
-        let _ = self.thread_attention.reconcile(
-            &self.key,
-            &self.navigation_items,
-            self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
-            ThreadAttentionObservation::Replay,
-        );
         let window = replay_initial_items_window_range(
             &self.key.kind,
             self.navigation_items.len(),
@@ -15618,14 +15831,16 @@ impl TimelineActor {
         let items = self.navigation_items[window.clone()].to_vec();
         let item_count = items.len();
         trace_timeline_items("replay_initial", &self.key, &items);
-        self.display_projection =
+        let candidate_display_projection =
             DisplayProjectionState::from_canonical_window(&self.navigation_items, window);
         let replay_known_candidates = replay_known_candidates_for_display_items(
             &self.key,
             &self.navigation_items,
-            self.display_projection.display_items(),
+            candidate_display_projection.display_items(),
         );
-        let emitted = emit_initial_items_and_reconcile_replay_known_for_generation(
+        let emitted = commit_prepared_initial_window_for_generation(
+            &mut self.navigation_items,
+            &mut self.display_projection,
             &self.event_tx,
             &self.replay_known_thread_root_projections,
             &self.thread_root_projection_service,
@@ -15634,9 +15849,22 @@ impl TimelineActor {
             self.actor_generation,
             replay_projection_request_id(self.projection_request_id, self.projection_acknowledged),
             self.generation,
-            items,
-            replay_known_candidates,
+            Vec::new(),
+            PreparedInitialWindow {
+                display_projection: candidate_display_projection,
+                navigation_items: None,
+                emitted_items: items,
+                replay_known_candidates,
+            },
         );
+        if emitted {
+            let _ = self.thread_attention.reconcile(
+                &self.key,
+                &self.navigation_items,
+                self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
+                ThreadAttentionObservation::Replay,
+            );
+        }
         record_subscribe_stage(
             if emitted {
                 "replay_initial_emitted"
@@ -15673,9 +15901,7 @@ impl TimelineActor {
         if diffs.is_empty() {
             return;
         }
-        // Advance the diff-batch sequence counter on every non-empty batch so
-        // settle ticks can detect when the final async DiffBatch has landed.
-        self.diff_batch_seq = self.diff_batch_seq.wrapping_add(1);
+        let sdk_diffs = diffs;
         let has_historical_gap_repair_projection = gap_repair_projections
             .iter()
             .any(|projection| projection.operation.domain == CausalProjectionDomain::HistoricalGap);
@@ -15683,20 +15909,9 @@ impl TimelineActor {
             .iter()
             .any(|projection| projection.operation.domain == CausalProjectionDomain::LiveTail);
 
-        for diff in &diffs {
-            self.apply_media_cache_diff(diff);
-        }
-        self.emit_receipts_from_sdk_diffs(&diffs);
-
-        // Phase 6: forward search index mutations before converting diffs.
-        if self.search_index_tx.is_some() {
-            for diff in &diffs {
-                self.forward_diff_to_search(diff).await;
-            }
-        }
-
-        let mut core_diffs: Vec<TimelineDiff> = diffs
-            .into_iter()
+        let mut core_diffs: Vec<TimelineDiff> = sdk_diffs
+            .iter()
+            .cloned()
             .map(|diff| {
                 sdk_vector_diff_to_timeline_diff(
                     diff,
@@ -15740,20 +15955,15 @@ impl TimelineActor {
         }
         trace_timeline_diffs("diff_batch", &self.key, &core_diffs);
         let activity_rows = activity_rows_from_timeline_diffs(&self.key, &core_diffs);
-        if !activity_rows.is_empty() {
-            let _ = self
-                .action_tx
-                .try_send(vec![AppAction::ActivityRowsObserved {
-                    rows: activity_rows,
-                }]);
-        }
+        let receipts_action = Self::live_receipts_action_from_sdk_diffs(&self.key, &sdk_diffs);
         let restore_diff_is_relevant = timeline_diffs_include_prepend(&core_diffs);
+        let restore_active = self.restore_anchor.is_some();
         let display_context = DisplayProjectionContext::for_timeline(
             &self.key.kind,
             &self.viewport_observation,
-            self.restore_anchor.is_some(),
+            restore_active,
         );
-        let Some((projection_lease, projected_batch)) = project_sdk_batch_for_generation(
+        let Some((emitted, emitted_batch_id)) = commit_sdk_batch_for_generation(
             &self.timeline_actor_generations,
             &self.key,
             self.actor_generation,
@@ -15761,33 +15971,60 @@ impl TimelineActor {
             &mut self.display_projection,
             &core_diffs,
             &display_context,
+            |projection_lease, projected_batch, navigation_items, display_projection| {
+                // State and synchronous batch-derived publications share this
+                // one generation lease; a stale actor commits neither half.
+                self.diff_batch_seq = self.diff_batch_seq.wrapping_add(1);
+                for diff in &sdk_diffs {
+                    Self::apply_sdk_media_cache_diff(&mut self.media_sources, diff);
+                }
+                if let Some(action) = receipts_action {
+                    let _ = self.action_tx.try_send(vec![action]);
+                }
+                if !activity_rows.is_empty() {
+                    let _ = self
+                        .action_tx
+                        .try_send(vec![AppAction::ActivityRowsObserved {
+                            rows: activity_rows,
+                        }]);
+                }
+
+                let display_diffs = projected_batch.display_diffs;
+                let emitted_batch_id = self.next_batch_id;
+                let emitted = if restore_active {
+                    self.next_batch_id = TimelineBatchId(self.next_batch_id.0 + 1);
+                    self.restore_emit_buffer.extend(display_diffs);
+                    false
+                } else {
+                    emit_items_updated_and_reconcile_replay_known_with_lease(
+                        &self.event_tx,
+                        &self.replay_known_thread_root_projections,
+                        &self.thread_root_projection_service,
+                        projection_lease,
+                        &self.key,
+                        self.generation,
+                        emitted_batch_id,
+                        display_diffs,
+                        navigation_items,
+                        display_projection.display_items(),
+                    );
+                    self.next_batch_id = TimelineBatchId(emitted_batch_id.0 + 1);
+                    true
+                };
+                (emitted, emitted_batch_id)
+            },
         ) else {
             return;
         };
-        let display_diffs = projected_batch.display_diffs;
-        let restore_active = self.restore_anchor.is_some();
-        let emitted_batch_id = self.next_batch_id;
-        let emitted = if restore_active {
-            self.next_batch_id = TimelineBatchId(self.next_batch_id.0 + 1);
-            self.restore_emit_buffer.extend(display_diffs);
-            false
-        } else {
-            emit_items_updated_and_reconcile_replay_known_with_lease(
-                &self.event_tx,
-                &self.replay_known_thread_root_projections,
-                &self.thread_root_projection_service,
-                &projection_lease,
-                &self.key,
-                self.generation,
-                emitted_batch_id,
-                display_diffs,
-                &self.navigation_items,
-                self.display_projection.display_items(),
-            );
-            self.next_batch_id = TimelineBatchId(emitted_batch_id.0 + 1);
-            true
-        };
-        drop(projection_lease);
+
+        // Search delivery can await channel capacity, so it follows the
+        // synchronous transaction instead of holding the replacement fence
+        // across an await.
+        if self.search_index_tx.is_some() {
+            for diff in &sdk_diffs {
+                self.forward_diff_to_search(diff).await;
+            }
+        }
 
         let live_edge_target_changed = matches!(self.key.kind, TimelineKind::Room { .. })
             && !has_historical_gap_repair_projection
@@ -16438,7 +16675,10 @@ impl TimelineActor {
         }
     }
 
-    fn apply_media_cache_diff(&mut self, diff: &eyeball_im::VectorDiff<Arc<SdkTimelineItem>>) {
+    fn apply_sdk_media_cache_diff(
+        media_sources: &mut HashMap<String, PrivateMediaEntry>,
+        diff: &eyeball_im::VectorDiff<Arc<SdkTimelineItem>>,
+    ) {
         use eyeball_im::VectorDiff;
 
         match diff {
@@ -16446,21 +16686,21 @@ impl TimelineActor {
             | VectorDiff::PushBack { value }
             | VectorDiff::Insert { value, .. }
             | VectorDiff::Set { value, .. } => {
-                cache_sdk_item_media_source(&mut self.media_sources, value);
+                cache_sdk_item_media_source(media_sources, value);
             }
             VectorDiff::Append { values } => {
                 for item in values {
-                    cache_sdk_item_media_source(&mut self.media_sources, item);
+                    cache_sdk_item_media_source(media_sources, item);
                 }
             }
             VectorDiff::Reset { values } => {
-                self.media_sources.clear();
+                media_sources.clear();
                 for item in values {
-                    cache_sdk_item_media_source(&mut self.media_sources, item);
+                    cache_sdk_item_media_source(media_sources, item);
                 }
             }
             VectorDiff::Clear => {
-                self.media_sources.clear();
+                media_sources.clear();
             }
             VectorDiff::Remove { .. }
             | VectorDiff::Truncate { .. }
@@ -16469,16 +16709,15 @@ impl TimelineActor {
         }
     }
 
-    async fn reconcile_authoritative_snapshot(
-        &mut self,
+    fn prepare_authoritative_snapshot_reconciliation(
+        &self,
         old_window_event_ids: &std::collections::BTreeSet<String>,
         items: &eyeball_im::Vector<Arc<SdkTimelineItem>>,
-    ) {
+    ) -> PreparedAuthoritativeSnapshotReconciliation {
         let mut replacement_media_sources = HashMap::new();
         for item in items {
             cache_sdk_item_media_source(&mut replacement_media_sources, item);
         }
-        replace_authoritative_cache(&mut self.media_sources, replacement_media_sources);
         let new_window_event_ids = items
             .iter()
             .filter_map(|item| match item.kind() {
@@ -16490,25 +16729,26 @@ impl TimelineActor {
             .collect::<std::collections::BTreeSet<_>>();
         let reconciliation =
             authoritative_window_reconciliation(old_window_event_ids, &new_window_event_ids);
-        if let Some(room_id) = timeline_room_id(&self.key) {
-            let _ = self
-                .emit_action_reliable(authoritative_receipts_action(
-                    &room_id,
-                    &reconciliation,
-                    live_event_receipts_from_sdk_items(items.iter()),
-                ))
-                .await;
+        let receipts_action = timeline_room_id(&self.key).map(|room_id| {
+            authoritative_receipts_action(
+                &room_id,
+                &reconciliation,
+                live_event_receipts_from_sdk_items(items.iter()),
+            )
+        });
+        let mut search_messages = Vec::new();
+        if self.search_index_tx.is_some() {
+            search_messages.extend(authoritative_search_removals(&reconciliation));
+            search_messages.extend(self.search_index_messages_for_diff(
+                &eyeball_im::VectorDiff::Reset {
+                    values: items.clone(),
+                },
+            ));
         }
-        if let Some(tx) = &self.search_index_tx {
-            for message in authoritative_search_removals(&reconciliation) {
-                if tx.send(message).await.is_err() {
-                    return;
-                }
-            }
-            self.forward_diff_to_search(&eyeball_im::VectorDiff::Reset {
-                values: items.clone(),
-            })
-            .await;
+        PreparedAuthoritativeSnapshotReconciliation {
+            replacement_media_sources,
+            receipts_action,
+            search_messages,
         }
     }
 
@@ -17035,17 +17275,16 @@ impl TimelineActor {
             .await;
         }
         trace_timeline_items("send_queue_lagged_initial", &self.key, &items);
-        self.navigation_items = items.clone();
-        self.display_projection = DisplayProjectionState::from_canonical_window(
-            &self.navigation_items,
-            0..self.navigation_items.len(),
-        );
+        let candidate_display_projection =
+            DisplayProjectionState::from_canonical_window(&items, 0..items.len());
         let replay_known_candidates = replay_known_candidates_for_display_items(
             &self.key,
-            &self.navigation_items,
-            self.display_projection.display_items(),
+            &items,
+            candidate_display_projection.display_items(),
         );
-        let _ = emit_initial_items_and_reconcile_replay_known_for_generation(
+        let _ = commit_prepared_initial_window_for_generation(
+            &mut self.navigation_items,
+            &mut self.display_projection,
             &self.event_tx,
             &self.replay_known_thread_root_projections,
             &self.thread_root_projection_service,
@@ -17054,8 +17293,13 @@ impl TimelineActor {
             self.actor_generation,
             None,
             self.generation,
-            items,
-            replay_known_candidates,
+            Vec::new(),
+            PreparedInitialWindow {
+                display_projection: candidate_display_projection,
+                navigation_items: Some(items.clone()),
+                emitted_items: items,
+                replay_known_candidates,
+            },
         );
     }
 
@@ -17088,6 +17332,16 @@ impl TimelineActor {
         if !accept_relay_generation(self.generation, overflow_generation) {
             return;
         }
+        // Avoid even tearing down a relay for an actor generation that has
+        // already been replaced. The authoritative commit below reacquires
+        // the lease after the SDK await and remains the final state fence.
+        if self
+            .timeline_actor_generations
+            .try_acquire(&self.key, self.actor_generation)
+            .is_none()
+        {
+            return;
+        }
         if let Some(task) = self.relay_restart_task.take() {
             task.abort();
         }
@@ -17103,10 +17357,7 @@ impl TimelineActor {
         else {
             return;
         };
-        self.generation = prepared.generation;
-        // 2. Reset batch_id to 0.
-        self.next_batch_id = TimelineBatchId(0);
-        self.gap_repair.clear_projected_gaps();
+        let recovery_generation = prepared.generation;
 
         // 3. Acquire the authoritative snapshot and its matching replacement
         //    stream from one SDK subscription boundary.
@@ -17130,8 +17381,12 @@ impl TimelineActor {
             .filter_map(timeline_item_event_id)
             .map(str::to_owned)
             .collect::<std::collections::BTreeSet<_>>();
-        self.reconcile_authoritative_snapshot(&old_window_event_ids, &current_items)
-            .await;
+        let PreparedAuthoritativeSnapshotReconciliation {
+            replacement_media_sources,
+            receipts_action,
+            search_messages,
+        } = self
+            .prepare_authoritative_snapshot_reconciliation(&old_window_event_ids, &current_items);
 
         // 5. Emit fresh InitialItems for the new generation.
         let link_preview_context = self.link_preview_policy.for_room(self.key.room_id());
@@ -17161,22 +17416,7 @@ impl TimelineActor {
             .await;
         }
         trace_timeline_items("overflow_initial", &self.key, &items);
-        if let Some(replacement) =
-            authoritative_media_gallery_replacement(&self.key, &self.media_gallery_items, &items)
-        {
-            if self.emit_action_reliable(replacement.action).await {
-                self.media_gallery_items = replacement.items;
-            }
-        }
-        if let Some(action) = self.thread_attention.reconcile(
-            &self.key,
-            &items,
-            self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
-            ThreadAttentionObservation::Replay,
-        ) {
-            let _ = self.emit_action_reliable(action).await;
-        }
-        commit_authoritative_recovery_window(
+        if !commit_authoritative_recovery_window(
             &mut self.navigation_items,
             &mut self.display_projection,
             &self.event_tx,
@@ -17185,10 +17425,48 @@ impl TimelineActor {
             &self.timeline_actor_generations,
             &self.key,
             self.actor_generation,
-            self.generation,
+            recovery_generation,
             reason,
             items,
-        );
+            || {
+                // Generation-local mirrors must become authoritative in the
+                // same lease as ResyncRequired + InitialItems. A replacement
+                // actor therefore sees all of this recovery or none of it.
+                self.generation = recovery_generation;
+                self.next_batch_id = TimelineBatchId(0);
+                self.gap_repair.clear_projected_gaps();
+                replace_authoritative_cache(&mut self.media_sources, replacement_media_sources);
+            },
+        ) {
+            return;
+        }
+        if let Some(action) = receipts_action {
+            let _ = self.emit_action_reliable(action).await;
+        }
+        if let Some(tx) = &self.search_index_tx {
+            for message in search_messages {
+                if tx.send(message).await.is_err() {
+                    break;
+                }
+            }
+        }
+        if let Some(replacement) = authoritative_media_gallery_replacement(
+            &self.key,
+            &self.media_gallery_items,
+            &self.navigation_items,
+        ) {
+            if self.emit_action_reliable(replacement.action).await {
+                self.media_gallery_items = replacement.items;
+            }
+        }
+        if let Some(action) = self.thread_attention.reconcile(
+            &self.key,
+            &self.navigation_items,
+            self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
+            ThreadAttentionObservation::Replay,
+        ) {
+            let _ = self.emit_action_reliable(action).await;
+        }
         if !snapshot_gap_repair_projections.is_empty() {
             let recovery_batch_id = self.next_batch_id;
             if self.emit_items_updated_and_reconcile_replay_known(Vec::new()) {
@@ -17288,31 +17566,62 @@ impl TimelineActor {
     /// BudgetExhausted/Failed/Superseded). If the buffer is empty nothing is
     /// emitted; navigation is always refreshed after a restore so React
     /// receives a consistent settled state. Never drops buffered diffs.
+    #[cfg(test)]
     fn flush_restore_emit_buffer(&mut self) -> bool {
-        if !self.restore_emit_buffer.is_empty() {
-            let diffs = std::mem::take(&mut self.restore_emit_buffer);
-            let published_batch_id = self.next_batch_id;
-            // A restore has deliberately deferred its UI diffs. Reconcile only
-            // now, immediately beside the one settled ItemsUpdated emission,
-            // so a replacement actor can never observe a replay transition
-            // without the canonical batch that caused it.
-            let emitted = self.emit_items_updated_and_reconcile_replay_known(diffs);
-            self.emit_navigation_if_changed();
-            if emitted {
-                let observation = self.restore_causal_projections.observe_after_publication(
-                    &mut self.gap_projection_correlation,
-                    &mut self.live_tail_projection_correlation,
-                    published_batch_id,
-                );
-                self.ready_restore_gap_projection_batch = observation.historical_gap_batch_id;
-            }
-            return emitted;
+        self.publish_restore_settlement(None).unwrap_or(false)
+    }
+
+    /// Publish the deferred display batch, changed navigation projection, and
+    /// optional restore terminal under one actor-generation lease.  Returning
+    /// `None` means a replacement actor won the generation fence; in that case
+    /// the buffer and all actor-owned mirrors remain untouched.
+    fn publish_restore_settlement(
+        &mut self,
+        terminal: Option<(RequestId, TimelineAnchorRestoreStatus)>,
+    ) -> Option<bool> {
+        let navigation_snapshot = derive_timeline_navigation_snapshot(
+            &self.navigation_items,
+            self.fully_read_event_id.as_deref(),
+            &self.viewport_observation,
+            self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
+        );
+        let changed_navigation = (self.last_navigation_snapshot.as_ref()
+            != Some(&navigation_snapshot))
+        .then_some(navigation_snapshot);
+        let published_batch_id = self.next_batch_id;
+        let published_items = publish_restore_settlement_for_generation(
+            &mut self.restore_emit_buffer,
+            !self.restore_causal_projections.projections.is_empty(),
+            &mut self.next_batch_id,
+            &self.event_tx,
+            &self.replay_known_thread_root_projections,
+            &self.thread_root_projection_service,
+            &self.timeline_actor_generations,
+            &self.key,
+            self.actor_generation,
+            self.generation,
+            &self.navigation_items,
+            self.display_projection.display_items(),
+            RestoreSettlement {
+                navigation_snapshot: changed_navigation.clone(),
+                terminal,
+            },
+        )?;
+
+        if let Some(snapshot) = changed_navigation {
+            self.last_navigation_snapshot = Some(snapshot);
+        }
+        if published_items {
+            let observation = self.restore_causal_projections.observe_after_publication(
+                &mut self.gap_projection_correlation,
+                &mut self.live_tail_projection_correlation,
+                published_batch_id,
+            );
+            self.ready_restore_gap_projection_batch = observation.historical_gap_batch_id;
         } else {
-            self.restore_emit_buffer.clear();
             self.restore_causal_projections = RestoreCausalProjectionBuffer::default();
         }
-        self.emit_navigation_if_changed();
-        false
+        Some(published_items)
     }
 
     /// Emit one canonical batch plus replay-known ownership changes. This is
@@ -17379,10 +17688,12 @@ impl TimelineActor {
         request_id: RequestId,
         status: TimelineAnchorRestoreStatus,
     ) {
-        if self.flush_restore_emit_buffer() {
+        if self
+            .publish_restore_settlement(Some((request_id, status)))
+            .unwrap_or(false)
+        {
             self.hydrate_after_restore_flush = true;
         }
-        self.emit_anchor_restore_finished(request_id, status);
     }
 
     /// Reliably deliver an `AppAction` to the reducer.  Uses `send` (not
@@ -17512,23 +17823,24 @@ impl TimelineActor {
             .try_send(vec![AppAction::TypingUsersUpdated { room_id, user_ids }]);
     }
 
-    fn emit_receipts_from_sdk_diffs(&self, diffs: &[eyeball_im::VectorDiff<Arc<SdkTimelineItem>>]) {
-        let Some(room_id) = timeline_room_id(&self.key) else {
-            return;
+    fn live_receipts_action_from_sdk_diffs(
+        key: &TimelineKey,
+        diffs: &[eyeball_im::VectorDiff<Arc<SdkTimelineItem>>],
+    ) -> Option<AppAction> {
+        let Some(room_id) = timeline_room_id(key) else {
+            return None;
         };
         let mut receipts_by_event = Vec::new();
         for diff in diffs {
             collect_live_event_receipts_from_diff(diff, &mut receipts_by_event);
         }
         if receipts_by_event.is_empty() {
-            return;
+            return None;
         }
-        let _ = self
-            .action_tx
-            .try_send(vec![AppAction::LiveRoomReceiptsUpdated {
-                room_id,
-                receipts_by_event,
-            }]);
+        Some(AppAction::LiveRoomReceiptsUpdated {
+            room_id,
+            receipts_by_event,
+        })
     }
 }
 
@@ -17550,6 +17862,12 @@ struct PreparedRelayRecovery<Snapshot, Stream> {
 struct AuthoritativeWindowReconciliation {
     scoped_event_ids: Vec<String>,
     removed_event_ids: Vec<String>,
+}
+
+struct PreparedAuthoritativeSnapshotReconciliation {
+    replacement_media_sources: HashMap<String, PrivateMediaEntry>,
+    receipts_action: Option<AppAction>,
+    search_messages: Vec<SearchIndexMessage>,
 }
 
 fn authoritative_window_reconciliation(
@@ -17624,7 +17942,7 @@ fn accepted_relay_batch<T>(
     accept_relay_generation(current_generation, incoming_generation).then_some(batch)
 }
 
-fn commit_authoritative_recovery_window(
+fn commit_authoritative_recovery_window<F>(
     navigation_items: &mut Vec<TimelineItem>,
     display_projection: &mut DisplayProjectionState,
     event_tx: &broadcast::Sender<CoreEvent>,
@@ -17636,63 +17954,47 @@ fn commit_authoritative_recovery_window(
     generation: TimelineGeneration,
     reason: TimelineResyncReason,
     authoritative_items: Vec<TimelineItem>,
-) {
-    *navigation_items = authoritative_items;
-    *display_projection =
-        DisplayProjectionState::from_canonical_window(navigation_items, 0..navigation_items.len());
+    commit_synchronous_candidates: F,
+) -> bool
+where
+    F: FnOnce(),
+{
+    let candidate_display = DisplayProjectionState::from_canonical_window(
+        &authoritative_items,
+        0..authoritative_items.len(),
+    );
     let replay_known_candidates = replay_known_candidates_for_display_items(
         key,
+        &authoritative_items,
+        candidate_display.display_items(),
+    );
+    let Some(lease) = timeline_actor_generations.try_acquire(key, actor_generation) else {
+        return false;
+    };
+    commit_prepared_initial_window_with_lease(
         navigation_items,
-        display_projection.display_items(),
-    );
-    emit_relay_recovery_snapshot(
+        display_projection,
         event_tx,
         replay_known_thread_root_projections,
         thread_root_projection_service,
-        timeline_actor_generations,
-        key,
-        actor_generation,
-        generation,
-        reason,
-        navigation_items.clone(),
-        replay_known_candidates,
-    );
-}
-
-fn emit_relay_recovery_snapshot(
-    event_tx: &broadcast::Sender<CoreEvent>,
-    replay_known_thread_root_projections: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
-    thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
-    timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
-    key: &TimelineKey,
-    actor_generation: u64,
-    generation: TimelineGeneration,
-    reason: TimelineResyncReason,
-    items: Vec<TimelineItem>,
-    replay_known_candidates: Vec<ThreadRootProjectionDto>,
-) {
-    let _ = emit_timeline_events_for_generation(
-        event_tx,
-        timeline_actor_generations,
-        key,
-        actor_generation,
-        vec![TimelineEvent::ResyncRequired {
-            key: key.clone(),
-            reason,
-        }],
-    );
-    let _ = emit_initial_items_and_reconcile_replay_known_for_generation(
-        event_tx,
-        replay_known_thread_root_projections,
-        thread_root_projection_service,
-        timeline_actor_generations,
+        &lease,
         key,
         actor_generation,
         None,
         generation,
-        items,
-        replay_known_candidates,
+        vec![TimelineEvent::ResyncRequired {
+            key: key.clone(),
+            reason,
+        }],
+        PreparedInitialWindow {
+            display_projection: candidate_display,
+            navigation_items: Some(authoritative_items.clone()),
+            emitted_items: authoritative_items,
+            replay_known_candidates,
+        },
+        commit_synchronous_candidates,
     );
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -18213,14 +18515,433 @@ impl DisplayProjectionState {
     fn refresh_display_items(&mut self) {
         self.display_items = normalize_display_projection_slots(&self.slots);
     }
+}
+
+fn flush_pending_canonical_push_fronts(
+    canonical_items: &mut Vec<TimelineItem>,
+    pending_push_fronts: &mut Vec<TimelineItem>,
+) {
+    if pending_push_fronts.is_empty() {
+        return;
+    }
+    pending_push_fronts.reverse();
+    let prefix = std::mem::take(pending_push_fronts);
+    canonical_items.splice(0..0, prefix);
+}
+
+/// Sparse weighted sequence for display membership. `Gap` compresses any
+/// canonical-only run while subtree weights translate the next SDK index
+/// without rescanning the bounded display or traversing/cloning the N-item
+/// canonical history. SplitMix priorities give expected logarithmic split /
+/// merge depth. Projection overhead is therefore expected
+/// `O(W + B log(W + B) + D)` time and `O(W + B + D)` temporary space, where W
+/// is represented pre-normalization membership, B is the SDK batch, and D is
+/// the emitted display diff (`D = O(W)` for the private builder below). Room
+/// live-edge W is hard-capped at `ROOM_REPLAY_INITIAL_ITEMS_MAX` (120).
+///
+/// This bound is deliberately only for projection. The existing canonical
+/// `Vec<TimelineItem>` still pays its normal Vec costs for prefix/interior
+/// Insert/Remove and scans a Reset payload once; none of those costs is hidden
+/// in the projection counter or repeated as a projection scan per diff.
+enum DisplayMembershipCell {
+    Gap(usize),
+    Slot(TimelineItem),
+}
+
+impl DisplayMembershipCell {
+    fn canonical_len(&self) -> usize {
+        match self {
+            Self::Gap(len) => *len,
+            Self::Slot(_) => 1,
+        }
+    }
+
+    fn visible_len(&self) -> usize {
+        usize::from(matches!(self, Self::Slot(_)))
+    }
+}
+
+type DisplayMembershipLink = Option<Box<DisplayMembershipNode>>;
+
+struct DisplayMembershipNode {
+    cell: DisplayMembershipCell,
+    left: DisplayMembershipLink,
+    right: DisplayMembershipLink,
+    priority: u64,
+    canonical_len: usize,
+    visible_len: usize,
+}
+
+impl DisplayMembershipNode {
+    fn new(cell: DisplayMembershipCell, priority: u64) -> Box<Self> {
+        let canonical_len = cell.canonical_len();
+        let visible_len = cell.visible_len();
+        Box::new(Self {
+            cell,
+            left: None,
+            right: None,
+            priority,
+            canonical_len,
+            visible_len,
+        })
+    }
+
+    fn refresh(&mut self) {
+        self.canonical_len = display_membership_canonical_len(&self.left)
+            .saturating_add(self.cell.canonical_len())
+            .saturating_add(display_membership_canonical_len(&self.right));
+        self.visible_len = display_membership_visible_len(&self.left)
+            .saturating_add(self.cell.visible_len())
+            .saturating_add(display_membership_visible_len(&self.right));
+    }
+}
+
+fn display_membership_canonical_len(link: &DisplayMembershipLink) -> usize {
+    link.as_ref().map_or(0, |node| node.canonical_len)
+}
+
+fn display_membership_visible_len(link: &DisplayMembershipLink) -> usize {
+    link.as_ref().map_or(0, |node| node.visible_len)
+}
+
+fn merge_display_membership(
+    left: DisplayMembershipLink,
+    right: DisplayMembershipLink,
+) -> DisplayMembershipLink {
+    match (left, right) {
+        (None, right) => right,
+        (left, None) => left,
+        (Some(mut left), Some(mut right)) => {
+            if left.priority >= right.priority {
+                left.right = merge_display_membership(left.right.take(), Some(right));
+                left.refresh();
+                Some(left)
+            } else {
+                right.left = merge_display_membership(Some(left), right.left.take());
+                right.refresh();
+                Some(right)
+            }
+        }
+    }
+}
+
+struct DisplayMembershipRope {
+    root: DisplayMembershipLink,
+    next_seed: u64,
+    /// Test-only count of visible payloads inspected while binding and
+    /// materializing membership. Structural tree-node visits are deliberately
+    /// excluded: this counter proves that payload normalization never rescans
+    /// all W display rows for every diff; it is not a wall-clock complexity
+    /// counter for the expected-logarithmic implicit treap.
+    #[cfg(test)]
+    display_payload_visits: usize,
+}
+
+impl DisplayMembershipRope {
+    fn empty(display_payload_visits: usize) -> Self {
+        #[cfg(not(test))]
+        let _ = display_payload_visits;
+        Self {
+            root: None,
+            next_seed: 1,
+            #[cfg(test)]
+            display_payload_visits,
+        }
+    }
+
+    fn from_projection_state(
+        canonical_len: usize,
+        display_state: &mut DisplayProjectionState,
+    ) -> (Self, bool) {
+        let slots = std::mem::take(&mut display_state.slots);
+        let mut rope = Self::empty(slots.len());
+        let mut cursor = 0;
+        let mut ambiguous = false;
+        for slot in slots {
+            if slot.canonical_index < cursor || slot.canonical_index >= canonical_len {
+                ambiguous = true;
+                continue;
+            }
+            rope.append(DisplayMembershipCell::Gap(slot.canonical_index - cursor));
+            rope.append(DisplayMembershipCell::Slot(slot.item));
+            cursor = slot.canonical_index + 1;
+        }
+        rope.append(DisplayMembershipCell::Gap(
+            canonical_len.saturating_sub(cursor),
+        ));
+        (rope, ambiguous)
+    }
+
+    fn from_canonical_window(
+        canonical_items: &[TimelineItem],
+        window: std::ops::Range<usize>,
+    ) -> Self {
+        let start = window.start.min(canonical_items.len());
+        let end = window.end.min(canonical_items.len()).max(start);
+        let mut rope = Self::empty(end - start);
+        rope.append(DisplayMembershipCell::Gap(start));
+        for item in canonical_items[start..end].iter().cloned() {
+            rope.append(DisplayMembershipCell::Slot(item));
+        }
+        rope.append(DisplayMembershipCell::Gap(canonical_items.len() - end));
+        rope
+    }
+
+    fn canonical_len(&self) -> usize {
+        display_membership_canonical_len(&self.root)
+    }
+
+    fn visible_len(&self) -> usize {
+        display_membership_visible_len(&self.root)
+    }
+
+    fn next_priority(&mut self) -> u64 {
+        let mut value = self.next_seed;
+        self.next_seed = self.next_seed.wrapping_add(1);
+        value = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        value ^ (value >> 31)
+    }
+
+    fn node(&mut self, cell: DisplayMembershipCell) -> DisplayMembershipLink {
+        Some(DisplayMembershipNode::new(cell, self.next_priority()))
+    }
+
+    fn append(&mut self, cell: DisplayMembershipCell) {
+        if matches!(cell, DisplayMembershipCell::Gap(0)) {
+            return;
+        }
+        let node = self.node(cell);
+        self.root = merge_display_membership(self.root.take(), node);
+    }
+
+    fn split(
+        &mut self,
+        link: DisplayMembershipLink,
+        index: usize,
+    ) -> (DisplayMembershipLink, DisplayMembershipLink) {
+        let Some(mut node) = link else {
+            return (None, None);
+        };
+        let left_len = display_membership_canonical_len(&node.left);
+        let cell_len = node.cell.canonical_len();
+        if index < left_len {
+            let (left, middle) = self.split(node.left.take(), index);
+            node.left = middle;
+            node.refresh();
+            return (left, Some(node));
+        }
+        if index > left_len.saturating_add(cell_len) {
+            let (middle, right) = self.split(
+                node.right.take(),
+                index.saturating_sub(left_len).saturating_sub(cell_len),
+            );
+            node.right = middle;
+            node.refresh();
+            return (Some(node), right);
+        }
+        if index == left_len {
+            let left = node.left.take();
+            node.refresh();
+            return (left, Some(node));
+        }
+        if index == left_len.saturating_add(cell_len) {
+            let right = node.right.take();
+            node.refresh();
+            return (Some(node), right);
+        }
+
+        let DisplayMembershipCell::Gap(gap_len) = node.cell else {
+            unreachable!("a visible slot cannot be split inside its unit length");
+        };
+        let offset = index - left_len;
+        let left_gap = self.node(DisplayMembershipCell::Gap(offset));
+        let right_gap = self.node(DisplayMembershipCell::Gap(gap_len - offset));
+        (
+            merge_display_membership(node.left.take(), left_gap),
+            merge_display_membership(right_gap, node.right.take()),
+        )
+    }
+
+    fn split_root(&mut self, index: usize) -> (DisplayMembershipLink, DisplayMembershipLink) {
+        let root = self.root.take();
+        self.split(root, index)
+    }
+
+    fn edge_is_visible(link: &DisplayMembershipLink, first: bool) -> bool {
+        let Some(mut node) = link.as_deref() else {
+            return false;
+        };
+        loop {
+            let next = if first {
+                node.left.as_deref()
+            } else {
+                node.right.as_deref()
+            };
+            let Some(next) = next else {
+                return matches!(node.cell, DisplayMembershipCell::Slot(_));
+            };
+            node = next;
+        }
+    }
+
+    fn insert(&mut self, index: usize, item: TimelineItem, include: Option<bool>) -> bool {
+        if index > self.canonical_len() {
+            return false;
+        }
+        let was_empty = self.canonical_len() == 0;
+        let (left, right) = self.split_root(index);
+        let include = include.unwrap_or_else(|| {
+            was_empty || Self::edge_is_visible(&left, false) || Self::edge_is_visible(&right, true)
+        });
+        let cell = if include {
+            #[cfg(test)]
+            {
+                self.display_payload_visits = self.display_payload_visits.saturating_add(1);
+            }
+            DisplayMembershipCell::Slot(item)
+        } else {
+            DisplayMembershipCell::Gap(1)
+        };
+        let middle = self.node(cell);
+        self.root = merge_display_membership(merge_display_membership(left, middle), right);
+        true
+    }
+
+    fn split_one(
+        &mut self,
+        index: usize,
+    ) -> Option<(
+        DisplayMembershipLink,
+        Box<DisplayMembershipNode>,
+        DisplayMembershipLink,
+    )> {
+        if index >= self.canonical_len() {
+            return None;
+        }
+        let (left, tail) = self.split_root(index);
+        let (middle, right) = self.split(tail, 1);
+        let middle = middle?;
+        (middle.canonical_len == 1).then_some((left, middle, right))
+    }
+
+    fn set(&mut self, index: usize, item: TimelineItem, expected_render_id: &str) -> bool {
+        let Some((left, mut middle, right)) = self.split_one(index) else {
+            return false;
+        };
+        let valid = match &mut middle.cell {
+            DisplayMembershipCell::Gap(_) => true,
+            DisplayMembershipCell::Slot(old_item) => {
+                #[cfg(test)]
+                {
+                    self.display_payload_visits = self.display_payload_visits.saturating_add(1);
+                }
+                let valid = timeline_item_render_id(old_item) == expected_render_id;
+                *old_item = item;
+                valid
+            }
+        };
+        middle.refresh();
+        self.root = merge_display_membership(merge_display_membership(left, Some(middle)), right);
+        valid
+    }
+
+    fn remove(&mut self, index: usize, expected_render_id: &str) -> bool {
+        let Some((left, middle, right)) = self.split_one(index) else {
+            return false;
+        };
+        let valid = match middle.cell {
+            DisplayMembershipCell::Gap(_) => true,
+            DisplayMembershipCell::Slot(old_item) => {
+                #[cfg(test)]
+                {
+                    self.display_payload_visits = self.display_payload_visits.saturating_add(1);
+                }
+                timeline_item_render_id(&old_item) == expected_render_id
+            }
+        };
+        self.root = merge_display_membership(left, right);
+        valid
+    }
+
+    fn truncate(&mut self, length: usize) {
+        let (left, _) = self.split_root(length.min(self.canonical_len()));
+        self.root = left;
+    }
+
+    fn clear(&mut self) {
+        self.root = None;
+    }
+
+    fn hide_first_visible(link: &mut DisplayMembershipLink, remaining: &mut usize) {
+        if *remaining == 0 || display_membership_visible_len(link) == 0 {
+            return;
+        }
+        let Some(node) = link.as_mut() else {
+            return;
+        };
+        Self::hide_first_visible(&mut node.left, remaining);
+        if *remaining > 0 && matches!(node.cell, DisplayMembershipCell::Slot(_)) {
+            node.cell = DisplayMembershipCell::Gap(1);
+            *remaining -= 1;
+        }
+        Self::hide_first_visible(&mut node.right, remaining);
+        node.refresh();
+    }
 
     fn trim_to_live_edge(&mut self, max_items: Option<usize>) {
         let Some(max_items) = max_items else {
             return;
         };
-        if self.slots.len() > max_items {
-            let excess = self.slots.len() - max_items;
-            self.slots.drain(..excess);
+        let mut excess = self.visible_len().saturating_sub(max_items);
+        Self::hide_first_visible(&mut self.root, &mut excess);
+    }
+
+    fn materialize(mut self, display_state: &mut DisplayProjectionState) -> usize {
+        let visible_len = self.visible_len();
+        let mut slots = Vec::with_capacity(visible_len);
+        let mut display_items = Vec::with_capacity(visible_len);
+        let mut seen = HashSet::new();
+        let mut canonical_index = 0_usize;
+        let mut pending = Vec::new();
+        let mut cursor = self.root.take();
+        while cursor.is_some() || !pending.is_empty() {
+            while let Some(mut node) = cursor {
+                cursor = node.left.take();
+                pending.push(node);
+            }
+            let mut node = pending.pop().expect("membership traversal has a node");
+            match node.cell {
+                DisplayMembershipCell::Gap(len) => {
+                    canonical_index = canonical_index.saturating_add(len);
+                }
+                DisplayMembershipCell::Slot(item) => {
+                    #[cfg(test)]
+                    {
+                        self.display_payload_visits = self.display_payload_visits.saturating_add(1);
+                    }
+                    if seen.insert(timeline_item_render_id(&item)) {
+                        display_items.push(item.clone());
+                    }
+                    slots.push(DisplayProjectionSlot {
+                        canonical_index,
+                        item,
+                    });
+                    canonical_index = canonical_index.saturating_add(1);
+                }
+            }
+            cursor = node.right.take();
+        }
+        display_state.slots = slots;
+        display_state.display_items = display_items;
+        #[cfg(test)]
+        {
+            self.display_payload_visits
+        }
+        #[cfg(not(test))]
+        {
+            0
         }
     }
 }
@@ -18262,9 +18983,11 @@ struct DisplayProjectionBatch {
     display_after: Vec<TimelineItem>,
     display_diffs: Vec<TimelineDiff>,
     used_reset_fallback: bool,
+    #[cfg(test)]
+    display_payload_visits: usize,
 }
 
-fn project_sdk_batch_for_generation(
+fn commit_sdk_batch_for_generation<R>(
     timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
     key: &TimelineKey,
     actor_generation: u64,
@@ -18272,10 +18995,16 @@ fn project_sdk_batch_for_generation(
     display_state: &mut DisplayProjectionState,
     canonical_diffs: &[TimelineDiff],
     context: &DisplayProjectionContext,
-) -> Option<(TimelineActorGenerationLease, DisplayProjectionBatch)> {
+    publish: impl FnOnce(
+        &TimelineActorGenerationLease,
+        DisplayProjectionBatch,
+        &[TimelineItem],
+        &DisplayProjectionState,
+    ) -> R,
+) -> Option<R> {
     let lease = timeline_actor_generations.try_acquire(key, actor_generation)?;
     let projection = project_sdk_batch(canonical_items, display_state, canonical_diffs, context);
-    Some((lease, projection))
+    Some(publish(&lease, projection, canonical_items, display_state))
 }
 
 fn project_sdk_batch(
@@ -18285,33 +19014,27 @@ fn project_sdk_batch(
     context: &DisplayProjectionContext,
 ) -> DisplayProjectionBatch {
     let display_before = display_state.display_items.clone();
-    let mut translation_ambiguous = false;
+    let (mut membership, mut translation_ambiguous) =
+        DisplayMembershipRope::from_projection_state(canonical_items.len(), display_state);
+    let mut pending_push_fronts = Vec::new();
 
     for diff in canonical_diffs {
-        match diff {
-            TimelineDiff::PushFront { item } => {
-                for slot in &mut display_state.slots {
-                    slot.canonical_index = slot.canonical_index.saturating_add(1);
-                }
-                canonical_items.insert(0, item.clone());
-                if context.include_prepend {
-                    display_state.slots.insert(
-                        0,
-                        DisplayProjectionSlot {
-                            canonical_index: 0,
-                            item: item.clone(),
-                        },
-                    );
-                }
+        if let TimelineDiff::PushFront { item } = diff {
+            pending_push_fronts.push(item.clone());
+            if !membership.insert(0, item.clone(), Some(context.include_prepend)) {
+                translation_ambiguous = true;
             }
+            membership.trim_to_live_edge(context.max_live_edge_items);
+            continue;
+        }
+        flush_pending_canonical_push_fronts(canonical_items, &mut pending_push_fronts);
+        match diff {
+            TimelineDiff::PushFront { .. } => unreachable!("PushFront is batched above"),
             TimelineDiff::PushBack { item } => {
                 let canonical_index = canonical_items.len();
                 canonical_items.push(item.clone());
-                if context.include_append {
-                    display_state.slots.push(DisplayProjectionSlot {
-                        canonical_index,
-                        item: item.clone(),
-                    });
+                if !membership.insert(canonical_index, item.clone(), Some(context.include_append)) {
+                    translation_ambiguous = true;
                 }
             }
             TimelineDiff::Insert { index, item } => {
@@ -18320,29 +19043,10 @@ fn project_sdk_batch(
                 if *index > old_len {
                     translation_ambiguous = true;
                 }
-                let include = (canonical_index == 0 && context.include_prepend)
-                    || display_state.slots.iter().any(|slot| {
-                        slot.canonical_index == canonical_index
-                            || slot.canonical_index.saturating_add(1) == canonical_index
-                    })
-                    || (display_state.slots.is_empty() && old_len == 0);
-                for slot in &mut display_state.slots {
-                    if slot.canonical_index >= canonical_index {
-                        slot.canonical_index = slot.canonical_index.saturating_add(1);
-                    }
-                }
                 canonical_items.insert(canonical_index, item.clone());
-                if include {
-                    let display_slot_index = display_state
-                        .slots
-                        .partition_point(|slot| slot.canonical_index < canonical_index);
-                    display_state.slots.insert(
-                        display_slot_index,
-                        DisplayProjectionSlot {
-                            canonical_index,
-                            item: item.clone(),
-                        },
-                    );
+                let include = (canonical_index == 0 && context.include_prepend).then_some(true);
+                if !membership.insert(canonical_index, item.clone(), include) {
+                    translation_ambiguous = true;
                 }
             }
             TimelineDiff::Set { index, item } => {
@@ -18354,15 +19058,8 @@ fn project_sdk_batch(
                 };
                 let old_render_identity = timeline_item_render_id(&old_item);
                 canonical_items[*index] = item.clone();
-                if let Some(slot) = display_state
-                    .slots
-                    .iter_mut()
-                    .find(|slot| slot.canonical_index == *index)
-                {
-                    if timeline_item_render_id(&slot.item) != old_render_identity {
-                        translation_ambiguous = true;
-                    }
-                    slot.item = item.clone();
+                if !membership.set(*index, item.clone(), &old_render_identity) {
+                    translation_ambiguous = true;
                 }
             }
             TimelineDiff::Remove { index } => {
@@ -18372,34 +19069,21 @@ fn project_sdk_batch(
                     continue;
                 };
                 let old_render_identity = timeline_item_render_id(&old_item);
-                if display_state.slots.iter().any(|slot| {
-                    slot.canonical_index == *index
-                        && timeline_item_render_id(&slot.item) != old_render_identity
-                }) {
+                if !membership.remove(*index, &old_render_identity) {
                     translation_ambiguous = true;
                 }
                 canonical_items.remove(*index);
-                display_state
-                    .slots
-                    .retain(|slot| slot.canonical_index != *index);
-                for slot in &mut display_state.slots {
-                    if slot.canonical_index > *index {
-                        slot.canonical_index -= 1;
-                    }
-                }
             }
             TimelineDiff::Truncate { length } => {
                 if *length > canonical_items.len() {
                     translation_ambiguous = true;
                 }
                 canonical_items.truncate(*length);
-                display_state
-                    .slots
-                    .retain(|slot| slot.canonical_index < *length);
+                membership.truncate(*length);
             }
             TimelineDiff::Clear => {
                 canonical_items.clear();
-                display_state.slots.clear();
+                membership.clear();
             }
             TimelineDiff::Reset { items } => {
                 *canonical_items = items.clone();
@@ -18407,16 +19091,22 @@ fn project_sdk_batch(
                     .max_live_edge_items
                     .map(|max_items| canonical_items.len().saturating_sub(max_items))
                     .unwrap_or(0);
-                *display_state = DisplayProjectionState::from_canonical_window(
+                membership = DisplayMembershipRope::from_canonical_window(
                     canonical_items,
                     start..canonical_items.len(),
                 );
             }
         }
-        display_state.trim_to_live_edge(context.max_live_edge_items);
+        membership.trim_to_live_edge(context.max_live_edge_items);
     }
 
-    display_state.refresh_display_items();
+    flush_pending_canonical_push_fronts(canonical_items, &mut pending_push_fronts);
+    if membership.canonical_len() != canonical_items.len() {
+        translation_ambiguous = true;
+    }
+    let display_payload_visits = membership.materialize(display_state);
+    #[cfg(not(test))]
+    let _ = display_payload_visits;
     let display_after = display_state.display_items.clone();
     let mut display_diffs = build_display_projection_diffs(&display_before, &display_after);
     let incrementally_valid = display_diffs.as_ref().is_some_and(|diffs| {
@@ -18429,13 +19119,18 @@ fn project_sdk_batch(
             items: display_after.clone(),
         }]
     } else {
-        display_diffs.take().unwrap_or_default()
+        display_diffs
+            .take()
+            .map(|built| built.0)
+            .unwrap_or_default()
     };
 
     DisplayProjectionBatch {
         display_after,
         display_diffs,
         used_reset_fallback,
+        #[cfg(test)]
+        display_payload_visits,
     }
 }
 
@@ -18448,10 +19143,16 @@ fn normalize_display_projection_slots(slots: &[DisplayProjectionSlot]) -> Vec<Ti
         .collect()
 }
 
+/// Diff program produced by the one projection builder. Keeping the wrapper's
+/// field private prevents the validator from silently becoming a generic
+/// arbitrary-diff interpreter: the builder emits only a constant number of
+/// structural groups, so validation is `O(W + D)` rather than `O(W * D)`.
+struct BuiltDisplayProjectionDiffs(Vec<TimelineDiff>);
+
 fn build_display_projection_diffs(
     display_before: &[TimelineItem],
     display_after: &[TimelineItem],
-) -> Option<Vec<TimelineDiff>> {
+) -> Option<BuiltDisplayProjectionDiffs> {
     let unique_after = display_after
         .iter()
         .map(timeline_item_render_id)
@@ -18460,12 +19161,12 @@ fn build_display_projection_diffs(
         return None;
     }
     if display_after.is_empty() {
-        return Some(
+        return Some(BuiltDisplayProjectionDiffs(
             (!display_before.is_empty())
                 .then_some(TimelineDiff::Clear)
                 .into_iter()
                 .collect(),
-        );
+        ));
     }
 
     let common_limit = display_before.len().min(display_after.len());
@@ -18499,7 +19200,7 @@ fn build_display_projection_diffs(
                     item,
                 }),
         );
-        return Some(diffs);
+        return Some(BuiltDisplayProjectionDiffs(diffs));
     }
 
     let before_ids = before_middle
@@ -18522,7 +19223,7 @@ fn build_display_projection_diffs(
                 });
             }
         }
-        return Some(diffs);
+        return Some(BuiltDisplayProjectionDiffs(diffs));
     }
 
     // Identity movement cannot use positional Set: the desktop's duplicate
@@ -18590,46 +19291,77 @@ fn build_display_projection_diffs(
             });
         }
     }
-    Some(diffs)
+    Some(BuiltDisplayProjectionDiffs(diffs))
 }
 
 fn validate_display_projection_diffs(
     display_before: &[TimelineItem],
-    diffs: &[TimelineDiff],
+    diffs: &BuiltDisplayProjectionDiffs,
     expected_after: &[TimelineItem],
 ) -> bool {
+    let diffs = &diffs.0;
     let mut items = display_before.to_vec();
     let mut index_by_id = items
         .iter()
         .enumerate()
         .map(|(index, item)| (timeline_item_render_id(item), index))
         .collect::<HashMap<_, _>>();
-    for diff in diffs {
-        match diff {
-            TimelineDiff::PushFront { item } => {
-                if index_by_id.contains_key(&timeline_item_render_id(item)) {
-                    continue;
-                }
-                items.insert(0, item.clone());
-                rebuild_display_projection_index(&items, &mut index_by_id);
-            }
-            TimelineDiff::PushBack { item } => {
-                let item_id = timeline_item_render_id(item);
-                if index_by_id.contains_key(&item_id) {
-                    continue;
-                }
-                index_by_id.insert(item_id, items.len());
-                items.push(item.clone());
-            }
-            TimelineDiff::Insert { index, item } => {
-                let item_id = timeline_item_render_id(item);
-                if *index > items.len() || index_by_id.contains_key(&item_id) {
-                    if *index > items.len() {
+    let mut cursor = 0;
+    while cursor < diffs.len() {
+        match &diffs[cursor] {
+            TimelineDiff::PushFront { .. } => {
+                let mut prefix = Vec::new();
+                let mut prefix_ids = HashSet::new();
+                while let Some(TimelineDiff::PushFront { item }) = diffs.get(cursor + prefix.len())
+                {
+                    let item_id = timeline_item_render_id(item);
+                    if index_by_id.contains_key(&item_id) || !prefix_ids.insert(item_id) {
                         return false;
                     }
-                    continue;
+                    prefix.push(item.clone());
                 }
-                items.insert(*index, item.clone());
+                cursor += prefix.len();
+                prefix.reverse();
+                items.splice(0..0, prefix);
+                rebuild_display_projection_index(&items, &mut index_by_id);
+            }
+            TimelineDiff::PushBack { .. } => {
+                let start = items.len();
+                while let Some(TimelineDiff::PushBack { item }) = diffs.get(cursor) {
+                    let item_id = timeline_item_render_id(item);
+                    if index_by_id.contains_key(&item_id) {
+                        return false;
+                    }
+                    index_by_id.insert(item_id, items.len());
+                    items.push(item.clone());
+                    cursor += 1;
+                }
+                if items.len() == start {
+                    return false;
+                }
+            }
+            TimelineDiff::Insert { index, .. } => {
+                let start = *index;
+                if start > items.len() {
+                    return false;
+                }
+                let mut inserted = Vec::new();
+                let mut inserted_ids = HashSet::new();
+                while let Some(TimelineDiff::Insert { index, item }) = diffs.get(cursor) {
+                    if *index != start + inserted.len() {
+                        break;
+                    }
+                    let item_id = timeline_item_render_id(item);
+                    if index_by_id.contains_key(&item_id) || !inserted_ids.insert(item_id) {
+                        return false;
+                    }
+                    inserted.push(item.clone());
+                    cursor += 1;
+                }
+                if inserted.is_empty() {
+                    return false;
+                }
+                items.splice(start..start, inserted);
                 rebuild_display_projection_index(&items, &mut index_by_id);
             }
             TimelineDiff::Set { index, item } => {
@@ -18642,14 +19374,28 @@ fn validate_display_projection_diffs(
                     .copied()
                     .filter(|existing_index| *existing_index != *index)
                     .unwrap_or(*index);
+                let old_id = timeline_item_render_id(&items[target_index]);
                 items[target_index] = item.clone();
-                rebuild_display_projection_index(&items, &mut index_by_id);
+                if index_by_id.get(&old_id) == Some(&target_index) {
+                    index_by_id.remove(&old_id);
+                }
+                index_by_id.insert(item_id, target_index);
+                cursor += 1;
             }
             TimelineDiff::Remove { index } => {
-                if *index >= items.len() {
+                let start = *index;
+                let mut count = 0;
+                while matches!(
+                    diffs.get(cursor + count),
+                    Some(TimelineDiff::Remove { index }) if *index == start
+                ) {
+                    count += 1;
+                }
+                if start >= items.len() || count > items.len() - start {
                     return false;
                 }
-                items.remove(*index);
+                items.drain(start..start + count);
+                cursor += count;
                 rebuild_display_projection_index(&items, &mut index_by_id);
             }
             TimelineDiff::Truncate { length } => {
@@ -18657,11 +19403,13 @@ fn validate_display_projection_diffs(
                     return false;
                 }
                 items.truncate(*length);
+                cursor += 1;
                 rebuild_display_projection_index(&items, &mut index_by_id);
             }
             TimelineDiff::Clear => {
                 items.clear();
                 index_by_id.clear();
+                cursor += 1;
             }
             TimelineDiff::Reset { items: reset_items } => {
                 let mut seen = HashSet::new();
@@ -18670,6 +19418,7 @@ fn validate_display_projection_diffs(
                     .filter(|item| seen.insert(timeline_item_render_id(item)))
                     .cloned()
                     .collect();
+                cursor += 1;
                 rebuild_display_projection_index(&items, &mut index_by_id);
             }
         }
@@ -18806,7 +19555,7 @@ fn apply_non_sdk_item_set_diffs_to_display_items(
         }];
     };
     if validate_display_projection_diffs(&display_before, &display_diffs, &display_after) {
-        display_diffs
+        display_diffs.0
     } else {
         record_display_projection_reset_fallback();
         vec![TimelineDiff::Reset {
@@ -20819,6 +21568,27 @@ mod tests {
         TimelineKey::room(AccountKey("@a:test".to_owned()), "!r:test")
     }
 
+    async fn replacement_generation_fixture(
+        key: &TimelineKey,
+    ) -> (Arc<TimelineActorGenerationGate>, u64, u64) {
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let stale = generations.activate_after_quiescence(key).await.generation;
+        let current = generations.activate_after_quiescence(key).await.generation;
+        (generations, stale, current)
+    }
+
+    fn replay_projection_services() -> (
+        Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+        Arc<Mutex<ThreadRootProjectionService>>,
+    ) {
+        (
+            Arc::new(Mutex::new(
+                ReplayKnownThreadRootProjectionRegistry::default(),
+            )),
+            Arc::new(Mutex::new(ThreadRootProjectionService::default())),
+        )
+    }
+
     #[test]
     fn resubscribe_replay_caps_room_timeline_to_live_window() {
         let key = room_key();
@@ -22054,7 +22824,6 @@ mod tests {
 
     #[test]
     fn sdk_canonical_indices_project_to_bounded_display_and_converge_local_echo() {
-        let fallback_count_before = DISPLAY_PROJECTION_RESET_FALLBACKS.load(Ordering::Relaxed);
         let mut canonical_items = synthetic_projection_items(9_039);
         let mut transaction = timeline_item(
             "$transaction-placeholder:test",
@@ -22117,10 +22886,6 @@ mod tests {
                 1
             );
         }
-        assert_eq!(
-            DISPLAY_PROJECTION_RESET_FALLBACKS.load(Ordering::Relaxed),
-            fallback_count_before
-        );
     }
 
     fn synthetic_projection_items(count: usize) -> Vec<TimelineItem> {
@@ -22142,6 +22907,22 @@ mod tests {
             include_prepend: true,
             include_append: true,
         }
+    }
+
+    fn deep_display_projection_fixture() -> (Vec<TimelineItem>, DisplayProjectionState) {
+        let canonical_items = synthetic_projection_items(9_040);
+        let start = canonical_items.len() - ROOM_REPLAY_INITIAL_ITEMS_MAX;
+        let state = DisplayProjectionState::from_canonical_window(
+            &canonical_items,
+            start..canonical_items.len(),
+        );
+        (canonical_items, state)
+    }
+
+    fn additive_display_payload_visit_bound(batch_len: usize) -> usize {
+        ROOM_REPLAY_INITIAL_ITEMS_MAX
+            .saturating_add(batch_len)
+            .saturating_mul(2)
     }
 
     fn assert_display_projection_converges(
@@ -22182,6 +22963,94 @@ mod tests {
                 .filter(|item| timeline_item_event_id(item) == Some("$duplicate:test"))
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn display_projection_media_duplicate_keeps_indexed_confirmation_in_display_space() {
+        let owner = timeline_media_item(
+            "$media-owner:test",
+            "@sender:test",
+            None,
+            1,
+            "owner.png",
+            TimelineMediaKind::Image,
+        );
+        let duplicate = timeline_media_item(
+            "$media-owner:test",
+            "@sender:test",
+            None,
+            2,
+            "duplicate.png",
+            TimelineMediaKind::Image,
+        );
+        let neighbor = timeline_item("$neighbor:test", Some("neighbor"), "@sender:test", false);
+        let mut transaction = timeline_media_item(
+            "$transaction-placeholder:test",
+            "@sender:test",
+            None,
+            3,
+            "upload.png",
+            TimelineMediaKind::Image,
+        );
+        transaction.id = TimelineItemId::Transaction {
+            transaction_id: "media-transaction:test".to_owned(),
+        };
+        let confirmed = timeline_media_item(
+            "$confirmed-media:test",
+            "@sender:test",
+            None,
+            4,
+            "confirmed.png",
+            TimelineMediaKind::Image,
+        );
+        let mut canonical_items = vec![owner.clone(), neighbor.clone(), transaction];
+        let mut state = DisplayProjectionState::from_canonical_window(
+            &canonical_items,
+            0..canonical_items.len(),
+        );
+        let display_before = state.display_items().to_vec();
+
+        let projection = project_sdk_batch(
+            &mut canonical_items,
+            &mut state,
+            &[
+                TimelineDiff::Insert {
+                    index: 1,
+                    item: duplicate,
+                },
+                TimelineDiff::Set {
+                    index: 3,
+                    item: confirmed.clone(),
+                },
+            ],
+            &historical_display_projection_context(),
+        );
+
+        assert!(!projection.used_reset_fallback);
+        assert_display_projection_converges(display_before, &projection);
+        assert_eq!(state.display_items(), &[owner, neighbor, confirmed]);
+        assert_eq!(
+            state
+                .display_items()
+                .iter()
+                .filter(|item| timeline_item_event_id(item) == Some("$media-owner:test"))
+                .count(),
+            1
+        );
+        assert!(
+            state
+                .display_items()
+                .iter()
+                .all(|item| !matches!(item.id, TimelineItemId::Transaction { .. }))
+        );
+        assert_eq!(
+            state
+                .display_items()
+                .last()
+                .and_then(|item| item.media.as_ref())
+                .map(|media| media.filename.as_str()),
+            Some("confirmed.png")
         );
     }
 
@@ -22267,6 +23136,78 @@ mod tests {
                 .first()
                 .and_then(timeline_item_event_id),
             Some("$canonical-81:test")
+        );
+    }
+
+    #[test]
+    fn display_projection_payload_work_does_not_rescan_window_per_prepend() {
+        let (mut canonical_items, mut state) = deep_display_projection_fixture();
+        let diffs = (0..512)
+            .map(|index| TimelineDiff::PushFront {
+                item: timeline_item(
+                    &format!("$older-{index}:test"),
+                    Some("older"),
+                    "@sender:test",
+                    false,
+                ),
+            })
+            .collect::<Vec<_>>();
+
+        let projection = project_sdk_batch(
+            &mut canonical_items,
+            &mut state,
+            &diffs,
+            &historical_display_projection_context(),
+        );
+
+        assert!(!projection.used_reset_fallback);
+        assert!(
+            projection.display_payload_visits <= additive_display_payload_visit_bound(diffs.len()),
+            "visible payload work must stay within binding plus materialization passes"
+        );
+    }
+
+    #[test]
+    fn display_projection_payload_work_does_not_rescan_window_per_indexed_diff() {
+        let (mut canonical_items, mut state) = deep_display_projection_fixture();
+        let mut diffs = Vec::new();
+        for index in 0..128 {
+            diffs.extend([
+                TimelineDiff::Set {
+                    index: 10,
+                    item: timeline_item(
+                        &format!("$outside-set-{index}:test"),
+                        Some("outside"),
+                        "@sender:test",
+                        false,
+                    ),
+                },
+                TimelineDiff::Remove { index: 10 },
+                TimelineDiff::Insert {
+                    index: 10,
+                    item: timeline_item(
+                        &format!("$outside-insert-{index}:test"),
+                        Some("outside"),
+                        "@sender:test",
+                        false,
+                    ),
+                },
+            ]);
+        }
+        let display_before = state.display_items().to_vec();
+
+        let projection = project_sdk_batch(
+            &mut canonical_items,
+            &mut state,
+            &diffs,
+            &historical_display_projection_context(),
+        );
+
+        assert!(!projection.used_reset_fallback);
+        assert_eq!(projection.display_after, display_before);
+        assert!(
+            projection.display_payload_visits <= additive_display_payload_visit_bound(diffs.len()),
+            "indexed diffs must not rescan all visible payloads per operation"
         );
     }
 
@@ -22360,50 +23301,165 @@ mod tests {
         assert_display_projection_converges(display_before, &projection);
     }
 
-    #[test]
-    fn display_projection_restore_buffer_must_store_projected_display_diffs() {
-        let mut canonical_items = synthetic_projection_items(5);
-        let mut state = DisplayProjectionState::from_canonical_window(&canonical_items, 3..5);
+    #[tokio::test]
+    async fn restore_terminal_flush_publishes_two_projected_batches_once_then_rebounds_live_edge() {
+        let key = room_key();
+        let mut canonical_items = synthetic_projection_items(200);
+        let mut state = DisplayProjectionState::from_canonical_window(&canonical_items, 80..200);
         let mut desktop_model = state.display_items().to_vec();
-        let context = DisplayProjectionContext::for_timeline(
-            &room_key().kind,
+        let restore_context = DisplayProjectionContext::for_timeline(
+            &key.kind,
             &TimelineViewportObservation {
                 at_bottom: true,
                 ..TimelineViewportObservation::default()
             },
             true,
         );
-        let projected = project_sdk_batch(
+        let mut restore_emit_buffer = Vec::new();
+        for event_id in ["$restore-1:test", "$restore-2:test"] {
+            let projected = project_sdk_batch(
+                &mut canonical_items,
+                &mut state,
+                &[TimelineDiff::PushFront {
+                    item: timeline_item(event_id, Some("restore"), "@sender:test", false),
+                }],
+                &restore_context,
+            );
+            assert!(!projected.used_reset_fallback);
+            restore_emit_buffer.extend(projected.display_diffs);
+        }
+        let expected_buffer = restore_emit_buffer.clone();
+        let (actor_generations, stale_generation, current_generation) =
+            replacement_generation_fixture(&key).await;
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        let (replay_registry, projection_service) = replay_projection_services();
+        let mut next_batch_id = TimelineBatchId(7);
+
+        assert_eq!(
+            publish_restore_settlement_for_generation(
+                &mut restore_emit_buffer,
+                false,
+                &mut next_batch_id,
+                &event_tx,
+                &replay_registry,
+                &projection_service,
+                &actor_generations,
+                &key,
+                stale_generation,
+                TimelineGeneration(3),
+                &canonical_items,
+                state.display_items(),
+                RestoreSettlement {
+                    navigation_snapshot: None,
+                    terminal: Some((fake_rid(70), TimelineAnchorRestoreStatus::Found)),
+                },
+            ),
+            None
+        );
+        assert_eq!(restore_emit_buffer, expected_buffer);
+        assert_eq!(next_batch_id, TimelineBatchId(7));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+
+        let lease = actor_generations
+            .try_acquire(&key, current_generation)
+            .expect("current restore lease");
+        let replacement_gate = actor_generations.clone();
+        let replacement_key = key.clone();
+        let replacement = tokio::spawn(async move {
+            replacement_gate
+                .activate_after_quiescence(&replacement_key)
+                .await
+        });
+        for _ in 0..10 {
+            if actor_generations
+                .try_acquire(&key, current_generation)
+                .is_none()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let navigation_snapshot = derive_timeline_navigation_snapshot(
+            &canonical_items,
+            None,
+            &TimelineViewportObservation::default(),
+            None,
+        );
+        assert!(publish_restore_settlement_with_lease(
+            &mut restore_emit_buffer,
+            false,
+            &mut next_batch_id,
+            &event_tx,
+            &replay_registry,
+            &projection_service,
+            &lease,
+            &key,
+            TimelineGeneration(3),
+            &canonical_items,
+            state.display_items(),
+            RestoreSettlement {
+                navigation_snapshot: Some(navigation_snapshot.clone()),
+                terminal: Some((fake_rid(71), TimelineAnchorRestoreStatus::Found)),
+            },
+        ));
+        let CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+            batch_id, diffs, ..
+        }) = event_rx.recv().await.expect("one terminal restore update")
+        else {
+            panic!("restore flush must publish ItemsUpdated");
+        };
+        assert_eq!(batch_id, TimelineBatchId(7));
+        assert_eq!(next_batch_id, TimelineBatchId(8));
+        assert!(restore_emit_buffer.is_empty());
+        apply_timeline_diffs_to_items(&mut desktop_model, &diffs);
+        assert_eq!(desktop_model, state.display_items());
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(CoreEvent::Timeline(TimelineEvent::NavigationUpdated {
+                snapshot,
+                ..
+            })) if snapshot == navigation_snapshot
+        ));
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(CoreEvent::Timeline(TimelineEvent::AnchorRestoreFinished {
+                request_id,
+                status: TimelineAnchorRestoreStatus::Found,
+                ..
+            })) if request_id == fake_rid(71)
+        ));
+        assert!(
+            !replacement.is_finished(),
+            "replacement must wait for the full restore terminal group"
+        );
+        drop(lease);
+        replacement.await.expect("replacement task");
+
+        let live = timeline_item(
+            "$live-after-restore:test",
+            Some("live"),
+            "@sender:test",
+            false,
+        );
+        let live_projection = project_sdk_batch(
             &mut canonical_items,
             &mut state,
-            &[TimelineDiff::PushFront {
-                item: timeline_item("$restore:test", Some("restore"), "@sender:test", false),
-            }],
-            &context,
+            &[TimelineDiff::PushBack { item: live.clone() }],
+            &DisplayProjectionContext::bounded_live_edge(),
         );
-        let restore_emit_buffer = projected.display_diffs;
-        apply_timeline_diffs_to_items(&mut desktop_model, &restore_emit_buffer);
-        assert_eq!(desktop_model, state.display_items());
-
-        let source = include_str!("timeline.rs");
-        let handler_start = source
-            .find("async fn handle_diff_batch(")
-            .expect("diff handler must exist");
-        let handler_end = source[handler_start..]
-            .find("fn maybe_continue_restore_anchor_after_diff")
-            .map(|offset| handler_start + offset)
-            .expect("restore continuation must follow diff handler");
-        let handler = &source[handler_start..handler_end];
-
-        assert!(handler.contains("restore_emit_buffer.extend(display_diffs)"));
-        assert!(!handler.contains("restore_emit_buffer.extend(core_diffs)"));
+        assert_display_projection_converges(desktop_model, &live_projection);
+        assert_eq!(state.display_items().len(), ROOM_REPLAY_INITIAL_ITEMS_MAX);
+        assert_eq!(state.display_items().last(), Some(&live));
     }
 
     #[tokio::test]
-    async fn display_projection_stale_generation_rejects_state_commit() {
+    async fn sdk_batch_generation_fence_rejects_activity_and_state_together() {
         let key = room_key();
-        let generations = Arc::new(TimelineActorGenerationGate::default());
-        let stale_generation = generations.activate_after_quiescence(&key).await.generation;
+        let (generations, stale_generation, _current_generation) =
+            replacement_generation_fixture(&key).await;
         let mut canonical_items = vec![timeline_item(
             "$before:test",
             Some("before"),
@@ -22413,9 +23469,9 @@ mod tests {
         let canonical_before = canonical_items.clone();
         let mut state = DisplayProjectionState::from_canonical_window(&canonical_items, 0..1);
         let state_before = state.clone();
+        let (action_tx, mut action_rx) = mpsc::channel(1);
 
-        let _current_generation = generations.activate_after_quiescence(&key).await.generation;
-        let projection = project_sdk_batch_for_generation(
+        let committed = commit_sdk_batch_for_generation(
             &generations,
             &key,
             stale_generation,
@@ -22425,10 +23481,20 @@ mod tests {
                 item: timeline_item("$stale:test", Some("stale"), "@sender:test", false),
             }],
             &historical_display_projection_context(),
+            |_lease, _projected, _canonical, _display| {
+                action_tx
+                    .try_send(vec![AppAction::ActivityRowsObserved { rows: Vec::new() }])
+                    .expect("current batch publication");
+            },
         );
-        assert!(projection.is_none());
+
+        assert!(committed.is_none());
         assert_eq!(canonical_items, canonical_before);
         assert_eq!(state, state_before);
+        assert!(matches!(
+            action_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
     }
 
     #[test]
@@ -24392,6 +25458,7 @@ mod tests {
                 .expect("actor lifecycle helper boundary");
             assert!(
                 section.contains("emit_initial_items_and_reconcile_replay_known_for_generation")
+                    || section.contains("commit_prepared_initial_window_for_generation")
                     || (name == "queue_overflow"
                         && (section.contains("emit_relay_recovery_snapshot")
                             || section.contains("commit_authoritative_recovery_window"))),
@@ -24405,17 +25472,15 @@ mod tests {
             .split("async fn handle_ignored_users_updated")
             .next()
             .expect("next actor handler must bound diff handler");
+        let diff_commit = "commit_sdk_batch_for_generation";
         assert!(
-            diff_handler.contains("self.emit_items_updated_and_reconcile_replay_known(core_diffs)"),
+            diff_handler.contains(diff_commit),
             "normal diffs must commit replay-known ownership beside ItemsUpdated"
         );
         assert!(
             diff_handler
                 .find("self.maybe_hydrate_missing_thread_roots().await")
-                .zip(
-                    diff_handler
-                        .find("self.emit_items_updated_and_reconcile_replay_known(core_diffs)"),
-                )
+                .zip(diff_handler.find(diff_commit))
                 .is_some_and(|(hydration, commit)| commit < hydration),
             "the canonical ItemsUpdated group must reach the store before hydration emits Pending"
         );
@@ -24427,8 +25492,8 @@ mod tests {
             .next()
             .expect("restore finish helper must follow flush");
         assert!(
-            restore_flush.contains("self.emit_items_updated_and_reconcile_replay_known(diffs)"),
-            "restore-buffer flushes must use the same atomic diff/replay group"
+            restore_flush.contains("publish_restore_settlement"),
+            "restore-buffer flushes must use the same atomic terminal group"
         );
         let actor_message_handler = source
             .split("async fn handle_msg")
@@ -25652,7 +26717,10 @@ mod tests {
             state_rx.await.expect("wrong-tag snapshot");
         assert!(pending);
         assert!(!completion_waiting);
-        assert_eq!(buffered_diff_count, 1);
+        assert_eq!(
+            buffered_diff_count, 0,
+            "a duplicate canonical slot is a valid projected display no-op"
+        );
         assert_eq!(buffered_projections, wrong_projections);
         assert_eq!(
             manager.live_tail_refreshes.freshness(&room_a),
@@ -25677,12 +26745,12 @@ mod tests {
                         && projection.operation == operation
                         && projection.projection_batch != u32::MAX
                 }) && completion_waiting
-                    && buffered_diff_count > 1
                 {
                     assert!(
                         pending,
                         "matching metadata remains pending until publication"
                     );
+                    let _ = buffered_diff_count;
                     break projection;
                 }
                 tokio::task::yield_now().await;
@@ -30512,7 +31580,11 @@ mod tests {
             snapshot,
             stream,
         } = prepared;
-        emit_relay_recovery_snapshot(
+        let mut navigation_items = Vec::new();
+        let mut display_projection = DisplayProjectionState::default();
+        assert!(commit_authoritative_recovery_window(
+            &mut navigation_items,
+            &mut display_projection,
             &event_tx,
             &replay_registry,
             &projection_service,
@@ -30522,8 +31594,8 @@ mod tests {
             generation,
             TimelineResyncReason::QueueOverflow,
             snapshot,
-            Vec::new(),
-        );
+            || {},
+        ));
         assert!(matches!(
             event_rx.recv().await,
             Ok(CoreEvent::Timeline(TimelineEvent::ResyncRequired { .. }))
@@ -30685,6 +31757,7 @@ mod tests {
             TimelineGeneration(2),
             TimelineResyncReason::QueueOverflow,
             vec![remote],
+            || {},
         );
 
         assert_eq!(current.len(), 1);
@@ -30710,6 +31783,96 @@ mod tests {
             })) if items.len() == 1
                 && matches!(items[0].id, TimelineItemId::Event { .. })
                 && !matches!(items[0].send_state, Some(TimelineSendState::Sending))
+        ));
+    }
+
+    #[tokio::test]
+    async fn stale_generation_recovery_does_not_commit_candidate_or_publish() {
+        let key = room_key();
+        let (actor_generations, stale_generation, _current_generation) =
+            replacement_generation_fixture(&key).await;
+        let original = timeline_item("$original:test", Some("original"), "@me:test", false);
+        let candidate = timeline_item("$candidate:test", Some("candidate"), "@me:test", false);
+        let mut navigation_items = vec![original.clone()];
+        let mut display_projection = DisplayProjectionState::from_canonical_window(
+            &navigation_items,
+            0..navigation_items.len(),
+        );
+        let display_before = display_projection.clone();
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        let (replay_registry, projection_service) = replay_projection_services();
+        let mut synchronous_candidate_committed = false;
+
+        assert!(!commit_authoritative_recovery_window(
+            &mut navigation_items,
+            &mut display_projection,
+            &event_tx,
+            &replay_registry,
+            &projection_service,
+            &actor_generations,
+            &key,
+            stale_generation,
+            TimelineGeneration(2),
+            TimelineResyncReason::QueueOverflow,
+            vec![candidate],
+            || synchronous_candidate_committed = true,
+        ));
+
+        assert_eq!(navigation_items, vec![original]);
+        assert_eq!(display_projection, display_before);
+        assert!(!synchronous_candidate_committed);
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn stale_generation_prepared_initial_window_does_not_commit_or_publish() {
+        let key = room_key();
+        let (actor_generations, stale_generation, _current_generation) =
+            replacement_generation_fixture(&key).await;
+        let original = timeline_item("$original:test", Some("original"), "@me:test", false);
+        let candidate = timeline_item("$candidate:test", Some("candidate"), "@me:test", false);
+        let mut navigation_items = vec![original.clone()];
+        let mut display_projection = DisplayProjectionState::from_canonical_window(
+            &navigation_items,
+            0..navigation_items.len(),
+        );
+        let display_before = display_projection.clone();
+        let candidate_navigation = vec![candidate.clone()];
+        let prepared = PreparedInitialWindow {
+            display_projection: DisplayProjectionState::from_canonical_window(
+                &candidate_navigation,
+                0..candidate_navigation.len(),
+            ),
+            navigation_items: Some(candidate_navigation),
+            emitted_items: vec![candidate],
+            replay_known_candidates: Vec::new(),
+        };
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        let (replay_registry, projection_service) = replay_projection_services();
+
+        assert!(!commit_prepared_initial_window_for_generation(
+            &mut navigation_items,
+            &mut display_projection,
+            &event_tx,
+            &replay_registry,
+            &projection_service,
+            &actor_generations,
+            &key,
+            stale_generation,
+            None,
+            TimelineGeneration(2),
+            Vec::new(),
+            prepared,
+        ));
+
+        assert_eq!(navigation_items, vec![original]);
+        assert_eq!(display_projection, display_before);
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
         ));
     }
 
@@ -31443,7 +32606,9 @@ mod tests {
             "handle_diff_batch must still emit ItemsUpdated on the non-restore branch"
         );
 
-        // 3. flush_restore_emit_buffer must emit ONE ItemsUpdated from the buffer.
+        // 3. The actor flush delegates to the one generation-fenced settlement
+        //    boundary. The boundary drains the buffer and emits ItemsUpdated,
+        //    changed navigation, and the terminal as one lease-held group.
         let flush_src = production
             .split("fn flush_restore_emit_buffer(")
             .nth(1)
@@ -31452,34 +32617,43 @@ mod tests {
             .next()
             .expect("flush_restore_emit_buffer must end before finish_anchor_restore");
         assert!(
-            flush_src.contains("std::mem::take"),
-            "flush must drain the buffer with mem::take to avoid cloning"
+            flush_src.contains("publish_restore_settlement(None)"),
+            "test flush must delegate to the atomic restore settlement"
+        );
+        let settlement_src = production
+            .split("fn publish_restore_settlement_with_lease(")
+            .nth(1)
+            .expect("restore settlement helper must exist")
+            .split("fn emit_initial_items_and_reconcile_replay_known_for_generation")
+            .next()
+            .expect("initial-items helper must follow restore settlement");
+        assert!(
+            settlement_src.contains("std::mem::take"),
+            "settlement must drain the buffer only after acquiring the lease"
         );
         assert!(
-            flush_src.contains("ItemsUpdated"),
-            "flush must emit exactly one ItemsUpdated from the drained buffer"
-        );
-        assert!(
-            flush_src.contains("emit_navigation_if_changed"),
-            "flush must refresh navigation after emitting the coalesced batch"
+            settlement_src.contains("TimelineEvent::NavigationUpdated")
+                && settlement_src.contains("TimelineEvent::AnchorRestoreFinished"),
+            "settlement must publish navigation and terminal under the same lease"
         );
 
-        // 4. finish_anchor_restore must call flush then emit_anchor_restore_finished.
+        // 4. finish_anchor_restore must use the atomic terminal settlement;
+        //    a second raw terminal emit would permit half-publication.
         let finish_src = production
             .split("fn finish_anchor_restore(")
             .nth(1)
             .expect("finish_anchor_restore wrapper must exist")
-            .split("fn flush_restore_emit_buffer(")
+            .split("fn emit_action_reliable")
             .next()
-            // May appear before the flush fn in source; accept any order.
-            .unwrap_or("");
-        // The wrapper is defined; search broadly for both calls in production.
+            .expect("reliable action helper must follow restore finish");
         assert!(
-            production.contains("flush_restore_emit_buffer()")
-                || production.contains("self.flush_restore_emit_buffer()"),
-            "finish_anchor_restore must call flush_restore_emit_buffer"
+            finish_src.contains("publish_restore_settlement(Some((request_id, status)))"),
+            "finish_anchor_restore must publish one atomic terminal settlement"
         );
-        let _ = finish_src; // used for the existence assertion above
+        assert!(
+            !finish_src.contains("emit_anchor_restore_finished"),
+            "finish_anchor_restore must not publish a second raw terminal"
+        );
 
         // 5. Every ACTIVE-restore terminal path must call finish_anchor_restore (not raw
         //    emit_anchor_restore_finished), ensuring the buffer is always flushed.

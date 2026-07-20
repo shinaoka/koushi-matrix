@@ -122,3 +122,43 @@ Confirmed:
   bound for unusually large multi-operation batches.
 - The intentionally deferred long homeserver lane still needs to be run once
   after parent review.
+
+## PAUSE CHECKPOINT — 2026-07-20
+
+The overflow-recovery atomicity slice is complete. A stale actor is rejected
+before relay teardown and is fenced again after the SDK subscription await.
+The recovery generation, batch-id reset, projected-gap reset, authoritative
+canonical/display window, media-source cache, `ResyncRequired`, `InitialItems`,
+and replay-known ownership now commit under one actor-generation lease.
+
+Fresh checkpoint evidence:
+
+- `cargo test -p koushi-core --lib authoritative_resync_projects_event_only_and_emits_ordered_recovery_events -- --nocapture`: 1 passed.
+- `cargo test -p koushi-core --lib stale_generation_recovery_does_not_commit_candidate_or_publish -- --nocapture`: 1 passed.
+- `cargo test -p koushi-core --lib relay_overflow_recovery_subscribes_once_emits_snapshot_then_next_live_update -- --nocapture`: 1 passed.
+- `cargo check -p koushi-core`: passed without warnings.
+- `cargo fmt -p koushi-core -- --check`: passed after applying package formatting.
+- `git diff --check`: passed.
+
+Also completed before this pause: the restore terminal now publishes its
+coalesced projected `ItemsUpdated`, replay-known lifecycle, changed navigation,
+and `AnchorRestoreFinished` under one lease. A causal projection whose display
+transition normalizes to a no-op still emits an empty `ItemsUpdated` render
+fence. The exact projection-overhead contract is documented as expected
+`O(W + B log(W+B) + D)` time and `O(W+B+D)` temporary space, with `W <= 120`
+at the Room live edge and `D = O(W)` for the private builder; canonical Vec
+mutation costs are explicitly outside that bound. The operational test counter
+now measures only visible-payload visits and no longer claims strict additive
+tree work.
+
+Remaining after resume:
+
+1. Re-run the full focused display/restore/timeline unit set after the latest
+   formatting and inspect any failures.
+2. Run the pending TypeScript TimelineStore regression and desktop typecheck.
+3. Consolidate the still-large implementation diff and remove any remaining
+   superseded helpers/tests without weakening the projection/lease contracts.
+4. Run the requested focused gates, package format/diff checks, and independent
+   review; update this report with final GREEN evidence and commit SHA.
+5. Leave the long homeserver lane to the root agent's single post-review run;
+   do not create/push a PR from this worker.
