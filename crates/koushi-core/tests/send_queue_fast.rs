@@ -1449,6 +1449,115 @@ fn send_queue_stage_uses_active_replay_waiter_for_both_subscriptions() {
 }
 
 #[test]
+fn headless_send_queue_diagnostic_contract_classifies_and_counts_forwarded_room_sends() {
+    let source = include_str!("../src/bin/headless-core-qa.rs");
+    let classifier = source
+        .split("\nfn qa_proxy_request_kind(")
+        .nth(1)
+        .expect("QA proxy request classifier")
+        .split("\nfn qa_messages_proxy_action(")
+        .next()
+        .expect("QA proxy request classifier end");
+    assert!(classifier.contains("(\"PUT\", path)"));
+    assert!(classifier.contains("path.contains(\"/rooms/\")"));
+    assert!(classifier.contains("path.contains(\"/send/\")"));
+    assert!(classifier.contains("QaProxyRequestKind::RoomSend"));
+
+    let proxy_request = source
+        .split("\nfn proxy_single_http_request(")
+        .nth(1)
+        .expect("QA proxy request forwarding body")
+        .split("\nfn qa_proxy_request_kind(")
+        .next()
+        .expect("QA proxy request forwarding body end");
+    let compact_proxy_request = proxy_request
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(compact_proxy_request.contains(
+        "request_kind == QaProxyRequestKind::RoomSend && action == QaProxyRequestAction::Forward"
+    ));
+    let counter_increment = proxy_request
+        .find("room_send_forwarded.fetch_add(1, Ordering::SeqCst);")
+        .expect("forwarded RoomSend counter increment");
+    let upstream_write = proxy_request
+        .find("io::Write::write_all(&mut server, &request)?;")
+        .expect("QA proxy upstream write");
+    assert!(
+        counter_increment < upstream_write,
+        "RoomSend counter must increment immediately before its upstream write"
+    );
+    assert!(source.contains("room_send_forwarded: Arc<AtomicUsize>"));
+    assert!(source.contains("fn room_send_forwarded_count(&self) -> usize"));
+}
+
+#[test]
+fn headless_send_queue_diagnostic_contract_wraps_fifo_failure_with_forward_count() {
+    let source = include_str!("../src/bin/headless-core-qa.rs");
+    let send_queue_stage = source
+        .split("\nasync fn run_send_queue_stage(")
+        .nth(1)
+        .expect("run_send_queue_stage body")
+        .split("\nasync fn unsubscribe_timeline_for_qa(")
+        .next()
+        .expect("run_send_queue_stage body end");
+    let retry_stage = send_queue_stage
+        .split("    proxy.enable();")
+        .nth(1)
+        .expect("FIFO retry stage")
+        .split("    println!(\"resend=ok\");")
+        .next()
+        .expect("FIFO retry stage end");
+
+    let baseline = retry_stage
+        .find("let room_send_forwarded_before_retry = proxy.room_send_forwarded_count();")
+        .expect("RoomSend baseline immediately before FIFO retry");
+    let retry = retry_stage
+        .find("let retry_id = retry_send_queue_item(")
+        .expect("first FIFO retry command");
+    assert!(baseline < retry, "RoomSend baseline must precede the retry");
+    assert!(retry_stage.contains("room_send_forwarded_after_retry={}"));
+    assert!(retry_stage.contains("saturating_sub(room_send_forwarded_before_retry)"));
+}
+
+#[test]
+fn headless_send_queue_diagnostic_contract_fails_early_on_private_safe_not_sent() {
+    let source = include_str!("../src/bin/headless-core-qa.rs");
+    let reason_helper = source
+        .split("\nfn send_queue_not_sent_reason(")
+        .nth(1)
+        .expect("private-safe SendQueue NotSent observer")
+        .split("\nasync fn wait_for_send_completions_in_order(")
+        .next()
+        .expect("private-safe SendQueue NotSent observer end");
+    assert!(reason_helper.contains("TimelineSendFailureReason::Recoverable"));
+    assert!(reason_helper.contains("Some(\"recoverable\")"));
+    assert!(reason_helper.contains("TimelineSendFailureReason::Unrecoverable"));
+    assert!(reason_helper.contains("Some(\"unrecoverable\")"));
+    assert!(!reason_helper.contains("format!("));
+
+    let waiter = source
+        .split("\nasync fn wait_for_send_completions_in_order(")
+        .nth(1)
+        .expect("ordered SendQueue completion waiter")
+        .split("\nasync fn wait_for_cancelled_or_removed_send(")
+        .next()
+        .expect("ordered SendQueue completion waiter end");
+    assert!(waiter.contains("TimelineEvent::InitialItems"));
+    assert!(waiter.contains("TimelineEvent::ItemsUpdated"));
+    assert!(waiter.contains("visit_timeline_diff_items(&diffs"));
+    assert!(waiter.contains("send_queue_not_sent_reason(item, &first.sdk_transaction_id)"));
+    assert_eq!(
+        waiter
+            .matches("\"{label}: first queued send returned to NotSent reason={reason}\"")
+            .count(),
+        2,
+        "InitialItems and ItemsUpdated must use the same private-safe fixed-token diagnostic"
+    );
+    assert!(!waiter.contains("sdk_transaction_id}"));
+}
+
+#[test]
 fn fast_send_queue_restored_completion_cannot_finish_from_send_completed_alone() {
     let source = include_str!("send_queue_fast.rs");
     let helper = source

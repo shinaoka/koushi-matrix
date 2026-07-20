@@ -37,7 +37,7 @@ use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::process::ExitCode;
 use std::sync::{
     Arc, Condvar, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -3869,6 +3869,7 @@ async fn run_send_queue_stage(
     .await?;
 
     proxy.enable();
+    let room_send_forwarded_before_retry = proxy.room_send_forwarded_count();
     let retry_id = retry_send_queue_item(
         &mut conn,
         &key,
@@ -3884,7 +3885,15 @@ async fn run_send_queue_stage(
         &second,
         "send_queue fifo retry",
     )
-    .await?;
+    .await
+    .map_err(|error| {
+        format!(
+            "{error} room_send_forwarded_after_retry={}",
+            proxy
+                .room_send_forwarded_count()
+                .saturating_sub(room_send_forwarded_before_retry)
+        )
+    })?;
     println!("resend=ok");
     println!("fifo=ok");
 
@@ -11502,6 +11511,7 @@ fn parse_env_flag(name: &str, value: &str) -> Result<bool, String> {
 struct QaTcpProxy {
     listen_addr: SocketAddr,
     enabled: Arc<AtomicBool>,
+    room_send_forwarded: Arc<AtomicUsize>,
     running: Arc<AtomicBool>,
     active_streams: Arc<Mutex<Vec<TcpStream>>>,
     fallback_control: Arc<(Mutex<QaFallbackProxyState>, Condvar)>,
@@ -11540,6 +11550,7 @@ enum QaProxyRequestKind {
     Versions,
     SyncService,
     LegacySync,
+    RoomSend,
     RoomMessages,
     Other,
 }
@@ -11763,6 +11774,7 @@ impl QaTcpProxy {
             .local_addr()
             .map_err(|e| format!("send_queue proxy local_addr failed: {e}"))?;
         let enabled = Arc::new(AtomicBool::new(true));
+        let room_send_forwarded = Arc::new(AtomicUsize::new(0));
         let running = Arc::new(AtomicBool::new(true));
         let active_streams = Arc::new(Mutex::new(Vec::new()));
         let fallback_control =
@@ -11770,6 +11782,7 @@ impl QaTcpProxy {
         let messages_control = Arc::new(Mutex::new(QaMessagesProxyControl::default()));
 
         let thread_enabled = enabled.clone();
+        let thread_room_send_forwarded = room_send_forwarded.clone();
         let thread_running = running.clone();
         let thread_streams = active_streams.clone();
         let thread_fallback_control = fallback_control.clone();
@@ -11788,6 +11801,7 @@ impl QaTcpProxy {
                             thread_streams.clone(),
                             thread_fallback_control.clone(),
                             thread_messages_control.clone(),
+                            thread_room_send_forwarded.clone(),
                         );
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -11805,6 +11819,7 @@ impl QaTcpProxy {
         Ok(Self {
             listen_addr,
             enabled,
+            room_send_forwarded,
             running,
             active_streams,
             fallback_control,
@@ -11824,6 +11839,10 @@ impl QaTcpProxy {
 
     fn enable(&self) {
         self.enabled.store(true, Ordering::SeqCst);
+    }
+
+    fn room_send_forwarded_count(&self) -> usize {
+        self.room_send_forwarded.load(Ordering::SeqCst)
     }
 
     fn arm_legacy_fallback(&self) -> Result<(), String> {
@@ -11989,6 +12008,7 @@ fn spawn_proxy_pair(
     active_streams: Arc<Mutex<Vec<TcpStream>>>,
     fallback_control: Arc<(Mutex<QaFallbackProxyState>, Condvar)>,
     messages_control: Arc<Mutex<QaMessagesProxyControl>>,
+    room_send_forwarded: Arc<AtomicUsize>,
 ) {
     thread::spawn(move || {
         let _ = proxy_single_http_request(
@@ -11997,6 +12017,7 @@ fn spawn_proxy_pair(
             active_streams,
             fallback_control,
             messages_control,
+            room_send_forwarded,
         );
         let _ = client.shutdown(Shutdown::Both);
     });
@@ -12008,6 +12029,7 @@ fn proxy_single_http_request(
     active_streams: Arc<Mutex<Vec<TcpStream>>>,
     fallback_control: Arc<(Mutex<QaFallbackProxyState>, Condvar)>,
     messages_control: Arc<Mutex<QaMessagesProxyControl>>,
+    room_send_forwarded: Arc<AtomicUsize>,
 ) -> io::Result<()> {
     let mut request_head = Vec::new();
     {
@@ -12045,6 +12067,8 @@ fn proxy_single_http_request(
     let request_kind = qa_proxy_request_kind(&request_head)?;
     let action = qa_messages_proxy_action(&messages_control, request_kind, &request_head)?
         .unwrap_or(fallback_proxy_action(&fallback_control, request_kind)?);
+    let count_forwarded_room_send =
+        request_kind == QaProxyRequestKind::RoomSend && action == QaProxyRequestAction::Forward;
     match action {
         QaProxyRequestAction::Forward => {}
         QaProxyRequestAction::FailClosed => {
@@ -12087,6 +12111,9 @@ fn proxy_single_http_request(
     }
 
     let request = rewrite_http_request_connection_close(&request_head)?;
+    if count_forwarded_room_send {
+        room_send_forwarded.fetch_add(1, Ordering::SeqCst);
+    }
     io::Write::write_all(&mut server, &request)?;
     io::copy(&mut server, client)?;
     Ok(())
@@ -12124,6 +12151,13 @@ fn qa_proxy_request_kind(request: &[u8]) -> io::Result<QaProxyRequestKind> {
         }
         (_, "/_matrix/client/v3/sync" | "/_matrix/client/r0/sync") => {
             QaProxyRequestKind::LegacySync
+        }
+        ("PUT", path)
+            if path.starts_with("/_matrix/client/")
+                && path.contains("/rooms/")
+                && path.contains("/send/") =>
+        {
+            QaProxyRequestKind::RoomSend
         }
         (_, path)
             if path.starts_with("/_matrix/client/")
@@ -12883,6 +12917,27 @@ async fn cancel_send_queue_item(
     Ok(request_id)
 }
 
+fn send_queue_not_sent_reason(
+    item: &TimelineItem,
+    sdk_transaction_id: &str,
+) -> Option<&'static str> {
+    if timeline_item_transaction_id(item) != Some(sdk_transaction_id) {
+        return None;
+    }
+    match item.send_state.as_ref() {
+        Some(TimelineSendState::NotSent {
+            reason: koushi_core::event::TimelineSendFailureReason::Recoverable,
+        }) => Some("recoverable"),
+        Some(TimelineSendState::NotSent {
+            reason: koushi_core::event::TimelineSendFailureReason::Unrecoverable,
+        }) => Some("unrecoverable"),
+        Some(
+            TimelineSendState::Sending | TimelineSendState::Cancelled | TimelineSendState::Sent,
+        )
+        | None => None,
+    }
+}
+
 async fn wait_for_send_completions_in_order(
     conn: &mut CoreConnection,
     key: &TimelineKey,
@@ -12904,6 +12959,36 @@ async fn wait_for_send_completions_in_order(
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
         match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: ref ev_key,
+                items,
+                ..
+            }) if ev_key == key => {
+                if let Some(reason) = items
+                    .iter()
+                    .find_map(|item| send_queue_not_sent_reason(item, &first.sdk_transaction_id))
+                {
+                    return Err(format!(
+                        "{label}: first queued send returned to NotSent reason={reason}"
+                    ));
+                }
+            }
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref ev_key,
+                diffs,
+                ..
+            }) if ev_key == key => {
+                visit_timeline_diff_items(&diffs, |item| {
+                    if let Some(reason) =
+                        send_queue_not_sent_reason(item, &first.sdk_transaction_id)
+                    {
+                        return Err(format!(
+                            "{label}: first queued send returned to NotSent reason={reason}"
+                        ));
+                    }
+                    Ok(())
+                })?;
+            }
             CoreEvent::Timeline(TimelineEvent::SendCompleted {
                 request_id,
                 key: ref ev_key,
