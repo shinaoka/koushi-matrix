@@ -649,9 +649,30 @@ fn sas_state_token(state: &koushi_sdk::MatrixSasState) -> &'static str {
         koushi_sdk::MatrixSasState::SasPresented { .. } => "sas_presented",
         koushi_sdk::MatrixSasState::Confirmed => "confirmed",
         koushi_sdk::MatrixSasState::Done => "done",
-        koushi_sdk::MatrixSasState::Cancelled => "cancelled",
+        koushi_sdk::MatrixSasState::Cancelled { .. } => "cancelled",
         koushi_sdk::MatrixSasState::UnsupportedShortAuth => "unsupported_short_auth",
     }
+}
+
+fn sas_state_changed_event(flow_id: u64, state: &koushi_sdk::MatrixSasState) -> DiagnosticEvent {
+    let mut event = sas_verification_event("sas_state_changed", flow_id)
+        .field(DiagnosticField::token("state", sas_state_token(state)));
+    if let koushi_sdk::MatrixSasState::Cancelled {
+        kind,
+        cancelled_by_us,
+    } = state
+    {
+        event = event
+            .field(DiagnosticField::token(
+                "cancel_kind",
+                verification_cancel_kind_token(*kind),
+            ))
+            .field(DiagnosticField::boolean(
+                "cancelled_by_us",
+                *cancelled_by_us,
+            ));
+    }
+    event
 }
 
 fn trust_failure_token(kind: TrustOperationFailureKind) -> &'static str {
@@ -4085,7 +4106,7 @@ impl AccountActor {
                         let terminal = matches!(
                             state,
                             koushi_sdk::MatrixSasState::Done
-                                | koushi_sdk::MatrixSasState::Cancelled
+                                | koushi_sdk::MatrixSasState::Cancelled { .. }
                                 | koushi_sdk::MatrixSasState::UnsupportedShortAuth
                         );
                         if tx
@@ -4162,10 +4183,7 @@ impl AccountActor {
         {
             return;
         }
-        record_sas_verification_event(
-            sas_verification_event("sas_state_changed", request_id.sequence)
-                .field(DiagnosticField::token("state", sas_state_token(&state))),
-        );
+        record_sas_verification_event(sas_state_changed_event(request_id.sequence, &state));
         self.project_sas_state(request_id, target, state).await;
     }
 
@@ -4277,11 +4295,7 @@ impl AccountActor {
         self.start_sas_timeout(request_id.sequence);
         self.observe_sas_verification(request_id, target.clone(), handle.clone());
         let initial_state = handle.state();
-        record_sas_verification_event(
-            sas_verification_event("sas_state_changed", request_id.sequence).field(
-                DiagnosticField::token("state", sas_state_token(&initial_state)),
-            ),
-        );
+        record_sas_verification_event(sas_state_changed_event(request_id.sequence, &initial_state));
         if matches!(initial_state, koushi_sdk::MatrixSasState::Started)
             && let Err(error) = koushi_sdk::accept_sas_verification(&handle).await
         {
@@ -4334,7 +4348,7 @@ impl AccountActor {
             koushi_sdk::MatrixSasState::Done => {
                 self.project_verification_completed(request_id).await;
             }
-            koushi_sdk::MatrixSasState::Cancelled => {
+            koushi_sdk::MatrixSasState::Cancelled { .. } => {
                 self.project_verification_failure(
                     request_id.sequence,
                     target,
@@ -8598,7 +8612,13 @@ mod tests {
             ),
             (SasState::Confirmed, "confirmed"),
             (SasState::Done, "done"),
-            (SasState::Cancelled, "cancelled"),
+            (
+                SasState::Cancelled {
+                    kind: CancelKind::Timeout,
+                    cancelled_by_us: false,
+                },
+                "cancelled",
+            ),
             (SasState::UnsupportedShortAuth, "unsupported_short_auth"),
         ];
         for (state, token) in sas_states {
@@ -8636,6 +8656,30 @@ mod tests {
                 TrustOperationFailureKind::Timeout,
             )),
             "failed"
+        );
+    }
+
+    #[test]
+    fn sas_cancel_diagnostic_contains_only_closed_private_safe_fields() {
+        use koushi_sdk::MatrixSasState as SasState;
+        use koushi_sdk::MatrixVerificationCancelKind as CancelKind;
+
+        let cancelled = sas_state_changed_event(
+            41,
+            &SasState::Cancelled {
+                kind: CancelKind::Timeout,
+                cancelled_by_us: false,
+            },
+        );
+        assert_eq!(
+            koushi_diagnostics::format_event(&cancelled),
+            "stage=sas_state_changed flow_id=41 state=cancelled cancel_kind=timeout cancelled_by_us=false"
+        );
+
+        let accepted = sas_state_changed_event(42, &SasState::Accepted);
+        assert_eq!(
+            koushi_diagnostics::format_event(&accepted),
+            "stage=sas_state_changed flow_id=42 state=accepted"
         );
     }
 

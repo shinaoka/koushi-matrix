@@ -649,10 +649,15 @@ pub enum MatrixSasState {
     Created,
     Started,
     Accepted,
-    SasPresented { emojis: Vec<SasEmoji> },
+    SasPresented {
+        emojis: Vec<SasEmoji>,
+    },
     Confirmed,
     Done,
-    Cancelled,
+    Cancelled {
+        kind: MatrixVerificationCancelKind,
+        cancelled_by_us: bool,
+    },
     UnsupportedShortAuth,
 }
 
@@ -828,7 +833,16 @@ fn map_sdk_sas_state(state: matrix_sdk::encryption::verification::SasState) -> M
         },
         SdkSasState::Confirmed => MatrixSasState::Confirmed,
         SdkSasState::Done { .. } => MatrixSasState::Done,
-        SdkSasState::Cancelled(_) => MatrixSasState::Cancelled,
+        SdkSasState::Cancelled(info) => {
+            map_sas_cancellation(info.cancel_code().as_str(), info.cancelled_by_us())
+        }
+    }
+}
+
+fn map_sas_cancellation(code: &str, cancelled_by_us: bool) -> MatrixSasState {
+    MatrixSasState::Cancelled {
+        kind: map_verification_cancel_kind(code),
+        cancelled_by_us,
     }
 }
 
@@ -2036,6 +2050,34 @@ GYW19pdjg0qdXNk/eqZsQTsNWVo6A\n\
             super::map_verification_cancel_kind("m.future_code"),
             Kind::Other
         );
+    }
+
+    #[test]
+    fn sas_cancellation_maps_to_closed_private_safe_projection() {
+        use super::{MatrixSasState as SasState, MatrixVerificationCancelKind as CancelKind};
+
+        let state = super::map_sas_cancellation("m.timeout", false);
+
+        assert_eq!(
+            state,
+            SasState::Cancelled {
+                kind: CancelKind::Timeout,
+                cancelled_by_us: false,
+            }
+        );
+        let debug = format!("{state:?}");
+        assert_eq!(debug, "Cancelled { kind: Timeout, cancelled_by_us: false }");
+        assert!(!debug.contains("m.timeout"));
+
+        let unknown = super::map_sas_cancellation("m.future_private_code", true);
+        assert_eq!(
+            unknown,
+            SasState::Cancelled {
+                kind: CancelKind::Other,
+                cancelled_by_us: true,
+            }
+        );
+        assert!(!format!("{unknown:?}").contains("future_private_code"));
     }
 
     #[test]
