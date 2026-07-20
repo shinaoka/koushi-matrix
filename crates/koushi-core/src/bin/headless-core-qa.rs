@@ -5382,6 +5382,16 @@ async fn cleanup_after_full_flow(
     Ok("restore_cleanup=ok".to_owned())
 }
 
+fn should_bootstrap_new_identity_before_logged_in(scenario: QaScenario) -> bool {
+    matches!(
+        scenario,
+        QaScenario::E2eeTrust
+            | QaScenario::GateRestore
+            | QaScenario::GateNegative
+            | QaScenario::SendQueue
+    )
+}
+
 async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, String> {
     if scenario == QaScenario::Safety {
         println!("safety=ok");
@@ -5439,10 +5449,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .await
         .map_err(|e| format!("submit login A: {e}"))?;
 
-    let bootstrap_recovery_secret_a = if matches!(
-        scenario,
-        QaScenario::E2eeTrust | QaScenario::GateRestore | QaScenario::GateNegative
-    ) {
+    let bootstrap_recovery_secret_a = if should_bootstrap_new_identity_before_logged_in(scenario) {
         let secret =
             complete_new_identity_gate_for_qa(&mut conn_a, &config.password_a, "gate-bootstrap-a")
                 .await?;
@@ -17456,6 +17463,32 @@ mod tests {
                 "restore_cleanup=ok",
             ]
         );
+    }
+
+    #[test]
+    fn send_queue_bootstraps_new_identity_before_waiting_for_logged_in() {
+        assert!(should_bootstrap_new_identity_before_logged_in(
+            QaScenario::SendQueue
+        ));
+        assert!(should_bootstrap_new_identity_before_logged_in(
+            QaScenario::E2eeTrust
+        ));
+        assert!(should_bootstrap_new_identity_before_logged_in(
+            QaScenario::GateRestore
+        ));
+        assert!(should_bootstrap_new_identity_before_logged_in(
+            QaScenario::GateNegative
+        ));
+
+        assert!(!should_bootstrap_new_identity_before_logged_in(
+            QaScenario::GateNoProof
+        ));
+        assert!(!should_bootstrap_new_identity_before_logged_in(
+            QaScenario::LoginSync
+        ));
+        assert!(!should_bootstrap_new_identity_before_logged_in(
+            QaScenario::TimelineReconnect
+        ));
     }
 
     #[test]

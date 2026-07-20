@@ -418,3 +418,37 @@ QA binary test suite (64 passed), the QA binary check, package rustfmt, and
 `git diff --check`. The independent implementation review was approved. No
 production or test code was changed for this evidence update, and no scenario
 was rerun here.
+
+## SEND-QUEUE FRESH-IDENTITY QA HARNESS FIX — 2026-07-20
+
+The official long-run failure before `normal_sync_started` was isolated to the
+generic QA login harness on a fresh account. That path completed the new-
+identity gate before `wait_for_logged_in` only for `E2eeTrust`, `GateRestore`,
+and `GateNegative`; `SendQueue` could therefore remain restricted before the
+scenario reached its actual send-queue assertions.
+
+The harness bootstrap predicate now includes only `SendQueue` in addition to
+those three existing scenarios. `GateNoProof` remains outside the generic path
+and retains its dedicated no-proof semantics. Ordinary `LoginSync` and the
+specialized `TimelineReconnect` path remain unchanged. No product account,
+identity, trust-gate, or sync behavior was modified.
+
+A network-free contract regression records that `SendQueue`, `E2eeTrust`,
+`GateRestore`, and `GateNegative` bootstrap before waiting for `LoggedIn`, while
+`GateNoProof`, ordinary `LoginSync`, and the specialized `TimelineReconnect`
+path do not use that generic bootstrap. RED failed because the predicate did
+not exist; GREEN passed after routing the production harness condition through
+the same predicate.
+
+Fresh short-gate evidence:
+
+- Focused SendQueue bootstrap contract: 1 passed, 0 failed.
+- Full headless Core QA binary tests: 65 passed, 0 failed.
+- Headless Core QA binary check with `qa-bin`: passed without warnings.
+- `cargo fmt -p koushi-core -- --check`: passed.
+- `git diff --check`: passed.
+
+No long scenario was run by this worker. The separate
+`timeline_reconnect missing_indices=[0]` result remains the pre-existing SDK
+20-item initial-window versus QA 21-offline-item pagination boundary described
+above; this SendQueue-only harness change does not address or alter it.
