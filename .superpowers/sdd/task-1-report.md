@@ -285,15 +285,18 @@ service mutation, reducer publication, and manager StartFetch publication are
 then one synchronous commit with no permit, lease, or mutex crossing another
 await.
 
-The deterministic capacity-one regression saturates both channels, queues an
-earlier manager sender ahead of hydration, and models manager processing that
-requires reducer capacity. It failed under the old permit order because the
-manager action timed out, and passes under the new order while also checking
-publication order, actor generation, fetch payload, and pending service state.
+The deterministic capacity-one regression saturates both channels, manually
+first-polls the earlier manager sender, hydration reservation, and manager
+reducer send to prove their FIFO enrollment before releasing either capacity,
+and then polls the selected owner directly. It uses no scheduler yields, sleeps,
+or timeout-based ordering. Reverting only the production permit order makes it
+fail immediately because hydration owns the first freed reducer slot; the fixed
+order passed 10 consecutive focused runs while also checking publication order,
+actor generation, fetch payload, and pending service state.
 
 Fresh verification evidence:
 
-- Focused saturation regression: 1 passed, 0 failed (0.01 s).
+- Focused saturation regression: 10/10 consecutive runs passed.
 - Full `timeline::tests`: 218 passed, 1 intentionally ignored, 0 failed.
 - TimelineStore: 69 passed, 0 failed.
 - Desktop typecheck: passed.

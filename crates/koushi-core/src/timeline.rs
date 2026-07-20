@@ -21783,8 +21783,11 @@ impl SendCompletionTracker {
 
 #[cfg(test)]
 mod tests {
+    use std::future::{Future, poll_fn};
+    use std::pin::Pin;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::task::Poll;
     use std::time::Duration;
 
     use koushi_diagnostics::DiagnosticValue;
@@ -21815,6 +21818,17 @@ mod tests {
     use crate::failure::{CoreFailure, TimelineFailureKind};
     use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineBatchId};
     use crate::runtime::CoreRuntime;
+
+    async fn assert_pending_on_first_poll<F: Future>(
+        mut future: Pin<&mut F>,
+        context: &'static str,
+    ) {
+        poll_fn(move |cx| match future.as_mut().poll(cx) {
+            Poll::Pending => Poll::Ready(()),
+            Poll::Ready(_) => panic!("{context} must be pending on its full channel"),
+        })
+        .await;
+    }
 
     #[test]
     fn backward_pagination_detects_only_a_changed_oldest_edge_as_prepend() {
@@ -24185,84 +24199,58 @@ mod tests {
             })
             .await
             .expect("fill manager mailbox");
-        let earlier_manager_sender = tokio::spawn({
-            let manager_tx = manager_tx.clone();
-            async move {
-                manager_tx
-                    .send(TimelineMessage::IgnoredUsersUpdated {
-                        user_ids: std::collections::BTreeSet::new(),
-                    })
-                    .await
-            }
-        });
-        tokio::task::yield_now().await;
+        let earlier_manager_tx = manager_tx.clone();
+        let mut earlier_manager_sender = Box::pin(earlier_manager_tx.send(
+            TimelineMessage::IgnoredUsersUpdated {
+                user_ids: std::collections::BTreeSet::new(),
+            },
+        ));
+        assert_pending_on_first_poll(earlier_manager_sender.as_mut(), "earlier manager sender")
+            .await;
 
-        let hydration = tokio::spawn({
-            let service = Arc::clone(&service);
-            let replay_registry = Arc::clone(&replay_registry);
-            let generations = Arc::clone(&generations);
-            let action_tx = action_tx.clone();
-            let manager_tx = manager_tx.clone();
-            let (event_tx, _) = broadcast::channel(8);
-            let key = key.clone();
-            let activity = activity.clone();
-            async move {
-                commit_prepared_thread_root_hydration_for_generation(
-                    &service,
-                    &replay_registry,
-                    &generations,
-                    &action_tx,
-                    &manager_tx,
-                    &event_tx,
-                    &key,
-                    actor_generation,
-                    None,
-                    PreparedThreadRootHydration {
-                        activities_by_root: HashMap::from([(
-                            activity.root_event_id.clone(),
-                            activity.clone(),
-                        )]),
-                        missing_activities: vec![activity],
-                    },
-                )
-                .await
-            }
-        });
-        tokio::task::yield_now().await;
+        let (event_tx, _) = broadcast::channel(8);
+        let mut hydration = Box::pin(commit_prepared_thread_root_hydration_for_generation(
+            &service,
+            &replay_registry,
+            &generations,
+            &action_tx,
+            &manager_tx,
+            &event_tx,
+            &key,
+            actor_generation,
+            None,
+            PreparedThreadRootHydration {
+                activities_by_root: HashMap::from([(
+                    activity.root_event_id.clone(),
+                    activity.clone(),
+                )]),
+                missing_activities: vec![activity.clone()],
+            },
+        ));
+        assert_pending_on_first_poll(hydration.as_mut(), "hydration reservation").await;
 
         let _initial_manager_message = manager_rx.recv().await.expect("manager message");
-        tokio::time::timeout(Duration::from_secs(1), earlier_manager_sender)
-            .await
-            .expect("earlier manager sender must take the first free slot")
-            .expect("earlier manager sender task")
-            .expect("manager mailbox open");
-        let mut manager_action = tokio::spawn({
-            let action_tx = action_tx.clone();
-            async move {
-                action_tx
-                    .send(vec![AppAction::ActivityRowsObserved { rows: Vec::new() }])
-                    .await
-            }
-        });
+        earlier_manager_sender.await.expect("manager mailbox open");
+        let manager_action_tx = action_tx.clone();
+        let mut manager_action = Box::pin(
+            manager_action_tx.send(vec![AppAction::ActivityRowsObserved { rows: Vec::new() }]),
+        );
+        assert_pending_on_first_poll(manager_action.as_mut(), "manager reducer action").await;
         let _occupied_action = action_rx.recv().await.expect("occupied reducer action");
-        tokio::time::timeout(Duration::from_secs(1), &mut manager_action)
-            .await
-            .expect("manager must not be blocked by a hydration-held action permit")
-            .expect("manager action task")
-            .expect("reducer channel open");
+        let manager_action_poll = poll_fn(|cx| Poll::Ready(manager_action.as_mut().poll(cx))).await;
+        assert!(
+            matches!(manager_action_poll, Poll::Ready(Ok(()))),
+            "manager must own the first freed reducer slot"
+        );
 
         let _earlier_manager_message = manager_rx.recv().await.expect("earlier manager message");
+        assert_pending_on_first_poll(hydration.as_mut(), "hydration reducer reservation").await;
         let manager_reducer_action = action_rx.recv().await.expect("manager reducer action");
         assert!(matches!(
             manager_reducer_action.as_slice(),
             [AppAction::ActivityRowsObserved { .. }]
         ));
-        assert!(
-            tokio::time::timeout(Duration::from_secs(1), hydration)
-                .await
-                .expect("hydration must complete after both capacities advance")
-                .expect("hydration task")
-        );
+        assert!(hydration.await);
         let hydration_action = action_rx.recv().await.expect("hydration reducer action");
         assert!(matches!(
             hydration_action.first(),
