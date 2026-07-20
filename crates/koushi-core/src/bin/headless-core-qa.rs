@@ -3837,7 +3837,8 @@ async fn run_send_queue_stage(
     }))
     .await
     .map_err(|e| format!("send_queue: submit subscribe failed: {e}"))?;
-    wait_for_initial_items(&mut conn, &key, subscribe_id, "send_queue subscribe").await?;
+    wait_for_initial_items_or_active_replay(&mut conn, &key, subscribe_id, "send_queue subscribe")
+        .await?;
 
     proxy.disable();
     let first = send_text_expect_local_echo(
@@ -3951,7 +3952,7 @@ async fn run_send_queue_stage(
     }))
     .await
     .map_err(|e| format!("send_queue: submit restore subscribe failed: {e}"))?;
-    let initial = wait_for_initial_items(
+    let initial = wait_for_initial_items_or_active_replay(
         &mut conn,
         &key,
         subscribe_id,
@@ -17900,6 +17901,31 @@ mod tests {
 
         assert!(secondary_subscribe.contains("wait_for_initial_items_or_active_replay("));
         assert!(!secondary_subscribe.contains("wait_for_initial_items("));
+    }
+
+    #[test]
+    fn send_queue_stage_uses_active_replay_waiter_for_both_subscriptions() {
+        let source = include_str!("headless-core-qa.rs");
+        let send_queue_stage = source
+            .split("\nasync fn run_send_queue_stage(")
+            .nth(1)
+            .expect("run_send_queue_stage body")
+            .split("\nasync fn unsubscribe_timeline_for_qa(")
+            .next()
+            .expect("run_send_queue_stage body end");
+
+        assert_eq!(
+            send_queue_stage
+                .matches("wait_for_initial_items_or_active_replay(")
+                .count(),
+            2,
+            "initial and restored SendQueue subscribes must both accept same-key replay InitialItems"
+        );
+        assert_eq!(
+            send_queue_stage.matches("wait_for_initial_items(").count(),
+            0,
+            "SendQueue subscribes must not require their fresh request id on an active timeline"
+        );
     }
 
     #[test]
