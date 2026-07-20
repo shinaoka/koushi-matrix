@@ -698,15 +698,15 @@ fn emit_items_updated_and_reconcile_replay_known_for_generation(
 
 /// Commits a non-SDK `Set` mutation beside its bounded replay display update
 /// and replay-known ownership transition. These mutations originate in actor
-/// policy/state handlers rather than an SDK vector diff, so canonical indexes
-/// cannot be applied to the bounded display mirror: a replay-only root can be
-/// outside that mirror while it still has index 0 in `navigation_items`.
+/// policy/state handlers rather than an SDK vector diff. Their canonical index
+/// is resolved against the exact retained slot owner; a replay-only root may
+/// be outside the bounded mirror and therefore intentionally emit no display
+/// mutation.
 ///
 /// The actor generation lease is acquired *before* the mirror is changed and
 /// retained until the display-safe `ItemsUpdated` event and scoped replay
 /// Ready/Clear events have all been synchronously broadcast. This is the same
-/// current-generation boundary used for SDK diff batches, with identity-based
-/// display updates appropriate for a bounded window.
+/// current-generation boundary used for SDK diff batches.
 fn emit_non_sdk_item_sets_and_reconcile_replay_known_for_generation(
     event_tx: &broadcast::Sender<CoreEvent>,
     registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
@@ -3944,7 +3944,10 @@ enum TimelineActorMessage {
     #[cfg(test)]
     TestRestoreCausalState(oneshot::Sender<(bool, bool, usize, BTreeSet<CausalProjectionId>)>),
     #[cfg(test)]
-    TestFlushRestore(oneshot::Sender<bool>),
+    TestFinishRestore {
+        request_id: RequestId,
+        response: oneshot::Sender<bool>,
+    },
     #[cfg(test)]
     TestArmGapRepairCompletionPause {
         pause: TestGapRepairCompletionPause,
@@ -5606,6 +5609,27 @@ async fn emit_app_action_reliable(
     action: AppAction,
 ) -> bool {
     action_tx.send(vec![action]).await.is_ok()
+}
+
+/// Wait for channel capacity without publishing, then synchronously validate
+/// actor ownership and publish while the short generation lease is held.
+/// Replacement may win during the capacity await; in that case the prepared
+/// value is discarded and no stale continuation escapes.
+async fn send_generation_fenced<T>(
+    tx: &mpsc::Sender<T>,
+    timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
+    key: &TimelineKey,
+    actor_generation: u64,
+    value: T,
+) -> bool {
+    let Ok(permit) = tx.clone().reserve_owned().await else {
+        return false;
+    };
+    let Some(_lease) = timeline_actor_generations.try_acquire(key, actor_generation) else {
+        return false;
+    };
+    permit.send(value);
+    true
 }
 
 fn spawn_link_preview_fetch(
@@ -12602,8 +12626,13 @@ impl TimelineActor {
                 ));
             }
             #[cfg(test)]
-            TimelineActorMessage::TestFlushRestore(response) => {
-                let _ = response.send(self.flush_restore_emit_buffer());
+            TimelineActorMessage::TestFinishRestore {
+                request_id,
+                response,
+            } => {
+                let had_buffered_diffs = !self.restore_emit_buffer.is_empty();
+                self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::EndReached);
+                let _ = response.send(had_buffered_diffs);
             }
             #[cfg(test)]
             TimelineActorMessage::TestArmGapRepairCompletionPause {
@@ -15909,18 +15938,13 @@ impl TimelineActor {
             .iter()
             .any(|projection| projection.operation.domain == CausalProjectionDomain::LiveTail);
 
-        let mut core_diffs: Vec<TimelineDiff> = sdk_diffs
-            .iter()
-            .cloned()
-            .map(|diff| {
-                sdk_vector_diff_to_timeline_diff(
-                    diff,
-                    &self.key,
-                    self.own_user_id.as_deref(),
-                    &self.send_statuses,
-                )
-            })
-            .collect();
+        let mut core_diffs = sdk_vector_diffs_to_timeline_diffs(
+            &sdk_diffs,
+            self.navigation_items.len(),
+            &self.key,
+            self.own_user_id.as_deref(),
+            &self.send_statuses,
+        );
         for diff in &mut core_diffs {
             apply_ignored_sender_suppression_to_diff(diff, &self.ignored_user_ids);
         }
@@ -15956,6 +15980,10 @@ impl TimelineActor {
         trace_timeline_diffs("diff_batch", &self.key, &core_diffs);
         let activity_rows = activity_rows_from_timeline_diffs(&self.key, &core_diffs);
         let receipts_action = Self::live_receipts_action_from_sdk_diffs(&self.key, &sdk_diffs);
+        let search_messages = sdk_diffs
+            .iter()
+            .flat_map(|diff| self.search_index_messages_for_diff(diff))
+            .collect::<Vec<_>>();
         let restore_diff_is_relevant = timeline_diffs_include_prepend(&core_diffs);
         let restore_active = self.restore_anchor.is_some();
         let display_context = DisplayProjectionContext::for_timeline(
@@ -16017,15 +16045,16 @@ impl TimelineActor {
             return;
         };
 
-        // Search delivery can await channel capacity, so it follows the
-        // synchronous transaction instead of holding the replacement fence
-        // across an await.
-        if self.search_index_tx.is_some() {
-            for diff in &sdk_diffs {
-                self.forward_diff_to_search(diff).await;
-            }
+        if !self.emit_search_messages_reliable(search_messages).await {
+            return;
         }
 
+        let Some(continuation_lease) = self
+            .timeline_actor_generations
+            .try_acquire(&self.key, self.actor_generation)
+        else {
+            return;
+        };
         let live_edge_target_changed = matches!(self.key.kind, TimelineKind::Room { .. })
             && !has_historical_gap_repair_projection
             && self
@@ -16037,12 +16066,22 @@ impl TimelineActor {
             self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
             &thread_attention_provenance,
         );
+        self.maybe_fetch_visible_reply_details();
+        drop(continuation_lease);
 
         if let Some(action) = thread_attention_action {
-            let _ = self.emit_action_reliable(action).await;
+            if !self.emit_action_reliable(action).await {
+                return;
+            }
         }
-        self.maybe_fetch_visible_reply_details();
         self.emit_media_gallery_if_changed().await;
+        let Some(post_media_lease) = self
+            .timeline_actor_generations
+            .try_acquire(&self.key, self.actor_generation)
+        else {
+            return;
+        };
+        let mut post_media_lease = Some(post_media_lease);
 
         let mut live_tail_completion_published = false;
 
@@ -16090,6 +16129,7 @@ impl TimelineActor {
                             );
                         }
                     } else {
+                        drop(post_media_lease.take());
                         self.maybe_continue_restore_anchor_after_diff().await;
                     }
                 }
@@ -16135,12 +16175,27 @@ impl TimelineActor {
                         ready_gap_projection_batch = observation.historical_gap_batch_id;
                     }
                 }
+                drop(post_media_lease.take());
                 if let Some(batch_id) = ready_gap_projection_batch {
                     self.finish_pending_gap_projection(batch_id).await;
+                    if self
+                        .timeline_actor_generations
+                        .try_acquire(&self.key, self.actor_generation)
+                        .is_none()
+                    {
+                        return;
+                    }
                 }
                 if live_tail_projection_ready {
                     live_tail_completion_published =
                         self.finish_pending_live_tail_projection().await;
+                    if self
+                        .timeline_actor_generations
+                        .try_acquire(&self.key, self.actor_generation)
+                        .is_none()
+                    {
+                        return;
+                    }
                 }
                 self.maybe_hydrate_missing_thread_roots().await;
             } else {
@@ -16163,6 +16218,7 @@ impl TimelineActor {
                 }
             }
         }
+        drop(post_media_lease.take());
         if let Some(trigger) = post_diff_gap_inspection_trigger(
             has_live_tail_projection,
             live_tail_completion_published,
@@ -16756,15 +16812,9 @@ impl TimelineActor {
     /// Redactions are privacy-sensitive removals and must not be silently
     /// dropped as freshness-only updates.
     async fn forward_diff_to_search(&self, diff: &eyeball_im::VectorDiff<Arc<SdkTimelineItem>>) {
-        let Some(tx) = &self.search_index_tx else {
-            return;
-        };
-
-        for message in self.search_index_messages_for_diff(diff) {
-            if tx.send(message).await.is_err() {
-                break;
-            }
-        }
+        let _ = self
+            .emit_search_messages_reliable(self.search_index_messages_for_diff(diff))
+            .await;
     }
 
     fn search_index_messages_for_diff(
@@ -17441,14 +17491,12 @@ impl TimelineActor {
             return;
         }
         if let Some(action) = receipts_action {
-            let _ = self.emit_action_reliable(action).await;
-        }
-        if let Some(tx) = &self.search_index_tx {
-            for message in search_messages {
-                if tx.send(message).await.is_err() {
-                    break;
-                }
+            if !self.emit_action_reliable(action).await {
+                return;
             }
+        }
+        if !self.emit_search_messages_reliable(search_messages).await {
+            return;
         }
         if let Some(replacement) = authoritative_media_gallery_replacement(
             &self.key,
@@ -17457,19 +17505,38 @@ impl TimelineActor {
         ) {
             if self.emit_action_reliable(replacement.action).await {
                 self.media_gallery_items = replacement.items;
+            } else {
+                return;
             }
         }
+        let Some(continuation_lease) = self
+            .timeline_actor_generations
+            .try_acquire(&self.key, self.actor_generation)
+        else {
+            return;
+        };
         if let Some(action) = self.thread_attention.reconcile(
             &self.key,
             &self.navigation_items,
             self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
             ThreadAttentionObservation::Replay,
         ) {
-            let _ = self.emit_action_reliable(action).await;
+            drop(continuation_lease);
+            if !self.emit_action_reliable(action).await {
+                return;
+            }
+        } else {
+            drop(continuation_lease);
         }
         if !snapshot_gap_repair_projections.is_empty() {
             let recovery_batch_id = self.next_batch_id;
             if self.emit_items_updated_and_reconcile_replay_known(Vec::new()) {
+                let Some(projection_lease) = self
+                    .timeline_actor_generations
+                    .try_acquire(&self.key, self.actor_generation)
+                else {
+                    return;
+                };
                 let mut ready_gap_projection_batch = None;
                 let mut live_tail_projection_ready = false;
                 for projection in snapshot_gap_repair_projections {
@@ -17483,6 +17550,7 @@ impl TimelineActor {
                         ready_gap_projection_batch.or(observation.historical_gap_batch_id);
                     live_tail_projection_ready |= observation.live_tail_batch_id.is_some();
                 }
+                drop(projection_lease);
                 if let Some(batch_id) = ready_gap_projection_batch {
                     self.finish_pending_gap_projection(batch_id).await;
                 }
@@ -17506,6 +17574,13 @@ impl TimelineActor {
             debug_assert_eq!(operation.domain, CausalProjectionDomain::HistoricalGap);
             self.release_gap_relay_settlement(actor_generation, operation.serial, trigger)
                 .await;
+            if self
+                .timeline_actor_generations
+                .try_acquire(&self.key, self.actor_generation)
+                .is_none()
+            {
+                return;
+            }
         }
         if let Some(fence) = self.gap_repair.awaiting_projection {
             let trigger = self
@@ -17513,7 +17588,20 @@ impl TimelineActor {
                 .pending_trigger
                 .unwrap_or(TimelineGapRepairTrigger::Automatic);
             self.recover_gap_render_settlement(fence, trigger).await;
+            if self
+                .timeline_actor_generations
+                .try_acquire(&self.key, self.actor_generation)
+                .is_none()
+            {
+                return;
+            }
         }
+        let Some(finalize_lease) = self
+            .timeline_actor_generations
+            .try_acquire(&self.key, self.actor_generation)
+        else {
+            return;
+        };
         let (relay_data_tx, relay_data_rx) = mpsc::channel(256);
         self.relay_data_rx = Some(relay_data_rx);
         self.relay_task = Some(executor::spawn(run_diff_relay(
@@ -17522,7 +17610,9 @@ impl TimelineActor {
             self.generation,
             diff_stream,
         )));
-        if let Some(restore) = self.restore_anchor.take() {
+        let restore = self.restore_anchor.take();
+        drop(finalize_lease);
+        if let Some(restore) = restore {
             self.finish_anchor_restore(
                 restore.request_id,
                 TimelineAnchorRestoreStatus::Failed {
@@ -17559,16 +17649,6 @@ impl TimelineActor {
             key: self.key.clone(),
             status,
         }));
-    }
-
-    /// Flush the restore-walk diff buffer as ONE `ItemsUpdated` event (Change
-    /// 2). Called at every restore terminal path (Found/EndReached/
-    /// BudgetExhausted/Failed/Superseded). If the buffer is empty nothing is
-    /// emitted; navigation is always refreshed after a restore so React
-    /// receives a consistent settled state. Never drops buffered diffs.
-    #[cfg(test)]
-    fn flush_restore_emit_buffer(&mut self) -> bool {
-        self.publish_restore_settlement(None).unwrap_or(false)
     }
 
     /// Publish the deferred display batch, changed navigation projection, and
@@ -17651,9 +17731,10 @@ impl TimelineActor {
     }
 
     /// Commit a local actor mutation through the same generation-fenced
-    /// display/replay group as an SDK diff. The bounded replay mirror uses
-    /// render identity rather than canonical index, because it can omit old
-    /// roots that remain present in `navigation_items`.
+    /// display/replay group as an SDK diff. The bounded replay mirror resolves
+    /// each local Set through the exact canonical owner retained on its slot;
+    /// roots omitted from the bounded window intentionally produce no display
+    /// diff and are handled by replay reconciliation.
     fn emit_non_sdk_item_sets_and_reconcile_replay_known(
         &mut self,
         diffs: Vec<TimelineDiff>,
@@ -17702,7 +17783,39 @@ impl TimelineActor {
     /// dropped action would leave the UI stuck in a pending/inconsistent state
     /// (REPOSITORY_RULES L124-128).
     async fn emit_action_reliable(&self, action: AppAction) -> bool {
-        emit_app_action_reliable(&self.action_tx, action).await
+        send_generation_fenced(
+            &self.action_tx,
+            &self.timeline_actor_generations,
+            &self.key,
+            self.actor_generation,
+            vec![action],
+        )
+        .await
+    }
+
+    async fn emit_search_messages_reliable(&self, messages: Vec<SearchIndexMessage>) -> bool {
+        let Some(tx) = &self.search_index_tx else {
+            return self
+                .timeline_actor_generations
+                .try_acquire(&self.key, self.actor_generation)
+                .is_some();
+        };
+        for message in messages {
+            if !send_generation_fenced(
+                tx,
+                &self.timeline_actor_generations,
+                &self.key,
+                self.actor_generation,
+                message,
+            )
+            .await
+            {
+                return false;
+            }
+        }
+        self.timeline_actor_generations
+            .try_acquire(&self.key, self.actor_generation)
+            .is_some()
     }
 
     fn emit_failure(&self, request_id: RequestId, failure: CoreFailure) {
@@ -19163,22 +19276,8 @@ fn project_sdk_batch(
     #[cfg(not(test))]
     let _ = display_payload_visits;
     let display_after = display_state.display_items.clone();
-    let mut display_diffs = build_display_projection_diffs(&display_before, &display_after);
-    let incrementally_valid = display_diffs.as_ref().is_some_and(|diffs| {
-        validate_display_projection_diffs(&display_before, diffs, &display_after)
-    });
-    let used_reset_fallback = translation_ambiguous || !incrementally_valid;
-    let display_diffs = if used_reset_fallback {
-        record_display_projection_reset_fallback();
-        vec![TimelineDiff::Reset {
-            items: display_after.clone(),
-        }]
-    } else {
-        display_diffs
-            .take()
-            .map(|built| built.0)
-            .unwrap_or_default()
-    };
+    let (display_diffs, used_reset_fallback) =
+        finalize_display_projection_diffs(&display_before, &display_after, translation_ambiguous);
 
     DisplayProjectionBatch {
         display_after,
@@ -19203,6 +19302,30 @@ fn normalize_display_projection_slots(slots: &[DisplayProjectionSlot]) -> Vec<Ti
 /// arbitrary-diff interpreter: the builder emits only a constant number of
 /// structural groups, so validation is `O(W + D)` rather than `O(W * D)`.
 struct BuiltDisplayProjectionDiffs(Vec<TimelineDiff>);
+
+fn finalize_display_projection_diffs(
+    display_before: &[TimelineItem],
+    display_after: &[TimelineItem],
+    translation_ambiguous: bool,
+) -> (Vec<TimelineDiff>, bool) {
+    let mut display_diffs = build_display_projection_diffs(display_before, display_after);
+    let incrementally_valid = display_diffs.as_ref().is_some_and(|diffs| {
+        validate_display_projection_diffs(display_before, diffs, display_after)
+    });
+    let used_reset_fallback = translation_ambiguous || !incrementally_valid;
+    let display_diffs = if used_reset_fallback {
+        record_display_projection_reset_fallback();
+        vec![TimelineDiff::Reset {
+            items: display_after.to_vec(),
+        }]
+    } else {
+        display_diffs
+            .take()
+            .map(|built| built.0)
+            .unwrap_or_default()
+    };
+    (display_diffs, used_reset_fallback)
+}
 
 fn build_display_projection_diffs(
     display_before: &[TimelineItem],
@@ -19574,49 +19697,31 @@ fn apply_timeline_diffs_to_display_items(items: &mut Vec<TimelineItem>, diffs: &
 
 /// Applies actor-originated item revisions to the bounded display mirror.
 ///
-/// Unlike SDK vector diffs, the index in a local mutation is an index into the
-/// actor's wider `navigation_items` cache. It is therefore unsafe to use it
-/// against a bounded replay window. Update only an already-rendered row with
-/// the same identity; a replay-only root is intentionally absent from this
-/// mirror and will instead be refreshed from `navigation_items` by the replay
-/// registry reconciliation that follows in the same generation lease. Returns
-/// the matching display-index `Set` diffs that are safe to deliver to the
-/// webview; omitted roots deliberately produce no canonical display diff.
+/// The local `Set` index names an exact owner in the actor's canonical
+/// `navigation_items`. The bounded display mirror retains that canonical index
+/// on every pre-normalization slot, so duplicate render identities cannot make
+/// us revise the wrong owner. An owner outside the bounded window is omitted;
+/// replay reconciliation refreshes it separately from canonical state.
 fn apply_non_sdk_item_set_diffs_to_display_items(
     display_projection: &mut DisplayProjectionState,
     diffs: &[TimelineDiff],
 ) -> Vec<TimelineDiff> {
     let display_before = display_projection.display_items.clone();
     for diff in diffs {
-        let TimelineDiff::Set { item, .. } = diff else {
+        let TimelineDiff::Set { index, item } = diff else {
             continue;
         };
-        let item_id = timeline_item_render_id(item);
         if let Some(existing) = display_projection
             .slots
             .iter_mut()
-            .find(|slot| timeline_item_render_id(&slot.item) == item_id)
+            .find(|slot| slot.canonical_index == *index)
         {
             existing.item = item.clone();
         }
     }
     display_projection.refresh_display_items();
     let display_after = display_projection.display_items.clone();
-    let Some(display_diffs) = build_display_projection_diffs(&display_before, &display_after)
-    else {
-        record_display_projection_reset_fallback();
-        return vec![TimelineDiff::Reset {
-            items: display_after,
-        }];
-    };
-    if validate_display_projection_diffs(&display_before, &display_diffs, &display_after) {
-        display_diffs.0
-    } else {
-        record_display_projection_reset_fallback();
-        vec![TimelineDiff::Reset {
-            items: display_after,
-        }]
-    }
+    finalize_display_projection_diffs(&display_before, &display_after, false).0
 }
 
 #[cfg(test)]
@@ -21287,103 +21392,123 @@ pub(crate) fn reaction_groups_from_sdk(
         .collect()
 }
 
-/// Convert an SDK `VectorDiff` to our `TimelineDiff`.
-fn sdk_vector_diff_to_timeline_diff(
-    diff: eyeball_im::VectorDiff<Arc<SdkTimelineItem>>,
+/// Convert one ordered SDK diff batch while tracking the evolving canonical
+/// length. `PopBack` has no explicit index and `Append` has no equivalent wire
+/// variant, so both must be expanded with the batch's actual preceding state.
+fn sdk_vector_diffs_to_timeline_diffs(
+    diffs: &[eyeball_im::VectorDiff<Arc<SdkTimelineItem>>],
+    initial_canonical_len: usize,
     key: &TimelineKey,
     own_user_id: Option<&matrix_sdk::ruma::UserId>,
     send_statuses: &HashMap<String, TimelineSendState>,
-) -> TimelineDiff {
-    match diff {
-        eyeball_im::VectorDiff::PushFront { value } => TimelineDiff::PushFront {
-            item: sdk_item_to_timeline_item_with_send_states(
-                key,
-                &value,
-                own_user_id,
-                send_statuses,
-            ),
-        },
-        eyeball_im::VectorDiff::PushBack { value } => TimelineDiff::PushBack {
-            item: sdk_item_to_timeline_item_with_send_states(
-                key,
-                &value,
-                own_user_id,
-                send_statuses,
-            ),
-        },
-        eyeball_im::VectorDiff::Insert { index, value } => TimelineDiff::Insert {
-            index,
-            item: sdk_item_to_timeline_item_with_send_states(
-                key,
-                &value,
-                own_user_id,
-                send_statuses,
-            ),
-        },
-        eyeball_im::VectorDiff::Set { index, value } => TimelineDiff::Set {
-            index,
-            item: sdk_item_to_timeline_item_with_send_states(
-                key,
-                &value,
-                own_user_id,
-                send_statuses,
-            ),
-        },
-        eyeball_im::VectorDiff::Remove { index } => TimelineDiff::Remove { index },
-        eyeball_im::VectorDiff::Truncate { length } => TimelineDiff::Truncate { length },
-        eyeball_im::VectorDiff::Clear => TimelineDiff::Clear,
-        eyeball_im::VectorDiff::Reset { values } => TimelineDiff::Reset {
-            items: values
-                .iter()
-                .map(|value| {
-                    sdk_item_to_timeline_item_with_send_states(
+) -> Vec<TimelineDiff> {
+    let mut canonical_len = initial_canonical_len;
+    let mut converted = Vec::with_capacity(diffs.len());
+    for diff in diffs {
+        match diff {
+            eyeball_im::VectorDiff::PushFront { value } => {
+                converted.push(TimelineDiff::PushFront {
+                    item: sdk_item_to_timeline_item_with_send_states(
                         key,
                         value,
                         own_user_id,
                         send_statuses,
-                    )
-                })
-                .collect(),
-        },
-        eyeball_im::VectorDiff::PopFront => {
-            // SDK VectorDiff::PopFront is not in the spec enum; map to Remove{0}.
-            TimelineDiff::Remove { index: 0 }
-        }
-        eyeball_im::VectorDiff::PopBack => {
-            // SDK VectorDiff::PopBack not in spec enum; we don't know the index.
-            // Emit a Clear+Reset is too aggressive; emit a no-op Truncate that
-            // leaves it to the SDK's Reset to resync if needed. The real "pop"
-            // case is extremely rare (SDK mainly uses Set/Insert/Remove).
-            // The safe approach: emit a Reset with the current items. But we
-            // don't hold the current list here. Emit Truncate(0) as a conservative
-            // sentinel that tells the UI to resync — the next Reset diff will fix it.
-            // This is a known gap; escalate if PopBack becomes common in practice.
-            TimelineDiff::Truncate { length: 0 }
-        }
-        eyeball_im::VectorDiff::Append { values } => {
-            // Append is equivalent to multiple PushBacks followed by a batch.
-            // Convert to Reset to keep ordering safe (the spec allows Reset as a
-            // position-preserving fallback). This is consistent with what the SDK
-            // actually emits: Append only fires during initial populate, after which
-            // the live stream uses PushBack/Insert/Set/Remove.
-            // We emit a Reset here; the UI applies it as a full list replacement.
-            // Alternatively we could split into PushBacks, but that risks sending
-            // oversized batches for large initial appends; Reset is more robust.
-            TimelineDiff::Reset {
-                items: values
-                    .iter()
-                    .map(|value| {
-                        sdk_item_to_timeline_item_with_send_states(
-                            key,
-                            value,
-                            own_user_id,
-                            send_statuses,
-                        )
-                    })
-                    .collect(),
+                    ),
+                });
+                canonical_len += 1;
+            }
+            eyeball_im::VectorDiff::PushBack { value } => {
+                converted.push(TimelineDiff::PushBack {
+                    item: sdk_item_to_timeline_item_with_send_states(
+                        key,
+                        value,
+                        own_user_id,
+                        send_statuses,
+                    ),
+                });
+                canonical_len += 1;
+            }
+            eyeball_im::VectorDiff::Insert { index, value } => {
+                converted.push(TimelineDiff::Insert {
+                    index: *index,
+                    item: sdk_item_to_timeline_item_with_send_states(
+                        key,
+                        value,
+                        own_user_id,
+                        send_statuses,
+                    ),
+                });
+                canonical_len += 1;
+            }
+            eyeball_im::VectorDiff::Set { index, value } => {
+                converted.push(TimelineDiff::Set {
+                    index: *index,
+                    item: sdk_item_to_timeline_item_with_send_states(
+                        key,
+                        value,
+                        own_user_id,
+                        send_statuses,
+                    ),
+                });
+            }
+            eyeball_im::VectorDiff::Remove { index } => {
+                converted.push(TimelineDiff::Remove { index: *index });
+                if *index < canonical_len {
+                    canonical_len -= 1;
+                }
+            }
+            eyeball_im::VectorDiff::Truncate { length } => {
+                converted.push(TimelineDiff::Truncate { length: *length });
+                canonical_len = canonical_len.min(*length);
+            }
+            eyeball_im::VectorDiff::Clear => {
+                converted.push(TimelineDiff::Clear);
+                canonical_len = 0;
+            }
+            eyeball_im::VectorDiff::Reset { values } => {
+                converted.push(TimelineDiff::Reset {
+                    items: values
+                        .iter()
+                        .map(|value| {
+                            sdk_item_to_timeline_item_with_send_states(
+                                key,
+                                value,
+                                own_user_id,
+                                send_statuses,
+                            )
+                        })
+                        .collect(),
+                });
+                canonical_len = values.len();
+            }
+            eyeball_im::VectorDiff::PopFront => {
+                if canonical_len > 0 {
+                    converted.push(TimelineDiff::Remove { index: 0 });
+                    canonical_len -= 1;
+                }
+            }
+            eyeball_im::VectorDiff::PopBack => {
+                if canonical_len > 0 {
+                    canonical_len -= 1;
+                    converted.push(TimelineDiff::Remove {
+                        index: canonical_len,
+                    });
+                }
+            }
+            eyeball_im::VectorDiff::Append { values } => {
+                converted.extend(values.iter().map(|value| TimelineDiff::PushBack {
+                    item: sdk_item_to_timeline_item_with_send_states(
+                        key,
+                        value,
+                        own_user_id,
+                        send_statuses,
+                    ),
+                }));
+                canonical_len += values.len();
             }
         }
     }
+    converted
 }
 
 // ---------------------------------------------------------------------------
@@ -22247,10 +22372,11 @@ mod tests {
             index: 0,
             item: ignored_root.clone(),
         }];
-        let navigation_items = vec![ignored_root.clone()];
-        let display_items = vec![before.clone(), after.clone()];
-        let mut display_projection =
-            DisplayProjectionState::from_canonical_window(&display_items, 0..display_items.len());
+        let navigation_items = vec![ignored_root.clone(), before.clone(), after.clone()];
+        let mut display_projection = DisplayProjectionState::from_canonical_window(
+            &navigation_items,
+            1..navigation_items.len(),
+        );
         let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
         let generations = Arc::new(TimelineActorGenerationGate::default());
         let actor_generation = generations.activate_after_quiescence(&key).await.generation;
@@ -22345,10 +22471,11 @@ mod tests {
             index: 0,
             item: revised_root.clone(),
         }];
-        let navigation_items = vec![revised_root.clone()];
-        let display_items = vec![before, after];
-        let mut display_projection =
-            DisplayProjectionState::from_canonical_window(&display_items, 0..display_items.len());
+        let navigation_items = vec![revised_root.clone(), before, after];
+        let mut display_projection = DisplayProjectionState::from_canonical_window(
+            &navigation_items,
+            1..navigation_items.len(),
+        );
         let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
         let generations = Arc::new(TimelineActorGenerationGate::default());
         let actor_generation = generations.activate_after_quiescence(&key).await.generation;
@@ -22393,7 +22520,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_sdk_set_updates_an_ordinary_bounded_display_item_by_render_identity() {
+    async fn non_sdk_set_updates_an_ordinary_bounded_display_item_by_canonical_owner() {
         let key = room_key();
         let mut root = timeline_item("$known-root:test", Some("root"), "@a:test", false);
         root.thread_summary = Some(ThreadSummaryDto {
@@ -22424,10 +22551,12 @@ mod tests {
             index: 1,
             item: revised_ordinary.clone(),
         }];
+        let canonical_before = vec![root.clone(), ordinary, after.clone()];
+        let mut display_projection = DisplayProjectionState::from_canonical_window(
+            &canonical_before,
+            1..canonical_before.len(),
+        );
         let navigation_items = vec![root, revised_ordinary.clone(), after.clone()];
-        let display_items = vec![ordinary, after.clone()];
-        let mut display_projection =
-            DisplayProjectionState::from_canonical_window(&display_items, 0..display_items.len());
         let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
         let generations = Arc::new(TimelineActorGenerationGate::default());
         let actor_generation = generations.activate_after_quiescence(&key).await.generation;
@@ -22541,100 +22670,53 @@ mod tests {
     }
 
     #[test]
-    fn non_sdk_item_mutation_paths_use_the_atomic_replay_reconcile_gateway() {
-        let source = include_str!("timeline.rs");
-        let actor_source = source
-            .split("impl TimelineActor {")
-            .nth(1)
-            .expect("timeline actor implementation must exist")
-            .split("\n#[cfg(test)]")
-            .next()
-            .expect("production source must precede tests");
-        for (name, start, end) in [
-            (
-                "ignored users",
-                "async fn handle_ignored_users_updated",
-                "fn emit_timeline_item_set",
-            ),
-            (
-                "single item set",
-                "fn emit_timeline_item_set",
-                "async fn handle_load_link_previews",
-            ),
-            (
-                "cancel previews",
-                "fn handle_cancel_link_previews",
-                "async fn handle_hide_link_preview",
-            ),
-            (
-                "hide preview",
-                "async fn handle_hide_link_preview",
-                "async fn handle_link_preview_policy_changed",
-            ),
-            (
-                "preview policy",
-                "async fn handle_link_preview_policy_changed",
-                "async fn emit_media_gallery_if_changed",
-            ),
-        ] {
-            let handler = actor_source
-                .split(start)
-                .nth(1)
-                .expect("mutation handler must exist")
-                .split(end)
-                .next()
-                .expect("mutation handler must have a stable boundary");
-            assert!(
-                handler.contains("self.emit_non_sdk_item_sets_and_reconcile_replay_known"),
-                "{name} must use the generation-fenced display-mirror and replay-registry gateway"
-            );
-            assert!(
-                !handler.contains("self.emit(CoreEvent::Timeline(TimelineEvent::ItemsUpdated"),
-                "{name} must not bypass replay reconciliation with a direct ItemsUpdated"
-            );
-        }
-    }
-
-    #[test]
-    fn non_sdk_item_sets_project_to_the_bounded_display_by_render_identity() {
-        let mut before = timeline_item("$before:test", Some("before"), "@a:test", false);
-        before.timestamp_ms = Some(200);
-        let mut after = timeline_item("$after:test", Some("after"), "@a:test", false);
-        after.timestamp_ms = Some(500);
-        let mut ignored_root = timeline_item("$old-root:test", Some("root"), "@ignored:test", true);
-        ignored_root.timestamp_ms = Some(400);
-        let mut revised_after = after.clone();
-        revised_after.body = Some("revised after".to_owned());
-
-        let display_items = vec![before.clone(), after.clone()];
+    fn non_sdk_item_sets_update_the_exact_canonical_duplicate_owner() {
+        let first_owner = timeline_item("$duplicate:test", Some("first"), "@a:test", false);
+        let second_owner = timeline_item("$duplicate:test", Some("second"), "@a:test", false);
+        let replacement = timeline_item("$replacement:test", Some("replacement"), "@a:test", false);
+        let canonical = vec![first_owner.clone(), second_owner];
         let mut display_projection =
-            DisplayProjectionState::from_canonical_window(&display_items, 0..display_items.len());
+            DisplayProjectionState::from_canonical_window(&canonical, 0..canonical.len());
         let projected = apply_non_sdk_item_set_diffs_to_display_items(
             &mut display_projection,
-            &[
-                TimelineDiff::Set {
-                    index: 0,
-                    item: ignored_root,
-                },
-                TimelineDiff::Set {
-                    index: 41,
-                    item: revised_after.clone(),
-                },
-            ],
+            &[TimelineDiff::Set {
+                index: 1,
+                item: replacement.clone(),
+            }],
         );
 
         assert_eq!(
             display_projection.display_items(),
-            &[before, revised_after.clone()]
+            &[first_owner, replacement.clone()],
+            "the Set index must select the second canonical owner, not the first matching identity"
         );
         assert_eq!(
             projected,
-            vec![TimelineDiff::Set {
+            vec![TimelineDiff::Insert {
                 index: 1,
-                item: revised_after,
-            }],
-            "a navigation-only root must not replace bounded display index zero"
+                item: replacement,
+            }]
         );
+    }
+
+    #[test]
+    fn non_sdk_item_sets_ignore_exact_owners_outside_the_display_window() {
+        let visible = timeline_item("$visible:test", Some("visible"), "@a:test", false);
+        let hidden_duplicate = timeline_item("$duplicate:test", Some("hidden"), "@a:test", false);
+        let replacement = timeline_item("$replacement:test", Some("replacement"), "@a:test", false);
+        let canonical = vec![visible.clone(), hidden_duplicate];
+        let mut display_projection =
+            DisplayProjectionState::from_canonical_window(&canonical, 0..1);
+        let projected = apply_non_sdk_item_set_diffs_to_display_items(
+            &mut display_projection,
+            &[TimelineDiff::Set {
+                index: 1,
+                item: replacement,
+            }],
+        );
+
+        assert_eq!(display_projection.display_items(), &[visible]);
+        assert!(projected.is_empty());
     }
 
     #[tokio::test]
@@ -23788,6 +23870,32 @@ mod tests {
             &mut acknowledged,
         ));
         assert!(acknowledged);
+    }
+
+    #[tokio::test]
+    async fn generation_fenced_send_discards_a_continuation_replaced_during_capacity_await() {
+        let key = room_key();
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let old_generation = generations.activate_after_quiescence(&key).await.generation;
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.send("occupied").await.expect("fill bounded channel");
+
+        let send_task = tokio::spawn({
+            let tx = tx.clone();
+            let generations = Arc::clone(&generations);
+            let key = key.clone();
+            async move { send_generation_fenced(&tx, &generations, &key, old_generation, "stale").await }
+        });
+        tokio::task::yield_now().await;
+        let replacement_generation = generations.activate_after_quiescence(&key).await.generation;
+        assert_ne!(replacement_generation, old_generation);
+
+        assert_eq!(rx.recv().await, Some("occupied"));
+        assert!(!send_task.await.expect("fenced send task"));
+        assert!(
+            rx.try_recv().is_err(),
+            "stale value must never be published"
+        );
     }
 
     #[tokio::test]
@@ -25539,16 +25647,16 @@ mod tests {
                 .is_some_and(|(hydration, commit)| commit < hydration),
             "the canonical ItemsUpdated group must reach the store before hydration emits Pending"
         );
-        let restore_flush = source
-            .split("fn flush_restore_emit_buffer")
-            .nth(1)
-            .expect("restore flush helper")
+        let restore_finish = source
             .split("fn finish_anchor_restore")
+            .nth(1)
+            .expect("restore finish helper")
+            .split("async fn emit_action_reliable")
             .next()
-            .expect("restore finish helper must follow flush");
+            .expect("action helper must follow restore finish");
         assert!(
-            restore_flush.contains("publish_restore_settlement"),
-            "restore-buffer flushes must use the same atomic terminal group"
+            restore_finish.contains("publish_restore_settlement"),
+            "restore terminal must use the same atomic terminal group"
         );
         let actor_message_handler = source
             .split("async fn handle_msg")
@@ -26749,7 +26857,7 @@ mod tests {
                 .expect("room A actor")
                 .send(TimelineActorMessage::TestInjectRestoreDiff {
                     diffs: vec![eyeball_im::VectorDiff::PushBack {
-                        value: real_sdk_item,
+                        value: real_sdk_item.clone(),
                     }],
                     projections: wrong_projections.clone(),
                     acknowledged: inject_tx,
@@ -26786,6 +26894,28 @@ mod tests {
             "wrong actor, operation, and batch identities cannot prove freshness",
         );
 
+        for diffs in [
+            vec![eyeball_im::VectorDiff::PopBack],
+            vec![eyeball_im::VectorDiff::PushBack {
+                value: real_sdk_item.clone(),
+            }],
+        ] {
+            let (inject_tx, inject_rx) = oneshot::channel();
+            assert!(
+                manager
+                    .timelines
+                    .get(&room_a)
+                    .expect("room A actor")
+                    .send(TimelineActorMessage::TestInjectRestoreDiff {
+                        diffs,
+                        projections: BTreeSet::new(),
+                        acknowledged: inject_tx,
+                    })
+                    .await
+            );
+            inject_rx.await.expect("restore batch handled");
+        }
+
         let matching_projection = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 let (actor_tx, state_tx, state_rx) = snapshot(&manager, &room_a);
@@ -26805,7 +26935,10 @@ mod tests {
                         pending,
                         "matching metadata remains pending until publication"
                     );
-                    let _ = buffered_diff_count;
+                    assert!(
+                        buffered_diff_count >= 2,
+                        "two real SDK batches must reach the actor restore buffer before terminal publication"
+                    );
                     break projection;
                 }
                 tokio::task::yield_now().await;
@@ -26824,12 +26957,16 @@ mod tests {
             .clone();
         let _manager_task = executor::spawn(manager.run());
 
+        while event_rx.try_recv().is_ok() {}
         let (flush_tx, flush_rx) = oneshot::channel();
         actor_tx
-            .send(TimelineActorMessage::TestFlushRestore(flush_tx))
+            .send(TimelineActorMessage::TestFinishRestore {
+                request_id: fake_rid(41),
+                response: flush_tx,
+            })
             .await
-            .expect("flush request");
-        assert!(flush_rx.await.expect("production restore flush result"));
+            .expect("finish restore request");
+        assert!(flush_rx.await.expect("production restore terminal result"));
 
         let (freshness, completion_dispatches) =
             tokio::time::timeout(Duration::from_secs(2), async {
@@ -26872,19 +27009,42 @@ mod tests {
             ["start:B:epoch=7:limit=128"],
         );
 
-        let mut items_updated_count = 0;
+        let mut settlement_events = Vec::new();
         while let Ok(event) = event_rx.try_recv() {
-            if matches!(
-                event,
-                CoreEvent::Timeline(TimelineEvent::ItemsUpdated { .. })
-            ) {
-                items_updated_count += 1;
+            match event {
+                CoreEvent::Timeline(TimelineEvent::ItemsUpdated { .. }) => {
+                    settlement_events.push("items")
+                }
+                CoreEvent::Timeline(TimelineEvent::NavigationUpdated { .. }) => {
+                    settlement_events.push("navigation")
+                }
+                CoreEvent::Timeline(TimelineEvent::AnchorRestoreFinished { .. }) => {
+                    settlement_events.push("terminal")
+                }
+                _ => {}
             }
         }
         assert_eq!(
-            items_updated_count, 1,
-            "restore publishes one coalesced batch"
+            settlement_events
+                .iter()
+                .filter(|event| **event == "items")
+                .count(),
+            1,
+            "restore publishes one convergent coalesced batch"
         );
+        let items_position = settlement_events
+            .iter()
+            .position(|event| *event == "items")
+            .expect("coalesced ItemsUpdated");
+        let navigation_position = settlement_events
+            .iter()
+            .position(|event| *event == "navigation")
+            .expect("settled NavigationUpdated");
+        let terminal_position = settlement_events
+            .iter()
+            .position(|event| *event == "terminal")
+            .expect("AnchorRestoreFinished terminal");
+        assert!(items_position < navigation_position && navigation_position < terminal_position);
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         manager_tx
@@ -29170,8 +29330,8 @@ mod tests {
             .expect("message builder should follow forwarder");
 
         assert!(
-            forwarder.contains("tx.send(message).await"),
-            "live search index mutations, including redactions, must use reliable send"
+            forwarder.contains("emit_search_messages_reliable"),
+            "live search index mutations, including redactions, must use the generation-fenced reliable sender"
         );
         assert!(
             !forwarder.contains("try_send(SearchIndexMessage"),
@@ -31674,11 +31834,9 @@ mod tests {
         else {
             panic!("replacement stream must produce a generation-tagged batch");
         };
-        let diffs = accepted_relay_batch(generation, batch_generation, diffs)
-            .expect("replacement generation must be accepted")
-            .into_iter()
-            .map(|diff| sdk_vector_diff_to_timeline_diff(diff, &key, None, &HashMap::new()))
-            .collect();
+        let sdk_diffs = accepted_relay_batch(generation, batch_generation, diffs)
+            .expect("replacement generation must be accepted");
+        let diffs = sdk_vector_diffs_to_timeline_diffs(&sdk_diffs, 0, &key, None, &HashMap::new());
         assert!(
             emit_items_updated_and_reconcile_replay_known_for_generation(
                 &event_tx,
@@ -32661,19 +32819,20 @@ mod tests {
             "handle_diff_batch must still emit ItemsUpdated on the non-restore branch"
         );
 
-        // 3. The actor flush delegates to the one generation-fenced settlement
-        //    boundary. The boundary drains the buffer and emits ItemsUpdated,
-        //    changed navigation, and the terminal as one lease-held group.
-        let flush_src = production
-            .split("fn flush_restore_emit_buffer(")
-            .nth(1)
-            .expect("flush_restore_emit_buffer helper must exist")
+        // 3. Every real terminal delegates directly to the one
+        //    generation-fenced settlement boundary. The boundary drains the
+        //    buffer and emits ItemsUpdated, changed navigation, and terminal
+        //    as one lease-held group.
+        let finish_src = production
             .split("fn finish_anchor_restore(")
+            .nth(1)
+            .expect("finish_anchor_restore must exist")
+            .split("async fn emit_action_reliable")
             .next()
-            .expect("flush_restore_emit_buffer must end before finish_anchor_restore");
+            .expect("action helper must follow restore finish");
         assert!(
-            flush_src.contains("publish_restore_settlement(None)"),
-            "test flush must delegate to the atomic restore settlement"
+            finish_src.contains("publish_restore_settlement(Some((request_id, status)))"),
+            "real restore terminals must delegate to the atomic settlement"
         );
         let settlement_src = production
             .split("fn publish_restore_settlement_with_lease(")
@@ -32834,15 +32993,105 @@ mod tests {
 
     // --- VectorDiff → TimelineDiff conversion ---
 
-    #[test]
-    fn sdk_vector_diff_converts_correctly() {
-        // We can't construct real SdkTimelineItems without the SDK runtime;
-        // instead test the conversion path shape by examining the match arms
-        // in sdk_vector_diff_to_timeline_diff are exhaustive for all diff kinds.
-        // This is verified by the compiler (no dead_code warnings).
-        // We document the PopBack → Truncate(0) and Append → Reset mappings here.
-        let _popback_maps_to_truncate: bool = true;
-        let _append_maps_to_reset: bool = true;
+    #[tokio::test]
+    async fn sdk_vector_diff_batch_preserves_prefix_for_append_and_pop_variants() {
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+        use matrix_sdk_test::{ALICE, JoinedRoomBuilder, event_factory::EventFactory};
+
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        client
+            .event_cache()
+            .subscribe()
+            .expect("event cache subscription");
+        let room_id = matrix_sdk::ruma::room_id!("!sdk-diff-shapes:example.org");
+        let room = server.sync_joined_room(&client, room_id).await;
+        let factory = EventFactory::new().room(room_id).sender(&ALICE);
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(room_id)
+                    .add_timeline_event(
+                        factory
+                            .text_msg("prefix-a")
+                            .event_id(matrix_sdk::ruma::event_id!("$prefix-a:example.org"))
+                            .into_raw_sync(),
+                    )
+                    .add_timeline_event(
+                        factory
+                            .text_msg("prefix-b")
+                            .event_id(matrix_sdk::ruma::event_id!("$prefix-b:example.org"))
+                            .into_raw_sync(),
+                    )
+                    .add_timeline_event(
+                        factory
+                            .text_msg("append-a")
+                            .event_id(matrix_sdk::ruma::event_id!("$append-a:example.org"))
+                            .into_raw_sync(),
+                    )
+                    .add_timeline_event(
+                        factory
+                            .text_msg("append-b")
+                            .event_id(matrix_sdk::ruma::event_id!("$append-b:example.org"))
+                            .into_raw_sync(),
+                    ),
+            )
+            .await;
+        let timeline = koushi_timeline_builder(
+            &room,
+            TimelineFocus::Live {
+                hide_threaded_events: false,
+            },
+        )
+        .build()
+        .await
+        .expect("room timeline");
+        let (sdk_items, _stream) = timeline.subscribe().await;
+        let event = |event_id: &str| {
+            sdk_items
+                .iter()
+                .find(|item| {
+                    item.as_event()
+                        .and_then(|event| event.event_id())
+                        .is_some_and(|candidate| candidate.as_str() == event_id)
+                })
+                .cloned()
+                .expect("fixture SDK event")
+        };
+        let key = TimelineKey::room(AccountKey(ALICE.to_string()), room_id.to_string());
+        let mut canonical = vec![
+            sdk_item_to_timeline_item(&key, &event("$prefix-a:example.org"), Some(&ALICE)),
+            sdk_item_to_timeline_item(&key, &event("$prefix-b:example.org"), Some(&ALICE)),
+        ];
+        let diffs = sdk_vector_diffs_to_timeline_diffs(
+            &[
+                eyeball_im::VectorDiff::Append {
+                    values: eyeball_im::Vector::from(vec![
+                        event("$append-a:example.org"),
+                        event("$append-b:example.org"),
+                    ]),
+                },
+                eyeball_im::VectorDiff::PopBack,
+                eyeball_im::VectorDiff::PopFront,
+            ],
+            canonical.len(),
+            &key,
+            Some(&ALICE),
+            &HashMap::new(),
+        );
+        apply_timeline_diffs_to_items(&mut canonical, &diffs);
+
+        assert_eq!(
+            canonical
+                .iter()
+                .filter_map(|item| match &item.id {
+                    TimelineItemId::Event { event_id } => Some(event_id.as_str()),
+                    TimelineItemId::Transaction { .. } | TimelineItemId::Synthetic { .. } => None,
+                })
+                .collect::<Vec<_>>(),
+            vec!["$prefix-b:example.org", "$append-a:example.org"],
+            "Append must retain the existing prefix and PopBack must remove only the live edge"
+        );
     }
 
     // --- Navigation snapshot read-marker display anchor ---

@@ -194,3 +194,46 @@ path, or raw error is recorded by the fallback diagnostic.
 
 The only gates deliberately left to the root agent are independent frontier
 review and the single long homeserver lane. No PR was created or pushed here.
+
+## POST-REVIEW HARDENING — 2026-07-20
+
+The root review found five real boundary weaknesses; all were addressed before
+handoff:
+
+- SDK `Append`, `PopBack`, and `PopFront` now convert as one ordered batch with
+  an evolving canonical length. `Append` emits ordered `PushBack` operations,
+  `PopBack` removes only `len - 1`, and a mixed batch preserves its prefix.
+- Awaitable reducer/search delivery reserves channel capacity first, then
+  reacquires the actor-generation lease and publishes synchronously. A
+  replacement during the await discards the prepared continuation. Diff and
+  authoritative-recovery continuations likewise reacquire ownership before
+  each synchronous mutation/publication stage and stop after a stale await.
+- Actor-originated `Set` changes resolve the exact retained
+  `DisplayProjectionSlot.canonical_index`. Duplicate render identities cannot
+  redirect a revision to the wrong owner; an exact owner outside the bounded
+  display produces no display diff. SDK and non-SDK projection now share the
+  same final diff builder, validator, and Reset fallback.
+- The production actor/manager restore test now drives two distinct SDK diff
+  batches through active buffering and a real `finish_anchor_restore`
+  terminal. It requires a non-empty multi-batch buffer, exactly one convergent
+  `ItemsUpdated`, and ordered `ItemsUpdated` → `NavigationUpdated` →
+  `AnchorRestoreFinished` publication.
+- The brittle source-parsing gateway test was deleted. The obsolete
+  flush-only test helper was also removed; restore tests exercise the real
+  terminal boundary.
+
+Fresh post-review evidence:
+
+- Ordered SDK variant fixture: 1 passed, 0 failed.
+- Duplicate-owner and out-of-window non-SDK projection: 2 passed, 0 failed.
+- Replacement-during-capacity-await generation fence: 1 passed, 0 failed.
+- Production actor restore settlement: 1 passed, 0 failed (0.60 s).
+- Full `timeline::tests`: 214 passed, 1 intentionally ignored, 0 failed.
+- TimelineStore: 69 passed, 0 failed.
+- Desktop typecheck: passed.
+- `cargo check -p koushi-core` and the `--no-default-features` variant: passed
+  without warnings.
+- `cargo fmt -p koushi-core -- --check`: passed.
+- `git diff --check`: passed.
+
+The long homeserver lane remains deliberately delegated to the root agent.
