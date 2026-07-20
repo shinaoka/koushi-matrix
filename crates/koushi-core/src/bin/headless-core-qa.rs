@@ -10177,7 +10177,7 @@ async fn verify_second_device_room_key_delivery_for_qa(
         .await
         .map_err(|e| format!("second-device decrypt: submit A2 subscribe failed: {e}"))?;
 
-    let initial_a2 = wait_for_initial_items(
+    let initial_a2 = wait_for_initial_items_or_active_replay(
         conn_a2,
         &key_a2,
         subscribe_a2_id,
@@ -17738,6 +17738,21 @@ mod tests {
         assert!(seed.contains("wait_for_initial_items_or_active_replay("));
         assert!(!seed.contains("wait_for_initial_items("));
         assert!(seed.contains("subscribe encrypted backup seed"));
+    }
+
+    #[test]
+    fn second_device_encrypted_room_resubscribe_uses_active_replay_waiter() {
+        let source = include_str!("headless-core-qa.rs");
+        let delivery = source
+            .split("async fn verify_second_device_room_key_delivery_for_qa(")
+            .nth(1)
+            .expect("second-device encrypted delivery helper should exist")
+            .split("async fn verify_multi_user_multi_device_room_key_delivery_for_qa(")
+            .next()
+            .expect("multi-device delivery helper should follow second-device delivery");
+
+        assert!(delivery.contains("wait_for_initial_items_or_active_replay("));
+        assert!(!delivery.contains("wait_for_initial_items("));
     }
 
     #[test]
