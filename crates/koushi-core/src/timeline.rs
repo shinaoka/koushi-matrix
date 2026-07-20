@@ -27918,6 +27918,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn idempotent_subscribe_replay_carries_exact_command_cause() {
+        let key = room_key();
+        let first_subscribe_request_id = fake_rid(28_500);
+        let second_subscribe_request_id = fake_rid(28_501);
+        let (actor_tx, mut actor_rx) = mpsc::channel(2);
+        let actor_handle = TimelineActorHandle {
+            tx: actor_tx,
+            task: None,
+            auxiliary_tasks: Vec::new(),
+            subscription_generation: None,
+            enqueue_context: None,
+        };
+        let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), actor_handle)]));
+
+        manager
+            .handle_subscribe(first_subscribe_request_id, key.clone(), true)
+            .await;
+        manager
+            .handle_subscribe(second_subscribe_request_id, key, true)
+            .await;
+
+        assert!(matches!(
+            actor_rx.recv().await,
+            Some(TimelineActorMessage::ReplayInitialItems {
+                cause_request_id: Some(cause_request_id),
+            }) if cause_request_id == first_subscribe_request_id
+        ));
+        assert!(matches!(
+            actor_rx.recv().await,
+            Some(TimelineActorMessage::ReplayInitialItems {
+                cause_request_id: Some(cause_request_id),
+            }) if cause_request_id == second_subscribe_request_id
+        ));
+    }
+
+    #[tokio::test]
     async fn live_tail_preemption_cancels_network_before_new_active_room_starts() {
         let account = AccountKey("@a:test".to_owned());
         let room_a = TimelineKey::room(account.clone(), "!a:test");

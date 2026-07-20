@@ -34,6 +34,7 @@
 //! SDK handles are dropped inside the Tokio runtime context (overview.md Async rule 11).
 
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::pin::Pin;
 use std::process::ExitCode;
 use std::sync::{
     Arc, Condvar, Mutex,
@@ -41,7 +42,7 @@ use std::sync::{
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::{collections::BTreeSet, io};
+use std::{collections::BTreeSet, future::Future, io};
 
 use koushi_core::command::{
     AccountCommand, AppCommand, CoreCommand, CreateRoomOptions, CreateRoomVisibility,
@@ -59,7 +60,7 @@ use koushi_core::event::{
 };
 use koushi_core::failure::{CoreFailure, RoomFailureKind};
 use koushi_core::ids::{AccountKey, RequestId, TimelineKey, TimelineKind};
-use koushi_core::runtime::{CoreConnection, CoreRuntime};
+use koushi_core::runtime::{CoreConnection, CoreRuntime, EventStreamLag};
 use koushi_state::{
     ActivityMarkReadTarget, ActivityRowKind, ActivityState, AppAction, AppState, AuthSecret,
     ComposerKey, ComposerKeyEvent, ComposerKeyModifiers, ComposerResolvedAction,
@@ -113,6 +114,39 @@ const E2EE_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
 // sends resume, so this lane needs a wider budget than generic event waits.
 const SEND_QUEUE_EVENT_TIMEOUT: Duration = Duration::from_secs(300);
 const TIMELINE_UNSUBSCRIBE_SETTLE_TIMEOUT: Duration = Duration::from_secs(2);
+
+type QaEventFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<CoreEvent, EventStreamLag>> + Send + 'a>>;
+
+trait QaEventSource {
+    fn recv_event(&mut self) -> QaEventFuture<'_>;
+}
+
+impl QaEventSource for CoreConnection {
+    fn recv_event(&mut self) -> QaEventFuture<'_> {
+        Box::pin(CoreConnection::recv_event(self))
+    }
+}
+
+#[derive(Clone, Copy)]
+struct QaEventDeadline {
+    instant: tokio::time::Instant,
+}
+
+impl QaEventDeadline {
+    fn after(timeout: Duration) -> Self {
+        Self {
+            instant: tokio::time::Instant::now() + timeout,
+        }
+    }
+
+    async fn recv<S: QaEventSource + ?Sized>(
+        self,
+        source: &mut S,
+    ) -> Result<Result<CoreEvent, EventStreamLag>, tokio::time::error::Elapsed> {
+        tokio::time::timeout_at(self.instant, source.recv_event()).await
+    }
+}
 const THREAD_REPLY_BODY: &str = "Phase 11 QA thread reply from B";
 const E2EE_KEY_BACKUP_SEED_BODY: &str = "Koushi E2EE key backup seed";
 const E2EE_SECOND_DEVICE_BODY: &str = "Koushi E2EE second-device delivery";
@@ -8652,8 +8686,10 @@ async fn wait_for_sync_started_and_running(
 ) -> Result<SyncBackendKind, String> {
     let mut observed_backend = None;
     let mut saw_running_before_started = false;
+    let deadline = QaEventDeadline::after(EVENT_TIMEOUT);
     loop {
-        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+        let event = deadline
+            .recv(conn)
             .await
             .map_err(|_| format!("{label}: timed out waiting for SyncEvent::Started/Running"))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
@@ -8903,8 +8939,10 @@ async fn wait_for_ready_snapshot(conn: &mut CoreConnection, label: &str) -> Resu
         return Ok(());
     }
 
+    let deadline = QaEventDeadline::after(EVENT_TIMEOUT);
     loop {
-        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+        let event = deadline
+            .recv(conn)
             .await
             .map_err(|_| format!("{label}: timed out waiting for Ready snapshot"))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
@@ -9135,8 +9173,10 @@ async fn wait_for_logged_in(
     if let SessionState::Ready(info) = &conn.snapshot().session {
         return Ok(AccountKey(info.user_id.clone()));
     }
+    let deadline = QaEventDeadline::after(LOGIN_EVENT_TIMEOUT);
     loop {
-        let event = tokio::time::timeout(LOGIN_EVENT_TIMEOUT, conn.recv_event())
+        let event = deadline
+            .recv(conn)
             .await
             .map_err(|_| format!("{label}: timed out waiting for LoggedIn event"))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
@@ -10617,8 +10657,10 @@ async fn subscribe_and_ack_active_timeline_projection_for_qa(
     .await
     .map_err(|e| format!("{label}: submit timeline subscribe failed: {e}"))?;
 
+    let deadline = QaEventDeadline::after(TIMELINE_INITIAL_EVENT_TIMEOUT);
     loop {
-        let event = tokio::time::timeout(TIMELINE_INITIAL_EVENT_TIMEOUT, conn.recv_event())
+        let event = deadline
+            .recv(conn)
             .await
             .map_err(|_| format!("{label}: timed out waiting for active timeline projection"))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
@@ -10814,8 +10856,10 @@ async fn wait_for_verification_accepted(
         return Ok(());
     }
 
+    let deadline = QaEventDeadline::after(E2EE_EVENT_TIMEOUT);
     loop {
-        let event = tokio::time::timeout(E2EE_EVENT_TIMEOUT, conn.recv_event())
+        let event = deadline
+            .recv(conn)
             .await
             .map_err(|_| format!("{label}: timed out waiting for verification acceptance"))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
@@ -11975,12 +12019,27 @@ async fn wait_for_initial_items(
     request_id: koushi_core::ids::RequestId,
     label: &str,
 ) -> Result<Vec<koushi_core::event::TimelineItem>, String> {
+    wait_for_initial_items_from_source(conn, key, request_id, label, TIMELINE_INITIAL_EVENT_TIMEOUT)
+        .await
+}
+
+async fn wait_for_initial_items_from_source<S: QaEventSource + ?Sized>(
+    source: &mut S,
+    key: &TimelineKey,
+    request_id: koushi_core::ids::RequestId,
+    label: &str,
+    timeout: Duration,
+) -> Result<Vec<koushi_core::event::TimelineItem>, String> {
+    let deadline = QaEventDeadline::after(timeout);
+    let mut diagnostics = InitialItemsWaitDiagnostics::default();
     loop {
-        let event = tokio::time::timeout(TIMELINE_INITIAL_EVENT_TIMEOUT, conn.recv_event())
+        let event = deadline
+            .recv(source)
             .await
-            .map_err(|_| format!("{label}: timed out waiting for TimelineEvent::InitialItems"))?
+            .map_err(|_| diagnostics.timeout_message(label))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
+        diagnostics.observe(&event, key, request_id);
         match match_initial_items_wait_event(event, key, request_id) {
             InitialItemsWaitMatch::Items(items) => return Ok(items),
             InitialItemsWaitMatch::Failure(failure) => {
@@ -11988,6 +12047,50 @@ async fn wait_for_initial_items(
             }
             InitialItemsWaitMatch::Ignore => continue,
         }
+    }
+}
+
+#[derive(Default)]
+struct InitialItemsWaitDiagnostics {
+    same_key_exact_cause: u64,
+    same_key_wrong_cause: u64,
+    same_key_causeless: u64,
+    wrong_key_initial_items: u64,
+    unrelated_events: u64,
+}
+
+impl InitialItemsWaitDiagnostics {
+    fn observe(&mut self, event: &CoreEvent, key: &TimelineKey, request_id: RequestId) {
+        match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                cause_request_id,
+                key: event_key,
+                ..
+            }) if event_key == key => match cause_request_id {
+                Some(cause_request_id) if *cause_request_id == request_id => {
+                    self.same_key_exact_cause += 1;
+                }
+                Some(_) => self.same_key_wrong_cause += 1,
+                None => self.same_key_causeless += 1,
+            },
+            CoreEvent::Timeline(TimelineEvent::InitialItems { .. }) => {
+                self.wrong_key_initial_items += 1;
+            }
+            _ => self.unrelated_events += 1,
+        }
+    }
+
+    fn timeout_message(&self, label: &str) -> String {
+        format!(
+            "{label}: timed out waiting for TimelineEvent::InitialItems \
+             (same_key_exact_cause={}, same_key_wrong_cause={}, same_key_causeless={}, \
+             wrong_key_initial_items={}, unrelated_events={})",
+            self.same_key_exact_cause,
+            self.same_key_wrong_cause,
+            self.same_key_causeless,
+            self.wrong_key_initial_items,
+            self.unrelated_events,
+        )
     }
 }
 
@@ -12242,8 +12345,10 @@ async fn wait_for_send_flow_completion_with_timeout(
 ) -> Result<SendFlowOutcome, String> {
     let mut waiter = SendFlowWaiter::new(request_id, key.clone(), client_txn_id, expected_body);
 
+    let deadline = QaEventDeadline::after(timeout);
     loop {
-        let event = tokio::time::timeout(timeout, conn.recv_event())
+        let event = deadline
+            .recv(conn)
             .await
             .map_err(|_| {
                 format!(
@@ -17639,6 +17744,311 @@ mod tests {
         ));
     }
 
+    struct ScriptedQaEventSource {
+        events: std::collections::VecDeque<CoreEvent>,
+    }
+
+    impl QaEventSource for ScriptedQaEventSource {
+        fn recv_event(
+            &mut self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<CoreEvent, koushi_core::runtime::EventStreamLag>,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async move {
+                match self.events.pop_front() {
+                    Some(event) => Ok(event),
+                    None => std::future::pending().await,
+                }
+            })
+        }
+    }
+
+    struct IntervalQaEventSource {
+        interval: tokio::time::Interval,
+    }
+
+    impl QaEventSource for IntervalQaEventSource {
+        fn recv_event(
+            &mut self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<CoreEvent, koushi_core::runtime::EventStreamLag>,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async move {
+                self.interval.tick().await;
+                Ok(CoreEvent::Sync(SyncEvent::Running))
+            })
+        }
+    }
+
+    fn strict_e2ee_waiter_inventory() -> &'static [(&'static str, &'static str)] {
+        &[
+            (
+                "wait_for_existing_identity_gate",
+                "\nasync fn wait_for_recovery_gate",
+            ),
+            (
+                "wait_for_room_in_room_list",
+                "\nasync fn wait_for_space_in_space_list",
+            ),
+            (
+                "wait_for_sync_started_and_running",
+                "\nasync fn wait_for_sync_started",
+            ),
+            (
+                "wait_for_ready_snapshot",
+                "\nasync fn wait_for_room_unread_count",
+            ),
+            ("wait_for_logged_in", "\nasync fn wait_for_session_restored"),
+            (
+                "subscribe_and_ack_active_timeline_projection_for_qa",
+                "\nfn assert_no_decryption_failure_items",
+            ),
+            (
+                "wait_for_verification_requested_event_only",
+                "\nfn requested_verification_flow_id",
+            ),
+            (
+                "wait_for_verification_accepted",
+                "\nfn verification_state_is_at_least_accepted",
+            ),
+            (
+                "wait_for_initial_items_from_source",
+                "\n#[derive(Default)]\nstruct InitialItemsWaitDiagnostics",
+            ),
+            (
+                "wait_for_send_flow_completion_with_timeout",
+                "\nasync fn send_text_expect_local_echo",
+            ),
+            (
+                "wait_for_item_with_body_or_decryption_failure",
+                "\nasync fn wait_for_bodies_and_pagination_settle",
+            ),
+        ]
+    }
+
+    fn strict_e2ee_waiter_body<'a>(
+        source: &'a str,
+        waiter: &str,
+        end_declaration: &str,
+    ) -> &'a str {
+        source
+            .split(&format!("async fn {waiter}"))
+            .nth(1)
+            .unwrap_or_else(|| panic!("missing strict E2EE waiter {waiter}"))
+            .split(end_declaration)
+            .next()
+            .unwrap_or_else(|| panic!("missing end declaration for strict E2EE waiter {waiter}"))
+    }
+
+    fn strict_e2ee_rolling_waiters(source: &str) -> Vec<&'static str> {
+        strict_e2ee_waiter_inventory()
+            .iter()
+            .filter_map(|&(waiter, end_declaration)| {
+                strict_e2ee_waiter_body(source, waiter, end_declaration)
+                    .contains("tokio::time::timeout(")
+                    .then_some(waiter)
+            })
+            .collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn initial_items_wait_deadline_is_not_extended_by_continuous_unrelated_events() {
+        let request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 2,
+        };
+        let key = TimelineKey::room(AccountKey("@qa:example.invalid".to_owned()), "!room:test");
+        let mut source = IntervalQaEventSource {
+            interval: tokio::time::interval(Duration::from_secs(1)),
+        };
+        let started_at = tokio::time::Instant::now();
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(30),
+            wait_for_initial_items_from_source(
+                &mut source,
+                &key,
+                request_id,
+                "deadline starvation regression",
+                Duration::from_secs(10),
+            ),
+        )
+        .await
+        .expect("the absolute waiter must finish before the outer starvation guard");
+
+        let error = result.expect_err("unrelated events must not satisfy the causal wait");
+        assert!(error.contains("timed out waiting for TimelineEvent::InitialItems"));
+        assert!(error.contains("same_key_wrong_cause=0"));
+        assert!(error.contains("same_key_causeless=0"));
+        assert!(error.contains("unrelated_events="));
+        assert_eq!(
+            tokio::time::Instant::now().duration_since(started_at),
+            Duration::from_secs(10),
+            "unrelated events must not restart the ten-second budget"
+        );
+    }
+
+    #[tokio::test]
+    async fn initial_items_wait_skips_fresh_wrong_cause_then_accepts_exact_replay_cause() {
+        let old_projection_request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 1,
+        };
+        let subscribe_request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 2,
+        };
+        let key = TimelineKey::room(AccountKey("@qa:example.invalid".to_owned()), "!room:test");
+        let event = |cause_request_id, items| {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id: Some(old_projection_request_id),
+                cause_request_id: Some(cause_request_id),
+                key: key.clone(),
+                actor_generation: 1,
+                generation: koushi_core::ids::TimelineGeneration(0),
+                items,
+            })
+        };
+        let mut source = ScriptedQaEventSource {
+            events: [
+                event(old_projection_request_id, Vec::new()),
+                event(
+                    subscribe_request_id,
+                    vec![projection_timeline_item("$exact-replay:test", false)],
+                ),
+            ]
+            .into(),
+        };
+
+        let items = wait_for_initial_items_from_source(
+            &mut source,
+            &key,
+            subscribe_request_id,
+            "causal replay regression",
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("the exact idempotent replay cause should satisfy the waiter");
+
+        assert_eq!(items.len(), 1, "the wrong-cause fresh event was ignored");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn initial_items_timeout_reports_only_private_safe_causal_category_counts() {
+        let old_request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 1,
+        };
+        let request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 2,
+        };
+        let key = TimelineKey::room(AccountKey("@qa:example.invalid".to_owned()), "!room:test");
+        let wrong_key =
+            TimelineKey::room(AccountKey("@qa:example.invalid".to_owned()), "!other:test");
+        let initial = |event_key, cause_request_id| {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id: Some(old_request_id),
+                cause_request_id,
+                key: event_key,
+                actor_generation: 1,
+                generation: koushi_core::ids::TimelineGeneration(0),
+                items: Vec::new(),
+            })
+        };
+        let mut source = ScriptedQaEventSource {
+            events: [
+                initial(key.clone(), Some(old_request_id)),
+                initial(key.clone(), None),
+                initial(wrong_key, Some(request_id)),
+                CoreEvent::Sync(SyncEvent::Running),
+            ]
+            .into(),
+        };
+
+        let error = wait_for_initial_items_from_source(
+            &mut source,
+            &key,
+            request_id,
+            "causal categories regression",
+            Duration::from_secs(1),
+        )
+        .await
+        .expect_err("no exact-cause event was supplied");
+
+        assert!(error.contains("same_key_exact_cause=0"));
+        assert!(error.contains("same_key_wrong_cause=1"));
+        assert!(error.contains("same_key_causeless=1"));
+        assert!(error.contains("wrong_key_initial_items=1"));
+        assert!(error.contains("unrelated_events=1"));
+        assert!(!error.contains("@qa:"));
+        assert!(!error.contains("!room:"));
+    }
+
+    #[test]
+    fn strict_e2ee_guard_extracts_each_complete_waiter_body() {
+        let source = include_str!("headless-core-qa.rs");
+        let production_source = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("headless-core-qa source should contain production section");
+
+        for &(waiter, end_declaration) in strict_e2ee_waiter_inventory() {
+            let body = strict_e2ee_waiter_body(production_source, waiter, end_declaration);
+            assert!(
+                body.contains(".recv(") || body.contains("recv_event()"),
+                "{waiter} extraction must reach its event receive loop"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_e2ee_guard_detects_a_rolling_timeout_in_every_inventory_body() {
+        let source = include_str!("headless-core-qa.rs");
+        let production_source = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("headless-core-qa source should contain production section");
+
+        for &(waiter, _) in strict_e2ee_waiter_inventory() {
+            let declaration = format!("async fn {waiter}");
+            let injected_declaration = format!(
+                "{declaration}\n    tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())"
+            );
+            let injected = production_source.replacen(&declaration, &injected_declaration, 1);
+
+            assert_eq!(
+                strict_e2ee_rolling_waiters(&injected),
+                vec![waiter],
+                "the structural guard must detect a rolling timeout in {waiter}"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_e2ee_event_waiters_do_not_restart_timeouts_per_event() {
+        let source = include_str!("headless-core-qa.rs");
+        let production_source = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("headless-core-qa source should contain production section");
+        let rolling_waiters = strict_e2ee_rolling_waiters(production_source);
+        assert!(
+            rolling_waiters.is_empty(),
+            "strict E2EE waiters must use one absolute deadline; rolling={rolling_waiters:?}"
+        );
+    }
+
     #[test]
     fn active_room_thread_refresh_uses_the_exact_causal_waiter() {
         let source = include_str!("headless-core-qa.rs");
@@ -17908,8 +18318,9 @@ mod tests {
             "login waits need their own timeout because local homeservers can finish /login slowly under full QA load"
         );
         assert!(
-            wait_body.contains("tokio::time::timeout(LOGIN_EVENT_TIMEOUT, conn.recv_event())"),
-            "wait_for_logged_in must not use the short generic EVENT_TIMEOUT"
+            wait_body.contains("QaEventDeadline::after(LOGIN_EVENT_TIMEOUT)")
+                && wait_body.contains(".recv(conn)"),
+            "wait_for_logged_in must use one absolute dedicated login deadline"
         );
         assert!(
             wait_body.contains("SessionState::Ready(info)")
