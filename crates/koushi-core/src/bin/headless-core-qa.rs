@@ -3747,8 +3747,8 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
 async fn run_focused_send_queue_scenario(config: &QaConfig) -> Result<(), String> {
     let QaParticipantLoginOutcome {
         runtime,
-        conn,
-        account_key: _,
+        mut conn,
+        account_key,
         bootstrap_recovery_secret,
     } = login_synced_participant_for_qa(
         &config.homeserver,
@@ -3761,15 +3761,37 @@ async fn run_focused_send_queue_scenario(config: &QaConfig) -> Result<(), String
         QaParticipantLoginGate::BootstrapNewIdentity,
     )
     .await?;
-    let recovery_secret = bootstrap_recovery_secret
-        .ok_or_else(|| "send_queue bootstrap recovery secret unavailable".to_owned())?;
     println!("login_sync=ok");
+
+    let sync_stop_id = conn.next_request_id();
+    conn.command(CoreCommand::Sync(SyncCommand::Stop {
+        request_id: sync_stop_id,
+    }))
+    .await
+    .map_err(|e| format!("send_queue bootstrap submit sync stop: {e}"))?;
+    wait_for_sync_stopped(&mut conn, sync_stop_id, "send_queue bootstrap sync stop").await?;
+
+    let logout_id = conn.next_request_id();
+    conn.command(CoreCommand::Account(AccountCommand::Logout {
+        request_id: logout_id,
+    }))
+    .await
+    .map_err(|e| format!("send_queue bootstrap submit logout: {e}"))?;
+    wait_for_logged_out(
+        &mut conn,
+        logout_id,
+        &account_key,
+        "send_queue bootstrap logout",
+    )
+    .await?;
 
     drop(conn);
     tokio::time::timeout(EVENT_TIMEOUT, runtime.shutdown())
         .await
         .map_err(|_| "send_queue bootstrap ordered runtime shutdown timed out".to_owned())?;
 
+    let recovery_secret = bootstrap_recovery_secret
+        .ok_or_else(|| "send_queue bootstrap recovery secret unavailable".to_owned())?;
     run_send_queue_stage(config, &recovery_secret).await
 }
 
@@ -17623,6 +17645,24 @@ mod tests {
         }
 
         let source = include_str!("headless-core-qa.rs");
+        let run_async_before_generic_fixture = source
+            .split("async fn run_async")
+            .nth(1)
+            .and_then(|rest| rest.split("// One CoreRuntime per synthetic user").next())
+            .expect("run_async before the generic two-user fixture");
+        let focused_dispatch = run_async_before_generic_fixture
+            .find("if should_run_focused_send_queue_route(scenario)")
+            .expect("run_async dispatches SendQueue through its focused route");
+        let focused_call = run_async_before_generic_fixture
+            .find("run_focused_send_queue_scenario(&config).await?")
+            .expect("run_async invokes the focused SendQueue scenario");
+        let focused_return = run_async_before_generic_fixture[focused_call..]
+            .find("return Ok(scenario_report(&config.server_kind, scenario))")
+            .map(|offset| focused_call + offset)
+            .expect("focused SendQueue dispatch returns before generic fixture setup");
+        assert!(focused_dispatch < focused_call);
+        assert!(focused_call < focused_return);
+
         let route = source
             .split("async fn run_focused_send_queue_scenario")
             .nth(1)
@@ -17644,6 +17684,51 @@ mod tests {
         assert!(ordered_shutdown < standalone_stage);
         assert!(!route.contains("user_b"));
         assert!(!route.contains("password_b"));
+    }
+
+    #[test]
+    fn focused_send_queue_bootstrap_logs_out_before_ordered_shutdown() {
+        let source = include_str!("headless-core-qa.rs");
+        let route = source
+            .split("async fn run_focused_send_queue_scenario")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn run_send_queue_stage").next())
+            .expect("focused SendQueue route");
+
+        let sync_stop = route
+            .find("SyncCommand::Stop")
+            .expect("focused route submits sync stop");
+        let sync_stopped = route
+            .find("wait_for_sync_stopped")
+            .expect("focused route waits for correlated sync stop");
+        let logout = route
+            .find("AccountCommand::Logout")
+            .expect("focused route submits logout");
+        let logged_out = route
+            .find("wait_for_logged_out")
+            .expect("focused route waits for correlated logout");
+        let drop_connection = route
+            .find("drop(conn)")
+            .expect("focused route drops its bootstrap connection");
+        let ordered_shutdown = route
+            .find("runtime.shutdown()")
+            .expect("focused route awaits ordered runtime shutdown");
+        let missing_secret = route
+            .find("send_queue bootstrap recovery secret unavailable")
+            .expect("focused route reports a missing recovery secret");
+        let standalone_stage = route
+            .find("run_send_queue_stage(config, &recovery_secret).await")
+            .expect("focused route invokes the standalone SendQueue stage");
+
+        assert!(!route.contains("account_key: _"));
+        assert!(route.contains("&account_key"));
+        assert!(sync_stop < sync_stopped);
+        assert!(sync_stopped < logout);
+        assert!(logout < logged_out);
+        assert!(logged_out < drop_connection);
+        assert!(drop_connection < ordered_shutdown);
+        assert!(ordered_shutdown < missing_secret);
+        assert!(missing_secret < standalone_stage);
     }
 
     #[test]
