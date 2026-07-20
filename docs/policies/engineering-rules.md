@@ -7,7 +7,7 @@ build gates. AGENTS.md remains the operational how-to (permissions, install
 caveats, recovery steps); durable rules discovered there are promoted to
 REPOSITORY_RULES.md or this document.
 
-Last amended: 2026-07-17.
+Last amended: 2026-07-20.
 
 ## Secrets and Private Data
 
@@ -309,7 +309,12 @@ Rules:
 ## Async and Runtime
 
 1. No fixed sleeps in QA or product code waiting for Matrix effects — wait
-   on events with timeouts.
+   on events with timeouts. A multi-event waiter owns one monotonic absolute
+   deadline for the whole operation and passes that same deadline through
+   every loop iteration and nested phase. Never recreate a relative timeout
+   around each received event: an unrelated continuous sync stream would then
+   postpone failure forever. Timeout diagnostics identify the typed phase and
+   private-data-free observed state needed to locate the missing transition.
 2. Store-backed Matrix SDK clients must be dropped while a Tokio runtime
    context is entered; otherwise `deadpool-runtime` panics with
    "there is no reactor running".
@@ -449,8 +454,9 @@ Rules:
    every small-account headless lane.
 12. User-intent commands resolve to a correlated, observable terminal outcome —
    never a silent no-op. A foreground one-shot command
-   (`SelectRoom`/`SelectSpace`, send/edit/redact, pin/unpin, mark-read, invite
-   accept/decline, start DM, join/leave) carries its `request_id` end to end and
+   (account restore/login/logout, `SelectRoom`/`SelectSpace`, send/edit/redact,
+   pin/unpin, mark-read, invite accept/decline, start DM, join/leave) carries
+   its `request_id` end to end and
    settles as exactly one of `committed`, `benign-noop(reason)`, or
    `failed-noop(reason)`. A reducer that returns `Vec::new()` for such a command
    (room absent from `state.rooms`, session not ready) MUST surface that as a
@@ -461,7 +467,12 @@ Rules:
    #116 blocker was three stacked silent no-ops (`handle_select_room`
    `Vec::new()` → empty `build_state_delta` → neither `StateDelta` nor
    `StateChanged` → opaque 10s timeout) that collapsed four distinct failure
-   modes into one undiagnosable string.
+   modes into one undiagnosable string. Reducer projection is also an admission
+   boundary: if the projected action is rejected in the current state, emit
+   exactly one correlated typed failure and do not route the command. Separate
+   operation-event and snapshot lanes may arrive in either order; a follow-up
+   that depends on authoritative state must observe both its terminal and the
+   required snapshot state before submitting.
 13. Telemetry and diagnostics travel on a dedicated lane, not the product-state
    channel. Lifecycle/diagnostic events such as `CoreEvent::IntentLifecycle` are
    never folded into product `StateDelta`/`StateChanged`, never drive product
@@ -487,8 +498,39 @@ Rules:
    Ready is projected, and normal SyncActor ownership begins only after the
    projection acknowledgement. Do not add an admission-only full-state sync,
    share an incompatible restricted token with normal sync, or retain a
-   restricted lane beside normal sync. Network catch-up failure does not revoke
-   authoritative Verified trust; it is normal Ready-shell sync state.
+   restricted lane beside normal sync. A manual `SyncOnce` is permitted only
+   when no continuous or restricted owner is active for that SDK client; QA
+   must await typed event/state conditions instead of overlapping cursor
+   owners. Enforce that rule at both routing boundaries: reject before
+   `SyncActor` routing while `AccountActor` owns restricted sync, and reject
+   before the SDK one-shot call while a continuous owner or any of its task,
+   service, backend, or stop-handle artifacts remains. Network catch-up failure
+   does not revoke authoritative Verified trust; it is normal Ready-shell sync
+   state. Replayed verification starts are
+   idempotent: the SDK and owning actor adopt one SAS continuation per flow and
+   never replace its handle, observer, timeout, or acceptance on replay.
+   A QA device-readiness checkpoint may use the `qa-bin`-only read-only
+   user-key refresh plus exact-device acknowledgement. It must not use a
+   verification request/cancellation pair as a probe or expose the target in
+   diagnostics.
+17. A bounded materialized view's diff stream is not proof that every source
+   domain represented beside that view is unchanged. If authoritative state can
+   commit outside the bounded window, the owning observer must consume a
+   post-commit source signal as a wake-up and reconcile only the affected
+   fingerprint. Coalesce queued wakes, perform one bounded reconciliation after
+   lag, and keep auxiliary-channel closure from killing the authoritative
+   observer. The auxiliary signal must not create a second network/sync owner,
+   and high-frequency unrelated updates must be proven not to trigger full-view
+   normalization.
+18. A protocol version advertisement is not proof that the operation semantics
+   needed by the product are complete. Probe the narrow authenticated behavior
+   before creating its authoritative owner, with one end-to-end deadline that
+   includes authentication refresh/retry. Treat omitted required response
+   structure, typed/malformed failure, and deadline expiry as unsupported;
+   discard any cursor or product payload returned by the preflight. Capability
+   checks must not fingerprint server families or become a second polling/sync
+   owner. Cover success, omission, malformed/error, timeout, and stalled token
+   refresh with behavioral tests.
 
 ## GUI Automation
 

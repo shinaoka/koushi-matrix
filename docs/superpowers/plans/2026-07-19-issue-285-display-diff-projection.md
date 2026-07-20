@@ -8,6 +8,59 @@
 
 **Tech Stack:** Rust, Matrix SDK `VectorDiff`, Koushi Core timeline actor, TypeScript TimelineStore contract, Rust unit tests, Vitest.
 
+## 2026-07-20 Implementation Discovery Addendum
+
+The original prohibition on Matrix SDK semantic changes remains in force for
+timeline projection and send-queue behavior. Live E2EE gating exposed one
+separate crypto defect: replaying the same remote SAS start could replace an
+already-adopted responder continuation and produce a commitment/key mismatch.
+The approved narrow exception is the vendored SDK's same-peer/device/flow
+remote-start idempotency patch, with simultaneous-start and replay regressions,
+the parent gitlink update, and an upstream-feedback ledger entry. Koushi also
+enforces one adopted SAS continuation per flow and prevents its manual one-shot
+sync path from overlapping an actor-owned restricted or continuous sync lane.
+These hardening changes do not alter SDK timeline ordering or diff semantics.
+The same live gate also exposed an existing replay-correlation gap: an
+idempotent active-timeline Subscribe retained the original projection ACK ID
+but discarded the new command cause. The approved root correction carries both
+identities on `InitialItems`; projection acknowledgement remains bound to the
+original actor/generation, while Subscribe success requires the new causal
+request ID. Same-key matching alone is not acceptance evidence.
+The post-correction live gate then exposed a QA timeout-liveness defect:
+event-wait loops recreated a relative timeout after every unrelated event, so
+continuous sync traffic could postpone a nominal 90-second failure forever.
+The approved correction gives each logical waiter one monotonic absolute
+deadline, exercises deadline starvation with a continuously ready unrelated
+event stream, and audits the headless QA wait boundary for the same pattern.
+The next full gate exposed a separate room-observer liveness gap: invite state
+could commit outside the bounded `RoomListService` entries head without an
+entries diff, leaving `AppState.invites` stale. The approved correction keeps
+the existing single SyncService/RoomListService owner and adds the base client's
+post-commit room-update broadcast only as an auxiliary wake. It filters and
+coalesces that signal, reprojects invite payload/membership changes, performs a
+single lag reconciliation, and proves that ordinary joined-room updates do not
+trigger full room-list normalization.
+The local Conduit gate then proved that advertising MSC4186 does not establish
+the invited-room list behavior required by the product: Conduit's simplified
+sliding-sync path omitted the requested invite-filtered list. Backend selection
+therefore performs one authenticated, cursorless, zero-timeline invite-list
+contract preflight before either continuous owner starts. Presence of the exact
+requested list selects SyncService; omission, typed/malformed error, or the
+single end-to-end two-second deadline selects LegacySync. The deadline encloses
+automatic access-token refresh/retry, and the probe discards cursor/room data so
+it cannot become a second owner. Family/version fingerprinting is forbidden.
+The same gate finally exposed a cross-lane logout barrier: the `LoggedOut`
+operation event could arrive before the reducer snapshot showed `SignedOut`, so
+an immediate RestoreSession was projection-rejected while `LoggingOut` and then
+silently discarded by the runtime. The approved correction makes projection
+rejection an exactly-once correlated `OperationFailed`, requires headless QA to
+observe both `LoggedOut` and authoritative `SignedOut` in either order, and
+uses one absolute deadline for that waiter and its expected-failure follow-up.
+If the post-logout restore is admitted and then returns `SessionNotFound`, its
+failure terminal and the reducer's resulting `SignedOut` projection are the
+same two-signal barrier; observing the failure alone is not permission to read
+the dependent state.
+
 ## Global Constraints
 
 - GitHub issue [#285](https://github.com/shinaoka/koushi-matrix/issues/285), including its current body and review comment, is the approved design specification.

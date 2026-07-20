@@ -1,6 +1,6 @@
 # Matrix Rust SDK Feedback Packet
 
-Date: 2026-06-15
+Date: 2026-07-20
 
 This note separates SDK-upstreamable material from desktop-product decisions. Element Desktop/Web compatibility work in this repository is UX-only and is intentionally out of scope for the SDK feedback.
 
@@ -48,6 +48,29 @@ This note separates SDK-upstreamable material from desktop-product decisions. El
   room only as a bounded signal to inspect and repair its newest persisted
   live-edge gap after restart.
 
+- Idempotent remote SAS-start replay (2026-07-20, issue #285 hardening): a
+  repeated `m.key.verification.start` from the same peer, device, and flow no
+  longer replaces the already-adopted responder SAS continuation. Replacement
+  previously discarded accepted state and could end a valid exchange with a
+  commitment/key mismatch when overlapping sync delivery replayed the start.
+  Locally initiated simultaneous starts and QR-to-SAS transitions retain their
+  existing origin-specific tie-break paths. SDK tests cover exact remote replay
+  through successful identical emoji/key completion and separately preserve
+  simultaneous-start behavior. Upstreaming intent: submit this minimal crypto
+  state-machine patch with the replay regression after the desktop live E2EE
+  proof; keep protocol identifiers and raw cancellation text out of evidence.
+
+- Exact own-member required-state key (2026-07-20, issue #285 hardening):
+  `RoomListService` expands the MSC4186 `m.room.member` `$ME` placeholder to the
+  authenticated user's exact state key when building the all-rooms list and
+  room subscriptions, while retaining `$ME` when no authenticated user exists.
+  Other placeholders and event types are unchanged. This improves compatibility
+  with servers that advertise MSC4186 but do not expand `$ME`; it is not treated
+  as proof that their invite-list semantics are otherwise complete. Unit and
+  integration requests assert the exact expansion. Upstreaming intent: submit
+  the helper and request-shape regressions independently of Koushi's backend
+  capability preflight.
+
 Current SDK-only patch area:
 
 - `vendor/matrix-rust-sdk/crates/matrix-sdk-search`
@@ -56,6 +79,9 @@ Current SDK-only patch area:
   (`SendHandle::transaction_id()` accessor only)
 - `vendor/matrix-rust-sdk/crates/matrix-sdk/src/event_cache/mod.rs`
 - `vendor/matrix-rust-sdk/crates/matrix-sdk/tests/integration/event_cache/mod.rs`
+- `vendor/matrix-rust-sdk/crates/matrix-sdk-crypto/src/verification/requests.rs`
+- `vendor/matrix-rust-sdk/crates/matrix-sdk-ui/src/room_list_service/mod.rs`
+- `vendor/matrix-rust-sdk/crates/matrix-sdk-ui/tests/integration/room_list_service.rs`
 
 ## API Questions
 
@@ -113,6 +139,9 @@ Current SDK-only patch area:
 
 - `cargo test --manifest-path vendor/matrix-rust-sdk/crates/matrix-sdk-search/Cargo.toml`
 - `cargo test --manifest-path vendor/matrix-rust-sdk/crates/matrix-sdk/Cargo.toml search_index --features experimental-search,sqlite,e2e-encryption`
+- `cargo test --manifest-path vendor/matrix-rust-sdk/crates/matrix-sdk-crypto/Cargo.toml test_replayed_sas_start_keeps_adopted_responder_sas`
+- `cargo test --manifest-path vendor/matrix-rust-sdk/crates/matrix-sdk-crypto/Cargo.toml test_simultaneous_sas_starts_keep_lexicographically_smaller_start`
+- `cargo test --manifest-path vendor/matrix-rust-sdk/crates/matrix-sdk-ui/Cargo.toml room_list_service`
 - `git -C vendor/matrix-rust-sdk diff --check`
 
 ## Remaining Before Upstream PR

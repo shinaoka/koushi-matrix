@@ -5,7 +5,7 @@ Dated specs and plans under `docs/superpowers/` are implementation guides
 toward this document and must not contradict it. Amend this document first
 when a design change is needed, then update or supersede the affected specs.
 
-Last amended: 2026-07-17.
+Last amended: 2026-07-20.
 
 ## Product Scope
 
@@ -158,16 +158,14 @@ Crate responsibilities:
 - `apps/desktop` — view and interaction code only, including viewport state,
   DOM measurement, and scroll anchoring.
 
-Upstream SDK deltas are consumed from a single rev-pinned git dependency on
-`github.com/shinaoka/matrix-rust-sdk-work`, with the local
-`vendor/matrix-rust-sdk` submodule kept as the editable SDK checkout for
-preparing and reviewing upstreamable patches. Local comments document the patch
-surfaces, and `docs/upstream/matrix-rust-sdk-feedback.md` remains the ledger for
-PR candidate material. The vendored fork already contains the behavior/API
-deltas needed for the current search and runtime work; Phase 9 added
-explanatory comments and management docs, not new runtime behavior. The Phase 9
-cleanup follow-up completed the SDK adapter rename, room lifecycle commands,
-runtime IPC contract drift check, and optional AppCommand decision.
+Upstream SDK deltas are consumed exclusively from the checked-out
+`vendor/matrix-rust-sdk` submodule. Root workspace Matrix SDK dependencies are
+exact paths beneath that checkout, and the parent repository gitlink is the
+single revision pin; builds must not substitute a remote git dependency for the
+code under review. The submodule tracks the upstreamable fork on
+`github.com/shinaoka/matrix-rust-sdk-work`. Local comments document patch
+surfaces, and `docs/upstream/matrix-rust-sdk-feedback.md` is the required ledger
+for every local SDK behavior or API divergence.
 
 GUI, Tauri, CLI, and QA all use the same command/event boundary. There is no
 standalone daemon; the runtime is in-process.
@@ -235,9 +233,15 @@ An in-process actor system in `koushi-core`:
   `RoomListService` instances is prohibited — they are not driven by the
   sync loop, race it, and return entries without the `required_state`
   (e.g. `m.room.create` for space classification) the live service
-  requests. Its live entries adapter uses a non-left filter so invited-room
-  diffs also wake Rust-owned invite projection; joined-only observation leaves
-  `AppState.invites` stale. Room tags are projected into
+  requests. Its live entries adapter uses a non-left filter, but a bounded
+  adapter diff is not the sole liveness signal: an invite can commit outside
+  the visible entries head without changing that head. The same observer
+  therefore consumes the base client's already-committed room-update broadcast
+  as an auxiliary wake source. It coalesces queued updates, reprojects on an
+  invite payload or invite-membership change, performs one reconciliation after
+  lag, and ignores ordinary joined-room updates whose invite fingerprint is
+  unchanged. Closing the auxiliary broadcast disables only that wake arm; it
+  never starts a second sync loop or `RoomListService`. Room tags are projected into
   `RoomSummary.tags` by the same Rust-owned room-list normalization path, and
   sidebar unread/mention affordances consume Rust-owned unread/highlight counts
   from `SidebarModel`. React must not derive favourite, low-priority, unread,
@@ -576,19 +580,28 @@ stream), and the runtime must relay that model, not fight it.
    runtime does not replay completion for a dead connection. Durable
    cross-process submission settlement would require a separate encrypted,
    body-free outbox journal and is not part of this contract.
-9. **Sync uses capability-probed SDK services, not ad hoc polling.** Prefer
-   `SyncService`/`RoomListService` when the homeserver supports MSC4186. If
-   `SyncService` is unavailable for a target homeserver, the `SyncActor`
-   switches to an explicit `LegacySync` backend using SDK `/sync` primitives
-   while preserving the same `CoreCommand`/`CoreEvent` contract. The selected
-   backend is emitted as a redacted diagnostic/event field so QA can assert it.
+9. **Sync uses behavior-probed SDK services, not ad hoc polling.** Advertising
+   an MSC4186 version is necessary but not sufficient: before starting either
+   authoritative sync owner, Core issues one bounded, authenticated MSC4186
+   request for a fixed zero-timeline invited-room list. Only a response that
+   includes the requested list selects `SyncService`/`RoomListService`.
+   Omission of that list, a malformed/error response, or expiry of the one
+   end-to-end two-second deadline fails closed to the explicit `LegacySync`
+   backend using SDK `/sync` primitives. The deadline encloses automatic token
+   refresh and retry as well as transport time; the response cursor and room
+   payload are discarded, so the preflight never becomes another sync owner.
+   Do not replace this contract probe with homeserver-name/version
+   fingerprinting. Both backends preserve the same `CoreCommand`/`CoreEvent`
+   contract, and the selected backend plus a coarse private-data-free reason is
+   emitted so QA can assert the decision.
    `sync_once`-style one-shot polling remains a QA/debug tool, not the product
    continuous-sync path. Because legacy `/sync` works against any homeserver,
    a debug/test-only override (compile-time gated out of release builds)
-   forces the `LegacySync` backend so local QA exercises the legacy path even
-   against MSC4186-capable servers — both local QA servers advertise MSC4186,
-   so without the override the fallback would never run before the real
-   homeserver gate. Note that `RoomListService` is built on sliding sync:
+   forces the `LegacySync` backend so local QA exercises that path even when
+   the contract probe succeeds. Conduit currently advertises MSC4186 but omits
+   the requested invited-room list and therefore selects `LegacySync`
+   automatically; the local Tuwunel/Synapse profiles return the list and select
+   `SyncService`. Note that `RoomListService` is built on sliding sync:
    on the `LegacySync` backend, `RoomActor` must normalize the room list from
    legacy sync state (`Client::rooms()` plus sync updates) instead. Because the
    local QA matrix includes homeservers without MSC4186, this legacy room-list
@@ -718,10 +731,21 @@ measurement, and DOM anchoring.
 
 Runtime responsibilities:
 
-- Emit an initial item set followed by FIFO, `VectorDiff`-shaped diff batches.
-  Diff batches preserve positional operations (`PushFront`, `PushBack`,
-  `Insert`, `Set`, `Remove`, `Truncate`, `Clear`, `Reset`) closely enough that
-  the UI can distinguish prepend pagination from live append/update/remove.
+- Treat SDK timeline order and indices as a canonical, Core-internal domain.
+  One Core-owned projection transaction applies each SDK batch exactly once,
+  advances the bounded display membership/mirror, and emits only display-space
+  diffs. No raw canonical SDK index crosses `TimelineEvent::ItemsUpdated`.
+- Emit an initial item set followed by FIFO, `VectorDiff`-shaped display
+  batches. Every numeric `PushFront`, `PushBack`, `Insert`, `Set`, `Remove`,
+  `Truncate`, `Clear`, or `Reset` operation is relative to the desktop display
+  sequence immediately before that operation. Applying a batch to the prior
+  display must equal Core's authoritative normalized display after the batch.
+- Validate emitted display operations and final convergence in release builds.
+  An ambiguous or invalid incremental translation recovers with one
+  authoritative display `Reset` and increments the private-data-free
+  `display_projection_reset_fallbacks` counter. Ordinary focused and local
+  homeserver gates require a zero counter delta; Reset is exceptional recovery,
+  not a normal translation strategy.
 - Emit pagination state changes with `TimelineKey`, direction, state, and
   `Option<RequestId>`: `Idle`, `Paginating`, `EndReached`, `Failed(kind)`.
 - Treat a pagination command as data-complete when the SDK has produced the
@@ -750,6 +774,13 @@ UI responsibilities:
   `ItemsUpdated` batch and no resync is pending, initialize that key from an
   empty render list and apply the diff. After `ResyncRequired` or
   `ResyncMarker`, continue to require a fresh `InitialItems`.
+- Keep command completion and projection ownership causally distinct.
+  `InitialItems` retains the original projection request identity until the
+  exact actor/generation is acknowledged, while a separate causal request
+  identity correlates each initial or idempotent replay to the Subscribe command
+  that requested it. A same-key event without the matching causal identity must
+  not settle a later Subscribe; failures remain correlated to that later
+  command's request identity.
 - A Focused main-pane anchor is not display success by itself. For Activity,
   search, and date navigation, Core publishes the anchor only after the
   app-level timeline store applies and acknowledges the exact actor-owned
@@ -875,12 +906,26 @@ architectural invariants:
   handles are held only by `AccountActor`; SDK request/SAS streams settle the
   reducer with typed actions and expose only private-data-free DTOs such as SAS
   emojis. Incoming verification request discovery is Rust-owned in
-  `AccountActor`. The local core `e2ee_trust` proof exercises same-user
+  `AccountActor`. Replayed same-peer/device/flow SAS starts are idempotent at
+  the SDK boundary, and `AccountActor` adopts only one SAS continuation per
+  flow; a replay must not replace its handle, observer, timeout, or acceptance.
+  Manual one-shot sync is admitted only when that SDK client has no continuous
+  or restricted sync owner: `AccountActor` rejects it before routing while a
+  restricted owner is active, and `SyncActor` rejects it before any SDK call
+  while a continuous owner or owner artifact remains.
+  Headless E2EE QA that needs a device-readiness barrier performs a read-only,
+  `qa-bin`-only user-key refresh and requires the exact device to be present
+  before acknowledging; it does not create a verification flow as a probe.
+  Closed cancellation diagnostics may expose only a fixed cancellation kind
+  and whether cancellation originated locally, never raw protocol text or
+  identifiers. The local core `e2ee_trust` proof exercises same-user
   two-device SAS verification, cross-signing bootstrap, passphrase-backed
   key-backup enable, encrypted seed-room backup upload, wrong-secret restore
   failure, successful joined-room restore on the second device, and identity
-  reset on disposable local homeservers through the probed SyncService core leg
-  before GUI wiring. No design doc may claim exhaustive backup-wide restore
+  reset on disposable local homeservers through the behavior-probed core leg
+  before GUI wiring. That leg may select either backend from the invite-list
+  preflight; E2EE correctness must not depend on the server label. No design doc
+  may claim exhaustive backup-wide restore
   until the exact supported restore scope is proven or split into an explicit
   follow-up.
 

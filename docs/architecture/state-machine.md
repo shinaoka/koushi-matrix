@@ -8,7 +8,7 @@ fixture/demo backend contract mentioned below is historical (dev/demo only).
 The state-transition diagrams in this document are normative and must track the
 reducer; see [Maintenance Contract](#maintenance-contract).
 
-Date: 2026-06-20
+Date: 2026-07-20
 
 ## Contract
 
@@ -93,6 +93,20 @@ stateDiagram-v2
     LoggingOut --> SignedOut: LogoutFinished
 ```
 
+- A state-changing account command is admitted only if its projected action is
+  accepted by the current reducer state. Rejection is never a silent return:
+  Core emits exactly one correlated `OperationFailed` with the stable failure
+  kind (for example `SessionRequired` for `RestoreSession` while logout has not
+  reached `SignedOut`) and does not route the rejected command to
+  `AccountActor`.
+- `LoggedOut` is an operation terminal, while `SessionState::SignedOut` is the
+  authoritative state barrier. They travel on independent runtime lanes and
+  may be observed in either order. A consumer that will immediately issue a
+  session-sensitive follow-up must observe both before proceeding; seeing only
+  `LoggedOut` does not prove reducer commit visibility. The same rule applies
+  when a restore attempt emits `OperationFailed(SessionNotFound)` while its
+  `RestoreSessionFailed` action is still advancing the reducer back to
+  `SignedOut`.
 - `Provisional`, `AwaitingVerification`, `Verifying`, and `Rejecting` are
   authenticated but not Ready. Their DTOs contain only coarse method/account
   capability and failure kinds plus app-owned opaque correlation IDs. SDK
@@ -380,6 +394,14 @@ stateDiagram-v2
 - `InviteListUpdated { invites }` is accepted only when the session is Ready.
   It replaces the whole invite snapshot and emits `RoomListChanged`; duplicate
   or stale SDK deliveries must be folded into the next Rust-owned snapshot.
+- Backend selection proves the invite-list contract before either continuous
+  owner starts. An authenticated, cursorless MSC4186 request asks for one fixed
+  zero-timeline invited-room list. Presence of that exact list selects
+  `SyncService`; omission, typed/malformed failure, or expiry of the single
+  end-to-end two-second deadline selects `LegacySync`. The deadline includes
+  automatic access-token refresh and retry. Probe cursors and room payloads are
+  discarded, and the preflight never creates a second sync owner. Server-family
+  or version-string fingerprints are not capability evidence.
 - `InvitePreview` carries room id for command correlation plus display name,
   optional topic, optional inviter display name, and `is_dm`. GUI code must
   treat those fields as render data, not as a local membership state machine.
@@ -391,10 +413,18 @@ stateDiagram-v2
   events/snapshots.
 - `RoomActor` owns projection for both sync backends. On the SyncService path,
   the single live `RoomListService` entries adapter uses the non-left filter so
-  invited-room diffs wake projection. Joined rooms/spaces are still normalized
-  from `RoomState::Joined`; invite previews are normalized from
-  `client.invited_rooms()`. A joined-only adapter is incorrect because invite
-  receipt can sync successfully without any joined-room diff.
+  visible invited-room diffs wake projection. A bounded entries head is not a
+  complete change feed: an invite may commit outside that head without emitting
+  an entries diff. The same observer also listens to the base client's
+  post-commit room-update broadcast as an auxiliary wake, coalesces queued
+  batches, and reprojects only for an invite payload, an invite-membership
+  change, or one bounded lag recovery. Ordinary joined-room updates with an
+  unchanged invite fingerprint do not rebuild the room list. A closed auxiliary
+  broadcast disables that arm without ending the authoritative entries
+  observer, and this path never creates a second sync owner or
+  `RoomListService`. Joined rooms/spaces are still normalized from
+  `RoomState::Joined`; invite previews are normalized from
+  `client.invited_rooms()`.
 - The local core `invites_dm` QA scenario is the Phase A proof:
   `invite_recv=ok invite_accept=ok invite_decline=ok dm_start=ok`. Its output
   must remain private-data-free; do not print Matrix room IDs, user IDs, invite
@@ -424,7 +454,10 @@ relay are discarded.
 ```mermaid
 stateDiagram-v2
     [*] --> Subscribed: Timeline::subscribe / snapshot + stream generation N
-    Subscribed --> Subscribed: DiffBatch(N) / ItemsUpdated(N)
+    Subscribed --> Projecting: CanonicalDiffBatch(N) / apply canonical once
+    Projecting --> Subscribed: valid display projection / ItemsUpdated(display indices)
+    Projecting --> Subscribed: ambiguous or invalid projection / display Reset + fallback counter
+    Subscribed --> Subscribed: Subscribe(request R) while active / replay InitialItems(cause R, retained projection ACK)
     Subscribed --> Overflowed: data inbox Full / lossless Overflow(N) control
     Subscribed --> Overflowed: SDK diff stream ended / lossless StreamEnded(N) control
     Overflowed --> Resubscribing: actor stops relay N and advances to N+1
@@ -452,6 +485,21 @@ stale or duplicate due tokens are ignored, and actor shutdown aborts the timer.
 Each immediately-ending replacement increases the delay, preventing a hot
 subscribe/Resync loop. The first accepted live diff batch resets backoff to the
 base delay. Queue overflow recovery remains immediate.
+
+Canonical SDK positions and bounded display positions are distinct domains.
+The timeline actor owns the only production projection transaction: it applies
+the canonical batch once, advances exact pre-normalization display membership,
+derives the authoritative bounded display, validates the display-relative
+output in release builds, and publishes only that output. Invalid incremental
+translation emits an authoritative display `Reset` and increments the
+private-data-free fallback counter; normal focused and homeserver proofs require
+the counter delta to remain zero.
+
+An active-key Subscribe replay preserves the original projection request ID so
+the WebView can acknowledge the exact actor/generation. It also carries the
+new Subscribe request as a separate causal identity. Consumers must require
+that causal identity for command success; key equality alone cannot settle a
+later Subscribe because an older same-key replay may already be queued.
 
 The replacement snapshot also reconciles actor-owned auxiliary projections
 before the replacement relay becomes live: media-source cache and media gallery
@@ -2139,6 +2187,12 @@ stateDiagram-v2
   flow id. `AccountActor` ignores duplicate observations for the active flow
   and only cancels/rejects a different incoming flow while another verification
   is active.
+- A verification request adopts at most one SAS continuation for a flow. After
+  a remote SAS start has been adopted, a replayed start from the same peer,
+  device, and flow is a no-op in the SDK, and `AccountActor` must not replace
+  the adopted handle, observer, or timeout or accept it twice. Locally started
+  simultaneous-SAS negotiation and QR-to-SAS transitions retain their protocol
+  tie-break paths; replay idempotency must not collapse those distinct origins.
 - SAS peer acceptance is decided from the SDK SAS state mapped into Rust, not
   from React state or SDK direction flags. `MatrixSasState::Started` is the
   peer side that must call the SDK SAS accept path; `Created` is the local side
@@ -2147,11 +2201,24 @@ stateDiagram-v2
   A2 -> A and start SAS from the requester after the accepting device reaches
   `Accepted`. The accepting-device-start sequence reproduced Tuwunel
   `m.key_mismatch` cancellation before SAS presentation in local QA.
-- The local proof starts the verification request while continuous sync is
-  running so device data is fresh, then pauses both sync loops and drives SAS
-  delivery with bounded `SyncOnce` polling. Do not overlap continuous
-  SyncService delivery with manual `SyncOnce` nudges during SAS; that overlap
-  reproduced pre-SAS key-mismatch flakes.
+- The local proof keeps one Koushi actor owner for each sync cursor/connection
+  lane and never overlaps Koushi's manual `SyncOnce` path with a restricted or
+  continuous owner for the same SDK client. This does not prohibit the Matrix
+  SDK from running distinct, internally coordinated encryption and room-list
+  protocol lanes. The already-ready primary keeps its normal sync owner for
+  incoming to-device delivery, while the provisional second device keeps its
+  actor-owned restricted verification sync until authoritative promotion.
+  Event/state conditions, not manual `SyncOnce` nudges or fixed sleeps, prove
+  progress. Overlapping Koushi cursor owners can replay verification traffic
+  and previously exposed pre-SAS key-mismatch failures. This is an actor
+  admission invariant, not only a QA convention: `AccountActor` rejects
+  one-shot sync before routing when it owns restricted sync, and `SyncActor`
+  rejects it before the SDK call whenever a continuous lifecycle/backend/task/
+  service/stop owner is still active.
+  Where QA must prove that a newly logged-in peer device is known before an
+  encrypted send, use the `qa-bin`-only exact-target device-key refresh and
+  acknowledgement. Do not send/cancel a verification request as a readiness
+  probe.
 - Identity reset is a typed Rust-owned state machine
   (`Idle`, `Resetting`, `AwaitingAuth`, `Failed`), not a nullable pending flag.
   `AwaitingAuth` carries only a request id and coarse auth type
