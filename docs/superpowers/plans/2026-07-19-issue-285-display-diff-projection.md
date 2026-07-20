@@ -16,8 +16,17 @@
 - Apply SDK canonical diffs exactly once.
 - Validate numeric display indices in release builds, not only debug assertions.
 - If incremental projection is ambiguous or invalid, emit display `Reset { items: display_after }` or use the existing resync path; never silently drop the transition.
-- Record a private-data-free `display_projection_reset_fallbacks` diagnostic and keep it zero in the normal focused/headless path.
-- Projection work is `O(display window + batch size)` per batch; never scan the full canonical sequence per diff.
+- Record a private-data-free `display_projection_reset_fallbacks` diagnostic
+  and assert its counter delta is zero in the normal focused/headless path;
+  absence from logs is not acceptance evidence.
+- Projection work is independent of the full canonical length per diff. The
+  implemented sparse membership rope has expected
+  `O(W + B log(W + B) + D)` projection time and `O(W + B + D)` temporary
+  space for represented membership `W`, SDK batch `B`, and emitted display
+  diff `D`; it never scans the full canonical sequence per diff. Live-edge
+  `W` is capped at 120. Historical/restore paths may have larger `W`, so a
+  deterministic structural-work gate covers that uncapped case rather than
+  inferring complexity from payload visits alone.
 - Anchor-restore buffering stores projected display diffs, not raw canonical-index diffs.
 - Preserve the actor-generation lease across display-mirror commit, `ItemsUpdated`, and replay-known reconciliation.
 - Do not match body, timestamp, sender, formatted content, or media metadata to reconcile identity.
@@ -131,11 +140,22 @@ vec![TimelineDiff::Reset {
 }]
 ```
 
-Record one private-data-free diagnostic for fallback use with a stable token/counter named `display_projection_reset_fallbacks`; do not record IDs, bodies, room identifiers, or raw errors. Ensure ordinary production-shaped and focused headless flows leave this counter at zero.
+Record one private-data-free diagnostic for fallback use with a stable
+token/counter named `display_projection_reset_fallbacks`; do not record IDs,
+bodies, room identifiers, or raw errors. Ensure ordinary production-shaped
+and focused headless flows assert the counter delta is zero and emit only the
+safe `display_projection_reset_fallbacks=0` success token.
 
 Change `restore_emit_buffer` to accumulate projected display diffs while canonical state advances immediately. The final flush must transform the desktop's pre-restore display into the authoritative post-restore display. Keep the existing actor-generation lease as the atomic publication/replay-known boundary.
 
-The hot path may scan the bounded display and current batch, but must not scan all canonical items for every diff. Maintain slot/window membership bookkeeping needed to meet `O(display window + batch size)` per batch.
+The hot path may scan the represented display membership and current batch,
+but must not scan all canonical items for every diff. Maintain sparse
+slot/window membership bookkeeping with the expected
+`O(W + B log(W + B) + D)` bound above. The logarithmic structural term is an
+explicit implementation amendment to the earlier additive target: it avoids
+`O(W * B)` indexed mutation work, remains independent of the canonical history
+length, and must be guarded for uncapped historical/restore membership as well
+as the 120-row live edge.
 
 - [ ] **Step 6: Document the wire contract and keep frontend defenses non-authoritative**
 

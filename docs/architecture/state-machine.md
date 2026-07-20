@@ -1026,9 +1026,13 @@ stateDiagram-v2
 ```
 
 - `UploadAndSendMedia { key, transaction_id, request }` is routed only to a
-  subscribed `TimelineActor`. The actor fixes the SDK attachment transaction id
-  to the caller-provided `transaction_id` so local echo, upload progress, and
-  `SendCompleted` correlate through the same Rust-owned key.
+  subscribed timeline, whose cloneable SDK context is handed to a
+  `TimelineManager`-owned enqueue worker. The worker fixes the SDK attachment
+  transaction id to the caller-provided `transaction_id` so local echo and
+  upload progress use the same Rust-owned key. Request/submission correlation
+  is registered before asynchronous SDK enqueue, and both enqueue and terminal
+  observation outlive presentation-actor replacement, so unsubscribe cannot
+  lose `SendCompleted`.
 - Upload requests may carry filename, caption, mimetype, dimensions, and bytes
   because those are required to send the media. Those fields are private
   visible-content payloads: `Debug`, QA output, logs, and errors must redact
@@ -1555,10 +1559,15 @@ stateDiagram-v2
 
 ## Outbound Send Queue
 
-Outbound timeline send state is owned by the Rust `TimelineActor`, keyed by the
-SDK send-queue transaction id exposed on local-echo timeline items. React may
-render `TimelineItem.send_state` and dispatch typed commands, but it must not
-derive retry/cancel legality from local component state.
+Outbound timeline send presentation and retry/cancel handles are Rust-owned and
+keyed by the SDK send-queue transaction id exposed on local-echo timeline
+items. The replaceable `TimelineActor` projects that local state. A
+session-scoped `TimelineManager` owns supervised text/reply/media enqueue
+workers, the sole client-global terminal observer, and the composite
+`(room_id, sdk_transaction_id)` correlation back to the original
+`TimelineKey`, `RequestId`, and `SubmissionId`. React may render
+`TimelineItem.send_state` and dispatch typed commands, but it must not derive
+retry/cancel legality from local component state.
 Visible timeline sends go through the SDK UI `Timeline::send` path so local
 echo diffs reach the subscribed timeline store; retry/cancel still operate on
 the underlying SDK send queue handles.
@@ -1581,7 +1590,26 @@ stateDiagram-v2
 | `SendError` | `sending` | none | Records `not_sent { reason }` using only the SDK recoverable flag. Raw SDK errors stay out of DTOs, logs, QA tokens, and React state. The matching composer pending state is failed once; later retry success can still emit `SendCompleted`. |
 | `RetrySend { room_id, transaction_id }` | `not_sent` with a stored `SendHandle` | `sending`, `sent`, `cancelled`, unknown transaction | Re-enables the SDK room queue with `room.send_queue().set_enabled(true)`, then calls `SendHandle::unwedge()`. FIFO order remains the SDK send queue's responsibility; React never reorders or manually marks successors sent. |
 | `CancelSend { room_id, transaction_id }` | `sending`, `not_sent` with a stored `SendHandle` | `sent`, `cancelled`, unknown transaction | Calls `SendHandle::abort()`. A successful cancel records `cancelled`, drops the handle, re-enables the SDK room queue so successors are not stranded, and clears matching composer pending state without creating a send-failure error. |
-| `SentEvent` | any | none | Records `sent`, drops the handle, maps SDK transaction id to event id, and emits `SendCompleted` for the original request when available. |
+| `SentEvent` | any | none | The manager-owned observer records `sent`, maps the composite SDK correlation to the original request, reliably enqueues the matching reducer action, then emits `SendCompleted`. Settled correlations are bounded tombstones so duplicate SDK terminals cannot complete twice. |
+
+An explicit timeline `Unsubscribe`, room switch, resubscribe, or actor crash
+removes only the presentation actor; active send correlation remains at
+session scope. Unknown room-wide terminal updates are retained only during an
+explicit pre-bind registration window and are purged when that room has no
+active Koushi registration. SDK broadcast lag is an observation-loss terminal:
+every affected active or in-flight request receives one private-data-safe
+`QueueOverflow` failure instead of waiting for a deadline, while its composite
+mapping remains available for a later exact `SentEvent` or cancellation.
+
+Ordered shutdown first joins all manager-owned enqueue workers while the global
+SDK terminal observer can still admit their results, then stops and joins that
+observer, stops the presentation actors, records any remaining observation
+loss, closes and drains manager terminal ingress, and only then acknowledges
+shutdown. Unexpected manager drop closes terminal admission and aborts every
+remaining worker so no accepted enqueue future detaches. This makes terminal
+admission linear with teardown. Process restart is a separate boundary:
+SDK-persisted local echoes converge after restore, but completion for the old
+connection's `RequestId` is not replayed.
 
 `TimelineItem.send_state` is a coarse webview DTO: `sending`, `notSent`
 (`recoverable` / `unrecoverable`), `cancelled`, or `sent`. The SDK

@@ -242,10 +242,22 @@ An in-process actor system in `koushi-core`:
   sidebar unread/mention affordances consume Rust-owned unread/highlight counts
   from `SidebarModel`. React must not derive favourite, low-priority, unread,
   or mention membership from local UI state.
+- `TimelineManager` (per account session) — timeline actor routing plus the
+  session-scoped outbound-send lifecycle. It owns supervised SDK enqueue
+  workers, the sole client-global SDK send-queue terminal observer, and the
+  composite `(room_id, sdk_transaction_id)` correlation back to the original
+  `TimelineKey`, `RequestId`, and `SubmissionId`. Its lifetime spans
+  room/thread unsubscribe and actor replacement. Accepted enqueue futures are
+  joined during orderly shutdown and aborted if the manager is dropped
+  unexpectedly; dropping a raw task handle must never detach an accepted
+  send.
 - `TimelineActor` (per room/thread/focused timeline) — subscription, diffs,
-  pagination, send/edit/redaction relay, reaction annotation projection and
+  pagination, edit/redaction relay, reaction annotation projection and
   guarded send/redact relay, media/file projection, upload progress,
-  room-scoped live signals, and Rust-only media download effects.
+  room-scoped live signals, send-state presentation, and Rust-only media
+  download effects. It provides a cloneable timeline/send context to the
+  manager and projects local echoes, but it neither owns the accepted SDK
+  enqueue future nor terminal send observation or command correlation.
   Room live timelines use
   `TimelineFocus::Live { hide_threaded_events: true }` so threaded replies
   are hidden from the main room timeline. Expanded threads use
@@ -254,8 +266,9 @@ An in-process actor system in `koushi-core`:
   `RoomListService` (`subscribe_to_rooms`, the Element X room-open pattern):
   the all-rooms list alone only guarantees the initial window on some
   servers. Thread backward pagination uses the same `TimelineKind::Thread {
-  room_id, root_event_id }` key as the thread subscription. Edits and
-  plain sends, edits, and redactions go through the SDK `Timeline` handle (not
+  room_id, root_event_id }` key as the thread subscription. Plain sends,
+  replies, media, edits, and redactions go through the SDK `Timeline` handle
+  (not
   direct room/send-queue calls) so their diffs are produced as local echoes
   instead of depending on the server echoing them back; for own sent events whose
   remote echo has not arrived, the actor resolves the event id back to the
@@ -368,7 +381,9 @@ Supervision follows the same ownership tree:
   emits a failure with a new generation marker. `SyncActor` crashes move the
   account to `SyncFailed`; the SDK's normal reconnect loop handles network
   churn, while an internal crash requires an explicit `SyncCommand::Restart`
-  or account restore path.
+  or account restore path. Replacing a `TimelineActor` does not replace the
+  session-owned outbound-send workers, terminal observer, or correlation
+  coordinator.
 - `AccountActor` failure is fatal to that account runtime: stop children,
   drop SDK handles in runtime context, emit a redacted account failure, and
   require restore/login rather than silently continuing with unknown state.
@@ -530,22 +545,37 @@ stream), and the runtime must relay that model, not fight it.
    identically to rooms.
 7. **Subscriptions have explicit lifecycles.** Every subscribe has a matching
    unsubscribe command. Unsubscribing (or account shutdown) drops the SDK
-   timeline handle, which cancels its background tasks. Room switching policy
+   timeline handle, which cancels its presentation/background tasks, but it
+   does not cancel an already accepted send or discard its manager-owned
+   terminal correlation. Room switching policy
    (drop immediately vs. keep-warm) is decided by the UI through these
    commands; the runtime never leaks timeline state in an unbounded map.
 8. **Sends go through the SDK timeline/send queue path.** Local echo, offline
    persistence, strict FIFO retry, retry-after-reconnect, and remote-echo
    matching come from the SDK send queue, reached through the SDK UI timeline
    handle for visible timeline sends. The Rust runtime owns the product state
-   projection:
+   projection. `TimelineManager` supervises every accepted text, reply, and
+   media enqueue future, observes client-global queue terminals, and preserves
+   request/submission correlation across timeline unsubscribe and actor
+   replacement. Per-timeline actors own only the presentation subscription and
+   guarded queue handles:
    `TimelineItem.send_state`, transaction-id keyed retry/cancel guards, and
    `RetrySend` / `CancelSend` command routing through SDK `SendHandle`s. After
    recoverable send errors, retry/cancel also re-enable the SDK room queue so
    FIFO successors are not stranded. React renders and dispatches only; it must
-   not infer send legality or repair queue state locally. `Transaction`
+   not infer send legality or repair queue state locally. The manager joins
+   enqueue workers while terminal admission is still open, then stops the
+   terminal observer and presentation actors and drains terminal ingress. An
+   unexpected manager drop first closes terminal admission and aborts every
+   remaining enqueue worker. `Transaction`
    timeline identities are stable local-echo keys only; visible failed/sending
    state comes from `TimelineItem.send_state`. The runtime does not serialize
    sends behind a command loop.
+   `RequestId` completion is connection-scoped: after process restart the SDK's
+   persisted queue/local echo converges the product projection, but the new
+   runtime does not replay completion for a dead connection. Durable
+   cross-process submission settlement would require a separate encrypted,
+   body-free outbox journal and is not part of this contract.
 9. **Sync uses capability-probed SDK services, not ad hoc polling.** Prefer
    `SyncService`/`RoomListService` when the homeserver supports MSC4186. If
    `SyncService` is unavailable for a target homeserver, the `SyncActor`

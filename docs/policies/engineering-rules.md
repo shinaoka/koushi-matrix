@@ -415,7 +415,19 @@ Rules:
 9. State-critical actor actions are reliable messages, not lossy hints. Do not
    ignore failed reducer-action sends for transitions that set or clear pending
    user-visible state. Await the send, retry through the owner, or emit a
-   correlated operation failure that leaves no stuck pending state.
+   correlated operation failure that leaves no stuck pending state. Once a
+   command accepts a user-intent submission, terminal observation and
+   request/submission correlation must be owned by a component whose lifetime
+   spans every replaceable presentation actor involved in that operation. An
+   unsubscribe, room switch, actor crash, or resubscribe must not discard the
+   accepted operation. Lossy observer lag becomes an immediate, correlated,
+   private-data-safe failure rather than a fixed-delay wait. Shutdown must stop
+   and join accepted operation workers while terminal admission remains live,
+   then stop terminal observers, drain their reliable handoff, and only then
+   acknowledge the owning actor's teardown. The enqueue future itself shares
+   that stable owner: a replaceable presentation actor must not await it, and
+   dropping a raw task handle must not detach it. An unexpected stable-owner
+   drop closes terminal admission and aborts all remaining operation workers.
 10. If a reducer returns an `AppEffect` that matters in production, the
    production runtime executes it or the behavior is redesigned as an explicit
    `CoreCommand`/actor command. Discarding such effects is allowed only for
