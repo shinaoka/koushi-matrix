@@ -607,6 +607,24 @@ enum VerificationTerminal {
     Failed(TrustOperationFailureKind),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SasAdoptionDecision {
+    Adopt,
+    Replay,
+    Conflict,
+}
+
+fn classify_sas_adoption(
+    active_flow_id: Option<u64>,
+    incoming_flow_id: u64,
+) -> SasAdoptionDecision {
+    match active_flow_id {
+        None => SasAdoptionDecision::Adopt,
+        Some(active_flow_id) if active_flow_id == incoming_flow_id => SasAdoptionDecision::Replay,
+        Some(_) => SasAdoptionDecision::Conflict,
+    }
+}
+
 fn sas_verification_event(stage: &'static str, flow_id: u64) -> DiagnosticEvent {
     DiagnosticEvent::new(DiagnosticLevel::Info, "core.sas_verification", stage)
         .field(DiagnosticField::count("flow_id", flow_id))
@@ -4286,6 +4304,17 @@ impl AccountActor {
         target: VerificationTarget,
         handle: koushi_sdk::MatrixSasVerificationHandle,
     ) {
+        let active_flow_id = self
+            .sas_verification
+            .as_ref()
+            .map(|pending| pending.request_id.sequence);
+        if !matches!(
+            classify_sas_adoption(active_flow_id, request_id.sequence),
+            SasAdoptionDecision::Adopt
+        ) {
+            return;
+        }
+
         self.stop_sas_verification_observer().await;
         self.sas_verification = Some(PendingSasVerification {
             request_id,
@@ -8192,6 +8221,58 @@ mod tests {
         assert_eq!(
             active_own_user_sas_flow_for_restricted_sync(4, 4, true, false, None),
             None
+        );
+    }
+
+    #[test]
+    fn sas_handle_adoption_is_classified_before_any_active_flow_side_effect() {
+        let source = include_str!("account.rs");
+        let body = source
+            .split("    async fn store_sas_verification(")
+            .nth(1)
+            .expect("store_sas_verification should exist")
+            .split("    async fn project_sas_state(")
+            .next()
+            .expect("project_sas_state should follow SAS handle adoption");
+
+        let classify = body
+            .find("classify_sas_adoption(")
+            .expect("SAS handle adoption must classify the incoming flow");
+        let early_return = body
+            .find("return;")
+            .expect("replayed or conflicting active SAS flows must be no-ops");
+        assert!(
+            classify < early_return,
+            "the adoption decision must be made before its no-op return"
+        );
+
+        for side_effect in [
+            "self.stop_sas_verification_observer().await",
+            "self.sas_verification = Some",
+            "self.start_sas_timeout(",
+            "self.observe_sas_verification(",
+            "koushi_sdk::accept_sas_verification(",
+        ] {
+            let side_effect = body
+                .find(side_effect)
+                .unwrap_or_else(|| panic!("missing expected adoption side effect: {side_effect}"));
+            assert!(
+                early_return < side_effect,
+                "SAS adoption guard must precede side effect: {side_effect}"
+            );
+        }
+    }
+
+    #[test]
+    fn sas_adoption_decision_adopts_once_and_rejects_replay_or_conflict() {
+        assert_eq!(classify_sas_adoption(None, 41), SasAdoptionDecision::Adopt);
+        assert_eq!(
+            classify_sas_adoption(Some(41), 41),
+            SasAdoptionDecision::Replay
+        );
+        assert_eq!(
+            classify_sas_adoption(Some(41), 42),
+            SasAdoptionDecision::Conflict
         );
     }
 

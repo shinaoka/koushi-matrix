@@ -1909,12 +1909,6 @@ async fn run_e2ee_trust_stage(
     .await?;
     println!("e2ee_key_backup_enable=ok");
 
-    sync_once_for_qa(
-        conn_a,
-        "publish primary cross-signing facts before gated second-device login",
-    )
-    .await?;
-
     let runtime_a2 = CoreRuntime::start_with_data_dir(qa_data_dir("a2"));
     let mut conn_a2 = runtime_a2.attach();
 
@@ -9745,7 +9739,6 @@ async fn seed_encrypted_room_key_for_qa(
 
     let room_id = wait_for_room_created(conn, create_room_id, label).await?;
 
-    sync_once_for_qa(conn, "sync after encrypted backup seed room").await?;
     wait_for_room_in_room_list(conn, &room_id, "room list after encrypted backup seed").await?;
 
     let key = TimelineKey::room(account_key.clone(), room_id.clone());
@@ -9757,7 +9750,13 @@ async fn seed_encrypted_room_key_for_qa(
     .await
     .map_err(|e| format!("{label}: submit encrypted timeline subscribe failed: {e}"))?;
 
-    wait_for_initial_items(conn, &key, subscribe_id, "subscribe encrypted backup seed").await?;
+    wait_for_initial_items_or_active_replay(
+        conn,
+        &key,
+        subscribe_id,
+        "subscribe encrypted backup seed",
+    )
+    .await?;
 
     let transaction_id = "qa-e2ee-key-backup-seed".to_owned();
     let send_id = conn.next_request_id();
@@ -17905,6 +17904,47 @@ mod tests {
 
         assert!(refresh.contains("wait_for_initial_items_or_active_replay("));
         assert!(!refresh.contains("wait_for_initial_items("));
+    }
+
+    #[test]
+    fn e2ee_trust_stage_does_not_overlap_normal_sync_with_manual_sync_once() {
+        let source = include_str!("headless-core-qa.rs");
+        let stage = source
+            .split("async fn run_e2ee_trust_stage(")
+            .nth(1)
+            .expect("E2EE trust stage should exist")
+            .split("async fn cleanup_e2ee_secondary_device(")
+            .next()
+            .expect("secondary-device cleanup should follow E2EE trust");
+
+        assert!(
+            !stage.contains("sync_once_for_qa("),
+            "E2EE trust must use the authoritative bootstrap and typed gate readiness while SyncService owns the client"
+        );
+        assert!(
+            !stage.contains("publish primary cross-signing facts before gated second-device login")
+        );
+    }
+
+    #[test]
+    fn encrypted_backup_seed_uses_live_room_discovery_and_active_replay_waiter() {
+        let source = include_str!("headless-core-qa.rs");
+        let seed = source
+            .split("async fn seed_encrypted_room_key_for_qa(")
+            .nth(1)
+            .expect("encrypted backup seed helper should exist")
+            .split("async fn enable_key_backup_for_qa(")
+            .next()
+            .expect("key backup enable helper should follow seed helper");
+
+        assert!(
+            !seed.contains("sync_once_for_qa("),
+            "backup seed room discovery must not overlap the running SyncService"
+        );
+        assert!(seed.contains("wait_for_room_in_room_list("));
+        assert!(seed.contains("wait_for_initial_items_or_active_replay("));
+        assert!(!seed.contains("wait_for_initial_items("));
+        assert!(seed.contains("subscribe encrypted backup seed"));
     }
 
     #[test]
