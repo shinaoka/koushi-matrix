@@ -238,6 +238,50 @@ Fresh post-review evidence:
 
 The long homeserver lane remains deliberately delegated to the root agent.
 
+## POST-LANE RECONNECT DIAGNOSIS — 2026-07-20
+
+The first targeted `timeline_reconnect` failure contained one QA observer
+defect: the non-legacy waiter discarded the `InitialItems` returned by the
+reopened subscription and only watched future `ItemsUpdated`. That was fixed in
+`b8d564c`; a synthetic network-free regression now composes both sources.
+
+After that harness correction the lane still reports exactly one missing body.
+The production-path trace ranks the remaining hypotheses as follows:
+
+1. **SDK initial-subscription window boundary (strongest evidence).** The QA
+   creates 21 offline messages. The vendored SDK's `TimelineSubscriber`
+   deliberately exposes at most 20 initial items via
+   `MAXIMUM_NUMBER_OF_INITIAL_ITEMS`, and SyncService room subscriptions also
+   request a timeline limit of 20. Koushi calls `timeline.subscribe()` directly
+   on actor spawn and only auto-paginates when the initial Room timeline is
+   empty. Therefore the oldest one of 21 messages can remain outside the public
+   subscriber window while event-cache continuity still reports no gap.
+2. **Koushi display projection (weaker evidence).** The issue-285 projection
+   receives only the SDK subscriber's exposed canonical sequence. Its live-edge
+   cap is 120, so it cannot itself reduce a 21-message batch to 20. The focused
+   projection suite covers ordered append/pop, duplicate ownership, local-echo
+   convergence, reset, and display-space validation. A projection defect is
+   still possible, but it does not explain the exact upstream 20/21 boundary as
+   directly.
+3. **Identity deduplication (weakest evidence).** Distinct confirmed events use
+   distinct event identities; transaction-to-event convergence only collapses
+   the local echo with its own confirmed event. There is no evidence that two
+   of the 21 remote sends share an identity.
+
+This boundary exists independently of issue 285: the merge-base comparison
+shows no change to `sync.rs`, `koushi-sdk`, the SDK subscriber's 20-item cap, or
+the SyncService room-subscription limit. Issue 285 changes how an already
+exposed canonical diff is mapped to the bounded display; it does not enlarge
+the SDK subscription window.
+
+The QA timeout diagnostic now reports only the missing expected-array indices
+and count. It never records body text, room/event/user/transaction identifiers,
+URLs, paths, or raw errors. The exact next experiment is one rerun of only the
+targeted `timeline_reconnect` lane with this diagnostic. `missing_indices=[0]`
+would confirm the 20/21 oldest-edge boundary; any interior or newest index would
+falsify that specific explanation and redirect the trace to projection/dedupe.
+No long lane was run during this diagnostic slice.
+
 ## FINAL RE-REVIEW HARDENING — 2026-07-20
 
 The final ownership review closed two replacement races that were not covered

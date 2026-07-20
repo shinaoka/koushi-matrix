@@ -14223,10 +14223,7 @@ async fn wait_for_all_items_with_bodies(
         }
         let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
             .await
-            .map_err(|_| {
-                let missing_count = missing_expected_body_count(&seen);
-                format!("{label}: timed out with {missing_count} expected rows still missing")
-            })?
+            .map_err(|_| missing_expected_body_timeout(label, &seen))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
         match event {
@@ -14447,8 +14444,24 @@ fn seed_expected_body_observation(
     seen
 }
 
+#[cfg(test)]
 fn missing_expected_body_count(seen: &[bool]) -> usize {
     seen.iter().filter(|found| !**found).count()
+}
+
+fn missing_expected_body_indices(seen: &[bool]) -> Vec<usize> {
+    seen.iter()
+        .enumerate()
+        .filter_map(|(index, found)| (!found).then_some(index))
+        .collect()
+}
+
+fn missing_expected_body_timeout(label: &str, seen: &[bool]) -> String {
+    let missing_indices = missing_expected_body_indices(seen);
+    format!(
+        "{label}: timed out with {} expected rows still missing; missing_indices={missing_indices:?}",
+        missing_indices.len()
+    )
 }
 
 async fn wait_for_event_item_with_body(
@@ -16097,6 +16110,11 @@ mod tests {
         .expect("future diff observation");
 
         assert_eq!(seen, [true, true, false]);
+        assert_eq!(missing_expected_body_indices(&seen), vec![2]);
+        assert_eq!(
+            missing_expected_body_timeout("reconnect observation", &seen),
+            "reconnect observation: timed out with 1 expected rows still missing; missing_indices=[2]"
+        );
         assert_eq!(
             missing_expected_body_count(&seen),
             1,
