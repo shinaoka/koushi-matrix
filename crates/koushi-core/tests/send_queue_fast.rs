@@ -16,7 +16,7 @@ use koushi_core::event::{
 };
 use koushi_core::ids::{AccountKey, RequestId, TimelineKey};
 use koushi_core::runtime::{CoreConnection, CoreRuntime};
-use koushi_state::{AuthSecret, MentionIntent, SessionState};
+use koushi_state::{AuthSecret, MentionIntent, SessionState, SubmissionId};
 use matrix_sdk::{
     ruma::{event_id, room_id},
     test_utils::mocks::MatrixMockServer,
@@ -29,7 +29,96 @@ struct FastTcpProxy {
     rejected_connections: Arc<AtomicUsize>,
     running: Arc<AtomicBool>,
     active_streams: Arc<Mutex<Vec<TcpStream>>>,
+    response_gate: Arc<FastProxyResponseGate>,
     accept_thread: Option<JoinHandle<()>>,
+}
+
+#[derive(Default)]
+struct FastProxyResponseGate {
+    state: Mutex<FastProxyResponseGateState>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct FastProxyResponseGateState {
+    armed: bool,
+    reached: bool,
+    released: bool,
+    expected_fragment: Vec<u8>,
+    preceding_tail: Vec<u8>,
+    held_expected_response: bool,
+}
+
+impl FastProxyResponseGate {
+    fn arm(&self, expected_fragment: &str) {
+        assert!(
+            !expected_fragment.is_empty(),
+            "response gate requires a non-empty expected fragment"
+        );
+        let mut state = self.state.lock().expect("response gate lock");
+        assert!(
+            !state.armed && !state.reached,
+            "response gate already armed"
+        );
+        state.armed = true;
+        state.released = false;
+        state.expected_fragment = expected_fragment.as_bytes().to_vec();
+        state.preceding_tail.clear();
+        state.held_expected_response = false;
+    }
+
+    fn pause_response_if_expected(&self, response: &[u8]) {
+        let mut state = self.state.lock().expect("response gate lock");
+        if !state.armed {
+            return;
+        }
+        let mut observed = Vec::with_capacity(state.preceding_tail.len() + response.len());
+        observed.extend_from_slice(&state.preceding_tail);
+        observed.extend_from_slice(response);
+        if !observed
+            .windows(state.expected_fragment.len())
+            .any(|window| window == state.expected_fragment)
+        {
+            let tail_len = state.expected_fragment.len().saturating_sub(1);
+            state.preceding_tail = observed
+                .get(observed.len().saturating_sub(tail_len)..)
+                .unwrap_or_default()
+                .to_vec();
+            return;
+        }
+        state.armed = false;
+        state.reached = true;
+        state.held_expected_response = true;
+        self.changed.notify_all();
+        while !state.released {
+            state = self.changed.wait(state).expect("response gate wait lock");
+        }
+        state.reached = false;
+        state.expected_fragment.clear();
+        state.preceding_tail.clear();
+    }
+
+    fn wait_until_reached(&self, timeout: Duration) -> bool {
+        let state = self.state.lock().expect("response gate lock");
+        let (state, _) = self
+            .changed
+            .wait_timeout_while(state, timeout, |state| !state.reached)
+            .expect("response gate timed wait lock");
+        state.reached
+    }
+
+    fn release(&self) {
+        let mut state = self.state.lock().expect("response gate lock");
+        state.released = true;
+        self.changed.notify_all();
+    }
+
+    fn held_expected_response(&self) -> bool {
+        self.state
+            .lock()
+            .expect("response gate lock")
+            .held_expected_response
+    }
 }
 
 #[derive(Default)]
@@ -102,10 +191,12 @@ impl FastTcpProxy {
         let rejected_connections = Arc::new(AtomicUsize::new(0));
         let running = Arc::new(AtomicBool::new(true));
         let active_streams = Arc::new(Mutex::new(Vec::new()));
+        let response_gate = Arc::new(FastProxyResponseGate::default());
         let thread_enabled = Arc::clone(&enabled);
         let thread_rejected = Arc::clone(&rejected_connections);
         let thread_running = Arc::clone(&running);
         let thread_streams = Arc::clone(&active_streams);
+        let thread_response_gate = Arc::clone(&response_gate);
         let thread_registration_gate = registration_gate.clone();
         let accept_thread = thread::spawn(move || {
             while thread_running.load(Ordering::SeqCst) {
@@ -122,6 +213,7 @@ impl FastTcpProxy {
                             Arc::clone(&thread_enabled),
                             Arc::clone(&thread_rejected),
                             thread_registration_gate.clone(),
+                            Arc::clone(&thread_response_gate),
                         );
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -140,6 +232,7 @@ impl FastTcpProxy {
             rejected_connections,
             running,
             active_streams,
+            response_gate,
             accept_thread: Some(accept_thread),
         })
     }
@@ -161,11 +254,31 @@ impl FastTcpProxy {
     fn enable(&self) {
         self.enabled.store(true, Ordering::SeqCst);
     }
+
+    fn arm_response_containing(&self, expected_fragment: &str) {
+        self.response_gate.arm(expected_fragment);
+    }
+
+    async fn wait_for_held_response(&self, timeout: Duration) -> bool {
+        let gate = Arc::clone(&self.response_gate);
+        tokio::task::spawn_blocking(move || gate.wait_until_reached(timeout))
+            .await
+            .unwrap_or(false)
+    }
+
+    fn release_held_response(&self) {
+        self.response_gate.release();
+    }
+
+    fn held_expected_response(&self) -> bool {
+        self.response_gate.held_expected_response()
+    }
 }
 
 impl Drop for FastTcpProxy {
     fn drop(&mut self) {
         self.running.store(false, Ordering::SeqCst);
+        self.response_gate.release();
         self.disable();
         let _ = TcpStream::connect(self.listen_addr);
         if let Some(thread) = self.accept_thread.take() {
@@ -195,6 +308,7 @@ fn spawn_fast_proxy_pair(
     enabled: Arc<AtomicBool>,
     rejected_connections: Arc<AtomicUsize>,
     registration_gate: Option<Arc<FastProxyRegistrationGate>>,
+    response_gate: Arc<FastProxyResponseGate>,
 ) {
     thread::spawn(move || {
         let Ok(upstream) = TcpStream::connect(target) else {
@@ -239,10 +353,46 @@ fn spawn_fast_proxy_pair(
         });
         let mut upstream_reader = upstream;
         let mut client_writer = client;
-        let _ = io::copy(&mut upstream_reader, &mut client_writer);
+        let mut response = [0_u8; 8 * 1024];
+        loop {
+            let Ok(read) = io::Read::read(&mut upstream_reader, &mut response) else {
+                break;
+            };
+            if read == 0 {
+                break;
+            }
+            response_gate.pause_response_if_expected(&response[..read]);
+            if io::Write::write_all(&mut client_writer, &response[..read]).is_err() {
+                break;
+            }
+        }
         let _ = client_writer.shutdown(Shutdown::Write);
         let _ = upload.join();
     });
+}
+
+#[test]
+fn fast_proxy_response_gate_ignores_unrelated_responses() {
+    let gate = Arc::new(FastProxyResponseGate::default());
+    gate.arm("$expected-send:test");
+    gate.pause_response_if_expected(b"HTTP/1.1 200 OK\r\n\r\n{\"event_id\":\"$unrelated:test\"}");
+    {
+        let state = gate.state.lock().expect("response gate lock");
+        assert!(state.armed);
+        assert!(!state.reached);
+        assert!(!state.held_expected_response);
+    }
+
+    let thread_gate = Arc::clone(&gate);
+    let paused = thread::spawn(move || {
+        thread_gate.pause_response_if_expected(
+            b"HTTP/1.1 200 OK\r\n\r\n{\"event_id\":\"$expected-send:test\"}",
+        );
+    });
+    assert!(gate.wait_until_reached(Duration::from_secs(1)));
+    assert!(gate.held_expected_response());
+    gate.release();
+    paused.join().expect("expected response gate worker");
 }
 
 #[test]
@@ -1972,6 +2122,250 @@ async fn run_fast_send_queue_feedback() {
     );
     drop(initial_send_guard);
 
+    let unsubscribe_send_guard = server
+        .mock_room_send()
+        .body_matches_partial_json(serde_json::json!({
+            "body": "fast unsubscribe terminal body"
+        }))
+        .ok(event_id!("$fast-unsubscribe-terminal:localhost"))
+        .mock_once()
+        .mount_as_scoped()
+        .await;
+    proxy.arm_response_containing("$fast-unsubscribe-terminal:localhost");
+    let unsubscribe_submission_id = SubmissionId::new("fast-unsubscribe-submission");
+    let unsubscribe_request_id = conn.next_request_id();
+    fast_send_queue_phase(
+        "fast_send_queue unsubscribe send command",
+        conn.command(CoreCommand::Timeline(TimelineCommand::SubmitText {
+            request_id: unsubscribe_request_id,
+            submission_id: unsubscribe_submission_id.clone(),
+            key: key.clone(),
+            transaction_id: "fast-unsubscribe-client".to_owned(),
+            body: "fast unsubscribe terminal body".to_owned(),
+            mentions: MentionIntent::default(),
+        })),
+    )
+    .await
+    .expect("fast_send_queue unsubscribe send command phase")
+    .expect("fast_send_queue submit unsubscribe send");
+
+    let pending_deadline = tokio::time::Instant::now() + FAST_SEND_QUEUE_PHASE_TIMEOUT;
+    let mut unsubscribe_sdk_transaction_id = None;
+    let mut submission_accepted = false;
+    while unsubscribe_sdk_transaction_id.is_none()
+        || !submission_accepted
+        || !conn
+            .snapshot()
+            .timeline
+            .submission_registry
+            .active_submissions
+            .iter()
+            .any(|active| active.submission_id == unsubscribe_submission_id)
+    {
+        let event = recv_fast_send_queue_event(
+            &mut conn,
+            pending_deadline,
+            "fast_send_queue unsubscribe pending",
+        )
+        .await
+        .expect("fast_send_queue unsubscribe pending event");
+        apply_fast_send_queue_event(
+            &mut projection,
+            &key,
+            &event,
+            "fast_send_queue unsubscribe pending",
+        )
+        .expect("fast_send_queue unsubscribe pending projection");
+        match event {
+            CoreEvent::Timeline(TimelineEvent::SubmissionAccepted { submission_id, .. })
+                if submission_id == unsubscribe_submission_id =>
+            {
+                submission_accepted = true
+            }
+            CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            } if request_id == unsubscribe_request_id => {
+                panic!("fast_send_queue unsubscribe send failed early: {failure:?}")
+            }
+            _ => {}
+        }
+        unsubscribe_sdk_transaction_id = projection.iter().find_map(|item| {
+            timeline_item_body_matches(item, "fast unsubscribe terminal body")
+                .then(|| timeline_item_transaction_id(item))
+                .flatten()
+                .map(str::to_owned)
+        });
+    }
+    assert!(
+        proxy
+            .wait_for_held_response(FAST_SEND_QUEUE_PHASE_TIMEOUT)
+            .await,
+        "fast_send_queue send response never reached the deterministic proxy gate"
+    );
+    assert!(
+        proxy.held_expected_response(),
+        "fast_send_queue proxy gate held an unrelated response"
+    );
+
+    let unsubscribe_command_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::Unsubscribe {
+        request_id: unsubscribe_command_id,
+        key: key.clone(),
+    }))
+    .await
+    .expect("fast_send_queue submit unsubscribe command");
+    let unsubscribe_barrier_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
+        request_id: unsubscribe_barrier_id,
+        key: key.clone(),
+        direction: koushi_core::event::PaginationDirection::Backward,
+        event_count: 1,
+    }))
+    .await
+    .expect("fast_send_queue submit unsubscribe barrier");
+    let barrier_deadline = tokio::time::Instant::now() + FAST_SEND_QUEUE_PHASE_TIMEOUT;
+    loop {
+        match recv_fast_send_queue_event(
+            &mut conn,
+            barrier_deadline,
+            "fast_send_queue unsubscribe barrier",
+        )
+        .await
+        .expect("fast_send_queue unsubscribe barrier event")
+        {
+            CoreEvent::OperationFailed { request_id, .. }
+                if request_id == unsubscribe_barrier_id =>
+            {
+                break;
+            }
+            CoreEvent::Timeline(TimelineEvent::SendCompleted { request_id, .. })
+                if request_id == unsubscribe_request_id =>
+            {
+                panic!("held send completed before the causal unsubscribe barrier")
+            }
+            _ => {}
+        }
+    }
+
+    proxy.release_held_response();
+    let terminal_deadline = tokio::time::Instant::now() + FAST_SEND_QUEUE_PHASE_TIMEOUT;
+    let mut completion_count = 0;
+    let mut settlement_transition_count = 0;
+    let mut was_active = true;
+    while completion_count == 0 || settlement_transition_count == 0 {
+        let event = recv_fast_send_queue_event(
+            &mut conn,
+            terminal_deadline,
+            "fast_send_queue unsubscribe terminal",
+        )
+        .await
+        .expect("fast_send_queue unsubscribe terminal event");
+        if let CoreEvent::Timeline(TimelineEvent::SendCompleted {
+            request_id,
+            key: event_key,
+            transaction_id,
+            event_id,
+        }) = event
+            && request_id == unsubscribe_request_id
+        {
+            assert_eq!(event_key, key);
+            assert_eq!(transaction_id, "fast-unsubscribe-client");
+            assert_eq!(event_id, "$fast-unsubscribe-terminal:localhost");
+            completion_count += 1;
+        }
+        let snapshot = conn.snapshot();
+        let is_active = snapshot
+            .timeline
+            .submission_registry
+            .active_submissions
+            .iter()
+            .any(|active| active.submission_id == unsubscribe_submission_id);
+        if was_active && !is_active {
+            assert!(
+                snapshot
+                    .timeline
+                    .submission_registry
+                    .settled_submission_ids
+                    .contains(&unsubscribe_submission_id),
+                "active submission disappeared without reducer settlement"
+            );
+            settlement_transition_count += 1;
+        }
+        was_active = is_active;
+    }
+
+    let duplicate_barrier_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
+        request_id: duplicate_barrier_id,
+        key: key.clone(),
+        direction: koushi_core::event::PaginationDirection::Backward,
+        event_count: 1,
+    }))
+    .await
+    .expect("fast_send_queue submit duplicate barrier");
+    let duplicate_deadline = tokio::time::Instant::now() + FAST_SEND_QUEUE_PHASE_TIMEOUT;
+    loop {
+        match recv_fast_send_queue_event(
+            &mut conn,
+            duplicate_deadline,
+            "fast_send_queue unsubscribe duplicate barrier",
+        )
+        .await
+        .expect("fast_send_queue unsubscribe duplicate barrier event")
+        {
+            CoreEvent::OperationFailed { request_id, .. } if request_id == duplicate_barrier_id => {
+                break;
+            }
+            CoreEvent::Timeline(TimelineEvent::SendCompleted { request_id, .. })
+                if request_id == unsubscribe_request_id =>
+            {
+                completion_count += 1;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        completion_count, 1,
+        "SendCompleted must be emitted exactly once"
+    );
+    assert_eq!(
+        settlement_transition_count, 1,
+        "the accepted submission must settle exactly once"
+    );
+    assert_eq!(
+        conn.snapshot()
+            .timeline
+            .submission_registry
+            .settled_submission_ids
+            .iter()
+            .filter(|settled| *settled == &unsubscribe_submission_id)
+            .count(),
+        1,
+        "the reducer settlement tombstone must be unique"
+    );
+    assert!(
+        unsubscribe_sdk_transaction_id.is_some(),
+        "the causal send must have reached an SDK local echo before unsubscribe"
+    );
+    drop(unsubscribe_send_guard);
+
+    let resubscribe_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+        request_id: resubscribe_id,
+        key: key.clone(),
+    }))
+    .await
+    .expect("fast_send_queue submit post-proof resubscribe");
+    projection = wait_for_initial_items_or_active_replay(
+        &mut conn,
+        &key,
+        resubscribe_id,
+        "fast_send_queue post-proof resubscribe",
+    )
+    .await
+    .expect("fast_send_queue post-proof projection");
+
     proxy.disable();
     let first = send_fast_send_queue_text_expect_recoverable_transport_failure(
         &mut conn,
@@ -1997,16 +2391,14 @@ async fn run_fast_send_queue_feedback() {
     .await
     .expect("fast_send_queue second offline local echo");
     proxy.enable();
-    // Keep the first successful response in flight while Sync Start produces
-    // Started, Running, and replacement InitialItems. This deterministically
-    // places SentEvent after actor replacement without a blind orchestration sleep.
+    // Keep the expected first successful response in flight while Sync Start
+    // produces Started, Running, and replacement InitialItems. This places
+    // SentEvent after actor replacement without a blind orchestration sleep or
+    // accidentally gating an unrelated response.
     let fifo_first_guard = server
         .mock_room_send()
         .body_matches_partial_json(serde_json::json!({ "body": "fast offline first body" }))
-        .ok_with_delay(
-            event_id!("$fast-fifo-first:localhost"),
-            Duration::from_secs(2),
-        )
+        .ok(event_id!("$fast-fifo-first:localhost"))
         .mock_once()
         .mount_as_scoped()
         .await;
@@ -2025,6 +2417,7 @@ async fn run_fast_send_queue_feedback() {
         .mock_once()
         .mount_as_scoped()
         .await;
+    proxy.arm_response_containing("$fast-fifo-first:localhost");
     let retry_id = fast_send_queue_phase(
         "fast_send_queue first retry command",
         retry_send_queue_item(
@@ -2037,6 +2430,16 @@ async fn run_fast_send_queue_feedback() {
     .await
     .expect("fast_send_queue first retry phase")
     .expect("fast_send_queue retry command");
+    assert!(
+        proxy
+            .wait_for_held_response(FAST_SEND_QUEUE_PHASE_TIMEOUT)
+            .await,
+        "fast_send_queue FIFO response never reached the deterministic proxy gate"
+    );
+    assert!(
+        proxy.held_expected_response(),
+        "fast_send_queue FIFO proxy gate held an unrelated response"
+    );
     projection = fast_send_queue_phase(
         "fast_send_queue replacement sync start",
         start_sync_and_wait_for_replacement_initial_items(
@@ -2050,6 +2453,7 @@ async fn run_fast_send_queue_feedback() {
     .await
     .expect("fast_send_queue replacement sync phase")
     .expect("fast_send_queue replacement InitialItems");
+    proxy.release_held_response();
     wait_for_fast_send_queue_completions_in_order(
         &mut conn,
         &mut projection,

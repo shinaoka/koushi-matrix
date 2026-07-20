@@ -98,7 +98,9 @@ use matrix_sdk::ruma::events::{
     Mentions, StateEventContentChange, room::name::RoomNameEventContent,
 };
 use matrix_sdk::ruma::html::{Html, SanitizerConfig};
-use matrix_sdk::send_queue::{LocalEcho, LocalEchoContent, RoomSendQueueUpdate, SendHandle};
+use matrix_sdk::send_queue::{
+    LocalEcho, LocalEchoContent, RoomSendQueueUpdate, SendHandle, SendQueueUpdate,
+};
 use matrix_sdk_ui::timeline::{
     AnyOtherStateEventContentChange, EmbeddedEvent, EncryptedMessage, EventItemOrigin,
     EventSendState as SdkEventSendState, EventTimelineItem, GapRepairProjectionId,
@@ -188,6 +190,11 @@ struct TimelineSendCompletionDelivery {
     event_id: String,
 }
 
+struct TimelineSendFailureDelivery {
+    request_id: RequestId,
+    failure: CoreFailure,
+}
+
 /// Internal payload accepted only through the manager-owned terminal ingress.
 /// Replaceable timeline actors cannot deliver reducer actions and completion
 /// events independently.
@@ -195,6 +202,7 @@ struct TimelineSendTerminalHandoff {
     submission_id: Option<koushi_state::SubmissionId>,
     action: Option<AppAction>,
     completion: Option<TimelineSendCompletionDelivery>,
+    failure: Option<TimelineSendFailureDelivery>,
 }
 
 #[derive(Clone)]
@@ -1425,6 +1433,8 @@ pub struct TimelineManagerActor {
     legacy_committed_response: Option<MatrixCommittedRoomUpdatesResponse>,
     timelines: HashMap<TimelineKey, TimelineActorHandle>,
     accepted_submissions: SubmissionAdmissionLedger,
+    send_completion: SharedSendCompletionCoordinator,
+    global_send_completion_observer_task: Option<executor::JoinHandle<()>>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     msg_tx: mpsc::Sender<TimelineMessage>,
@@ -1538,6 +1548,8 @@ impl TimelineManagerActor {
             legacy_committed_response: None,
             timelines: HashMap::new(),
             accepted_submissions: SubmissionAdmissionLedger::default(),
+            send_completion: SharedSendCompletionCoordinator::default(),
+            global_send_completion_observer_task: None,
             action_tx,
             event_tx,
             msg_tx: tx.clone(),
@@ -1582,6 +1594,13 @@ impl TimelineManagerActor {
     ) -> TimelineManagerHandle {
         let (tx, msg_rx) = mpsc::channel(crate::runtime::ACTOR_MESSAGE_QUEUE_CAPACITY);
         let (terminal_ingress, terminal_rx) = TimelineSendTerminalIngress::channel();
+        let send_completion = SharedSendCompletionCoordinator::default();
+        let global_send_completion_observer_task =
+            Some(executor::spawn(run_global_send_completion_observer(
+                session.client().send_queue().subscribe(),
+                Arc::clone(&send_completion),
+                terminal_ingress.clone(),
+            )));
         let actor = TimelineManagerActor {
             session: Some(session),
             room_list_service: None,
@@ -1590,6 +1609,8 @@ impl TimelineManagerActor {
             legacy_committed_response: None,
             timelines: HashMap::new(),
             accepted_submissions: SubmissionAdmissionLedger::default(),
+            send_completion,
+            global_send_completion_observer_task,
             action_tx,
             event_tx,
             msg_tx: tx.clone(),
@@ -1772,8 +1793,27 @@ impl TimelineManagerActor {
             .filter(|key| matches!(key.kind, TimelineKind::Room { .. }))
             .cloned()
             .collect::<Vec<_>>();
-        // Drop child handles first so relay/SDK work cannot race cleanup or acknowledgement.
-        self.timelines.clear();
+        // Stop and join the sole session observer before stopping producers
+        // that can still bind or abandon registrations. Once both layers are
+        // quiescent, every remaining bound request receives one explicit
+        // observation-loss settlement before ingress closes.
+        if let Some(task) = self.global_send_completion_observer_task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        let timeline_actors = self
+            .timelines
+            .drain()
+            .map(|(_, handle)| handle)
+            .collect::<Vec<_>>();
+        for handle in timeline_actors {
+            handle.stop().await;
+        }
+        apply_send_completion_observation_loss_and_handoff(
+            &self.send_completion,
+            &self.terminal_ingress,
+            None,
+        );
         // Reject later actor admissions, then drain every handoff accepted before
         // the close. Shutdown acknowledgement is deliberately held until the
         // reducer channel has accepted every action-required terminal in FIFO order.
@@ -1799,12 +1839,19 @@ impl TimelineManagerActor {
             submission_id,
             action,
             completion,
+            failure,
         } = handoff;
         if let Some(action) = action
             && !deliver_submission_terminal_action(&self.action_tx, action).await
         {
             // A required reducer action that cannot be enqueued fails closed:
             // neither the admission ledger nor CoreEvent may claim settlement.
+            if let Some(failure) = failure {
+                self.emit(CoreEvent::OperationFailed {
+                    request_id: failure.request_id,
+                    failure: failure.failure,
+                });
+            }
             return;
         }
         if let Some(submission_id) = submission_id {
@@ -1817,6 +1864,12 @@ impl TimelineManagerActor {
                 transaction_id: completion.transaction_id,
                 event_id: completion.event_id,
             }));
+        }
+        if let Some(failure) = failure {
+            self.emit(CoreEvent::OperationFailed {
+                request_id: failure.request_id,
+                failure: failure.failure,
+            });
         }
     }
 
@@ -2435,7 +2488,9 @@ impl TimelineManagerActor {
         {
             Ok(handle) => {
                 self.emit_timeline_subscribed_action(&key).await;
-                self.timelines.insert(key.clone(), handle);
+                if let Some(previous) = self.timelines.insert(key.clone(), handle) {
+                    previous.stop().await;
+                }
                 self.restore_foreground_gap_demand(&key).await;
                 self.replay_retained_room_subscription_checkpoint(&key)
                     .await;
@@ -2567,7 +2622,9 @@ impl TimelineManagerActor {
                         .invalidate_and_quiesce(&key)
                         .await;
                 }
-                self.timelines.remove(&key);
+                if let Some(handle) = self.timelines.remove(&key) {
+                    handle.stop().await;
+                }
             }
             TimelineCommand::Paginate {
                 request_id,
@@ -2676,6 +2733,7 @@ impl TimelineManagerActor {
                         request_id,
                         submission_id: None,
                         admission: None,
+                        registration: None,
                         transaction_id,
                         body,
                         mentions,
@@ -2711,6 +2769,7 @@ impl TimelineManagerActor {
                         request_id,
                         submission_id: Some(submission_id.clone()),
                         admission: None,
+                        registration: None,
                         transaction_id,
                         body,
                         mentions,
@@ -2740,6 +2799,7 @@ impl TimelineManagerActor {
                         request_id,
                         submission_id: None,
                         admission: None,
+                        registration: None,
                         transaction_id,
                         in_reply_to_event_id,
                         body,
@@ -2777,6 +2837,7 @@ impl TimelineManagerActor {
                         request_id,
                         submission_id: Some(submission_id.clone()),
                         admission: None,
+                        registration: None,
                         transaction_id,
                         in_reply_to_event_id,
                         body,
@@ -2870,11 +2931,13 @@ impl TimelineManagerActor {
                 transaction_id,
                 request,
             } => {
-                self.route_to_actor_or_fail(
+                self.route_media_send_to_actor_or_fail(
                     request_id,
                     &key,
+                    transaction_id.clone(),
                     TimelineActorMessage::UploadAndSendMedia {
                         request_id,
+                        registration: None,
                         transaction_id,
                         request,
                     },
@@ -3119,23 +3182,46 @@ impl TimelineManagerActor {
                 return;
             }
         }
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&self.send_completion),
+            self.terminal_ingress.clone(),
+            key.clone(),
+            transaction_id,
+            None,
+            request_id,
+            true,
+        );
+        registration.activate();
+        let _ = handle.send(msg.with_send_registration(registration)).await;
+    }
 
-        if !handle.send(msg).await {
-            if let Some(action) = send_failed_action(
-                key,
-                projection,
-                transaction_id,
-                "timeline send route closed".to_owned(),
-            ) {
-                let _ = self.action_tx.send(vec![action]).await;
-            }
+    async fn route_media_send_to_actor_or_fail(
+        &self,
+        request_id: RequestId,
+        key: &TimelineKey,
+        transaction_id: String,
+        msg: TimelineActorMessage,
+    ) {
+        let Some(handle) = self.timelines.get(key) else {
             self.emit_failure(
                 request_id,
                 CoreFailure::TimelineOperationFailed {
-                    kind: TimelineFailureKind::QueueOverflow,
+                    kind: TimelineFailureKind::NotSubscribed,
                 },
             );
-        }
+            return;
+        };
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&self.send_completion),
+            self.terminal_ingress.clone(),
+            key.clone(),
+            transaction_id,
+            None,
+            request_id,
+            false,
+        );
+        registration.activate();
+        let _ = handle.send(msg.with_send_registration(registration)).await;
     }
 
     async fn route_submission_to_actor(
@@ -3178,7 +3264,39 @@ impl TimelineManagerActor {
             return;
         };
         let (permit_tx, permit_rx) = oneshot::channel();
-        if !handle.send(msg.with_submission_admission(permit_rx)).await {
+        let registration = SendCompletionRegistration::begin(
+            Arc::clone(&self.send_completion),
+            self.terminal_ingress.clone(),
+            key.clone(),
+            transaction_id.clone(),
+            Some(submission_id.clone()),
+            request_id,
+            true,
+        );
+        let registration_id = registration
+            .registration_id()
+            .expect("new send registration must own its id");
+        if !handle
+            .send(
+                msg.with_submission_admission(permit_rx)
+                    .with_send_registration(registration),
+            )
+            .await
+        {
+            self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
+                request_id,
+                key: key.clone(),
+                submission_id,
+                kind: TimelineFailureKind::QueueOverflow,
+            }));
+            return;
+        }
+        if !self
+            .send_completion
+            .lock()
+            .expect("send completion coordinator lock must not be poisoned")
+            .activate_registration(registration_id)
+        {
             self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
                 request_id,
                 key: key.clone(),
@@ -3213,6 +3331,10 @@ impl TimelineManagerActor {
         };
         if let Some(action) = action {
             if self.action_tx.send(vec![action]).await.is_err() {
+                self.send_completion
+                    .lock()
+                    .expect("send completion coordinator lock must not be poisoned")
+                    .cancel_registration(registration_id);
                 self.accepted_submissions
                     .reject(submission_id.clone(), key.clone());
                 self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
@@ -3357,7 +3479,9 @@ impl TimelineManagerActor {
         {
             Ok(handle) => {
                 self.emit_timeline_subscribed_action(&key).await;
-                self.timelines.insert(key.clone(), handle);
+                if let Some(previous) = self.timelines.insert(key.clone(), handle) {
+                    previous.stop().await;
+                }
                 self.replay_retained_room_subscription_checkpoint(&key)
                     .await;
                 trace("subscribed_done");
@@ -3453,12 +3577,6 @@ impl TimelineManagerActor {
             Ok(t) => Arc::new(t),
             Err(_) => return Err(TimelineFailureKind::Sdk),
         };
-        let send_completion = self
-            .timelines
-            .get(key)
-            .map(|handle| Arc::clone(&handle.send_completion))
-            .unwrap_or_default();
-
         trace("spawn_begin");
         let handle = TimelineActor::spawn(
             key.clone(),
@@ -3477,7 +3595,7 @@ impl TimelineManagerActor {
             Arc::clone(&self.timeline_actor_generations),
             actor_generation,
             subscription_generation,
-            send_completion,
+            Arc::clone(&self.send_completion),
             self.terminal_ingress.clone(),
             self.msg_tx.clone(),
         )
@@ -3986,6 +4104,7 @@ enum TimelineActorMessage {
         request_id: RequestId,
         submission_id: Option<koushi_state::SubmissionId>,
         admission: Option<oneshot::Receiver<()>>,
+        registration: Option<SendCompletionRegistration>,
         transaction_id: String,
         body: String,
         mentions: MentionIntent,
@@ -3994,6 +4113,7 @@ enum TimelineActorMessage {
         request_id: RequestId,
         submission_id: Option<koushi_state::SubmissionId>,
         admission: Option<oneshot::Receiver<()>>,
+        registration: Option<SendCompletionRegistration>,
         transaction_id: String,
         in_reply_to_event_id: String,
         body: String,
@@ -4026,6 +4146,7 @@ enum TimelineActorMessage {
     },
     UploadAndSendMedia {
         request_id: RequestId,
+        registration: Option<SendCompletionRegistration>,
         transaction_id: String,
         request: UploadMediaRequest,
     },
@@ -4162,6 +4283,25 @@ impl TimelineActorMessage {
                 false,
                 "admission permits only apply to composer submissions"
             ),
+        }
+        self
+    }
+
+    fn with_send_registration(mut self, registration: SendCompletionRegistration) -> Self {
+        match &mut self {
+            Self::SendText {
+                registration: target,
+                ..
+            }
+            | Self::SendReply {
+                registration: target,
+                ..
+            }
+            | Self::UploadAndSendMedia {
+                registration: target,
+                ..
+            } => *target = Some(registration),
+            _ => debug_assert!(false, "send registrations apply only to queued sends"),
         }
         self
     }
@@ -6819,21 +6959,33 @@ fn thread_summary_from_loaded_root_raw(raw: &serde_json::Value) -> Option<Thread
 
 struct TimelineActorHandle {
     tx: mpsc::Sender<TimelineActorMessage>,
-    task: executor::JoinHandle<()>,
+    task: Option<executor::JoinHandle<()>>,
     auxiliary_tasks: Vec<executor::JoinHandle<()>>,
     subscription_generation: Option<u64>,
-    send_completion: SharedSendCompletionTracker,
 }
 
 impl TimelineActorHandle {
     async fn send(&self, msg: TimelineActorMessage) -> bool {
         self.tx.send(msg).await.is_ok()
     }
+
+    async fn stop(mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        for task in self.auxiliary_tasks.drain(..) {
+            task.abort();
+            let _ = task.await;
+        }
+    }
 }
 
 impl Drop for TimelineActorHandle {
     fn drop(&mut self) {
-        self.task.abort();
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
         for task in &self.auxiliary_tasks {
             task.abort();
         }
@@ -11218,7 +11370,7 @@ struct TimelineActor {
     projection_acknowledged: bool,
     next_batch_id: TimelineBatchId,
     /// Correlates send queue completions across the enqueue / SentEvent race.
-    send_completion: SharedSendCompletionTracker,
+    send_completion: SharedSendCompletionCoordinator,
     /// SDK transaction id -> Rust-owned outbound send state.
     send_statuses: HashMap<String, TimelineSendState>,
     /// SDK transaction id -> SDK send handle used for retry/cancel.
@@ -11750,7 +11902,7 @@ impl TimelineActor {
         timeline_actor_generations: Arc<TimelineActorGenerationGate>,
         actor_generation: u64,
         subscription_generation: Option<u64>,
-        send_completion: SharedSendCompletionTracker,
+        send_completion: SharedSendCompletionCoordinator,
         terminal_ingress: TimelineSendTerminalIngress,
         manager_tx: mpsc::Sender<TimelineMessage>,
     ) -> TimelineActorHandle {
@@ -12122,10 +12274,9 @@ impl TimelineActor {
 
         TimelineActorHandle {
             tx: actor_tx,
-            task,
+            task: Some(task),
             auxiliary_tasks,
             subscription_generation,
-            send_completion,
         }
     }
 
@@ -12637,6 +12788,7 @@ impl TimelineActor {
                 request_id,
                 submission_id,
                 admission,
+                registration,
                 transaction_id,
                 body,
                 mentions,
@@ -12644,13 +12796,25 @@ impl TimelineActor {
                 if !await_submission_admission(admission).await {
                     return;
                 }
-                self.handle_send_text(request_id, submission_id, transaction_id, body, mentions)
-                    .await;
+                let Some(registration) = registration else {
+                    self.emit_timeline_failure(request_id, TimelineFailureKind::QueueOverflow);
+                    return;
+                };
+                self.handle_send_text(
+                    request_id,
+                    submission_id,
+                    registration,
+                    transaction_id,
+                    body,
+                    mentions,
+                )
+                .await;
             }
             TimelineActorMessage::SendReply {
                 request_id,
                 submission_id,
                 admission,
+                registration,
                 transaction_id,
                 in_reply_to_event_id,
                 body,
@@ -12659,9 +12823,14 @@ impl TimelineActor {
                 if !await_submission_admission(admission).await {
                     return;
                 }
+                let Some(registration) = registration else {
+                    self.emit_timeline_failure(request_id, TimelineFailureKind::QueueOverflow);
+                    return;
+                };
                 self.handle_send_reply(
                     request_id,
                     submission_id,
+                    registration,
                     transaction_id,
                     in_reply_to_event_id,
                     body,
@@ -12712,11 +12881,21 @@ impl TimelineActor {
             }
             TimelineActorMessage::UploadAndSendMedia {
                 request_id,
+                registration,
                 transaction_id,
                 request,
             } => {
-                self.handle_upload_and_send_media(request_id, transaction_id, request)
-                    .await;
+                let Some(registration) = registration else {
+                    self.emit_timeline_failure(request_id, TimelineFailureKind::QueueOverflow);
+                    return;
+                };
+                self.handle_upload_and_send_media(
+                    request_id,
+                    registration,
+                    transaction_id,
+                    request,
+                )
+                .await;
             }
             TimelineActorMessage::DownloadMedia {
                 request_id,
@@ -14697,9 +14876,10 @@ impl TimelineActor {
 
     async fn handle_send_text(
         &mut self,
-        request_id: RequestId,
-        submission_id: Option<koushi_state::SubmissionId>,
-        client_txn_id: String,
+        _request_id: RequestId,
+        _submission_id: Option<koushi_state::SubmissionId>,
+        mut registration: SendCompletionRegistration,
+        _client_txn_id: String,
         body: String,
         mentions: MentionIntent,
     ) {
@@ -14712,30 +14892,13 @@ impl TimelineActor {
         let room_id = match matrix_sdk::ruma::RoomId::parse(&room_id_str) {
             Ok(id) => id,
             Err(_) => {
-                self.emit_send_failed_action_with_submission(
-                    &client_txn_id,
-                    submission_id.as_ref(),
-                )
-                .await;
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
+                registration.fail_known(TimelineFailureKind::Sdk);
                 return;
             }
         };
         let client = self.session.client();
         if client.get_room(&room_id).is_none() {
-            self.emit_send_failed_action_with_submission(&client_txn_id, submission_id.as_ref())
-                .await;
-            self.emit_failure(
-                request_id,
-                CoreFailure::TimelineOperationFailed {
-                    kind: TimelineFailureKind::Sdk,
-                },
-            );
+            registration.fail_known(TimelineFailureKind::Sdk);
             return;
         };
 
@@ -14748,12 +14911,7 @@ impl TimelineActor {
         let content = match build_room_message_content_from_composer_body(&body, mentions) {
             Ok(content) => content,
             Err(kind) => {
-                self.emit_send_failed_action_with_submission(
-                    &client_txn_id,
-                    submission_id.as_ref(),
-                )
-                .await;
-                self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
+                registration.fail_known(kind);
                 return;
             }
         };
@@ -14768,27 +14926,11 @@ impl TimelineActor {
                     &handle,
                     TimelineSendState::Sending,
                 );
-                apply_send_completion_transition_and_handoff(
-                    &self.send_completion,
-                    &self.terminal_ingress,
-                    &self.key,
-                    SendCompletionTransition::Pending {
-                        sdk_transaction_id: sdk_txn_id,
-                        client_transaction_id: client_txn_id,
-                        submission_id: submission_id.clone(),
-                        request_id,
-                        settles_composer: true,
-                    },
-                );
+                registration.bind(sdk_txn_id);
             }
             Err(err) => {
                 let kind = classify_timeline_send_error(&err);
-                self.emit_send_failed_action_with_submission(
-                    &client_txn_id,
-                    submission_id.as_ref(),
-                )
-                .await;
-                self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
+                registration.fail_known(kind);
             }
         }
         // On success: local echo appears via diff (Transaction id = SDK txn_id).
@@ -14797,9 +14939,10 @@ impl TimelineActor {
 
     async fn handle_send_reply(
         &mut self,
-        request_id: RequestId,
-        submission_id: Option<koushi_state::SubmissionId>,
-        client_txn_id: String,
+        _request_id: RequestId,
+        _submission_id: Option<koushi_state::SubmissionId>,
+        mut registration: SendCompletionRegistration,
+        _client_txn_id: String,
         in_reply_to_event_id: String,
         body: String,
         mentions: MentionIntent,
@@ -14813,17 +14956,7 @@ impl TimelineActor {
         let room_id = match matrix_sdk::ruma::RoomId::parse(&room_id_str) {
             Ok(id) => id,
             Err(_) => {
-                self.emit_send_failed_action_with_submission(
-                    &client_txn_id,
-                    submission_id.as_ref(),
-                )
-                .await;
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
+                registration.fail_known(TimelineFailureKind::Sdk);
                 return;
             }
         };
@@ -14831,31 +14964,14 @@ impl TimelineActor {
         let reply_event_id = match matrix_sdk::ruma::EventId::parse(&in_reply_to_event_id) {
             Ok(id) => id,
             Err(_) => {
-                self.emit_send_failed_action_with_submission(
-                    &client_txn_id,
-                    submission_id.as_ref(),
-                )
-                .await;
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
+                registration.fail_known(TimelineFailureKind::Sdk);
                 return;
             }
         };
 
         let client = self.session.client();
         if client.get_room(&room_id).is_none() {
-            self.emit_send_failed_action_with_submission(&client_txn_id, submission_id.as_ref())
-                .await;
-            self.emit_failure(
-                request_id,
-                CoreFailure::TimelineOperationFailed {
-                    kind: TimelineFailureKind::Sdk,
-                },
-            );
+            registration.fail_known(TimelineFailureKind::Sdk);
             return;
         }
 
@@ -14863,12 +14979,7 @@ impl TimelineActor {
             match build_room_message_content_without_relation_from_composer_body(&body, mentions) {
                 Ok(content) => content,
                 Err(kind) => {
-                    self.emit_send_failed_action_with_submission(
-                        &client_txn_id,
-                        submission_id.as_ref(),
-                    )
-                    .await;
-                    self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
+                    registration.fail_known(kind);
                     return;
                 }
             };
@@ -14881,17 +14992,7 @@ impl TimelineActor {
         let content = match self.timeline.room().make_reply_event(content, reply).await {
             Ok(content) => content,
             Err(_) => {
-                self.emit_send_failed_action_with_submission(
-                    &client_txn_id,
-                    submission_id.as_ref(),
-                )
-                .await;
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
+                registration.fail_known(TimelineFailureKind::Sdk);
                 return;
             }
         };
@@ -14905,27 +15006,11 @@ impl TimelineActor {
                     &handle,
                     TimelineSendState::Sending,
                 );
-                apply_send_completion_transition_and_handoff(
-                    &self.send_completion,
-                    &self.terminal_ingress,
-                    &self.key,
-                    SendCompletionTransition::Pending {
-                        sdk_transaction_id: sdk_txn_id,
-                        client_transaction_id: client_txn_id,
-                        submission_id: submission_id.clone(),
-                        request_id,
-                        settles_composer: true,
-                    },
-                );
+                registration.bind(sdk_txn_id);
             }
             Err(err) => {
                 let kind = classify_timeline_send_error(&err);
-                self.emit_send_failed_action_with_submission(
-                    &client_txn_id,
-                    submission_id.as_ref(),
-                )
-                .await;
-                self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
+                registration.fail_known(kind);
             }
         }
     }
@@ -15111,11 +15196,11 @@ impl TimelineActor {
                 if let Some(room) = self.sdk_room_for_key() {
                     room.send_queue().set_enabled(true);
                 }
-                apply_send_completion_transition_and_handoff(
+                apply_send_completion_observation_and_handoff(
                     &self.send_completion,
                     &self.terminal_ingress,
-                    &self.key,
-                    SendCompletionTransition::Cancelled {
+                    self.key.room_id(),
+                    SendCompletionObservation::Cancelled {
                         sdk_transaction_id: transaction_id,
                     },
                 );
@@ -15142,6 +15227,7 @@ impl TimelineActor {
     async fn handle_upload_and_send_media(
         &mut self,
         request_id: RequestId,
+        mut registration: SendCompletionRegistration,
         client_txn_id: String,
         request: UploadMediaRequest,
     ) {
@@ -15154,36 +15240,21 @@ impl TimelineActor {
         let room_id = match matrix_sdk::ruma::RoomId::parse(&room_id_str) {
             Ok(id) => id,
             Err(_) => {
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
+                registration.fail_known(TimelineFailureKind::Sdk);
                 return;
             }
         };
 
         let client = self.session.client();
         let Some(room) = client.get_room(&room_id) else {
-            self.emit_failure(
-                request_id,
-                CoreFailure::TimelineOperationFailed {
-                    kind: TimelineFailureKind::Sdk,
-                },
-            );
+            registration.fail_known(TimelineFailureKind::Sdk);
             return;
         };
 
         let mime_type = match request.mime_type.parse() {
             Ok(mime_type) => mime_type,
             Err(_) => {
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
+                registration.fail_known(TimelineFailureKind::Sdk);
                 return;
             }
         };
@@ -15220,18 +15291,7 @@ impl TimelineActor {
                     &handle,
                     TimelineSendState::Sending,
                 );
-                apply_send_completion_transition_and_handoff(
-                    &self.send_completion,
-                    &self.terminal_ingress,
-                    &self.key,
-                    SendCompletionTransition::Pending {
-                        sdk_transaction_id: sdk_txn_id,
-                        client_transaction_id: client_txn_id.clone(),
-                        submission_id: None,
-                        request_id,
-                        settles_composer: false,
-                    },
-                );
+                registration.bind(sdk_txn_id);
                 self.emit(CoreEvent::Timeline(TimelineEvent::MediaSendQueued {
                     request_id,
                     key: self.key.clone(),
@@ -15239,12 +15299,7 @@ impl TimelineActor {
                 }));
             }
             Err(err) => {
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: classify_send_queue_error(&err),
-                    },
-                );
+                registration.fail_known(classify_send_queue_error(&err));
             }
         }
     }
@@ -17388,14 +17443,6 @@ impl TimelineActor {
                 self.send_statuses
                     .insert(sdk_txn_str.clone(), TimelineSendState::Cancelled);
                 self.send_handles.remove(&sdk_txn_str);
-                apply_send_completion_transition_and_handoff(
-                    &self.send_completion,
-                    &self.terminal_ingress,
-                    &self.key,
-                    SendCompletionTransition::Cancelled {
-                        sdk_transaction_id: sdk_txn_str,
-                    },
-                );
             }
             RoomSendQueueUpdate::ReplacedLocalEvent { transaction_id, .. } => {
                 self.send_statuses
@@ -17411,14 +17458,6 @@ impl TimelineActor {
                     sdk_txn_str.clone(),
                     TimelineSendState::NotSent {
                         reason: send_failure_reason(is_recoverable),
-                    },
-                );
-                apply_send_completion_transition_and_handoff(
-                    &self.send_completion,
-                    &self.terminal_ingress,
-                    &self.key,
-                    SendCompletionTransition::SendError {
-                        sdk_transaction_id: sdk_txn_str,
                     },
                 );
             }
@@ -17437,15 +17476,6 @@ impl TimelineActor {
                 self.send_handles.remove(&sdk_txn_str);
                 self.sent_event_txns
                     .insert(event_id.to_string(), transaction_id.clone());
-                apply_send_completion_transition_and_handoff(
-                    &self.send_completion,
-                    &self.terminal_ingress,
-                    &self.key,
-                    SendCompletionTransition::Sent {
-                        sdk_transaction_id: sdk_txn_str,
-                        event_id: event_id.to_string(),
-                    },
-                );
             }
             RoomSendQueueUpdate::MediaUpload {
                 related_to,
@@ -17459,8 +17489,8 @@ impl TimelineActor {
                 let pending = self
                     .send_completion
                     .lock()
-                    .expect("send completion tracker lock must not be poisoned")
-                    .pending_send(&sdk_txn_str)
+                    .expect("send completion coordinator lock must not be poisoned")
+                    .pending_send(self.key.room_id(), &sdk_txn_str)
                     .map(|(client_txn_id, request_id)| (client_txn_id.to_owned(), request_id));
                 let (transaction_id, request_id) = pending
                     .map(|(client_txn_id, request_id)| (client_txn_id, Some(request_id)))
@@ -18016,55 +18046,6 @@ impl TimelineActor {
         self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
     }
 
-    /// Drive the reducer's composer failure transition for the matching pending
-    /// send. Room timelines settle the main composer; thread timelines settle
-    /// the open thread composer; focused timelines own no composer state.
-    async fn emit_send_failed_action_with_submission(
-        &self,
-        client_txn_id: &str,
-        submission_id: Option<&koushi_state::SubmissionId>,
-    ) {
-        if let Some((submission_id, target)) = submission_id.zip(submission_target(&self.key)) {
-            self.handoff_submission_terminal(
-                submission_id.clone(),
-                AppAction::ComposerSubmissionSettled {
-                    submission_id: submission_id.clone(),
-                    transaction_id: client_txn_id.to_owned(),
-                    target,
-                    outcome: koushi_state::ComposerSubmissionTerminalOutcome::Failed {
-                        message: "send failed".to_owned(),
-                    },
-                },
-            );
-            return;
-        }
-        let projection = match self.key.kind {
-            TimelineKind::Room { .. } => SendComposerProjection::Room,
-            TimelineKind::Thread { .. } => SendComposerProjection::ThreadReply,
-            TimelineKind::Focused { .. } => SendComposerProjection::None,
-        };
-        if let Some(action) = send_failed_action(
-            &self.key,
-            projection,
-            client_txn_id.to_owned(),
-            "send failed".to_owned(),
-        ) {
-            let _ = self.emit_action_reliable(action).await;
-        }
-    }
-
-    fn handoff_submission_terminal(
-        &self,
-        submission_id: koushi_state::SubmissionId,
-        action: AppAction,
-    ) {
-        let _admission = self.terminal_ingress.admit(TimelineSendTerminalHandoff {
-            submission_id: Some(submission_id),
-            action: Some(action),
-            completion: None,
-        });
-    }
-
     fn emit_typing_users_action(&self, user_ids: Vec<String>) {
         let Some(room_id) = timeline_room_id(&self.key) else {
             return;
@@ -18324,6 +18305,62 @@ async fn run_diff_relay(
 // ---------------------------------------------------------------------------
 // Send queue monitor task
 // ---------------------------------------------------------------------------
+
+async fn run_global_send_completion_observer(
+    mut update_rx: broadcast::Receiver<SendQueueUpdate>,
+    coordinator: SharedSendCompletionCoordinator,
+    terminal_ingress: TimelineSendTerminalIngress,
+) {
+    loop {
+        match update_rx.recv().await {
+            Ok(SendQueueUpdate { room_id, update }) => {
+                let observation = match update {
+                    RoomSendQueueUpdate::SentEvent {
+                        transaction_id,
+                        event_id,
+                    } => Some(SendCompletionObservation::Sent {
+                        sdk_transaction_id: transaction_id.to_string(),
+                        event_id: event_id.to_string(),
+                    }),
+                    RoomSendQueueUpdate::SendError { transaction_id, .. } => {
+                        Some(SendCompletionObservation::SendError {
+                            sdk_transaction_id: transaction_id.to_string(),
+                        })
+                    }
+                    RoomSendQueueUpdate::CancelledLocalEvent { transaction_id } => {
+                        Some(SendCompletionObservation::Cancelled {
+                            sdk_transaction_id: transaction_id.to_string(),
+                        })
+                    }
+                    RoomSendQueueUpdate::NewLocalEvent(_)
+                    | RoomSendQueueUpdate::ReplacedLocalEvent { .. }
+                    | RoomSendQueueUpdate::RetryEvent { .. }
+                    | RoomSendQueueUpdate::MediaUpload { .. } => None,
+                };
+                if let Some(observation) = observation {
+                    apply_send_completion_observation_and_handoff(
+                        &coordinator,
+                        &terminal_ingress,
+                        room_id.as_str(),
+                        observation,
+                    );
+                }
+            }
+            Err(broadcast::error::RecvError::Lagged(_)) => {
+                // A global terminal broadcast gap is explicit observation loss,
+                // never a guessed SDK SendError. Fail every active request once
+                // with the private-safe queue-overflow contract while retaining
+                // bound correlation for a later exact terminal.
+                apply_send_completion_observation_loss_and_handoff(
+                    &coordinator,
+                    &terminal_ingress,
+                    None,
+                );
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
+        }
+    }
+}
 
 async fn run_send_queue_monitor(
     actor_tx: mpsc::Sender<TimelineActorMessage>,
@@ -21711,27 +21748,32 @@ fn classify_send_queue_error(
     }
 }
 
-const MAX_SETTLED_SEND_TOMBSTONES: usize = 128;
-
-type SharedSendCompletionTracker = Arc<Mutex<SendCompletionTracker>>;
-
-#[derive(Default)]
-struct SendCompletionTracker {
-    /// Pending send requests: sdk_txn_id → completion metadata.
-    pending_sends: HashMap<String, PendingSendCompletion>,
-    /// SentEvent updates that arrived before the pending mapping existed:
-    /// sdk_txn_id → event_id. These are unresolved active correlations, not
-    /// settled history: they remain until Pending arrives or the whole tracker
-    /// is dropped on unsubscribe/session teardown.
-    completed_sends: HashMap<String, String>,
-    /// Recently settled SDK transactions. SyncStarted replacement briefly
-    /// overlaps old/new send-queue monitors, so duplicate terminal updates
-    /// must not recreate an early-completion entry or emit twice.
-    settled_send_tombstones: HashSet<String>,
-    settled_send_order: VecDeque<String>,
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct SendCorrelationKey {
+    room_id: String,
+    sdk_transaction_id: String,
 }
 
-struct PendingSendCompletion {
+type SharedSendCompletionCoordinator = Arc<Mutex<SendCompletionCoordinator>>;
+
+// Correlation is deliberately session-memory state. A process restart drops
+// request/submission response ownership; SDK unsent/local echoes are restored
+// and reprojected independently. Cross-process SendCompleted responses would
+// require a durable database outbox, which is outside this lifecycle contract.
+#[derive(Default)]
+struct SendCompletionCoordinator {
+    next_registration_id: u64,
+    registrations: std::collections::BTreeMap<u64, CoordinatedPendingSend>,
+    pending_sends: HashMap<SendCorrelationKey, CoordinatedPendingSend>,
+    unmatched_terminals: HashMap<SendCorrelationKey, VecDeque<ObservedSendTerminal>>,
+    settled_send_tombstones: HashSet<SendCorrelationKey>,
+    settled_send_order: VecDeque<SendCorrelationKey>,
+}
+
+struct CoordinatedPendingSend {
+    registration_id: u64,
+    active: bool,
+    key: TimelineKey,
     client_txn_id: String,
     submission_id: Option<koushi_state::SubmissionId>,
     request_id: RequestId,
@@ -21739,14 +21781,7 @@ struct PendingSendCompletion {
     failure_reported: bool,
 }
 
-enum SendCompletionTransition {
-    Pending {
-        sdk_transaction_id: String,
-        client_transaction_id: String,
-        submission_id: Option<koushi_state::SubmissionId>,
-        request_id: RequestId,
-        settles_composer: bool,
-    },
+enum SendCompletionObservation {
     Sent {
         sdk_transaction_id: String,
         event_id: String,
@@ -21758,6 +21793,423 @@ enum SendCompletionTransition {
         sdk_transaction_id: String,
     },
 }
+
+enum ObservedSendTerminal {
+    Sent { event_id: String },
+    SendError,
+    Cancelled,
+}
+
+struct SendCompletionRegistration {
+    coordinator: SharedSendCompletionCoordinator,
+    terminal_ingress: TimelineSendTerminalIngress,
+    registration_id: Option<u64>,
+}
+
+impl SendCompletionRegistration {
+    #[allow(clippy::too_many_arguments)]
+    fn begin(
+        coordinator: SharedSendCompletionCoordinator,
+        terminal_ingress: TimelineSendTerminalIngress,
+        key: TimelineKey,
+        client_txn_id: String,
+        submission_id: Option<koushi_state::SubmissionId>,
+        request_id: RequestId,
+        settles_composer: bool,
+    ) -> Self {
+        let registration_id = {
+            let mut coordinator = coordinator
+                .lock()
+                .expect("send completion coordinator lock must not be poisoned");
+            coordinator.next_registration_id = coordinator
+                .next_registration_id
+                .checked_add(1)
+                .expect("send registration id space exhausted");
+            let registration_id = coordinator.next_registration_id;
+            coordinator.registrations.insert(
+                registration_id,
+                CoordinatedPendingSend {
+                    registration_id,
+                    active: false,
+                    key,
+                    client_txn_id,
+                    submission_id,
+                    request_id,
+                    settles_composer,
+                    failure_reported: false,
+                },
+            );
+            registration_id
+        };
+        Self {
+            coordinator,
+            terminal_ingress,
+            registration_id: Some(registration_id),
+        }
+    }
+
+    fn activate(&mut self) {
+        let Some(registration_id) = self.registration_id else {
+            return;
+        };
+        self.coordinator
+            .lock()
+            .expect("send completion coordinator lock must not be poisoned")
+            .activate_registration(registration_id);
+    }
+
+    fn registration_id(&self) -> Option<u64> {
+        self.registration_id
+    }
+
+    fn bind(&mut self, sdk_transaction_id: String) {
+        let Some(registration_id) = self.registration_id.take() else {
+            return;
+        };
+        let mut coordinator = self
+            .coordinator
+            .lock()
+            .expect("send completion coordinator lock must not be poisoned");
+        let handoffs = coordinator.bind_registration(registration_id, sdk_transaction_id);
+        for handoff in handoffs {
+            let _admission = self.terminal_ingress.admit(handoff);
+        }
+    }
+
+    fn fail_known(&mut self, kind: TimelineFailureKind) {
+        let Some(registration_id) = self.registration_id.take() else {
+            return;
+        };
+        let mut coordinator = self
+            .coordinator
+            .lock()
+            .expect("send completion coordinator lock must not be poisoned");
+        if let Some(handoff) = coordinator.fail_registration(registration_id, kind) {
+            let _admission = self.terminal_ingress.admit(handoff);
+        }
+    }
+}
+
+impl Drop for SendCompletionRegistration {
+    fn drop(&mut self) {
+        let Some(registration_id) = self.registration_id.take() else {
+            return;
+        };
+        let mut coordinator = self
+            .coordinator
+            .lock()
+            .expect("send completion coordinator lock must not be poisoned");
+        if let Some(handoff) = coordinator.abandon_registration(registration_id) {
+            let _admission = self.terminal_ingress.admit(handoff);
+        }
+    }
+}
+
+impl SendCompletionCoordinator {
+    fn pending_send(&self, room_id: &str, sdk_transaction_id: &str) -> Option<(&str, RequestId)> {
+        self.pending_sends
+            .get(&SendCorrelationKey {
+                room_id: room_id.to_owned(),
+                sdk_transaction_id: sdk_transaction_id.to_owned(),
+            })
+            .map(|pending| (pending.client_txn_id.as_str(), pending.request_id))
+    }
+
+    fn activate_registration(&mut self, registration_id: u64) -> bool {
+        let Some(registration) = self.registrations.get_mut(&registration_id) else {
+            return false;
+        };
+        registration.active = true;
+        true
+    }
+
+    fn cancel_registration(&mut self, registration_id: u64) {
+        let room_id = self
+            .registrations
+            .remove(&registration_id)
+            .map(|registration| registration.key.room_id().to_owned());
+        if let Some(room_id) = room_id {
+            self.purge_unmatched_for_inactive_room(&room_id);
+        }
+    }
+
+    fn fail_registration(
+        &mut self,
+        registration_id: u64,
+        kind: TimelineFailureKind,
+    ) -> Option<TimelineSendTerminalHandoff> {
+        let registration = self.registrations.remove(&registration_id)?;
+        let room_id = registration.key.room_id().to_owned();
+        let handoff = (!registration.failure_reported)
+            .then(|| timeline_send_failure_handoff(&registration, kind));
+        self.purge_unmatched_for_inactive_room(&room_id);
+        handoff
+    }
+
+    fn abandon_registration(
+        &mut self,
+        registration_id: u64,
+    ) -> Option<TimelineSendTerminalHandoff> {
+        let registration = self.registrations.remove(&registration_id)?;
+        let room_id = registration.key.room_id().to_owned();
+        let handoff = (registration.active && !registration.failure_reported)
+            .then(|| timeline_send_observation_loss_handoff(&registration));
+        self.purge_unmatched_for_inactive_room(&room_id);
+        handoff
+    }
+
+    fn room_has_active_registration(&self, room_id: &str) -> bool {
+        self.registrations
+            .values()
+            .any(|registration| registration.active && registration.key.room_id() == room_id)
+            || self
+                .pending_sends
+                .values()
+                .any(|pending| pending.key.room_id() == room_id)
+    }
+
+    fn room_unbound_capacity(&self, room_id: &str) -> usize {
+        self.registrations
+            .values()
+            .filter(|registration| registration.active && registration.key.room_id() == room_id)
+            .count()
+    }
+
+    fn purge_unmatched_for_inactive_room(&mut self, room_id: &str) {
+        if self.room_has_active_registration(room_id) {
+            return;
+        }
+        self.unmatched_terminals
+            .retain(|correlation, _| correlation.room_id != room_id);
+    }
+
+    fn remember_settled(&mut self, correlation: SendCorrelationKey) {
+        if !self.settled_send_tombstones.insert(correlation.clone()) {
+            return;
+        }
+        self.settled_send_order.push_back(correlation);
+        while self.settled_send_order.len() > MAX_SETTLED_SEND_TOMBSTONES {
+            if let Some(expired) = self.settled_send_order.pop_front() {
+                self.settled_send_tombstones.remove(&expired);
+            }
+        }
+    }
+
+    fn bind_registration(
+        &mut self,
+        registration_id: u64,
+        sdk_transaction_id: String,
+    ) -> Vec<TimelineSendTerminalHandoff> {
+        let Some(registration) = self.registrations.remove(&registration_id) else {
+            return Vec::new();
+        };
+        if !registration.active {
+            self.purge_unmatched_for_inactive_room(registration.key.room_id());
+            return Vec::new();
+        }
+        let correlation = SendCorrelationKey {
+            room_id: registration.key.room_id().to_owned(),
+            sdk_transaction_id,
+        };
+        if self.settled_send_tombstones.contains(&correlation)
+            || self.pending_sends.contains_key(&correlation)
+        {
+            let handoffs = (!registration.failure_reported)
+                .then(|| timeline_send_observation_loss_handoff(&registration))
+                .into_iter()
+                .collect();
+            self.purge_unmatched_for_inactive_room(&correlation.room_id);
+            return handoffs;
+        }
+        self.pending_sends.insert(correlation.clone(), registration);
+        let observed = self
+            .unmatched_terminals
+            .remove(&correlation)
+            .unwrap_or_default();
+        let mut handoffs = Vec::new();
+        for terminal in observed {
+            if let Some(handoff) = self.apply_terminal(&correlation, terminal) {
+                handoffs.push(handoff);
+            }
+        }
+        handoffs
+    }
+
+    fn observe(
+        &mut self,
+        room_id: &str,
+        observation: SendCompletionObservation,
+    ) -> Vec<TimelineSendTerminalHandoff> {
+        let (sdk_transaction_id, terminal) = match observation {
+            SendCompletionObservation::Sent {
+                sdk_transaction_id,
+                event_id,
+            } => (sdk_transaction_id, ObservedSendTerminal::Sent { event_id }),
+            SendCompletionObservation::SendError { sdk_transaction_id } => {
+                (sdk_transaction_id, ObservedSendTerminal::SendError)
+            }
+            SendCompletionObservation::Cancelled { sdk_transaction_id } => {
+                (sdk_transaction_id, ObservedSendTerminal::Cancelled)
+            }
+        };
+        let correlation = SendCorrelationKey {
+            room_id: room_id.to_owned(),
+            sdk_transaction_id,
+        };
+        if self.settled_send_tombstones.contains(&correlation) {
+            return Vec::new();
+        }
+        if self.pending_sends.contains_key(&correlation) {
+            return self
+                .apply_terminal(&correlation, terminal)
+                .into_iter()
+                .collect();
+        }
+        let capacity = self.room_unbound_capacity(room_id);
+        if capacity == 0 {
+            return Vec::new();
+        }
+        if let Some(observed) = self.unmatched_terminals.get_mut(&correlation) {
+            if observed.len() < 2 {
+                observed.push_back(terminal);
+                return Vec::new();
+            }
+            return self.observation_lost(Some(room_id));
+        }
+        let retained_for_room = self
+            .unmatched_terminals
+            .keys()
+            .filter(|candidate| candidate.room_id == room_id)
+            .count();
+        if retained_for_room >= capacity {
+            return self.observation_lost(Some(room_id));
+        }
+        self.unmatched_terminals
+            .entry(correlation)
+            .or_default()
+            .push_back(terminal);
+        Vec::new()
+    }
+
+    fn observation_lost(&mut self, room_id: Option<&str>) -> Vec<TimelineSendTerminalHandoff> {
+        let mut registration_ids = self
+            .registrations
+            .values()
+            .filter(|registration| {
+                registration.active
+                    && room_id.is_none_or(|room_id| registration.key.room_id() == room_id)
+            })
+            .map(|registration| registration.registration_id)
+            .chain(
+                self.pending_sends
+                    .values()
+                    .filter(|pending| {
+                        room_id.is_none_or(|room_id| pending.key.room_id() == room_id)
+                    })
+                    .map(|pending| pending.registration_id),
+            )
+            .collect::<Vec<_>>();
+        registration_ids.sort_unstable();
+        let mut handoffs = Vec::new();
+        for registration_id in registration_ids {
+            let registration = self.registrations.get_mut(&registration_id).or_else(|| {
+                self.pending_sends
+                    .values_mut()
+                    .find(|pending| pending.registration_id == registration_id)
+            });
+            let Some(registration) = registration else {
+                continue;
+            };
+            if registration.failure_reported {
+                continue;
+            }
+            registration.failure_reported = true;
+            handoffs.push(timeline_send_observation_loss_handoff(registration));
+        }
+        handoffs
+    }
+
+    fn apply_terminal(
+        &mut self,
+        correlation: &SendCorrelationKey,
+        terminal: ObservedSendTerminal,
+    ) -> Option<TimelineSendTerminalHandoff> {
+        match terminal {
+            ObservedSendTerminal::Sent { event_id } => {
+                let pending = self.pending_sends.remove(correlation)?;
+                let settles_composer = pending.settles_composer && !pending.failure_reported;
+                self.remember_settled(correlation.clone());
+                self.purge_unmatched_for_inactive_room(&correlation.room_id);
+                Some(timeline_send_terminal_handoff(
+                    &pending.key,
+                    pending.client_txn_id,
+                    pending.submission_id,
+                    SendCompletionTerminal::Succeeded {
+                        request_id: pending.request_id,
+                        event_id,
+                        settles_composer,
+                    },
+                ))
+            }
+            ObservedSendTerminal::SendError => {
+                let pending = self.pending_sends.get_mut(correlation)?;
+                if pending.failure_reported {
+                    return None;
+                }
+                pending.failure_reported = true;
+                Some(timeline_send_terminal_handoff(
+                    &pending.key,
+                    pending.client_txn_id.clone(),
+                    pending.submission_id.clone(),
+                    SendCompletionTerminal::Failed {
+                        settles_composer: pending.settles_composer,
+                    },
+                ))
+            }
+            ObservedSendTerminal::Cancelled => {
+                let pending = self.pending_sends.remove(correlation)?;
+                let settles_composer = pending.settles_composer && !pending.failure_reported;
+                self.remember_settled(correlation.clone());
+                self.purge_unmatched_for_inactive_room(&correlation.room_id);
+                Some(timeline_send_terminal_handoff(
+                    &pending.key,
+                    pending.client_txn_id,
+                    pending.submission_id,
+                    SendCompletionTerminal::Cancelled { settles_composer },
+                ))
+            }
+        }
+    }
+}
+
+fn apply_send_completion_observation_and_handoff(
+    coordinator: &SharedSendCompletionCoordinator,
+    terminal_ingress: &TimelineSendTerminalIngress,
+    room_id: &str,
+    observation: SendCompletionObservation,
+) {
+    let mut coordinator = coordinator
+        .lock()
+        .expect("send completion coordinator lock must not be poisoned");
+    for handoff in coordinator.observe(room_id, observation) {
+        let _admission = terminal_ingress.admit(handoff);
+    }
+}
+
+fn apply_send_completion_observation_loss_and_handoff(
+    coordinator: &SharedSendCompletionCoordinator,
+    terminal_ingress: &TimelineSendTerminalIngress,
+    room_id: Option<&str>,
+) {
+    let mut coordinator = coordinator
+        .lock()
+        .expect("send completion coordinator lock must not be poisoned");
+    for handoff in coordinator.observation_lost(room_id) {
+        let _admission = terminal_ingress.admit(handoff);
+    }
+}
+
+const MAX_SETTLED_SEND_TOMBSTONES: usize = 128;
 
 enum SendCompletionTerminal {
     Succeeded {
@@ -21771,125 +22223,6 @@ enum SendCompletionTerminal {
     Cancelled {
         settles_composer: bool,
     },
-}
-
-impl SendCompletionTracker {
-    fn remember_early_completion(&mut self, sdk_txn_id: String, event_id: String) {
-        self.completed_sends.entry(sdk_txn_id).or_insert(event_id);
-    }
-
-    fn remember_settled(&mut self, sdk_txn_id: String) {
-        if !self.settled_send_tombstones.insert(sdk_txn_id.clone()) {
-            return;
-        }
-        self.settled_send_order.push_back(sdk_txn_id);
-        while self.settled_send_order.len() > MAX_SETTLED_SEND_TOMBSTONES {
-            if let Some(expired) = self.settled_send_order.pop_front() {
-                self.settled_send_tombstones.remove(&expired);
-            }
-        }
-    }
-
-    fn remember_pending_send(
-        &mut self,
-        sdk_txn_id: String,
-        client_txn_id: String,
-        submission_id: Option<koushi_state::SubmissionId>,
-        request_id: RequestId,
-        settles_composer: bool,
-    ) -> Option<(
-        String,
-        Option<koushi_state::SubmissionId>,
-        RequestId,
-        String,
-    )> {
-        if self.settled_send_tombstones.contains(&sdk_txn_id) {
-            None
-        } else if let Some(event_id) = self.completed_sends.remove(&sdk_txn_id) {
-            self.remember_settled(sdk_txn_id);
-            Some((client_txn_id, submission_id, request_id, event_id))
-        } else {
-            self.pending_sends.insert(
-                sdk_txn_id,
-                PendingSendCompletion {
-                    client_txn_id,
-                    submission_id,
-                    request_id,
-                    settles_composer,
-                    failure_reported: false,
-                },
-            );
-            None
-        }
-    }
-
-    fn record_sent_event(
-        &mut self,
-        sdk_txn_id: String,
-        event_id: String,
-    ) -> Option<(
-        String,
-        Option<koushi_state::SubmissionId>,
-        RequestId,
-        String,
-        bool,
-    )> {
-        if self.settled_send_tombstones.contains(&sdk_txn_id) {
-            return None;
-        }
-        if let Some(pending) = self.pending_sends.remove(&sdk_txn_id) {
-            let settles_composer = pending.settles_composer && !pending.failure_reported;
-            self.remember_settled(sdk_txn_id);
-            Some((
-                pending.client_txn_id,
-                pending.submission_id,
-                pending.request_id,
-                event_id,
-                settles_composer,
-            ))
-        } else {
-            self.remember_early_completion(sdk_txn_id, event_id);
-            None
-        }
-    }
-
-    fn record_send_error(
-        &mut self,
-        sdk_txn_id: &str,
-    ) -> Option<(String, Option<koushi_state::SubmissionId>, RequestId, bool)> {
-        let pending = self.pending_sends.get_mut(sdk_txn_id)?;
-        if pending.failure_reported {
-            return None;
-        }
-        pending.failure_reported = true;
-        Some((
-            pending.client_txn_id.clone(),
-            pending.submission_id.clone(),
-            pending.request_id,
-            pending.settles_composer,
-        ))
-    }
-
-    fn record_cancelled_event(
-        &mut self,
-        sdk_txn_id: &str,
-    ) -> Option<(String, Option<koushi_state::SubmissionId>, RequestId, bool)> {
-        let pending = self.pending_sends.remove(sdk_txn_id)?;
-        self.completed_sends.remove(sdk_txn_id);
-        self.remember_settled(sdk_txn_id.to_owned());
-        Some((
-            pending.client_txn_id,
-            pending.submission_id,
-            pending.request_id,
-            pending.settles_composer && !pending.failure_reported,
-        ))
-    }
-
-    fn pending_send(&self, sdk_txn_id: &str) -> Option<(&str, RequestId)> {
-        self.pending_sends
-            .get(sdk_txn_id)
-            .map(|pending| (pending.client_txn_id.as_str(), pending.request_id))
-    }
 }
 
 fn send_terminal_action(
@@ -21979,96 +22312,33 @@ fn timeline_send_terminal_handoff(
         submission_id: ledger_submission_id,
         action,
         completion,
+        failure: None,
     }
 }
 
-/// The single ordering boundary for tracker-derived send terminals. The
-/// tracker transition, terminal payload construction, and FIFO admission all
-/// happen while the shared tracker lock is held. This gives overlapping
-/// replacement actors one total terminal order without any detached task.
-fn apply_send_completion_transition_and_handoff(
-    tracker: &SharedSendCompletionTracker,
-    terminal_ingress: &TimelineSendTerminalIngress,
-    key: &TimelineKey,
-    transition: SendCompletionTransition,
-) {
-    let mut tracker = tracker
-        .lock()
-        .expect("send completion tracker lock must not be poisoned");
-    let handoff = match transition {
-        SendCompletionTransition::Pending {
-            sdk_transaction_id,
-            client_transaction_id,
-            submission_id,
-            request_id,
-            settles_composer,
-        } => tracker
-            .remember_pending_send(
-                sdk_transaction_id,
-                client_transaction_id,
-                submission_id,
-                request_id,
-                settles_composer,
-            )
-            .map(
-                |(client_transaction_id, submission_id, request_id, event_id)| {
-                    timeline_send_terminal_handoff(
-                        key,
-                        client_transaction_id,
-                        submission_id,
-                        SendCompletionTerminal::Succeeded {
-                            request_id,
-                            event_id,
-                            settles_composer,
-                        },
-                    )
-                },
-            ),
-        SendCompletionTransition::Sent {
-            sdk_transaction_id,
-            event_id,
-        } => tracker.record_sent_event(sdk_transaction_id, event_id).map(
-            |(client_transaction_id, submission_id, request_id, event_id, settles_composer)| {
-                timeline_send_terminal_handoff(
-                    key,
-                    client_transaction_id,
-                    submission_id,
-                    SendCompletionTerminal::Succeeded {
-                        request_id,
-                        event_id,
-                        settles_composer,
-                    },
-                )
-            },
-        ),
-        SendCompletionTransition::SendError { sdk_transaction_id } => {
-            tracker.record_send_error(&sdk_transaction_id).map(
-                |(client_transaction_id, submission_id, _request_id, settles_composer)| {
-                    timeline_send_terminal_handoff(
-                        key,
-                        client_transaction_id,
-                        submission_id,
-                        SendCompletionTerminal::Failed { settles_composer },
-                    )
-                },
-            )
-        }
-        SendCompletionTransition::Cancelled { sdk_transaction_id } => {
-            tracker.record_cancelled_event(&sdk_transaction_id).map(
-                |(client_transaction_id, submission_id, _request_id, settles_composer)| {
-                    timeline_send_terminal_handoff(
-                        key,
-                        client_transaction_id,
-                        submission_id,
-                        SendCompletionTerminal::Cancelled { settles_composer },
-                    )
-                },
-            )
-        }
-    };
-    if let Some(handoff) = handoff {
-        let _admission = terminal_ingress.admit(handoff);
-    }
+fn timeline_send_observation_loss_handoff(
+    pending: &CoordinatedPendingSend,
+) -> TimelineSendTerminalHandoff {
+    timeline_send_failure_handoff(pending, TimelineFailureKind::QueueOverflow)
+}
+
+fn timeline_send_failure_handoff(
+    pending: &CoordinatedPendingSend,
+    kind: TimelineFailureKind,
+) -> TimelineSendTerminalHandoff {
+    let mut handoff = timeline_send_terminal_handoff(
+        &pending.key,
+        pending.client_txn_id.clone(),
+        pending.submission_id.clone(),
+        SendCompletionTerminal::Failed {
+            settles_composer: pending.settles_composer,
+        },
+    );
+    handoff.failure = Some(TimelineSendFailureDelivery {
+        request_id: pending.request_id,
+        failure: CoreFailure::TimelineOperationFailed { kind },
+    });
+    handoff
 }
 
 // ---------------------------------------------------------------------------
@@ -24378,17 +24648,7 @@ mod tests {
         let client_transaction_id = "client-terminal-handoff".to_owned();
         let event_id = "$event-terminal-handoff:test".to_owned();
         let request_id = fake_rid(775);
-        let tracker = SharedSendCompletionTracker::default();
-        tracker
-            .lock()
-            .expect("send completion tracker")
-            .remember_pending_send(
-                sdk_transaction_id.clone(),
-                client_transaction_id.clone(),
-                None,
-                request_id,
-                true,
-            );
+        let coordinator = SharedSendCompletionCoordinator::default();
 
         let (action_tx, mut action_rx) = mpsc::channel(1);
         action_tx
@@ -24400,20 +24660,31 @@ mod tests {
         let (event_tx, mut event_rx) = broadcast::channel(8);
         let manager =
             TimelineManagerActor::spawn(action_tx, event_tx, None, MessagesBackpressure::default());
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            manager.terminal_sender(),
+            key.clone(),
+            client_transaction_id.clone(),
+            None,
+            request_id,
+            true,
+        );
+        registration.activate();
+        registration.bind(sdk_transaction_id.clone());
 
         let (settled_tx, settled_rx) = oneshot::channel();
         let origin = executor::spawn({
-            let tracker = Arc::clone(&tracker);
+            let coordinator = Arc::clone(&coordinator);
             let terminal_tx = manager.terminal_sender();
             let key = key.clone();
             let sdk_transaction_id = sdk_transaction_id.clone();
             let event_id = event_id.clone();
             async move {
-                apply_send_completion_transition_and_handoff(
-                    &tracker,
+                apply_send_completion_observation_and_handoff(
+                    &coordinator,
                     &terminal_tx,
-                    &key,
-                    SendCompletionTransition::Sent {
+                    key.room_id(),
+                    SendCompletionObservation::Sent {
                         sdk_transaction_id,
                         event_id,
                     },
@@ -24425,13 +24696,13 @@ mod tests {
         settled_rx.await.expect("origin settled SDK terminal");
         origin.abort();
 
-        // Model the overlapping replacement monitor. The shared tracker must
-        // suppress its duplicate before another durable handoff is scheduled.
-        apply_send_completion_transition_and_handoff(
-            &tracker,
+        // Model a duplicate global/direct terminal observation. The manager
+        // coordinator must suppress it before another handoff is scheduled.
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
             &manager.terminal_sender(),
-            &key,
-            SendCompletionTransition::Sent {
+            key.room_id(),
+            SendCompletionObservation::Sent {
                 sdk_transaction_id,
                 event_id: event_id.clone(),
             },
@@ -24526,6 +24797,7 @@ mod tests {
                     transaction_id,
                     event_id: "$event-closed-reducer:test".to_owned(),
                 }),
+                failure: None,
             }),
             TimelineSendTerminalAdmission::Accepted
         ));
@@ -24569,6 +24841,46 @@ mod tests {
             .expect("manager shutdown timeout")
             .expect("manager shutdown acknowledgement");
         manager_task.await.expect("manager shutdown task");
+    }
+
+    #[tokio::test]
+    async fn observation_loss_failure_survives_required_action_channel_shutdown() {
+        let key = room_key();
+        let request_id = fake_rid(777);
+        let mut manager = live_tail_test_manager(HashMap::new());
+        let mut event_rx = manager.event_tx.subscribe();
+
+        manager
+            .handle_send_terminal_handoff(TimelineSendTerminalHandoff {
+                submission_id: None,
+                action: Some(AppAction::SendTextFailed {
+                    room_id: key.room_id().to_owned(),
+                    transaction_id: "client-observation-loss".to_owned(),
+                    message: "send failed".to_owned(),
+                }),
+                completion: None,
+                failure: Some(TimelineSendFailureDelivery {
+                    request_id,
+                    failure: CoreFailure::TimelineOperationFailed {
+                        kind: TimelineFailureKind::QueueOverflow,
+                    },
+                }),
+            })
+            .await;
+
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::OperationFailed {
+                request_id: delivered_request_id,
+                failure: CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::QueueOverflow,
+                },
+            }) if delivered_request_id == request_id
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
     }
 
     #[tokio::test]
@@ -25224,6 +25536,8 @@ mod tests {
             legacy_committed_response: None,
             timelines: HashMap::from([(key.clone(), test_timeline_actor_handle())]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
+            send_completion: SharedSendCompletionCoordinator::default(),
+            global_send_completion_observer_task: None,
             action_tx,
             event_tx,
             msg_tx,
@@ -26665,6 +26979,8 @@ mod tests {
             legacy_committed_response: None,
             timelines: HashMap::from([(key.clone(), test_timeline_actor_handle())]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
+            send_completion: SharedSendCompletionCoordinator::default(),
+            global_send_completion_observer_task: None,
             action_tx,
             event_tx,
             msg_tx,
@@ -27069,10 +27385,9 @@ mod tests {
 
         let handle = TimelineActorHandle {
             tx,
-            task: actor_task,
+            task: Some(actor_task),
             auxiliary_tasks: vec![auxiliary_task],
             subscription_generation: None,
-            send_completion: Default::default(),
         };
         drop(handle);
         executor::sleep(Duration::from_millis(25)).await;
@@ -27132,10 +27447,9 @@ mod tests {
         let task = executor::spawn(async move { while rx.recv().await.is_some() {} });
         TimelineActorHandle {
             tx,
-            task,
+            task: Some(task),
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
-            send_completion: Default::default(),
         }
     }
 
@@ -27177,10 +27491,9 @@ mod tests {
         });
         TimelineActorHandle {
             tx,
-            task,
+            task: Some(task),
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
-            send_completion: Default::default(),
         }
     }
 
@@ -27221,10 +27534,9 @@ mod tests {
         });
         TimelineActorHandle {
             tx,
-            task,
+            task: Some(task),
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
-            send_completion: Default::default(),
         }
     }
 
@@ -27253,10 +27565,9 @@ mod tests {
         });
         TimelineActorHandle {
             tx,
-            task,
+            task: Some(task),
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
-            send_completion: Default::default(),
         }
     }
 
@@ -27275,6 +27586,8 @@ mod tests {
             legacy_committed_response: None,
             timelines,
             accepted_submissions: SubmissionAdmissionLedger::default(),
+            send_completion: SharedSendCompletionCoordinator::default(),
+            global_send_completion_observer_task: None,
             action_tx,
             event_tx,
             msg_tx,
@@ -28186,13 +28499,14 @@ mod tests {
                 key.clone(),
                 TimelineActorHandle {
                     tx: actor_tx,
-                    task: actor_task,
+                    task: Some(actor_task),
                     auxiliary_tasks: Vec::new(),
                     subscription_generation: None,
-                    send_completion: Default::default(),
                 },
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
+            send_completion: SharedSendCompletionCoordinator::default(),
+            global_send_completion_observer_task: None,
             action_tx,
             event_tx,
             msg_tx,
@@ -28270,10 +28584,9 @@ mod tests {
             key.clone(),
             TimelineActorHandle {
                 tx: actor_tx,
-                task: actor_task,
+                task: Some(actor_task),
                 auxiliary_tasks: Vec::new(),
                 subscription_generation: None,
-                send_completion: Default::default(),
             },
         );
         let (closed_action_tx, closed_action_rx) = mpsc::channel(1);
@@ -28391,13 +28704,14 @@ mod tests {
                 key.clone(),
                 TimelineActorHandle {
                     tx: actor_tx,
-                    task: child,
+                    task: Some(child),
                     auxiliary_tasks: Vec::new(),
                     subscription_generation: None,
-                    send_completion: Default::default(),
                 },
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
+            send_completion: SharedSendCompletionCoordinator::default(),
+            global_send_completion_observer_task: None,
             action_tx,
             event_tx,
             msg_tx: msg_tx.clone(),
@@ -28469,13 +28783,14 @@ mod tests {
                 key.clone(),
                 TimelineActorHandle {
                     tx: actor_tx,
-                    task: actor_task,
+                    task: Some(actor_task),
                     auxiliary_tasks: Vec::new(),
                     subscription_generation: None,
-                    send_completion: Default::default(),
                 },
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
+            send_completion: SharedSendCompletionCoordinator::default(),
+            global_send_completion_observer_task: None,
             action_tx,
             event_tx,
             msg_tx,
@@ -29711,13 +30026,14 @@ mod tests {
                 key.clone(),
                 TimelineActorHandle {
                     tx: actor_tx,
-                    task: actor_task,
+                    task: Some(actor_task),
                     auxiliary_tasks: Vec::new(),
                     subscription_generation: None,
-                    send_completion: Default::default(),
                 },
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
+            send_completion: SharedSendCompletionCoordinator::default(),
+            global_send_completion_observer_task: None,
             action_tx,
             event_tx,
             msg_tx: manager_tx.clone(),
@@ -29895,13 +30211,14 @@ mod tests {
                 key.clone(),
                 TimelineActorHandle {
                     tx: actor_tx,
-                    task: actor_task,
+                    task: Some(actor_task),
                     auxiliary_tasks: Vec::new(),
                     subscription_generation: None,
-                    send_completion: Default::default(),
                 },
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
+            send_completion: SharedSendCompletionCoordinator::default(),
+            global_send_completion_observer_task: None,
             action_tx,
             event_tx,
             msg_tx: _manager_tx,
@@ -32233,12 +32550,26 @@ mod tests {
             .next()
             .expect("receipts projection should follow send state");
         let terminal_boundary_source = source
-            .split("fn apply_send_completion_transition_and_handoff")
+            .split("fn apply_send_completion_observation_and_handoff")
             .nth(1)
             .expect("send completion boundary should exist")
-            .split("// ---------------------------------------------------------------------------")
+            .split("fn apply_send_completion_observation_loss_and_handoff")
             .next()
-            .expect("unit tests should follow send completion boundary");
+            .expect("observation-loss boundary should follow exact terminals");
+        let global_observer_source = source
+            .split("async fn run_global_send_completion_observer")
+            .nth(1)
+            .expect("global send completion observer should exist")
+            .split("async fn run_send_queue_monitor")
+            .next()
+            .expect("presentation monitor should follow global observer");
+        let actor_update_source = source
+            .split("async fn handle_send_queue_update")
+            .nth(1)
+            .expect("actor send-state projection handler should exist")
+            .split("async fn handle_send_queue_lagged")
+            .next()
+            .expect("actor lag resync should follow update handling");
         let manager_delivery_source = source
             .split("async fn handle_send_terminal_handoff")
             .nth(1)
@@ -32275,6 +32606,18 @@ mod tests {
             "terminal ownership transfer must not depend on a detached task reaching the manager mailbox"
         );
         assert!(
+            global_observer_source.contains("SendQueueUpdate")
+                && global_observer_source.contains("RecvError::Lagged")
+                && global_observer_source
+                    .contains("apply_send_completion_observation_loss_and_handoff"),
+            "the session-global observer must own exact terminals and explicit lag failure"
+        );
+        assert!(
+            !actor_update_source.contains("apply_send_completion_observation_and_handoff")
+                && !actor_update_source.contains("SendCompleted"),
+            "replaceable actor-local monitors are presentation-only terminal consumers"
+        );
+        assert!(
             manager_delivery_source.contains("deliver_submission_terminal_action")
                 && manager_delivery_source.contains(".await")
                 && !manager_delivery_source.contains("try_send"),
@@ -32295,23 +32638,12 @@ mod tests {
         );
         assert_eq!(
             production
-                .matches("apply_send_completion_transition_and_handoff")
+                .matches("session.client().send_queue().subscribe()")
                 .count(),
-            8,
-            "all seven tracker-derived actor transitions plus the boundary definition must stay centralized"
+            1,
+            "one client-global send terminal subscription belongs to the session manager"
         );
-        for tracker_operation in [
-            "remember_pending_send",
-            "record_sent_event",
-            "record_send_error",
-            "record_cancelled_event",
-        ] {
-            assert_eq!(
-                production.matches(tracker_operation).count(),
-                2,
-                "tracker terminal operations must appear only in their definition and the non-async handoff boundary: {tracker_operation}"
-            );
-        }
+        assert!(!production.contains("SharedSendCompletionTracker"));
     }
 
     #[test]
@@ -33197,273 +33529,908 @@ mod tests {
 
     // --- Txn-ID mapping ---
 
+    #[tokio::test]
+    async fn manager_coordinator_survives_unsubscribe_until_sdk_terminal() {
+        let key = room_key();
+        let mut manager = live_tail_test_manager(HashMap::from([(
+            key.clone(),
+            gap_demand_test_actor_handle("send-owner", Arc::new(Mutex::new(Vec::new()))),
+        )]));
+        let request_id = fake_rid(7410);
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&manager.send_completion),
+            manager.terminal_ingress.clone(),
+            key.clone(),
+            "client-unsubscribe-unit".to_owned(),
+            None,
+            request_id,
+            true,
+        );
+        registration.activate();
+        registration.bind("sdk-unsubscribe-unit".to_owned());
+
+        manager
+            .handle_command(TimelineCommand::Unsubscribe {
+                request_id: fake_rid(7411),
+                key: key.clone(),
+            })
+            .await;
+        assert!(!manager.timelines.contains_key(&key));
+        apply_send_completion_observation_and_handoff(
+            &manager.send_completion,
+            &manager.terminal_ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-unsubscribe-unit".to_owned(),
+                event_id: "$event-unsubscribe-unit:test".to_owned(),
+            },
+        );
+
+        let handoff = manager
+            .terminal_rx
+            .recv()
+            .await
+            .expect("manager-owned completion after unsubscribe");
+        assert!(matches!(
+            handoff.completion,
+            Some(TimelineSendCompletionDelivery {
+                request_id: delivered_request_id,
+                key: delivered_key,
+                transaction_id,
+                event_id,
+            }) if delivered_request_id == request_id
+                && delivered_key == key
+                && transaction_id == "client-unsubscribe-unit"
+                && event_id == "$event-unsubscribe-unit:test"
+        ));
+    }
+
     #[test]
-    fn pending_sends_map_sdk_txn_to_client_txn_and_request_id() {
-        let mut tracker = SendCompletionTracker::default();
-        let sdk_txn = "sdk-auto-generated-txn".to_owned();
-        let client_txn = "client-txn-42".to_owned();
-        let rid = fake_rid(42);
-        let event_id = "$event-42".to_owned();
+    fn manager_coordinator_keeps_same_room_room_and_thread_keys_collision_safe() {
+        let account = AccountKey("@send-owner:test".to_owned());
+        let room_key = TimelineKey::room(account.clone(), "!shared-room:test");
+        let thread_key = TimelineKey {
+            account_key: account,
+            kind: TimelineKind::Thread {
+                room_id: "!shared-room:test".to_owned(),
+                root_event_id: "$thread-root:test".to_owned(),
+            },
+        };
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut room_registration = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            room_key.clone(),
+            "client-room".to_owned(),
+            None,
+            fake_rid(7420),
+            true,
+        );
+        room_registration.activate();
+        room_registration.bind("sdk-room".to_owned());
+        let mut thread_registration = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            thread_key.clone(),
+            "client-thread".to_owned(),
+            None,
+            fake_rid(7421),
+            true,
+        );
+        thread_registration.activate();
+        thread_registration.bind("sdk-thread".to_owned());
+
+        for (sdk_transaction_id, event_id) in [
+            ("sdk-thread", "$event-thread:test"),
+            ("sdk-room", "$event-room:test"),
+        ] {
+            apply_send_completion_observation_and_handoff(
+                &coordinator,
+                &ingress,
+                "!shared-room:test",
+                SendCompletionObservation::Sent {
+                    sdk_transaction_id: sdk_transaction_id.to_owned(),
+                    event_id: event_id.to_owned(),
+                },
+            );
+        }
+
+        let thread_handoff = terminal_rx.try_recv().expect("thread terminal first");
+        let room_handoff = terminal_rx.try_recv().expect("room terminal second");
+        assert!(matches!(
+            thread_handoff.completion,
+            Some(TimelineSendCompletionDelivery { key, .. }) if key == thread_key
+        ));
+        assert!(matches!(
+            room_handoff.completion,
+            Some(TimelineSendCompletionDelivery { key, .. }) if key == room_key
+        ));
+    }
+
+    #[test]
+    fn unmatched_terminal_cohort_overflow_fails_safe_once_without_unbounded_growth() {
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
+            "client-cohort".to_owned(),
+            None,
+            fake_rid(7430),
+            true,
+        );
+        registration.activate();
+
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-cohort-candidate".to_owned(),
+                event_id: "$event-cohort-candidate:test".to_owned(),
+            },
+        );
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-cohort-overflow".to_owned(),
+                event_id: "$event-cohort-overflow:test".to_owned(),
+            },
+        );
+        let overflow = terminal_rx.try_recv().expect("cohort overflow terminal");
+        assert!(matches!(
+            overflow.failure,
+            Some(TimelineSendFailureDelivery {
+                request_id,
+                failure: CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::QueueOverflow,
+                },
+            }) if request_id == fake_rid(7430)
+        ));
+        assert_eq!(
+            coordinator
+                .lock()
+                .expect("send completion coordinator")
+                .unmatched_terminals
+                .len(),
+            1,
+            "one active unbound registration admits only one unmatched transaction cohort"
+        );
+
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-cohort-overflow-again".to_owned(),
+                event_id: "$event-cohort-overflow-again:test".to_owned(),
+            },
+        );
+        assert!(
+            terminal_rx.try_recv().is_err(),
+            "cohort overflow failure must be reported once per active request"
+        );
+
+        registration.bind("sdk-cohort-candidate".to_owned());
+        let completion = terminal_rx.try_recv().expect("retained exact terminal");
+        assert!(completion.failure.is_none());
+        assert!(matches!(
+            completion.completion,
+            Some(TimelineSendCompletionDelivery { key: delivered_key, .. })
+                if delivered_key == key
+        ));
+    }
+
+    #[test]
+    fn known_enqueue_failure_and_active_registration_abort_have_distinct_terminals() {
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut known_failure = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
+            "client-known-failure".to_owned(),
+            None,
+            fake_rid(7435),
+            true,
+        );
+        known_failure.activate();
+        known_failure.fail_known(TimelineFailureKind::Forbidden);
+        drop(known_failure);
+        assert!(matches!(
+            terminal_rx.try_recv().expect("known failure").failure,
+            Some(TimelineSendFailureDelivery {
+                failure: CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Forbidden,
+                },
+                ..
+            })
+        ));
+        assert!(terminal_rx.try_recv().is_err());
+
+        let mut abandoned = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress,
+            key,
+            "client-abandoned".to_owned(),
+            None,
+            fake_rid(7436),
+            true,
+        );
+        abandoned.activate();
+        drop(abandoned);
+        assert!(matches!(
+            terminal_rx.try_recv().expect("abandoned failure").failure,
+            Some(TimelineSendFailureDelivery {
+                failure: CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::QueueOverflow,
+                },
+                ..
+            })
+        ));
+        assert!(terminal_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn global_send_observer_lag_fails_bound_and_unbound_in_registration_order() {
+        let account = AccountKey("@lag-owner:test".to_owned());
+        let first_key = TimelineKey::room(account.clone(), "!lag-room:test");
+        let second_key = TimelineKey {
+            account_key: account,
+            kind: TimelineKind::Focused {
+                room_id: "!lag-room:test".to_owned(),
+                event_id: "$focus:test".to_owned(),
+            },
+        };
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut first = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            first_key,
+            "client-lag-first".to_owned(),
+            None,
+            fake_rid(7440),
+            true,
+        );
+        first.activate();
+        first.bind("sdk-lag-first".to_owned());
+        let mut second = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            second_key,
+            "client-lag-second".to_owned(),
+            None,
+            fake_rid(7441),
+            false,
+        );
+        second.activate();
+
+        let (updates_tx, updates_rx) = broadcast::channel(1);
+        let room_id =
+            matrix_sdk::ruma::OwnedRoomId::try_from("!lag-room:test").expect("lag room id");
+        for transaction_id in ["sdk-overflow-one", "sdk-overflow-two"] {
+            updates_tx
+                .send(matrix_sdk::send_queue::SendQueueUpdate {
+                    room_id: room_id.clone(),
+                    update: RoomSendQueueUpdate::RetryEvent {
+                        transaction_id: matrix_sdk::ruma::OwnedTransactionId::from(transaction_id),
+                    },
+                })
+                .expect("queue lag update");
+        }
+        drop(updates_tx);
+        run_global_send_completion_observer(updates_rx, Arc::clone(&coordinator), ingress.clone())
+            .await;
+
+        let first_failure = terminal_rx.try_recv().expect("first lag failure");
+        let second_failure = terminal_rx.try_recv().expect("second lag failure");
+        assert!(matches!(
+            first_failure.failure,
+            Some(TimelineSendFailureDelivery { request_id, .. }) if request_id == fake_rid(7440)
+        ));
+        assert!(first_failure.action.is_some());
+        assert!(matches!(
+            second_failure.failure,
+            Some(TimelineSendFailureDelivery { request_id, .. }) if request_id == fake_rid(7441)
+        ));
+        assert!(second_failure.action.is_none());
+        assert!(terminal_rx.try_recv().is_err());
+
+        apply_send_completion_observation_loss_and_handoff(&coordinator, &ingress, None);
+        assert!(
+            terminal_rx.try_recv().is_err(),
+            "a repeated lag notification must not report either request twice"
+        );
+        second.bind("sdk-lag-second".to_owned());
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            "!lag-room:test",
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-lag-second".to_owned(),
+                event_id: "$event-after-lag:test".to_owned(),
+            },
+        );
+        let recovered = terminal_rx.try_recv().expect("exact terminal after lag");
+        assert!(recovered.action.is_none());
+        assert!(recovered.failure.is_none());
+        assert!(recovered.completion.is_some());
+    }
+
+    #[tokio::test]
+    async fn shutdown_joins_observer_then_actor_and_drains_registration_failure_before_ack() {
+        struct OrderedDrop {
+            label: &'static str,
+            log: Arc<Mutex<Vec<&'static str>>>,
+        }
+
+        impl Drop for OrderedDrop {
+            fn drop(&mut self) {
+                self.log
+                    .lock()
+                    .expect("shutdown ordering log")
+                    .push(self.label);
+            }
+        }
+
+        let key = room_key();
+        let mut manager = live_tail_test_manager(HashMap::new());
+        let (action_tx, mut action_rx) = mpsc::channel(8);
+        manager.action_tx = action_tx;
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let (observer_started_tx, observer_started_rx) = oneshot::channel();
+        manager.global_send_completion_observer_task = Some(executor::spawn({
+            let order = Arc::clone(&order);
+            async move {
+                let _drop = OrderedDrop {
+                    label: "observer",
+                    log: order,
+                };
+                let _ = observer_started_tx.send(());
+                std::future::pending::<()>().await;
+            }
+        }));
+
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&manager.send_completion),
+            manager.terminal_ingress.clone(),
+            key.clone(),
+            "client-shutdown-order".to_owned(),
+            None,
+            fake_rid(7450),
+            true,
+        );
+        registration.activate();
+        let (actor_started_tx, actor_started_rx) = oneshot::channel();
+        let (actor_tx, _actor_rx) = mpsc::channel(1);
+        let actor_task = executor::spawn({
+            let order = Arc::clone(&order);
+            async move {
+                let _drop = OrderedDrop {
+                    label: "actor",
+                    log: order,
+                };
+                let _registration = registration;
+                let _ = actor_started_tx.send(());
+                std::future::pending::<()>().await;
+            }
+        });
+        manager.timelines.insert(
+            key,
+            TimelineActorHandle {
+                tx: actor_tx,
+                task: Some(actor_task),
+                auxiliary_tasks: Vec::new(),
+                subscription_generation: None,
+            },
+        );
+        observer_started_rx.await.expect("observer started");
+        actor_started_rx.await.expect("actor started");
+
+        let manager_tx = manager.msg_tx.clone();
+        let manager_task = executor::spawn(manager.run());
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        manager_tx
+            .send(TimelineMessage::Shutdown {
+                acknowledged: Some(shutdown_tx),
+            })
+            .await
+            .expect("shutdown command");
+        shutdown_rx.await.expect("shutdown acknowledgement");
+        manager_task.await.expect("manager shutdown task");
+
+        let observed_order = order.lock().expect("shutdown ordering log").clone();
+        assert_eq!(
+            observed_order,
+            ["observer", "actor"],
+            "the sole observer must stop before actor registration producers"
+        );
+        let mut send_failure_count = 0;
+        while let Ok(actions) = action_rx.try_recv() {
+            send_failure_count += actions
+                .iter()
+                .filter(|action| {
+                    matches!(
+                        action,
+                        AppAction::SendTextFailed { transaction_id, .. }
+                            if transaction_id == "client-shutdown-order"
+                    )
+                })
+                .count();
+        }
+        assert_eq!(
+            send_failure_count, 1,
+            "shutdown must drain one fail-safe terminal"
+        );
+    }
+
+    #[test]
+    fn coordinator_maps_sdk_transaction_to_client_request_and_completion() {
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
+            "client-txn-42".to_owned(),
+            None,
+            fake_rid(42),
+            true,
+        );
+        registration.activate();
+        registration.bind("sdk-auto-generated-txn".to_owned());
 
         assert_eq!(
-            tracker.remember_pending_send(sdk_txn.clone(), client_txn.clone(), None, rid, true),
-            None
+            coordinator
+                .lock()
+                .expect("send completion coordinator")
+                .pending_send(key.room_id(), "sdk-auto-generated-txn"),
+            Some(("client-txn-42", fake_rid(42)))
         );
-        assert_eq!(
-            tracker.pending_send(&sdk_txn),
-            Some((client_txn.as_str(), rid))
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-auto-generated-txn".to_owned(),
+                event_id: "$event-42:test".to_owned(),
+            },
         );
-        assert_eq!(
-            tracker.record_sent_event(sdk_txn.clone(), event_id.clone()),
-            Some((client_txn.clone(), None, rid, event_id, true))
-        );
-
-        assert!(tracker.pending_sends.is_empty());
-        assert!(tracker.completed_sends.is_empty());
+        assert!(matches!(
+            terminal_rx.try_recv().expect("mapped completion").completion,
+            Some(TimelineSendCompletionDelivery {
+                request_id,
+                transaction_id,
+                event_id,
+                ..
+            }) if request_id == fake_rid(42)
+                && transaction_id == "client-txn-42"
+                && event_id == "$event-42:test"
+        ));
     }
 
     #[test]
     fn send_completion_race_delivers_completion_when_sent_event_arrives_first() {
-        let mut tracker = SendCompletionTracker::default();
-        let sdk_txn = "sdk-race-txn".to_owned();
-        let client_txn = "client-race-txn".to_owned();
-        let request_id = fake_rid(77);
-        let event_id = "$event-race".to_owned();
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
+            "client-race-txn".to_owned(),
+            None,
+            fake_rid(77),
+            true,
+        );
+        registration.activate();
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-race-txn".to_owned(),
+                event_id: "$event-race:test".to_owned(),
+            },
+        );
+        assert!(terminal_rx.try_recv().is_err());
 
-        assert_eq!(
-            tracker.record_sent_event(sdk_txn.clone(), event_id.clone()),
-            None
-        );
-        assert_eq!(
-            tracker.remember_pending_send(
-                sdk_txn.clone(),
-                client_txn.clone(),
-                None,
+        registration.bind("sdk-race-txn".to_owned());
+        assert!(matches!(
+            terminal_rx.try_recv().expect("early completion correlated").completion,
+            Some(TimelineSendCompletionDelivery {
                 request_id,
-                true,
-            ),
-            Some((client_txn.clone(), None, request_id, event_id.clone()))
+                transaction_id,
+                event_id,
+                ..
+            }) if request_id == fake_rid(77)
+                && transaction_id == "client-race-txn"
+                && event_id == "$event-race:test"
+        ));
+    }
+
+    #[test]
+    fn replacement_owner_preserves_pending_send_completion_correlation() {
+        let key = room_key();
+        let current_owner = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&current_owner),
+            ingress.clone(),
+            key.clone(),
+            "client-owner-handoff-txn".to_owned(),
+            None,
+            fake_rid(773),
+            true,
         );
-        assert!(tracker.pending_sends.is_empty());
-        assert!(tracker.completed_sends.is_empty());
+        registration.activate();
+        registration.bind("sdk-owner-handoff-txn".to_owned());
+
+        let replacement_owner = Arc::clone(&current_owner);
+        drop(registration);
+        drop(current_owner);
+        apply_send_completion_observation_and_handoff(
+            &replacement_owner,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-owner-handoff-txn".to_owned(),
+                event_id: "$event-owner-handoff:test".to_owned(),
+            },
+        );
+        assert!(matches!(
+            terminal_rx.try_recv().expect("replacement completion").completion,
+            Some(TimelineSendCompletionDelivery {
+                request_id,
+                transaction_id,
+                event_id,
+                ..
+            }) if request_id == fake_rid(773)
+                && transaction_id == "client-owner-handoff-txn"
+                && event_id == "$event-owner-handoff:test"
+        ));
     }
 
     #[test]
     fn duplicate_sent_event_after_completion_is_idempotent() {
-        let mut tracker = SendCompletionTracker::default();
-        let sdk_txn = "sdk-duplicate-txn".to_owned();
-        let event_id = "$event-duplicate".to_owned();
-        tracker.remember_pending_send(
-            sdk_txn.clone(),
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
             "client-duplicate-txn".to_owned(),
             None,
             fake_rid(770),
             true,
         );
+        registration.activate();
+        registration.bind("sdk-duplicate-txn".to_owned());
+        for _ in 0..2 {
+            apply_send_completion_observation_and_handoff(
+                &coordinator,
+                &ingress,
+                key.room_id(),
+                SendCompletionObservation::Sent {
+                    sdk_transaction_id: "sdk-duplicate-txn".to_owned(),
+                    event_id: "$event-duplicate:test".to_owned(),
+                },
+            );
+        }
 
         assert!(
-            tracker
-                .record_sent_event(sdk_txn.clone(), event_id.clone())
+            terminal_rx
+                .try_recv()
+                .expect("first completion")
+                .completion
                 .is_some()
         );
-        assert_eq!(
-            tracker.record_sent_event(sdk_txn.clone(), event_id),
-            None,
-            "an overlapping replacement monitor must not emit twice"
-        );
         assert!(
-            tracker.completed_sends.is_empty(),
-            "a duplicate terminal must not become an early-completion entry"
-        );
-        assert!(tracker.settled_send_tombstones.contains(&sdk_txn));
-    }
-
-    #[test]
-    fn replacement_owner_preserves_pending_send_completion_correlation() {
-        let current_owner = SharedSendCompletionTracker::default();
-        let sdk_txn = "sdk-owner-handoff-txn".to_owned();
-        let client_txn = "client-owner-handoff-txn".to_owned();
-        let request_id = fake_rid(773);
-        current_owner
-            .lock()
-            .expect("current tracker lock")
-            .remember_pending_send(sdk_txn.clone(), client_txn.clone(), None, request_id, true);
-
-        let replacement_owner = Arc::clone(&current_owner);
-        drop(current_owner);
-        assert_eq!(
-            replacement_owner
-                .lock()
-                .expect("replacement tracker lock")
-                .record_sent_event(sdk_txn, "$event-owner-handoff".to_owned()),
-            Some((
-                client_txn,
-                None,
-                request_id,
-                "$event-owner-handoff".to_owned(),
-                true,
-            ))
+            terminal_rx.try_recv().is_err(),
+            "an overlapping observer must not emit twice"
         );
     }
 
     #[test]
     fn sent_event_before_pending_race_remains_idempotent_after_settlement() {
-        let mut tracker = SendCompletionTracker::default();
-        let sdk_txn = "sdk-early-duplicate-txn".to_owned();
-        let event_id = "$event-early-duplicate".to_owned();
-
-        assert_eq!(
-            tracker.record_sent_event(sdk_txn.clone(), event_id.clone()),
-            None
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
+            "client-early-duplicate-txn".to_owned(),
+            None,
+            fake_rid(771),
+            true,
         );
+        registration.activate();
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-early-duplicate-txn".to_owned(),
+                event_id: "$event-early-duplicate:test".to_owned(),
+            },
+        );
+        registration.bind("sdk-early-duplicate-txn".to_owned());
         assert!(
-            tracker
-                .remember_pending_send(
-                    sdk_txn.clone(),
-                    "client-early-duplicate-txn".to_owned(),
-                    None,
-                    fake_rid(771),
-                    true,
-                )
+            terminal_rx
+                .try_recv()
+                .expect("early completion")
+                .completion
                 .is_some()
         );
-        assert_eq!(tracker.record_sent_event(sdk_txn.clone(), event_id), None);
-        assert!(tracker.completed_sends.is_empty());
-        assert!(tracker.settled_send_tombstones.contains(&sdk_txn));
+
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-early-duplicate-txn".to_owned(),
+                event_id: "$event-early-duplicate:test".to_owned(),
+            },
+        );
+        assert!(terminal_rx.try_recv().is_err());
     }
 
     #[test]
     fn cancelled_completion_is_tombstoned_against_late_sent_event() {
-        let mut tracker = SendCompletionTracker::default();
-        let sdk_txn = "sdk-cancelled-txn".to_owned();
-        tracker.remember_pending_send(
-            sdk_txn.clone(),
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
             "client-cancelled-txn".to_owned(),
             None,
             fake_rid(772),
             true,
         );
-
-        assert!(tracker.record_cancelled_event(&sdk_txn).is_some());
-        assert_eq!(
-            tracker.record_sent_event(sdk_txn.clone(), "$late-event".to_owned()),
-            None
+        registration.activate();
+        registration.bind("sdk-cancelled-txn".to_owned());
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Cancelled {
+                sdk_transaction_id: "sdk-cancelled-txn".to_owned(),
+            },
         );
-        assert!(tracker.completed_sends.is_empty());
-        assert!(tracker.settled_send_tombstones.contains(&sdk_txn));
-    }
-
-    #[test]
-    fn settled_send_tombstones_are_bounded() {
-        let mut tracker = SendCompletionTracker::default();
-        for index in 0..=MAX_SETTLED_SEND_TOMBSTONES {
-            let sdk_txn = format!("sdk-bounded-{index}");
-            tracker.remember_pending_send(
-                sdk_txn.clone(),
-                format!("client-bounded-{index}"),
-                None,
-                fake_rid(800 + index as u64),
-                true,
-            );
-            assert!(
-                tracker
-                    .record_sent_event(sdk_txn, format!("$event-bounded-{index}"))
-                    .is_some()
-            );
-        }
-
-        assert_eq!(
-            tracker.settled_send_tombstones.len(),
-            MAX_SETTLED_SEND_TOMBSTONES
-        );
-        assert!(!tracker.settled_send_tombstones.contains("sdk-bounded-0"));
         assert!(
-            tracker
+            terminal_rx
+                .try_recv()
+                .expect("cancel terminal")
+                .action
+                .is_some()
+        );
+
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-cancelled-txn".to_owned(),
+                event_id: "$late-event:test".to_owned(),
+            },
+        );
+        assert!(terminal_rx.try_recv().is_err());
+        assert!(
+            coordinator
+                .lock()
+                .expect("send completion coordinator")
                 .settled_send_tombstones
-                .contains(&format!("sdk-bounded-{MAX_SETTLED_SEND_TOMBSTONES}"))
+                .contains(&SendCorrelationKey {
+                    room_id: key.room_id().to_owned(),
+                    sdk_transaction_id: "sdk-cancelled-txn".to_owned(),
+                })
         );
     }
 
     #[test]
     fn unmatched_early_send_completions_survive_beyond_tombstone_history_bound() {
-        let mut tracker = SendCompletionTracker::default();
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
         let observed = MAX_SETTLED_SEND_TOMBSTONES + 64;
+        let mut registrations = Vec::with_capacity(observed);
         for index in 0..observed {
-            assert_eq!(
-                tracker.record_sent_event(
-                    format!("sdk-early-bounded-{index}"),
-                    format!("$event-early-bounded-{index}"),
-                ),
-                None
+            let mut registration = SendCompletionRegistration::begin(
+                Arc::clone(&coordinator),
+                ingress.clone(),
+                key.clone(),
+                format!("client-early-{index}"),
+                None,
+                fake_rid(900 + index as u64),
+                true,
+            );
+            registration.activate();
+            registrations.push(registration);
+        }
+        for index in 0..observed {
+            apply_send_completion_observation_and_handoff(
+                &coordinator,
+                &ingress,
+                key.room_id(),
+                SendCompletionObservation::Sent {
+                    sdk_transaction_id: format!("sdk-early-{index}"),
+                    event_id: format!("$event-early-{index}:test"),
+                },
+            );
+        }
+        assert_eq!(
+            coordinator
+                .lock()
+                .expect("send completion coordinator")
+                .unmatched_terminals
+                .len(),
+            observed,
+            "active unmatched correlations are not tombstone history and must not be evicted"
+        );
+
+        registrations[0].bind("sdk-early-0".to_owned());
+        assert!(matches!(
+            terminal_rx.try_recv().expect("oldest early completion").completion,
+            Some(TimelineSendCompletionDelivery {
+                request_id,
+                event_id,
+                ..
+            }) if request_id == fake_rid(900) && event_id == "$event-early-0:test"
+        ));
+    }
+
+    #[test]
+    fn settled_send_tombstones_are_bounded() {
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        for index in 0..=MAX_SETTLED_SEND_TOMBSTONES {
+            let sdk_transaction_id = format!("sdk-bounded-{index}");
+            let mut registration = SendCompletionRegistration::begin(
+                Arc::clone(&coordinator),
+                ingress.clone(),
+                key.clone(),
+                format!("client-bounded-{index}"),
+                None,
+                fake_rid(1200 + index as u64),
+                true,
+            );
+            registration.activate();
+            registration.bind(sdk_transaction_id.clone());
+            apply_send_completion_observation_and_handoff(
+                &coordinator,
+                &ingress,
+                key.room_id(),
+                SendCompletionObservation::Sent {
+                    sdk_transaction_id,
+                    event_id: format!("$event-bounded-{index}:test"),
+                },
+            );
+            assert!(
+                terminal_rx
+                    .try_recv()
+                    .expect("bounded completion")
+                    .completion
+                    .is_some()
             );
         }
 
+        let first = SendCorrelationKey {
+            room_id: key.room_id().to_owned(),
+            sdk_transaction_id: "sdk-bounded-0".to_owned(),
+        };
+        let newest = SendCorrelationKey {
+            room_id: key.room_id().to_owned(),
+            sdk_transaction_id: format!("sdk-bounded-{MAX_SETTLED_SEND_TOMBSTONES}"),
+        };
+        let coordinator_guard = coordinator.lock().expect("send completion coordinator");
         assert_eq!(
-            tracker.completed_sends.len(),
-            observed,
-            "unmatched SentEvent correlation is active state and must not be evicted like history"
+            coordinator_guard.settled_send_tombstones.len(),
+            MAX_SETTLED_SEND_TOMBSTONES
         );
-        assert_eq!(
-            tracker.remember_pending_send(
-                "sdk-early-bounded-0".to_owned(),
-                "client-oldest-early".to_owned(),
-                None,
-                fake_rid(900),
-                true,
-            ),
-            Some((
-                "client-oldest-early".to_owned(),
-                None,
-                fake_rid(900),
-                "$event-early-bounded-0".to_owned(),
-            )),
-            "the oldest unresolved SentEvent must still correlate when Pending arrives later"
+        assert!(!coordinator_guard.settled_send_tombstones.contains(&first));
+        assert!(coordinator_guard.settled_send_tombstones.contains(&newest));
+        drop(coordinator_guard);
+
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: newest.sdk_transaction_id,
+                event_id: "$duplicate:test".to_owned(),
+            },
         );
+        assert!(terminal_rx.try_recv().is_err());
     }
 
     #[test]
-    fn media_pending_send_does_not_settle_text_composer() {
-        let mut tracker = SendCompletionTracker::default();
-        let sdk_txn = "sdk-media-txn".to_owned();
-        let client_txn = "client-media-txn".to_owned();
-        let request_id = fake_rid(78);
-        let event_id = "$event-media".to_owned();
-
-        assert_eq!(
-            tracker.remember_pending_send(
-                sdk_txn.clone(),
-                client_txn.clone(),
-                None,
-                request_id,
-                false,
-            ),
-            None
-        );
-        assert_eq!(
-            tracker.record_sent_event(sdk_txn.clone(), event_id.clone()),
-            Some((client_txn, None, request_id, event_id, false))
-        );
-    }
-
-    #[test]
-    fn send_completion_tracker_preserves_submission_id_for_terminal_paths() {
-        let mut tracker = SendCompletionTracker::default();
+    fn send_completion_coordinator_preserves_submission_id_for_terminal_paths() {
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
         let submission_id = SubmissionId::new("submission-terminal");
-        tracker.remember_pending_send(
-            "sdk-txn".to_owned(),
-            "client-txn".to_owned(),
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
+            "client-submission-terminal".to_owned(),
             Some(submission_id.clone()),
             fake_rid(7400),
             true,
         );
+        registration.activate();
+        registration.bind("sdk-submission-terminal".to_owned());
+
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::SendError {
+                sdk_transaction_id: "sdk-submission-terminal".to_owned(),
+            },
+        );
+        let failure = terminal_rx.try_recv().expect("submission send error");
         assert!(matches!(
-            tracker.record_send_error("sdk-txn"),
-            Some((_, Some(ref found), _, true)) if found == &submission_id
+            failure.action,
+            Some(AppAction::ComposerSubmissionSettled {
+                submission_id: found,
+                ..
+            }) if found == submission_id
         ));
-        assert!(matches!(
-            tracker.record_cancelled_event("sdk-txn"),
-            Some((_, Some(found), _, false)) if found == submission_id
-        ));
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Cancelled {
+                sdk_transaction_id: "sdk-submission-terminal".to_owned(),
+            },
+        );
+        let cancelled = terminal_rx.try_recv().expect("submission cancellation");
+        assert!(cancelled.action.is_none());
+        assert!(cancelled.completion.is_none());
+    }
+
+    #[test]
+    fn media_pending_send_does_not_settle_text_composer() {
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
+            "client-media-txn".to_owned(),
+            None,
+            fake_rid(78),
+            false,
+        );
+        registration.activate();
+        registration.bind("sdk-media-txn".to_owned());
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-media-txn".to_owned(),
+                event_id: "$event-media:test".to_owned(),
+            },
+        );
+        let terminal = terminal_rx.try_recv().expect("media completion");
+        assert!(terminal.action.is_none());
+        assert!(terminal.completion.is_some());
     }
 
     #[test]
@@ -33809,6 +34776,71 @@ mod tests {
                 "missing timeline trace token {token}"
             );
         }
+    }
+
+    #[test]
+    fn manager_coordinator_fails_new_registration_on_exact_correlation_collision() {
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut first = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
+            "client-collision-first".to_owned(),
+            None,
+            fake_rid(7422),
+            true,
+        );
+        first.activate();
+        first.bind("sdk-collision".to_owned());
+        let mut second = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
+            "client-collision-second".to_owned(),
+            None,
+            fake_rid(7423),
+            true,
+        );
+        second.activate();
+        second.bind("sdk-collision".to_owned());
+
+        let collision = terminal_rx
+            .try_recv()
+            .expect("exact correlation collision must fail safe");
+        assert!(matches!(
+            collision.failure,
+            Some(TimelineSendFailureDelivery {
+                request_id,
+                failure: CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::QueueOverflow,
+                },
+            }) if request_id == fake_rid(7423)
+        ));
+        assert!(matches!(
+            collision.action,
+            Some(AppAction::SendTextFailed { transaction_id, .. })
+                if transaction_id == "client-collision-second"
+        ));
+
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-collision".to_owned(),
+                event_id: "$event-collision-first:test".to_owned(),
+            },
+        );
+        let first_completion = terminal_rx
+            .try_recv()
+            .expect("the original correlation owner must remain pending");
+        assert!(matches!(
+            first_completion.completion,
+            Some(TimelineSendCompletionDelivery { request_id, .. })
+                if request_id == fake_rid(7422)
+        ));
     }
 
     #[test]
