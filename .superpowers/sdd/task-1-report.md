@@ -273,3 +273,33 @@ Fresh verification evidence:
 
 The long homeserver lane remains delegated to the root agent; this worker did
 not push or create a PR.
+
+## FINAL PERMIT-ORDER HARDENING — 2026-07-20
+
+A final bounded-channel review found one lock-free deadlock cycle: hydration
+reserved reducer capacity and then awaited manager-mailbox capacity, while the
+manager could be processing an earlier message that itself needed reducer
+capacity. Hydration now reserves the manager batch first and reducer capacity
+second. The reducer reservation is the final await; actor-generation lease,
+service mutation, reducer publication, and manager StartFetch publication are
+then one synchronous commit with no permit, lease, or mutex crossing another
+await.
+
+The deterministic capacity-one regression saturates both channels, queues an
+earlier manager sender ahead of hydration, and models manager processing that
+requires reducer capacity. It failed under the old permit order because the
+manager action timed out, and passes under the new order while also checking
+publication order, actor generation, fetch payload, and pending service state.
+
+Fresh verification evidence:
+
+- Focused saturation regression: 1 passed, 0 failed (0.01 s).
+- Full `timeline::tests`: 218 passed, 1 intentionally ignored, 0 failed.
+- TimelineStore: 69 passed, 0 failed.
+- Desktop typecheck: passed.
+- `cargo check -p koushi-core` and the `--no-default-features` variant: passed.
+- `cargo fmt -p koushi-core -- --check`: passed.
+- `git diff --check`: passed.
+
+The long homeserver lane remains delegated to the root agent; this worker did
+not push or create a PR.

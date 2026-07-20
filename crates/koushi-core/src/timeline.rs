@@ -5863,9 +5863,6 @@ async fn commit_prepared_thread_root_hydration_for_generation(
     own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
     prepared: PreparedThreadRootHydration,
 ) -> bool {
-    let Ok(action_permit) = action_tx.clone().reserve_owned().await else {
-        return false;
-    };
     let fetch_permit = if prepared.missing_activities.is_empty() {
         None
     } else {
@@ -5873,6 +5870,12 @@ async fn commit_prepared_thread_root_hydration_for_generation(
             return false;
         };
         Some(permit)
+    };
+    // Manager capacity is reserved first. The reducer permit is the final
+    // await, so hydration can never hold reducer capacity while a manager
+    // message that needs that same reducer is ahead of it in the mailbox.
+    let Ok(action_permit) = action_tx.clone().reserve_owned().await else {
+        return false;
     };
     let Some(lease) = generations.try_acquire(key, actor_generation) else {
         return false;
@@ -24148,6 +24151,137 @@ mod tests {
         assert!(action_rx.try_recv().is_err(), "no stale projection action");
         assert!(manager_rx.try_recv().is_err(), "no stale manager fetch");
         assert!(event_rx.try_recv().is_err(), "no stale projection event");
+    }
+
+    #[tokio::test]
+    async fn hydration_does_not_hold_action_capacity_while_waiting_for_manager_capacity() {
+        let key = room_key();
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = generations.activate_after_quiescence(&key).await.generation;
+        let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        let replay_registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let activity = ThreadRootProjectionActivity {
+            room_id: key.room_id().to_owned(),
+            root_event_id: "$root:test".to_owned(),
+            activity_event_id: "$reply:test".to_owned(),
+            activity_timestamp_ms: Some(300),
+            activity_sender: None,
+            activity_sender_label: None,
+            activity_body_preview: None,
+        };
+        let (action_tx, mut action_rx) = mpsc::channel(1);
+        action_tx
+            .send(vec![AppAction::ThreadRootProjectionsCleared {
+                room_id: "!occupied:test".to_owned(),
+            }])
+            .await
+            .expect("fill reducer channel");
+        let (manager_tx, mut manager_rx) = mpsc::channel(1);
+        manager_tx
+            .send(TimelineMessage::IgnoredUsersUpdated {
+                user_ids: std::collections::BTreeSet::new(),
+            })
+            .await
+            .expect("fill manager mailbox");
+        let earlier_manager_sender = tokio::spawn({
+            let manager_tx = manager_tx.clone();
+            async move {
+                manager_tx
+                    .send(TimelineMessage::IgnoredUsersUpdated {
+                        user_ids: std::collections::BTreeSet::new(),
+                    })
+                    .await
+            }
+        });
+        tokio::task::yield_now().await;
+
+        let hydration = tokio::spawn({
+            let service = Arc::clone(&service);
+            let replay_registry = Arc::clone(&replay_registry);
+            let generations = Arc::clone(&generations);
+            let action_tx = action_tx.clone();
+            let manager_tx = manager_tx.clone();
+            let (event_tx, _) = broadcast::channel(8);
+            let key = key.clone();
+            let activity = activity.clone();
+            async move {
+                commit_prepared_thread_root_hydration_for_generation(
+                    &service,
+                    &replay_registry,
+                    &generations,
+                    &action_tx,
+                    &manager_tx,
+                    &event_tx,
+                    &key,
+                    actor_generation,
+                    None,
+                    PreparedThreadRootHydration {
+                        activities_by_root: HashMap::from([(
+                            activity.root_event_id.clone(),
+                            activity.clone(),
+                        )]),
+                        missing_activities: vec![activity],
+                    },
+                )
+                .await
+            }
+        });
+        tokio::task::yield_now().await;
+
+        let _initial_manager_message = manager_rx.recv().await.expect("manager message");
+        tokio::time::timeout(Duration::from_secs(1), earlier_manager_sender)
+            .await
+            .expect("earlier manager sender must take the first free slot")
+            .expect("earlier manager sender task")
+            .expect("manager mailbox open");
+        let mut manager_action = tokio::spawn({
+            let action_tx = action_tx.clone();
+            async move {
+                action_tx
+                    .send(vec![AppAction::ActivityRowsObserved { rows: Vec::new() }])
+                    .await
+            }
+        });
+        let _occupied_action = action_rx.recv().await.expect("occupied reducer action");
+        tokio::time::timeout(Duration::from_secs(1), &mut manager_action)
+            .await
+            .expect("manager must not be blocked by a hydration-held action permit")
+            .expect("manager action task")
+            .expect("reducer channel open");
+
+        let _earlier_manager_message = manager_rx.recv().await.expect("earlier manager message");
+        let manager_reducer_action = action_rx.recv().await.expect("manager reducer action");
+        assert!(matches!(
+            manager_reducer_action.as_slice(),
+            [AppAction::ActivityRowsObserved { .. }]
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), hydration)
+                .await
+                .expect("hydration must complete after both capacities advance")
+                .expect("hydration task")
+        );
+        let hydration_action = action_rx.recv().await.expect("hydration reducer action");
+        assert!(matches!(
+            hydration_action.first(),
+            Some(AppAction::ThreadRootProjectionsReconciled { .. })
+        ));
+        assert!(matches!(
+            manager_rx.recv().await,
+            Some(TimelineMessage::StartThreadRootProjectionFetch {
+                actor_generation: generation,
+                activities,
+                ..
+            }) if generation == actor_generation && activities == vec![activity.clone()]
+        ));
+        assert!(
+            service
+                .lock()
+                .expect("service lock")
+                .has_pending_attempt(&activity)
+        );
     }
 
     #[tokio::test]
