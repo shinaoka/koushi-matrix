@@ -4779,6 +4779,7 @@ mod tests {
 
         let _ = event_tx.send(CoreEvent::Timeline(TimelineEvent::InitialItems {
             request_id: None,
+            cause_request_id: None,
             key,
             actor_generation: 0,
             generation: crate::ids::TimelineGeneration(0),

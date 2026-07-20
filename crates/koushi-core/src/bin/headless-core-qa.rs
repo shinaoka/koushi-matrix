@@ -3794,8 +3794,7 @@ async fn run_send_queue_stage(
     }))
     .await
     .map_err(|e| format!("send_queue: submit subscribe failed: {e}"))?;
-    wait_for_initial_items_or_active_replay(&mut conn, &key, subscribe_id, "send_queue subscribe")
-        .await?;
+    wait_for_initial_items(&mut conn, &key, subscribe_id, "send_queue subscribe").await?;
 
     proxy.disable();
     let first = send_text_expect_local_echo(
@@ -3923,7 +3922,7 @@ async fn run_send_queue_stage(
     }))
     .await
     .map_err(|e| format!("send_queue: submit restore subscribe failed: {e}"))?;
-    let initial = wait_for_initial_items_or_active_replay(
+    let initial = wait_for_initial_items(
         &mut conn,
         &key,
         subscribe_id,
@@ -5871,13 +5870,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .await
         .map_err(|e| format!("submit subscribe timeline A: {e}"))?;
 
-    wait_for_initial_items_or_active_replay(
-        &mut conn_a,
-        &key_a,
-        subscribe_a_id,
-        "subscribe timeline A",
-    )
-    .await?;
+    wait_for_initial_items(&mut conn_a, &key_a, subscribe_a_id, "subscribe timeline A").await?;
     println!("timeline_subscribed_a=ok");
 
     // A sends message 1 with a distinct client transaction id.
@@ -5947,13 +5940,8 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .await
         .map_err(|e| format!("submit subscribe timeline B: {e}"))?;
 
-    let b_initial = wait_for_initial_items_or_active_replay(
-        &mut conn_b,
-        &key_b,
-        subscribe_b_id,
-        "subscribe timeline B",
-    )
-    .await?;
+    let b_initial =
+        wait_for_initial_items(&mut conn_b, &key_b, subscribe_b_id, "subscribe timeline B").await?;
     println!("timeline_subscribed_b=ok");
 
     // Paginate backward on B to ensure A's messages are loaded from server
@@ -6253,7 +6241,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
             .await
             .map_err(|e| format!("submit refresh room timeline A: {e}"))?;
 
-        let refreshed_room_items = wait_for_initial_items_or_active_replay(
+        let refreshed_room_items = wait_for_initial_items(
             &mut conn_a,
             &key_a,
             refresh_room_a_id,
@@ -9668,13 +9656,7 @@ async fn seed_encrypted_room_key_for_qa(
     .await
     .map_err(|e| format!("{label}: submit encrypted timeline subscribe failed: {e}"))?;
 
-    wait_for_initial_items_or_active_replay(
-        conn,
-        &key,
-        subscribe_id,
-        "subscribe encrypted backup seed",
-    )
-    .await?;
+    wait_for_initial_items(conn, &key, subscribe_id, "subscribe encrypted backup seed").await?;
 
     let transaction_id = "qa-e2ee-key-backup-seed".to_owned();
     let send_id = conn.next_request_id();
@@ -10177,7 +10159,7 @@ async fn verify_second_device_room_key_delivery_for_qa(
         .await
         .map_err(|e| format!("second-device decrypt: submit A2 subscribe failed: {e}"))?;
 
-    let initial_a2 = wait_for_initial_items_or_active_replay(
+    let initial_a2 = wait_for_initial_items(
         conn_a2,
         &key_a2,
         subscribe_a2_id,
@@ -11993,41 +11975,20 @@ async fn wait_for_initial_items(
     request_id: koushi_core::ids::RequestId,
     label: &str,
 ) -> Result<Vec<koushi_core::event::TimelineItem>, String> {
-    wait_for_initial_items_with_policy(
-        conn,
-        key,
-        request_id,
-        label,
-        InitialItemsWaitPolicy::ExactRequest,
-    )
-    .await
-}
+    loop {
+        let event = tokio::time::timeout(TIMELINE_INITIAL_EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for TimelineEvent::InitialItems"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
-/// Wait for the same-key `InitialItems` emitted by an idempotent active-room
-/// subscription. The actor deliberately retains the original unacknowledged
-/// projection request identity, so a replay may carry an older request id (or
-/// no request id after acknowledgement). Failures remain correlated exactly to
-/// the newly submitted request.
-async fn wait_for_initial_items_or_active_replay(
-    conn: &mut CoreConnection,
-    key: &TimelineKey,
-    request_id: koushi_core::ids::RequestId,
-    label: &str,
-) -> Result<Vec<koushi_core::event::TimelineItem>, String> {
-    wait_for_initial_items_with_policy(
-        conn,
-        key,
-        request_id,
-        label,
-        InitialItemsWaitPolicy::ActiveKeyReplay,
-    )
-    .await
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum InitialItemsWaitPolicy {
-    ExactRequest,
-    ActiveKeyReplay,
+        match match_initial_items_wait_event(event, key, request_id) {
+            InitialItemsWaitMatch::Items(items) => return Ok(items),
+            InitialItemsWaitMatch::Failure(failure) => {
+                return Err(format!("{label} failed: {failure:?}"));
+            }
+            InitialItemsWaitMatch::Ignore => continue,
+        }
+    }
 }
 
 enum InitialItemsWaitMatch {
@@ -12040,18 +12001,14 @@ fn match_initial_items_wait_event(
     event: CoreEvent,
     key: &TimelineKey,
     request_id: koushi_core::ids::RequestId,
-    policy: InitialItemsWaitPolicy,
 ) -> InitialItemsWaitMatch {
     match event {
         CoreEvent::Timeline(TimelineEvent::InitialItems {
-            request_id: event_request_id,
+            cause_request_id: Some(event_cause_request_id),
             key: event_key,
             items,
             ..
-        }) if event_key == *key
-            && (event_request_id == Some(request_id)
-                || policy == InitialItemsWaitPolicy::ActiveKeyReplay) =>
-        {
+        }) if event_key == *key && event_cause_request_id == request_id => {
             InitialItemsWaitMatch::Items(items)
         }
         CoreEvent::OperationFailed {
@@ -12059,29 +12016,6 @@ fn match_initial_items_wait_event(
             failure,
         } if event_request_id == request_id => InitialItemsWaitMatch::Failure(failure),
         _ => InitialItemsWaitMatch::Ignore,
-    }
-}
-
-async fn wait_for_initial_items_with_policy(
-    conn: &mut CoreConnection,
-    key: &TimelineKey,
-    request_id: koushi_core::ids::RequestId,
-    label: &str,
-    policy: InitialItemsWaitPolicy,
-) -> Result<Vec<koushi_core::event::TimelineItem>, String> {
-    loop {
-        let event = tokio::time::timeout(TIMELINE_INITIAL_EVENT_TIMEOUT, conn.recv_event())
-            .await
-            .map_err(|_| format!("{label}: timed out waiting for TimelineEvent::InitialItems"))?
-            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
-
-        match match_initial_items_wait_event(event, key, request_id, policy) {
-            InitialItemsWaitMatch::Items(items) => return Ok(items),
-            InitialItemsWaitMatch::Failure(failure) => {
-                return Err(format!("{label} failed: {failure:?}"));
-            }
-            InitialItemsWaitMatch::Ignore => continue,
-        }
     }
 }
 
@@ -15374,6 +15308,7 @@ fn assert_hide_redacted_projection() -> Result<(), String> {
     );
     let mut event = TimelineEvent::InitialItems {
         request_id: None,
+        cause_request_id: None,
         key,
         actor_generation: 0,
         generation: koushi_core::ids::TimelineGeneration(0),
@@ -17632,7 +17567,7 @@ mod tests {
     }
 
     #[test]
-    fn idempotent_initial_items_wait_accepts_only_same_key_replays() {
+    fn initial_items_wait_requires_exact_subscribe_cause_even_for_same_key_replays() {
         let request_id = RequestId {
             connection_id: koushi_core::ids::RuntimeConnectionId(1),
             sequence: 2,
@@ -17648,88 +17583,64 @@ mod tests {
         let key = TimelineKey::room(AccountKey("@qa:example.invalid".to_owned()), "!room:test");
         let wrong_key =
             TimelineKey::room(AccountKey("@qa:example.invalid".to_owned()), "!other:test");
-        let initial = |request_id, key: TimelineKey| {
+        let initial = |projection_request_id, cause_request_id, key: TimelineKey| {
             CoreEvent::Timeline(TimelineEvent::InitialItems {
-                request_id,
+                request_id: projection_request_id,
+                cause_request_id,
                 key,
                 actor_generation: 1,
                 generation: koushi_core::ids::TimelineGeneration(0),
                 items: Vec::new(),
             })
         };
-        let classify =
-            |event, policy| match_initial_items_wait_event(event, &key, request_id, policy);
+        let classify = |event| match_initial_items_wait_event(event, &key, request_id);
 
         assert!(matches!(
-            classify(
-                initial(Some(request_id), key.clone()),
-                InitialItemsWaitPolicy::ExactRequest
-            ),
+            classify(initial(Some(old_request_id), Some(request_id), key.clone())),
             InitialItemsWaitMatch::Items(_)
         ));
         assert!(matches!(
-            classify(
-                initial(Some(old_request_id), key.clone()),
-                InitialItemsWaitPolicy::ExactRequest
-            ),
+            classify(initial(None, Some(request_id), key.clone())),
+            InitialItemsWaitMatch::Items(_)
+        ));
+        assert!(matches!(
+            classify(initial(Some(request_id), Some(old_request_id), key.clone())),
             InitialItemsWaitMatch::Ignore
         ));
         assert!(matches!(
-            classify(
-                initial(Some(old_request_id), key.clone()),
-                InitialItemsWaitPolicy::ActiveKeyReplay
-            ),
-            InitialItemsWaitMatch::Items(_)
+            classify(initial(Some(request_id), None, key.clone())),
+            InitialItemsWaitMatch::Ignore
         ));
         assert!(matches!(
-            classify(
-                initial(None, key.clone()),
-                InitialItemsWaitPolicy::ActiveKeyReplay
-            ),
-            InitialItemsWaitMatch::Items(_)
-        ));
-        assert!(matches!(
-            classify(
-                initial(Some(old_request_id), wrong_key),
-                InitialItemsWaitPolicy::ActiveKeyReplay
-            ),
+            classify(initial(Some(old_request_id), Some(request_id), wrong_key)),
             InitialItemsWaitMatch::Ignore
         ));
 
         assert!(matches!(
-            classify(
-                CoreEvent::OperationFailed {
-                    request_id,
-                    failure: CoreFailure::SessionRequired,
-                },
-                InitialItemsWaitPolicy::ActiveKeyReplay
-            ),
+            classify(CoreEvent::OperationFailed {
+                request_id,
+                failure: CoreFailure::SessionRequired,
+            }),
             InitialItemsWaitMatch::Failure(CoreFailure::SessionRequired)
         ));
         assert!(matches!(
-            classify(
-                CoreEvent::OperationFailed {
-                    request_id: old_request_id,
-                    failure: CoreFailure::SessionRequired,
-                },
-                InitialItemsWaitPolicy::ActiveKeyReplay
-            ),
+            classify(CoreEvent::OperationFailed {
+                request_id: old_request_id,
+                failure: CoreFailure::SessionRequired,
+            }),
             InitialItemsWaitMatch::Ignore
         ));
         assert!(matches!(
-            classify(
-                CoreEvent::OperationFailed {
-                    request_id: wrong_connection_request_id,
-                    failure: CoreFailure::SessionRequired,
-                },
-                InitialItemsWaitPolicy::ActiveKeyReplay
-            ),
+            classify(CoreEvent::OperationFailed {
+                request_id: wrong_connection_request_id,
+                failure: CoreFailure::SessionRequired,
+            }),
             InitialItemsWaitMatch::Ignore
         ));
     }
 
     #[test]
-    fn active_room_thread_refresh_uses_the_idempotent_replay_waiter() {
+    fn active_room_thread_refresh_uses_the_exact_causal_waiter() {
         let source = include_str!("headless-core-qa.rs");
         let refresh = source
             .split("let refresh_room_a_id = conn_a.next_request_id();")
@@ -17739,8 +17650,7 @@ mod tests {
             .next()
             .expect("thread summary wait should follow the room refresh");
 
-        assert!(refresh.contains("wait_for_initial_items_or_active_replay("));
-        assert!(!refresh.contains("wait_for_initial_items("));
+        assert!(refresh.contains("wait_for_initial_items("));
     }
 
     #[test]
@@ -17764,7 +17674,7 @@ mod tests {
     }
 
     #[test]
-    fn encrypted_backup_seed_uses_live_room_discovery_and_active_replay_waiter() {
+    fn encrypted_backup_seed_uses_live_room_discovery_and_exact_causal_waiter() {
         let source = include_str!("headless-core-qa.rs");
         let seed = source
             .split("async fn seed_encrypted_room_key_for_qa(")
@@ -17779,13 +17689,12 @@ mod tests {
             "backup seed room discovery must not overlap the running SyncService"
         );
         assert!(seed.contains("wait_for_room_in_room_list("));
-        assert!(seed.contains("wait_for_initial_items_or_active_replay("));
-        assert!(!seed.contains("wait_for_initial_items("));
+        assert!(seed.contains("wait_for_initial_items("));
         assert!(seed.contains("subscribe encrypted backup seed"));
     }
 
     #[test]
-    fn second_device_encrypted_room_resubscribe_uses_active_replay_waiter() {
+    fn second_device_encrypted_room_resubscribe_uses_exact_causal_waiter() {
         let source = include_str!("headless-core-qa.rs");
         let delivery = source
             .split("async fn verify_second_device_room_key_delivery_for_qa(")
@@ -17795,12 +17704,11 @@ mod tests {
             .next()
             .expect("multi-device delivery helper should follow second-device delivery");
 
-        assert!(delivery.contains("wait_for_initial_items_or_active_replay("));
-        assert!(!delivery.contains("wait_for_initial_items("));
+        assert!(delivery.contains("wait_for_initial_items("));
     }
 
     #[test]
-    fn generic_secondary_timeline_subscribe_uses_active_replay_waiter() {
+    fn generic_secondary_timeline_subscribe_uses_exact_causal_waiter() {
         let source = include_str!("headless-core-qa.rs");
         let secondary_subscribe = source
             .split("// B subscribes and receives both messages")
@@ -17810,8 +17718,7 @@ mod tests {
             .next()
             .expect("generic B timeline subscribe block end");
 
-        assert!(secondary_subscribe.contains("wait_for_initial_items_or_active_replay("));
-        assert!(!secondary_subscribe.contains("wait_for_initial_items("));
+        assert!(secondary_subscribe.contains("wait_for_initial_items("));
     }
 
     #[test]

@@ -356,6 +356,11 @@ export type TimelineEvent =
   | {
       InitialItems: {
         request_id: RequestId | null;
+        /**
+         * Exact command cause. Production Rust payloads always include this
+         * key; omission is accepted only for legacy and synthetic fixtures.
+         */
+        cause_request_id?: RequestId | null;
         key: TimelineKey;
         /** Monotonic owner generation; distinct from relay generation. */
         actor_generation?: number;

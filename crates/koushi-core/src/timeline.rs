@@ -987,6 +987,42 @@ fn replay_projection_request_id(
     (!projection_acknowledged).then_some(projection_request_id)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct InitialItemsRequestIdentity {
+    projection_request_id: Option<RequestId>,
+    cause_request_id: Option<RequestId>,
+}
+
+impl InitialItemsRequestIdentity {
+    fn fresh(request_id: RequestId) -> Self {
+        Self {
+            projection_request_id: Some(request_id),
+            cause_request_id: Some(request_id),
+        }
+    }
+
+    fn replay(
+        projection_request_id: RequestId,
+        projection_acknowledged: bool,
+        cause_request_id: Option<RequestId>,
+    ) -> Self {
+        Self {
+            projection_request_id: replay_projection_request_id(
+                projection_request_id,
+                projection_acknowledged,
+            ),
+            cause_request_id,
+        }
+    }
+
+    fn recovery() -> Self {
+        Self {
+            projection_request_id: None,
+            cause_request_id: None,
+        }
+    }
+}
+
 /// The only emission gateway for TimelineActor-owned Core timeline events.
 ///
 /// The lease is held solely for the synchronous broadcast send(s). It never
@@ -1258,7 +1294,7 @@ fn emit_initial_items_and_reconcile_replay_known_for_generation(
     timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
     key: &TimelineKey,
     actor_generation: u64,
-    request_id: Option<RequestId>,
+    request_identity: InitialItemsRequestIdentity,
     generation: TimelineGeneration,
     items: Vec<TimelineItem>,
     replay_known_candidates: Vec<ThreadRootProjectionDto>,
@@ -1270,7 +1306,7 @@ fn emit_initial_items_and_reconcile_replay_known_for_generation(
         timeline_actor_generations,
         key,
         actor_generation,
-        request_id,
+        request_identity,
         generation,
         items,
         replay_known_candidates,
@@ -1289,7 +1325,7 @@ fn emit_initial_items_and_reconcile_replay_known_for_generation_after_initial<F>
     timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
     key: &TimelineKey,
     actor_generation: u64,
-    request_id: Option<RequestId>,
+    request_identity: InitialItemsRequestIdentity,
     generation: TimelineGeneration,
     items: Vec<TimelineItem>,
     replay_known_candidates: Vec<ThreadRootProjectionDto>,
@@ -1308,7 +1344,7 @@ where
         &lease,
         key,
         actor_generation,
-        request_id,
+        request_identity,
         generation,
         items,
         replay_known_candidates,
@@ -1325,7 +1361,7 @@ fn emit_initial_items_and_reconcile_replay_known_with_lease_after_initial<F>(
     lease: &TimelineActorGenerationLease,
     key: &TimelineKey,
     actor_generation: u64,
-    request_id: Option<RequestId>,
+    request_identity: InitialItemsRequestIdentity,
     generation: TimelineGeneration,
     items: Vec<TimelineItem>,
     replay_known_candidates: Vec<ThreadRootProjectionDto>,
@@ -1343,7 +1379,8 @@ fn emit_initial_items_and_reconcile_replay_known_with_lease_after_initial<F>(
         event_tx,
         lease,
         vec![TimelineEvent::InitialItems {
-            request_id,
+            request_id: request_identity.projection_request_id,
+            cause_request_id: request_identity.cause_request_id,
             key: key.clone(),
             actor_generation,
             generation,
@@ -1376,7 +1413,7 @@ fn commit_prepared_initial_window_for_generation(
     timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
     key: &TimelineKey,
     actor_generation: u64,
-    request_id: Option<RequestId>,
+    request_identity: InitialItemsRequestIdentity,
     generation: TimelineGeneration,
     prefix_events: Vec<TimelineEvent>,
     prepared: PreparedInitialWindow,
@@ -1393,7 +1430,7 @@ fn commit_prepared_initial_window_for_generation(
         &lease,
         key,
         actor_generation,
-        request_id,
+        request_identity,
         generation,
         prefix_events,
         prepared,
@@ -1411,7 +1448,7 @@ fn commit_prepared_initial_window_with_lease<F>(
     lease: &TimelineActorGenerationLease,
     key: &TimelineKey,
     actor_generation: u64,
-    request_id: Option<RequestId>,
+    request_identity: InitialItemsRequestIdentity,
     generation: TimelineGeneration,
     prefix_events: Vec<TimelineEvent>,
     prepared: PreparedInitialWindow,
@@ -1437,7 +1474,7 @@ fn commit_prepared_initial_window_with_lease<F>(
         lease,
         key,
         actor_generation,
-        request_id,
+        request_identity,
         generation,
         emitted_items,
         replay_known_candidates,
@@ -1454,7 +1491,7 @@ fn emit_initial_items_and_reconcile_replay_known_for_generation_with_test_hook<F
     timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
     key: &TimelineKey,
     actor_generation: u64,
-    request_id: Option<RequestId>,
+    request_identity: InitialItemsRequestIdentity,
     generation: TimelineGeneration,
     items: Vec<TimelineItem>,
     replay_known_candidates: Vec<ThreadRootProjectionDto>,
@@ -1470,7 +1507,7 @@ where
         timeline_actor_generations,
         key,
         actor_generation,
-        request_id,
+        request_identity,
         generation,
         items,
         replay_known_candidates,
@@ -3676,10 +3713,12 @@ impl TimelineManagerActor {
         let _ = permit_tx.send(());
     }
 
-    async fn handle_replay_subscribed(&mut self, request_id: RequestId) {
+    async fn handle_replay_subscribed(&mut self, _request_id: RequestId) {
         for handle in self.timelines.values() {
             let _ = handle
-                .send(TimelineActorMessage::ReplayInitialItems { request_id })
+                .send(TimelineActorMessage::ReplayInitialItems {
+                    cause_request_id: None,
+                })
                 .await;
         }
     }
@@ -3760,7 +3799,9 @@ impl TimelineManagerActor {
             if replay_existing {
                 handle
                     .tx
-                    .try_send(TimelineActorMessage::ReplayInitialItems { request_id })
+                    .try_send(TimelineActorMessage::ReplayInitialItems {
+                        cause_request_id: Some(request_id),
+                    })
             } else {
                 Ok(())
             }
@@ -4517,13 +4558,11 @@ enum TimelineActorMessage {
     /// Internal: send queue broadcast lagged and the actor must resync the
     /// SDK-owned local echo snapshot before projecting outbound send states.
     SendQueueLagged,
-    /// Internal: re-emit the current navigation_items as InitialItems for a
-    /// new request_id without tearing down the SDK subscription.  Sent by
-    /// `handle_subscribe` when the key is already subscribed (idempotency
-    /// path) so a freshly re-mounted TimelineView still receives an
-    /// InitialItems batch.
+    /// Internal: re-emit the current navigation_items as InitialItems without
+    /// tearing down the SDK subscription. A user-command Subscribe supplies
+    /// its exact cause; internal recovery replay is causeless.
     ReplayInitialItems {
-        request_id: RequestId,
+        cause_request_id: Option<RequestId>,
     },
     AcknowledgeProjection {
         projection_request_id: RequestId,
@@ -12353,7 +12392,7 @@ impl TimelineActor {
             &timeline_actor_generations,
             &key,
             actor_generation,
-            Some(subscribe_request_id),
+            InitialItemsRequestIdentity::fresh(subscribe_request_id),
             generation,
             initial_items.clone(),
             replay_known_candidates,
@@ -13218,8 +13257,8 @@ impl TimelineActor {
             TimelineActorMessage::SendQueueLagged => {
                 self.handle_send_queue_lagged().await;
             }
-            TimelineActorMessage::ReplayInitialItems { request_id } => {
-                self.handle_replay_initial_items(request_id);
+            TimelineActorMessage::ReplayInitialItems { cause_request_id } => {
+                self.handle_replay_initial_items(cause_request_id);
             }
             TimelineActorMessage::AcknowledgeProjection {
                 projection_request_id,
@@ -16161,13 +16200,11 @@ impl TimelineActor {
         }
     }
 
-    /// Re-emit `navigation_items` as `InitialItems` for `request_id` without
-    /// touching the SDK subscription or tearing down the actor.  Called when
-    /// `handle_subscribe` detects that this key is already subscribed (the
-    /// idempotency fast path).  The generation is unchanged; the caller only
-    /// needs a fresh InitialItems batch so a re-mounted TimelineView is
-    /// populated.
-    fn handle_replay_initial_items(&mut self, _request_id: RequestId) {
+    /// Re-emit `navigation_items` as `InitialItems` without touching the SDK
+    /// subscription or tearing down the actor. Idempotent Subscribe supplies
+    /// an exact cause; internal replay recovery does not. The projection ACK
+    /// identity remains owned by the actor in both cases.
+    fn handle_replay_initial_items(&mut self, cause_request_id: Option<RequestId>) {
         let window = replay_initial_items_window_range(
             &self.key.kind,
             self.navigation_items.len(),
@@ -16192,7 +16229,11 @@ impl TimelineActor {
             &self.timeline_actor_generations,
             &self.key,
             self.actor_generation,
-            replay_projection_request_id(self.projection_request_id, self.projection_acknowledged),
+            InitialItemsRequestIdentity::replay(
+                self.projection_request_id,
+                self.projection_acknowledged,
+                cause_request_id,
+            ),
             self.generation,
             Vec::new(),
             PreparedInitialWindow {
@@ -17524,7 +17565,7 @@ impl TimelineActor {
             &self.timeline_actor_generations,
             &self.key,
             self.actor_generation,
-            None,
+            InitialItemsRequestIdentity::recovery(),
             self.generation,
             Vec::new(),
             PreparedInitialWindow {
@@ -18178,7 +18219,7 @@ where
         &lease,
         key,
         actor_generation,
-        None,
+        InitialItemsRequestIdentity::recovery(),
         generation,
         vec![TimelineEvent::ResyncRequired {
             key: key.clone(),
@@ -25268,6 +25309,121 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn initial_items_keep_projection_ack_identity_separate_from_subscribe_cause() {
+        let key = focused_key();
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = generations.activate_after_quiescence(&key).await.generation;
+        let projection_request_id = fake_rid(92);
+        let replay_request_id = fake_rid(93);
+        let acknowledged_replay_request_id = fake_rid(94);
+        let generation = TimelineGeneration(2);
+        let (event_tx, mut event_rx) = broadcast::channel(4);
+        let (registry, projection_service) = replay_projection_services();
+
+        assert!(
+            emit_initial_items_and_reconcile_replay_known_for_generation(
+                &event_tx,
+                &registry,
+                &projection_service,
+                &generations,
+                &key,
+                actor_generation,
+                InitialItemsRequestIdentity::fresh(projection_request_id),
+                generation,
+                Vec::new(),
+                Vec::new(),
+            )
+        );
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id: Some(found_projection_request_id),
+                cause_request_id: Some(found_cause_request_id),
+                ..
+            })) if found_projection_request_id == projection_request_id
+                && found_cause_request_id == projection_request_id
+        ));
+
+        assert!(
+            emit_initial_items_and_reconcile_replay_known_for_generation(
+                &event_tx,
+                &registry,
+                &projection_service,
+                &generations,
+                &key,
+                actor_generation,
+                InitialItemsRequestIdentity::replay(
+                    projection_request_id,
+                    false,
+                    Some(replay_request_id),
+                ),
+                generation,
+                Vec::new(),
+                Vec::new(),
+            )
+        );
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id: Some(found_projection_request_id),
+                cause_request_id: Some(found_cause_request_id),
+                ..
+            })) if found_projection_request_id == projection_request_id
+                && found_cause_request_id == replay_request_id
+        ));
+
+        assert!(
+            emit_initial_items_and_reconcile_replay_known_for_generation(
+                &event_tx,
+                &registry,
+                &projection_service,
+                &generations,
+                &key,
+                actor_generation,
+                InitialItemsRequestIdentity::replay(
+                    projection_request_id,
+                    true,
+                    Some(acknowledged_replay_request_id),
+                ),
+                generation,
+                Vec::new(),
+                Vec::new(),
+            )
+        );
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id: None,
+                cause_request_id: Some(found_cause_request_id),
+                ..
+            })) if found_cause_request_id == acknowledged_replay_request_id
+        ));
+
+        assert!(
+            emit_initial_items_and_reconcile_replay_known_for_generation(
+                &event_tx,
+                &registry,
+                &projection_service,
+                &generations,
+                &key,
+                actor_generation,
+                InitialItemsRequestIdentity::replay(projection_request_id, false, None),
+                generation,
+                Vec::new(),
+                Vec::new(),
+            )
+        );
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id: Some(found_projection_request_id),
+                cause_request_id: None,
+                ..
+            })) if found_projection_request_id == projection_request_id
+        ));
+    }
+
+    #[tokio::test]
     async fn lost_delivery_reprojection_emits_same_core_event_under_active_actor_lease() {
         let key = focused_key();
         let generations = Arc::new(TimelineActorGenerationGate::default());
@@ -25277,6 +25433,7 @@ mod tests {
         let (event_tx, mut event_rx) = broadcast::channel(4);
         let projection = TimelineEvent::InitialItems {
             request_id: Some(projection_request_id),
+            cause_request_id: Some(projection_request_id),
             key: key.clone(),
             actor_generation,
             generation: projection_generation,
@@ -25312,11 +25469,13 @@ mod tests {
             replay,
             CoreEvent::Timeline(TimelineEvent::InitialItems {
                 request_id: Some(found_request_id),
+                cause_request_id: Some(found_cause_request_id),
                 key: found_key,
                 actor_generation: found_actor_generation,
                 generation: found_generation,
                 items,
             }) if found_request_id == projection_request_id
+                && found_cause_request_id == projection_request_id
                 && found_key == key
                 && found_actor_generation == actor_generation
                 && found_generation == projection_generation
@@ -25394,6 +25553,7 @@ mod tests {
             old_generation,
             vec![TimelineEvent::InitialItems {
                 request_id: None,
+                cause_request_id: None,
                 key: key.clone(),
                 actor_generation: old_generation,
                 generation: TimelineGeneration(0),
@@ -25417,6 +25577,7 @@ mod tests {
             new_generation,
             vec![TimelineEvent::InitialItems {
                 request_id: None,
+                cause_request_id: None,
                 key: key.clone(),
                 actor_generation: new_generation,
                 generation: TimelineGeneration(0),
@@ -26008,7 +26169,7 @@ mod tests {
                 &actor_generations,
                 &key,
                 actor_generation,
-                Some(fake_rid(14)),
+                InitialItemsRequestIdentity::fresh(fake_rid(14)),
                 TimelineGeneration(0),
                 vec![replay_root.clone()],
                 vec![replay_snapshot],
@@ -26310,7 +26471,7 @@ mod tests {
                     &actor_generations,
                     &key,
                     actor_generation,
-                    Some(fake_rid(15)),
+                    InitialItemsRequestIdentity::fresh(fake_rid(15)),
                     TimelineGeneration(0),
                     vec![replay_root.clone()],
                     vec![replay_snapshot],
@@ -27528,7 +27689,7 @@ mod tests {
         assert!(
             auxiliary_sender
                 .try_send(TimelineActorMessage::ReplayInitialItems {
-                    request_id: fake_rid(99),
+                    cause_request_id: Some(fake_rid(99)),
                 })
                 .is_err()
         );
@@ -31824,7 +31985,7 @@ mod tests {
     }
 
     #[test]
-    fn replay_subscribed_command_replays_initial_items_for_all_existing_timelines() {
+    fn replay_subscribed_recovery_replays_initial_items_causeless_for_all_timelines() {
         let source = include_str!("timeline.rs");
         let handle_command = source
             .split("async fn handle_command")
@@ -31848,10 +32009,10 @@ mod tests {
         );
         assert!(
             replay_handler.contains("for handle in self.timelines.values()")
-                && replay_handler
-                    .contains(".send(TimelineActorMessage::ReplayInitialItems { request_id })")
+                && replay_handler.contains("TimelineActorMessage::ReplayInitialItems")
+                && replay_handler.contains("cause_request_id: None")
                 && replay_handler.contains(".await"),
-            "replay helper must reliably ask every subscribed TimelineActor to re-emit InitialItems"
+            "recovery must ask every subscribed TimelineActor for a causeless InitialItems replay"
         );
     }
 
@@ -33244,7 +33405,7 @@ mod tests {
 
         command_tx
             .try_send(TimelineActorMessage::ReplayInitialItems {
-                request_id: fake_rid(1),
+                cause_request_id: Some(fake_rid(1)),
             })
             .expect("command must queue independently of relay data");
 
@@ -33310,7 +33471,7 @@ mod tests {
         let (command_tx, mut command_rx) = mpsc::channel::<TimelineActorMessage>(1);
         command_tx
             .try_send(TimelineActorMessage::ReplayInitialItems {
-                request_id: fake_rid(88),
+                cause_request_id: Some(fake_rid(88)),
             })
             .expect("command must queue independently");
 
@@ -33367,7 +33528,7 @@ mod tests {
         let (command_tx, mut command_rx) = mpsc::channel(1);
         command_tx
             .try_send(TimelineActorMessage::ReplayInitialItems {
-                request_id: fake_rid(89),
+                cause_request_id: Some(fake_rid(89)),
             })
             .expect("command queued during restart delay");
         let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
@@ -33637,6 +33798,8 @@ mod tests {
         assert!(matches!(
             event_rx.recv().await,
             Ok(CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id: None,
+                cause_request_id: None,
                 generation: TimelineGeneration(2),
                 items,
                 ..
@@ -33722,7 +33885,7 @@ mod tests {
             &actor_generations,
             &key,
             stale_generation,
-            None,
+            InitialItemsRequestIdentity::recovery(),
             TimelineGeneration(2),
             Vec::new(),
             prepared,

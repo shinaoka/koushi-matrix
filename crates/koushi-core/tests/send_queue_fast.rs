@@ -639,7 +639,7 @@ async fn start_sync_and_wait_for_replacement_initial_items(
     }
 }
 
-async fn wait_for_initial_items_or_active_replay(
+async fn wait_for_initial_items(
     conn: &mut CoreConnection,
     key: &TimelineKey,
     request_id: RequestId,
@@ -652,10 +652,11 @@ async fn wait_for_initial_items_or_active_replay(
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?
         {
             CoreEvent::Timeline(TimelineEvent::InitialItems {
+                cause_request_id: Some(event_cause_request_id),
                 key: event_key,
                 items,
                 ..
-            }) if event_key == *key => return Ok(items),
+            }) if event_key == *key && event_cause_request_id == request_id => return Ok(items),
             CoreEvent::OperationFailed {
                 request_id: event_request_id,
                 failure,
@@ -1681,7 +1682,7 @@ fn fast_send_queue_lane_hard_bounds_generic_lifecycle_phases() {
 }
 
 #[test]
-fn send_queue_stage_uses_active_replay_waiter_for_both_subscriptions() {
+fn send_queue_stage_uses_exact_causal_waiter_for_both_subscriptions() {
     let source = include_str!("../src/bin/headless-core-qa.rs");
     let send_queue_stage = source
         .split("\nasync fn run_send_queue_stage(")
@@ -1692,16 +1693,9 @@ fn send_queue_stage_uses_active_replay_waiter_for_both_subscriptions() {
         .expect("run_send_queue_stage body end");
 
     assert_eq!(
-        send_queue_stage
-            .matches("wait_for_initial_items_or_active_replay(")
-            .count(),
-        2,
-        "initial and restored SendQueue subscribes must both accept same-key replay InitialItems"
-    );
-    assert_eq!(
         send_queue_stage.matches("wait_for_initial_items(").count(),
-        0,
-        "SendQueue subscribes must not require their fresh request id on an active timeline"
+        2,
+        "initial and restored SendQueue subscribes must both require their exact causal request id"
     );
 }
 
@@ -2053,7 +2047,7 @@ async fn run_fast_send_queue_feedback() {
     .expect("fast_send_queue submit subscribe");
     let mut projection = fast_send_queue_phase(
         "fast_send_queue initial subscribe replay",
-        wait_for_initial_items_or_active_replay(
+        wait_for_initial_items(
             &mut conn,
             &key,
             subscribe_id,
@@ -2357,7 +2351,7 @@ async fn run_fast_send_queue_feedback() {
     }))
     .await
     .expect("fast_send_queue submit post-proof resubscribe");
-    projection = wait_for_initial_items_or_active_replay(
+    projection = wait_for_initial_items(
         &mut conn,
         &key,
         resubscribe_id,
@@ -2626,7 +2620,7 @@ async fn run_fast_send_queue_feedback() {
     .expect("fast_send_queue submit restored subscribe");
     let mut projection = fast_send_queue_phase(
         "fast_send_queue restored subscribe replay",
-        wait_for_initial_items_or_active_replay(
+        wait_for_initial_items(
             &mut conn,
             &key,
             subscribe_id,

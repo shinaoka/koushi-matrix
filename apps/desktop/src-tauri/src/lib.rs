@@ -2337,6 +2337,7 @@ mod tests {
         // InitialItems envelope + payload
         let initial = serialize_core_event(&CoreEvent::Timeline(TimelineEvent::InitialItems {
             request_id: Some(request_id),
+            cause_request_id: Some(request_id),
             key: key.clone(),
             actor_generation: 1,
             generation: TimelineGeneration(1),
@@ -2347,6 +2348,10 @@ mod tests {
         let payload = &initial["event"]["InitialItems"];
         assert_eq!(
             payload["request_id"],
+            json!({ "connection_id": 3, "sequence": 7 })
+        );
+        assert_eq!(
+            payload["cause_request_id"],
             json!({ "connection_id": 3, "sequence": 7 })
         );
         assert_eq!(
@@ -2457,6 +2462,7 @@ mod tests {
         let media_initial =
             serialize_core_event(&CoreEvent::Timeline(TimelineEvent::InitialItems {
                 request_id: Some(request_id),
+                cause_request_id: None,
                 key: key.clone(),
                 actor_generation: 2,
                 generation: TimelineGeneration(2),
@@ -2494,6 +2500,7 @@ mod tests {
         let send_state_initial =
             serialize_core_event(&CoreEvent::Timeline(TimelineEvent::InitialItems {
                 request_id: Some(request_id),
+                cause_request_id: None,
                 key: key.clone(),
                 actor_generation: 3,
                 generation: TimelineGeneration(3),
@@ -2511,6 +2518,7 @@ mod tests {
         let reply_quote_initial =
             serialize_core_event(&CoreEvent::Timeline(TimelineEvent::InitialItems {
                 request_id: Some(request_id),
+                cause_request_id: None,
                 key: key.clone(),
                 actor_generation: 4,
                 generation: TimelineGeneration(4),
@@ -2531,6 +2539,7 @@ mod tests {
         let link_preview_initial =
             serialize_core_event(&CoreEvent::Timeline(TimelineEvent::InitialItems {
                 request_id: Some(request_id),
+                cause_request_id: None,
                 key: key.clone(),
                 actor_generation: 5,
                 generation: TimelineGeneration(5),

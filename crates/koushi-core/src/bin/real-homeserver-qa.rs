@@ -1884,7 +1884,7 @@ async fn wait_for_initial_items(
 
         match event {
             CoreEvent::Timeline(TimelineEvent::InitialItems {
-                request_id: Some(ev_id),
+                cause_request_id: Some(ev_id),
                 key: ref ev_key,
                 items,
                 ..

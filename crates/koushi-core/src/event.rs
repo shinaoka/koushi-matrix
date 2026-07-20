@@ -897,7 +897,12 @@ impl fmt::Debug for RoomEvent {
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TimelineEvent {
     InitialItems {
+        /// Stable projection identity retained until the WebView acknowledges
+        /// this actor generation's initial projection.
         request_id: Option<RequestId>,
+        /// Exact command that caused this delivery. Recovery projections have
+        /// no command cause and therefore use `None`.
+        cause_request_id: Option<RequestId>,
         key: TimelineKey,
         /// Monotonic owner generation for actor replacement fencing.
         actor_generation: u64,
@@ -1034,12 +1039,14 @@ impl fmt::Debug for TimelineEvent {
         match self {
             Self::InitialItems {
                 request_id,
+                cause_request_id,
                 generation,
                 items,
                 ..
             } => formatter
                 .debug_struct("InitialItems")
                 .field("request_id", request_id)
+                .field("cause_request_id", cause_request_id)
                 .field("key", &"TimelineKey(..)")
                 .field("generation", generation)
                 .field("items", items)
@@ -3102,6 +3109,7 @@ mod tests {
         );
         let mut event = TimelineEvent::InitialItems {
             request_id: None,
+            cause_request_id: None,
             key,
             actor_generation: 0,
             generation: TimelineGeneration(0),
