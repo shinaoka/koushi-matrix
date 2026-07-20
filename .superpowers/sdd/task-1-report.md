@@ -708,3 +708,34 @@ The focused test then passed. The complete headless Core QA binary suite passed
 with 70 tests, and the `qa-bin` binary check completed successfully. No long
 homeserver lane, product change, push, or PR operation was included in this
 follow-up.
+
+## SENDQUEUE ORDERED RESTART SHUTDOWN — 2026-07-20
+
+Two long Conduit runs independently reached `send_fail`, `resend`, `fifo`,
+`cancel_send`, `unsent_restart`, and `sync_a=stopped`, then stalled before
+emitting any restored-session token. The second run exhausted the 20-minute
+outer budget at the same boundary, ruling out the shorter event timeout as the
+cause of this restart hang.
+
+Inspection found that the SendQueue restart path dropped its connection, used
+`drop(runtime)`, slept for a blind 500 milliseconds, and reopened the same data
+directory. `CoreRuntime::shutdown` is the lifecycle boundary that waits for the
+ordered AppActor, AccountActor, and store shutdown barrier; dropping the handle
+does not establish that persistence/reopen ordering.
+
+Strict RED extended the existing unsubscribe-before-shutdown contract around
+the exact restart slice. It failed with `restart must await the ordered runtime
+shutdown barrier`. The contract also requires shutdown to precede reopening the
+same data directory and rejects both `drop(runtime)` and the restart-only 500ms
+sleep.
+
+The minimal fix now performs `drop(conn); runtime.shutdown().await;` before
+`CoreRuntime::start_with_data_dir(data_dir)`. Timeline unsubscribe and sync stop
+remain before shutdown, and persisted-unsent restore semantics are otherwise
+unchanged. No cleanup helper, product lifecycle implementation, or timeout was
+changed.
+
+The focused lifecycle test then passed. The complete headless Core QA binary
+suite passed with 70 tests, and the `qa-bin` binary check completed
+successfully. No additional long homeserver lane, push, or PR operation was
+included in this follow-up.

@@ -3885,8 +3885,7 @@ async fn run_send_queue_stage(
     .await?;
     stop_sync_for_qa(&mut conn, "send_queue stop before restart").await?;
     drop(conn);
-    drop(runtime);
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    runtime.shutdown().await;
 
     let runtime = CoreRuntime::start_with_data_dir(data_dir);
     let mut conn = runtime.attach();
@@ -18027,6 +18026,11 @@ mod tests {
                     .next()
             })
             .expect("send queue stage body");
+        let restart_slice = body
+            .split("stop_sync_for_qa(&mut conn, \"send_queue stop before restart\")")
+            .nth(1)
+            .and_then(|rest| rest.split("let mut conn = runtime.attach();").next())
+            .expect("send queue restart lifecycle slice");
 
         assert!(
             body.contains("send_queue unsubscribe before restart shutdown"),
@@ -18046,6 +18050,18 @@ mod tests {
             body.contains("TIMELINE_UNSUBSCRIBE_SETTLE_TIMEOUT"),
             "send_queue unsubscribe helper should wait for timeline actor shutdown before runtime drop"
         );
+        let shutdown = restart_slice
+            .find("runtime.shutdown().await")
+            .expect("restart must await the ordered runtime shutdown barrier");
+        let reopen = restart_slice
+            .find("CoreRuntime::start_with_data_dir(data_dir)")
+            .expect("restart must reopen the same persisted data directory");
+        assert!(
+            shutdown < reopen,
+            "runtime shutdown must complete before reopen"
+        );
+        assert!(!restart_slice.contains("drop(runtime)"));
+        assert!(!restart_slice.contains("Duration::from_millis(500)"));
     }
 
     #[test]
