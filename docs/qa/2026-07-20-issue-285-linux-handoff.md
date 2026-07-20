@@ -133,7 +133,8 @@ During implementation, run the exact fast SendQueue invocation plus these
 short gates:
 
 ```bash
-cargo test -p koushi-core --features qa-bin --bin headless-core-qa tests::fast_send_queue_feedback_runs_production_runtime_without_homeserver -- --exact --nocapture
+cargo test -p koushi-core --test send_queue_fast fast_send_queue_feedback_runs_production_runtime_without_homeserver -- --exact --nocapture
+cargo test -p koushi-core --test send_queue_fast
 cargo test -p koushi-core --features qa-bin --bin headless-core-qa
 cargo test -p koushi-core --lib display_projection
 npm --prefix apps/desktop test -- src/domain/timelineStore.test.ts --reporter=dot
