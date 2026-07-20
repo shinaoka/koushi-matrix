@@ -238,19 +238,22 @@ pub enum TimelineMessage {
     /// unsubscribe/shutdown can cancel it deterministically.
     StartThreadRootProjectionFetch {
         key: TimelineKey,
+        actor_generation: u64,
         own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
-        activity: ThreadRootProjectionActivity,
+        activities: Vec<ThreadRootProjectionActivity>,
     },
     /// Terminal result of the manager-owned bounded root lookup. It returns to
     /// the manager mailbox rather than publishing state/frontend changes from
     /// an unowned detached task.
     ThreadRootProjectionFetchFinished {
         key: TimelineKey,
+        actor_generation: u64,
         activity: ThreadRootProjectionActivity,
         result: Result<TimelineItem, OperationFailureKind>,
     },
     SubmissionTerminal {
         submission_id: koushi_state::SubmissionId,
+        action: AppAction,
     },
     Shutdown {
         acknowledged: Option<tokio::sync::oneshot::Sender<()>>,
@@ -266,34 +269,57 @@ pub struct TimelineManagerHandle {
 /// queued completion is handled makes the completion stale by construction.
 #[derive(Default)]
 struct ThreadRootProjectionFetchRegistry {
-    tasks: HashMap<(String, String), executor::JoinHandle<()>>,
+    tasks: HashMap<(String, String), (u64, executor::JoinHandle<()>)>,
 }
 
 impl ThreadRootProjectionFetchRegistry {
-    fn contains(&self, room_id: &str, root_event_id: &str) -> bool {
+    fn contains(&self, room_id: &str, root_event_id: &str, actor_generation: u64) -> bool {
         self.tasks
-            .contains_key(&(room_id.to_owned(), root_event_id.to_owned()))
+            .get(&(room_id.to_owned(), root_event_id.to_owned()))
+            .is_some_and(|(generation, _)| *generation == actor_generation)
     }
 
-    fn insert(&mut self, room_id: String, root_event_id: String, task: executor::JoinHandle<()>) {
-        if let Some(previous) = self.tasks.insert((room_id, root_event_id), task) {
+    fn insert(
+        &mut self,
+        room_id: String,
+        root_event_id: String,
+        actor_generation: u64,
+        task: executor::JoinHandle<()>,
+    ) {
+        if let Some((previous_generation, previous)) = self
+            .tasks
+            .insert((room_id, root_event_id), (actor_generation, task))
+        {
             // This is defensive: start handling gates duplicates, but a future
             // caller must never leak the prior worker if it violates that
             // invariant.
             previous.abort();
-            debug_assert!(
-                false,
-                "a root hydration worker must be unique per room/root"
+            debug_assert_ne!(
+                previous_generation, actor_generation,
+                "a root hydration worker must be unique within one actor generation"
             );
         }
     }
 
     /// Returns false when unsubscribe/shutdown already cancelled this worker;
     /// callers must then ignore its late terminal message.
-    fn take_completion(&mut self, room_id: &str, root_event_id: &str) -> bool {
-        self.tasks
-            .remove(&(room_id.to_owned(), root_event_id.to_owned()))
-            .is_some()
+    fn take_completion(
+        &mut self,
+        room_id: &str,
+        root_event_id: &str,
+        actor_generation: u64,
+    ) -> bool {
+        let key = (room_id.to_owned(), root_event_id.to_owned());
+        if self
+            .tasks
+            .get(&key)
+            .is_some_and(|(generation, _)| *generation == actor_generation)
+        {
+            self.tasks.remove(&key);
+            true
+        } else {
+            false
+        }
     }
 
     fn abort_room(&mut self, room_id: &str) -> usize {
@@ -305,7 +331,7 @@ impl ThreadRootProjectionFetchRegistry {
             .collect::<Vec<_>>();
         let count = keys.len();
         for key in keys {
-            if let Some(task) = self.tasks.remove(&key) {
+            if let Some((_, task)) = self.tasks.remove(&key) {
                 task.abort();
             }
         }
@@ -313,7 +339,7 @@ impl ThreadRootProjectionFetchRegistry {
     }
 
     fn abort_all(&mut self) {
-        for (_, task) in self.tasks.drain() {
+        for (_, (_, task)) in self.tasks.drain() {
             task.abort();
         }
     }
@@ -1585,22 +1611,39 @@ impl TimelineManagerActor {
                 }
                 TimelineMessage::StartThreadRootProjectionFetch {
                     key,
+                    actor_generation,
                     own_user_id,
-                    activity,
+                    activities,
                 } => {
-                    self.handle_thread_root_projection_fetch_start(key, own_user_id, activity)
-                        .await;
+                    self.handle_thread_root_projection_fetch_start(
+                        key,
+                        actor_generation,
+                        own_user_id,
+                        activities,
+                    )
+                    .await;
                 }
                 TimelineMessage::ThreadRootProjectionFetchFinished {
                     key,
+                    actor_generation,
                     activity,
                     result,
                 } => {
-                    self.handle_thread_root_projection_fetch_finished(key, activity, result)
-                        .await;
+                    self.handle_thread_root_projection_fetch_finished(
+                        key,
+                        actor_generation,
+                        activity,
+                        result,
+                    )
+                    .await;
                 }
-                TimelineMessage::SubmissionTerminal { submission_id } => {
-                    self.accepted_submissions.terminal(&submission_id);
+                TimelineMessage::SubmissionTerminal {
+                    submission_id,
+                    action,
+                } => {
+                    if deliver_submission_terminal_action(&self.action_tx, action).await {
+                        self.accepted_submissions.terminal(&submission_id);
+                    }
                 }
                 TimelineMessage::Command(command) => {
                     self.handle_command(command).await;
@@ -1657,71 +1700,92 @@ impl TimelineManagerActor {
     async fn handle_thread_root_projection_fetch_start(
         &mut self,
         key: TimelineKey,
+        actor_generation: u64,
         own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
-        activity: ThreadRootProjectionActivity,
+        activities: Vec<ThreadRootProjectionActivity>,
     ) {
-        if !matches!(key.kind, TimelineKind::Room { .. })
-            || !self.timelines.contains_key(&key)
-            || self
-                .thread_root_projection_fetches
-                .contains(&activity.room_id, &activity.root_event_id)
-        {
+        let Some(_lease) = self
+            .timeline_actor_generations
+            .try_acquire(&key, actor_generation)
+        else {
             return;
-        }
-        let should_start = self
-            .thread_root_projection_service
-            .lock()
-            .expect("thread-root projection service lock must not be poisoned")
-            .has_pending_attempt(&activity);
-        if !should_start {
+        };
+        if !matches!(key.kind, TimelineKind::Room { .. }) || !self.timelines.contains_key(&key) {
             return;
         }
         let Some(session) = self.session.clone() else {
             return;
         };
-        let task = spawn_thread_root_projection_fetch(
-            session,
-            key.clone(),
-            own_user_id,
-            self.msg_tx.clone(),
-            activity.clone(),
-        );
-        self.thread_root_projection_fetches
-            .insert(activity.room_id, activity.root_event_id, task);
+        for activity in activities {
+            if self.thread_root_projection_fetches.contains(
+                &activity.room_id,
+                &activity.root_event_id,
+                actor_generation,
+            ) {
+                continue;
+            }
+            let should_start = self
+                .thread_root_projection_service
+                .lock()
+                .expect("thread-root projection service lock must not be poisoned")
+                .has_pending_attempt(&activity);
+            if !should_start {
+                continue;
+            }
+            let task = spawn_thread_root_projection_fetch(
+                session.clone(),
+                key.clone(),
+                actor_generation,
+                own_user_id.clone(),
+                self.msg_tx.clone(),
+                activity.clone(),
+            );
+            self.thread_root_projection_fetches.insert(
+                activity.room_id,
+                activity.root_event_id,
+                actor_generation,
+                task,
+            );
+        }
     }
 
     async fn handle_thread_root_projection_fetch_finished(
         &mut self,
         key: TimelineKey,
+        actor_generation: u64,
         activity: ThreadRootProjectionActivity,
         result: Result<TimelineItem, OperationFailureKind>,
     ) {
-        if !self
-            .thread_root_projection_fetches
-            .take_completion(&activity.room_id, &activity.root_event_id)
-            || !self.timelines.contains_key(&key)
+        if !self.thread_root_projection_fetches.take_completion(
+            &activity.room_id,
+            &activity.root_event_id,
+            actor_generation,
+        ) || !self.timelines.contains_key(&key)
         {
             return;
         }
-        let record = {
-            let mut service = self
-                .thread_root_projection_service
-                .lock()
-                .expect("thread-root projection service lock must not be poisoned");
-            match result {
-                Ok(item) => service.mark_ready(&activity, item),
-                Err(failure_kind) => service.mark_failed(&activity, failure_kind),
-            }
+        let Ok(action_permit) = self.action_tx.clone().reserve_owned().await else {
+            return;
+        };
+        let Some(lease) = self
+            .timeline_actor_generations
+            .try_acquire(&key, actor_generation)
+        else {
+            return;
+        };
+        let mut service = self
+            .thread_root_projection_service
+            .lock()
+            .expect("thread-root projection service lock must not be poisoned");
+        let record = match result {
+            Ok(item) => service.mark_ready(&activity, item),
+            Err(failure_kind) => service.mark_failed(&activity, failure_kind),
         };
         let Some(record) = record else {
             return;
         };
-        if !self
-            .emit_action_reliable(thread_root_projection_action_from_record(&record))
-            .await
-        {
-            return;
-        }
+        action_permit.send(vec![thread_root_projection_action_from_record(&record)]);
+        drop(service);
         // A bounded replay may have acquired display ownership while this
         // manager-owned cache/network lookup was in flight. The shared
         // registry mutex covers both this decision and the synchronous
@@ -1735,6 +1799,7 @@ impl TimelineManagerActor {
             &key,
             thread_root_projection_dto_from_record(&record),
         );
+        drop(lease);
     }
 
     async fn clear_thread_root_projections_for_room(&mut self, key: &TimelineKey) {
@@ -5611,6 +5676,16 @@ async fn emit_app_action_reliable(
     action_tx.send(vec![action]).await.is_ok()
 }
 
+/// Composer terminals belong to the manager-owned submission ledger, not to
+/// one replaceable timeline actor. The manager waits for reducer capacity and
+/// only then tombstones the submission.
+async fn deliver_submission_terminal_action(
+    action_tx: &mpsc::Sender<Vec<AppAction>>,
+    action: AppAction,
+) -> bool {
+    emit_app_action_reliable(action_tx, action).await
+}
+
 /// Wait for channel capacity without publishing, then synchronously validate
 /// actor ownership and publish while the short generation lease is held.
 /// Replacement may win during the capacity await; in that case the prepared
@@ -5703,6 +5778,7 @@ fn spawn_reply_detail_fetch(
 fn spawn_thread_root_projection_fetch(
     session: Arc<MatrixClientSession>,
     key: TimelineKey,
+    actor_generation: u64,
     own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
     manager_tx: mpsc::Sender<TimelineMessage>,
     activity: ThreadRootProjectionActivity,
@@ -5714,6 +5790,7 @@ fn spawn_thread_root_projection_fetch(
         let _ = manager_tx
             .send(TimelineMessage::ThreadRootProjectionFetchFinished {
                 key,
+                actor_generation,
                 activity,
                 result,
             })
@@ -5743,6 +5820,131 @@ fn thread_root_projection_dto_from_record(
         source: ThreadRootProjectionSourceDto::Hydration,
         state,
     }
+}
+
+fn thread_root_projection_pending_dto(
+    activity: &ThreadRootProjectionActivity,
+) -> ThreadRootProjectionDto {
+    ThreadRootProjectionDto {
+        root_event_id: activity.root_event_id.clone(),
+        activity_event_id: activity.activity_event_id.clone(),
+        activity_timestamp_ms: activity.activity_timestamp_ms,
+        retain_without_reply: false,
+        source: ThreadRootProjectionSourceDto::Hydration,
+        state: ThreadRootProjectionStateDto::Pending,
+    }
+}
+
+fn hydration_projection_event(
+    key: &TimelineKey,
+    projection: ThreadRootProjectionDto,
+) -> TimelineEvent {
+    TimelineEvent::ThreadRootProjection {
+        key: key.clone(),
+        projection,
+    }
+}
+
+struct PreparedThreadRootHydration {
+    activities_by_root: HashMap<String, ThreadRootProjectionActivity>,
+    missing_activities: Vec<ThreadRootProjectionActivity>,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn commit_prepared_thread_root_hydration_for_generation(
+    service: &Arc<Mutex<ThreadRootProjectionService>>,
+    replay_registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    generations: &Arc<TimelineActorGenerationGate>,
+    action_tx: &mpsc::Sender<Vec<AppAction>>,
+    manager_tx: &mpsc::Sender<TimelineMessage>,
+    event_tx: &broadcast::Sender<CoreEvent>,
+    key: &TimelineKey,
+    actor_generation: u64,
+    own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
+    prepared: PreparedThreadRootHydration,
+) -> bool {
+    let Ok(action_permit) = action_tx.clone().reserve_owned().await else {
+        return false;
+    };
+    let fetch_permit = if prepared.missing_activities.is_empty() {
+        None
+    } else {
+        let Ok(permit) = manager_tx.clone().reserve_owned().await else {
+            return false;
+        };
+        Some(permit)
+    };
+    let Some(lease) = generations.try_acquire(key, actor_generation) else {
+        return false;
+    };
+    let mut actions = vec![AppAction::ThreadRootProjectionsReconciled {
+        room_id: key.room_id().to_owned(),
+        activities: prepared
+            .activities_by_root
+            .values()
+            .map(|activity| ThreadRootProjectionActivityState {
+                root_event_id: activity.root_event_id.clone(),
+                activity_event_id: activity.activity_event_id.clone(),
+                activity_timestamp_ms: activity.activity_timestamp_ms,
+            })
+            .collect(),
+    }];
+    let mut events = Vec::new();
+    let mut terminal_projections = Vec::new();
+    let mut fetches = Vec::new();
+    let mut service_guard = service
+        .lock()
+        .expect("thread-root projection service lock must not be poisoned");
+    service_guard.reconcile_room_activities(key.room_id(), &prepared.activities_by_root);
+    for activity in prepared.missing_activities {
+        let decision = service_guard.observe(activity);
+        match decision {
+            ThreadRootProjectionDecision::StartFetch(activity) => {
+                actions.push(AppAction::ThreadRootProjectionObserved {
+                    room_id: activity.room_id.clone(),
+                    root_event_id: activity.root_event_id.clone(),
+                    activity_event_id: activity.activity_event_id.clone(),
+                    activity_timestamp_ms: activity.activity_timestamp_ms,
+                });
+                events.push(hydration_projection_event(
+                    key,
+                    thread_root_projection_pending_dto(&activity),
+                ));
+                fetches.push(activity);
+            }
+            ThreadRootProjectionDecision::ActivityUpdated(record)
+            | ThreadRootProjectionDecision::Existing(record) => {
+                actions.push(thread_root_projection_action_from_record(&record));
+                if record.is_pending() {
+                    events.push(hydration_projection_event(
+                        key,
+                        thread_root_projection_dto_from_record(&record),
+                    ));
+                    fetches.push(record.activity.clone());
+                } else {
+                    terminal_projections.push(thread_root_projection_dto_from_record(&record));
+                }
+            }
+        }
+    }
+    action_permit.send(actions);
+    emit_timeline_events_with_lease(event_tx, &lease, events);
+    drop(service_guard);
+    for projection in terminal_projections {
+        let _ =
+            emit_hydration_terminal_unless_replay_owned(event_tx, replay_registry, key, projection);
+    }
+    if let Some(permit) = fetch_permit {
+        if !fetches.is_empty() {
+            permit.send(TimelineMessage::StartThreadRootProjectionFetch {
+                key: key.clone(),
+                actor_generation,
+                own_user_id,
+                activities: fetches,
+            });
+        }
+    }
+    true
 }
 
 fn thread_root_projection_action_from_record(record: &ThreadRootProjectionRecord) -> AppAction {
@@ -6183,41 +6385,6 @@ fn emit_hydration_terminal_unless_replay_owned(
         key: key.clone(),
         projection,
     }));
-    true
-}
-
-/// Actor-side variant of [`emit_hydration_terminal_unless_replay_owned`].
-/// Existing service records can be re-emitted by a replacement actor, so they
-/// must also take the actor generation lease before they inspect or mutate the
-/// shared replay owner. This keeps stale actors from publishing a terminal
-/// after `SyncStarted` has fenced their generation.
-fn emit_hydration_terminal_unless_replay_owned_for_generation(
-    event_tx: &broadcast::Sender<CoreEvent>,
-    registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
-    timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
-    key: &TimelineKey,
-    actor_generation: u64,
-    projection: ThreadRootProjectionDto,
-) -> bool {
-    let Some(lease) = timeline_actor_generations.try_acquire(key, actor_generation) else {
-        return false;
-    };
-    let mut registry = registry
-        .lock()
-        .expect("replay-known root registry lock must not be poisoned");
-    if registry.owns_root(key, &projection.root_event_id) {
-        registry.mark_hydration_terminal_suppressed(key, projection.root_event_id.clone());
-        return false;
-    }
-    registry.mark_hydration_terminal_emitted(key, projection.root_event_id.clone());
-    emit_timeline_events_with_lease(
-        event_tx,
-        &lease,
-        vec![TimelineEvent::ThreadRootProjection {
-            key: key.clone(),
-            projection,
-        }],
-    );
     true
 }
 
@@ -16250,116 +16417,27 @@ impl TimelineActor {
                 }
                 selected
             });
-        {
-            let mut service = self
-                .thread_root_projection_service
-                .lock()
-                .expect("thread-root projection service lock must not be poisoned");
-            service.reconcile_room_activities(self.key.room_id(), &activities_by_root);
-        }
-        if !self
-            .emit_action_reliable(AppAction::ThreadRootProjectionsReconciled {
-                room_id: self.key.room_id().to_owned(),
-                activities: activities_by_root
-                    .values()
-                    .map(|activity| ThreadRootProjectionActivityState {
-                        root_event_id: activity.root_event_id.clone(),
-                        activity_event_id: activity.activity_event_id.clone(),
-                        activity_timestamp_ms: activity.activity_timestamp_ms,
-                    })
-                    .collect(),
-            })
-            .await
-        {
-            return;
-        }
-
-        for activity in activities_by_root
-            .into_values()
-            .into_iter()
+        let missing_activities = activities_by_root
+            .values()
             .filter(|activity| !self.timeline_contains_event_id(&activity.root_event_id))
-        {
-            let decision = self
-                .thread_root_projection_service
-                .lock()
-                .expect("thread-root projection service lock must not be poisoned")
-                .observe(activity);
-            match decision {
-                ThreadRootProjectionDecision::StartFetch(activity) => {
-                    if !self
-                        .emit_action_reliable(AppAction::ThreadRootProjectionObserved {
-                            room_id: activity.room_id.clone(),
-                            root_event_id: activity.root_event_id.clone(),
-                            activity_event_id: activity.activity_event_id.clone(),
-                            activity_timestamp_ms: activity.activity_timestamp_ms,
-                        })
-                        .await
-                    {
-                        return;
-                    }
-                    self.emit_thread_root_projection_pending(&activity);
-                    if self
-                        .manager_tx
-                        .send(TimelineMessage::StartThreadRootProjectionFetch {
-                            key: self.key.clone(),
-                            own_user_id: self.own_user_id.clone(),
-                            activity,
-                        })
-                        .await
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
-                ThreadRootProjectionDecision::ActivityUpdated(record)
-                | ThreadRootProjectionDecision::Existing(record) => {
-                    if !self
-                        .emit_action_reliable(thread_root_projection_action_from_record(&record))
-                        .await
-                    {
-                        return;
-                    }
-                    self.emit_thread_root_projection_record(&record);
-                }
-            }
-        }
-    }
-
-    fn emit_thread_root_projection_pending(&self, activity: &ThreadRootProjectionActivity) {
-        self.emit(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
-            key: self.key.clone(),
-            projection: ThreadRootProjectionDto {
-                root_event_id: activity.root_event_id.clone(),
-                activity_event_id: activity.activity_event_id.clone(),
-                activity_timestamp_ms: activity.activity_timestamp_ms,
-                retain_without_reply: false,
-                source: ThreadRootProjectionSourceDto::Hydration,
-                state: ThreadRootProjectionStateDto::Pending,
-            },
-        }));
-    }
-
-    fn emit_thread_root_projection_record(&self, record: &ThreadRootProjectionRecord) {
-        let projection = thread_root_projection_dto_from_record(record);
-        if record.is_pending() {
-            self.emit(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
-                key: self.key.clone(),
-                projection,
-            }));
-            return;
-        }
-        // A replacement actor can re-observe a retained terminal record while
-        // a replay-known Ready owns this root. Reuse the manager's ownership
-        // boundary so that resend is suppressed and marked exactly once; the
-        // later scoped replay Clear then hands the terminal back exactly once.
-        let _ = emit_hydration_terminal_unless_replay_owned_for_generation(
-            &self.event_tx,
+            .cloned()
+            .collect();
+        let _ = commit_prepared_thread_root_hydration_for_generation(
+            &self.thread_root_projection_service,
             &self.replay_known_thread_root_projections,
             &self.timeline_actor_generations,
+            &self.action_tx,
+            &self.manager_tx,
+            &self.event_tx,
             &self.key,
             self.actor_generation,
-            projection,
-        );
+            self.own_user_id.clone(),
+            PreparedThreadRootHydration {
+                activities_by_root,
+                missing_activities,
+            },
+        )
+        .await;
     }
 
     async fn handle_ignored_users_updated(&mut self, user_ids: std::collections::BTreeSet<String>) {
@@ -17848,11 +17926,14 @@ impl TimelineActor {
                 },
             )
             .or_else(|| send_finished_action(&self.key, client_txn_id.to_owned()));
-        if let Some(action) = action {
-            let _ = self.emit_action_reliable(action).await;
-        }
-        if let Some(submission_id) = submission_id {
-            self.notify_submission_terminal(submission_id).await;
+        match (submission_id, action) {
+            (Some(submission_id), Some(action)) => {
+                self.handoff_submission_terminal(submission_id.clone(), action);
+            }
+            (_, Some(action)) => {
+                let _ = self.emit_action_reliable(action).await;
+            }
+            (_, None) => {}
         }
     }
 
@@ -17870,17 +17951,17 @@ impl TimelineActor {
         submission_id: Option<&koushi_state::SubmissionId>,
     ) {
         if let Some((submission_id, target)) = submission_id.zip(submission_target(&self.key)) {
-            let _ = self
-                .emit_action_reliable(AppAction::ComposerSubmissionSettled {
+            self.handoff_submission_terminal(
+                submission_id.clone(),
+                AppAction::ComposerSubmissionSettled {
                     submission_id: submission_id.clone(),
                     transaction_id: client_txn_id.to_owned(),
                     target,
                     outcome: koushi_state::ComposerSubmissionTerminalOutcome::Failed {
                         message: "send failed".to_owned(),
                     },
-                })
-                .await;
-            self.notify_submission_terminal(submission_id).await;
+                },
+            );
             return;
         }
         let projection = match self.key.kind {
@@ -17904,27 +17985,36 @@ impl TimelineActor {
         submission_id: Option<&koushi_state::SubmissionId>,
     ) {
         if let Some((submission_id, target)) = submission_id.zip(submission_target(&self.key)) {
-            let _ = self
-                .emit_action_reliable(AppAction::ComposerSubmissionSettled {
+            self.handoff_submission_terminal(
+                submission_id.clone(),
+                AppAction::ComposerSubmissionSettled {
                     submission_id: submission_id.clone(),
                     transaction_id: client_txn_id.to_owned(),
                     target,
                     outcome: koushi_state::ComposerSubmissionTerminalOutcome::Cancelled,
-                })
-                .await;
-            self.notify_submission_terminal(submission_id).await;
+                },
+            );
         } else {
             self.emit_send_finished_action(client_txn_id).await;
         }
     }
 
-    async fn notify_submission_terminal(&self, submission_id: &koushi_state::SubmissionId) {
-        let _ = self
-            .manager_tx
-            .send(TimelineMessage::SubmissionTerminal {
-                submission_id: submission_id.clone(),
-            })
-            .await;
+    fn handoff_submission_terminal(
+        &self,
+        submission_id: koushi_state::SubmissionId,
+        action: AppAction,
+    ) {
+        let manager_tx = self.manager_tx.clone();
+        // Detach the durable handoff from this replaceable actor task. Dropping
+        // the actor must not cancel a terminal already learned from the SDK.
+        drop(executor::spawn(async move {
+            let _ = manager_tx
+                .send(TimelineMessage::SubmissionTerminal {
+                    submission_id,
+                    action,
+                })
+                .await;
+        }));
     }
 
     fn emit_typing_users_action(&self, user_ids: Vec<String>) {
@@ -23899,6 +23989,168 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn composer_terminals_survive_replacement_during_reducer_capacity_wait() {
+        use koushi_state::{
+            ComposerSubmissionTarget, ComposerSubmissionTerminalOutcome, SubmissionId,
+        };
+
+        for (label, outcome) in [
+            ("success", ComposerSubmissionTerminalOutcome::Succeeded),
+            (
+                "failure",
+                ComposerSubmissionTerminalOutcome::Failed {
+                    message: "send failed".to_owned(),
+                },
+            ),
+            ("cancel", ComposerSubmissionTerminalOutcome::Cancelled),
+        ] {
+            let key = room_key();
+            let submission_id = SubmissionId::new(format!("{label}-submission"));
+            let mut ledger = SubmissionAdmissionLedger::default();
+            ledger.accept(submission_id.clone(), key.clone(), format!("{label}-txn"));
+            let (action_tx, mut action_rx) = mpsc::channel(1);
+            action_tx
+                .send(vec![AppAction::ThreadRootProjectionsCleared {
+                    room_id: "!occupied:test".to_owned(),
+                }])
+                .await
+                .expect("fill reducer channel");
+            let delivery = tokio::spawn({
+                let action_tx = action_tx.clone();
+                let submission_id = submission_id.clone();
+                let outcome = outcome.clone();
+                async move {
+                    deliver_submission_terminal_action(
+                        &action_tx,
+                        AppAction::ComposerSubmissionSettled {
+                            submission_id,
+                            transaction_id: format!("{label}-txn"),
+                            target: ComposerSubmissionTarget::Main {
+                                room_id: "!room:test".to_owned(),
+                            },
+                            outcome,
+                        },
+                    )
+                    .await
+                }
+            });
+            tokio::task::yield_now().await;
+
+            let generations = Arc::new(TimelineActorGenerationGate::default());
+            let _old = generations.activate_after_quiescence(&key).await.generation;
+            let _replacement = generations.activate_after_quiescence(&key).await.generation;
+            assert!(
+                ledger.active.contains_key(&submission_id),
+                "ledger must remain active until reducer delivery"
+            );
+
+            let _occupied = action_rx.recv().await.expect("occupied reducer slot");
+            assert!(delivery.await.expect("terminal delivery task"));
+            let delivered = action_rx.recv().await.expect("terminal reducer action");
+            assert!(matches!(
+                delivered.as_slice(),
+                [AppAction::ComposerSubmissionSettled {
+                    submission_id: delivered_id,
+                    ..
+                }] if delivered_id == &submission_id
+            ));
+            ledger.terminal(&submission_id);
+            assert!(!ledger.active.contains_key(&submission_id));
+            assert!(ledger.get(&submission_id).is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn hydration_preparation_replaced_during_capacity_wait_publishes_nothing() {
+        let key = room_key();
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let old_generation = generations.activate_after_quiescence(&key).await.generation;
+        let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        let replay_registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let activity = ThreadRootProjectionActivity {
+            room_id: key.room_id().to_owned(),
+            root_event_id: "$stale-root:test".to_owned(),
+            activity_event_id: "$stale-reply:test".to_owned(),
+            activity_timestamp_ms: Some(300),
+            activity_sender: None,
+            activity_sender_label: None,
+            activity_body_preview: None,
+        };
+        let mut second_activity = activity.clone();
+        second_activity.root_event_id = "$second-stale-root:test".to_owned();
+        second_activity.activity_event_id = "$second-stale-reply:test".to_owned();
+        let (action_tx, mut action_rx) = mpsc::channel(1);
+        action_tx
+            .send(vec![AppAction::ThreadRootProjectionsCleared {
+                room_id: "!occupied:test".to_owned(),
+            }])
+            .await
+            .expect("fill reducer channel");
+        let (manager_tx, mut manager_rx) = mpsc::channel(1);
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        let commit = tokio::spawn({
+            let service = Arc::clone(&service);
+            let replay_registry = Arc::clone(&replay_registry);
+            let generations = Arc::clone(&generations);
+            let action_tx = action_tx.clone();
+            let manager_tx = manager_tx.clone();
+            let event_tx = event_tx.clone();
+            let key = key.clone();
+            let activity = activity.clone();
+            let second_activity = second_activity.clone();
+            async move {
+                commit_prepared_thread_root_hydration_for_generation(
+                    &service,
+                    &replay_registry,
+                    &generations,
+                    &action_tx,
+                    &manager_tx,
+                    &event_tx,
+                    &key,
+                    old_generation,
+                    None,
+                    PreparedThreadRootHydration {
+                        activities_by_root: HashMap::from([
+                            (activity.root_event_id.clone(), activity.clone()),
+                            (
+                                second_activity.root_event_id.clone(),
+                                second_activity.clone(),
+                            ),
+                        ]),
+                        // More fetches than manager mailbox capacity must still
+                        // reserve one atomic batch rather than deadlocking on
+                        // unpublished per-fetch permits.
+                        missing_activities: vec![activity, second_activity],
+                    },
+                )
+                .await
+            }
+        });
+        tokio::task::yield_now().await;
+        let replacement = generations.activate_after_quiescence(&key).await.generation;
+        assert_ne!(replacement, old_generation);
+
+        let _occupied = action_rx.recv().await.expect("occupied reducer action");
+        assert!(
+            !tokio::time::timeout(Duration::from_secs(1), commit)
+                .await
+                .expect("batched fetch reservation must not deadlock")
+                .expect("stale hydration commit")
+        );
+        assert!(
+            !service
+                .lock()
+                .expect("service lock")
+                .has_pending_attempt(&activity)
+        );
+        assert!(action_rx.try_recv().is_err(), "no stale projection action");
+        assert!(manager_rx.try_recv().is_err(), "no stale manager fetch");
+        assert!(event_rx.try_recv().is_err(), "no stale projection event");
+    }
+
+    #[tokio::test]
     async fn actor_owner_generation_remains_monotonic_across_manager_gate_recreation() {
         let key = focused_key();
         let first_gate = TimelineActorGenerationGate::default();
@@ -24372,6 +24624,11 @@ mod tests {
             #[cfg(test)]
             test_session_available: false,
         };
+        let actor_generation = manager
+            .timeline_actor_generations
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
 
         for (root_event_id, result) in [
             (
@@ -24418,11 +24675,17 @@ mod tests {
             manager.thread_root_projection_fetches.insert(
                 activity.room_id.clone(),
                 activity.root_event_id.clone(),
+                actor_generation,
                 executor::spawn(async {}),
             );
 
             manager
-                .handle_thread_root_projection_fetch_finished(key.clone(), activity.clone(), result)
+                .handle_thread_root_projection_fetch_finished(
+                    key.clone(),
+                    actor_generation,
+                    activity.clone(),
+                    result,
+                )
                 .await;
 
             let action = action_rx.recv().await;
@@ -24504,11 +24767,13 @@ mod tests {
         manager.thread_root_projection_fetches.insert(
             ordinary_activity.room_id.clone(),
             ordinary_activity.root_event_id.clone(),
+            actor_generation,
             executor::spawn(async {}),
         );
         manager
             .handle_thread_root_projection_fetch_finished(
                 key.clone(),
+                actor_generation,
                 ordinary_activity,
                 Ok(timeline_item(
                     "$ordinary-root:test",
@@ -24538,6 +24803,84 @@ mod tests {
                 ..
             })) if root_event_id == "$ordinary-root:test"
         ));
+    }
+
+    #[tokio::test]
+    async fn manager_rejects_stale_generation_hydration_start_and_completion() {
+        let key = room_key();
+        let mut manager =
+            live_tail_test_manager(HashMap::from([(key.clone(), test_timeline_actor_handle())]));
+        let mut event_rx = manager.event_tx.subscribe();
+        let old_generation = manager
+            .timeline_actor_generations
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
+        let replacement_generation = manager
+            .timeline_actor_generations
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
+        assert_ne!(old_generation, replacement_generation);
+        let activity = ThreadRootProjectionActivity {
+            room_id: key.room_id().to_owned(),
+            root_event_id: "$stale-root:test".to_owned(),
+            activity_event_id: "$stale-reply:test".to_owned(),
+            activity_timestamp_ms: Some(300),
+            activity_sender: None,
+            activity_sender_label: None,
+            activity_body_preview: None,
+        };
+        assert!(matches!(
+            manager
+                .thread_root_projection_service
+                .lock()
+                .expect("service lock")
+                .observe(activity.clone()),
+            ThreadRootProjectionDecision::StartFetch(_)
+        ));
+
+        manager
+            .handle_thread_root_projection_fetch_start(
+                key.clone(),
+                old_generation,
+                None,
+                vec![activity.clone()],
+            )
+            .await;
+        assert!(!manager.thread_root_projection_fetches.contains(
+            &activity.room_id,
+            &activity.root_event_id,
+            old_generation,
+        ));
+
+        manager.thread_root_projection_fetches.insert(
+            activity.room_id.clone(),
+            activity.root_event_id.clone(),
+            old_generation,
+            executor::spawn(async {}),
+        );
+        manager
+            .handle_thread_root_projection_fetch_finished(
+                key.clone(),
+                old_generation,
+                activity.clone(),
+                Ok(timeline_item(
+                    "$stale-root:test",
+                    Some("stale"),
+                    "@a:test",
+                    false,
+                )),
+            )
+            .await;
+        assert!(
+            manager
+                .thread_root_projection_service
+                .lock()
+                .expect("service lock")
+                .has_pending_attempt(&activity)
+        );
+        assert!(event_rx.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -25275,15 +25618,11 @@ mod tests {
             &key,
             terminal.clone(),
         ));
+        let _lease = actor_generations
+            .try_acquire(&key, actor_generation)
+            .expect("current actor lease");
         assert!(
-            !emit_hydration_terminal_unless_replay_owned_for_generation(
-                &event_tx,
-                &registry,
-                &actor_generations,
-                &key,
-                actor_generation,
-                terminal,
-            ),
+            !emit_hydration_terminal_unless_replay_owned(&event_tx, &registry, &key, terminal),
             "an Existing terminal reemit must share the same one-time suppression marker"
         );
 
@@ -29509,17 +29848,29 @@ mod tests {
             .split("fn maybe_hydrate_missing_thread_roots")
             .nth(1)
             .expect("Room root hydration detection must exist")
-            .split("fn emit_thread_root_projection_pending")
+            .split("async fn handle_ignored_users_updated")
             .next()
             .expect("root hydration handler boundary");
         assert!(
-            hydration.contains("ThreadRootProjectionDecision::StartFetch")
-                && hydration.contains("TimelineMessage::StartThreadRootProjectionFetch"),
+            hydration.contains("missing_activities")
+                && hydration.contains("commit_prepared_thread_root_hydration_for_generation"),
             "an absent root must request one manager-owned bounded fetch"
         );
+        let commit = production
+            .split("async fn commit_prepared_thread_root_hydration_for_generation")
+            .nth(1)
+            .expect("generation-scoped hydration commit must exist")
+            .split("fn thread_root_projection_action_from_record")
+            .next()
+            .expect("hydration commit boundary");
         assert!(
-            hydration.contains("emit_action_reliable") && !hydration.contains("try_send"),
-            "projection state transitions must not be dropped when the reducer channel is full"
+            commit.contains("reserve_owned().await")
+                && commit.contains("ThreadRootProjectionDecision::StartFetch")
+                && commit.contains("fetches.push(activity)")
+                && commit.contains("TimelineMessage::StartThreadRootProjectionFetch")
+                && commit.contains("actor_generation")
+                && !commit.contains("try_send"),
+            "projection state and tagged fetch requests must commit reliably for one actor generation"
         );
         assert!(
             !hydration.contains("paginate_backwards(")
@@ -29584,7 +29935,7 @@ mod tests {
             std::future::pending::<()>().await;
         });
         let mut registry = ThreadRootProjectionFetchRegistry::default();
-        registry.insert("!room:test".to_owned(), "$root:test".to_owned(), task);
+        registry.insert("!room:test".to_owned(), "$root:test".to_owned(), 7, task);
         started_rx
             .await
             .expect("worker must be in flight before cancellation");
@@ -29595,7 +29946,7 @@ mod tests {
             .expect("abort must end the in-flight hydration worker")
             .expect("worker cancellation probe should be delivered");
         assert!(
-            !registry.take_completion("!room:test", "$root:test"),
+            !registry.take_completion("!room:test", "$root:test", 7),
             "a completion queued before unsubscribe must not publish a stale terminal state"
         );
     }

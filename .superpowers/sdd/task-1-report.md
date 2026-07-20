@@ -237,3 +237,39 @@ Fresh post-review evidence:
 - `git diff --check`: passed.
 
 The long homeserver lane remains deliberately delegated to the root agent.
+
+## FINAL RE-REVIEW HARDENING — 2026-07-20
+
+The final ownership review closed two replacement races that were not covered
+by the first hardening pass:
+
+- Composer success, failure, and cancellation terminals are now handed back to
+  the manager as submission-ledger work. They are deliberately independent of
+  the replaced timeline actor generation, and the submission is tombstoned
+  only after the reducer terminal action has been delivered reliably.
+- Thread-root hydration now prepares only immutable activity inputs, reserves
+  publication capacity, then applies service deltas and publishes reducer
+  actions, projection events, and a generation-tagged manager fetch batch under
+  one current-generation lease. This avoids both stale mutation and whole-state
+  candidate swaps that could lose a concurrent completion for another root.
+  Manager fetch completion repeats the same post-await generation validation
+  before mutating shared state. Multiple root fetches use one manager-mailbox
+  message, so a projection containing more roots than mailbox capacity cannot
+  deadlock on unpublished permits.
+
+Fresh focused race coverage verifies terminal delivery across actor
+replacement for success/failure/cancel, stale hydration preparation while
+waiting for capacity, a fetch count larger than mailbox capacity, and manager
+rejection of stale-generation starts and completions.
+
+Fresh verification evidence:
+
+- Full `timeline::tests`: 217 passed, 1 intentionally ignored, 0 failed.
+- TimelineStore: 69 passed, 0 failed.
+- Desktop typecheck: passed.
+- `cargo check -p koushi-core` and the `--no-default-features` variant: passed.
+- `cargo fmt -p koushi-core -- --check`: passed.
+- `git diff --check`: passed.
+
+The long homeserver lane remains delegated to the root agent; this worker did
+not push or create a PR.
