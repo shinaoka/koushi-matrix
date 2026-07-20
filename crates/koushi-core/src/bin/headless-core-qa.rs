@@ -10231,24 +10231,6 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
     account_key_a2: &AccountKey,
 ) -> Result<(), String> {
     let check_recipient_second_device = env_flag_enabled(ENV_E2EE_RECIPIENT_SECOND_DEVICE)?;
-    let QaParticipantLoginOutcome {
-        runtime: runtime_b,
-        conn: mut conn_b,
-        account_key: account_key_b,
-        bootstrap_recovery_secret: _,
-        sync_backend: _,
-    } = login_synced_participant_for_qa(
-        &config.homeserver,
-        qa_data_dir("e2ee-b"),
-        &config.user_b,
-        &config.password_b,
-        DEVICE_B,
-        "e2ee login B",
-        "gate-bootstrap-b",
-        QaParticipantLoginGate::BootstrapNewIdentity,
-    )
-    .await?;
-
     let user_b_full_id = format!("@{}:{}", config.user_b, config.server_name);
     let room_id = create_room_for_qa(
         conn_a,
@@ -10272,6 +10254,25 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
         "e2ee multi-device invite B",
     )
     .await?;
+
+    let QaParticipantLoginOutcome {
+        runtime: runtime_b,
+        conn: mut conn_b,
+        account_key: account_key_b,
+        bootstrap_recovery_secret: _,
+        sync_backend: _,
+    } = login_synced_participant_for_qa(
+        &config.homeserver,
+        qa_data_dir("e2ee-b"),
+        &config.user_b,
+        &config.password_b,
+        DEVICE_B,
+        "e2ee login B",
+        "gate-bootstrap-b",
+        QaParticipantLoginGate::BootstrapNewIdentity,
+    )
+    .await?;
+
     wait_for_invite_in_snapshot(
         &mut conn_b,
         &room_id,
@@ -15716,6 +15717,49 @@ mod tests {
         assert!(helper.contains("tokio::time::timeout(E2EE_EVENT_TIMEOUT, ack)"));
         assert!(!helper.contains("AccountCommand::RequestVerification"));
         assert!(!helper.contains("tokio::time::sleep"));
+    }
+
+    #[test]
+    fn e2ee_key_delivery_preestablishes_invite_before_b_bootstrap() {
+        let source = include_str!("headless-core-qa.rs");
+        let stage = source
+            .split("async fn verify_multi_user_multi_device_room_key_delivery_for_qa")
+            .nth(1)
+            .expect("multi-device delivery stage should exist")
+            .split("async fn refresh_device_keys_and_assert_known_for_qa")
+            .next()
+            .expect("device-key refresh helper should follow multi-device delivery");
+
+        let create = stage
+            .find("let room_id = create_room_for_qa(")
+            .expect("E2EE room should be created");
+        let invite = stage
+            .find("invite_user_for_qa(")
+            .expect("B should be invited to the E2EE room");
+        let bootstrap = stage
+            .find("} = login_synced_participant_for_qa(")
+            .expect("B should bootstrap and start normal actor-owned sync");
+        let observe = stage
+            .find("wait_for_invite_in_snapshot(")
+            .expect("B should observe the pre-existing invite snapshot");
+        let cleanup = stage
+            .rfind("cleanup_logged_in_runtime(conn_b, runtime_b, account_key_b")
+            .expect("B should retain ordered cleanup after key-delivery checks");
+
+        assert!(create < invite);
+        assert!(invite < bootstrap);
+        assert!(bootstrap < observe);
+        assert!(observe < cleanup);
+        assert_eq!(stage.matches("login_synced_participant_for_qa(").count(), 1);
+        assert_eq!(
+            stage
+                .matches("cleanup_logged_in_runtime(conn_b, runtime_b, account_key_b")
+                .count(),
+            1
+        );
+        assert!(!stage.contains("SyncCommand::SyncOnce"));
+        assert!(!stage.contains("sync_once_for_qa("));
+        assert!(!stage.contains("tokio::time::sleep"));
     }
 
     #[test]
