@@ -16039,6 +16039,804 @@ async fn wait_for_search_result(
 mod tests {
     use super::*;
     use koushi_core::event::{ThreadSummaryDto, TimelineGapPosition, TimelineMessageActions};
+    use matrix_sdk::{
+        ruma::{event_id, room_id},
+        test_utils::mocks::MatrixMockServer,
+    };
+    use matrix_sdk_test::JoinedRoomBuilder;
+
+    async fn configure_fast_send_queue_trust(runtime: &CoreRuntime) -> Result<(), String> {
+        let configured = runtime
+            .configure_trust_observation_for_testing(koushi_sdk::CurrentDeviceTrustObservation {
+                current: koushi_state::CurrentDeviceTrustState::Verified,
+                updates: Box::pin(futures_util::stream::pending()),
+            })
+            .await;
+        if configured {
+            Ok(())
+        } else {
+            Err("fast_send_queue trust observation actor unavailable".to_owned())
+        }
+    }
+
+    fn apply_fast_send_queue_diffs(
+        items: &mut Vec<TimelineItem>,
+        diffs: &[TimelineDiff],
+        label: &str,
+    ) -> Result<(), String> {
+        for diff in diffs {
+            match diff {
+                TimelineDiff::PushFront { item } => items.insert(0, item.clone()),
+                TimelineDiff::PushBack { item } => items.push(item.clone()),
+                TimelineDiff::Insert { index, item } if *index <= items.len() => {
+                    items.insert(*index, item.clone());
+                }
+                TimelineDiff::Set { index, item } if *index < items.len() => {
+                    items[*index] = item.clone();
+                }
+                TimelineDiff::Remove { index } if *index < items.len() => {
+                    items.remove(*index);
+                }
+                TimelineDiff::Truncate { length } => items.truncate(*length),
+                TimelineDiff::Clear => items.clear(),
+                TimelineDiff::Reset { items: reset } => items.clone_from(reset),
+                TimelineDiff::Insert { index, .. }
+                | TimelineDiff::Set { index, .. }
+                | TimelineDiff::Remove { index } => {
+                    return Err(format!(
+                        "{label}: display diff index {index} outside projection length {}",
+                        items.len()
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_fast_send_queue_event(
+        items: &mut Vec<TimelineItem>,
+        key: &TimelineKey,
+        event: &CoreEvent,
+        label: &str,
+    ) -> Result<(), String> {
+        if let CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+            key: event_key,
+            diffs,
+            ..
+        }) = event
+            && event_key == key
+        {
+            apply_fast_send_queue_diffs(items, diffs, label)?;
+        }
+        Ok(())
+    }
+
+    async fn recv_fast_send_queue_event(
+        conn: &mut CoreConnection,
+        deadline: tokio::time::Instant,
+        label: &str,
+    ) -> Result<CoreEvent, String> {
+        tokio::time::timeout_at(deadline, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for CoreEvent"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))
+    }
+
+    async fn wait_for_fast_send_queue_pending_removal(
+        conn: &mut CoreConnection,
+        projection: &mut Vec<TimelineItem>,
+        key: &TimelineKey,
+        expected_body: &str,
+        label: &str,
+    ) -> Result<(), String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let (events, transactions) =
+                fast_send_queue_projection_counts(projection, expected_body);
+            if events > 1 || transactions > 1 {
+                return Err(format!(
+                    "{label}: duplicate send projection events={events} transactions={transactions}"
+                ));
+            }
+            if transactions == 0 {
+                return Ok(());
+            }
+            let event = recv_fast_send_queue_event(conn, deadline, label).await?;
+            apply_fast_send_queue_event(projection, key, &event, label)?;
+        }
+    }
+
+    async fn wait_for_fast_send_queue_authoritative_completion(
+        conn: &mut CoreConnection,
+        projection: &mut Vec<TimelineItem>,
+        key: &TimelineKey,
+        send_request_id: RequestId,
+        retry_request_id: RequestId,
+        expected_transaction_id: &str,
+        expected_body: &str,
+        label: &str,
+    ) -> Result<String, String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let event = recv_fast_send_queue_event(conn, deadline, label).await?;
+            apply_fast_send_queue_event(projection, key, &event, label)?;
+            if let Some(event_id) = projection.iter().find_map(|item| {
+                if !timeline_item_body_matches(item, expected_body) {
+                    return None;
+                }
+                match &item.id {
+                    TimelineItemId::Event { event_id } => Some(event_id.clone()),
+                    TimelineItemId::Transaction { .. } | TimelineItemId::Synthetic { .. } => None,
+                }
+            }) {
+                return Ok(event_id);
+            }
+
+            match event {
+                CoreEvent::Timeline(TimelineEvent::SendCompleted {
+                    request_id,
+                    key: ref event_key,
+                    transaction_id,
+                    event_id,
+                }) if request_id == send_request_id && event_key == key => {
+                    if transaction_id != expected_transaction_id {
+                        return Err(format!(
+                            "{label}: completion transaction mismatch: {transaction_id}"
+                        ));
+                    }
+                    return Ok(event_id);
+                }
+                CoreEvent::OperationFailed {
+                    request_id,
+                    failure,
+                } if request_id == send_request_id || request_id == retry_request_id => {
+                    return Err(format!("{label}: operation failed: {failure:?}"));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    async fn wait_for_fast_send_queue_flow_completion(
+        conn: &mut CoreConnection,
+        projection: &mut Vec<TimelineItem>,
+        request_id: RequestId,
+        key: &TimelineKey,
+        client_transaction_id: &str,
+        expected_body: &str,
+        label: &str,
+    ) -> Result<SendFlowOutcome, String> {
+        let mut waiter = SendFlowWaiter::new(
+            request_id,
+            key.clone(),
+            client_transaction_id,
+            expected_body,
+        );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let event = recv_fast_send_queue_event(conn, deadline, label).await?;
+            apply_fast_send_queue_event(projection, key, &event, label)?;
+            waiter.observe(event)?;
+            if waiter.is_complete() {
+                return waiter.finish();
+            }
+        }
+    }
+
+    async fn send_fast_send_queue_text_expect_local_echo(
+        conn: &mut CoreConnection,
+        projection: &mut Vec<TimelineItem>,
+        key: &TimelineKey,
+        client_transaction_id: &str,
+        body: &str,
+        label: &str,
+    ) -> Result<SendQueueLocalEcho, String> {
+        let request_id = conn.next_request_id();
+        conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+            request_id,
+            key: key.clone(),
+            transaction_id: client_transaction_id.to_owned(),
+            body: body.to_owned(),
+            mentions: MentionIntent::default(),
+        }))
+        .await
+        .map_err(|error| format!("{label}: submit SendText failed: {error}"))?;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let event = recv_fast_send_queue_event(conn, deadline, label).await?;
+            apply_fast_send_queue_event(projection, key, &event, label)?;
+            if let CoreEvent::OperationFailed {
+                request_id: event_request_id,
+                failure,
+            } = &event
+                && *event_request_id == request_id
+            {
+                return Err(format!(
+                    "{label}: send failed before local echo: {failure:?}"
+                ));
+            }
+            if let Some(sdk_transaction_id) = projection.iter().find_map(|item| {
+                (timeline_item_body_matches(item, body))
+                    .then(|| timeline_item_transaction_id(item))
+                    .flatten()
+                    .map(str::to_owned)
+            }) {
+                return Ok(SendQueueLocalEcho {
+                    request_id,
+                    client_transaction_id: client_transaction_id.to_owned(),
+                    sdk_transaction_id,
+                });
+            }
+        }
+    }
+
+    async fn wait_for_fast_send_queue_not_sent(
+        conn: &mut CoreConnection,
+        projection: &mut Vec<TimelineItem>,
+        key: &TimelineKey,
+        send: &SendQueueLocalEcho,
+        label: &str,
+    ) -> Result<(), String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if projection.iter().any(|item| {
+                timeline_item_transaction_id(item) == Some(send.sdk_transaction_id.as_str())
+                    && matches!(item.send_state, Some(TimelineSendState::NotSent { .. }))
+            }) {
+                return Ok(());
+            }
+            let event = recv_fast_send_queue_event(conn, deadline, label).await?;
+            apply_fast_send_queue_event(projection, key, &event, label)?;
+            if let CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            } = event
+                && request_id == send.request_id
+            {
+                return Err(format!("{label}: operation failed: {failure:?}"));
+            }
+        }
+    }
+
+    async fn wait_for_fast_send_queue_completions_in_order(
+        conn: &mut CoreConnection,
+        projection: &mut Vec<TimelineItem>,
+        key: &TimelineKey,
+        retry_request_id: RequestId,
+        first: &SendQueueLocalEcho,
+        second: &SendQueueLocalEcho,
+        label: &str,
+    ) -> Result<(), String> {
+        let mut first_completed = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let event = recv_fast_send_queue_event(conn, deadline, label).await?;
+            apply_fast_send_queue_event(projection, key, &event, label)?;
+            match event {
+                CoreEvent::Timeline(TimelineEvent::SendCompleted {
+                    request_id,
+                    key: ref event_key,
+                    transaction_id,
+                    ..
+                }) if request_id == first.request_id && event_key == key => {
+                    if transaction_id != first.client_transaction_id {
+                        return Err(format!(
+                            "{label}: first completion transaction mismatch: {transaction_id}"
+                        ));
+                    }
+                    first_completed = true;
+                }
+                CoreEvent::Timeline(TimelineEvent::SendCompleted {
+                    request_id,
+                    key: ref event_key,
+                    transaction_id,
+                    ..
+                }) if request_id == second.request_id && event_key == key => {
+                    if !first_completed {
+                        return Err(format!(
+                            "{label}: later queued send completed before the failed predecessor"
+                        ));
+                    }
+                    if transaction_id != second.client_transaction_id {
+                        return Err(format!(
+                            "{label}: second completion transaction mismatch: {transaction_id}"
+                        ));
+                    }
+                    return Ok(());
+                }
+                CoreEvent::OperationFailed {
+                    request_id,
+                    failure,
+                } if request_id == retry_request_id
+                    || request_id == first.request_id
+                    || request_id == second.request_id =>
+                {
+                    return Err(format!("{label}: operation failed: {failure:?}"));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    async fn wait_for_fast_send_queue_cancelled_or_removed(
+        conn: &mut CoreConnection,
+        projection: &mut Vec<TimelineItem>,
+        key: &TimelineKey,
+        cancel_request_id: RequestId,
+        sdk_transaction_id: &str,
+        label: &str,
+    ) -> Result<(), String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if projection
+                .iter()
+                .all(|item| timeline_item_transaction_id(item) != Some(sdk_transaction_id))
+            {
+                return Ok(());
+            }
+            let event = recv_fast_send_queue_event(conn, deadline, label).await?;
+            apply_fast_send_queue_event(projection, key, &event, label)?;
+            if let CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            } = event
+                && request_id == cancel_request_id
+            {
+                return Err(format!("{label}: cancel failed: {failure:?}"));
+            }
+        }
+    }
+
+    fn fast_send_queue_projection_counts(
+        items: &[TimelineItem],
+        expected_body: &str,
+    ) -> (usize, usize) {
+        items
+            .iter()
+            .filter(|item| timeline_item_body_matches(item, expected_body))
+            .fold((0, 0), |(events, transactions), item| match item.id {
+                TimelineItemId::Event { .. } => (events + 1, transactions),
+                TimelineItemId::Transaction { .. } => (events, transactions + 1),
+                TimelineItemId::Synthetic { .. } => (events, transactions),
+            })
+    }
+
+    fn assert_fast_send_queue_pending_removed_without_duplicates(
+        items: &[TimelineItem],
+        expected_body: &str,
+        phase: &str,
+    ) {
+        let (events, transactions) = fast_send_queue_projection_counts(items, expected_body);
+        assert!(
+            events <= 1 && transactions == 0,
+            "{phase}: duplicate/pending projection events={events} transactions={transactions}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fast_send_queue_feedback_runs_production_runtime_without_homeserver() {
+        let started = std::time::Instant::now();
+        let server = MatrixMockServer::new().await;
+        let room_id = room_id!("!fast-send-queue:localhost");
+        let data_dir = tempfile::tempdir().expect("fast_send_queue data directory");
+        let credential_dir = tempfile::tempdir().expect("fast_send_queue credential directory");
+
+        server.mock_versions().ok().mount().await;
+        server.mock_login().ok().mock_once().mount().await;
+        server
+            .mock_room_state_encryption()
+            .ignore_access_token()
+            .plain()
+            .mount()
+            .await;
+        server
+            .mock_sync()
+            .ok(|builder| {
+                builder.add_joined_room(JoinedRoomBuilder::new(room_id));
+            })
+            .mock_once()
+            .mount()
+            .await;
+
+        let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+            data_dir.path().to_path_buf(),
+            credential_dir.path().to_path_buf(),
+        );
+        configure_fast_send_queue_trust(&runtime)
+            .await
+            .expect("fast_send_queue initial trust admission");
+        let mut conn = runtime.attach();
+        let login_id = conn.next_request_id();
+        conn.command(CoreCommand::Account(AccountCommand::LoginPassword {
+            request_id: login_id,
+            request: koushi_state::LoginRequest {
+                homeserver: server.uri(),
+                username: "fast-send-queue".to_owned(),
+                password: AuthSecret::new("fast-send-queue-password"),
+                device_display_name: Some("Fast Send Queue QA".to_owned()),
+            },
+        }))
+        .await
+        .expect("fast_send_queue submit login");
+        let account_key = wait_for_logged_in(&mut conn, login_id, "fast_send_queue login")
+            .await
+            .expect("fast_send_queue login event");
+        wait_for_ready_snapshot(&mut conn, "fast_send_queue ready")
+            .await
+            .expect("fast_send_queue ready projection");
+        wait_for_room_in_room_list(&mut conn, room_id.as_str(), "fast_send_queue room list")
+            .await
+            .expect("fast_send_queue room list projection");
+        stop_sync_for_qa(&mut conn, "fast_send_queue stop background sync")
+            .await
+            .expect("fast_send_queue background sync stopped");
+
+        let key = TimelineKey::room(account_key.clone(), room_id.to_string());
+        let subscribe_id = conn.next_request_id();
+        conn.command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+            request_id: subscribe_id,
+            key: key.clone(),
+        }))
+        .await
+        .expect("fast_send_queue submit subscribe");
+        let mut projection = wait_for_initial_items_or_active_replay(
+            &mut conn,
+            &key,
+            subscribe_id,
+            "fast_send_queue initial subscribe",
+        )
+        .await
+        .expect("fast_send_queue initial projection");
+        assert!(
+            projection.is_empty(),
+            "fast_send_queue starts with an empty timeline"
+        );
+
+        let initial_send_guard = tokio::time::timeout(
+            Duration::from_secs(5),
+            server
+                .mock_room_send()
+                .body_matches_partial_json(serde_json::json!({ "body": "fast initial body" }))
+                .ok(event_id!("$fast-initial:localhost"))
+                .mock_once()
+                .mount_as_scoped(),
+        )
+        .await;
+        let initial_send_guard =
+            initial_send_guard.expect("fast_send_queue initial guard mount timed out");
+        let initial_request_id = conn.next_request_id();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+                request_id: initial_request_id,
+                key: key.clone(),
+                transaction_id: "fast-initial-client".to_owned(),
+                body: "fast initial body".to_owned(),
+                mentions: MentionIntent::default(),
+            })),
+        )
+        .await
+        .expect("fast_send_queue initial command submission timed out")
+        .expect("fast_send_queue submit initial send");
+        let initial_outcome = wait_for_fast_send_queue_flow_completion(
+            &mut conn,
+            &mut projection,
+            initial_request_id,
+            &key,
+            "fast-initial-client",
+            "fast initial body",
+            "fast_send_queue initial completion",
+        )
+        .await
+        .expect("fast_send_queue initial local echo and completion");
+        assert_eq!(initial_outcome.event_id, "$fast-initial:localhost");
+        wait_for_fast_send_queue_pending_removal(
+            &mut conn,
+            &mut projection,
+            &key,
+            "fast initial body",
+            "fast_send_queue initial pending removal",
+        )
+        .await
+        .expect("fast_send_queue initial pending echo removed");
+        assert_fast_send_queue_pending_removed_without_duplicates(
+            &projection,
+            "fast initial body",
+            "fast_send_queue initial completion",
+        );
+        drop(initial_send_guard);
+
+        let offline_guard = server
+            .mock_room_send()
+            .body_matches_partial_json(serde_json::json!({ "body": "fast offline first body" }))
+            .error_too_large()
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        let first = send_fast_send_queue_text_expect_local_echo(
+            &mut conn,
+            &mut projection,
+            &key,
+            "fast-offline-first-client",
+            "fast offline first body",
+            "fast_send_queue first offline local echo",
+        )
+        .await
+        .expect("fast_send_queue first offline local echo");
+        wait_for_fast_send_queue_not_sent(
+            &mut conn,
+            &mut projection,
+            &key,
+            &first,
+            "fast_send_queue first offline failure",
+        )
+        .await
+        .expect("fast_send_queue first offline state");
+        drop(offline_guard);
+
+        let second = send_fast_send_queue_text_expect_local_echo(
+            &mut conn,
+            &mut projection,
+            &key,
+            "fast-offline-second-client",
+            "fast offline second body",
+            "fast_send_queue second offline local echo",
+        )
+        .await
+        .expect("fast_send_queue second offline local echo");
+        let fifo_first_guard = server
+            .mock_room_send()
+            .body_matches_partial_json(serde_json::json!({ "body": "fast offline first body" }))
+            .ok(event_id!("$fast-fifo-first:localhost"))
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        let fifo_second_guard = server
+            .mock_room_send()
+            .body_matches_partial_json(serde_json::json!({ "body": "fast offline second body" }))
+            .ok(event_id!("$fast-fifo-second:localhost"))
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        let retry_id = retry_send_queue_item(
+            &mut conn,
+            &key,
+            &first.sdk_transaction_id,
+            "fast_send_queue retry first offline",
+        )
+        .await
+        .expect("fast_send_queue retry command");
+        wait_for_fast_send_queue_completions_in_order(
+            &mut conn,
+            &mut projection,
+            &key,
+            retry_id,
+            &first,
+            &second,
+            "fast_send_queue FIFO completion",
+        )
+        .await
+        .expect("fast_send_queue FIFO order");
+        wait_for_fast_send_queue_pending_removal(
+            &mut conn,
+            &mut projection,
+            &key,
+            "fast offline first body",
+            "fast_send_queue FIFO first pending removal",
+        )
+        .await
+        .expect("fast_send_queue FIFO first pending echo removed");
+        wait_for_fast_send_queue_pending_removal(
+            &mut conn,
+            &mut projection,
+            &key,
+            "fast offline second body",
+            "fast_send_queue FIFO second pending removal",
+        )
+        .await
+        .expect("fast_send_queue FIFO second pending echo removed");
+        assert_fast_send_queue_pending_removed_without_duplicates(
+            &projection,
+            "fast offline first body",
+            "fast_send_queue FIFO first",
+        );
+        assert_fast_send_queue_pending_removed_without_duplicates(
+            &projection,
+            "fast offline second body",
+            "fast_send_queue FIFO second",
+        );
+        drop(fifo_second_guard);
+        drop(fifo_first_guard);
+
+        let cancel_failure_guard = server
+            .mock_room_send()
+            .body_matches_partial_json(serde_json::json!({ "body": "fast cancel body" }))
+            .error_too_large()
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        let cancel = send_fast_send_queue_text_expect_local_echo(
+            &mut conn,
+            &mut projection,
+            &key,
+            "fast-cancel-client",
+            "fast cancel body",
+            "fast_send_queue cancel local echo",
+        )
+        .await
+        .expect("fast_send_queue cancel local echo");
+        wait_for_fast_send_queue_not_sent(
+            &mut conn,
+            &mut projection,
+            &key,
+            &cancel,
+            "fast_send_queue cancel not-sent",
+        )
+        .await
+        .expect("fast_send_queue cancel not-sent state");
+        drop(cancel_failure_guard);
+        let cancel_id = cancel_send_queue_item(
+            &mut conn,
+            &key,
+            &cancel.sdk_transaction_id,
+            "fast_send_queue cancel",
+        )
+        .await
+        .expect("fast_send_queue cancel command");
+        wait_for_fast_send_queue_cancelled_or_removed(
+            &mut conn,
+            &mut projection,
+            &key,
+            cancel_id,
+            &cancel.sdk_transaction_id,
+            "fast_send_queue cancel removal",
+        )
+        .await
+        .expect("fast_send_queue cancel removal event");
+        assert_fast_send_queue_pending_removed_without_duplicates(
+            &projection,
+            "fast cancel body",
+            "fast_send_queue cancel",
+        );
+
+        let restart_failure_guard = server
+            .mock_room_send()
+            .body_matches_partial_json(serde_json::json!({ "body": "fast restart body" }))
+            .error_too_large()
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        let restart = send_fast_send_queue_text_expect_local_echo(
+            &mut conn,
+            &mut projection,
+            &key,
+            "fast-restart-client",
+            "fast restart body",
+            "fast_send_queue restart local echo",
+        )
+        .await
+        .expect("fast_send_queue restart local echo");
+        wait_for_fast_send_queue_not_sent(
+            &mut conn,
+            &mut projection,
+            &key,
+            &restart,
+            "fast_send_queue restart not-sent",
+        )
+        .await
+        .expect("fast_send_queue restart not-sent state");
+
+        drop(conn);
+        tokio::time::timeout(EVENT_TIMEOUT, runtime.shutdown())
+            .await
+            .expect("fast_send_queue first ordered shutdown");
+        drop(restart_failure_guard);
+
+        let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+            data_dir.path().to_path_buf(),
+            credential_dir.path().to_path_buf(),
+        );
+        configure_fast_send_queue_trust(&runtime)
+            .await
+            .expect("fast_send_queue restore trust admission");
+        let mut conn = runtime.attach();
+        let restore_id = conn.next_request_id();
+        conn.command(CoreCommand::Account(AccountCommand::RestoreSession {
+            request_id: restore_id,
+            account_key: account_key.clone(),
+        }))
+        .await
+        .expect("fast_send_queue submit restore");
+        wait_for_session_restored(
+            &mut conn,
+            restore_id,
+            &account_key,
+            "fast_send_queue restore",
+        )
+        .await
+        .expect("fast_send_queue restored session event");
+        wait_for_ready_snapshot(&mut conn, "fast_send_queue restored ready")
+            .await
+            .expect("fast_send_queue restored ready projection");
+        stop_sync_for_qa(&mut conn, "fast_send_queue stop restored background sync")
+            .await
+            .expect("fast_send_queue restored background sync stopped");
+
+        let subscribe_id = conn.next_request_id();
+        conn.command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+            request_id: subscribe_id,
+            key: key.clone(),
+        }))
+        .await
+        .expect("fast_send_queue submit restored subscribe");
+        let mut projection = wait_for_initial_items_or_active_replay(
+            &mut conn,
+            &key,
+            subscribe_id,
+            "fast_send_queue restored subscribe",
+        )
+        .await
+        .expect("fast_send_queue restored projection");
+        assert_eq!(
+            fast_send_queue_projection_counts(&projection, "fast restart body"),
+            (0, 1),
+            "fast_send_queue restored unsent echo: projection count mismatch",
+        );
+
+        let restart_success_guard = server
+            .mock_room_send()
+            .body_matches_partial_json(serde_json::json!({ "body": "fast restart body" }))
+            .ok(event_id!("$fast-restart:localhost"))
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        let restart_retry_id = retry_send_queue_item(
+            &mut conn,
+            &key,
+            &restart.sdk_transaction_id,
+            "fast_send_queue retry restored",
+        )
+        .await
+        .expect("fast_send_queue restored retry command");
+        let restart_event_id = wait_for_fast_send_queue_authoritative_completion(
+            &mut conn,
+            &mut projection,
+            &key,
+            restart.request_id,
+            restart_retry_id,
+            &restart.client_transaction_id,
+            "fast restart body",
+            "fast_send_queue restored completion",
+        )
+        .await
+        .expect("fast_send_queue restored authoritative completion");
+        assert_eq!(restart_event_id, "$fast-restart:localhost");
+        wait_for_fast_send_queue_pending_removal(
+            &mut conn,
+            &mut projection,
+            &key,
+            "fast restart body",
+            "fast_send_queue restored pending removal",
+        )
+        .await
+        .expect("fast_send_queue restored pending echo removed");
+        assert_fast_send_queue_pending_removed_without_duplicates(
+            &projection,
+            "fast restart body",
+            "fast_send_queue restored completion dedupe",
+        );
+        drop(restart_success_guard);
+
+        drop(conn);
+        tokio::time::timeout(EVENT_TIMEOUT, runtime.shutdown())
+            .await
+            .expect("fast_send_queue final ordered shutdown");
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "fast_send_queue exceeded the 60-second lane budget"
+        );
+    }
 
     #[test]
     fn visible_gap_selector_prefers_internal_gap_and_returns_nearest_event_bounds() {

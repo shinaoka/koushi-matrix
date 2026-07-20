@@ -336,7 +336,7 @@ pub enum AccountMessage {
     AttachLifecycleProbe {
         probe_tx: mpsc::UnboundedSender<&'static str>,
     },
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     ConfigureTrustObservation {
         observation: koushi_sdk::CurrentDeviceTrustObservation,
     },
@@ -791,9 +791,9 @@ pub struct AccountActor {
     teardown_retry_task: Option<crate::executor::JoinHandle<()>>,
     #[cfg(test)]
     lifecycle_probe: Option<mpsc::UnboundedSender<&'static str>>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     trust_observation_override: std::sync::Mutex<Option<koushi_sdk::CurrentDeviceTrustObservation>>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     trust_observation_is_synthetic: bool,
     #[cfg(test)]
     recovery_download_override: std::sync::Mutex<Option<oneshot::Receiver<bool>>>,
@@ -957,9 +957,9 @@ impl AccountActor {
             teardown_retry_task: None,
             #[cfg(test)]
             lifecycle_probe: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-hooks"))]
             trust_observation_override: std::sync::Mutex::new(None),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-hooks"))]
             trust_observation_is_synthetic: false,
             #[cfg(test)]
             recovery_download_override: std::sync::Mutex::new(None),
@@ -1409,7 +1409,7 @@ impl AccountActor {
                 AccountMessage::AttachLifecycleProbe { probe_tx } => {
                     self.lifecycle_probe = Some(probe_tx);
                 }
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-hooks"))]
                 AccountMessage::ConfigureTrustObservation { observation } => {
                     *self
                         .trust_observation_override
@@ -6517,7 +6517,7 @@ impl AccountActor {
         self.trust_generation = self.trust_generation.wrapping_add(1);
         let generation = self.trust_generation;
         let trust_read_started_at = Instant::now();
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-hooks"))]
         let (observation, synthetic_trust_observation) = {
             let override_observation = self
                 .trust_observation_override
@@ -6530,10 +6530,10 @@ impl AccountActor {
                 synthetic,
             )
         };
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-hooks")))]
         let observation = session.observe_current_device_trust();
         let current_trust = observation.current;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-hooks"))]
         {
             self.trust_observation_is_synthetic = synthetic_trust_observation;
         }
@@ -6579,7 +6579,7 @@ impl AccountActor {
             generation,
             transition_id,
         ));
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-hooks"))]
         if self.trust_observation_is_synthetic {
             let _ = session;
             self.restricted_sync = Some(executor::spawn(std::future::pending()));
@@ -6663,7 +6663,7 @@ impl AccountActor {
         }
         self.verification_method_discovery_failed = false;
         self.stop_restricted_sync().await;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-hooks"))]
         {
             self.trust_observation_is_synthetic = false;
         }

@@ -168,7 +168,7 @@ pub struct CoreRuntime {
     /// the typed runtime boundary.
     media_preparation: Arc<crate::media_preparation::MediaPreparationService>,
     media_lifecycle: executor::JoinHandle<()>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     account_actor_test_handle: AccountActorHandle,
     actor: executor::JoinHandle<()>,
 }
@@ -281,7 +281,7 @@ impl CoreRuntime {
             crate::link_preview::LinkPreviewContext::from_settings(&initial_state.settings.values),
         );
 
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-hooks"))]
         let account_actor_test_handle = account_actor.clone();
         let actor = AppActor {
             command_rx,
@@ -330,7 +330,7 @@ impl CoreRuntime {
             action_tx,
             media_preparation,
             media_lifecycle,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-hooks"))]
             account_actor_test_handle,
             actor,
         }
@@ -361,6 +361,18 @@ impl CoreRuntime {
         let _ = self.action_tx.send(actions).await;
     }
 
+    /// Test hook: override current-device trust observation through the typed
+    /// AccountActor path. Not part of the public production API.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub async fn configure_trust_observation_for_testing(
+        &self,
+        observation: koushi_sdk::CurrentDeviceTrustObservation,
+    ) -> bool {
+        self.account_actor_test_handle
+            .send(AccountMessage::ConfigureTrustObservation { observation })
+            .await
+    }
+
     pub fn shutdown_handle(&self) -> &executor::JoinHandle<()> {
         &self.actor
     }
@@ -376,7 +388,7 @@ impl CoreRuntime {
             action_tx: _,
             media_preparation: _,
             media_lifecycle,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-hooks"))]
                 account_actor_test_handle: _,
             actor,
         } = self;
