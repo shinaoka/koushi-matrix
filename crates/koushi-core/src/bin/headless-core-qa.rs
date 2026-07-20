@@ -8575,6 +8575,134 @@ fn sidebar_dm_room_ids(snapshot: &AppState) -> BTreeSet<String> {
     .collect()
 }
 
+#[derive(Default)]
+struct InviteObserverDiagnosticSummary {
+    started: u64,
+    rls_wake_max: u64,
+    base_wake_max: u64,
+    base_invite_update_seen: bool,
+    base_membership_change_seen: bool,
+    base_projection_required_seen: bool,
+    invite_projection: u64,
+    invite_projection_delivered: u64,
+    invite_projection_undelivered: u64,
+    lagged: u64,
+    closed: u64,
+    exit: u64,
+    dropped: u64,
+}
+
+fn diagnostic_count_field(
+    event: &koushi_diagnostics::DiagnosticEvent,
+    key: &'static str,
+) -> Option<u64> {
+    event.fields.iter().find_map(|field| {
+        if field.key == key
+            && let koushi_diagnostics::DiagnosticValue::Count(value) = field.value
+        {
+            return Some(value);
+        }
+        None
+    })
+}
+
+fn diagnostic_boolean_field(
+    event: &koushi_diagnostics::DiagnosticEvent,
+    key: &'static str,
+) -> Option<bool> {
+    event.fields.iter().find_map(|field| {
+        if field.key == key
+            && let koushi_diagnostics::DiagnosticValue::Boolean(value) = field.value
+        {
+            return Some(value);
+        }
+        None
+    })
+}
+
+fn diagnostic_has_token(
+    event: &koushi_diagnostics::DiagnosticEvent,
+    key: &'static str,
+    expected: &'static str,
+) -> bool {
+    event.fields.iter().any(|field| {
+        field.key == key && field.value == koushi_diagnostics::DiagnosticValue::Token(expected)
+    })
+}
+
+fn invite_observer_diagnostic_summary(snapshot: &koushi_diagnostics::DiagnosticSnapshot) -> String {
+    let mut summary = InviteObserverDiagnosticSummary {
+        dropped: snapshot.dropped_records,
+        ..InviteObserverDiagnosticSummary::default()
+    };
+    for record in &snapshot.records {
+        let event = &record.event;
+        if event.source != "core.room" {
+            continue;
+        }
+        match event.stage {
+            "live_observer_started" => summary.started = summary.started.saturating_add(1),
+            "live_observer_wake_milestone" => {
+                let wake_count = diagnostic_count_field(event, "wake_count").unwrap_or(0);
+                if diagnostic_has_token(event, "source", "rls_diff") {
+                    summary.rls_wake_max = summary.rls_wake_max.max(wake_count);
+                } else if diagnostic_has_token(event, "source", "base_room_updates") {
+                    summary.base_wake_max = summary.base_wake_max.max(wake_count);
+                    summary.base_invite_update_seen |=
+                        diagnostic_boolean_field(event, "invite_update_observed").unwrap_or(false);
+                    summary.base_membership_change_seen |=
+                        diagnostic_boolean_field(event, "invite_membership_changed")
+                            .unwrap_or(false);
+                    summary.base_projection_required_seen |=
+                        diagnostic_boolean_field(event, "projection_required").unwrap_or(false);
+                }
+            }
+            "live_observer_invite_projection" => {
+                summary.invite_projection = summary.invite_projection.saturating_add(1);
+            }
+            "live_observer_invite_projection_completed" => {
+                if diagnostic_boolean_field(event, "action_delivered").unwrap_or(false) {
+                    summary.invite_projection_delivered =
+                        summary.invite_projection_delivered.saturating_add(1);
+                } else {
+                    summary.invite_projection_undelivered =
+                        summary.invite_projection_undelivered.saturating_add(1);
+                }
+            }
+            "live_observer_base_lagged" => {
+                summary.lagged = summary.lagged.saturating_add(1);
+            }
+            "live_observer_auxiliary_closed" => {
+                summary.closed = summary.closed.saturating_add(1);
+            }
+            "live_observer_exit" => summary.exit = summary.exit.saturating_add(1),
+            _ => {}
+        }
+    }
+    format!(
+        "observer_diag_started={} observer_diag_rls_wake_max={} \
+         observer_diag_base_wake_max={} observer_diag_base_invite_update_seen={} \
+         observer_diag_base_membership_change_seen={} \
+         observer_diag_base_projection_required_seen={} observer_diag_invite_projection={} \
+         observer_diag_invite_projection_delivered={} \
+         observer_diag_invite_projection_undelivered={} observer_diag_lagged={} \
+         observer_diag_closed={} observer_diag_exit={} observer_diag_dropped={}",
+        summary.started,
+        summary.rls_wake_max,
+        summary.base_wake_max,
+        summary.base_invite_update_seen,
+        summary.base_membership_change_seen,
+        summary.base_projection_required_seen,
+        summary.invite_projection,
+        summary.invite_projection_delivered,
+        summary.invite_projection_undelivered,
+        summary.lagged,
+        summary.closed,
+        summary.exit,
+        summary.dropped,
+    )
+}
+
 async fn wait_for_invite_in_snapshot(
     conn: &mut CoreConnection,
     expected_room_id: &str,
@@ -8598,10 +8726,12 @@ async fn wait_for_invite_in_snapshot(
             .await
             .map_err(|_| {
                 let snapshot = conn.snapshot();
+                let observer_diagnostics =
+                    invite_observer_diagnostic_summary(&koushi_diagnostics::snapshot());
                 format!(
                     "{label}: timed out waiting for invite snapshot \
-                     (have {} invites)",
-                    snapshot.invites.len()
+                     (have {} invites; {observer_diagnostics})",
+                    snapshot.invites.len(),
                 )
             })?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
@@ -15684,6 +15814,113 @@ async fn wait_for_search_result(
 mod tests {
     use super::*;
     use koushi_core::event::{ThreadSummaryDto, TimelineGapPosition, TimelineMessageActions};
+
+    #[test]
+    fn invite_timeout_diagnostic_summary_is_allowlisted_and_private_safe() {
+        use koushi_diagnostics::{
+            DiagnosticEvent, DiagnosticField, DiagnosticLevel, DiagnosticRecord, DiagnosticSnapshot,
+        };
+
+        let record = |event| DiagnosticRecord {
+            timestamp_ms: 0,
+            event,
+        };
+        let snapshot = DiagnosticSnapshot {
+            records: vec![
+                record(DiagnosticEvent::new(
+                    DiagnosticLevel::Debug,
+                    "core.room",
+                    "live_observer_started",
+                )),
+                record(
+                    DiagnosticEvent::new(
+                        DiagnosticLevel::Debug,
+                        "core.room",
+                        "live_observer_wake_milestone",
+                    )
+                    .field(DiagnosticField::token("source", "rls_diff"))
+                    .field(DiagnosticField::count("wake_count", 4))
+                    .field(DiagnosticField::token(
+                        "ignored_private_field",
+                        "!private-room:example.invalid",
+                    )),
+                ),
+                record(
+                    DiagnosticEvent::new(
+                        DiagnosticLevel::Debug,
+                        "core.room",
+                        "live_observer_wake_milestone",
+                    )
+                    .field(DiagnosticField::token("source", "base_room_updates"))
+                    .field(DiagnosticField::count("wake_count", 8))
+                    .field(DiagnosticField::boolean("invite_update_observed", true))
+                    .field(DiagnosticField::boolean("invite_membership_changed", false))
+                    .field(DiagnosticField::boolean("projection_required", true)),
+                ),
+                record(DiagnosticEvent::new(
+                    DiagnosticLevel::Debug,
+                    "core.room",
+                    "live_observer_invite_projection",
+                )),
+                record(
+                    DiagnosticEvent::new(
+                        DiagnosticLevel::Debug,
+                        "core.room",
+                        "live_observer_invite_projection_completed",
+                    )
+                    .field(DiagnosticField::boolean("action_delivered", true)),
+                ),
+                record(DiagnosticEvent::new(
+                    DiagnosticLevel::Warn,
+                    "core.room",
+                    "live_observer_base_lagged",
+                )),
+                record(DiagnosticEvent::new(
+                    DiagnosticLevel::Warn,
+                    "core.room",
+                    "live_observer_auxiliary_closed",
+                )),
+                record(DiagnosticEvent::new(
+                    DiagnosticLevel::Error,
+                    "core.room",
+                    "live_observer_exit",
+                )),
+            ],
+            dropped_records: 2,
+        };
+
+        let summary = invite_observer_diagnostic_summary(&snapshot);
+        assert_eq!(
+            summary,
+            "observer_diag_started=1 observer_diag_rls_wake_max=4 \
+             observer_diag_base_wake_max=8 observer_diag_base_invite_update_seen=true \
+             observer_diag_base_membership_change_seen=false \
+             observer_diag_base_projection_required_seen=true \
+             observer_diag_invite_projection=1 observer_diag_invite_projection_delivered=1 \
+             observer_diag_invite_projection_undelivered=0 observer_diag_lagged=1 \
+             observer_diag_closed=1 observer_diag_exit=1 observer_diag_dropped=2"
+        );
+        assert!(!summary.contains("private-room"));
+        assert!(!summary.contains("room_id"));
+    }
+
+    #[test]
+    fn invite_timeout_uses_private_safe_observer_diagnostic_summary() {
+        let source = include_str!("headless-core-qa.rs");
+        let helper = source
+            .split("async fn wait_for_invite_in_snapshot")
+            .nth(1)
+            .expect("invite waiter should exist")
+            .split("async fn wait_for_invite_absent")
+            .next()
+            .expect("invite removal waiter should follow");
+
+        assert!(
+            helper.contains("invite_observer_diagnostic_summary(&koushi_diagnostics::snapshot())")
+        );
+        assert!(helper.contains("{observer_diagnostics}"));
+        assert!(!helper.contains("expected_room_id:?"));
+    }
 
     #[test]
     fn production_qa_never_overlaps_actor_owned_sync_with_manual_sync_once() {
