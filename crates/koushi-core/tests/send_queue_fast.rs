@@ -676,6 +676,7 @@ impl Drop for FastSendQueuePausedTime {
 async fn coordinate_fast_send_queue_paused_attempts<T>(
     send: impl std::future::Future<Output = Result<T, String>>,
     attempts: impl std::future::Future<Output = Result<(), String>>,
+    attempt_wall_timeout: Duration,
 ) -> Result<T, String> {
     let paused_time = FastSendQueuePausedTime::start();
     tokio::pin!(send);
@@ -691,8 +692,12 @@ async fn coordinate_fast_send_queue_paused_attempts<T>(
                 })?
         }
         send_result = &mut send => {
-            let attempts_result = (&mut attempts).await;
+            let attempts_result =
+                fast_send_queue_wall_timeout(attempt_wall_timeout, &mut attempts).await;
             drop(paused_time);
+            let attempts_result = attempts_result.ok_or_else(|| {
+                "fast_send_queue retry attempts timed out after send completed".to_owned()
+            })?;
             attempts_result?;
             send_result
         }
@@ -715,11 +720,11 @@ async fn fast_send_queue_wall_timeout<T>(
     }
 }
 
-struct FastPendingSendDropProbe {
+struct FastPendingResultDropProbe {
     dropped: Arc<AtomicBool>,
 }
 
-impl std::future::Future for FastPendingSendDropProbe {
+impl std::future::Future for FastPendingResultDropProbe {
     type Output = Result<(), String>;
 
     fn poll(
@@ -730,7 +735,7 @@ impl std::future::Future for FastPendingSendDropProbe {
     }
 }
 
-impl Drop for FastPendingSendDropProbe {
+impl Drop for FastPendingResultDropProbe {
     fn drop(&mut self) {
         self.dropped.store(true, Ordering::SeqCst);
     }
@@ -742,10 +747,11 @@ async fn fast_send_queue_attempt_error_cancels_pending_send_and_resumes_time() {
     let result = fast_send_queue_wall_timeout(
         Duration::from_millis(100),
         coordinate_fast_send_queue_paused_attempts(
-            FastPendingSendDropProbe {
+            FastPendingResultDropProbe {
                 dropped: Arc::clone(&send_dropped),
             },
             async { Err("attempt driver failed".to_owned()) },
+            Duration::from_millis(10),
         ),
     )
     .await
@@ -762,6 +768,38 @@ async fn fast_send_queue_attempt_error_cancels_pending_send_and_resumes_time() {
     )
     .await
     .expect("Tokio time must resume before the attempt error is returned");
+}
+
+#[tokio::test]
+async fn fast_send_queue_send_success_times_out_pending_attempts_and_resumes_time() {
+    let attempts_dropped = Arc::new(AtomicBool::new(false));
+    let result = fast_send_queue_wall_timeout(
+        Duration::from_millis(100),
+        coordinate_fast_send_queue_paused_attempts(
+            async { Ok(()) },
+            FastPendingResultDropProbe {
+                dropped: Arc::clone(&attempts_dropped),
+            },
+            Duration::from_millis(10),
+        ),
+    )
+    .await
+    .expect("pending attempts must be wall-bounded after the send completes");
+    assert_eq!(
+        result,
+        Err("fast_send_queue retry attempts timed out after send completed".to_owned())
+    );
+    assert!(
+        attempts_dropped.load(Ordering::SeqCst),
+        "pending attempts future must be cancelled before returning the timeout"
+    );
+
+    fast_send_queue_wall_timeout(
+        Duration::from_millis(100),
+        tokio::time::sleep(Duration::from_millis(1)),
+    )
+    .await
+    .expect("Tokio time must resume before the attempt timeout is returned");
 }
 
 async fn fast_send_queue_phase<T>(
@@ -1136,6 +1174,7 @@ async fn send_fast_send_queue_text_expect_recoverable_transport_failure(
             Ok::<_, String>(send)
         },
         drive_fast_send_queue_short_retry_attempts(proxy, baseline, attempt_phase),
+        FAST_SEND_QUEUE_PHASE_TIMEOUT,
     )
     .await
 }
