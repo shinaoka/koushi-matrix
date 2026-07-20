@@ -48,7 +48,7 @@
 //! but never in error messages, log strings, or Debug output of error types.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{
     Arc, Mutex,
@@ -3330,6 +3330,11 @@ impl TimelineManagerActor {
             Ok(t) => Arc::new(t),
             Err(_) => return Err(TimelineFailureKind::Sdk),
         };
+        let send_completion = self
+            .timelines
+            .get(key)
+            .map(|handle| Arc::clone(&handle.send_completion))
+            .unwrap_or_default();
 
         trace("spawn_begin");
         let handle = TimelineActor::spawn(
@@ -3349,6 +3354,7 @@ impl TimelineManagerActor {
             Arc::clone(&self.timeline_actor_generations),
             actor_generation,
             subscription_generation,
+            send_completion,
             self.msg_tx.clone(),
         )
         .await;
@@ -6692,6 +6698,7 @@ struct TimelineActorHandle {
     task: executor::JoinHandle<()>,
     auxiliary_tasks: Vec<executor::JoinHandle<()>>,
     subscription_generation: Option<u64>,
+    send_completion: SharedSendCompletionTracker,
 }
 
 impl TimelineActorHandle {
@@ -10289,6 +10296,7 @@ mod timeline_gap_repair_tracker_tests {
             generations,
             actor_generation,
             None,
+            Default::default(),
             manager_tx,
         )
         .await;
@@ -11084,7 +11092,7 @@ struct TimelineActor {
     projection_acknowledged: bool,
     next_batch_id: TimelineBatchId,
     /// Correlates send queue completions across the enqueue / SentEvent race.
-    send_completion: SendCompletionTracker,
+    send_completion: SharedSendCompletionTracker,
     /// SDK transaction id -> Rust-owned outbound send state.
     send_statuses: HashMap<String, TimelineSendState>,
     /// SDK transaction id -> SDK send handle used for retry/cancel.
@@ -11613,6 +11621,7 @@ impl TimelineActor {
         timeline_actor_generations: Arc<TimelineActorGenerationGate>,
         actor_generation: u64,
         subscription_generation: Option<u64>,
+        send_completion: SharedSendCompletionTracker,
         manager_tx: mpsc::Sender<TimelineMessage>,
     ) -> TimelineActorHandle {
         let mut auxiliary_tasks: Vec<executor::JoinHandle<()>> = Vec::new();
@@ -11918,7 +11927,7 @@ impl TimelineActor {
             projection_request_id: subscribe_request_id,
             projection_acknowledged: false,
             next_batch_id: TimelineBatchId(0),
-            send_completion: SendCompletionTracker::default(),
+            send_completion: Arc::clone(&send_completion),
             send_statuses,
             send_handles,
             own_user_id,
@@ -11985,6 +11994,7 @@ impl TimelineActor {
             task,
             auxiliary_tasks,
             subscription_generation,
+            send_completion,
         }
     }
 
@@ -14627,14 +14637,19 @@ impl TimelineActor {
                     &handle,
                     TimelineSendState::Sending,
                 );
-                if let Some((client_txn_id, completed_submission_id, request_id, event_id)) =
-                    self.send_completion.remember_pending_send(
+                let completion = self
+                    .send_completion
+                    .lock()
+                    .expect("send completion tracker lock must not be poisoned")
+                    .remember_pending_send(
                         sdk_txn_id,
                         client_txn_id,
                         submission_id.clone(),
                         request_id,
                         true,
-                    )
+                    );
+                if let Some((client_txn_id, completed_submission_id, request_id, event_id)) =
+                    completion
                 {
                     self.emit_send_finished_action_with_submission(
                         &client_txn_id,
@@ -14773,14 +14788,19 @@ impl TimelineActor {
                     &handle,
                     TimelineSendState::Sending,
                 );
-                if let Some((client_txn_id, completed_submission_id, request_id, event_id)) =
-                    self.send_completion.remember_pending_send(
+                let completion = self
+                    .send_completion
+                    .lock()
+                    .expect("send completion tracker lock must not be poisoned")
+                    .remember_pending_send(
                         sdk_txn_id,
                         client_txn_id,
                         submission_id.clone(),
                         request_id,
                         true,
-                    )
+                    );
+                if let Some((client_txn_id, completed_submission_id, request_id, event_id)) =
+                    completion
                 {
                     self.emit_send_finished_action_with_submission(
                         &client_txn_id,
@@ -14988,8 +15008,13 @@ impl TimelineActor {
                 if let Some(room) = self.sdk_room_for_key() {
                     room.send_queue().set_enabled(true);
                 }
+                let completion = self
+                    .send_completion
+                    .lock()
+                    .expect("send completion tracker lock must not be poisoned")
+                    .record_cancelled_event(&transaction_id);
                 if let Some((client_txn_id, submission_id, _request_id, settles_composer)) =
-                    self.send_completion.record_cancelled_event(&transaction_id)
+                    completion
                 {
                     if settles_composer {
                         self.emit_send_cancelled_action(&client_txn_id, submission_id.as_ref())
@@ -15097,15 +15122,18 @@ impl TimelineActor {
                     &handle,
                     TimelineSendState::Sending,
                 );
-                if let Some((client_txn_id, _submission_id, request_id, event_id)) =
-                    self.send_completion.remember_pending_send(
+                let completion = self
+                    .send_completion
+                    .lock()
+                    .expect("send completion tracker lock must not be poisoned")
+                    .remember_pending_send(
                         sdk_txn_id,
                         client_txn_id.clone(),
                         None,
                         request_id,
                         false,
-                    )
-                {
+                    );
+                if let Some((client_txn_id, _submission_id, request_id, event_id)) = completion {
                     self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
                         request_id,
                         key: self.key.clone(),
@@ -17269,8 +17297,13 @@ impl TimelineActor {
                 self.send_statuses
                     .insert(sdk_txn_str.clone(), TimelineSendState::Cancelled);
                 self.send_handles.remove(&sdk_txn_str);
+                let completion = self
+                    .send_completion
+                    .lock()
+                    .expect("send completion tracker lock must not be poisoned")
+                    .record_cancelled_event(&sdk_txn_str);
                 if let Some((client_txn_id, submission_id, _request_id, settles_composer)) =
-                    self.send_completion.record_cancelled_event(&sdk_txn_str)
+                    completion
                 {
                     if settles_composer {
                         self.emit_send_cancelled_action(&client_txn_id, submission_id.as_ref())
@@ -17294,8 +17327,13 @@ impl TimelineActor {
                         reason: send_failure_reason(is_recoverable),
                     },
                 );
+                let completion = self
+                    .send_completion
+                    .lock()
+                    .expect("send completion tracker lock must not be poisoned")
+                    .record_send_error(&sdk_txn_str);
                 if let Some((client_txn_id, submission_id, _request_id, settles_composer)) =
-                    self.send_completion.record_send_error(&sdk_txn_str)
+                    completion
                 {
                     if settles_composer {
                         self.emit_send_failed_action_with_submission(
@@ -17321,15 +17359,18 @@ impl TimelineActor {
                 self.send_handles.remove(&sdk_txn_str);
                 self.sent_event_txns
                     .insert(event_id.to_string(), transaction_id.clone());
+                let completion = self
+                    .send_completion
+                    .lock()
+                    .expect("send completion tracker lock must not be poisoned")
+                    .record_sent_event(sdk_txn_str, event_id.to_string());
                 if let Some((
                     client_txn_id,
                     submission_id,
                     request_id,
                     event_id,
                     settles_composer,
-                )) = self
-                    .send_completion
-                    .record_sent_event(sdk_txn_str, event_id.to_string())
+                )) = completion
                 {
                     if settles_composer {
                         self.emit_send_finished_action_with_submission(
@@ -17355,9 +17396,14 @@ impl TimelineActor {
                 let sdk_txn_str = related_to.to_string();
                 self.send_statuses
                     .insert(sdk_txn_str.clone(), TimelineSendState::Sending);
-                let pending = self.send_completion.pending_send(&sdk_txn_str);
+                let pending = self
+                    .send_completion
+                    .lock()
+                    .expect("send completion tracker lock must not be poisoned")
+                    .pending_send(&sdk_txn_str)
+                    .map(|(client_txn_id, request_id)| (client_txn_id.to_owned(), request_id));
                 let (transaction_id, request_id) = pending
-                    .map(|(client_txn_id, request_id)| (client_txn_id.to_owned(), Some(request_id)))
+                    .map(|(client_txn_id, request_id)| (client_txn_id, Some(request_id)))
                     .unwrap_or((sdk_txn_str, None));
 
                 self.emit(CoreEvent::Timeline(TimelineEvent::MediaUploadProgress {
@@ -21666,6 +21712,10 @@ fn classify_send_queue_error(
     }
 }
 
+const MAX_SETTLED_SEND_TOMBSTONES: usize = 128;
+
+type SharedSendCompletionTracker = Arc<Mutex<SendCompletionTracker>>;
+
 #[derive(Default)]
 struct SendCompletionTracker {
     /// Pending send requests: sdk_txn_id → completion metadata.
@@ -21673,6 +21723,11 @@ struct SendCompletionTracker {
     /// SentEvent updates that arrived before the pending mapping existed:
     /// sdk_txn_id → event_id.
     completed_sends: HashMap<String, String>,
+    /// Recently settled SDK transactions. SyncStarted replacement briefly
+    /// overlaps old/new send-queue monitors, so duplicate terminal updates
+    /// must not recreate an early-completion entry or emit twice.
+    settled_send_tombstones: HashSet<String>,
+    settled_send_order: VecDeque<String>,
 }
 
 struct PendingSendCompletion {
@@ -21684,6 +21739,18 @@ struct PendingSendCompletion {
 }
 
 impl SendCompletionTracker {
+    fn remember_settled(&mut self, sdk_txn_id: String) {
+        if !self.settled_send_tombstones.insert(sdk_txn_id.clone()) {
+            return;
+        }
+        self.settled_send_order.push_back(sdk_txn_id);
+        while self.settled_send_order.len() > MAX_SETTLED_SEND_TOMBSTONES {
+            if let Some(expired) = self.settled_send_order.pop_front() {
+                self.settled_send_tombstones.remove(&expired);
+            }
+        }
+    }
+
     fn remember_pending_send(
         &mut self,
         sdk_txn_id: String,
@@ -21697,7 +21764,10 @@ impl SendCompletionTracker {
         RequestId,
         String,
     )> {
-        if let Some(event_id) = self.completed_sends.remove(&sdk_txn_id) {
+        if self.settled_send_tombstones.contains(&sdk_txn_id) {
+            None
+        } else if let Some(event_id) = self.completed_sends.remove(&sdk_txn_id) {
+            self.remember_settled(sdk_txn_id);
             Some((client_txn_id, submission_id, request_id, event_id))
         } else {
             self.pending_sends.insert(
@@ -21725,8 +21795,12 @@ impl SendCompletionTracker {
         String,
         bool,
     )> {
+        if self.settled_send_tombstones.contains(&sdk_txn_id) {
+            return None;
+        }
         if let Some(pending) = self.pending_sends.remove(&sdk_txn_id) {
             let settles_composer = pending.settles_composer && !pending.failure_reported;
+            self.remember_settled(sdk_txn_id);
             Some((
                 pending.client_txn_id,
                 pending.submission_id,
@@ -21735,7 +21809,7 @@ impl SendCompletionTracker {
                 settles_composer,
             ))
         } else {
-            self.completed_sends.insert(sdk_txn_id, event_id);
+            self.completed_sends.entry(sdk_txn_id).or_insert(event_id);
             None
         }
     }
@@ -21762,6 +21836,8 @@ impl SendCompletionTracker {
         sdk_txn_id: &str,
     ) -> Option<(String, Option<koushi_state::SubmissionId>, RequestId, bool)> {
         let pending = self.pending_sends.remove(sdk_txn_id)?;
+        self.completed_sends.remove(sdk_txn_id);
+        self.remember_settled(sdk_txn_id.to_owned());
         Some((
             pending.client_txn_id,
             pending.submission_id,
@@ -26572,6 +26648,7 @@ mod tests {
             task: actor_task,
             auxiliary_tasks: vec![auxiliary_task],
             subscription_generation: None,
+            send_completion: Default::default(),
         };
         drop(handle);
         executor::sleep(Duration::from_millis(25)).await;
@@ -26634,6 +26711,7 @@ mod tests {
             task,
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
+            send_completion: Default::default(),
         }
     }
 
@@ -26678,6 +26756,7 @@ mod tests {
             task,
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
+            send_completion: Default::default(),
         }
     }
 
@@ -26721,6 +26800,7 @@ mod tests {
             task,
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
+            send_completion: Default::default(),
         }
     }
 
@@ -26752,6 +26832,7 @@ mod tests {
             task,
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
+            send_completion: Default::default(),
         }
     }
 
@@ -27256,6 +27337,7 @@ mod tests {
             Arc::clone(&manager.timeline_actor_generations),
             actor_generation,
             None,
+            Default::default(),
             manager.msg_tx.clone(),
         )
         .await;
@@ -27678,6 +27760,7 @@ mod tests {
                     task: actor_task,
                     auxiliary_tasks: Vec::new(),
                     subscription_generation: None,
+                    send_completion: Default::default(),
                 },
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
@@ -27759,6 +27842,7 @@ mod tests {
                 task: actor_task,
                 auxiliary_tasks: Vec::new(),
                 subscription_generation: None,
+                send_completion: Default::default(),
             },
         );
         let (closed_action_tx, closed_action_rx) = mpsc::channel(1);
@@ -27878,6 +27962,7 @@ mod tests {
                     task: child,
                     auxiliary_tasks: Vec::new(),
                     subscription_generation: None,
+                    send_completion: Default::default(),
                 },
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
@@ -27952,6 +28037,7 @@ mod tests {
                     task: actor_task,
                     auxiliary_tasks: Vec::new(),
                     subscription_generation: None,
+                    send_completion: Default::default(),
                 },
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
@@ -29190,6 +29276,7 @@ mod tests {
                     task: actor_task,
                     auxiliary_tasks: Vec::new(),
                     subscription_generation: None,
+                    send_completion: Default::default(),
                 },
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
@@ -29370,6 +29457,7 @@ mod tests {
                     task: actor_task,
                     auxiliary_tasks: Vec::new(),
                     subscription_generation: None,
+                    send_completion: Default::default(),
                 },
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
@@ -32665,6 +32753,142 @@ mod tests {
         );
         assert!(tracker.pending_sends.is_empty());
         assert!(tracker.completed_sends.is_empty());
+    }
+
+    #[test]
+    fn duplicate_sent_event_after_completion_is_idempotent() {
+        let mut tracker = SendCompletionTracker::default();
+        let sdk_txn = "sdk-duplicate-txn".to_owned();
+        let event_id = "$event-duplicate".to_owned();
+        tracker.remember_pending_send(
+            sdk_txn.clone(),
+            "client-duplicate-txn".to_owned(),
+            None,
+            fake_rid(770),
+            true,
+        );
+
+        assert!(
+            tracker
+                .record_sent_event(sdk_txn.clone(), event_id.clone())
+                .is_some()
+        );
+        assert_eq!(
+            tracker.record_sent_event(sdk_txn.clone(), event_id),
+            None,
+            "an overlapping replacement monitor must not emit twice"
+        );
+        assert!(
+            tracker.completed_sends.is_empty(),
+            "a duplicate terminal must not become an early-completion entry"
+        );
+        assert!(tracker.settled_send_tombstones.contains(&sdk_txn));
+    }
+
+    #[test]
+    fn replacement_owner_preserves_pending_send_completion_correlation() {
+        let current_owner = SharedSendCompletionTracker::default();
+        let sdk_txn = "sdk-owner-handoff-txn".to_owned();
+        let client_txn = "client-owner-handoff-txn".to_owned();
+        let request_id = fake_rid(773);
+        current_owner
+            .lock()
+            .expect("current tracker lock")
+            .remember_pending_send(sdk_txn.clone(), client_txn.clone(), None, request_id, true);
+
+        let replacement_owner = Arc::clone(&current_owner);
+        drop(current_owner);
+        assert_eq!(
+            replacement_owner
+                .lock()
+                .expect("replacement tracker lock")
+                .record_sent_event(sdk_txn, "$event-owner-handoff".to_owned()),
+            Some((
+                client_txn,
+                None,
+                request_id,
+                "$event-owner-handoff".to_owned(),
+                true,
+            ))
+        );
+    }
+
+    #[test]
+    fn sent_event_before_pending_race_remains_idempotent_after_settlement() {
+        let mut tracker = SendCompletionTracker::default();
+        let sdk_txn = "sdk-early-duplicate-txn".to_owned();
+        let event_id = "$event-early-duplicate".to_owned();
+
+        assert_eq!(
+            tracker.record_sent_event(sdk_txn.clone(), event_id.clone()),
+            None
+        );
+        assert!(
+            tracker
+                .remember_pending_send(
+                    sdk_txn.clone(),
+                    "client-early-duplicate-txn".to_owned(),
+                    None,
+                    fake_rid(771),
+                    true,
+                )
+                .is_some()
+        );
+        assert_eq!(tracker.record_sent_event(sdk_txn.clone(), event_id), None);
+        assert!(tracker.completed_sends.is_empty());
+        assert!(tracker.settled_send_tombstones.contains(&sdk_txn));
+    }
+
+    #[test]
+    fn cancelled_completion_is_tombstoned_against_late_sent_event() {
+        let mut tracker = SendCompletionTracker::default();
+        let sdk_txn = "sdk-cancelled-txn".to_owned();
+        tracker.remember_pending_send(
+            sdk_txn.clone(),
+            "client-cancelled-txn".to_owned(),
+            None,
+            fake_rid(772),
+            true,
+        );
+
+        assert!(tracker.record_cancelled_event(&sdk_txn).is_some());
+        assert_eq!(
+            tracker.record_sent_event(sdk_txn.clone(), "$late-event".to_owned()),
+            None
+        );
+        assert!(tracker.completed_sends.is_empty());
+        assert!(tracker.settled_send_tombstones.contains(&sdk_txn));
+    }
+
+    #[test]
+    fn settled_send_tombstones_are_bounded() {
+        let mut tracker = SendCompletionTracker::default();
+        for index in 0..=MAX_SETTLED_SEND_TOMBSTONES {
+            let sdk_txn = format!("sdk-bounded-{index}");
+            tracker.remember_pending_send(
+                sdk_txn.clone(),
+                format!("client-bounded-{index}"),
+                None,
+                fake_rid(800 + index as u64),
+                true,
+            );
+            assert!(
+                tracker
+                    .record_sent_event(sdk_txn, format!("$event-bounded-{index}"))
+                    .is_some()
+            );
+        }
+
+        assert_eq!(
+            tracker.settled_send_tombstones.len(),
+            MAX_SETTLED_SEND_TOMBSTONES
+        );
+        assert!(!tracker.settled_send_tombstones.contains("sdk-bounded-0"));
+        assert!(
+            tracker
+                .settled_send_tombstones
+                .contains(&format!("sdk-bounded-{MAX_SETTLED_SEND_TOMBSTONES}"))
+        );
     }
 
     #[test]

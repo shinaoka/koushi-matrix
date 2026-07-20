@@ -412,6 +412,83 @@ async fn stop_sync_for_qa(conn: &mut CoreConnection, label: &str) -> Result<(), 
     }
 }
 
+async fn start_sync_and_wait_for_replacement_initial_items(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    first: &SendQueueLocalEcho,
+    second: &SendQueueLocalEcho,
+    label: &str,
+) -> Result<Vec<TimelineItem>, String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Sync(SyncCommand::Start { request_id }))
+        .await
+        .map_err(|error| format!("{label}: submit Sync start failed: {error}"))?;
+
+    let deadline = tokio::time::Instant::now() + FAST_SEND_QUEUE_PHASE_TIMEOUT;
+    let mut started = false;
+    let mut running = false;
+    let mut replacement_items = None;
+    let mut initial_items_seen = false;
+    let mut first_restored = false;
+    let mut first_state_restored = false;
+    let mut second_restored = false;
+    let mut second_state_restored = false;
+    loop {
+        let event = recv_fast_send_queue_event(conn, deadline, label)
+            .await
+            .map_err(|error| {
+                format!(
+                    "{error} started={started} running={running} initial_items_seen={initial_items_seen} \
+                     first_restored={first_restored} first_state_restored={first_state_restored} \
+                     second_restored={second_restored} \
+                     second_state_restored={second_state_restored}"
+                )
+            })?;
+        match event {
+            CoreEvent::Sync(SyncEvent::Started {
+                request_id: Some(event_request_id),
+                ..
+            }) if event_request_id == request_id => started = true,
+            CoreEvent::Sync(SyncEvent::Running) => running = true,
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: event_key,
+                items,
+                ..
+            }) if event_key == *key => {
+                initial_items_seen = true;
+                let first_item = items.iter().find(|item| {
+                    timeline_item_transaction_id(item) == Some(first.sdk_transaction_id.as_str())
+                });
+                let second_item = items.iter().find(|item| {
+                    timeline_item_transaction_id(item) == Some(second.sdk_transaction_id.as_str())
+                });
+                first_restored = first_item.is_some();
+                first_state_restored =
+                    first_item.is_some_and(|item| item.send_state.as_ref().is_some());
+                second_restored = second_item.is_some();
+                second_state_restored =
+                    second_item.is_some_and(|item| item.send_state.as_ref().is_some());
+                if first_state_restored && second_state_restored {
+                    replacement_items = Some(items);
+                }
+            }
+            CoreEvent::OperationFailed {
+                request_id: event_request_id,
+                failure,
+            } if event_request_id == request_id => {
+                return Err(format!("{label}: Sync start failed: {failure:?}"));
+            }
+            _ => {}
+        }
+        if started
+            && running
+            && let Some(items) = replacement_items
+        {
+            return Ok(items);
+        }
+    }
+}
+
 async fn wait_for_initial_items_or_active_replay(
     conn: &mut CoreConnection,
     key: &TimelineKey,
@@ -1188,10 +1265,18 @@ async fn wait_for_fast_send_queue_completions_in_order(
     second: &SendQueueLocalEcho,
     label: &str,
 ) -> Result<(), String> {
-    let mut first_completed = false;
+    let mut first_completion_count = 0;
+    let mut second_completion_count = 0;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        let event = recv_fast_send_queue_event(conn, deadline, label).await?;
+        let event = recv_fast_send_queue_event(conn, deadline, label)
+            .await
+            .map_err(|error| {
+                format!(
+                    "{error} first_completion_count={first_completion_count} \
+                     second_completion_count={second_completion_count}"
+                )
+            })?;
         apply_fast_send_queue_event(projection, key, &event, label)?;
         match event {
             CoreEvent::Timeline(TimelineEvent::SendCompleted {
@@ -1205,7 +1290,12 @@ async fn wait_for_fast_send_queue_completions_in_order(
                         "{label}: first completion transaction mismatch: {transaction_id}"
                     ));
                 }
-                first_completed = true;
+                first_completion_count += 1;
+                if first_completion_count != 1 {
+                    return Err(format!(
+                        "{label}: first completion was emitted more than once"
+                    ));
+                }
             }
             CoreEvent::Timeline(TimelineEvent::SendCompleted {
                 request_id,
@@ -1213,7 +1303,7 @@ async fn wait_for_fast_send_queue_completions_in_order(
                 transaction_id,
                 ..
             }) if request_id == second.request_id && event_key == key => {
-                if !first_completed {
+                if first_completion_count != 1 {
                     return Err(format!(
                         "{label}: later queued send completed before the failed predecessor"
                     ));
@@ -1223,7 +1313,22 @@ async fn wait_for_fast_send_queue_completions_in_order(
                         "{label}: second completion transaction mismatch: {transaction_id}"
                     ));
                 }
+                second_completion_count += 1;
+                if second_completion_count != 1 {
+                    return Err(format!(
+                        "{label}: second completion was emitted more than once"
+                    ));
+                }
                 return Ok(());
+            }
+            CoreEvent::Timeline(TimelineEvent::SendCompleted {
+                request_id,
+                key: ref event_key,
+                ..
+            }) if request_id == retry_request_id && event_key == key => {
+                return Err(format!(
+                    "{label}: retry request id must not own SendCompleted"
+                ));
             }
             CoreEvent::OperationFailed {
                 request_id,
@@ -1403,6 +1508,8 @@ fn fast_send_queue_lane_hard_bounds_generic_lifecycle_phases() {
         "fast_send_queue initial stop sync",
         "fast_send_queue initial subscribe command",
         "fast_send_queue initial subscribe replay",
+        "fast_send_queue replacement sync start",
+        "fast_send_queue stop replacement sync",
         "fast_send_queue first retry command",
         "fast_send_queue cancel command",
         "fast_send_queue first shutdown barrier",
@@ -1890,10 +1997,16 @@ async fn run_fast_send_queue_feedback() {
     .await
     .expect("fast_send_queue second offline local echo");
     proxy.enable();
+    // Keep the first successful response in flight while Sync Start produces
+    // Started, Running, and replacement InitialItems. This deterministically
+    // places SentEvent after actor replacement without a blind orchestration sleep.
     let fifo_first_guard = server
         .mock_room_send()
         .body_matches_partial_json(serde_json::json!({ "body": "fast offline first body" }))
-        .ok(event_id!("$fast-fifo-first:localhost"))
+        .ok_with_delay(
+            event_id!("$fast-fifo-first:localhost"),
+            Duration::from_secs(2),
+        )
         .mock_once()
         .mount_as_scoped()
         .await;
@@ -1901,6 +2014,14 @@ async fn run_fast_send_queue_feedback() {
         .mock_room_send()
         .body_matches_partial_json(serde_json::json!({ "body": "fast offline second body" }))
         .ok(event_id!("$fast-fifo-second:localhost"))
+        .mock_once()
+        .mount_as_scoped()
+        .await;
+    let replacement_sync_guard = server
+        .mock_sync()
+        .ok(|builder| {
+            builder.add_joined_room(JoinedRoomBuilder::new(room_id));
+        })
         .mock_once()
         .mount_as_scoped()
         .await;
@@ -1916,6 +2037,19 @@ async fn run_fast_send_queue_feedback() {
     .await
     .expect("fast_send_queue first retry phase")
     .expect("fast_send_queue retry command");
+    projection = fast_send_queue_phase(
+        "fast_send_queue replacement sync start",
+        start_sync_and_wait_for_replacement_initial_items(
+            &mut conn,
+            &key,
+            &first,
+            &second,
+            "fast_send_queue replacement sync start",
+        ),
+    )
+    .await
+    .expect("fast_send_queue replacement sync phase")
+    .expect("fast_send_queue replacement InitialItems");
     wait_for_fast_send_queue_completions_in_order(
         &mut conn,
         &mut projection,
@@ -1957,6 +2091,14 @@ async fn run_fast_send_queue_feedback() {
     );
     drop(fifo_second_guard);
     drop(fifo_first_guard);
+    drop(replacement_sync_guard);
+    fast_send_queue_phase(
+        "fast_send_queue stop replacement sync",
+        stop_sync_for_qa(&mut conn, "fast_send_queue stop replacement sync"),
+    )
+    .await
+    .expect("fast_send_queue replacement stop-sync phase")
+    .expect("fast_send_queue replacement sync stopped");
 
     proxy.disable();
     let cancel = send_fast_send_queue_text_expect_recoverable_transport_failure(
@@ -2203,4 +2345,14 @@ async fn fast_send_queue_feedback_runs_production_runtime_without_homeserver() {
         started.elapsed() < Duration::from_secs(60),
         "fast_send_queue exceeded the 60-second lane budget"
     );
+}
+
+#[tokio::test]
+async fn fast_send_queue_sync_started_replacement_preserves_original_completion_correlation() {
+    tokio::time::timeout(
+        FAST_SEND_QUEUE_TOTAL_TIMEOUT,
+        run_fast_send_queue_feedback(),
+    )
+    .await
+    .expect("fast_send_queue replacement regression timed out");
 }
