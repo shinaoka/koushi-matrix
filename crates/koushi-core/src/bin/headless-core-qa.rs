@@ -122,9 +122,19 @@ trait QaEventSource {
     fn recv_event(&mut self) -> QaEventFuture<'_>;
 }
 
+trait QaSnapshotEventSource: QaEventSource {
+    fn snapshot(&self) -> AppState;
+}
+
 impl QaEventSource for CoreConnection {
     fn recv_event(&mut self) -> QaEventFuture<'_> {
         Box::pin(CoreConnection::recv_event(self))
+    }
+}
+
+impl QaSnapshotEventSource for CoreConnection {
+    fn snapshot(&self) -> AppState {
+        CoreConnection::snapshot(self)
     }
 }
 
@@ -1176,18 +1186,14 @@ async fn run_gate_no_proof_stage(config: &QaConfig) -> Result<(), String> {
         }))
         .await
         .map_err(|_| "no-proof restart restore submit failed".to_owned())?;
-    let failure =
-        wait_for_operation_failed(&mut reopened_conn, restore_id, "no-proof restart restore")
-            .await?;
+    let failure = wait_for_operation_failed_and_signed_out(
+        &mut reopened_conn,
+        restore_id,
+        "no-proof restart restore",
+    )
+    .await?;
     if failure != CoreFailure::SessionNotFound {
         return Err("no-proof restart did not remain SignedOut".to_owned());
-    }
-    let signed_out_deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
-    while !matches!(reopened_conn.snapshot().session, SessionState::SignedOut) {
-        tokio::time::timeout_at(signed_out_deadline, reopened_conn.recv_event())
-            .await
-            .map_err(|_| "no-proof restart SignedOut projection timed out".to_owned())?
-            .map_err(|_| "no-proof restart event stream closed".to_owned())?;
     }
     println!("gate_no_proof_restart_signed_out=ok");
     drop(reopened_conn);
@@ -1520,7 +1526,7 @@ async fn cleanup_after_login_sync(
         .await
         .map_err(|e| format!("submit post-logout restore A: {e}"))?;
 
-    let failure = wait_for_operation_failed(
+    let failure = wait_for_operation_failed_and_signed_out(
         &mut conn_a2,
         restore_gone_id,
         "post-logout restore A (must fail)",
@@ -1531,10 +1537,6 @@ async fn cleanup_after_login_sync(
             "post-logout restore A failed with unexpected kind: {failure:?}"
         ));
     }
-    if !matches!(conn_a2.snapshot().session, SessionState::SignedOut) {
-        return Err("post-logout restore A must leave the session SignedOut".to_owned());
-    }
-
     println!("restore_cleanup=ok");
     Ok("restore_cleanup=ok".to_owned())
 }
@@ -5368,7 +5370,7 @@ async fn cleanup_after_full_flow(
         .await
         .map_err(|e| format!("submit post-logout restore A: {e}"))?;
 
-    let failure = wait_for_operation_failed(
+    let failure = wait_for_operation_failed_and_signed_out(
         &mut conn_a2,
         restore_gone_id,
         "post-logout restore A (must fail)",
@@ -5379,10 +5381,6 @@ async fn cleanup_after_full_flow(
             "post-logout restore A failed with unexpected kind: {failure:?}"
         ));
     }
-    if !matches!(conn_a2.snapshot().session, SessionState::SignedOut) {
-        return Err("post-logout restore A must leave the session SignedOut".to_owned());
-    }
-
     let logout_b_id = conn_b.next_request_id();
     conn_b
         .command(CoreCommand::Account(AccountCommand::Logout {
@@ -5401,7 +5399,7 @@ async fn cleanup_after_full_flow(
         .await
         .map_err(|e| format!("submit post-logout restore-last: {e}"))?;
 
-    let failure = wait_for_operation_failed(
+    let failure = wait_for_operation_failed_and_signed_out(
         &mut conn_b,
         restore_last_id,
         "post-logout restore-last (must be not-found)",
@@ -5412,10 +5410,6 @@ async fn cleanup_after_full_flow(
             "post-logout restore-last failed with unexpected kind: {failure:?}"
         ));
     }
-    if !matches!(conn_b.snapshot().session, SessionState::SignedOut) {
-        return Err("post-logout restore-last must leave the session SignedOut".to_owned());
-    }
-
     drop(conn_b);
     runtime_b.shutdown().await;
 
@@ -6639,7 +6633,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .await
         .map_err(|e| format!("submit post-logout restore A: {e}"))?;
 
-    let failure = wait_for_operation_failed(
+    let failure = wait_for_operation_failed_and_signed_out(
         &mut conn_a2,
         restore_gone_id,
         "post-logout restore A (must fail)",
@@ -6650,10 +6644,6 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
             "post-logout restore A failed with unexpected kind: {failure:?}"
         ));
     }
-    if !matches!(conn_a2.snapshot().session, SessionState::SignedOut) {
-        return Err("post-logout restore A must leave the session SignedOut".to_owned());
-    }
-
     // -----------------------------------------------------------------------
     // --- Logout B ---
     // -----------------------------------------------------------------------
@@ -6680,7 +6670,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .await
         .map_err(|e| format!("submit post-logout restore-last: {e}"))?;
 
-    let failure = wait_for_operation_failed(
+    let failure = wait_for_operation_failed_and_signed_out(
         &mut conn_b,
         restore_last_id,
         "post-logout restore-last (must be not-found)",
@@ -6691,10 +6681,6 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
             "post-logout restore-last failed with unexpected kind: {failure:?}"
         ));
     }
-    if !matches!(conn_b.snapshot().session, SessionState::SignedOut) {
-        return Err("post-logout restore-last must leave the session SignedOut".to_owned());
-    }
-
     drop(conn_b);
     runtime_b.shutdown().await;
 
@@ -9334,8 +9320,8 @@ async fn wait_for_logged_in(
 }
 
 /// Wait for `AccountEvent::SessionRestored` with the given request_id.
-async fn wait_for_session_restored(
-    conn: &mut CoreConnection,
+async fn wait_for_session_restored<S: QaSnapshotEventSource + ?Sized>(
+    conn: &mut S,
     request_id: koushi_core::ids::RequestId,
     expected_account_key: &AccountKey,
     label: &str,
@@ -9366,12 +9352,7 @@ async fn wait_for_session_restored(
                 request_id: ev_id,
                 account_key,
             }) if ev_id == request_id => {
-                if account_key != *expected_account_key {
-                    return Err(format!(
-                        "{label}: SessionRestored account_key mismatch: got {:?}, expected {:?}",
-                        account_key, expected_account_key
-                    ));
-                }
+                ensure_session_restored_account_key(&account_key, expected_account_key, label)?;
                 return Ok(());
             }
             CoreEvent::OperationFailed {
@@ -9385,15 +9366,33 @@ async fn wait_for_session_restored(
     }
 }
 
+fn ensure_session_restored_account_key(
+    actual: &AccountKey,
+    expected: &AccountKey,
+    label: &str,
+) -> Result<(), String> {
+    if actual != expected {
+        return Err(format!("{label}: SessionRestored account_key mismatch"));
+    }
+    Ok(())
+}
+
 /// Wait for `AccountEvent::LoggedOut` with the given request_id.
-async fn wait_for_logged_out(
-    conn: &mut CoreConnection,
+async fn wait_for_logged_out<S: QaSnapshotEventSource + ?Sized>(
+    conn: &mut S,
     request_id: koushi_core::ids::RequestId,
     expected_account_key: &AccountKey,
     label: &str,
 ) -> Result<(), String> {
+    let deadline = QaEventDeadline::after(EVENT_TIMEOUT);
+    let mut saw_logged_out = false;
     loop {
-        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+        if saw_logged_out && matches!(conn.snapshot().session, SessionState::SignedOut) {
+            return Ok(());
+        }
+
+        let event = deadline
+            .recv(conn)
             .await
             .map_err(|_| format!("{label}: timed out waiting for LoggedOut event"))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
@@ -9404,12 +9403,9 @@ async fn wait_for_logged_out(
                 account_key,
             }) if ev_id == request_id => {
                 if account_key != *expected_account_key {
-                    return Err(format!(
-                        "{label}: LoggedOut account_key mismatch: got {:?}, expected {:?}",
-                        account_key, expected_account_key
-                    ));
+                    return Err(format!("{label}: LoggedOut account_key mismatch"));
                 }
-                return Ok(());
+                saw_logged_out = true;
             }
             CoreEvent::OperationFailed {
                 request_id: ev_id,
@@ -9423,13 +9419,15 @@ async fn wait_for_logged_out(
 }
 
 /// Wait for `OperationFailed` with the given request_id and return the failure.
-async fn wait_for_operation_failed(
-    conn: &mut CoreConnection,
+async fn wait_for_operation_failed<S: QaEventSource + ?Sized>(
+    conn: &mut S,
     request_id: koushi_core::ids::RequestId,
     label: &str,
 ) -> Result<CoreFailure, String> {
+    let deadline = QaEventDeadline::after(EVENT_TIMEOUT);
     loop {
-        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+        let event = deadline
+            .recv(conn)
             .await
             .map_err(|_| format!("{label}: timed out waiting for OperationFailed event"))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
@@ -9440,6 +9438,60 @@ async fn wait_for_operation_failed(
                 failure,
             } if ev_id == request_id => {
                 return Ok(failure);
+            }
+            CoreEvent::Account(account_event) => {
+                let matches_request = match &account_event {
+                    AccountEvent::LoggedIn { request_id: id, .. }
+                    | AccountEvent::SessionRestored { request_id: id, .. }
+                    | AccountEvent::SavedSessionsListed { request_id: id, .. }
+                    | AccountEvent::RecoveryCompleted { request_id: id, .. }
+                    | AccountEvent::ProfileUpdated { request_id: id, .. }
+                    | AccountEvent::AvatarThumbnailDownloaded { request_id: id, .. }
+                    | AccountEvent::ReportCompleted { request_id: id, .. }
+                    | AccountEvent::LoggedOut { request_id: id, .. }
+                    | AccountEvent::AccountSwitched { request_id: id, .. } => *id == request_id,
+                    AccountEvent::OidcAuthorizationCreated { .. }
+                    | AccountEvent::RecoveryRequired { .. } => false,
+                };
+                if matches_request {
+                    return Err(format!(
+                        "{label}: expected OperationFailed but the operation succeeded"
+                    ));
+                }
+            }
+            _ => continue,
+        }
+    }
+}
+
+async fn wait_for_operation_failed_and_signed_out<S: QaSnapshotEventSource + ?Sized>(
+    conn: &mut S,
+    request_id: koushi_core::ids::RequestId,
+    label: &str,
+) -> Result<CoreFailure, String> {
+    let deadline = QaEventDeadline::after(EVENT_TIMEOUT);
+    let mut operation_failure = None;
+    loop {
+        if matches!(conn.snapshot().session, SessionState::SignedOut) {
+            if let Some(failure) = operation_failure.take() {
+                return Ok(failure);
+            }
+        }
+
+        let event = deadline
+            .recv(conn)
+            .await
+            .map_err(|_| {
+                format!("{label}: timed out waiting for OperationFailed and SignedOut state")
+            })?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                operation_failure = Some(failure);
             }
             CoreEvent::Account(account_event) => {
                 let matches_request = match &account_event {
@@ -18005,6 +18057,42 @@ mod tests {
         }
     }
 
+    struct ScriptedQaSnapshotEventSource {
+        events: std::collections::VecDeque<(CoreEvent, SessionState)>,
+        snapshot: AppState,
+        received: usize,
+    }
+
+    impl QaEventSource for ScriptedQaSnapshotEventSource {
+        fn recv_event(
+            &mut self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<CoreEvent, koushi_core::runtime::EventStreamLag>,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async move {
+                match self.events.pop_front() {
+                    Some((event, session)) => {
+                        self.snapshot.session = session;
+                        self.received += 1;
+                        Ok(event)
+                    }
+                    None => std::future::pending().await,
+                }
+            })
+        }
+    }
+
+    impl QaSnapshotEventSource for ScriptedQaSnapshotEventSource {
+        fn snapshot(&self) -> AppState {
+            self.snapshot.clone()
+        }
+    }
+
     struct IntervalQaEventSource {
         interval: tokio::time::Interval,
     }
@@ -18025,6 +18113,324 @@ mod tests {
                 Ok(CoreEvent::Sync(SyncEvent::Running))
             })
         }
+    }
+
+    struct IntervalQaSnapshotEventSource {
+        interval: tokio::time::Interval,
+        snapshot: AppState,
+        first_event: Option<CoreEvent>,
+    }
+
+    impl QaEventSource for IntervalQaSnapshotEventSource {
+        fn recv_event(
+            &mut self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<CoreEvent, koushi_core::runtime::EventStreamLag>,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async move {
+                if let Some(event) = self.first_event.take() {
+                    return Ok(event);
+                }
+                self.interval.tick().await;
+                Ok(CoreEvent::Sync(SyncEvent::Running))
+            })
+        }
+    }
+
+    impl QaSnapshotEventSource for IntervalQaSnapshotEventSource {
+        fn snapshot(&self) -> AppState {
+            self.snapshot.clone()
+        }
+    }
+
+    fn qa_state_with_session(session: SessionState) -> AppState {
+        AppState {
+            session,
+            ..AppState::default()
+        }
+    }
+
+    fn qa_logged_out_event(request_id: RequestId, account_key: AccountKey) -> CoreEvent {
+        CoreEvent::Account(AccountEvent::LoggedOut {
+            request_id,
+            account_key,
+        })
+    }
+
+    fn qa_operation_failed_event(request_id: RequestId) -> CoreEvent {
+        CoreEvent::OperationFailed {
+            request_id,
+            failure: CoreFailure::SessionNotFound,
+        }
+    }
+
+    #[tokio::test]
+    async fn session_restored_account_mismatch_is_private_safe() {
+        let request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 6,
+        };
+        let expected = AccountKey("@expected:example.invalid".to_owned());
+        let mut source = ScriptedQaSnapshotEventSource {
+            events: [(
+                CoreEvent::Account(AccountEvent::SessionRestored {
+                    request_id,
+                    account_key: AccountKey("@unexpected:example.invalid".to_owned()),
+                }),
+                SessionState::SignedOut,
+            )]
+            .into(),
+            snapshot: qa_state_with_session(SessionState::SignedOut),
+            received: 0,
+        };
+
+        let error =
+            wait_for_session_restored(&mut source, request_id, &expected, "restore mismatch")
+                .await
+                .expect_err("wrong restored account must fail immediately");
+        assert!(error.contains("account_key mismatch"));
+        assert!(!error.contains('@'));
+        assert_eq!(source.received, 1);
+    }
+
+    #[tokio::test]
+    async fn logged_out_waiter_requires_event_and_signed_out_snapshot_in_either_order() {
+        let request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 7,
+        };
+        let account_key = AccountKey("@logout-barrier:example.invalid".to_owned());
+        let signed_out = qa_state_with_session(SessionState::SignedOut);
+        let cases = [
+            [
+                (
+                    qa_logged_out_event(request_id, account_key.clone()),
+                    SessionState::LoggingOut,
+                ),
+                (
+                    CoreEvent::StateChanged(signed_out.clone()),
+                    SessionState::SignedOut,
+                ),
+            ],
+            [
+                (
+                    CoreEvent::StateChanged(signed_out.clone()),
+                    SessionState::SignedOut,
+                ),
+                (
+                    qa_logged_out_event(request_id, account_key.clone()),
+                    SessionState::SignedOut,
+                ),
+            ],
+        ];
+
+        for events in cases {
+            let mut source = ScriptedQaSnapshotEventSource {
+                events: events.into(),
+                snapshot: qa_state_with_session(SessionState::LoggingOut),
+                received: 0,
+            };
+            wait_for_logged_out(&mut source, request_id, &account_key, "logout barrier")
+                .await
+                .expect("both authoritative logout signals should satisfy the barrier");
+            assert_eq!(
+                source.received, 2,
+                "neither event nor snapshot may complete the barrier alone"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn logged_out_waiter_keeps_wrong_account_and_failure_terminal_and_private_safe() {
+        let request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 8,
+        };
+        let account_key = AccountKey("@expected:example.invalid".to_owned());
+        let mut wrong_account = ScriptedQaSnapshotEventSource {
+            events: [(
+                qa_logged_out_event(
+                    request_id,
+                    AccountKey("@unexpected:example.invalid".to_owned()),
+                ),
+                SessionState::SignedOut,
+            )]
+            .into(),
+            snapshot: qa_state_with_session(SessionState::LoggingOut),
+            received: 0,
+        };
+        let error = wait_for_logged_out(
+            &mut wrong_account,
+            request_id,
+            &account_key,
+            "logout barrier",
+        )
+        .await
+        .expect_err("wrong account must fail immediately");
+        assert!(error.contains("account_key mismatch"));
+        assert!(!error.contains('@'));
+        assert_eq!(wrong_account.received, 1);
+
+        let mut failed = ScriptedQaSnapshotEventSource {
+            events: [(
+                CoreEvent::OperationFailed {
+                    request_id,
+                    failure: CoreFailure::SessionRequired,
+                },
+                SessionState::SignedOut,
+            )]
+            .into(),
+            snapshot: qa_state_with_session(SessionState::LoggingOut),
+            received: 0,
+        };
+        let error = wait_for_logged_out(&mut failed, request_id, &account_key, "logout barrier")
+            .await
+            .expect_err("correlated failure must fail immediately");
+        assert!(error.contains("SessionRequired"));
+        assert_eq!(failed.received, 1);
+    }
+
+    #[tokio::test]
+    async fn operation_failed_signed_out_waiter_requires_both_signals_in_either_order() {
+        let request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 10,
+        };
+        let signed_out = qa_state_with_session(SessionState::SignedOut);
+        let cases = [
+            [
+                (
+                    qa_operation_failed_event(request_id),
+                    SessionState::Restoring,
+                ),
+                (
+                    CoreEvent::StateChanged(signed_out.clone()),
+                    SessionState::SignedOut,
+                ),
+            ],
+            [
+                (
+                    CoreEvent::StateChanged(signed_out.clone()),
+                    SessionState::SignedOut,
+                ),
+                (
+                    qa_operation_failed_event(request_id),
+                    SessionState::SignedOut,
+                ),
+            ],
+        ];
+
+        for events in cases {
+            let mut source = ScriptedQaSnapshotEventSource {
+                events: events.into(),
+                snapshot: qa_state_with_session(SessionState::Restoring),
+                received: 0,
+            };
+            let failure = wait_for_operation_failed_and_signed_out(
+                &mut source,
+                request_id,
+                "restore cleanup barrier",
+            )
+            .await
+            .expect("both authoritative cleanup signals should satisfy the barrier");
+            assert_eq!(failure, CoreFailure::SessionNotFound);
+            assert_eq!(
+                source.received, 2,
+                "neither failure nor SignedOut may complete the barrier alone"
+            );
+        }
+
+        let mut succeeded = ScriptedQaSnapshotEventSource {
+            events: [(
+                CoreEvent::Account(AccountEvent::SessionRestored {
+                    request_id,
+                    account_key: AccountKey("@private:example.invalid".to_owned()),
+                }),
+                SessionState::SignedOut,
+            )]
+            .into(),
+            snapshot: signed_out,
+            received: 0,
+        };
+        let error = wait_for_operation_failed_and_signed_out(
+            &mut succeeded,
+            request_id,
+            "restore cleanup barrier",
+        )
+        .await
+        .expect_err("a same-request success terminal must fail immediately");
+        assert!(error.contains("operation succeeded"));
+        assert!(!error.contains('@'));
+        assert_eq!(succeeded.received, 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn operation_failed_signed_out_deadline_survives_unrelated_event_starvation() {
+        let request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 11,
+        };
+        let mut source = IntervalQaSnapshotEventSource {
+            interval: tokio::time::interval(Duration::from_secs(1)),
+            snapshot: qa_state_with_session(SessionState::Restoring),
+            first_event: Some(qa_operation_failed_event(request_id)),
+        };
+        let started_at = tokio::time::Instant::now();
+        wait_for_operation_failed_and_signed_out(
+            &mut source,
+            request_id,
+            "restore cleanup deadline",
+        )
+        .await
+        .expect_err("unrelated events must not restart the cleanup deadline");
+        assert_eq!(
+            tokio::time::Instant::now().duration_since(started_at),
+            EVENT_TIMEOUT
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn logout_and_operation_failed_deadlines_survive_unrelated_event_starvation() {
+        let request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 9,
+        };
+        let account_key = AccountKey("@deadline:example.invalid".to_owned());
+        let mut logout_source = IntervalQaSnapshotEventSource {
+            interval: tokio::time::interval(Duration::from_secs(1)),
+            snapshot: qa_state_with_session(SessionState::LoggingOut),
+            first_event: Some(qa_logged_out_event(request_id, account_key.clone())),
+        };
+        let logout_started_at = tokio::time::Instant::now();
+        wait_for_logged_out(
+            &mut logout_source,
+            request_id,
+            &account_key,
+            "logout deadline",
+        )
+        .await
+        .expect_err("a LoggedOut event without SignedOut state must time out");
+        assert_eq!(
+            tokio::time::Instant::now().duration_since(logout_started_at),
+            EVENT_TIMEOUT
+        );
+
+        let mut failure_source = IntervalQaEventSource {
+            interval: tokio::time::interval(Duration::from_secs(1)),
+        };
+        let failure_started_at = tokio::time::Instant::now();
+        wait_for_operation_failed(&mut failure_source, request_id, "failure deadline")
+            .await
+            .expect_err("unrelated events must not restart the failure deadline");
+        assert_eq!(
+            tokio::time::Instant::now().duration_since(failure_started_at),
+            EVENT_TIMEOUT
+        );
     }
 
     fn strict_e2ee_waiter_inventory() -> &'static [(&'static str, &'static str)] {
