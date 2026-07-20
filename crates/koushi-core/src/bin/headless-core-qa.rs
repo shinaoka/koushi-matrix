@@ -4877,6 +4877,7 @@ async fn run_timeline_reconnect_scenario_impl(
         wait_for_all_items_with_bodies(
             &mut conn_a,
             &key_a,
+            &reopened_items,
             &offline_bodies,
             "timeline_reconnect A repairs the complete missed batch",
         )
@@ -14210,16 +14211,20 @@ async fn wait_for_item_with_body(
 async fn wait_for_all_items_with_bodies(
     conn: &mut CoreConnection,
     key: &TimelineKey,
+    initial_items: &[TimelineItem],
     expected_bodies: &[String],
     label: &str,
 ) -> Result<(), String> {
-    let mut seen = vec![false; expected_bodies.len()];
+    let mut seen = seed_expected_body_observation(initial_items, expected_bodies);
 
     loop {
+        if seen.iter().all(|found| *found) {
+            return Ok(());
+        }
         let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
             .await
             .map_err(|_| {
-                let missing_count = seen.iter().filter(|found| !**found).count();
+                let missing_count = missing_expected_body_count(&seen);
                 format!("{label}: timed out with {missing_count} expected rows still missing")
             })?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
@@ -14245,10 +14250,6 @@ async fn wait_for_all_items_with_bodies(
                 })?;
             }
             _ => {}
-        }
-
-        if seen.iter().all(|found| *found) {
-            return Ok(());
         }
     }
 }
@@ -14433,6 +14434,21 @@ fn observe_expected_bodies(
             seen[index] = true;
         }
     }
+}
+
+fn seed_expected_body_observation(
+    initial_items: &[TimelineItem],
+    expected_bodies: &[String],
+) -> Vec<bool> {
+    let mut seen = vec![false; expected_bodies.len()];
+    for item in initial_items {
+        observe_expected_bodies(item, expected_bodies, &mut seen);
+    }
+    seen
+}
+
+fn missing_expected_body_count(seen: &[bool]) -> usize {
+    seen.iter().filter(|found| !**found).count()
 }
 
 async fn wait_for_event_item_with_body(
@@ -16058,6 +16074,34 @@ mod tests {
         assert_eq!(selected.id, new_gap_id);
         assert_eq!(*actor_generation, 7);
         assert_eq!(*projection_generation, 41);
+    }
+
+    #[test]
+    fn expected_body_observation_composes_initial_items_with_future_diffs() {
+        let expected_bodies = vec![
+            "initial body".to_owned(),
+            "future body".to_owned(),
+            "truly absent body".to_owned(),
+        ];
+        let mut initial = projection_timeline_item("$initial:test", false);
+        initial.body = Some("initial body".to_owned());
+        let mut seen = seed_expected_body_observation(&[initial], &expected_bodies);
+        assert_eq!(missing_expected_body_count(&seen), 2);
+
+        let mut future = projection_timeline_item("$future:test", false);
+        future.body = Some("future body".to_owned());
+        visit_timeline_diff_items(&[TimelineDiff::PushBack { item: future }], |item| {
+            observe_expected_bodies(item, &expected_bodies, &mut seen);
+            Ok(())
+        })
+        .expect("future diff observation");
+
+        assert_eq!(seen, [true, true, false]);
+        assert_eq!(
+            missing_expected_body_count(&seen),
+            1,
+            "an actually absent row must remain missing"
+        );
     }
 
     #[test]

@@ -274,6 +274,33 @@ Fresh verification evidence:
 The long homeserver lane remains delegated to the root agent; this worker did
 not push or create a PR.
 
+## TARGETED RECONNECT QA HARNESS FIX — 2026-07-20
+
+The targeted `timeline_reconnect` rerun reached timeline recovery but reported
+one missing expected row. This was a QA observer bug already present on
+`origin/main`, not a product projection failure: `subscribe_timeline_for_qa`
+consumes and returns `InitialItems`; the legacy waiter seeded its model from
+those returned items, while the non-legacy waiter discarded them and observed
+only future `InitialItems`/`ItemsUpdated` events.
+
+The non-legacy waiter now seeds expected-body observation from its returned
+`reopened_items` before consuming future diffs. It still requires every truly
+absent expected body: the network-free regression composes one body from the
+initial snapshot with one from a future diff and verifies that a third absent
+body remains missing.
+
+Fresh verification evidence:
+
+- Focused initial-plus-future observation regression: 1 passed, 0 failed.
+- Full headless Core QA binary tests: 64 passed, 0 failed.
+- Headless Core QA binary check with `qa-bin`: passed.
+- `cargo check -p koushi-core`: passed.
+- `cargo fmt -p koushi-core -- --check`: passed.
+- `git diff --check`: passed.
+
+No homeserver scenario was rerun by this worker; the root agent owns the single
+targeted long rerun after review.
+
 ## FINAL PERMIT-ORDER HARDENING — 2026-07-20
 
 A final bounded-channel review found one lock-free deadlock cycle: hydration
