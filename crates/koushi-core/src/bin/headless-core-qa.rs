@@ -96,8 +96,6 @@ const ENV_EXPECT_SYNC_BACKEND: &str = "KOUSHI_LOCAL_QA_EXPECT_SYNC_BACKEND";
 const ENV_QA_SCENARIO: &str = "KOUSHI_QA_SCENARIO";
 const ENV_ALLOW_IDENTITY_RESET: &str = "KOUSHI_QA_ALLOW_IDENTITY_RESET";
 const ENV_E2EE_RECIPIENT_SECOND_DEVICE: &str = "KOUSHI_QA_E2EE_RECIPIENT_SECOND_DEVICE";
-const ENV_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND: &str =
-    "KOUSHI_QA_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND";
 #[cfg(any(debug_assertions, feature = "qa-bin"))]
 const ENV_FILE_CREDENTIAL_STORE_DIR: &str = "KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR";
 
@@ -115,7 +113,6 @@ const E2EE_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
 // sends resume, so this lane needs a wider budget than generic event waits.
 const SEND_QUEUE_EVENT_TIMEOUT: Duration = Duration::from_secs(300);
 const TIMELINE_UNSUBSCRIBE_SETTLE_TIMEOUT: Duration = Duration::from_secs(2);
-const DEVICE_LIST_SETTLE_SYNC_TIMEOUT: Duration = Duration::from_secs(5);
 const THREAD_REPLY_BODY: &str = "Phase 11 QA thread reply from B";
 const E2EE_KEY_BACKUP_SEED_BODY: &str = "Koushi E2EE key backup seed";
 const E2EE_SECOND_DEVICE_BODY: &str = "Koushi E2EE second-device delivery";
@@ -1570,7 +1567,6 @@ async fn run_invites_dm_stage(
         "invites_dm invite B to room",
     )
     .await?;
-    sync_once_for_qa(conn_b, "invites_dm sync B for room invite").await?;
     wait_for_invite_in_snapshot(
         conn_b,
         &accept_room_id,
@@ -1581,7 +1577,6 @@ async fn run_invites_dm_stage(
     println!("invite_recv=ok");
 
     accept_invite_for_qa(conn_b, &accept_room_id, "invites_dm accept room invite").await?;
-    sync_once_for_qa(conn_b, "invites_dm sync B after room accept").await?;
     wait_for_room_in_room_list(
         conn_b,
         &accept_room_id,
@@ -1610,7 +1605,6 @@ async fn run_invites_dm_stage(
         "invites_dm invite B to space",
     )
     .await?;
-    sync_once_for_qa(conn_b, "invites_dm sync B for space invite").await?;
     wait_for_invite_in_snapshot(
         conn_b,
         &accept_space_id,
@@ -1619,7 +1613,6 @@ async fn run_invites_dm_stage(
     )
     .await?;
     accept_invite_for_qa(conn_b, &accept_space_id, "invites_dm accept space invite").await?;
-    sync_once_for_qa(conn_b, "invites_dm sync B after space accept").await?;
     wait_for_space_in_space_list(
         conn_b,
         &accept_space_id,
@@ -1637,7 +1630,17 @@ async fn run_invites_dm_stage(
         &[user_a_full_id.as_str(), user_b_full_id.as_str()],
         "invites_dm accepted space members",
     )?;
-    sync_once_for_qa(conn_a, "invites_dm sync A after space accept").await?;
+    let accept_space_settings_a = load_room_settings_for_qa(
+        conn_a,
+        &accept_space_id,
+        "invites_dm creator observes accepted space member",
+    )
+    .await?;
+    assert_room_settings_contains_members(
+        &accept_space_settings_a,
+        &[user_a_full_id.as_str(), user_b_full_id.as_str()],
+        "invites_dm creator observes accepted space member",
+    )?;
     println!("invite_accept=ok");
     println!("member_list=ok");
 
@@ -1655,7 +1658,6 @@ async fn run_invites_dm_stage(
         "invites_dm invite B to decline room",
     )
     .await?;
-    sync_once_for_qa(conn_b, "invites_dm sync B for decline invite").await?;
     wait_for_invite_in_snapshot(
         conn_b,
         &decline_room_id,
@@ -1664,7 +1666,6 @@ async fn run_invites_dm_stage(
     )
     .await?;
     decline_invite_for_qa(conn_b, &decline_room_id, "invites_dm decline room invite").await?;
-    sync_once_for_qa(conn_b, "invites_dm sync B after decline").await?;
     wait_for_invite_absent(
         conn_b,
         &decline_room_id,
@@ -1676,10 +1677,8 @@ async fn run_invites_dm_stage(
     let dm_room_id =
         start_direct_message_for_qa(conn_a, &user_b_full_id, "invites_dm start direct message")
             .await?;
-    sync_once_for_qa(conn_a, "invites_dm sync A after DM start").await?;
     wait_for_dm_room_in_room_list(conn_a, &dm_room_id, "invites_dm A room list after DM start")
         .await?;
-    sync_once_for_qa(conn_b, "invites_dm sync B for DM invite").await?;
     wait_for_invite_in_snapshot(
         conn_b,
         &dm_room_id,
@@ -1696,7 +1695,6 @@ async fn run_invites_dm_stage(
         "invites_dm start control direct message",
     )
     .await?;
-    sync_once_for_qa(conn_a, "invites_dm sync A after control DM start").await?;
     wait_for_dm_room_in_room_list(
         conn_a,
         &control_dm_room_id,
@@ -1791,7 +1789,6 @@ async fn run_room_management_stage(
         "room_management create room",
     )
     .await?;
-    sync_once_for_qa(conn_a, "room_management sync A after create").await?;
     wait_for_room_in_room_list(conn_a, &room_id, "room_management A room list").await?;
 
     let user_b_full_id = format!("@{}:{}", config.user_b, config.server_name);
@@ -1802,7 +1799,6 @@ async fn run_room_management_stage(
         "room_management invite B",
     )
     .await?;
-    sync_once_for_qa(conn_b, "room_management sync B for invite").await?;
     wait_for_invite_in_snapshot(
         conn_b,
         &room_id,
@@ -1820,11 +1816,13 @@ async fn run_room_management_stage(
         .await
         .map_err(|e| format!("room_management: submit B join failed: {e}"))?;
     wait_for_room_joined(conn_b, join_b_id, &room_id, "room_management B joins").await?;
-    sync_once_for_qa(conn_a, "room_management sync A after B join").await?;
-    sync_once_for_qa(conn_b, "room_management sync B after join").await?;
-
     let settings_a =
         load_room_settings_for_qa(conn_a, &room_id, "room_management load settings A").await?;
+    assert_room_settings_contains_members(
+        &settings_a,
+        &[account_key_a.0.as_str(), account_key_b.0.as_str()],
+        "room_management A observes joined members",
+    )?;
     if !settings_a.permissions.can_edit_settings || !settings_a.permissions.can_kick {
         return Err("room_management: creator permissions were not projected".to_owned());
     }
@@ -1847,6 +1845,11 @@ async fn run_room_management_stage(
 
     let settings_b =
         load_room_settings_for_qa(conn_b, &room_id, "room_management load settings B").await?;
+    assert_room_settings_contains_members(
+        &settings_b,
+        &[account_key_a.0.as_str(), account_key_b.0.as_str()],
+        "room_management B observes joined members",
+    )?;
     if settings_b.permissions.can_kick {
         return Err("room_management: normal member unexpectedly has kick permission".to_owned());
     }
@@ -3092,7 +3095,6 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
             "cache_restore create room",
         )
         .await?;
-        sync_once_for_qa(&mut conn, "cache_restore sync after room create").await?;
         wait_for_room_in_room_list(&mut conn, &room_id, "cache_restore room in list").await?;
 
         let key = TimelineKey::room(account_key.clone(), room_id.clone());
@@ -3258,7 +3260,6 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
         "cache_restore shallow create",
     )
     .await?;
-    sync_once_for_qa(&mut conn, "cache_restore sync after shallow room create").await?;
     wait_for_room_in_room_list(
         &mut conn,
         &shallow_room_id,
@@ -3783,7 +3784,6 @@ async fn run_send_queue_stage(
         "send_queue create room",
     )
     .await?;
-    sync_once_for_qa(&mut conn, "send_queue sync after room create").await?;
     wait_for_room_in_room_list(&mut conn, &room_id, "send_queue room list").await?;
 
     let key = TimelineKey::room(account_key.clone(), room_id.clone());
@@ -4123,20 +4123,10 @@ async fn run_timeline_reconnect_scenario_impl(
             "timeline legacy persisted gap start direct message",
         )
         .await?;
-        sync_once_for_qa(
-            &mut conn_a,
-            "timeline legacy persisted gap sync A after DM create",
-        )
-        .await?;
         wait_for_dm_room_in_room_list(
             &mut conn_a,
             &room_id,
             "timeline legacy persisted gap A DM room list",
-        )
-        .await?;
-        sync_once_for_qa(
-            &mut conn_b,
-            "timeline legacy persisted gap sync B for DM invite",
         )
         .await?;
         wait_for_invite_in_snapshot(
@@ -4152,20 +4142,10 @@ async fn run_timeline_reconnect_scenario_impl(
             "timeline legacy persisted gap B accepts DM invite",
         )
         .await?;
-        sync_once_for_qa(
-            &mut conn_b,
-            "timeline legacy persisted gap sync B after DM accept",
-        )
-        .await?;
         wait_for_room_in_room_list(
             &mut conn_b,
             &room_id,
             "timeline legacy persisted gap B room list",
-        )
-        .await?;
-        sync_once_for_qa(
-            &mut conn_a,
-            "timeline legacy persisted gap sync A after DM accept",
         )
         .await?;
         wait_for_dm_room_in_room_list(
@@ -4183,7 +4163,6 @@ async fn run_timeline_reconnect_scenario_impl(
             "timeline_reconnect create room",
         )
         .await?;
-        sync_once_for_qa(&mut conn_a, "timeline_reconnect sync A after room create").await?;
         wait_for_room_in_room_list(&mut conn_a, &room_id, "timeline_reconnect A room list").await?;
         invite_user_for_qa(
             &mut conn_a,
@@ -4192,7 +4171,6 @@ async fn run_timeline_reconnect_scenario_impl(
             "timeline_reconnect invite B",
         )
         .await?;
-        sync_once_for_qa(&mut conn_b, "timeline_reconnect sync B for invite").await?;
         wait_for_invite_in_snapshot(
             &mut conn_b,
             &room_id,
@@ -4201,9 +4179,7 @@ async fn run_timeline_reconnect_scenario_impl(
         )
         .await?;
         accept_invite_for_qa(&mut conn_b, &room_id, "timeline_reconnect B accepts invite").await?;
-        sync_once_for_qa(&mut conn_b, "timeline_reconnect sync B after accept").await?;
         wait_for_room_in_room_list(&mut conn_b, &room_id, "timeline_reconnect B room list").await?;
-        sync_once_for_qa(&mut conn_a, "timeline_reconnect sync A after B accepts").await?;
         room_id
     };
 
@@ -4253,7 +4229,7 @@ async fn run_timeline_reconnect_scenario_impl(
         "timeline_reconnect seed known anchor",
     )
     .await?;
-    wait_for_item_with_body_with_sync(
+    wait_for_item_with_body_or_decryption_failure(
         &mut conn_a,
         &key_a,
         seed_body,
@@ -5794,10 +5770,6 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     .await?;
     println!("invite_b_to_space=ok");
 
-    // Ensure the space create state has been folded into A's room-list
-    // classification before asserting rooms vs spaces.
-    sync_once_for_qa(&mut conn_a, "sync A after room and space creates").await?;
-
     // Wait (event-driven, bounded) until A's room list contains the created
     // room AND the created space; the wait itself is the assertion.
     let snapshot_a = wait_for_room_list_containing(
@@ -5849,10 +5821,6 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
 
     wait_for_room_joined(&mut conn_b, join_space_id, &space_id, "B joins space").await?;
     println!("b_joined_space=ok");
-
-    // Ensure the joined space has been folded into B's room-list
-    // classification before asserting rooms vs spaces.
-    sync_once_for_qa(&mut conn_b, "sync B after room and space joins").await?;
 
     // Wait (event-driven, bounded) until B's room list contains the joined
     // room AND the joined space; the wait itself is the assertion.
@@ -8529,28 +8497,48 @@ async fn wait_for_sidebar_dm_room_ids(
         .iter()
         .map(|room_id| (*room_id).to_owned())
         .collect::<BTreeSet<_>>();
-
-    for attempt in 0..5 {
-        if sidebar_dm_room_ids(&conn.snapshot()) == expected {
-            return Ok(());
-        }
-        let sync_label = format!("{label} SyncOnce attempt {}", attempt + 1);
-        sync_once_for_qa(conn, &sync_label).await?;
-    }
-
-    let snapshot = conn.snapshot();
-    let observed_count = sidebar_dm_room_ids(&snapshot).len();
-    if sidebar_dm_room_ids(&snapshot) == expected {
+    let matches_expected = |snapshot: &AppState| sidebar_dm_room_ids(snapshot) == expected;
+    if matches_expected(&conn.snapshot()) {
         return Ok(());
     }
 
-    Err(format!(
-        "{label}: DM section scope mismatch \
-         (expected_count={}, observed_count={}, active_space={})",
-        expected.len(),
-        observed_count,
-        snapshot.navigation.active_space_id.is_some()
-    ))
+    let deadline = tokio::time::Instant::now() + ROOM_LIST_EVENT_TIMEOUT;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            let snapshot = conn.snapshot();
+            return Err(format!(
+                "{label}: DM section scope mismatch \
+                 (expected_count={}, observed_count={}, active_space={})",
+                expected.len(),
+                sidebar_dm_room_ids(&snapshot).len(),
+                snapshot.navigation.active_space_id.is_some()
+            ));
+        }
+
+        let event = tokio::time::timeout(remaining, conn.recv_event())
+            .await
+            .map_err(|_| {
+                let snapshot = conn.snapshot();
+                format!(
+                    "{label}: DM section scope mismatch \
+                     (expected_count={}, observed_count={}, active_space={})",
+                    expected.len(),
+                    sidebar_dm_room_ids(&snapshot).len(),
+                    snapshot.navigation.active_space_id.is_some()
+                )
+            })?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::StateChanged(snapshot) if matches_expected(&snapshot) => return Ok(()),
+            CoreEvent::Room(RoomEvent::RoomListUpdated) if matches_expected(&conn.snapshot()) => {
+                return Ok(());
+            }
+            _ if matches_expected(&conn.snapshot()) => return Ok(()),
+            _ => {}
+        }
+    }
 }
 
 fn sidebar_dm_room_ids(snapshot: &AppState) -> BTreeSet<String> {
@@ -8778,48 +8766,6 @@ async fn wait_for_sync_stopped(
     }
 }
 
-async fn sync_once_for_qa(conn: &mut CoreConnection, label: &str) -> Result<(), String> {
-    let request_id = conn.next_request_id();
-    conn.command(CoreCommand::Sync(SyncCommand::SyncOnce { request_id }))
-        .await
-        .map_err(|e| format!("{label}: submit SyncOnce failed: {e}"))?;
-    wait_for_sync_once(conn, request_id, label).await
-}
-
-async fn best_effort_sync_once_for_qa(
-    conn: &mut CoreConnection,
-    label: &str,
-) -> Result<(), String> {
-    let request_id = conn.next_request_id();
-    conn.command(CoreCommand::Sync(SyncCommand::SyncOnce { request_id }))
-        .await
-        .map_err(|e| format!("{label}: submit SyncOnce failed: {e}"))?;
-
-    loop {
-        let event =
-            match tokio::time::timeout(DEVICE_LIST_SETTLE_SYNC_TIMEOUT, conn.recv_event()).await {
-                Ok(Ok(event)) => event,
-                Ok(Err(lag)) => {
-                    return Err(format!(
-                        "{label}: event stream lagged during best-effort SyncOnce (skipped={})",
-                        lag.skipped
-                    ));
-                }
-                Err(_) => return Ok(()),
-            };
-
-        match event {
-            CoreEvent::Sync(SyncEvent::Stopped {
-                request_id: Some(ev_id),
-            }) if ev_id == request_id => return Ok(()),
-            CoreEvent::OperationFailed {
-                request_id: ev_id, ..
-            } if ev_id == request_id => return Ok(()),
-            _ => {}
-        }
-    }
-}
-
 async fn stop_sync_for_qa(conn: &mut CoreConnection, label: &str) -> Result<(), String> {
     let request_id = conn.next_request_id();
     conn.command(CoreCommand::Sync(SyncCommand::Stop { request_id }))
@@ -8961,33 +8907,6 @@ async fn prove_legacy_stays_starting(conn: &mut CoreConnection, label: &str) -> 
         }
     }
     Ok(())
-}
-
-async fn wait_for_sync_once(
-    conn: &mut CoreConnection,
-    request_id: RequestId,
-    label: &str,
-) -> Result<(), String> {
-    let deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
-    loop {
-        let event = tokio::time::timeout_at(deadline, conn.recv_event())
-            .await
-            .map_err(|_| format!("{label}: timed out waiting for SyncOnce"))?
-            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
-
-        match event {
-            CoreEvent::Sync(SyncEvent::Stopped {
-                request_id: Some(ev_id),
-            }) if ev_id == request_id => return Ok(()),
-            CoreEvent::OperationFailed {
-                request_id: ev_id,
-                failure,
-            } if ev_id == request_id => {
-                return Err(format!("{label}: SyncOnce failed: {failure:?}"));
-            }
-            _ => {}
-        }
-    }
 }
 
 /// Wait for a `StateChanged` snapshot where `SessionState::Ready`.
@@ -9673,7 +9592,6 @@ async fn run_activity_stage(
     )
     .await?;
 
-    sync_once_for_qa(conn_a, "activity sync A after unread seed").await?;
     wait_for_room_unread_count(conn_a, room_id, "activity room unread count").await?;
 
     let open_id = conn_a.next_request_id();
@@ -10244,8 +10162,7 @@ async fn verify_second_device_room_key_delivery_for_qa(
     account_key_a2: &AccountKey,
     room_id: &str,
 ) -> Result<(), String> {
-    sync_once_for_qa(conn_a, "sync A before second-device encrypted send").await?;
-    sync_once_for_qa(conn_a2, "sync A2 before second-device encrypted receive").await?;
+    wait_for_room_in_room_list(conn_a, room_id, "A room list before encrypted send").await?;
     wait_for_room_in_room_list(conn_a2, room_id, "A2 room list before encrypted receive").await?;
 
     let key_a = TimelineKey::room(account_key_a.clone(), room_id.to_owned());
@@ -10341,7 +10258,6 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
     )
     .await?;
 
-    sync_once_for_qa(conn_a, "e2ee multi-device sync A after room create").await?;
     wait_for_room_in_room_list(
         conn_a,
         &room_id,
@@ -10356,7 +10272,6 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
         "e2ee multi-device invite B",
     )
     .await?;
-    sync_once_for_qa(&mut conn_b, "e2ee multi-device sync B for invite").await?;
     wait_for_invite_in_snapshot(
         &mut conn_b,
         &room_id,
@@ -10366,9 +10281,17 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
     .await?;
     accept_invite_for_qa(&mut conn_b, &room_id, "e2ee multi-device B accepts invite").await?;
 
-    sync_once_for_qa(conn_a, "e2ee multi-device sync A after B join").await?;
-    sync_once_for_qa(conn_a2, "e2ee multi-device sync A2 after room join").await?;
-    sync_once_for_qa(&mut conn_b, "e2ee multi-device sync B after join").await?;
+    let settings_a = load_room_settings_for_qa(
+        conn_a,
+        &room_id,
+        "e2ee multi-device A observes B membership",
+    )
+    .await?;
+    assert_room_settings_contains_members(
+        &settings_a,
+        &[account_key_a.0.as_str(), user_b_full_id.as_str()],
+        "e2ee multi-device A observes B membership",
+    )?;
     wait_for_room_in_room_list(
         conn_a2,
         &room_id,
@@ -10433,18 +10356,6 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
         maybe_recipient_second_device = Some((runtime_b2, conn_b2, account_key_b2, key_b2));
     }
 
-    if let Some((_runtime_b2, conn_b2, _account_key_b2, _key_b2)) =
-        maybe_recipient_second_device.as_mut()
-    {
-        settle_e2ee_device_list_propagation_for_qa(
-            conn_a,
-            &mut conn_b,
-            conn_b2,
-            "e2ee multi-device settle after B2 verification",
-        )
-        .await?;
-    }
-
     let runtime_b3 = CoreRuntime::start_with_data_dir(qa_data_dir("e2ee-b3-unverified"));
     let mut conn_b3 = runtime_b3.attach();
     let login_b3 = conn_b3.next_request_id();
@@ -10462,19 +10373,15 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
         .map_err(|error| format!("e2ee unverified peer login submit: {error}"))?;
     let session_b3 =
         wait_for_existing_identity_gate(&mut conn_b3, "e2ee unverified peer gate").await?;
-    best_effort_sync_once_for_qa(conn_a, "e2ee discover unverified peer device").await?;
-
-    if env_flag_enabled(ENV_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND)? {
-        stop_sync_for_qa(conn_a, "pause sync A before multi-device send").await?;
-        stop_sync_for_qa(conn_a2, "pause sync A2 before multi-device send").await?;
-        stop_sync_for_qa(&mut conn_b, "pause sync B before multi-device send").await?;
-        if let Some((_runtime_b2, conn_b2, _account_key_b2, _key_b2)) =
-            maybe_recipient_second_device.as_mut()
-        {
-            stop_sync_for_qa(conn_b2, "pause sync B2 before multi-device send").await?;
-        }
-    }
-
+    refresh_device_keys_and_assert_known_for_qa(
+        conn_a,
+        VerificationTarget {
+            user_id: session_b3.user_id.clone(),
+            device_id: session_b3.device_id.clone(),
+        },
+        "e2ee unverified peer device discovery",
+    )
+    .await?;
     let transaction_id = "qa-e2ee-multi-user-multi-device-delivery".to_owned();
     let send_id = conn_a.next_request_id();
     conn_a
@@ -10500,14 +10407,14 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
     .await?;
     println!("e2ee_unverified_peer_send_nonblocking=ok");
 
-    wait_for_item_with_body_with_sync(
+    wait_for_item_with_body_or_decryption_failure(
         conn_a2,
         &key_a2,
         E2EE_MULTI_USER_MULTI_DEVICE_BODY,
         "e2ee multi-device A2 receive",
     )
     .await?;
-    wait_for_item_with_body_with_sync(
+    wait_for_item_with_body_or_decryption_failure(
         &mut conn_b,
         &key_b,
         E2EE_MULTI_USER_MULTI_DEVICE_BODY,
@@ -10558,7 +10465,7 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
         E2EE_EVENT_TIMEOUT,
     )
     .await?;
-    wait_for_item_with_body_with_sync(
+    wait_for_item_with_body_or_decryption_failure(
         &mut conn_b,
         &key_b,
         blocked_body,
@@ -10591,7 +10498,7 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
     cleanup_logged_in_runtime(conn_b3, runtime_b3, account_key_b3, "e2ee cleanup B3").await?;
 
     if let Some((runtime_b2, mut conn_b2, account_key_b2, key_b2)) = maybe_recipient_second_device {
-        wait_for_item_with_body_with_sync(
+        wait_for_item_with_body_or_decryption_failure(
             &mut conn_b2,
             &key_b2,
             E2EE_MULTI_USER_MULTI_DEVICE_BODY,
@@ -10606,22 +10513,28 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
     Ok(())
 }
 
-async fn settle_e2ee_device_list_propagation_for_qa(
-    conn_a: &mut CoreConnection,
-    conn_b: &mut CoreConnection,
-    conn_b2: &mut CoreConnection,
+async fn refresh_device_keys_and_assert_known_for_qa(
+    conn: &mut CoreConnection,
+    target: VerificationTarget,
     label: &str,
 ) -> Result<(), String> {
-    for attempt in 1..=3 {
-        let label_b2 = format!("{label}: B2 sync {attempt}");
-        best_effort_sync_once_for_qa(conn_b2, &label_b2).await?;
-        let label_b = format!("{label}: B sync {attempt}");
-        best_effort_sync_once_for_qa(conn_b, &label_b).await?;
-        let label_a = format!("{label}: A sync {attempt}");
-        best_effort_sync_once_for_qa(conn_a, &label_a).await?;
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    Ok(())
+    let (acknowledged, ack) = tokio::sync::oneshot::channel();
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Account(
+        AccountCommand::QaRefreshDeviceKeysAndAssertKnown {
+            request_id,
+            target,
+            acknowledged,
+        },
+    ))
+    .await
+    .map_err(|_| format!("{label}: submit device-key refresh checkpoint failed"))?;
+
+    tokio::time::timeout(E2EE_EVENT_TIMEOUT, ack)
+        .await
+        .map_err(|_| format!("{label}: timed out waiting for device-key refresh checkpoint"))?
+        .map_err(|_| format!("{label}: device-key refresh checkpoint closed"))?
+        .map_err(|_| format!("{label}: exact device was not known after key refresh"))
 }
 
 enum QaParticipantLoginGate<'a> {
@@ -10824,49 +10737,6 @@ impl<'a> BodyWaitObserver<'a> {
                 self.expected_body
             )
         }
-    }
-}
-
-enum BodyWithSyncEventOutcome {
-    Found(TimelineItem),
-    RequestNextSync,
-    Continue,
-}
-
-fn observe_body_with_sync_event(
-    observer: &mut BodyWaitObserver<'_>,
-    key: &TimelineKey,
-    sync_request_id: RequestId,
-    event: CoreEvent,
-    label: &str,
-) -> Result<BodyWithSyncEventOutcome, String> {
-    match event {
-        CoreEvent::Timeline(TimelineEvent::InitialItems {
-            key: ref event_key,
-            items,
-            ..
-        }) if event_key == key => Ok(observer.observe_items(&items).map_or(
-            BodyWithSyncEventOutcome::Continue,
-            BodyWithSyncEventOutcome::Found,
-        )),
-        CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
-            key: ref event_key,
-            diffs,
-            ..
-        }) if event_key == key => Ok(observer.observe_diffs(&diffs)?.map_or(
-            BodyWithSyncEventOutcome::Continue,
-            BodyWithSyncEventOutcome::Found,
-        )),
-        CoreEvent::Sync(SyncEvent::Stopped {
-            request_id: Some(event_request_id),
-        }) if event_request_id == sync_request_id => Ok(BodyWithSyncEventOutcome::RequestNextSync),
-        CoreEvent::OperationFailed {
-            request_id: event_request_id,
-            failure,
-        } if event_request_id == sync_request_id => {
-            Err(format!("{label}: SyncOnce failed: {failure:?}"))
-        }
-        _ => Ok(BodyWithSyncEventOutcome::Continue),
     }
 }
 
@@ -13169,7 +13039,6 @@ async fn run_live_signals_stage(
         matches!(event, LiveSignalsEvent::ReadReceiptSent { .. })
     })
     .await?;
-    best_effort_sync_once_for_qa(conn_a, "live signals sync A for read receipt").await?;
     wait_for_read_receipt_projection(
         conn_a,
         &observer_room_id,
@@ -13222,12 +13091,6 @@ async fn run_live_signals_stage(
         )
     })
     .await?;
-    // Local SyncService homeserver lanes can acknowledge the typing command but
-    // not wake the room typing observer from the sliding-sync typing extension.
-    // A bounded SyncOnce keeps this QA leg focused on the Rust-owned
-    // command/event/state contract; product sync policy remains in SyncActor.
-    sync_once_for_qa(conn_a, "live signals sync A for typing").await?;
-
     wait_for_live_signal_snapshot(conn_a, "typing state", |snapshot| {
         snapshot
             .live_signals
@@ -13777,7 +13640,6 @@ async fn run_link_preview_stage(
     )
     .await?;
 
-    sync_once_for_qa(conn_a, "sync after link preview encrypted room creation").await?;
     wait_for_room_in_room_list(
         conn_a,
         &enc_room_id,
@@ -14530,9 +14392,10 @@ async fn wait_for_item_with_body_or_decryption_failure(
     expected_body: &str,
     label: &str,
 ) -> Result<koushi_core::event::TimelineItem, String> {
+    let deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
     let mut observer = BodyWaitObserver::new(expected_body);
     loop {
-        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+        let event = tokio::time::timeout_at(deadline, conn.recv_event())
             .await
             .map_err(|_| observer.timeout_message(label))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
@@ -14557,50 +14420,6 @@ async fn wait_for_item_with_body_or_decryption_failure(
                 }
             }
             _ => {}
-        }
-    }
-}
-
-async fn wait_for_item_with_body_with_sync(
-    conn: &mut CoreConnection,
-    key: &TimelineKey,
-    expected_body: &str,
-    label: &str,
-) -> Result<koushi_core::event::TimelineItem, String> {
-    let deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
-    let mut sync_request_id: Option<RequestId> = None;
-    let mut observer = BodyWaitObserver::new(expected_body);
-
-    loop {
-        if tokio::time::Instant::now() >= deadline {
-            return Err(observer.timeout_message(label));
-        }
-
-        if sync_request_id.is_none() {
-            let request_id = conn.next_request_id();
-            conn.command(CoreCommand::Sync(SyncCommand::SyncOnce { request_id }))
-                .await
-                .map_err(|e| format!("{label}: submit SyncOnce failed: {e}"))?;
-            sync_request_id = Some(request_id);
-        }
-
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        let event = tokio::time::timeout(remaining.min(EVENT_TIMEOUT), conn.recv_event())
-            .await
-            .map_err(|_| observer.timeout_message(label))?
-            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
-        let active_sync_request_id =
-            sync_request_id.expect("a SyncOnce request is active while waiting for events");
-        match observe_body_with_sync_event(
-            &mut observer,
-            key,
-            active_sync_request_id,
-            event,
-            label,
-        )? {
-            BodyWithSyncEventOutcome::Found(item) => return Ok(item),
-            BodyWithSyncEventOutcome::RequestNextSync => sync_request_id = None,
-            BodyWithSyncEventOutcome::Continue => {}
         }
     }
 }
@@ -15826,6 +15645,80 @@ mod tests {
     use koushi_core::event::{ThreadSummaryDto, TimelineGapPosition, TimelineMessageActions};
 
     #[test]
+    fn production_qa_never_overlaps_actor_owned_sync_with_manual_sync_once() {
+        let source = include_str!("headless-core-qa.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production source should precede tests");
+
+        assert!(
+            !production.contains("SyncCommand::SyncOnce"),
+            "production QA must wait on actor-owned typed events instead of issuing manual SyncOnce"
+        );
+        assert!(
+            !production.contains("sync_once_for_qa("),
+            "production QA must not retain manual SyncOnce helpers or callers"
+        );
+    }
+
+    #[test]
+    fn owner_driven_e2ee_body_waiter_keeps_the_extended_deadline() {
+        let source = include_str!("headless-core-qa.rs");
+        let helper = source
+            .split("async fn wait_for_item_with_body_or_decryption_failure")
+            .nth(1)
+            .expect("owner-driven E2EE body waiter should exist")
+            .split("async fn wait_for_bodies_and_pagination_settle")
+            .next()
+            .expect("pagination waiter should follow the E2EE body waiter");
+
+        assert!(helper.contains("E2EE_EVENT_TIMEOUT"));
+        assert!(helper.contains("tokio::time::timeout_at(deadline, conn.recv_event())"));
+        assert!(!helper.contains("SyncCommand::SyncOnce"));
+    }
+
+    #[test]
+    fn unverified_peer_refreshes_device_keys_before_behavioral_checkpoints() {
+        let source = include_str!("headless-core-qa.rs");
+        let stage = source
+            .split("async fn verify_multi_user_multi_device_room_key_delivery_for_qa")
+            .nth(1)
+            .expect("multi-device delivery stage should exist")
+            .split("enum QaParticipantLoginGate")
+            .next()
+            .expect("participant gate should follow multi-device delivery");
+
+        let refresh = stage
+            .find("refresh_device_keys_and_assert_known_for_qa(")
+            .expect("unverified-peer stage must refresh and assert the exact device");
+        let send = stage
+            .find("TimelineCommand::SendText")
+            .expect("unverified-peer stage must retain its behavioral send checkpoint");
+        assert!(refresh < send);
+        assert!(stage.contains("wait_for_send_flow_completion_with_timeout("));
+        assert!(stage.contains("E2EE_EVENT_TIMEOUT"));
+        assert!(stage.contains("e2ee multi-device A2 receive"));
+        assert!(stage.contains("e2ee multi-device B receive"));
+        assert!(stage.contains("blocked QA blacklist ack timeout"));
+        assert!(stage.contains("blocked QA B3 did not retain withheld/undecryptable event"));
+        assert!(!stage.contains("AccountCommand::RequestVerification"));
+        assert!(!stage.contains("SyncCommand::SyncOnce"));
+
+        let helper = source
+            .split("async fn refresh_device_keys_and_assert_known_for_qa")
+            .nth(1)
+            .expect("device-key refresh checkpoint helper should exist")
+            .split("enum QaParticipantLoginGate")
+            .next()
+            .expect("participant gate should follow the checkpoint helper");
+        assert!(helper.contains("AccountCommand::QaRefreshDeviceKeysAndAssertKnown"));
+        assert!(helper.contains("tokio::time::timeout(E2EE_EVENT_TIMEOUT, ack)"));
+        assert!(!helper.contains("AccountCommand::RequestVerification"));
+        assert!(!helper.contains("tokio::time::sleep"));
+    }
+
+    #[test]
     fn visible_gap_selector_prefers_internal_gap_and_returns_nearest_event_bounds() {
         let mut synthetic = projection_timeline_item("$synthetic-placeholder:test", false);
         synthetic.id = TimelineItemId::Synthetic {
@@ -16780,108 +16673,6 @@ mod tests {
     }
 
     #[test]
-    fn body_with_sync_event_observer_returns_found_before_matching_stop() {
-        let key = TimelineKey::room(
-            AccountKey("@alice:test".to_owned()),
-            "!room:test".to_owned(),
-        );
-        let sync_request_id = RequestId {
-            connection_id: koushi_core::ids::RuntimeConnectionId(1),
-            sequence: 10,
-        };
-        let delivered = synthetic_timeline_item(
-            "$delivered:test",
-            Some("delivered exact body"),
-            None,
-            None,
-            None,
-        );
-        let mut observer = BodyWaitObserver::new("delivered exact body");
-        let events = [
-            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
-                key: key.clone(),
-                generation: koushi_core::ids::TimelineGeneration(1),
-                batch_id: koushi_core::ids::TimelineBatchId(1),
-                diffs: vec![TimelineDiff::PushBack { item: delivered }],
-            }),
-            CoreEvent::Sync(SyncEvent::Stopped {
-                request_id: Some(sync_request_id),
-            }),
-        ];
-        let mut found = None;
-        let mut requested_next_sync = false;
-        for event in events {
-            match observe_body_with_sync_event(
-                &mut observer,
-                &key,
-                sync_request_id,
-                event,
-                "body with sync test",
-            )
-            .unwrap()
-            {
-                BodyWithSyncEventOutcome::Found(item) => {
-                    found = Some(item);
-                    break;
-                }
-                BodyWithSyncEventOutcome::RequestNextSync => {
-                    requested_next_sync = true;
-                    break;
-                }
-                BodyWithSyncEventOutcome::Continue => {}
-            }
-        }
-
-        let found = found.expect("target ItemsUpdated must win before SyncStopped");
-        assert_eq!(found.body.as_deref(), Some("delivered exact body"));
-        assert!(!requested_next_sync);
-    }
-
-    #[test]
-    fn body_with_sync_event_observer_repeats_only_for_matching_stop() {
-        let key = TimelineKey::room(
-            AccountKey("@alice:test".to_owned()),
-            "!room:test".to_owned(),
-        );
-        let sync_request_id = RequestId {
-            connection_id: koushi_core::ids::RuntimeConnectionId(1),
-            sequence: 20,
-        };
-        let other_request_id = RequestId {
-            connection_id: koushi_core::ids::RuntimeConnectionId(1),
-            sequence: 21,
-        };
-        let mut observer = BodyWaitObserver::new("missing body");
-
-        assert!(matches!(
-            observe_body_with_sync_event(
-                &mut observer,
-                &key,
-                sync_request_id,
-                CoreEvent::Sync(SyncEvent::Stopped {
-                    request_id: Some(other_request_id),
-                }),
-                "body with sync test",
-            )
-            .unwrap(),
-            BodyWithSyncEventOutcome::Continue
-        ));
-        assert!(matches!(
-            observe_body_with_sync_event(
-                &mut observer,
-                &key,
-                sync_request_id,
-                CoreEvent::Sync(SyncEvent::Stopped {
-                    request_id: Some(sync_request_id),
-                }),
-                "body with sync test",
-            )
-            .unwrap(),
-            BodyWithSyncEventOutcome::RequestNextSync
-        ));
-    }
-
-    #[test]
     fn find_timeline_item_with_body_finds_thread_reply_in_one_batch() {
         let items = vec![koushi_core::event::TimelineItem {
             id: koushi_core::event::TimelineItemId::Synthetic {
@@ -17179,7 +16970,7 @@ mod tests {
     }
 
     #[test]
-    fn e2ee_strict_qa_can_pause_sync_before_multi_device_send() {
+    fn e2ee_strict_qa_keeps_actor_owned_sync_running_for_multi_device_send() {
         let source = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/src/bin/headless-core-qa.rs"
@@ -17189,13 +16980,14 @@ mod tests {
             .next()
             .expect("headless-core-qa source should contain production section");
 
-        assert!(production_source.contains("ENV_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND"));
-        assert!(production_source.contains("pause sync A before multi-device send"));
-        assert!(production_source.contains("pause sync B2 before multi-device send"));
+        assert!(!production_source.contains("ENV_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND"));
+        assert!(!production_source.contains("pause sync A before multi-device send"));
+        assert!(!production_source.contains("pause sync B2 before multi-device send"));
+        assert!(production_source.contains("wait_for_item_with_body_or_decryption_failure("));
     }
 
     #[test]
-    fn e2ee_strict_qa_settles_device_lists_after_recipient_second_device_verification() {
+    fn e2ee_strict_qa_uses_typed_causal_checks_after_recipient_device_verification() {
         let source = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/src/bin/headless-core-qa.rs"
@@ -17205,10 +16997,11 @@ mod tests {
             .next()
             .expect("headless-core-qa source should contain production section");
 
-        assert!(production_source.contains("settle_e2ee_device_list_propagation_for_qa"));
-        assert!(production_source.contains("e2ee multi-device settle after B2 verification"));
-        assert!(production_source.contains("best_effort_sync_once_for_qa"));
-        assert!(production_source.contains("DEVICE_LIST_SETTLE_SYNC_TIMEOUT"));
+        assert!(!production_source.contains("settle_e2ee_device_list_propagation_for_qa"));
+        assert!(!production_source.contains("DEVICE_LIST_SETTLE_SYNC_TIMEOUT"));
+        assert!(production_source.contains("e2ee recipient verification B/B2"));
+        assert!(production_source.contains("e2ee multi-device B2 room list"));
+        assert!(production_source.contains("e2ee multi-device B2 receive"));
     }
 
     #[test]

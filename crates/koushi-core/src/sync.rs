@@ -213,6 +213,20 @@ enum ActiveBackend {
     LegacySync,
 }
 
+fn sync_once_admitted(
+    lifecycle: SyncLifecycle,
+    active_backend: ActiveBackend,
+    sync_task_active: bool,
+    sync_service_active: bool,
+    legacy_stop_active: bool,
+) -> bool {
+    matches!(lifecycle, SyncLifecycle::Stopped | SyncLifecycle::Failed)
+        && active_backend == ActiveBackend::None
+        && !sync_task_active
+        && !sync_service_active
+        && !legacy_stop_active
+}
+
 fn sync_lifecycle_label(lifecycle: SyncLifecycle) -> &'static str {
     match lifecycle {
         SyncLifecycle::Stopped => "stopped",
@@ -1158,6 +1172,22 @@ impl SyncActor {
 
     /// QA/debug: one-shot sync, does not affect the continuous sync state machine.
     async fn handle_sync_once(&self, request_id: RequestId) {
+        if !sync_once_admitted(
+            self.lifecycle,
+            self.active_backend,
+            self.sync_task.is_some(),
+            self.sync_service.is_some(),
+            self.legacy_stop_tx.is_some(),
+        ) {
+            self.emit(CoreEvent::OperationFailed {
+                request_id,
+                failure: CoreFailure::SyncFailed {
+                    kind: SyncFailureKind::Internal,
+                },
+            });
+            return;
+        }
+
         match koushi_sdk::sync_once(&self.session).await {
             Ok(()) => {
                 self.emit(CoreEvent::Sync(SyncEvent::Stopped {
@@ -1854,6 +1884,8 @@ pub(crate) fn sync_failure_kind_label(kind: SyncFailureKind) -> &'static str {
 
 #[cfg(test)]
 pub mod tests {
+    use koushi_state::SessionInfo;
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
     use tokio::sync::{broadcast, mpsc};
 
     use super::*;
@@ -1906,6 +1938,149 @@ pub mod tests {
         let clean = handle.shutdown_with_timeout(Duration::from_millis(1)).await;
 
         assert!(!clean, "stuck actor task must be aborted after timeout");
+    }
+
+    #[tokio::test]
+    async fn sync_once_is_rejected_before_sdk_call_while_continuous_owner_is_active() {
+        let server = MatrixMockServer::new().await;
+        server.mock_sync().ok(|_| {}).expect(0).mount().await;
+        let session = Arc::new(MatrixClientSession::from_client_for_testing(
+            server.client_builder().build().await,
+            SessionInfo {
+                homeserver: server.uri(),
+                user_id: "@sync-owner:example.invalid".to_owned(),
+                device_id: "SYNCOWNER".to_owned(),
+            },
+        ));
+        let (action_tx, _action_rx) = mpsc::channel(4);
+        let (event_tx, mut event_rx) = broadcast::channel(4);
+        let (_command_tx, command_rx) = mpsc::channel(1);
+        let (control_tx, control_rx) = mpsc::channel(1);
+        let (room_tx, _room_rx) = mpsc::channel(1);
+        let (timeline_tx, _timeline_rx) = mpsc::channel(1);
+        let mut actor = SyncActor {
+            session,
+            action_tx,
+            event_tx,
+            command_rx,
+            control_tx,
+            control_rx,
+            room_tx,
+            timeline_tx,
+            lifecycle: SyncLifecycle::Running,
+            sync_generation: Arc::new(AtomicU64::new(0)),
+            active_backend: ActiveBackend::LegacySync,
+            sync_task: None,
+            legacy_stop_tx: None,
+            legacy_run_generation: 1,
+            sync_service_run_generation: 0,
+            sync_service: None,
+            active_start_request_id: None,
+            sync_service_runtime_fallback_attempted: false,
+            ignored_user_list_handler: None,
+        };
+        let request_id = RequestId {
+            connection_id: crate::ids::RuntimeConnectionId(7),
+            sequence: 42,
+        };
+
+        actor
+            .handle_command(SyncCommand::SyncOnce { request_id })
+            .await;
+
+        assert!(matches!(
+            event_rx.recv().await.expect("sync once rejection event"),
+            CoreEvent::OperationFailed {
+                request_id: event_request_id,
+                failure: CoreFailure::SyncFailed {
+                    kind: SyncFailureKind::Internal,
+                },
+            } if event_request_id == request_id
+        ));
+        assert!(
+            event_rx.try_recv().is_err(),
+            "one rejected SyncOnce must emit exactly one failure"
+        );
+        server.verify().await;
+    }
+
+    #[test]
+    fn sync_once_admission_guard_precedes_the_sdk_call() {
+        let source = include_str!("sync.rs");
+        let body = source
+            .split("    async fn handle_sync_once")
+            .nth(1)
+            .expect("handle_sync_once should exist")
+            .split("    fn emit(")
+            .next()
+            .expect("emit should follow handle_sync_once");
+        let guard = body
+            .find("sync_once_admitted(")
+            .expect("SyncOnce must check continuous-owner admission");
+        let sdk_call = body
+            .find("koushi_sdk::sync_once(")
+            .expect("SDK sync_once call should remain present");
+
+        assert!(guard < sdk_call, "admission must run before the SDK call");
+        assert!(
+            body[guard..sdk_call].contains("SyncFailureKind::Internal")
+                && body[guard..sdk_call].contains("return;"),
+            "rejection must emit the fixed Internal failure and return before SDK work"
+        );
+    }
+
+    #[test]
+    fn sync_once_admission_requires_an_idle_lifecycle_and_no_owner_artifacts() {
+        assert!(sync_once_admitted(
+            SyncLifecycle::Stopped,
+            ActiveBackend::None,
+            false,
+            false,
+            false,
+        ));
+        assert!(sync_once_admitted(
+            SyncLifecycle::Failed,
+            ActiveBackend::None,
+            false,
+            false,
+            false,
+        ));
+
+        for lifecycle in [
+            SyncLifecycle::Starting,
+            SyncLifecycle::Running,
+            SyncLifecycle::Reconnecting,
+        ] {
+            assert!(!sync_once_admitted(
+                lifecycle,
+                ActiveBackend::None,
+                false,
+                false,
+                false,
+            ));
+        }
+        for backend in [ActiveBackend::SyncService, ActiveBackend::LegacySync] {
+            assert!(!sync_once_admitted(
+                SyncLifecycle::Stopped,
+                backend,
+                false,
+                false,
+                false,
+            ));
+        }
+        for owner_artifacts in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            assert!(!sync_once_admitted(
+                SyncLifecycle::Failed,
+                ActiveBackend::None,
+                owner_artifacts.0,
+                owner_artifacts.1,
+                owner_artifacts.2,
+            ));
+        }
     }
 
     #[test]

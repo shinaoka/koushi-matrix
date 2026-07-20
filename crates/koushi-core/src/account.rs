@@ -63,7 +63,9 @@ use crate::event::{
     EventCacheSubscribeStatus, LiveSignalsEvent, LocalEncryptionEvent,
 };
 use crate::executor;
-use crate::failure::{CoreFailure, LoginFailureKind, ProfileFailureKind, TimelineFailureKind};
+use crate::failure::{
+    CoreFailure, LoginFailureKind, ProfileFailureKind, SyncFailureKind, TimelineFailureKind,
+};
 use crate::ids::{
     AccountKey, RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration, TimelineKey,
     TimelineKind,
@@ -776,6 +778,31 @@ fn should_report_restricted_sync_failure(failure_reported: &mut bool, succeeded:
         *failure_reported = true;
         true
     }
+}
+
+fn restricted_sync_blocks_sync_once(restricted_sync_active: bool, command: &SyncCommand) -> bool {
+    restricted_sync_active && matches!(command, SyncCommand::SyncOnce { .. })
+}
+
+#[cfg(feature = "qa-bin")]
+async fn refresh_device_keys_and_assert_known(
+    session: &MatrixClientSession,
+    target: VerificationTarget,
+) -> Result<(), ()> {
+    let user_id = matrix_sdk::ruma::UserId::parse(target.user_id).map_err(|_| ())?;
+    let device_id = matrix_sdk::ruma::OwnedDeviceId::from(target.device_id);
+    let encryption = session.client().encryption();
+
+    let _ = encryption
+        .request_user_identity(&user_id)
+        .await
+        .map_err(|_| ())?;
+    encryption
+        .get_device(&user_id, &device_id)
+        .await
+        .map_err(|_| ())?
+        .ok_or(())?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2382,6 +2409,16 @@ impl AccountActor {
             }
         );
 
+        if restricted_sync_blocks_sync_once(self.restricted_sync.is_some(), &command) {
+            self.emit_failure(
+                request_id,
+                CoreFailure::SyncFailed {
+                    kind: SyncFailureKind::Internal,
+                },
+            );
+            return;
+        }
+
         if self.sync_actor.is_none()
             && !matches!(command, SyncCommand::Stop { .. })
             && let Some(session) = &self.session
@@ -2910,6 +2947,18 @@ impl AccountActor {
             } => {
                 self.handle_restore_key_backup(request_id, version, request)
                     .await;
+            }
+            #[cfg(feature = "qa-bin")]
+            AccountCommand::QaRefreshDeviceKeysAndAssertKnown {
+                target,
+                acknowledged,
+                ..
+            } => {
+                let result = match self.session.as_ref() {
+                    Some(session) => refresh_device_keys_and_assert_known(session, target).await,
+                    None => Err(()),
+                };
+                let _ = acknowledged.send(result);
             }
             #[cfg(feature = "qa-bin")]
             AccountCommand::QaSetLocalDeviceBlacklisted {
@@ -10862,6 +10911,112 @@ mod tests {
         assert!(
             spawn_call < no_actor_trace,
             "no-actor stop handling should be separate from the spawn path"
+        );
+    }
+
+    #[test]
+    fn restricted_sync_once_guard_precedes_sync_actor_spawn_and_send() {
+        let source = include_str!("account.rs");
+        let route_body = source
+            .split("async fn route_sync_command")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn spawn_sync_actor").next())
+            .expect("route_sync_command body");
+        let guard = route_body
+            .find("restricted_sync_blocks_sync_once(")
+            .expect("restricted sync must gate SyncOnce at the AccountActor boundary");
+        let spawn = route_body
+            .find("self.spawn_sync_actor(")
+            .expect("normal routing should retain lazy SyncActor spawn");
+        let send = route_body
+            .find("handle.send(SyncMessage::Command(command))")
+            .expect("normal routing should retain SyncActor send");
+
+        assert!(guard < spawn && guard < send);
+        assert!(
+            route_body[guard..spawn].contains("CoreFailure::SyncFailed")
+                && route_body[guard..spawn].contains("SyncFailureKind::Internal")
+                && route_body[guard..spawn].contains("return;"),
+            "restricted-owner rejection must emit one fixed Internal failure before routing"
+        );
+    }
+
+    #[test]
+    fn restricted_sync_blocks_only_sync_once_commands() {
+        let request_id = test_request_id();
+
+        assert!(restricted_sync_blocks_sync_once(
+            true,
+            &SyncCommand::SyncOnce { request_id },
+        ));
+        assert!(!restricted_sync_blocks_sync_once(
+            false,
+            &SyncCommand::SyncOnce { request_id },
+        ));
+        for command in [
+            SyncCommand::Start { request_id },
+            SyncCommand::Stop { request_id },
+            SyncCommand::Restart { request_id },
+        ] {
+            assert!(!restricted_sync_blocks_sync_once(true, &command));
+        }
+    }
+
+    #[cfg(feature = "qa-bin")]
+    #[test]
+    fn qa_device_key_refresh_queries_before_asserting_the_exact_device() {
+        let source = include_str!("account.rs");
+        let helper = source
+            .split("async fn refresh_device_keys_and_assert_known")
+            .nth(1)
+            .expect("QA device-key refresh helper should exist")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("tests should follow the QA device-key refresh helper");
+        let query = helper
+            .find("request_user_identity(&user_id)")
+            .expect("QA checkpoint must perform an explicit /keys/query");
+        let exact_device = helper
+            .find("get_device(&user_id, &device_id)")
+            .expect("QA checkpoint must require the exact device after refresh");
+
+        assert!(query < exact_device);
+        assert!(helper[exact_device..].contains(".ok_or(())?"));
+    }
+
+    #[cfg(feature = "qa-bin")]
+    #[tokio::test]
+    async fn qa_device_key_refresh_accepts_identityless_exact_device_and_rejects_missing_device() {
+        let server = MatrixMockServer::new().await;
+        server.mock_crypto_endpoints_preset().await;
+        let (alice, bob) = server.set_up_alice_and_bob_for_encryption().await;
+        let bob_target = VerificationTarget {
+            user_id: bob.user_id().expect("synthetic Bob user").to_string(),
+            device_id: bob.device_id().expect("synthetic Bob device").to_string(),
+        };
+        let session = MatrixClientSession::from_client_for_testing(
+            alice,
+            koushi_state::SessionInfo {
+                homeserver: server.uri(),
+                user_id: "@alice:example.org".to_owned(),
+                device_id: "4L1C3".to_owned(),
+            },
+        );
+
+        assert_eq!(
+            refresh_device_keys_and_assert_known(&session, bob_target.clone()).await,
+            Ok(())
+        );
+        assert_eq!(
+            refresh_device_keys_and_assert_known(
+                &session,
+                VerificationTarget {
+                    device_id: "MISSINGDEVICE".to_owned(),
+                    ..bob_target
+                },
+            )
+            .await,
+            Err(())
         );
     }
 

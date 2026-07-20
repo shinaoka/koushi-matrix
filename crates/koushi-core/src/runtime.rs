@@ -3912,7 +3912,8 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
             Some(AppAction::RestoreSessionRequested)
         }
         #[cfg(feature = "qa-bin")]
-        AccountCommand::QaSetLocalDeviceBlacklisted { .. } => None,
+        AccountCommand::QaSetLocalDeviceBlacklisted { .. }
+        | AccountCommand::QaRefreshDeviceKeysAndAssertKnown { .. } => None,
         AccountCommand::CompleteOidcLogin { .. }
         | AccountCommand::QuerySavedSessions { .. }
         | AccountCommand::SetPresence { .. }
@@ -5734,6 +5735,26 @@ mod tests {
                 reason: koushi_state::VerificationCancelReason::User,
             }),
             None
+        );
+    }
+
+    #[cfg(feature = "qa-bin")]
+    #[test]
+    fn qa_device_key_refresh_has_no_speculative_app_projection() {
+        let (acknowledged, _ack) = tokio::sync::oneshot::channel();
+        assert!(
+            account_command_projected_action(&AccountCommand::QaRefreshDeviceKeysAndAssertKnown {
+                request_id: RequestId {
+                    connection_id: RuntimeConnectionId(1),
+                    sequence: 43,
+                },
+                target: koushi_state::VerificationTarget {
+                    user_id: "@private:example.invalid".to_owned(),
+                    device_id: "PRIVATEDEVICE".to_owned(),
+                },
+                acknowledged,
+            })
+            .is_none()
         );
     }
 
