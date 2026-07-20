@@ -679,6 +679,7 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "cancel_send=ok",
             "fifo=ok",
             "unsent_restart=ok",
+            "display_projection_reset_fallbacks=0",
         ],
         QaStage::RestoreCleanup => &["restore_cleanup=ok"],
         QaStage::LinkPreview => &[
@@ -759,6 +760,7 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "cancel_send=ok",
         "fifo=ok",
         "unsent_restart=ok",
+        "display_projection_reset_fallbacks=0",
         "joined_room_restore=ok",
         "e2ee_second_device_decrypt=ok",
         "e2ee_multi_user_multi_device_decrypt=ok",
@@ -3799,6 +3801,8 @@ async fn run_send_queue_stage(
     config: &QaConfig,
     recovery_secret: &AuthSecret,
 ) -> Result<(), String> {
+    let display_projection_reset_fallback_baseline =
+        koushi_core::timeline::display_projection_reset_fallback_count();
     let proxy = QaTcpProxy::start(&config.homeserver)?;
     let data_dir = qa_data_dir("send_queue");
     let proxy_homeserver = proxy.homeserver_url();
@@ -3978,6 +3982,11 @@ async fn run_send_queue_stage(
     let restored_txn = match restored.id {
         TimelineItemId::Transaction { transaction_id } => transaction_id,
         TimelineItemId::Event { .. } => {
+            assert_zero_display_projection_reset_fallback_delta(
+                display_projection_reset_fallback_baseline,
+                koushi_core::timeline::display_projection_reset_fallback_count(),
+            )?;
+            println!("display_projection_reset_fallbacks=0");
             unsubscribe_timeline_for_qa(&mut conn, &key, "send_queue unsubscribe before cleanup")
                 .await?;
             println!("unsent_restart=ok");
@@ -4009,8 +4018,25 @@ async fn run_send_queue_stage(
     .await?;
     println!("unsent_restart=ok");
 
+    assert_zero_display_projection_reset_fallback_delta(
+        display_projection_reset_fallback_baseline,
+        koushi_core::timeline::display_projection_reset_fallback_count(),
+    )?;
+    println!("display_projection_reset_fallbacks=0");
+
     unsubscribe_timeline_for_qa(&mut conn, &key, "send_queue unsubscribe before cleanup").await?;
     cleanup_logged_in_runtime(conn, runtime, account_key, "send_queue cleanup").await
+}
+
+fn assert_zero_display_projection_reset_fallback_delta(
+    baseline: u64,
+    current: u64,
+) -> Result<(), String> {
+    if current == baseline {
+        Ok(())
+    } else {
+        Err("send_queue: display projection reset fallback counter changed".to_owned())
+    }
 }
 
 async fn unsubscribe_timeline_for_qa(
@@ -17733,9 +17759,31 @@ mod tests {
                 "cancel_send=ok",
                 "fifo=ok",
                 "unsent_restart=ok",
+                "display_projection_reset_fallbacks=0",
                 "restore_cleanup=ok",
             ]
         );
+    }
+
+    #[test]
+    fn send_queue_display_projection_fallback_gate_requires_zero_counter_delta() {
+        assert_eq!(
+            assert_zero_display_projection_reset_fallback_delta(41, 41),
+            Ok(())
+        );
+        assert!(assert_zero_display_projection_reset_fallback_delta(41, 42).is_err());
+
+        let source = include_str!("headless-core-qa.rs");
+        let stage = source
+            .split("async fn run_send_queue_stage")
+            .nth(1)
+            .expect("send queue stage")
+            .split("async fn unsubscribe_timeline_for_qa")
+            .next()
+            .expect("send queue stage boundary");
+        assert!(stage.contains("display_projection_reset_fallback_count()"));
+        assert!(stage.contains("assert_zero_display_projection_reset_fallback_delta"));
+        assert!(stage.contains("println!(\"display_projection_reset_fallbacks=0\")"));
     }
 
     #[test]
@@ -18613,6 +18661,7 @@ mod tests {
                 "cancel_send=ok",
                 "fifo=ok",
                 "unsent_restart=ok",
+                "display_projection_reset_fallbacks=0",
                 "joined_room_restore=ok",
                 "e2ee_second_device_decrypt=ok",
                 "e2ee_multi_user_multi_device_decrypt=ok",
@@ -19102,6 +19151,7 @@ mod tests {
                 "cancel_send=ok",
                 "fifo=ok",
                 "unsent_restart=ok",
+                "display_projection_reset_fallbacks=0",
                 "joined_room_restore=ok",
                 "e2ee_second_device_decrypt=ok",
                 "e2ee_multi_user_multi_device_decrypt=ok",
