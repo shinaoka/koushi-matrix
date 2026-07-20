@@ -1424,6 +1424,31 @@ fn fast_send_queue_lane_hard_bounds_generic_lifecycle_phases() {
 }
 
 #[test]
+fn send_queue_stage_uses_active_replay_waiter_for_both_subscriptions() {
+    let source = include_str!("../src/bin/headless-core-qa.rs");
+    let send_queue_stage = source
+        .split("\nasync fn run_send_queue_stage(")
+        .nth(1)
+        .expect("run_send_queue_stage body")
+        .split("\nasync fn unsubscribe_timeline_for_qa(")
+        .next()
+        .expect("run_send_queue_stage body end");
+
+    assert_eq!(
+        send_queue_stage
+            .matches("wait_for_initial_items_or_active_replay(")
+            .count(),
+        2,
+        "initial and restored SendQueue subscribes must both accept same-key replay InitialItems"
+    );
+    assert_eq!(
+        send_queue_stage.matches("wait_for_initial_items(").count(),
+        0,
+        "SendQueue subscribes must not require their fresh request id on an active timeline"
+    );
+}
+
+#[test]
 fn fast_send_queue_restored_completion_cannot_finish_from_send_completed_alone() {
     let source = include_str!("send_queue_fast.rs");
     let helper = source

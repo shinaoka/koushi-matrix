@@ -17904,31 +17904,6 @@ mod tests {
     }
 
     #[test]
-    fn send_queue_stage_uses_active_replay_waiter_for_both_subscriptions() {
-        let source = include_str!("headless-core-qa.rs");
-        let send_queue_stage = source
-            .split("\nasync fn run_send_queue_stage(")
-            .nth(1)
-            .expect("run_send_queue_stage body")
-            .split("\nasync fn unsubscribe_timeline_for_qa(")
-            .next()
-            .expect("run_send_queue_stage body end");
-
-        assert_eq!(
-            send_queue_stage
-                .matches("wait_for_initial_items_or_active_replay(")
-                .count(),
-            2,
-            "initial and restored SendQueue subscribes must both accept same-key replay InitialItems"
-        );
-        assert_eq!(
-            send_queue_stage.matches("wait_for_initial_items(").count(),
-            0,
-            "SendQueue subscribes must not require their fresh request id on an active timeline"
-        );
-    }
-
-    #[test]
     fn send_queue_proxy_forces_connection_close_per_request() {
         let request = b"POST /_matrix/client/v3/login HTTP/1.1\r\nHost: example.test\r\nConnection: keep-alive\r\nProxy-Connection: keep-alive\r\nContent-Length: 2\r\n\r\n{}";
         let rewritten = rewrite_http_request_connection_close(request).unwrap();
