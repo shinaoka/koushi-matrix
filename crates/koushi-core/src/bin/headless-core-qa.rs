@@ -500,11 +500,7 @@ impl QaScenario {
             ),
             Self::SendQueue => matches!(
                 stage,
-                QaStage::Safety
-                    | QaStage::LoginSync
-                    | QaStage::RoomSpace
-                    | QaStage::Timeline
-                    | QaStage::SendQueue
+                QaStage::Safety | QaStage::LoginSync | QaStage::SendQueue
             ),
             Self::RestoreCleanup => matches!(
                 stage,
@@ -896,13 +892,7 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::Timeline,
             QaStage::ScheduledSend,
         ],
-        QaScenario::SendQueue => vec![
-            QaStage::Safety,
-            QaStage::LoginSync,
-            QaStage::RoomSpace,
-            QaStage::Timeline,
-            QaStage::SendQueue,
-        ],
+        QaScenario::SendQueue => vec![QaStage::Safety, QaStage::LoginSync, QaStage::SendQueue],
         QaScenario::RestoreCleanup => vec![
             QaStage::Safety,
             QaStage::LoginSync,
@@ -3754,6 +3744,35 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
     Ok(())
 }
 
+async fn run_focused_send_queue_scenario(config: &QaConfig) -> Result<(), String> {
+    let QaParticipantLoginOutcome {
+        runtime,
+        conn,
+        account_key: _,
+        bootstrap_recovery_secret,
+    } = login_synced_participant_for_qa(
+        &config.homeserver,
+        qa_data_dir("send_queue_bootstrap"),
+        &config.user_a,
+        &config.password_a,
+        "Koushi Core QA Send Queue Bootstrap",
+        "send_queue bootstrap login",
+        "send_queue bootstrap gate",
+        QaParticipantLoginGate::BootstrapNewIdentity,
+    )
+    .await?;
+    let recovery_secret = bootstrap_recovery_secret
+        .ok_or_else(|| "send_queue bootstrap recovery secret unavailable".to_owned())?;
+    println!("login_sync=ok");
+
+    drop(conn);
+    tokio::time::timeout(EVENT_TIMEOUT, runtime.shutdown())
+        .await
+        .map_err(|_| "send_queue bootstrap ordered runtime shutdown timed out".to_owned())?;
+
+    run_send_queue_stage(config, &recovery_secret).await
+}
+
 async fn run_send_queue_stage(
     config: &QaConfig,
     recovery_secret: &AuthSecret,
@@ -3761,7 +3780,12 @@ async fn run_send_queue_stage(
     let proxy = QaTcpProxy::start(&config.homeserver)?;
     let data_dir = qa_data_dir("send_queue");
     let proxy_homeserver = proxy.homeserver_url();
-    let (runtime, mut conn, account_key) = login_synced_participant_for_qa(
+    let QaParticipantLoginOutcome {
+        runtime,
+        mut conn,
+        account_key,
+        bootstrap_recovery_secret: _,
+    } = login_synced_participant_for_qa(
         &proxy_homeserver,
         data_dir.clone(),
         &config.user_a,
@@ -5381,11 +5405,10 @@ fn should_bootstrap_new_identity_before_logged_in(scenario: QaScenario) -> bool 
             | QaScenario::E2eeTrust
             | QaScenario::GateRestore
             | QaScenario::GateNegative
-            | QaScenario::SendQueue
     )
 }
 
-fn should_bootstrap_secondary_identity_before_logged_in(scenario: QaScenario) -> bool {
+fn should_run_focused_send_queue_route(scenario: QaScenario) -> bool {
     scenario == QaScenario::SendQueue
 }
 
@@ -5419,6 +5442,11 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     if scenario == QaScenario::GateNoProof {
         println!("safety=ok");
         run_gate_no_proof_stage(&config).await?;
+        return Ok(scenario_report(&config.server_kind, scenario));
+    }
+    if should_run_focused_send_queue_route(scenario) {
+        println!("safety=ok");
+        run_focused_send_queue_scenario(&config).await?;
         return Ok(scenario_report(&config.server_kind, scenario));
     }
 
@@ -5736,11 +5764,6 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         }))
         .await
         .map_err(|e| format!("submit login B: {e}"))?;
-
-    if should_bootstrap_secondary_identity_before_logged_in(scenario) {
-        complete_new_identity_gate_for_qa(&mut conn_b, &config.password_b, "gate-bootstrap-b")
-            .await?;
-    }
 
     let account_key_b = wait_for_logged_in(&mut conn_b, login_b_id, "login B").await?;
     wait_for_ready_snapshot(&mut conn_b, "session B Ready").await?;
@@ -10372,7 +10395,12 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
     account_key_a2: &AccountKey,
 ) -> Result<(), String> {
     let check_recipient_second_device = env_flag_enabled(ENV_E2EE_RECIPIENT_SECOND_DEVICE)?;
-    let (runtime_b, mut conn_b, account_key_b) = login_synced_participant_for_qa(
+    let QaParticipantLoginOutcome {
+        runtime: runtime_b,
+        conn: mut conn_b,
+        account_key: account_key_b,
+        bootstrap_recovery_secret: _,
+    } = login_synced_participant_for_qa(
         &config.homeserver,
         qa_data_dir("e2ee-b"),
         &config.user_b,
@@ -10681,6 +10709,13 @@ enum QaParticipantLoginGate<'a> {
     RecoverExistingIdentity(&'a AuthSecret),
 }
 
+struct QaParticipantLoginOutcome {
+    runtime: CoreRuntime,
+    conn: CoreConnection,
+    account_key: AccountKey,
+    bootstrap_recovery_secret: Option<AuthSecret>,
+}
+
 async fn login_synced_participant_for_qa(
     homeserver: &str,
     data_dir: std::path::PathBuf,
@@ -10690,7 +10725,7 @@ async fn login_synced_participant_for_qa(
     label: &str,
     gate_label: &str,
     gate: QaParticipantLoginGate<'_>,
-) -> Result<(CoreRuntime, CoreConnection, AccountKey), String> {
+) -> Result<QaParticipantLoginOutcome, String> {
     let runtime = CoreRuntime::start_with_data_dir(data_dir);
     let mut conn = runtime.attach();
 
@@ -10706,9 +10741,9 @@ async fn login_synced_participant_for_qa(
     }))
     .await
     .map_err(|e| format!("{label}: submit login failed: {e}"))?;
-    match gate {
+    let bootstrap_recovery_secret = match gate {
         QaParticipantLoginGate::BootstrapNewIdentity => {
-            complete_new_identity_gate_for_qa(&mut conn, password, gate_label).await?;
+            complete_new_identity_gate_for_qa(&mut conn, password, gate_label).await?
         }
         QaParticipantLoginGate::RecoverExistingIdentity(recovery_secret) => {
             wait_for_recovery_gate(&mut conn, gate_label).await?;
@@ -10721,13 +10756,19 @@ async fn login_synced_participant_for_qa(
             }))
             .await
             .map_err(|e| format!("{gate_label}: submit recovery failed: {e}"))?;
+            None
         }
-    }
+    };
     let account_key = wait_for_logged_in(&mut conn, login_id, label).await?;
     wait_for_ready_snapshot(&mut conn, label).await?;
     start_sync_for_qa(&mut conn, label).await?;
 
-    Ok((runtime, conn, account_key))
+    Ok(QaParticipantLoginOutcome {
+        runtime,
+        conn,
+        account_key,
+        bootstrap_recovery_secret,
+    })
 }
 
 async fn subscribe_timeline_for_qa(
@@ -17536,24 +17577,24 @@ mod tests {
     }
 
     #[test]
-    fn send_queue_scenario_runs_after_timeline_and_reports_private_tokens() {
+    fn send_queue_scenario_skips_generic_fixture_stages_and_reports_private_tokens() {
         assert!(QaScenario::SendQueue.should_run_stage(QaStage::Safety));
         assert!(QaScenario::SendQueue.should_run_stage(QaStage::LoginSync));
-        assert!(QaScenario::SendQueue.should_run_stage(QaStage::RoomSpace));
-        assert!(QaScenario::SendQueue.should_run_stage(QaStage::Timeline));
+        assert!(!QaScenario::SendQueue.should_run_stage(QaStage::RoomSpace));
+        assert!(!QaScenario::SendQueue.should_run_stage(QaStage::Timeline));
         assert!(QaScenario::SendQueue.should_run_stage(QaStage::SendQueue));
         assert!(!QaScenario::SendQueue.should_run_stage(QaStage::Reply));
         assert!(!QaScenario::SendQueue.should_run_stage(QaStage::EditRedactSearch));
+        assert_eq!(
+            stages_for_scenario(QaScenario::SendQueue),
+            [QaStage::Safety, QaStage::LoginSync, QaStage::SendQueue]
+        );
 
         assert_eq!(
             final_tokens_for_scenario(QaScenario::SendQueue),
             [
                 "safety=ok",
                 "login_sync=ok",
-                "room_space=ok",
-                "timeline=ok",
-                "timeline_nav=ok",
-                "hide_redacted=ok",
                 "send_fail=ok",
                 "resend=ok",
                 "cancel_send=ok",
@@ -17565,15 +17606,53 @@ mod tests {
     }
 
     #[test]
-    fn send_queue_bootstraps_new_identity_before_waiting_for_logged_in() {
+    fn send_queue_alone_uses_the_focused_early_route() {
+        assert!(should_run_focused_send_queue_route(QaScenario::SendQueue));
+
+        for scenario in [
+            QaScenario::All,
+            QaScenario::LoginSync,
+            QaScenario::RoomSpace,
+            QaScenario::Timeline,
+            QaScenario::E2eeTrust,
+        ] {
+            assert!(
+                !should_run_focused_send_queue_route(scenario),
+                "{scenario:?} must retain its existing route"
+            );
+        }
+
+        let source = include_str!("headless-core-qa.rs");
+        let route = source
+            .split("async fn run_focused_send_queue_scenario")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn run_send_queue_stage").next())
+            .expect("focused SendQueue route");
+        let drop_connection = route
+            .find("drop(conn)")
+            .expect("focused route drops its bootstrap connection");
+        let ordered_shutdown = route
+            .find("runtime.shutdown()")
+            .expect("focused route awaits ordered runtime shutdown");
+        let standalone_stage = route
+            .find("run_send_queue_stage(config, &recovery_secret).await")
+            .expect("focused route invokes the standalone SendQueue stage");
+
+        assert!(route.contains("QaParticipantLoginGate::BootstrapNewIdentity"));
+        assert!(route.contains("bootstrap_recovery_secret"));
+        assert!(drop_connection < ordered_shutdown);
+        assert!(ordered_shutdown < standalone_stage);
+        assert!(!route.contains("user_b"));
+        assert!(!route.contains("password_b"));
+    }
+
+    #[test]
+    fn all_flow_retains_the_primary_recovery_secret_for_its_send_queue_stage() {
         assert!(QaScenario::All.should_run_stage(QaStage::SendQueue));
         assert!(
             should_bootstrap_new_identity_before_logged_in(QaScenario::All),
             "All must retain the primary recovery secret required by its SendQueue stage"
         );
-        assert!(should_bootstrap_new_identity_before_logged_in(
-            QaScenario::SendQueue
-        ));
         assert!(should_bootstrap_new_identity_before_logged_in(
             QaScenario::E2eeTrust
         ));
@@ -17593,27 +17672,9 @@ mod tests {
         assert!(!should_bootstrap_new_identity_before_logged_in(
             QaScenario::TimelineReconnect
         ));
-    }
-
-    #[test]
-    fn send_queue_bootstraps_secondary_identity_before_waiting_for_logged_in() {
-        assert!(should_bootstrap_secondary_identity_before_logged_in(
+        assert!(!should_bootstrap_new_identity_before_logged_in(
             QaScenario::SendQueue
         ));
-
-        for scenario in [
-            QaScenario::LoginSync,
-            QaScenario::TimelineReconnect,
-            QaScenario::GateNoProof,
-            QaScenario::E2eeTrust,
-            QaScenario::GateRestore,
-            QaScenario::GateNegative,
-        ] {
-            assert!(
-                !should_bootstrap_secondary_identity_before_logged_in(scenario),
-                "{scenario:?} must retain its existing primary or dedicated gate semantics"
-            );
-        }
     }
 
     #[test]
