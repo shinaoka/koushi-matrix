@@ -3753,7 +3753,10 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
     Ok(())
 }
 
-async fn run_send_queue_stage(config: &QaConfig) -> Result<(), String> {
+async fn run_send_queue_stage(
+    config: &QaConfig,
+    recovery_secret: &AuthSecret,
+) -> Result<(), String> {
     let proxy = QaTcpProxy::start(&config.homeserver)?;
     let data_dir = qa_data_dir("send_queue");
     let proxy_homeserver = proxy.homeserver_url();
@@ -3764,8 +3767,8 @@ async fn run_send_queue_stage(config: &QaConfig) -> Result<(), String> {
         &config.password_a,
         "Koushi Core QA Send Queue",
         "send_queue login",
-        "send_queue gate bootstrap",
-        true,
+        "send_queue recovery gate",
+        QaParticipantLoginGate::RecoverExistingIdentity(recovery_secret),
     )
     .await?;
 
@@ -6370,7 +6373,10 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     println!("timeline=ok");
 
     if scenario.should_run_stage(QaStage::SendQueue) {
-        run_send_queue_stage(&config).await?;
+        let recovery_secret = bootstrap_recovery_secret_a
+            .as_ref()
+            .ok_or_else(|| "send_queue: primary recovery secret unavailable".to_owned())?;
+        run_send_queue_stage(&config, recovery_secret).await?;
     }
 
     if !scenario.should_run_stage(QaStage::EditRedactSearch) {
@@ -10381,7 +10387,7 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
         DEVICE_B,
         "e2ee login B",
         "gate-bootstrap-b",
-        true,
+        QaParticipantLoginGate::BootstrapNewIdentity,
     )
     .await?;
 
@@ -10677,6 +10683,11 @@ async fn settle_e2ee_device_list_propagation_for_qa(
     Ok(())
 }
 
+enum QaParticipantLoginGate<'a> {
+    BootstrapNewIdentity,
+    RecoverExistingIdentity(&'a AuthSecret),
+}
+
 async fn login_synced_participant_for_qa(
     homeserver: &str,
     data_dir: std::path::PathBuf,
@@ -10685,7 +10696,7 @@ async fn login_synced_participant_for_qa(
     device_display_name: &str,
     label: &str,
     gate_label: &str,
-    bootstrap_new_identity: bool,
+    gate: QaParticipantLoginGate<'_>,
 ) -> Result<(CoreRuntime, CoreConnection, AccountKey), String> {
     let runtime = CoreRuntime::start_with_data_dir(data_dir);
     let mut conn = runtime.attach();
@@ -10702,8 +10713,22 @@ async fn login_synced_participant_for_qa(
     }))
     .await
     .map_err(|e| format!("{label}: submit login failed: {e}"))?;
-    if bootstrap_new_identity {
-        complete_new_identity_gate_for_qa(&mut conn, password, gate_label).await?;
+    match gate {
+        QaParticipantLoginGate::BootstrapNewIdentity => {
+            complete_new_identity_gate_for_qa(&mut conn, password, gate_label).await?;
+        }
+        QaParticipantLoginGate::RecoverExistingIdentity(recovery_secret) => {
+            wait_for_recovery_gate(&mut conn, gate_label).await?;
+            let recovery_request_id = conn.next_request_id();
+            conn.command(CoreCommand::Account(AccountCommand::SubmitRecovery {
+                request_id: recovery_request_id,
+                request: RecoveryRequest {
+                    secret: recovery_secret.clone(),
+                },
+            }))
+            .await
+            .map_err(|e| format!("{gate_label}: submit recovery failed: {e}"))?;
+        }
     }
     let account_key = wait_for_logged_in(&mut conn, login_id, label).await?;
     wait_for_ready_snapshot(&mut conn, label).await?;
@@ -17594,7 +17619,7 @@ mod tests {
     }
 
     #[test]
-    fn standalone_send_queue_login_uses_centralized_identity_bootstrap() {
+    fn standalone_send_queue_login_requires_primary_recovery_secret() {
         let source = include_str!("headless-core-qa.rs");
         let stage = source
             .split("async fn run_send_queue_stage")
@@ -17606,9 +17631,33 @@ mod tests {
 
         assert!(stage.contains("login_synced_participant_for_qa("));
         assert!(stage.contains("proxy.homeserver_url()"));
-        assert!(stage.contains("\n        true,"));
+        assert!(stage.contains("recovery_secret: &AuthSecret"));
+        assert!(stage.contains("QaParticipantLoginGate::RecoverExistingIdentity(recovery_secret)"));
+        assert!(!stage.contains("\n        true,"));
         assert!(!stage.contains("AccountCommand::LoginPassword"));
         assert!(!stage.contains("wait_for_logged_in"));
+    }
+
+    #[test]
+    fn participant_login_gate_policy_distinguishes_bootstrap_from_recovery() {
+        let source = include_str!("headless-core-qa.rs");
+        let before_helper = source
+            .split("async fn login_synced_participant_for_qa")
+            .next()
+            .expect("source before centralized participant login helper");
+        let helper = source
+            .split("async fn login_synced_participant_for_qa")
+            .nth(1)
+            .expect("centralized participant login helper")
+            .split("async fn subscribe_timeline_for_qa")
+            .next()
+            .expect("centralized participant login helper end");
+
+        assert!(before_helper.contains("enum QaParticipantLoginGate<'a>"));
+        assert!(before_helper.contains("BootstrapNewIdentity"));
+        assert!(before_helper.contains("RecoverExistingIdentity(&'a AuthSecret)"));
+        assert!(helper.contains("gate: QaParticipantLoginGate<'_>"));
+        assert!(!helper.contains("bootstrap_new_identity: bool"));
     }
 
     #[test]

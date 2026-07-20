@@ -630,3 +630,33 @@ Fresh short-gate evidence:
 - `git diff --check`: passed.
 
 No long lane was run by this worker, and no push or PR was created.
+
+## SENDQUEUE EXISTING-IDENTITY GATE FIX — 2026-07-20
+
+The follow-up Conduit evidence refined the earlier diagnosis. The standalone
+SendQueue device successfully reached `AwaitingVerification`, while identity
+discovery reported an existing identity. The centralized helper nevertheless
+used a boolean `bootstrap_new_identity` policy and called the NewIdentity-only
+bootstrap waiter. It therefore timed out even though the account gate itself was
+healthy. The generic timeline path remained fully green.
+
+Two source-contract regressions were established RED before implementation:
+
+- `standalone_send_queue_login_requires_primary_recovery_secret` failed because
+  `run_send_queue_stage` accepted no recovery secret; and
+- `participant_login_gate_policy_distinguishes_bootstrap_from_recovery` failed
+  because the helper still accepted `bootstrap_new_identity: bool`.
+
+The QA-only login policy is now typed as `QaParticipantLoginGate`, separating
+`BootstrapNewIdentity` from `RecoverExistingIdentity(&AuthSecret)`. The E2EE
+fresh-user caller selects bootstrap. The standalone SendQueue stage requires the
+primary account's already-created recovery secret in its function signature,
+waits for the existing-identity recovery gate, submits `SubmitRecovery`, and
+then rejoins the shared LoggedIn/Ready/sync path. Neither the secret nor Matrix
+identifiers are logged or included in diagnostics.
+
+Focused RED commands were rerun after implementation and both passed. The full
+QA binary unit suite passed with 70 tests, and
+`cargo check -p koushi-core --features qa-bin --bin headless-core-qa` completed
+successfully. No product code, product gate semantics, long homeserver lane,
+push, or PR operation was included in this follow-up.
