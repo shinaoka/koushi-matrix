@@ -531,3 +531,31 @@ Fresh short-gate evidence:
 No long Conduit lane was rerun here. This harness-only change is independent of
 both issue-285 display projection and the separate timeline-reconnect SDK
 20/QA 21 pagination boundary.
+
+### Secondary active-timeline replay follow-up
+
+The final targeted Conduit run confirmed the A-side active replay waiter and
+then advanced through both messages' local echoes and send-completed terminals.
+It failed only at the generic `subscribe timeline B` exact waiter. Core recorded
+a B-side active replay with three initial items, proving B was also already
+auto-subscribed and hit the same established projection-identity boundary.
+This is not a new product failure.
+
+Strict TDD added a deterministic network-free source-policy contract first.
+RED failed exactly because the generic B subscription block did not contain
+`wait_for_initial_items_or_active_replay` and still contained the exact
+`wait_for_initial_items` call. GREEN changes only that B call to the existing
+same-key active replay waiter. Every other initial-items call site remains
+exact.
+
+Fresh short-gate evidence:
+
+- Focused generic-B replay-waiter policy: 1 passed, 0 failed.
+- Full headless Core QA binary tests: 68 passed, 0 failed.
+- Headless Core QA binary check with `qa-bin`: passed without warnings.
+- `cargo fmt -p koushi-core -- --check`: passed.
+- `git diff --check`: passed.
+
+No long Conduit lane was rerun here. Product replay request/ACK identity remains
+unchanged, as do issue-285 projection behavior and the separate SDK 20/QA 21
+timeline-reconnect pagination boundary.

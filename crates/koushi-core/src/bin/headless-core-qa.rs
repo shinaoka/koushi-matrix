@@ -5927,8 +5927,13 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .await
         .map_err(|e| format!("submit subscribe timeline B: {e}"))?;
 
-    let b_initial =
-        wait_for_initial_items(&mut conn_b, &key_b, subscribe_b_id, "subscribe timeline B").await?;
+    let b_initial = wait_for_initial_items_or_active_replay(
+        &mut conn_b,
+        &key_b,
+        subscribe_b_id,
+        "subscribe timeline B",
+    )
+    .await?;
     println!("timeline_subscribed_b=ok");
 
     // Paginate backward on B to ensure A's messages are loaded from server
@@ -17674,6 +17679,21 @@ mod tests {
             ),
             InitialItemsWaitMatch::Ignore
         ));
+    }
+
+    #[test]
+    fn generic_secondary_timeline_subscribe_uses_active_replay_waiter() {
+        let source = include_str!("headless-core-qa.rs");
+        let secondary_subscribe = source
+            .split("// B subscribes and receives both messages")
+            .nth(1)
+            .expect("generic B timeline subscribe block")
+            .split("// Paginate backward on B")
+            .next()
+            .expect("generic B timeline subscribe block end");
+
+        assert!(secondary_subscribe.contains("wait_for_initial_items_or_active_replay("));
+        assert!(!secondary_subscribe.contains("wait_for_initial_items("));
     }
 
     #[test]
