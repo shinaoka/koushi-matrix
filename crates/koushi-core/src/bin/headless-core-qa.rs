@@ -37,7 +37,7 @@ use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::process::ExitCode;
 use std::sync::{
     Arc, Condvar, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -11501,6 +11501,8 @@ fn parse_env_flag(name: &str, value: &str) -> Result<bool, String> {
 struct QaTcpProxy {
     listen_addr: SocketAddr,
     enabled: Arc<AtomicBool>,
+    #[allow(dead_code)]
+    rejected_connections: Arc<AtomicUsize>,
     running: Arc<AtomicBool>,
     active_streams: Arc<Mutex<Vec<TcpStream>>>,
     fallback_control: Arc<(Mutex<QaFallbackProxyState>, Condvar)>,
@@ -11762,6 +11764,7 @@ impl QaTcpProxy {
             .local_addr()
             .map_err(|e| format!("send_queue proxy local_addr failed: {e}"))?;
         let enabled = Arc::new(AtomicBool::new(true));
+        let rejected_connections = Arc::new(AtomicUsize::new(0));
         let running = Arc::new(AtomicBool::new(true));
         let active_streams = Arc::new(Mutex::new(Vec::new()));
         let fallback_control =
@@ -11769,6 +11772,7 @@ impl QaTcpProxy {
         let messages_control = Arc::new(Mutex::new(QaMessagesProxyControl::default()));
 
         let thread_enabled = enabled.clone();
+        let thread_rejected_connections = rejected_connections.clone();
         let thread_running = running.clone();
         let thread_streams = active_streams.clone();
         let thread_fallback_control = fallback_control.clone();
@@ -11779,6 +11783,7 @@ impl QaTcpProxy {
                     Ok((client, _)) => {
                         if !thread_enabled.load(Ordering::SeqCst) {
                             let _ = client.shutdown(Shutdown::Both);
+                            thread_rejected_connections.fetch_add(1, Ordering::SeqCst);
                             continue;
                         }
                         spawn_proxy_pair(
@@ -11804,6 +11809,7 @@ impl QaTcpProxy {
         Ok(Self {
             listen_addr,
             enabled,
+            rejected_connections,
             running,
             active_streams,
             fallback_control,
@@ -11814,6 +11820,11 @@ impl QaTcpProxy {
 
     fn homeserver_url(&self) -> String {
         format!("http://{}", self.listen_addr)
+    }
+
+    #[allow(dead_code)]
+    fn rejected_connection_count(&self) -> usize {
+        self.rejected_connections.load(Ordering::SeqCst)
     }
 
     fn disable(&self) {
@@ -16045,6 +16056,36 @@ mod tests {
     };
     use matrix_sdk_test::JoinedRoomBuilder;
 
+    const FAST_SEND_QUEUE_PHASE_TIMEOUT: Duration = Duration::from_secs(5);
+    const FAST_SEND_QUEUE_TOTAL_TIMEOUT: Duration = Duration::from_secs(55);
+    const FAST_SEND_QUEUE_SHORT_RETRY_ATTEMPTS: usize = 3;
+    const FAST_SEND_QUEUE_RETRY_VIRTUAL_BUDGET: Duration = Duration::from_secs(30);
+    const FAST_SEND_QUEUE_RETRY_PUMP_STEP: Duration = Duration::from_millis(50);
+
+    struct FastSendQueuePausedTime;
+
+    impl FastSendQueuePausedTime {
+        fn start() -> Self {
+            tokio::time::pause();
+            Self
+        }
+    }
+
+    impl Drop for FastSendQueuePausedTime {
+        fn drop(&mut self) {
+            tokio::time::resume();
+        }
+    }
+
+    async fn fast_send_queue_phase<T>(
+        label: &str,
+        future: impl std::future::Future<Output = T>,
+    ) -> Result<T, String> {
+        tokio::time::timeout(FAST_SEND_QUEUE_PHASE_TIMEOUT, future)
+            .await
+            .map_err(|_| format!("{label}: timed out"))
+    }
+
     async fn configure_fast_send_queue_trust(runtime: &CoreRuntime) -> Result<(), String> {
         let configured = runtime
             .configure_trust_observation_for_testing(koushi_sdk::CurrentDeviceTrustObservation {
@@ -16122,6 +16163,53 @@ mod tests {
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))
     }
 
+    async fn drive_fast_send_queue_short_retry_attempts(
+        proxy: &QaTcpProxy,
+        baseline: usize,
+        phase: &str,
+    ) -> Result<(), String> {
+        let wall_deadline = std::time::Instant::now() + FAST_SEND_QUEUE_PHASE_TIMEOUT;
+        let expected = baseline + FAST_SEND_QUEUE_SHORT_RETRY_ATTEMPTS;
+        let mut virtual_advanced = Duration::ZERO;
+
+        loop {
+            let observed = proxy.rejected_connection_count();
+            if observed > expected {
+                return Err(format!(
+                    "fast_send_queue phase={phase} rejected_connections={} expected={}",
+                    observed - baseline,
+                    FAST_SEND_QUEUE_SHORT_RETRY_ATTEMPTS
+                ));
+            }
+            if observed == expected {
+                eprintln!(
+                    "fast_send_queue phase={phase} rejected_connections={}",
+                    observed - baseline
+                );
+                return Ok(());
+            }
+            if std::time::Instant::now() >= wall_deadline {
+                return Err(format!(
+                    "fast_send_queue phase={phase} rejected_connections={} expected={}",
+                    observed - baseline,
+                    FAST_SEND_QUEUE_SHORT_RETRY_ATTEMPTS
+                ));
+            }
+            if virtual_advanced >= FAST_SEND_QUEUE_RETRY_VIRTUAL_BUDGET {
+                return Err(format!(
+                    "fast_send_queue phase={phase} virtual_budget_exhausted=1 rejected_connections={} expected={}",
+                    observed - baseline,
+                    FAST_SEND_QUEUE_SHORT_RETRY_ATTEMPTS
+                ));
+            }
+            for _ in 0..64 {
+                tokio::task::yield_now().await;
+            }
+            tokio::time::advance(FAST_SEND_QUEUE_RETRY_PUMP_STEP).await;
+            virtual_advanced += FAST_SEND_QUEUE_RETRY_PUMP_STEP;
+        }
+    }
+
     async fn wait_for_fast_send_queue_pending_removal(
         conn: &mut CoreConnection,
         projection: &mut Vec<TimelineItem>,
@@ -16129,7 +16217,7 @@ mod tests {
         expected_body: &str,
         label: &str,
     ) -> Result<(), String> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now() + FAST_SEND_QUEUE_PHASE_TIMEOUT;
         loop {
             let (events, transactions) =
                 fast_send_queue_projection_counts(projection, expected_body);
@@ -16151,26 +16239,45 @@ mod tests {
         projection: &mut Vec<TimelineItem>,
         key: &TimelineKey,
         send_request_id: RequestId,
-        retry_request_id: RequestId,
+        mut retry_request_id: Option<RequestId>,
+        sdk_transaction_id: &str,
         expected_transaction_id: &str,
         expected_body: &str,
+        expected_event_id: &str,
         label: &str,
     ) -> Result<String, String> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
-            let event = recv_fast_send_queue_event(conn, deadline, label).await?;
-            apply_fast_send_queue_event(projection, key, &event, label)?;
-            if let Some(event_id) = projection.iter().find_map(|item| {
-                if !timeline_item_body_matches(item, expected_body) {
-                    return None;
-                }
-                match &item.id {
-                    TimelineItemId::Event { event_id } => Some(event_id.clone()),
-                    TimelineItemId::Transaction { .. } | TimelineItemId::Synthetic { .. } => None,
-                }
-            }) {
+            if let Some(event_id) = fast_send_queue_authoritative_projection(
+                projection,
+                expected_body,
+                expected_event_id,
+                label,
+            )? {
                 return Ok(event_id);
             }
+            if retry_request_id.is_none()
+                && projection.iter().any(|item| {
+                    timeline_item_transaction_id(item) == Some(sdk_transaction_id)
+                        && matches!(
+                            item.send_state,
+                            Some(TimelineSendState::NotSent {
+                                reason: koushi_core::event::TimelineSendFailureReason::Recoverable,
+                            })
+                        )
+                })
+            {
+                retry_request_id = Some(
+                    fast_send_queue_phase(
+                        "fast_send_queue restored retry command",
+                        retry_send_queue_item(conn, key, sdk_transaction_id, label),
+                    )
+                    .await??,
+                );
+            }
+
+            let event = recv_fast_send_queue_event(conn, deadline, label).await?;
+            apply_fast_send_queue_event(projection, key, &event, label)?;
 
             match event {
                 CoreEvent::Timeline(TimelineEvent::SendCompleted {
@@ -16184,12 +16291,14 @@ mod tests {
                             "{label}: completion transaction mismatch: {transaction_id}"
                         ));
                     }
-                    return Ok(event_id);
+                    if event_id != expected_event_id {
+                        return Err(format!("{label}: completion event mismatch: {event_id}"));
+                    }
                 }
                 CoreEvent::OperationFailed {
                     request_id,
                     failure,
-                } if request_id == send_request_id || request_id == retry_request_id => {
+                } if request_id == send_request_id || retry_request_id == Some(request_id) => {
                     return Err(format!("{label}: operation failed: {failure:?}"));
                 }
                 _ => {}
@@ -16232,14 +16341,18 @@ mod tests {
         label: &str,
     ) -> Result<SendQueueLocalEcho, String> {
         let request_id = conn.next_request_id();
-        conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
-            request_id,
-            key: key.clone(),
-            transaction_id: client_transaction_id.to_owned(),
-            body: body.to_owned(),
-            mentions: MentionIntent::default(),
-        }))
+        fast_send_queue_phase(
+            label,
+            conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+                request_id,
+                key: key.clone(),
+                transaction_id: client_transaction_id.to_owned(),
+                body: body.to_owned(),
+                mentions: MentionIntent::default(),
+            })),
+        )
         .await
+        .map_err(|error| format!("{label}: submit SendText timed out: {error}"))?
         .map_err(|error| format!("{label}: submit SendText failed: {error}"))?;
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -16278,13 +16391,24 @@ mod tests {
         send: &SendQueueLocalEcho,
         label: &str,
     ) -> Result<(), String> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now() + FAST_SEND_QUEUE_RETRY_VIRTUAL_BUDGET;
         loop {
-            if projection.iter().any(|item| {
+            if let Some(item) = projection.iter().find(|item| {
                 timeline_item_transaction_id(item) == Some(send.sdk_transaction_id.as_str())
-                    && matches!(item.send_state, Some(TimelineSendState::NotSent { .. }))
             }) {
-                return Ok(());
+                match item.send_state {
+                    Some(TimelineSendState::NotSent {
+                        reason: koushi_core::event::TimelineSendFailureReason::Recoverable,
+                    }) => return Ok(()),
+                    Some(TimelineSendState::NotSent {
+                        reason: koushi_core::event::TimelineSendFailureReason::Unrecoverable,
+                    }) => {
+                        return Err(format!(
+                            "{label}: expected recoverable transport failure, got unrecoverable NotSent"
+                        ));
+                    }
+                    _ => {}
+                }
             }
             let event = recv_fast_send_queue_event(conn, deadline, label).await?;
             apply_fast_send_queue_event(projection, key, &event, label)?;
@@ -16297,6 +16421,40 @@ mod tests {
                 return Err(format!("{label}: operation failed: {failure:?}"));
             }
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn send_fast_send_queue_text_expect_recoverable_transport_failure(
+        conn: &mut CoreConnection,
+        projection: &mut Vec<TimelineItem>,
+        key: &TimelineKey,
+        client_transaction_id: &str,
+        body: &str,
+        label: &str,
+        attempt_phase: &str,
+        proxy: &QaTcpProxy,
+    ) -> Result<SendQueueLocalEcho, String> {
+        let baseline = proxy.rejected_connection_count();
+        let paused_time = FastSendQueuePausedTime::start();
+        let (send, attempts) = tokio::join!(
+            async {
+                let send = send_fast_send_queue_text_expect_local_echo(
+                    conn,
+                    projection,
+                    key,
+                    client_transaction_id,
+                    body,
+                    label,
+                )
+                .await?;
+                wait_for_fast_send_queue_not_sent(conn, projection, key, &send, label).await?;
+                Ok::<_, String>(send)
+            },
+            drive_fast_send_queue_short_retry_attempts(proxy, baseline, attempt_phase),
+        );
+        drop(paused_time);
+        attempts?;
+        send
     }
 
     async fn wait_for_fast_send_queue_completions_in_order(
@@ -16388,6 +16546,42 @@ mod tests {
         }
     }
 
+    fn fast_send_queue_authoritative_projection(
+        items: &[TimelineItem],
+        expected_body: &str,
+        expected_event_id: &str,
+        label: &str,
+    ) -> Result<Option<String>, String> {
+        let mut event_ids = Vec::new();
+        let mut transactions = 0;
+        for item in items
+            .iter()
+            .filter(|item| timeline_item_body_matches(item, expected_body))
+        {
+            match &item.id {
+                TimelineItemId::Event { event_id } => event_ids.push(event_id.as_str()),
+                TimelineItemId::Transaction { .. } => transactions += 1,
+                TimelineItemId::Synthetic { .. } => {}
+            }
+        }
+
+        if event_ids.len() > 1 || transactions > 1 {
+            return Err(format!(
+                "{label}: duplicate send projection events={} transactions={transactions}",
+                event_ids.len()
+            ));
+        }
+        if let Some(event_id) = event_ids.first()
+            && *event_id != expected_event_id
+        {
+            return Err(format!("{label}: authoritative event mismatch: {event_id}"));
+        }
+        if event_ids.len() == 1 && transactions == 0 {
+            return Ok(Some(expected_event_id.to_owned()));
+        }
+        Ok(None)
+    }
+
     fn fast_send_queue_projection_counts(
         items: &[TimelineItem],
         expected_body: &str,
@@ -16414,10 +16608,169 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn fast_send_queue_feedback_runs_production_runtime_without_homeserver() {
-        let started = std::time::Instant::now();
+    #[test]
+    fn fast_send_queue_lane_hard_bounds_generic_lifecycle_phases() {
+        let source = include_str!("headless-core-qa.rs");
+        let lane = source
+            .split("\n    async fn run_fast_send_queue_feedback")
+            .nth(1)
+            .and_then(|section| {
+                section
+                    .split(
+                        "\n    async fn fast_send_queue_feedback_runs_production_runtime_without_homeserver",
+                    )
+                    .next()
+            })
+            .unwrap_or("");
+        let compact = lane
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .replace("( ", "(");
+
+        assert!(
+            source.contains("timeout(FAST_SEND_QUEUE_TOTAL_TIMEOUT"),
+            "fast SendQueue lane must have a hard whole-test timeout"
+        );
+        for phase in [
+            "fast_send_queue initial trust configure",
+            "fast_send_queue login command",
+            "fast_send_queue LoggedIn event",
+            "fast_send_queue ready snapshot",
+            "fast_send_queue room-list snapshot",
+            "fast_send_queue initial stop sync",
+            "fast_send_queue initial subscribe command",
+            "fast_send_queue initial subscribe replay",
+            "fast_send_queue first retry command",
+            "fast_send_queue cancel command",
+            "fast_send_queue first shutdown barrier",
+            "fast_send_queue restored trust configure",
+            "fast_send_queue restore command",
+            "fast_send_queue SessionRestored event",
+            "fast_send_queue restored ready snapshot",
+            "fast_send_queue restored stop sync",
+            "fast_send_queue restored subscribe command",
+            "fast_send_queue restored subscribe replay",
+            "fast_send_queue restored retry command",
+            "fast_send_queue final shutdown barrier",
+        ] {
+            assert!(
+                compact.contains(&format!("fast_send_queue_phase(\"{phase}\",")),
+                "generic lifecycle phase is not fast-bounded: {phase}"
+            );
+        }
+    }
+
+    #[test]
+    fn fast_send_queue_restored_completion_cannot_finish_from_send_completed_alone() {
+        let source = include_str!("headless-core-qa.rs");
+        let helper = source
+            .split("async fn wait_for_fast_send_queue_authoritative_completion")
+            .nth(1)
+            .and_then(|section| {
+                section
+                    .split("async fn wait_for_fast_send_queue_flow_completion")
+                    .next()
+            })
+            .expect("fast SendQueue authoritative completion helper source");
+
+        assert!(
+            helper.contains("fast_send_queue_authoritative_projection"),
+            "restored completion must validate the accumulated projection"
+        );
+        let send_completed_arm = helper
+            .split("TimelineEvent::SendCompleted")
+            .nth(1)
+            .and_then(|section| section.split("CoreEvent::OperationFailed").next())
+            .expect("fast SendQueue SendCompleted arm");
+        assert!(
+            !send_completed_arm.contains("return Ok(event_id)"),
+            "SendCompleted alone must not finish restored completion with zero Event rows"
+        );
+    }
+
+    #[test]
+    fn fast_send_queue_authoritative_projection_requires_one_exact_event_and_no_transaction() {
+        let body = "fast authoritative body";
+        let expected_event_id = "$fast-authoritative:localhost";
+        let mut transaction = projection_timeline_item("$placeholder:localhost", false);
+        transaction.id = TimelineItemId::Transaction {
+            transaction_id: "fast-authoritative-transaction".to_owned(),
+        };
+        transaction.body = Some(body.to_owned());
+        let mut event = projection_timeline_item(expected_event_id, false);
+        event.body = Some(body.to_owned());
+
+        assert_eq!(
+            fast_send_queue_authoritative_projection(
+                &[],
+                body,
+                expected_event_id,
+                "fast_send_queue contract"
+            )
+            .expect("empty projection is still waiting"),
+            None
+        );
+        assert_eq!(
+            fast_send_queue_authoritative_projection(
+                &[transaction.clone()],
+                body,
+                expected_event_id,
+                "fast_send_queue contract"
+            )
+            .expect("transaction-only projection is still waiting"),
+            None
+        );
+        assert_eq!(
+            fast_send_queue_authoritative_projection(
+                &[event.clone(), transaction],
+                body,
+                expected_event_id,
+                "fast_send_queue contract"
+            )
+            .expect("mixed projection is still waiting for transaction removal"),
+            None
+        );
+        assert_eq!(
+            fast_send_queue_authoritative_projection(
+                &[event.clone()],
+                body,
+                expected_event_id,
+                "fast_send_queue contract"
+            )
+            .expect("exact event projection"),
+            Some(expected_event_id.to_owned())
+        );
+
+        let mut wrong = event.clone();
+        wrong.id = TimelineItemId::Event {
+            event_id: "$fast-wrong:localhost".to_owned(),
+        };
+        assert!(
+            fast_send_queue_authoritative_projection(
+                &[wrong],
+                body,
+                expected_event_id,
+                "fast_send_queue contract"
+            )
+            .is_err(),
+            "wrong Event rows must be rejected"
+        );
+        assert!(
+            fast_send_queue_authoritative_projection(
+                &[event.clone(), event],
+                body,
+                expected_event_id,
+                "fast_send_queue contract"
+            )
+            .is_err(),
+            "duplicate Event rows must be rejected"
+        );
+    }
+
+    async fn run_fast_send_queue_feedback() {
         let server = MatrixMockServer::new().await;
+        let proxy = QaTcpProxy::start(&server.uri()).expect("fast_send_queue proxy start");
         let room_id = room_id!("!fast-send-queue:localhost");
         let data_dir = tempfile::tempdir().expect("fast_send_queue data directory");
         let credential_dir = tempfile::tempdir().expect("fast_send_queue credential directory");
@@ -16443,50 +16796,82 @@ mod tests {
             data_dir.path().to_path_buf(),
             credential_dir.path().to_path_buf(),
         );
-        configure_fast_send_queue_trust(&runtime)
-            .await
-            .expect("fast_send_queue initial trust admission");
+        fast_send_queue_phase(
+            "fast_send_queue initial trust configure",
+            configure_fast_send_queue_trust(&runtime),
+        )
+        .await
+        .expect("fast_send_queue initial trust phase")
+        .expect("fast_send_queue initial trust admission");
         let mut conn = runtime.attach();
         let login_id = conn.next_request_id();
-        conn.command(CoreCommand::Account(AccountCommand::LoginPassword {
-            request_id: login_id,
-            request: koushi_state::LoginRequest {
-                homeserver: server.uri(),
-                username: "fast-send-queue".to_owned(),
-                password: AuthSecret::new("fast-send-queue-password"),
-                device_display_name: Some("Fast Send Queue QA".to_owned()),
-            },
-        }))
+        fast_send_queue_phase(
+            "fast_send_queue login command",
+            conn.command(CoreCommand::Account(AccountCommand::LoginPassword {
+                request_id: login_id,
+                request: koushi_state::LoginRequest {
+                    homeserver: proxy.homeserver_url(),
+                    username: "fast-send-queue".to_owned(),
+                    password: AuthSecret::new("fast-send-queue-password"),
+                    device_display_name: Some("Fast Send Queue QA".to_owned()),
+                },
+            })),
+        )
         .await
+        .expect("fast_send_queue login command phase")
         .expect("fast_send_queue submit login");
-        let account_key = wait_for_logged_in(&mut conn, login_id, "fast_send_queue login")
-            .await
-            .expect("fast_send_queue login event");
-        wait_for_ready_snapshot(&mut conn, "fast_send_queue ready")
-            .await
-            .expect("fast_send_queue ready projection");
-        wait_for_room_in_room_list(&mut conn, room_id.as_str(), "fast_send_queue room list")
-            .await
-            .expect("fast_send_queue room list projection");
-        stop_sync_for_qa(&mut conn, "fast_send_queue stop background sync")
-            .await
-            .expect("fast_send_queue background sync stopped");
+        let account_key = fast_send_queue_phase(
+            "fast_send_queue LoggedIn event",
+            wait_for_logged_in(&mut conn, login_id, "fast_send_queue login"),
+        )
+        .await
+        .expect("fast_send_queue LoggedIn phase")
+        .expect("fast_send_queue login event");
+        fast_send_queue_phase(
+            "fast_send_queue ready snapshot",
+            wait_for_ready_snapshot(&mut conn, "fast_send_queue ready"),
+        )
+        .await
+        .expect("fast_send_queue ready phase")
+        .expect("fast_send_queue ready projection");
+        fast_send_queue_phase(
+            "fast_send_queue room-list snapshot",
+            wait_for_room_in_room_list(&mut conn, room_id.as_str(), "fast_send_queue room list"),
+        )
+        .await
+        .expect("fast_send_queue room-list phase")
+        .expect("fast_send_queue room list projection");
+        fast_send_queue_phase(
+            "fast_send_queue initial stop sync",
+            stop_sync_for_qa(&mut conn, "fast_send_queue stop background sync"),
+        )
+        .await
+        .expect("fast_send_queue initial stop-sync phase")
+        .expect("fast_send_queue background sync stopped");
 
         let key = TimelineKey::room(account_key.clone(), room_id.to_string());
         let subscribe_id = conn.next_request_id();
-        conn.command(CoreCommand::Timeline(TimelineCommand::Subscribe {
-            request_id: subscribe_id,
-            key: key.clone(),
-        }))
-        .await
-        .expect("fast_send_queue submit subscribe");
-        let mut projection = wait_for_initial_items_or_active_replay(
-            &mut conn,
-            &key,
-            subscribe_id,
-            "fast_send_queue initial subscribe",
+        fast_send_queue_phase(
+            "fast_send_queue initial subscribe command",
+            conn.command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+                request_id: subscribe_id,
+                key: key.clone(),
+            })),
         )
         .await
+        .expect("fast_send_queue initial subscribe command phase")
+        .expect("fast_send_queue submit subscribe");
+        let mut projection = fast_send_queue_phase(
+            "fast_send_queue initial subscribe replay",
+            wait_for_initial_items_or_active_replay(
+                &mut conn,
+                &key,
+                subscribe_id,
+                "fast_send_queue initial subscribe",
+            ),
+        )
+        .await
+        .expect("fast_send_queue initial subscribe replay phase")
         .expect("fast_send_queue initial projection");
         assert!(
             projection.is_empty(),
@@ -16506,8 +16891,8 @@ mod tests {
         let initial_send_guard =
             initial_send_guard.expect("fast_send_queue initial guard mount timed out");
         let initial_request_id = conn.next_request_id();
-        tokio::time::timeout(
-            Duration::from_secs(5),
+        fast_send_queue_phase(
+            "fast_send_queue initial send command",
             conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
                 request_id: initial_request_id,
                 key: key.clone(),
@@ -16517,7 +16902,7 @@ mod tests {
             })),
         )
         .await
-        .expect("fast_send_queue initial command submission timed out")
+        .expect("fast_send_queue initial send command phase")
         .expect("fast_send_queue submit initial send");
         let initial_outcome = wait_for_fast_send_queue_flow_completion(
             &mut conn,
@@ -16547,33 +16932,19 @@ mod tests {
         );
         drop(initial_send_guard);
 
-        let offline_guard = server
-            .mock_room_send()
-            .body_matches_partial_json(serde_json::json!({ "body": "fast offline first body" }))
-            .error_too_large()
-            .mock_once()
-            .mount_as_scoped()
-            .await;
-        let first = send_fast_send_queue_text_expect_local_echo(
+        proxy.disable();
+        let first = send_fast_send_queue_text_expect_recoverable_transport_failure(
             &mut conn,
             &mut projection,
             &key,
             "fast-offline-first-client",
             "fast offline first body",
-            "fast_send_queue first offline local echo",
-        )
-        .await
-        .expect("fast_send_queue first offline local echo");
-        wait_for_fast_send_queue_not_sent(
-            &mut conn,
-            &mut projection,
-            &key,
-            &first,
             "fast_send_queue first offline failure",
+            "offline_first",
+            &proxy,
         )
         .await
-        .expect("fast_send_queue first offline state");
-        drop(offline_guard);
+        .expect("fast_send_queue first recoverable offline state");
 
         let second = send_fast_send_queue_text_expect_local_echo(
             &mut conn,
@@ -16585,6 +16956,7 @@ mod tests {
         )
         .await
         .expect("fast_send_queue second offline local echo");
+        proxy.enable();
         let fifo_first_guard = server
             .mock_room_send()
             .body_matches_partial_json(serde_json::json!({ "body": "fast offline first body" }))
@@ -16599,13 +16971,17 @@ mod tests {
             .mock_once()
             .mount_as_scoped()
             .await;
-        let retry_id = retry_send_queue_item(
-            &mut conn,
-            &key,
-            &first.sdk_transaction_id,
-            "fast_send_queue retry first offline",
+        let retry_id = fast_send_queue_phase(
+            "fast_send_queue first retry command",
+            retry_send_queue_item(
+                &mut conn,
+                &key,
+                &first.sdk_transaction_id,
+                "fast_send_queue retry first offline",
+            ),
         )
         .await
+        .expect("fast_send_queue first retry phase")
         .expect("fast_send_queue retry command");
         wait_for_fast_send_queue_completions_in_order(
             &mut conn,
@@ -16649,40 +17025,30 @@ mod tests {
         drop(fifo_second_guard);
         drop(fifo_first_guard);
 
-        let cancel_failure_guard = server
-            .mock_room_send()
-            .body_matches_partial_json(serde_json::json!({ "body": "fast cancel body" }))
-            .error_too_large()
-            .mock_once()
-            .mount_as_scoped()
-            .await;
-        let cancel = send_fast_send_queue_text_expect_local_echo(
+        proxy.disable();
+        let cancel = send_fast_send_queue_text_expect_recoverable_transport_failure(
             &mut conn,
             &mut projection,
             &key,
             "fast-cancel-client",
             "fast cancel body",
-            "fast_send_queue cancel local echo",
+            "fast_send_queue cancel transport failure",
+            "cancel",
+            &proxy,
         )
         .await
-        .expect("fast_send_queue cancel local echo");
-        wait_for_fast_send_queue_not_sent(
-            &mut conn,
-            &mut projection,
-            &key,
-            &cancel,
-            "fast_send_queue cancel not-sent",
+        .expect("fast_send_queue cancel recoverable state");
+        let cancel_id = fast_send_queue_phase(
+            "fast_send_queue cancel command",
+            cancel_send_queue_item(
+                &mut conn,
+                &key,
+                &cancel.sdk_transaction_id,
+                "fast_send_queue cancel",
+            ),
         )
         .await
-        .expect("fast_send_queue cancel not-sent state");
-        drop(cancel_failure_guard);
-        let cancel_id = cancel_send_queue_item(
-            &mut conn,
-            &key,
-            &cancel.sdk_transaction_id,
-            "fast_send_queue cancel",
-        )
-        .await
+        .expect("fast_send_queue cancel command phase")
         .expect("fast_send_queue cancel command");
         wait_for_fast_send_queue_cancelled_or_removed(
             &mut conn,
@@ -16700,113 +17066,170 @@ mod tests {
             "fast_send_queue cancel",
         );
 
-        let restart_failure_guard = server
-            .mock_room_send()
-            .body_matches_partial_json(serde_json::json!({ "body": "fast restart body" }))
-            .error_too_large()
-            .mock_once()
-            .mount_as_scoped()
-            .await;
-        let restart = send_fast_send_queue_text_expect_local_echo(
+        let restart = send_fast_send_queue_text_expect_recoverable_transport_failure(
             &mut conn,
             &mut projection,
             &key,
             "fast-restart-client",
             "fast restart body",
-            "fast_send_queue restart local echo",
+            "fast_send_queue restart transport failure",
+            "restart",
+            &proxy,
         )
         .await
-        .expect("fast_send_queue restart local echo");
-        wait_for_fast_send_queue_not_sent(
-            &mut conn,
-            &mut projection,
-            &key,
-            &restart,
-            "fast_send_queue restart not-sent",
-        )
-        .await
-        .expect("fast_send_queue restart not-sent state");
+        .expect("fast_send_queue restart recoverable state");
 
         drop(conn);
-        tokio::time::timeout(EVENT_TIMEOUT, runtime.shutdown())
+        fast_send_queue_phase("fast_send_queue first shutdown barrier", runtime.shutdown())
             .await
             .expect("fast_send_queue first ordered shutdown");
-        drop(restart_failure_guard);
 
         let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
             data_dir.path().to_path_buf(),
             credential_dir.path().to_path_buf(),
         );
-        configure_fast_send_queue_trust(&runtime)
-            .await
-            .expect("fast_send_queue restore trust admission");
+        fast_send_queue_phase(
+            "fast_send_queue restored trust configure",
+            configure_fast_send_queue_trust(&runtime),
+        )
+        .await
+        .expect("fast_send_queue restored trust phase")
+        .expect("fast_send_queue restore trust admission");
         let mut conn = runtime.attach();
         let restore_id = conn.next_request_id();
-        conn.command(CoreCommand::Account(AccountCommand::RestoreSession {
-            request_id: restore_id,
-            account_key: account_key.clone(),
-        }))
-        .await
-        .expect("fast_send_queue submit restore");
-        wait_for_session_restored(
-            &mut conn,
-            restore_id,
-            &account_key,
-            "fast_send_queue restore",
+        fast_send_queue_phase(
+            "fast_send_queue restore command",
+            conn.command(CoreCommand::Account(AccountCommand::RestoreSession {
+                request_id: restore_id,
+                account_key: account_key.clone(),
+            })),
         )
         .await
+        .expect("fast_send_queue restore command phase")
+        .expect("fast_send_queue submit restore");
+        fast_send_queue_phase(
+            "fast_send_queue SessionRestored event",
+            wait_for_session_restored(
+                &mut conn,
+                restore_id,
+                &account_key,
+                "fast_send_queue restore",
+            ),
+        )
+        .await
+        .expect("fast_send_queue SessionRestored phase")
         .expect("fast_send_queue restored session event");
-        wait_for_ready_snapshot(&mut conn, "fast_send_queue restored ready")
-            .await
-            .expect("fast_send_queue restored ready projection");
-        stop_sync_for_qa(&mut conn, "fast_send_queue stop restored background sync")
-            .await
-            .expect("fast_send_queue restored background sync stopped");
+        fast_send_queue_phase(
+            "fast_send_queue restored ready snapshot",
+            wait_for_ready_snapshot(&mut conn, "fast_send_queue restored ready"),
+        )
+        .await
+        .expect("fast_send_queue restored ready phase")
+        .expect("fast_send_queue restored ready projection");
+        fast_send_queue_phase(
+            "fast_send_queue restored stop sync",
+            stop_sync_for_qa(&mut conn, "fast_send_queue stop restored background sync"),
+        )
+        .await
+        .expect("fast_send_queue restored stop-sync phase")
+        .expect("fast_send_queue restored background sync stopped");
 
         let subscribe_id = conn.next_request_id();
-        conn.command(CoreCommand::Timeline(TimelineCommand::Subscribe {
-            request_id: subscribe_id,
-            key: key.clone(),
-        }))
-        .await
-        .expect("fast_send_queue submit restored subscribe");
-        let mut projection = wait_for_initial_items_or_active_replay(
-            &mut conn,
-            &key,
-            subscribe_id,
-            "fast_send_queue restored subscribe",
+        fast_send_queue_phase(
+            "fast_send_queue restored subscribe command",
+            conn.command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+                request_id: subscribe_id,
+                key: key.clone(),
+            })),
         )
         .await
+        .expect("fast_send_queue restored subscribe command phase")
+        .expect("fast_send_queue submit restored subscribe");
+        let mut projection = fast_send_queue_phase(
+            "fast_send_queue restored subscribe replay",
+            wait_for_initial_items_or_active_replay(
+                &mut conn,
+                &key,
+                subscribe_id,
+                "fast_send_queue restored subscribe",
+            ),
+        )
+        .await
+        .expect("fast_send_queue restored subscribe replay phase")
         .expect("fast_send_queue restored projection");
         assert_eq!(
             fast_send_queue_projection_counts(&projection, "fast restart body"),
             (0, 1),
             "fast_send_queue restored unsent echo: projection count mismatch",
         );
+        let restored_send_state = projection
+            .iter()
+            .find(|item| timeline_item_body_matches(item, "fast restart body"))
+            .and_then(|item| {
+                (timeline_item_transaction_id(item) == Some(restart.sdk_transaction_id.as_str()))
+                    .then(|| item.send_state.clone())
+                    .flatten()
+            })
+            .expect("fast_send_queue restored unsent Transaction state");
+        assert!(
+            matches!(
+                &restored_send_state,
+                TimelineSendState::Sending
+                    | TimelineSendState::NotSent {
+                        reason: koushi_core::event::TimelineSendFailureReason::Recoverable,
+                    }
+            ),
+            "fast_send_queue restored Transaction must remain recoverable"
+        );
 
-        let restart_success_guard = server
-            .mock_room_send()
-            .body_matches_partial_json(serde_json::json!({ "body": "fast restart body" }))
-            .ok(event_id!("$fast-restart:localhost"))
-            .mock_once()
-            .mount_as_scoped()
-            .await;
-        let restart_retry_id = retry_send_queue_item(
-            &mut conn,
-            &key,
-            &restart.sdk_transaction_id,
-            "fast_send_queue retry restored",
+        let restart_success_guard = fast_send_queue_phase(
+            "fast_send_queue restored success fixture",
+            server
+                .mock_room_send()
+                .body_matches_partial_json(serde_json::json!({ "body": "fast restart body" }))
+                .ok(event_id!("$fast-restart:localhost"))
+                .mock_once()
+                .mount_as_scoped(),
         )
         .await
-        .expect("fast_send_queue restored retry command");
+        .expect("fast_send_queue restored success fixture phase");
+        proxy.enable();
+        let restart_retry_id = if matches!(
+            &restored_send_state,
+            TimelineSendState::NotSent {
+                reason: koushi_core::event::TimelineSendFailureReason::Recoverable,
+            }
+        ) {
+            Some(
+                fast_send_queue_phase(
+                    "fast_send_queue restored retry command",
+                    retry_send_queue_item(
+                        &mut conn,
+                        &key,
+                        &restart.sdk_transaction_id,
+                        "fast_send_queue retry restored",
+                    ),
+                )
+                .await
+                .expect("fast_send_queue restored retry phase")
+                .expect("fast_send_queue restored retry command"),
+            )
+        } else {
+            let paused_time = FastSendQueuePausedTime::start();
+            tokio::time::advance(Duration::from_millis(1_500)).await;
+            drop(paused_time);
+            None
+        };
         let restart_event_id = wait_for_fast_send_queue_authoritative_completion(
             &mut conn,
             &mut projection,
             &key,
             restart.request_id,
             restart_retry_id,
+            &restart.sdk_transaction_id,
             &restart.client_transaction_id,
             "fast restart body",
+            "$fast-restart:localhost",
             "fast_send_queue restored completion",
         )
         .await
@@ -16829,9 +17252,20 @@ mod tests {
         drop(restart_success_guard);
 
         drop(conn);
-        tokio::time::timeout(EVENT_TIMEOUT, runtime.shutdown())
+        fast_send_queue_phase("fast_send_queue final shutdown barrier", runtime.shutdown())
             .await
             .expect("fast_send_queue final ordered shutdown");
+    }
+
+    #[tokio::test]
+    async fn fast_send_queue_feedback_runs_production_runtime_without_homeserver() {
+        let started = std::time::Instant::now();
+        tokio::time::timeout(
+            FAST_SEND_QUEUE_TOTAL_TIMEOUT,
+            run_fast_send_queue_feedback(),
+        )
+        .await
+        .expect("fast_send_queue whole lane timed out");
         assert!(
             started.elapsed() < Duration::from_secs(60),
             "fast_send_queue exceeded the 60-second lane budget"
