@@ -1605,8 +1605,9 @@ Ordered shutdown first joins all manager-owned enqueue workers while the global
 SDK terminal observer can still admit their results, then stops and joins that
 observer, stops the presentation actors, records any remaining observation
 loss, closes and drains manager terminal ingress, and only then acknowledges
-shutdown. Unexpected manager drop closes terminal admission and aborts every
-remaining worker so no accepted enqueue future detaches. This makes terminal
+shutdown. Unexpected manager drop closes terminal admission and aborts both the
+global observer and every remaining worker so no send-lifecycle task detaches.
+This makes terminal
 admission linear with teardown. Process restart is a separate boundary:
 SDK-persisted local echoes converge after restore, but completion for the old
 connection's `RequestId` is not replayed.

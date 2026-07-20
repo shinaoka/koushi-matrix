@@ -427,7 +427,8 @@ Rules:
    acknowledge the owning actor's teardown. The enqueue future itself shares
    that stable owner: a replaceable presentation actor must not await it, and
    dropping a raw task handle must not detach it. An unexpected stable-owner
-   drop closes terminal admission and aborts all remaining operation workers.
+   drop closes terminal admission and aborts all remaining operation workers
+   and terminal observers.
 10. If a reducer returns an `AppEffect` that matters in production, the
    production runtime executes it or the behavior is redesigned as an explicit
    `CoreCommand`/actor command. Discarding such effects is allowed only for

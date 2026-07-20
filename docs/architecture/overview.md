@@ -248,9 +248,9 @@ An in-process actor system in `koushi-core`:
   composite `(room_id, sdk_transaction_id)` correlation back to the original
   `TimelineKey`, `RequestId`, and `SubmissionId`. Its lifetime spans
   room/thread unsubscribe and actor replacement. Accepted enqueue futures are
-  joined during orderly shutdown and aborted if the manager is dropped
-  unexpectedly; dropping a raw task handle must never detach an accepted
-  send.
+  joined during orderly shutdown. If the manager is dropped unexpectedly, it
+  closes terminal admission and aborts both the observer and every enqueue
+  worker; dropping a raw task handle must never detach an accepted send.
 - `TimelineActor` (per room/thread/focused timeline) — subscription, diffs,
   pagination, edit/redaction relay, reaction annotation projection and
   guarded send/redact relay, media/file projection, upload progress,
@@ -566,8 +566,8 @@ stream), and the runtime must relay that model, not fight it.
    not infer send legality or repair queue state locally. The manager joins
    enqueue workers while terminal admission is still open, then stops the
    terminal observer and presentation actors and drains terminal ingress. An
-   unexpected manager drop first closes terminal admission and aborts every
-   remaining enqueue worker. `Transaction`
+   unexpected manager drop first closes terminal admission and aborts the
+   terminal observer and every remaining enqueue worker. `Transaction`
    timeline identities are stable local-echo keys only; visible failed/sending
    state comes from `TimelineItem.send_state`. The runtime does not serialize
    sends behind a command loop.
