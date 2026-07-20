@@ -559,3 +559,39 @@ Fresh short-gate evidence:
 No long Conduit lane was rerun here. Product replay request/ACK identity remains
 unchanged, as do issue-285 projection behavior and the separate SDK 20/QA 21
 timeline-reconnect pagination boundary.
+
+## FINAL CONDUIT EVIDENCE — 2026-07-20
+
+The final targeted Conduit run confirmed the complete generic timeline path.
+Both generic participants passed their new-identity gate, sync, and
+`room_space=ok`. The private-safe stdout then recorded all of the following:
+
+- `timeline_subscribed_a=ok`;
+- `local_echo_msg1=ok` and `send_completed_msg1=ok`;
+- `local_echo_msg2=ok` and `send_completed_msg2=ok`;
+- `timeline_subscribed_b=ok` and `b_recv_msgs=ok`;
+- `timeline_nav=ok`;
+- `edit_msg1=ok`, `redact_msg2=ok`, and `hide_redacted=ok`;
+- `paginate=end_reached`; and
+- `timeline=ok`.
+
+The latest Core stdout/stderr logs contain zero
+`display_projection_reset_fallback` tokens. Together with the successful
+timeline assertions, this provides no runtime evidence that issue 285 entered
+its validated Reset fallback during the run.
+
+The overall command still exits 1, but only after the complete generic timeline
+path above. The later, standalone SendQueue stage starts a third fresh data-dir
+login through another direct QA call site. That login remains at the new-
+identity verification gate because the direct call does not use a centralized
+identity-gated QA login abstraction. This is another QA orchestration boundary,
+not a product timeline or issue-285 projection failure.
+
+No further per-call identity-bootstrap patch is being added to issue 285.
+Identity-gated QA login/bootstrap policy should be centralized once in a
+separate follow-up, then used by all fresh-account QA entry points. This avoids
+continuing to repair individual login call sites and keeps the product account
+and trust-gate protocol out of QA-specific workarounds.
+
+This update records integration evidence only. No code or tests were changed or
+run, and no long lane, push, or PR operation was started by this worker.
