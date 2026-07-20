@@ -2,7 +2,11 @@
 
 ## Result
 
-Implementation commit: `0598615` (`fix(timeline): project SDK diffs into display index space`).
+Implementation commits:
+
+- `0598615` — `fix(timeline): project SDK diffs into display index space`
+- `af7bb42` — `fix(timeline): fence projection recovery transactions`
+- `c92b82d` — `test(timeline): cover media projection and linearize membership build`
 
 Core now owns one stateful SDK-to-display projection transaction. It advances
 the canonical timeline once, retains the exact pre-normalization canonical
@@ -41,12 +45,14 @@ Fresh focused gates after the final self-review change:
 
 - Production-shaped Core regression: 1 passed, 0 failed (16.34 s including
   recompilation); the ordinary-path fallback counter remained unchanged.
-- `cargo test -p koushi-core --lib display_projection -- --nocapture`: 9 passed,
-  0 failed (0.08 s).
+- `cargo test -p koushi-core --lib display_projection -- --nocapture`: 10 passed,
+  0 failed.
 - `npm --prefix apps/desktop test -- src/domain/timelineStore.test.ts
-  --reporter=dot`: 68 passed, 0 failed (0.20 s).
-- `cargo check -p koushi-core`: passed without warnings (3.36 s).
-- `npm --prefix apps/desktop run typecheck`: passed (2.97 s).
+  --reporter=dot`: 69 passed, 0 failed.
+- `cargo test -p koushi-core --lib timeline::tests -- --test-threads=4`:
+  213 passed, 1 intentionally ignored, 0 failed.
+- `cargo check -p koushi-core`: passed without warnings.
+- `npm --prefix apps/desktop run typecheck`: passed.
 - `cargo fmt -p koushi-core -- --check`: passed.
 - `git diff --check`: passed.
 - Impacted non-SDK and authoritative-recovery focused tests: 3 passed, 0
@@ -79,14 +85,15 @@ emits `Reset { items: display_after }`. It increments the stable
 tokens and the count. The deliberate invalid-index test exercised this
 fallback; ordinary production-shaped flows observed no fallback.
 
-Projection work never scans the full canonical sequence for each diff. It
-updates only explicit bounded-window membership and the current batch; Reset
-scans its replacement payload once. Structural operations can visit the
-bounded membership (normally capped at 120 slots) for each operation in a
-multi-operation batch, so the current strict worst case is
-`O(batch * display-window)` rather than the aspirational `O(batch +
-display-window)`. It remains independent of the roughly 9,000-slot canonical
-history on the live hot path.
+Projection work never scans the full canonical sequence for each diff. A
+sparse implicit treap compresses canonical-only gaps and constructs its initial
+membership in one Cartesian-tree pass. With W represented display slots, B SDK
+operations, and D emitted display operations, projection overhead is expected
+`O(W + B log(W+B) + D)` time and `O(W+B+D)` temporary space. The private diff
+builder guarantees `D = O(W)`, and Room live-edge W is hard-capped at 120.
+Reset scans its supplied replacement payload once. Existing canonical
+`Vec<TimelineItem>` insertion/removal costs are deliberately outside this
+projection-only bound and are stated as such in the source.
 
 ## Self-review
 
@@ -117,9 +124,6 @@ Confirmed:
 
 - Workspace-wide rustfmt is blocked by the pre-existing clean vendor baseline
   described above.
-- The bounded structural bookkeeping is independent of canonical-history size
-  but does not yet achieve a strict additive `O(display window + batch size)`
-  bound for unusually large multi-operation batches.
 - The intentionally deferred long homeserver lane still needs to be run once
   after parent review.
 
@@ -162,3 +166,31 @@ Remaining after resume:
    review; update this report with final GREEN evidence and commit SHA.
 5. Leave the long homeserver lane to the root agent's single post-review run;
    do not create/push a PR from this worker.
+
+## FINAL RESUME CHECKPOINT — 2026-07-20
+
+The pending media reducer regression is GREEN and committed. The membership
+constructor was consolidated from repeated treap merges to a single linear
+Cartesian-tree build, removing an avoidable `W log W` setup term while keeping
+all dynamic SDK index operations in the same sparse projection boundary.
+
+Fresh final evidence:
+
+- `cargo test -p koushi-core --lib sdk_canonical_indices_project_to_bounded_display_and_converge_local_echo -- --nocapture`: 1 passed.
+- `cargo test -p koushi-core --lib display_projection -- --nocapture`: 10 passed.
+- `cargo test -p koushi-core --lib timeline::tests -- --test-threads=4`: 213 passed, 1 intentionally ignored, 0 failed.
+- `npm --prefix apps/desktop test -- src/domain/timelineStore.test.ts --reporter=dot`: 69 passed.
+- `cargo check -p koushi-core`: passed without warnings.
+- `npm --prefix apps/desktop run typecheck`: passed.
+- `cargo fmt -p koushi-core -- --check`: passed.
+- `git diff --check`: passed.
+
+Final implementation audit found no second production SDK projection path and
+no raw canonical-index `ItemsUpdated` emission. Text and media confirmation,
+duplicate ownership, every diff variant, stale actor rejection, validated Reset
+fallback, real restore terminal grouping, recovery grouping, and display no-op
+causal fences remain covered. No body, sender, event, room, transaction, URL,
+path, or raw error is recorded by the fallback diagnostic.
+
+The only gates deliberately left to the root agent are independent frontier
+review and the single long homeserver lane. No PR was created or pushed here.
