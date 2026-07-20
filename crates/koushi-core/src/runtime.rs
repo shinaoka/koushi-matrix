@@ -1806,6 +1806,7 @@ impl AppActor {
 
     /// Returns whether `AppState` changed.
     async fn handle_command(&mut self, command: CoreCommand) -> bool {
+        let command_request_id = command.request_id();
         if command.requires_ready_session()
             && !is_ready_session_for_commands(&self.state.session)
             && !is_verification_gate_command(&command, &self.state.session)
@@ -1825,7 +1826,7 @@ impl AppActor {
                 runtime_request_id_trace_label(command.request_id())
             );
             self.emit(CoreEvent::OperationFailed {
-                request_id: command.request_id(),
+                request_id: command_request_id,
                 failure: CoreFailure::SessionRequired,
             });
             return false;
@@ -1876,6 +1877,10 @@ impl AppActor {
                 );
                 let should_route = !requires_projection_acceptance || projected_state_changed;
                 if !should_route {
+                    self.emit(CoreEvent::OperationFailed {
+                        request_id: command_request_id,
+                        failure: CoreFailure::SessionRequired,
+                    });
                     return false;
                 }
                 // Route to AccountActor; it will produce AppActions and
@@ -3960,7 +3965,7 @@ fn default_data_dir() -> PathBuf {
 mod tests {
     use super::*;
     use crate::event::{
-        ThreadSummaryDto, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId,
+        AccountEvent, ThreadSummaryDto, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId,
     };
     use koushi_state::{
         DisplaySettings, LocalUserAliasUpdateState, OwnProfile, ProfileState,
@@ -4681,6 +4686,89 @@ mod tests {
         assert!(matches!(
             snapshot.state.session,
             koushi_state::SessionState::Ready(_)
+        ));
+        runtime.shutdown_handle().abort();
+    }
+
+    #[tokio::test]
+    async fn projection_rejected_restore_emits_one_correlated_failure_without_routing() {
+        let runtime = CoreRuntime::start_with_event_capacity(16);
+        let mut connection = runtime.attach();
+        runtime
+            .inject_actions(vec![AppAction::LogoutRequested])
+            .await;
+
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(1), connection.recv_event())
+                .await
+                .expect("logout projection should be published")
+                .expect("event stream should remain open");
+            if matches!(
+                event,
+                CoreEvent::StateChanged(AppState {
+                    session: SessionState::LoggingOut,
+                    ..
+                })
+            ) {
+                break;
+            }
+        }
+
+        let restore_request_id = connection.next_request_id();
+        connection
+            .command(CoreCommand::Account(AccountCommand::RestoreSession {
+                request_id: restore_request_id,
+                account_key: AccountKey("@restore-rejected:example.invalid".to_owned()),
+            }))
+            .await
+            .expect("restore command should enter the bounded runtime inbox");
+        let marker_request_id = connection.next_request_id();
+        connection
+            .command(CoreCommand::Account(AccountCommand::QuerySavedSessions {
+                request_id: marker_request_id,
+            }))
+            .await
+            .expect("ordered marker should enter the bounded runtime inbox");
+
+        let mut restore_failure_count = 0;
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(1), connection.recv_event())
+                .await
+                .expect("projection rejection should settle before the ordered marker")
+                .expect("event stream should remain open");
+            match event {
+                CoreEvent::OperationFailed {
+                    request_id,
+                    failure: CoreFailure::SessionRequired,
+                } if request_id == restore_request_id => {
+                    restore_failure_count += 1;
+                }
+                CoreEvent::OperationFailed { request_id, .. }
+                    if request_id == restore_request_id =>
+                {
+                    panic!("projection rejection emitted the wrong failure kind")
+                }
+                CoreEvent::Account(AccountEvent::SessionRestored { request_id, .. })
+                    if request_id == restore_request_id =>
+                {
+                    panic!("projection-rejected restore was routed to AccountActor")
+                }
+                CoreEvent::Account(AccountEvent::SavedSessionsListed { request_id, .. })
+                    if request_id == marker_request_id =>
+                {
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert_eq!(
+            restore_failure_count, 1,
+            "a projection-rejected command must have exactly one terminal failure"
+        );
+        assert!(matches!(
+            connection.snapshot().session,
+            SessionState::LoggingOut
         ));
         runtime.shutdown_handle().abort();
     }
