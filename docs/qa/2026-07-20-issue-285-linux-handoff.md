@@ -153,6 +153,7 @@ node scripts/desktop-headless-local-qa.mjs \
   --core \
   --core-backend=probed \
   --scenario=send_queue \
+  --timeout-ms=600000 \
   --cargo-profile=release
 ```
 
@@ -165,6 +166,7 @@ node scripts/desktop-headless-local-qa.mjs \
   --core \
   --core-backend=probed \
   --scenario=all \
+  --timeout-ms=1200000 \
   --cargo-profile=release
 ```
 
