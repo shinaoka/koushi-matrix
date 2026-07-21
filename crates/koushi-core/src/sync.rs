@@ -3076,12 +3076,21 @@ pub mod tests {
                 .expect("SyncEvent::Running must arrive"),
             Ok(CoreEvent::Sync(SyncEvent::Running))
         ));
-        assert!(!matches!(
-            event_rx.try_recv(),
-            Ok(CoreEvent::Sync(
-                SyncEvent::Stopped { .. } | SyncEvent::Failed
-            ))
-        ));
+        loop {
+            match event_rx.try_recv() {
+                Ok(CoreEvent::Sync(SyncEvent::Stopped { .. } | SyncEvent::Failed)) => {
+                    panic!("isolated invite probe must not stop or fail after LegacySync starts")
+                }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) => {
+                    panic!("event receiver lagged while checking probe continuation: {skipped}")
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                    panic!("event receiver closed while checking probe continuation")
+                }
+            }
+        }
 
         actor.do_stop(None).await;
         server.join().expect("synthetic probe and legacy server");

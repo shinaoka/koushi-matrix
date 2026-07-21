@@ -652,9 +652,11 @@ Rules:
    normalization.
 18. A protocol version advertisement is not proof that the operation semantics
    needed by the product are complete. Probe the narrow authenticated behavior
-   before creating its authoritative owner, with one end-to-end deadline that
-   includes authentication refresh/retry. Treat omitted required response
-   structure, typed/malformed failure, and deadline expiry as unsupported;
+   before creating its authoritative owner. The disposable authenticated probe
+   receives no refresh token, so automatic refresh is impossible/disabled, and
+   request retries are disabled; its single end-to-end two-second deadline
+   covers disposable-client setup plus one transport request. Treat omitted
+   required response structure, typed/malformed failure, and deadline expiry as unsupported;
    discard any cursor or product payload returned by the preflight. Capability
    checks must not fingerprint server families or become a second polling/sync
    owner. A non-authoritative authenticated probe must isolate session-change
@@ -663,7 +665,9 @@ Rules:
    refresh token to a disposable probe client. Probe failure is a
    backend-selection fact and must not itself cause a product
    authentication-state transition. Cover success, omission, malformed/error,
-   timeout, and stalled token refresh with behavioral tests.
+   and timeout, plus behavioral proof that `M_UNKNOWN_TOKEN` causes zero refresh
+   calls, no authoritative session-change/token mutation, and fail-closed
+   `LegacySync` selection.
 
 ## GUI Automation
 

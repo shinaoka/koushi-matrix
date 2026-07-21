@@ -601,9 +601,15 @@ stream), and the runtime must relay that model, not fight it.
    includes the requested list selects `SyncService`/`RoomListService`.
    Omission of that list, a malformed/error response, or expiry of the one
    end-to-end two-second deadline fails closed to the explicit `LegacySync`
-   backend using SDK `/sync` primitives. The deadline encloses automatic token
-   refresh and retry as well as transport time; the response cursor and room
-   payload are discarded, so the preflight never becomes another sync owner.
+   backend using SDK `/sync` primitives. The disposable authenticated probe
+   receives no refresh token, so automatic refresh is impossible/disabled, and
+   request retries are disabled; its single end-to-end two-second deadline
+   covers disposable-client setup plus one transport request. The response
+   cursor and room payload are discarded, so the preflight never becomes
+   another sync owner. Behavioral coverage proves success, omission,
+   malformed/error, and timeout, plus that `M_UNKNOWN_TOKEN` causes zero
+   refresh calls, no authoritative session-change/token mutation, and
+   fail-closed `LegacySync` selection.
    Do not replace this contract probe with homeserver-name/version
    fingerprinting. Both backends preserve the same `CoreCommand`/`CoreEvent`
    contract, and the selected backend plus a coarse private-data-free reason is
