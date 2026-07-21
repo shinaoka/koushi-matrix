@@ -7,7 +7,7 @@ build gates. AGENTS.md remains the operational how-to (permissions, install
 caveats, recovery steps); durable rules discovered there are promoted to
 REPOSITORY_RULES.md or this document.
 
-Last amended: 2026-07-20.
+Last amended: 2026-07-22.
 
 ## Secrets and Private Data
 
@@ -657,8 +657,13 @@ Rules:
    structure, typed/malformed failure, and deadline expiry as unsupported;
    discard any cursor or product payload returned by the preflight. Capability
    checks must not fingerprint server families or become a second polling/sync
-   owner. Cover success, omission, malformed/error, timeout, and stalled token
-   refresh with behavioral tests.
+   owner. A non-authoritative authenticated probe must isolate session-change
+   delivery, access-token-expiry state, token refresh, rotating refresh
+   credentials, and persistent stores from the authoritative client. Supply no
+   refresh token to a disposable probe client. Probe failure is a
+   backend-selection fact and must not itself cause a product
+   authentication-state transition. Cover success, omission, malformed/error,
+   timeout, and stalled token refresh with behavioral tests.
 
 ## GUI Automation
 
