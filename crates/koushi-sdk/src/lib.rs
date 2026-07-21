@@ -4755,10 +4755,17 @@ struct MatrixErrorResponse {
 pub async fn probe_sliding_sync_invite_list_support(
     session: &MatrixClientSession,
 ) -> MatrixSlidingSyncInviteListSupport {
-    let Some(probe) = build_sliding_sync_invite_probe_client(session).await else {
-        return MatrixSlidingSyncInviteListSupport::Unknown;
-    };
-    send_sliding_sync_invite_list_probe(&probe).await
+    match tokio::time::timeout(SYNC_INVITE_PROBE_TIMEOUT, async {
+        let Some(probe) = build_sliding_sync_invite_probe_client(session).await else {
+            return MatrixSlidingSyncInviteListSupport::Unknown;
+        };
+        send_sliding_sync_invite_list_probe(&probe).await
+    })
+    .await
+    {
+        Ok(support) => support,
+        Err(_) => MatrixSlidingSyncInviteListSupport::Unknown,
+    }
 }
 
 async fn build_sliding_sync_invite_probe_client(
@@ -7962,19 +7969,35 @@ mod tests {
     #[test]
     fn sliding_sync_invite_probe_contract_is_typed_bounded_and_discards_cursor() {
         let source = include_str!("lib.rs");
-        let body = source
+        let implementation = source
             .split("pub async fn probe_sliding_sync_invite_list_support")
             .nth(1)
             .and_then(|rest| rest.split("pub fn discover_login_flows").next())
             .expect("typed invite-list support probe should precede login discovery");
+        let body = implementation
+            .split("async fn build_sliding_sync_invite_probe_client")
+            .next()
+            .expect("typed invite-list support probe should precede login discovery");
 
-        assert!(body.contains(".send(request)"));
-        assert!(body.contains("with_request_config"));
-        assert!(body.contains("SYNC_INVITE_PROBE_TIMEOUT"));
-        assert!(body.contains("tokio::time::timeout("));
-        assert!(body.contains("disable_retry()"));
-        assert!(!body.contains(".sliding_sync("));
-        assert!(!body.contains("RoomListService::"));
+        let timeout = body
+            .find("tokio::time::timeout(SYNC_INVITE_PROBE_TIMEOUT, async {")
+            .expect("the public probe must start one outer end-to-end timeout");
+        let build = body
+            .find("build_sliding_sync_invite_probe_client(session).await")
+            .expect("the public probe must build its disposable client");
+        let send = body
+            .find("send_sliding_sync_invite_list_probe(&probe).await")
+            .expect("the public probe must send its disposable request");
+        assert!(
+            timeout < build && build < send,
+            "the one outer timeout must enclose disposable-client setup and its request"
+        );
+        assert!(implementation.contains(".send(request)"));
+        assert!(implementation.contains("with_request_config"));
+        assert!(implementation.contains("SYNC_INVITE_PROBE_TIMEOUT"));
+        assert!(implementation.contains("disable_retry()"));
+        assert!(!implementation.contains(".sliding_sync("));
+        assert!(!implementation.contains("RoomListService::"));
     }
 
     #[derive(Clone, Copy)]
