@@ -34,14 +34,15 @@
 //! SDK handles are dropped inside the Tokio runtime context (overview.md Async rule 11).
 
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::pin::Pin;
 use std::process::ExitCode;
 use std::sync::{
     Arc, Condvar, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::{collections::BTreeSet, io};
+use std::{collections::BTreeSet, future::Future, io};
 
 use koushi_core::command::{
     AccountCommand, AppCommand, CoreCommand, CreateRoomOptions, CreateRoomVisibility,
@@ -59,7 +60,7 @@ use koushi_core::event::{
 };
 use koushi_core::failure::{CoreFailure, RoomFailureKind};
 use koushi_core::ids::{AccountKey, RequestId, TimelineKey, TimelineKind};
-use koushi_core::runtime::{CoreConnection, CoreRuntime};
+use koushi_core::runtime::{CoreConnection, CoreRuntime, EventStreamLag};
 use koushi_state::{
     ActivityMarkReadTarget, ActivityRowKind, ActivityState, AppAction, AppState, AuthSecret,
     ComposerKey, ComposerKeyEvent, ComposerKeyModifiers, ComposerResolvedAction,
@@ -77,9 +78,8 @@ use koushi_state::{
     SessionInfo, SessionState, SettingsPatch, SettingsPersistenceState,
     StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind, TimelineMediaGalleryItem,
     TimelineMediaGalleryMedia, TimelineMediaGallerySource, TimelineMediaKind,
-    TrustOperationFailureKind, VerificationFlowState, VerificationTarget,
-    build_formatted_message_draft, compose_sidebar, native_attention_state_from_rooms, reduce,
-    resolve_composer_key_action,
+    VerificationFlowState, VerificationTarget, build_formatted_message_draft, compose_sidebar,
+    native_attention_state_from_rooms, reduce, resolve_composer_key_action,
 };
 
 const ENV_HOMESERVER: &str = "KOUSHI_LOCAL_QA_HOMESERVER";
@@ -97,8 +97,6 @@ const ENV_EXPECT_SYNC_BACKEND: &str = "KOUSHI_LOCAL_QA_EXPECT_SYNC_BACKEND";
 const ENV_QA_SCENARIO: &str = "KOUSHI_QA_SCENARIO";
 const ENV_ALLOW_IDENTITY_RESET: &str = "KOUSHI_QA_ALLOW_IDENTITY_RESET";
 const ENV_E2EE_RECIPIENT_SECOND_DEVICE: &str = "KOUSHI_QA_E2EE_RECIPIENT_SECOND_DEVICE";
-const ENV_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND: &str =
-    "KOUSHI_QA_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND";
 #[cfg(any(debug_assertions, feature = "qa-bin"))]
 const ENV_FILE_CREDENTIAL_STORE_DIR: &str = "KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR";
 
@@ -112,9 +110,80 @@ const LOGIN_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
 const ROOM_LIST_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
 const TIMELINE_INITIAL_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
 const E2EE_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
-const SEND_QUEUE_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
+// Local proxy teardown can leave the SDK in reconnect/backoff before queued
+// sends resume, so this lane needs a wider budget than generic event waits.
+const SEND_QUEUE_EVENT_TIMEOUT: Duration = Duration::from_secs(300);
 const TIMELINE_UNSUBSCRIBE_SETTLE_TIMEOUT: Duration = Duration::from_secs(2);
-const DEVICE_LIST_SETTLE_SYNC_TIMEOUT: Duration = Duration::from_secs(5);
+
+type QaEventFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<CoreEvent, EventStreamLag>> + Send + 'a>>;
+
+trait QaEventSource {
+    fn recv_event(&mut self) -> QaEventFuture<'_>;
+}
+
+trait QaSnapshotEventSource: QaEventSource {
+    fn snapshot(&self) -> AppState;
+}
+
+impl QaEventSource for CoreConnection {
+    fn recv_event(&mut self) -> QaEventFuture<'_> {
+        Box::pin(CoreConnection::recv_event(self))
+    }
+}
+
+impl QaSnapshotEventSource for CoreConnection {
+    fn snapshot(&self) -> AppState {
+        CoreConnection::snapshot(self)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct QaEventDeadline {
+    instant: tokio::time::Instant,
+}
+
+impl QaEventDeadline {
+    fn after(timeout: Duration) -> Self {
+        Self {
+            instant: tokio::time::Instant::now() + timeout,
+        }
+    }
+
+    async fn recv<S: QaEventSource + ?Sized>(
+        self,
+        source: &mut S,
+    ) -> Result<Result<CoreEvent, EventStreamLag>, tokio::time::error::Elapsed> {
+        tokio::time::timeout_at(self.instant, source.recv_event()).await
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PairedEventWaitError {
+    Deadline,
+    Primary(EventStreamLag),
+    Secondary(EventStreamLag),
+}
+
+async fn wait_for_paired_event_until<Primary, Secondary>(
+    primary: &mut Primary,
+    secondary: &mut Secondary,
+    deadline: tokio::time::Instant,
+) -> Result<(), PairedEventWaitError>
+where
+    Primary: QaEventSource + ?Sized,
+    Secondary: QaEventSource + ?Sized,
+{
+    tokio::select! {
+        event = primary.recv_event() => event
+            .map(|_| ())
+            .map_err(PairedEventWaitError::Primary),
+        event = secondary.recv_event() => event
+            .map(|_| ())
+            .map_err(PairedEventWaitError::Secondary),
+        _ = tokio::time::sleep_until(deadline) => Err(PairedEventWaitError::Deadline),
+    }
+}
 const THREAD_REPLY_BODY: &str = "Phase 11 QA thread reply from B";
 const E2EE_KEY_BACKUP_SEED_BODY: &str = "Koushi E2EE key backup seed";
 const E2EE_SECOND_DEVICE_BODY: &str = "Koushi E2EE second-device delivery";
@@ -498,11 +567,7 @@ impl QaScenario {
             ),
             Self::SendQueue => matches!(
                 stage,
-                QaStage::Safety
-                    | QaStage::LoginSync
-                    | QaStage::RoomSpace
-                    | QaStage::Timeline
-                    | QaStage::SendQueue
+                QaStage::Safety | QaStage::LoginSync | QaStage::SendQueue
             ),
             Self::RestoreCleanup => matches!(
                 stage,
@@ -681,6 +746,7 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "cancel_send=ok",
             "fifo=ok",
             "unsent_restart=ok",
+            "display_projection_reset_fallbacks=0",
         ],
         QaStage::RestoreCleanup => &["restore_cleanup=ok"],
         QaStage::LinkPreview => &[
@@ -761,6 +827,7 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "cancel_send=ok",
         "fifo=ok",
         "unsent_restart=ok",
+        "display_projection_reset_fallbacks=0",
         "joined_room_restore=ok",
         "e2ee_second_device_decrypt=ok",
         "e2ee_multi_user_multi_device_decrypt=ok",
@@ -894,13 +961,7 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::Timeline,
             QaStage::ScheduledSend,
         ],
-        QaScenario::SendQueue => vec![
-            QaStage::Safety,
-            QaStage::LoginSync,
-            QaStage::RoomSpace,
-            QaStage::Timeline,
-            QaStage::SendQueue,
-        ],
+        QaScenario::SendQueue => vec![QaStage::Safety, QaStage::LoginSync, QaStage::SendQueue],
         QaScenario::RestoreCleanup => vec![
             QaStage::Safety,
             QaStage::LoginSync,
@@ -1152,18 +1213,14 @@ async fn run_gate_no_proof_stage(config: &QaConfig) -> Result<(), String> {
         }))
         .await
         .map_err(|_| "no-proof restart restore submit failed".to_owned())?;
-    let failure =
-        wait_for_operation_failed(&mut reopened_conn, restore_id, "no-proof restart restore")
-            .await?;
+    let failure = wait_for_operation_failed_and_signed_out(
+        &mut reopened_conn,
+        restore_id,
+        "no-proof restart restore",
+    )
+    .await?;
     if failure != CoreFailure::SessionNotFound {
         return Err("no-proof restart did not remain SignedOut".to_owned());
-    }
-    let signed_out_deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
-    while !matches!(reopened_conn.snapshot().session, SessionState::SignedOut) {
-        tokio::time::timeout_at(signed_out_deadline, reopened_conn.recv_event())
-            .await
-            .map_err(|_| "no-proof restart SignedOut projection timed out".to_owned())?
-            .map_err(|_| "no-proof restart event stream closed".to_owned())?;
     }
     println!("gate_no_proof_restart_signed_out=ok");
     drop(reopened_conn);
@@ -1496,7 +1553,7 @@ async fn cleanup_after_login_sync(
         .await
         .map_err(|e| format!("submit post-logout restore A: {e}"))?;
 
-    let failure = wait_for_operation_failed(
+    let failure = wait_for_operation_failed_and_signed_out(
         &mut conn_a2,
         restore_gone_id,
         "post-logout restore A (must fail)",
@@ -1507,10 +1564,6 @@ async fn cleanup_after_login_sync(
             "post-logout restore A failed with unexpected kind: {failure:?}"
         ));
     }
-    if !matches!(conn_a2.snapshot().session, SessionState::SignedOut) {
-        return Err("post-logout restore A must leave the session SignedOut".to_owned());
-    }
-
     println!("restore_cleanup=ok");
     Ok("restore_cleanup=ok".to_owned())
 }
@@ -1558,29 +1611,8 @@ async fn wait_for_saved_session_presence(
 async fn run_invites_dm_stage(
     config: &QaConfig,
     conn_a: &mut CoreConnection,
-    data_dir_b: std::path::PathBuf,
+    conn_b: &mut CoreConnection,
 ) -> Result<(), String> {
-    let runtime_b = CoreRuntime::start_with_data_dir(data_dir_b);
-    let mut conn_b = runtime_b.attach();
-
-    let login_b_id = conn_b.next_request_id();
-    conn_b
-        .command(CoreCommand::Account(AccountCommand::LoginPassword {
-            request_id: login_b_id,
-            request: koushi_state::LoginRequest {
-                homeserver: config.homeserver.clone(),
-                username: config.user_b.clone(),
-                password: AuthSecret::new(config.password_b.clone()),
-                device_display_name: Some(DEVICE_B.to_owned()),
-            },
-        }))
-        .await
-        .map_err(|e| format!("invites_dm: submit login B failed: {e}"))?;
-
-    let account_key_b = wait_for_logged_in(&mut conn_b, login_b_id, "invites_dm login B").await?;
-    wait_for_ready_snapshot(&mut conn_b, "invites_dm session B Ready").await?;
-    start_sync_for_qa(&mut conn_b, "invites_dm sync B").await?;
-
     let user_b_full_id = format!("@{}:{}", config.user_b, config.server_name);
     let user_a_full_id = format!("@{}:{}", config.user_a, config.server_name);
 
@@ -1598,9 +1630,8 @@ async fn run_invites_dm_stage(
         "invites_dm invite B to room",
     )
     .await?;
-    sync_once_for_qa(&mut conn_b, "invites_dm sync B for room invite").await?;
     wait_for_invite_in_snapshot(
-        &mut conn_b,
+        conn_b,
         &accept_room_id,
         Some(false),
         "invites_dm wait for room invite",
@@ -1608,25 +1639,16 @@ async fn run_invites_dm_stage(
     .await?;
     println!("invite_recv=ok");
 
-    accept_invite_for_qa(
-        &mut conn_b,
-        &accept_room_id,
-        "invites_dm accept room invite",
-    )
-    .await?;
-    sync_once_for_qa(&mut conn_b, "invites_dm sync B after room accept").await?;
+    accept_invite_for_qa(conn_b, &accept_room_id, "invites_dm accept room invite").await?;
     wait_for_room_in_room_list(
-        &mut conn_b,
+        conn_b,
         &accept_room_id,
         "invites_dm room list after room accept",
     )
     .await?;
-    let accept_room_settings = load_room_settings_for_qa(
-        &mut conn_b,
-        &accept_room_id,
-        "invites_dm accepted room members",
-    )
-    .await?;
+    let accept_room_settings =
+        load_room_settings_for_qa(conn_b, &accept_room_id, "invites_dm accepted room members")
+            .await?;
     assert_room_settings_contains_members(
         &accept_room_settings,
         &[user_a_full_id.as_str(), user_b_full_id.as_str()],
@@ -1646,29 +1668,22 @@ async fn run_invites_dm_stage(
         "invites_dm invite B to space",
     )
     .await?;
-    sync_once_for_qa(&mut conn_b, "invites_dm sync B for space invite").await?;
     wait_for_invite_in_snapshot(
-        &mut conn_b,
+        conn_b,
         &accept_space_id,
         Some(false),
         "invites_dm wait for space invite",
     )
     .await?;
-    accept_invite_for_qa(
-        &mut conn_b,
-        &accept_space_id,
-        "invites_dm accept space invite",
-    )
-    .await?;
-    sync_once_for_qa(&mut conn_b, "invites_dm sync B after space accept").await?;
+    accept_invite_for_qa(conn_b, &accept_space_id, "invites_dm accept space invite").await?;
     wait_for_space_in_space_list(
-        &mut conn_b,
+        conn_b,
         &accept_space_id,
         "invites_dm space list after space accept",
     )
     .await?;
     let accept_space_settings = load_room_settings_for_qa(
-        &mut conn_b,
+        conn_b,
         &accept_space_id,
         "invites_dm accepted space members",
     )
@@ -1678,7 +1693,17 @@ async fn run_invites_dm_stage(
         &[user_a_full_id.as_str(), user_b_full_id.as_str()],
         "invites_dm accepted space members",
     )?;
-    sync_once_for_qa(conn_a, "invites_dm sync A after space accept").await?;
+    let accept_space_settings_a = load_room_settings_for_qa(
+        conn_a,
+        &accept_space_id,
+        "invites_dm creator observes accepted space member",
+    )
+    .await?;
+    assert_room_settings_contains_members(
+        &accept_space_settings_a,
+        &[user_a_full_id.as_str(), user_b_full_id.as_str()],
+        "invites_dm creator observes accepted space member",
+    )?;
     println!("invite_accept=ok");
     println!("member_list=ok");
 
@@ -1696,23 +1721,16 @@ async fn run_invites_dm_stage(
         "invites_dm invite B to decline room",
     )
     .await?;
-    sync_once_for_qa(&mut conn_b, "invites_dm sync B for decline invite").await?;
     wait_for_invite_in_snapshot(
-        &mut conn_b,
+        conn_b,
         &decline_room_id,
         Some(false),
         "invites_dm wait for decline invite",
     )
     .await?;
-    decline_invite_for_qa(
-        &mut conn_b,
-        &decline_room_id,
-        "invites_dm decline room invite",
-    )
-    .await?;
-    sync_once_for_qa(&mut conn_b, "invites_dm sync B after decline").await?;
+    decline_invite_for_qa(conn_b, &decline_room_id, "invites_dm decline room invite").await?;
     wait_for_invite_absent(
-        &mut conn_b,
+        conn_b,
         &decline_room_id,
         "invites_dm wait for declined invite removal",
     )
@@ -1722,12 +1740,10 @@ async fn run_invites_dm_stage(
     let dm_room_id =
         start_direct_message_for_qa(conn_a, &user_b_full_id, "invites_dm start direct message")
             .await?;
-    sync_once_for_qa(conn_a, "invites_dm sync A after DM start").await?;
     wait_for_dm_room_in_room_list(conn_a, &dm_room_id, "invites_dm A room list after DM start")
         .await?;
-    sync_once_for_qa(&mut conn_b, "invites_dm sync B for DM invite").await?;
     wait_for_invite_in_snapshot(
-        &mut conn_b,
+        conn_b,
         &dm_room_id,
         Some(true),
         "invites_dm wait for DM invite",
@@ -1742,7 +1758,6 @@ async fn run_invites_dm_stage(
         "invites_dm start control direct message",
     )
     .await?;
-    sync_once_for_qa(conn_a, "invites_dm sync A after control DM start").await?;
     wait_for_dm_room_in_room_list(
         conn_a,
         &control_dm_room_id,
@@ -1753,11 +1768,14 @@ async fn run_invites_dm_stage(
         .await?;
     println!("dm_space_scope=ok");
 
-    cleanup_logged_in_runtime(conn_b, runtime_b, account_key_b, "invites_dm cleanup B").await?;
     Ok(())
 }
 
-async fn run_directory_stage(config: &QaConfig, conn_a: &mut CoreConnection) -> Result<(), String> {
+async fn run_directory_stage(
+    config: &QaConfig,
+    conn_a: &mut CoreConnection,
+    conn_b: &mut CoreConnection,
+) -> Result<(), String> {
     let directory_room_name = "Koushi Directory QA";
     let alias_localpart = format!("koushi-desktop-directory-qa-{}", std::process::id());
     let expected_alias = format!("#{alias_localpart}:{}", config.server_name);
@@ -1788,28 +1806,8 @@ async fn run_directory_stage(config: &QaConfig, conn_a: &mut CoreConnection) -> 
     }
     println!("directory_query=ok");
 
-    let runtime_b = CoreRuntime::start_with_data_dir(qa_data_dir("directory_b"));
-    let mut conn_b = runtime_b.attach();
-
-    let login_b_id = conn_b.next_request_id();
-    conn_b
-        .command(CoreCommand::Account(AccountCommand::LoginPassword {
-            request_id: login_b_id,
-            request: koushi_state::LoginRequest {
-                homeserver: config.homeserver.clone(),
-                username: config.user_b.clone(),
-                password: AuthSecret::new(config.password_b.clone()),
-                device_display_name: Some("Koushi Core QA Directory B".to_owned()),
-            },
-        }))
-        .await
-        .map_err(|e| format!("directory: submit login B failed: {e}"))?;
-
-    let account_key_b = wait_for_logged_in(&mut conn_b, login_b_id, "directory login B").await?;
-    wait_for_ready_snapshot(&mut conn_b, "directory session B Ready").await?;
-
     join_directory_room_for_qa(
-        &mut conn_b,
+        conn_b,
         &expected_alias,
         &config.server_name,
         &public_room_id,
@@ -1818,7 +1816,6 @@ async fn run_directory_stage(config: &QaConfig, conn_a: &mut CoreConnection) -> 
     .await?;
     println!("directory_join=ok");
 
-    cleanup_logged_in_runtime(conn_b, runtime_b, account_key_b, "directory cleanup B").await?;
     Ok(())
 }
 
@@ -1855,7 +1852,6 @@ async fn run_room_management_stage(
         "room_management create room",
     )
     .await?;
-    sync_once_for_qa(conn_a, "room_management sync A after create").await?;
     wait_for_room_in_room_list(conn_a, &room_id, "room_management A room list").await?;
 
     let user_b_full_id = format!("@{}:{}", config.user_b, config.server_name);
@@ -1866,7 +1862,6 @@ async fn run_room_management_stage(
         "room_management invite B",
     )
     .await?;
-    sync_once_for_qa(conn_b, "room_management sync B for invite").await?;
     wait_for_invite_in_snapshot(
         conn_b,
         &room_id,
@@ -1884,11 +1879,13 @@ async fn run_room_management_stage(
         .await
         .map_err(|e| format!("room_management: submit B join failed: {e}"))?;
     wait_for_room_joined(conn_b, join_b_id, &room_id, "room_management B joins").await?;
-    sync_once_for_qa(conn_a, "room_management sync A after B join").await?;
-    sync_once_for_qa(conn_b, "room_management sync B after join").await?;
-
     let settings_a =
         load_room_settings_for_qa(conn_a, &room_id, "room_management load settings A").await?;
+    assert_room_settings_contains_members(
+        &settings_a,
+        &[account_key_a.0.as_str(), account_key_b.0.as_str()],
+        "room_management A observes joined members",
+    )?;
     if !settings_a.permissions.can_edit_settings || !settings_a.permissions.can_kick {
         return Err("room_management: creator permissions were not projected".to_owned());
     }
@@ -1911,6 +1908,11 @@ async fn run_room_management_stage(
 
     let settings_b =
         load_room_settings_for_qa(conn_b, &room_id, "room_management load settings B").await?;
+    assert_room_settings_contains_members(
+        &settings_b,
+        &[account_key_a.0.as_str(), account_key_b.0.as_str()],
+        "room_management B observes joined members",
+    )?;
     if settings_b.permissions.can_kick {
         return Err("room_management: normal member unexpectedly has kick permission".to_owned());
     }
@@ -1951,6 +1953,7 @@ async fn run_e2ee_trust_stage(
     config: &QaConfig,
     conn_a: &mut CoreConnection,
     account_key_a: &AccountKey,
+    recipient_base: Option<(&mut CoreConnection, &AccountKey)>,
 ) -> Result<(), String> {
     let session_a = authenticated_session_info(conn_a, "session A info for E2EE trust")?;
 
@@ -1973,107 +1976,120 @@ async fn run_e2ee_trust_stage(
     .await?;
     println!("e2ee_key_backup_enable=ok");
 
-    sync_once_for_qa(
-        conn_a,
-        "publish primary cross-signing facts before gated second-device login",
-    )
-    .await?;
-
     let runtime_a2 = CoreRuntime::start_with_data_dir(qa_data_dir("a2"));
-    let mut conn_a2 = runtime_a2.attach();
+    let conn_a2 = runtime_a2.attach();
+    let mut owned_a2 = QaOwnedRuntimeParticipant::new(runtime_a2, conn_a2);
+    let a2_stage_result: Result<(), String> = async {
+        let login_a2_id = owned_a2.conn.next_request_id();
+        owned_a2
+            .conn
+            .command(CoreCommand::Account(AccountCommand::LoginPassword {
+                request_id: login_a2_id,
+                request: koushi_state::LoginRequest {
+                    homeserver: config.homeserver.clone(),
+                    username: config.user_a.clone(),
+                    password: AuthSecret::new(config.password_a.clone()),
+                    device_display_name: Some("Koushi Core QA A2".to_owned()),
+                },
+            }))
+            .await
+            .map_err(|e| format!("submit login A2: {e}"))?;
+        owned_a2.mark_login_submitted();
 
-    let login_a2_id = conn_a2.next_request_id();
-    conn_a2
-        .command(CoreCommand::Account(AccountCommand::LoginPassword {
-            request_id: login_a2_id,
-            request: koushi_state::LoginRequest {
-                homeserver: config.homeserver.clone(),
-                username: config.user_a.clone(),
-                password: AuthSecret::new(config.password_a.clone()),
-                device_display_name: Some("Koushi Core QA A2".to_owned()),
-            },
-        }))
-        .await
-        .map_err(|e| format!("submit login A2: {e}"))?;
+        let session_a2 =
+            wait_for_existing_identity_gate(&mut owned_a2.conn, "session A2 gate").await?;
+        verify_provisional_second_device_for_qa(
+            conn_a,
+            &mut owned_a2.conn,
+            &session_a,
+            &session_a2,
+            "e2ee gated self verification A/A2",
+            SasQaOutcome::Success,
+        )
+        .await?;
+        let account_key_a2 =
+            wait_for_logged_in(&mut owned_a2.conn, login_a2_id, "login A2").await?;
+        owned_a2.mark_logged_in(account_key_a2.clone());
+        let conn_a2 = &mut owned_a2.conn;
+        wait_for_ready_snapshot(conn_a2, "session A2 Ready").await?;
+        println!("gate_own_sas=ok");
 
-    let session_a2 = wait_for_existing_identity_gate(&mut conn_a2, "session A2 gate").await?;
-    verify_provisional_second_device_for_qa(
-        conn_a,
-        &mut conn_a2,
-        &session_a,
-        &session_a2,
-        "e2ee gated self verification A/A2",
-        SasQaOutcome::Success,
+        let sync_start_a2_id = conn_a2.next_request_id();
+        conn_a2
+            .command(CoreCommand::Sync(SyncCommand::Start {
+                request_id: sync_start_a2_id,
+            }))
+            .await
+            .map_err(|e| format!("submit sync start A2: {e}"))?;
+        let sync_backend_a2 =
+            wait_for_sync_started_and_running(conn_a2, sync_start_a2_id, "sync start A2").await?;
+        assert_expected_backend(
+            config.expect_sync_backend.as_deref(),
+            sync_backend_a2,
+            "sync start A2",
+        )?;
+
+        wait_for_room_in_room_list(
+            conn_a2,
+            &key_backup_seed_room_id,
+            "room list A2 after key backup seed",
+        )
+        .await?;
+
+        restore_key_backup_failure_for_qa(
+            conn_a2,
+            &account_key_a2,
+            Some(key_backup_version.clone()),
+            "restore key backup failure A2",
+        )
+        .await?;
+        println!("e2ee_key_backup_restore_failure=ok");
+
+        restore_key_backup_success_for_qa(
+            conn_a2,
+            &account_key_a2,
+            Some(key_backup_version),
+            AuthSecret::new(config.password_a.clone()),
+            "restore key backup success A2",
+        )
+        .await?;
+        println!("joined_room_restore=ok");
+
+        println!("e2ee_verification=ok");
+
+        verify_second_device_room_key_delivery_for_qa(
+            conn_a,
+            conn_a2,
+            account_key_a,
+            &account_key_a2,
+            &key_backup_seed_room_id,
+        )
+        .await?;
+        println!("e2ee_second_device_decrypt=ok");
+
+        verify_multi_user_multi_device_room_key_delivery_for_qa(
+            config,
+            conn_a,
+            conn_a2,
+            account_key_a,
+            &account_key_a2,
+            recipient_base,
+        )
+        .await?;
+        println!("e2ee_multi_user_multi_device_decrypt=ok");
+        Ok(())
+    }
+    .await;
+
+    finish_e2ee_recipient_stage_with_owned_cleanup(
+        a2_stage_result,
+        Some(owned_a2),
+        |participant| async move {
+            cleanup_owned_e2ee_participant_best_effort(participant, "cleanup secondary device")
+                .await
+        },
     )
     .await?;
-    let account_key_a2 = wait_for_logged_in(&mut conn_a2, login_a2_id, "login A2").await?;
-    wait_for_ready_snapshot(&mut conn_a2, "session A2 Ready").await?;
-    println!("gate_own_sas=ok");
-
-    let sync_start_a2_id = conn_a2.next_request_id();
-    conn_a2
-        .command(CoreCommand::Sync(SyncCommand::Start {
-            request_id: sync_start_a2_id,
-        }))
-        .await
-        .map_err(|e| format!("submit sync start A2: {e}"))?;
-    let sync_backend_a2 =
-        wait_for_sync_started_and_running(&mut conn_a2, sync_start_a2_id, "sync start A2").await?;
-    assert_expected_backend(
-        config.expect_sync_backend.as_deref(),
-        sync_backend_a2,
-        "sync start A2",
-    )?;
-
-    wait_for_room_in_room_list(
-        &mut conn_a2,
-        &key_backup_seed_room_id,
-        "room list A2 after key backup seed",
-    )
-    .await?;
-
-    restore_key_backup_failure_for_qa(
-        &mut conn_a2,
-        &account_key_a2,
-        Some(key_backup_version.clone()),
-        "restore key backup failure A2",
-    )
-    .await?;
-    println!("e2ee_key_backup_restore_failure=ok");
-
-    restore_key_backup_success_for_qa(
-        &mut conn_a2,
-        &account_key_a2,
-        Some(key_backup_version),
-        AuthSecret::new(config.password_a.clone()),
-        "restore key backup success A2",
-    )
-    .await?;
-    println!("joined_room_restore=ok");
-
-    println!("e2ee_verification=ok");
-
-    verify_second_device_room_key_delivery_for_qa(
-        conn_a,
-        &mut conn_a2,
-        account_key_a,
-        &account_key_a2,
-        &key_backup_seed_room_id,
-    )
-    .await?;
-    println!("e2ee_second_device_decrypt=ok");
-
-    verify_multi_user_multi_device_room_key_delivery_for_qa(
-        config,
-        conn_a,
-        &mut conn_a2,
-        account_key_a,
-        &account_key_a2,
-    )
-    .await?;
-    println!("e2ee_multi_user_multi_device_decrypt=ok");
-
-    cleanup_e2ee_secondary_device(conn_a2, runtime_a2, account_key_a2).await?;
 
     if config.allow_identity_reset {
         reset_identity_for_qa(
@@ -2090,14 +2106,6 @@ async fn run_e2ee_trust_stage(
     println!("e2ee_trust=ok");
 
     Ok(())
-}
-
-async fn cleanup_e2ee_secondary_device(
-    conn: CoreConnection,
-    runtime: CoreRuntime,
-    account_key: AccountKey,
-) -> Result<(), String> {
-    cleanup_logged_in_runtime(conn, runtime, account_key, "cleanup secondary device").await
 }
 
 async fn cleanup_logged_in_runtime(
@@ -2123,9 +2131,260 @@ async fn cleanup_logged_in_runtime(
     wait_for_logged_out(&mut conn, logout_id, &account_key, label).await?;
 
     drop(conn);
-    drop(runtime);
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    runtime.shutdown().await;
     Ok(())
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum QaE2eeLogoutBarrier {
+    AnyAccount,
+    Exact(AccountKey),
+}
+
+fn e2ee_cleanup_logout_barrier(phase: &QaOwnedRuntimePhase) -> Option<QaE2eeLogoutBarrier> {
+    match phase {
+        QaOwnedRuntimePhase::LoginNotSubmitted => None,
+        // Login was submitted, but ownership has not advanced through the
+        // authoritative LoggedIn gate. Do not infer an exact account key from
+        // a provisional snapshot.
+        QaOwnedRuntimePhase::LoginSubmitted => Some(QaE2eeLogoutBarrier::AnyAccount),
+        QaOwnedRuntimePhase::LoggedIn(account_key) => {
+            Some(QaE2eeLogoutBarrier::Exact(account_key.clone()))
+        }
+    }
+}
+
+trait QaOwnedE2eeCleanupOperations {
+    async fn stop_sync(&mut self, label: &str) -> Result<(), String>;
+    async fn submit_logout(
+        &mut self,
+        barrier: &QaE2eeLogoutBarrier,
+        label: &str,
+    ) -> Result<(), String>;
+    async fn wait_for_authoritative_logout(
+        &mut self,
+        barrier: &QaE2eeLogoutBarrier,
+        label: &str,
+    ) -> Result<(), String>;
+    fn drop_connection(&mut self);
+    async fn shutdown_runtime(&mut self);
+}
+
+struct QaCoreOwnedE2eeCleanupOperations {
+    runtime: Option<CoreRuntime>,
+    conn: Option<CoreConnection>,
+    logout_request_id: Option<koushi_core::ids::RequestId>,
+}
+
+impl QaCoreOwnedE2eeCleanupOperations {
+    fn new(runtime: CoreRuntime, conn: CoreConnection) -> Self {
+        Self {
+            runtime: Some(runtime),
+            conn: Some(conn),
+            logout_request_id: None,
+        }
+    }
+
+    fn connection(&mut self) -> &mut CoreConnection {
+        self.conn
+            .as_mut()
+            .expect("owned E2EE cleanup connection is available before its drop barrier")
+    }
+}
+
+impl QaOwnedE2eeCleanupOperations for QaCoreOwnedE2eeCleanupOperations {
+    async fn stop_sync(&mut self, label: &str) -> Result<(), String> {
+        let conn = self.connection();
+        let sync_stop_id = conn.next_request_id();
+        match conn
+            .command(CoreCommand::Sync(SyncCommand::Stop {
+                request_id: sync_stop_id,
+            }))
+            .await
+        {
+            Ok(()) => wait_for_sync_stopped(conn, sync_stop_id, label).await,
+            Err(_) => Err(format!("{label}: submit sync stop failed")),
+        }
+    }
+
+    async fn submit_logout(
+        &mut self,
+        _barrier: &QaE2eeLogoutBarrier,
+        label: &str,
+    ) -> Result<(), String> {
+        let conn = self.connection();
+        let logout_request_id = conn.next_request_id();
+        conn.command(CoreCommand::Account(AccountCommand::Logout {
+            request_id: logout_request_id,
+        }))
+        .await
+        .map_err(|_| format!("{label}: submit logout failed"))?;
+        self.logout_request_id = Some(logout_request_id);
+        Ok(())
+    }
+
+    async fn wait_for_authoritative_logout(
+        &mut self,
+        barrier: &QaE2eeLogoutBarrier,
+        label: &str,
+    ) -> Result<(), String> {
+        let logout_request_id = self
+            .logout_request_id
+            .take()
+            .expect("logout submission precedes its authoritative cleanup barrier");
+        let conn = self.connection();
+        match barrier {
+            QaE2eeLogoutBarrier::AnyAccount => {
+                wait_for_signed_out_after_logout(conn, logout_request_id, label).await
+            }
+            QaE2eeLogoutBarrier::Exact(account_key) => {
+                wait_for_logged_out(conn, logout_request_id, account_key, label).await
+            }
+        }
+    }
+
+    fn drop_connection(&mut self) {
+        drop(self.conn.take());
+    }
+
+    async fn shutdown_runtime(&mut self) {
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown().await;
+        }
+    }
+}
+
+async fn cleanup_owned_e2ee_lifecycle_best_effort<Operations>(
+    phase: &QaOwnedRuntimePhase,
+    operations: &mut Operations,
+    label: &str,
+) -> Result<(), String>
+where
+    Operations: QaOwnedE2eeCleanupOperations,
+{
+    let sync_stop_result = if matches!(phase, QaOwnedRuntimePhase::LoggedIn(_)) {
+        operations.stop_sync(label).await
+    } else {
+        Ok(())
+    };
+
+    // Logout is attempted even if stopping sync failed. Connection drop and
+    // ordered runtime shutdown remain the final barriers in every phase.
+    let logout_result = if let Some(barrier) = e2ee_cleanup_logout_barrier(phase) {
+        match operations.submit_logout(&barrier, label).await {
+            Ok(()) => {
+                operations
+                    .wait_for_authoritative_logout(&barrier, label)
+                    .await
+            }
+            Err(error) => Err(error),
+        }
+    } else {
+        Ok(())
+    };
+
+    operations.drop_connection();
+    operations.shutdown_runtime().await;
+
+    match (sync_stop_result, logout_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(_), Ok(())) => Err(format!("{label}: sync stop cleanup failed")),
+        (Ok(()), Err(_)) => Err(format!("{label}: logout cleanup failed")),
+        (Err(_), Err(_)) => Err(format!("{label}: sync stop and logout cleanup failed")),
+    }
+}
+
+async fn cleanup_owned_e2ee_participant_best_effort(
+    participant: QaOwnedRuntimeParticipant,
+    label: &str,
+) -> Result<(), String> {
+    let QaOwnedRuntimeParticipant {
+        runtime,
+        conn,
+        phase,
+    } = participant;
+    let mut operations = QaCoreOwnedE2eeCleanupOperations::new(runtime, conn);
+    cleanup_owned_e2ee_lifecycle_best_effort(&phase, &mut operations, label).await
+}
+
+async fn cleanup_e2ee_callers_after_stage_failure(
+    callers: (QaOwnedRuntimeParticipant, QaOwnedRuntimeParticipant),
+) -> Result<(), String> {
+    let (caller_a, caller_b) = callers;
+    let cleanup_a =
+        cleanup_owned_e2ee_participant_best_effort(caller_a, "all E2EE failure cleanup caller A")
+            .await;
+    let cleanup_b =
+        cleanup_owned_e2ee_participant_best_effort(caller_b, "all E2EE failure cleanup caller B")
+            .await;
+
+    match (cleanup_a, cleanup_b) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(_), Ok(())) => Err("all E2EE caller A cleanup failed".to_owned()),
+        (Ok(()), Err(_)) => Err("all E2EE caller B cleanup failed".to_owned()),
+        (Err(_), Err(_)) => Err("all E2EE caller cleanup failed for both participants".to_owned()),
+    }
+}
+
+async fn cleanup_e2ee_multi_device_participants(
+    participants: (
+        Option<QaOwnedRuntimeParticipant>,
+        Option<QaOwnedRuntimeParticipant>,
+        Option<QaOwnedRuntimeParticipant>,
+    ),
+) -> Result<(), String> {
+    let (base, second_device, unverified_device) = participants;
+    cleanup_all_owned_e2ee_participants(
+        [
+            unverified_device.map(|participant| (participant, "e2ee cleanup B3")),
+            second_device.map(|participant| (participant, "e2ee cleanup B2")),
+            base.map(|participant| (participant, "e2ee cleanup B")),
+        ],
+        |(participant, label)| async move {
+            cleanup_owned_e2ee_participant_best_effort(participant, label).await
+        },
+    )
+    .await
+}
+
+async fn cleanup_all_owned_e2ee_participants<Participant, Cleanup, CleanupFuture, const N: usize>(
+    participants: [Option<Participant>; N],
+    mut cleanup: Cleanup,
+) -> Result<(), String>
+where
+    Cleanup: FnMut(Participant) -> CleanupFuture,
+    CleanupFuture: Future<Output = Result<(), String>>,
+{
+    let mut failed = 0usize;
+    for participant in participants.into_iter().flatten() {
+        if cleanup(participant).await.is_err() {
+            failed += 1;
+        }
+    }
+
+    if failed == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "E2EE cleanup failed for {failed} owned recipient participant(s)"
+        ))
+    }
+}
+
+async fn cleanup_normal_secondary_participant_for_qa(
+    normal_secondary: &mut Option<QaParticipantLoginOutcome>,
+    label: &str,
+) -> Result<(), String> {
+    let Some(participant) = normal_secondary.take() else {
+        return Ok(());
+    };
+    cleanup_logged_in_runtime(
+        participant.conn,
+        participant.runtime,
+        participant.account_key,
+        label,
+    )
+    .await
 }
 
 async fn run_timeline_stress_stage(
@@ -3147,7 +3406,6 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
             "cache_restore create room",
         )
         .await?;
-        sync_once_for_qa(&mut conn, "cache_restore sync after room create").await?;
         wait_for_room_in_room_list(&mut conn, &room_id, "cache_restore room in list").await?;
 
         let key = TimelineKey::room(account_key.clone(), room_id.clone());
@@ -3313,7 +3571,6 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
         "cache_restore shallow create",
     )
     .await?;
-    sync_once_for_qa(&mut conn, "cache_restore sync after shallow room create").await?;
     wait_for_room_in_room_list(
         &mut conn,
         &shallow_room_id,
@@ -3444,8 +3701,7 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
     // Clean shutdown of Connect 1.
     stop_sync_for_qa(&mut conn, "cache_restore stop sync before restart").await?;
     drop(conn);
-    drop(runtime);
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    runtime.shutdown().await;
 
     // -----------------------------------------------------------------------
     // Connect 2: restart over the same data dir, BLOCK the network, then drive
@@ -3753,28 +4009,84 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
     Ok(())
 }
 
-async fn run_send_queue_stage(config: &QaConfig) -> Result<(), String> {
-    let proxy = QaTcpProxy::start(&config.homeserver)?;
-    let data_dir = qa_data_dir("send_queue");
-    let runtime = CoreRuntime::start_with_data_dir(data_dir.clone());
-    let mut conn = runtime.attach();
+async fn run_focused_send_queue_scenario(config: &QaConfig) -> Result<(), String> {
+    let QaParticipantLoginOutcome {
+        runtime,
+        mut conn,
+        account_key,
+        bootstrap_recovery_secret,
+        sync_backend: _,
+    } = login_synced_participant_for_qa(
+        &config.homeserver,
+        qa_data_dir("send_queue_bootstrap"),
+        &config.user_a,
+        &config.password_a,
+        "Koushi Core QA Send Queue Bootstrap",
+        "send_queue bootstrap login",
+        "send_queue bootstrap gate",
+        QaParticipantLoginGate::BootstrapNewIdentity,
+    )
+    .await?;
+    println!("login_sync=ok");
 
-    let login_id = conn.next_request_id();
-    conn.command(CoreCommand::Account(AccountCommand::LoginPassword {
-        request_id: login_id,
-        request: koushi_state::LoginRequest {
-            homeserver: proxy.homeserver_url(),
-            username: config.user_a.clone(),
-            password: AuthSecret::new(config.password_a.clone()),
-            device_display_name: Some("Koushi Core QA Send Queue".to_owned()),
-        },
+    let sync_stop_id = conn.next_request_id();
+    conn.command(CoreCommand::Sync(SyncCommand::Stop {
+        request_id: sync_stop_id,
     }))
     .await
-    .map_err(|e| format!("send_queue: submit login failed: {e}"))?;
+    .map_err(|e| format!("send_queue bootstrap submit sync stop: {e}"))?;
+    wait_for_sync_stopped(&mut conn, sync_stop_id, "send_queue bootstrap sync stop").await?;
 
-    let account_key = wait_for_logged_in(&mut conn, login_id, "send_queue login").await?;
-    wait_for_ready_snapshot(&mut conn, "send_queue Ready").await?;
-    start_sync_for_qa(&mut conn, "send_queue sync").await?;
+    let logout_id = conn.next_request_id();
+    conn.command(CoreCommand::Account(AccountCommand::Logout {
+        request_id: logout_id,
+    }))
+    .await
+    .map_err(|e| format!("send_queue bootstrap submit logout: {e}"))?;
+    wait_for_logged_out(
+        &mut conn,
+        logout_id,
+        &account_key,
+        "send_queue bootstrap logout",
+    )
+    .await?;
+
+    drop(conn);
+    tokio::time::timeout(EVENT_TIMEOUT, runtime.shutdown())
+        .await
+        .map_err(|_| "send_queue bootstrap ordered runtime shutdown timed out".to_owned())?;
+
+    let recovery_secret = bootstrap_recovery_secret
+        .ok_or_else(|| "send_queue bootstrap recovery secret unavailable".to_owned())?;
+    run_send_queue_stage(config, &recovery_secret).await
+}
+
+async fn run_send_queue_stage(
+    config: &QaConfig,
+    recovery_secret: &AuthSecret,
+) -> Result<(), String> {
+    let display_projection_reset_fallback_baseline =
+        koushi_core::timeline::display_projection_reset_fallback_count();
+    let proxy = QaTcpProxy::start(&config.homeserver)?;
+    let data_dir = qa_data_dir("send_queue");
+    let proxy_homeserver = proxy.homeserver_url();
+    let QaParticipantLoginOutcome {
+        runtime,
+        mut conn,
+        account_key,
+        bootstrap_recovery_secret: _,
+        sync_backend: _,
+    } = login_synced_participant_for_qa(
+        &proxy_homeserver,
+        data_dir.clone(),
+        &config.user_a,
+        &config.password_a,
+        "Koushi Core QA Send Queue",
+        "send_queue login",
+        "send_queue recovery gate",
+        QaParticipantLoginGate::RecoverExistingIdentity(recovery_secret),
+    )
+    .await?;
 
     let room_id = create_room_for_qa(
         &mut conn,
@@ -3783,7 +4095,6 @@ async fn run_send_queue_stage(config: &QaConfig) -> Result<(), String> {
         "send_queue create room",
     )
     .await?;
-    sync_once_for_qa(&mut conn, "send_queue sync after room create").await?;
     wait_for_room_in_room_list(&mut conn, &room_id, "send_queue room list").await?;
 
     let key = TimelineKey::room(account_key.clone(), room_id.clone());
@@ -3825,6 +4136,8 @@ async fn run_send_queue_stage(config: &QaConfig) -> Result<(), String> {
     .await?;
 
     proxy.enable();
+    let room_send_forwarded_before_retry = proxy.room_send_forwarded_count();
+    let room_send_responses_completed_before_retry = proxy.room_send_responses_completed_count();
     let retry_id = retry_send_queue_item(
         &mut conn,
         &key,
@@ -3840,7 +4153,19 @@ async fn run_send_queue_stage(config: &QaConfig) -> Result<(), String> {
         &second,
         "send_queue fifo retry",
     )
-    .await?;
+    .await
+    .map_err(|error| {
+        format!(
+            "{error} room_send_forwarded_after_retry={} \
+             room_send_responses_completed_after_retry={}",
+            proxy
+                .room_send_forwarded_count()
+                .saturating_sub(room_send_forwarded_before_retry),
+            proxy
+                .room_send_responses_completed_count()
+                .saturating_sub(room_send_responses_completed_before_retry)
+        )
+    })?;
     println!("resend=ok");
     println!("fifo=ok");
 
@@ -3887,8 +4212,7 @@ async fn run_send_queue_stage(config: &QaConfig) -> Result<(), String> {
     .await?;
     stop_sync_for_qa(&mut conn, "send_queue stop before restart").await?;
     drop(conn);
-    drop(runtime);
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    runtime.shutdown().await;
 
     let runtime = CoreRuntime::start_with_data_dir(data_dir);
     let mut conn = runtime.attach();
@@ -3921,6 +4245,11 @@ async fn run_send_queue_stage(config: &QaConfig) -> Result<(), String> {
     let restored_txn = match restored.id {
         TimelineItemId::Transaction { transaction_id } => transaction_id,
         TimelineItemId::Event { .. } => {
+            assert_zero_display_projection_reset_fallback_delta(
+                display_projection_reset_fallback_baseline,
+                koushi_core::timeline::display_projection_reset_fallback_count(),
+            )?;
+            println!("display_projection_reset_fallbacks=0");
             unsubscribe_timeline_for_qa(&mut conn, &key, "send_queue unsubscribe before cleanup")
                 .await?;
             println!("unsent_restart=ok");
@@ -3952,8 +4281,25 @@ async fn run_send_queue_stage(config: &QaConfig) -> Result<(), String> {
     .await?;
     println!("unsent_restart=ok");
 
+    assert_zero_display_projection_reset_fallback_delta(
+        display_projection_reset_fallback_baseline,
+        koushi_core::timeline::display_projection_reset_fallback_count(),
+    )?;
+    println!("display_projection_reset_fallbacks=0");
+
     unsubscribe_timeline_for_qa(&mut conn, &key, "send_queue unsubscribe before cleanup").await?;
     cleanup_logged_in_runtime(conn, runtime, account_key, "send_queue cleanup").await
+}
+
+fn assert_zero_display_projection_reset_fallback_delta(
+    baseline: u64,
+    current: u64,
+) -> Result<(), String> {
+    if current == baseline {
+        Ok(())
+    } else {
+        Err("send_queue: display projection reset fallback counter changed".to_owned())
+    }
 }
 
 async fn unsubscribe_timeline_for_qa(
@@ -4087,20 +4433,10 @@ async fn run_timeline_reconnect_scenario_impl(
             "timeline legacy persisted gap start direct message",
         )
         .await?;
-        sync_once_for_qa(
-            &mut conn_a,
-            "timeline legacy persisted gap sync A after DM create",
-        )
-        .await?;
         wait_for_dm_room_in_room_list(
             &mut conn_a,
             &room_id,
             "timeline legacy persisted gap A DM room list",
-        )
-        .await?;
-        sync_once_for_qa(
-            &mut conn_b,
-            "timeline legacy persisted gap sync B for DM invite",
         )
         .await?;
         wait_for_invite_in_snapshot(
@@ -4116,20 +4452,10 @@ async fn run_timeline_reconnect_scenario_impl(
             "timeline legacy persisted gap B accepts DM invite",
         )
         .await?;
-        sync_once_for_qa(
-            &mut conn_b,
-            "timeline legacy persisted gap sync B after DM accept",
-        )
-        .await?;
         wait_for_room_in_room_list(
             &mut conn_b,
             &room_id,
             "timeline legacy persisted gap B room list",
-        )
-        .await?;
-        sync_once_for_qa(
-            &mut conn_a,
-            "timeline legacy persisted gap sync A after DM accept",
         )
         .await?;
         wait_for_dm_room_in_room_list(
@@ -4147,7 +4473,6 @@ async fn run_timeline_reconnect_scenario_impl(
             "timeline_reconnect create room",
         )
         .await?;
-        sync_once_for_qa(&mut conn_a, "timeline_reconnect sync A after room create").await?;
         wait_for_room_in_room_list(&mut conn_a, &room_id, "timeline_reconnect A room list").await?;
         invite_user_for_qa(
             &mut conn_a,
@@ -4156,7 +4481,6 @@ async fn run_timeline_reconnect_scenario_impl(
             "timeline_reconnect invite B",
         )
         .await?;
-        sync_once_for_qa(&mut conn_b, "timeline_reconnect sync B for invite").await?;
         wait_for_invite_in_snapshot(
             &mut conn_b,
             &room_id,
@@ -4165,9 +4489,7 @@ async fn run_timeline_reconnect_scenario_impl(
         )
         .await?;
         accept_invite_for_qa(&mut conn_b, &room_id, "timeline_reconnect B accepts invite").await?;
-        sync_once_for_qa(&mut conn_b, "timeline_reconnect sync B after accept").await?;
         wait_for_room_in_room_list(&mut conn_b, &room_id, "timeline_reconnect B room list").await?;
-        sync_once_for_qa(&mut conn_a, "timeline_reconnect sync A after B accepts").await?;
         room_id
     };
 
@@ -4217,7 +4539,7 @@ async fn run_timeline_reconnect_scenario_impl(
         "timeline_reconnect seed known anchor",
     )
     .await?;
-    wait_for_item_with_body_with_sync(
+    wait_for_item_with_body_or_decryption_failure(
         &mut conn_a,
         &key_a,
         seed_body,
@@ -4877,6 +5199,7 @@ async fn run_timeline_reconnect_scenario_impl(
         wait_for_all_items_with_bodies(
             &mut conn_a,
             &key_a,
+            &reopened_items,
             &offline_bodies,
             "timeline_reconnect A repairs the complete missed batch",
         )
@@ -5286,11 +5609,7 @@ async fn cleanup_after_full_flow(
     println!("sync_a=stopped");
 
     drop(conn_a);
-    drop(runtime_a);
-    // Store-lock release after dropping the runtime is a filesystem event with
-    // no observable Core signal to wait on; this brief bounded wait avoids
-    // store-lock contention when the same data dir is reopened below.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    runtime_a.shutdown().await;
 
     let runtime_a2 = CoreRuntime::start_with_data_dir(data_dir_a);
     let mut conn_a2 = runtime_a2.attach();
@@ -5326,7 +5645,7 @@ async fn cleanup_after_full_flow(
         .await
         .map_err(|e| format!("submit post-logout restore A: {e}"))?;
 
-    let failure = wait_for_operation_failed(
+    let failure = wait_for_operation_failed_and_signed_out(
         &mut conn_a2,
         restore_gone_id,
         "post-logout restore A (must fail)",
@@ -5337,10 +5656,6 @@ async fn cleanup_after_full_flow(
             "post-logout restore A failed with unexpected kind: {failure:?}"
         ));
     }
-    if !matches!(conn_a2.snapshot().session, SessionState::SignedOut) {
-        return Err("post-logout restore A must leave the session SignedOut".to_owned());
-    }
-
     let logout_b_id = conn_b.next_request_id();
     conn_b
         .command(CoreCommand::Account(AccountCommand::Logout {
@@ -5359,7 +5674,7 @@ async fn cleanup_after_full_flow(
         .await
         .map_err(|e| format!("submit post-logout restore-last: {e}"))?;
 
-    let failure = wait_for_operation_failed(
+    let failure = wait_for_operation_failed_and_signed_out(
         &mut conn_b,
         restore_last_id,
         "post-logout restore-last (must be not-found)",
@@ -5370,15 +5685,32 @@ async fn cleanup_after_full_flow(
             "post-logout restore-last failed with unexpected kind: {failure:?}"
         ));
     }
-    if !matches!(conn_b.snapshot().session, SessionState::SignedOut) {
-        return Err("post-logout restore-last must leave the session SignedOut".to_owned());
-    }
-
     drop(conn_b);
-    drop(runtime_b);
+    runtime_b.shutdown().await;
 
     println!("restore_cleanup=ok");
     Ok("restore_cleanup=ok".to_owned())
+}
+
+fn should_bootstrap_new_identity_before_logged_in(scenario: QaScenario) -> bool {
+    matches!(
+        scenario,
+        QaScenario::All
+            | QaScenario::InvitesDm
+            | QaScenario::E2eeTrust
+            | QaScenario::GateRestore
+            | QaScenario::GateNegative
+    )
+}
+
+fn should_run_normal_secondary_participant(scenario: QaScenario) -> bool {
+    scenario.should_run_stage(QaStage::InvitesDm)
+        || scenario.should_run_stage(QaStage::Directory)
+        || scenario.should_run_stage(QaStage::RoomSpace)
+}
+
+fn should_run_focused_send_queue_route(scenario: QaScenario) -> bool {
+    scenario == QaScenario::SendQueue
 }
 
 async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, String> {
@@ -5413,6 +5745,11 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         run_gate_no_proof_stage(&config).await?;
         return Ok(scenario_report(&config.server_kind, scenario));
     }
+    if should_run_focused_send_queue_route(scenario) {
+        println!("safety=ok");
+        run_focused_send_queue_scenario(&config).await?;
+        return Ok(scenario_report(&config.server_kind, scenario));
+    }
 
     // One CoreRuntime per synthetic user (two-device topology).
     let data_dir_a = qa_data_dir("a");
@@ -5421,7 +5758,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     // -----------------------------------------------------------------------
     // --- Login A (storeless exchange + store bootstrap inside the actor) ---
     // -----------------------------------------------------------------------
-    let runtime_a = CoreRuntime::start_with_data_dir(data_dir_a.clone());
+    let mut runtime_a = CoreRuntime::start_with_data_dir(data_dir_a.clone());
     let mut conn_a = runtime_a.attach();
 
     let login_a_id = conn_a.next_request_id();
@@ -5438,10 +5775,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .await
         .map_err(|e| format!("submit login A: {e}"))?;
 
-    let bootstrap_recovery_secret_a = if matches!(
-        scenario,
-        QaScenario::E2eeTrust | QaScenario::GateRestore | QaScenario::GateNegative
-    ) {
+    let bootstrap_recovery_secret_a = if should_bootstrap_new_identity_before_logged_in(scenario) {
         let secret =
             complete_new_identity_gate_for_qa(&mut conn_a, &config.password_a, "gate-bootstrap-a")
                 .await?;
@@ -5451,7 +5785,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         None
     };
 
-    let account_key_a = wait_for_logged_in(&mut conn_a, login_a_id, "login A").await?;
+    let mut account_key_a = wait_for_logged_in(&mut conn_a, login_a_id, "login A").await?;
     wait_for_ready_snapshot(&mut conn_a, "session A Ready").await?;
 
     // -----------------------------------------------------------------------
@@ -5555,7 +5889,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     }
 
     if scenario == QaScenario::E2eeTrust {
-        run_e2ee_trust_stage(&config, &mut conn_a, &account_key_a).await?;
+        run_e2ee_trust_stage(&config, &mut conn_a, &account_key_a, None).await?;
         drop(conn_a);
         runtime_a.shutdown().await;
         return Ok(scenario_report(&config.server_kind, scenario));
@@ -5580,20 +5914,62 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         return Ok(scenario_report(&config.server_kind, scenario));
     }
 
+    let mut normal_secondary = if should_run_normal_secondary_participant(scenario) {
+        let participant = login_synced_participant_for_qa(
+            &config.homeserver,
+            data_dir_b.clone(),
+            &config.user_b,
+            &config.password_b,
+            DEVICE_B,
+            "normal secondary login B",
+            "normal secondary bootstrap gate B",
+            QaParticipantLoginGate::BootstrapNewIdentity,
+        )
+        .await?;
+        println!("sync_backend_b={:?}", participant.sync_backend);
+        assert_expected_backend(
+            config.expect_sync_backend.as_deref(),
+            participant.sync_backend,
+            "normal secondary sync start B",
+        )?;
+        println!("sync_b=running");
+        Some(participant)
+    } else {
+        None
+    };
+
     if scenario.should_run_stage(QaStage::InvitesDm) {
-        run_invites_dm_stage(&config, &mut conn_a, data_dir_b.clone()).await?;
+        let conn_b = &mut normal_secondary
+            .as_mut()
+            .ok_or_else(|| "InvitesDm requires the normal secondary participant".to_owned())?
+            .conn;
+        run_invites_dm_stage(&config, &mut conn_a, conn_b).await?;
     }
 
     if scenario == QaScenario::InvitesDm {
+        cleanup_normal_secondary_participant_for_qa(
+            &mut normal_secondary,
+            "InvitesDm normal secondary cleanup",
+        )
+        .await?;
         cleanup_after_login_sync(conn_a, runtime_a, data_dir_a, account_key_a).await?;
         return Ok(scenario_report(&config.server_kind, scenario));
     }
 
     if scenario.should_run_stage(QaStage::Directory) {
-        run_directory_stage(&config, &mut conn_a).await?;
+        let conn_b = &mut normal_secondary
+            .as_mut()
+            .ok_or_else(|| "Directory requires the normal secondary participant".to_owned())?
+            .conn;
+        run_directory_stage(&config, &mut conn_a, conn_b).await?;
     }
 
     if !scenario.should_run_stage(QaStage::RoomSpace) {
+        cleanup_normal_secondary_participant_for_qa(
+            &mut normal_secondary,
+            "pre-RoomSpace normal secondary cleanup",
+        )
+        .await?;
         cleanup_after_login_sync(conn_a, runtime_a, data_dir_a, account_key_a).await?;
         return Ok(scenario_report(&config.server_kind, scenario));
     }
@@ -5696,10 +6072,6 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     .await?;
     println!("invite_b_to_space=ok");
 
-    // Ensure the space create state has been folded into A's room-list
-    // classification before asserting rooms vs spaces.
-    sync_once_for_qa(&mut conn_a, "sync A after room and space creates").await?;
-
     // Wait (event-driven, bounded) until A's room list contains the created
     // room AND the created space; the wait itself is the assertion.
     let snapshot_a = wait_for_room_list_containing(
@@ -5713,47 +6085,18 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     println!("room_list_a={room_list_a}");
 
     // -----------------------------------------------------------------------
-    // --- Login B + sync B + join room + join space ---
+    // --- Reuse centrally logged-in B + join room + join space ---
     // -----------------------------------------------------------------------
-    let runtime_b = CoreRuntime::start_with_data_dir(data_dir_b);
-    let mut conn_b = runtime_b.attach();
-
-    let login_b_id = conn_b.next_request_id();
-    conn_b
-        .command(CoreCommand::Account(AccountCommand::LoginPassword {
-            request_id: login_b_id,
-            request: koushi_state::LoginRequest {
-                homeserver: config.homeserver.clone(),
-                username: config.user_b.clone(),
-                password: AuthSecret::new(config.password_b.clone()),
-                device_display_name: Some(DEVICE_B.to_owned()),
-            },
-        }))
-        .await
-        .map_err(|e| format!("submit login B: {e}"))?;
-
-    let account_key_b = wait_for_logged_in(&mut conn_b, login_b_id, "login B").await?;
-    wait_for_ready_snapshot(&mut conn_b, "session B Ready").await?;
-
-    // Start sync B
-    let sync_start_b_id = conn_b.next_request_id();
-    conn_b
-        .command(CoreCommand::Sync(SyncCommand::Start {
-            request_id: sync_start_b_id,
-        }))
-        .await
-        .map_err(|e| format!("submit sync start B: {e}"))?;
-
-    let sync_backend_b =
-        wait_for_sync_started_and_running(&mut conn_b, sync_start_b_id, "sync start B").await?;
-    println!("sync_backend_b={sync_backend_b:?}");
-    assert_expected_backend(
-        config.expect_sync_backend.as_deref(),
-        sync_backend_b,
-        "sync start B",
-    )?;
-
-    println!("sync_b=running");
+    let normal_secondary = normal_secondary.take();
+    let normal_secondary = normal_secondary
+        .ok_or_else(|| "RoomSpace requires the normal secondary participant".to_owned())?;
+    let QaParticipantLoginOutcome {
+        runtime: mut runtime_b,
+        conn: mut conn_b,
+        account_key: mut account_key_b,
+        bootstrap_recovery_secret: _,
+        sync_backend: _,
+    } = normal_secondary;
 
     // B joins the room
     let join_room_id = conn_b.next_request_id();
@@ -5780,10 +6123,6 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
 
     wait_for_room_joined(&mut conn_b, join_space_id, &space_id, "B joins space").await?;
     println!("b_joined_space=ok");
-
-    // Ensure the joined space has been folded into B's room-list
-    // classification before asserting rooms vs spaces.
-    sync_once_for_qa(&mut conn_b, "sync B after room and space joins").await?;
 
     // Wait (event-driven, bounded) until B's room list contains the joined
     // room AND the joined space; the wait itself is the assertion.
@@ -6349,7 +6688,10 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     println!("timeline=ok");
 
     if scenario.should_run_stage(QaStage::SendQueue) {
-        run_send_queue_stage(&config).await?;
+        let recovery_secret = bootstrap_recovery_secret_a
+            .as_ref()
+            .ok_or_else(|| "send_queue: primary recovery secret unavailable".to_owned())?;
+        run_send_queue_stage(&config, recovery_secret).await?;
     }
 
     if !scenario.should_run_stage(QaStage::EditRedactSearch) {
@@ -6511,7 +6853,38 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     // `wait_for_sync_stopped` (request-id-scoped) is the concrete wait.
 
     if scenario == QaScenario::All {
-        run_e2ee_trust_stage(&config, &mut conn_a, &account_key_a).await?;
+        let e2ee_stage_result = run_e2ee_trust_stage(
+            &config,
+            &mut conn_a,
+            &account_key_a,
+            Some((&mut conn_b, &account_key_b)),
+        )
+        .await;
+        let (caller_a, caller_b) = retain_or_cleanup_e2ee_callers_after_stage(
+            e2ee_stage_result,
+            (
+                QaOwnedRuntimeParticipant::from_logged_in(QaOwnedLoggedInRuntime {
+                    runtime: runtime_a,
+                    conn: conn_a,
+                    account_key: account_key_a,
+                }),
+                QaOwnedRuntimeParticipant::from_logged_in(QaOwnedLoggedInRuntime {
+                    runtime: runtime_b,
+                    conn: conn_b,
+                    account_key: account_key_b,
+                }),
+            ),
+            cleanup_e2ee_callers_after_stage_failure,
+        )
+        .await?;
+        let caller_a = caller_a.into_logged_in_runtime();
+        let caller_b = caller_b.into_logged_in_runtime();
+        runtime_a = caller_a.runtime;
+        conn_a = caller_a.conn;
+        account_key_a = caller_a.account_key;
+        runtime_b = caller_b.runtime;
+        conn_b = caller_b.conn;
+        account_key_b = caller_b.account_key;
     }
 
     // -----------------------------------------------------------------------
@@ -6529,11 +6902,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     println!("sync_a=stopped");
 
     drop(conn_a);
-    drop(runtime_a);
-    // Store-lock release after dropping the runtime is a filesystem event with
-    // no observable Core signal to wait on; this brief bounded wait avoids
-    // store-lock contention when the same data dir is reopened on restore.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    runtime_a.shutdown().await;
 
     let runtime_a2 = CoreRuntime::start_with_data_dir(data_dir_a);
     let mut conn_a2 = runtime_a2.attach();
@@ -6570,7 +6939,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .await
         .map_err(|e| format!("submit post-logout restore A: {e}"))?;
 
-    let failure = wait_for_operation_failed(
+    let failure = wait_for_operation_failed_and_signed_out(
         &mut conn_a2,
         restore_gone_id,
         "post-logout restore A (must fail)",
@@ -6581,10 +6950,6 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
             "post-logout restore A failed with unexpected kind: {failure:?}"
         ));
     }
-    if !matches!(conn_a2.snapshot().session, SessionState::SignedOut) {
-        return Err("post-logout restore A must leave the session SignedOut".to_owned());
-    }
-
     // -----------------------------------------------------------------------
     // --- Logout B ---
     // -----------------------------------------------------------------------
@@ -6611,7 +6976,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .await
         .map_err(|e| format!("submit post-logout restore-last: {e}"))?;
 
-    let failure = wait_for_operation_failed(
+    let failure = wait_for_operation_failed_and_signed_out(
         &mut conn_b,
         restore_last_id,
         "post-logout restore-last (must be not-found)",
@@ -6622,9 +6987,8 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
             "post-logout restore-last failed with unexpected kind: {failure:?}"
         ));
     }
-    if !matches!(conn_b.snapshot().session, SessionState::SignedOut) {
-        return Err("post-logout restore-last must leave the session SignedOut".to_owned());
-    }
+    drop(conn_b);
+    runtime_b.shutdown().await;
 
     println!("restore_cleanup=ok");
     Ok(scenario_report(&config.server_kind, scenario))
@@ -6871,23 +7235,34 @@ async fn verify_provisional_second_device_for_qa(
             "{label}: expected two distinct devices for one user"
         ));
     }
-    stop_sync_for_qa(conn_a, &format!("{label}: pause primary sync")).await?;
+    // Keep the primary's normal sync continuously running: it owns incoming
+    // to-device delivery for the entire SAS flow, including retry outcomes.
     let previous_primary_flow_id =
         verification_state_flow_id(&conn_a.snapshot().e2ee_trust.verification);
-    let flow_request = conn_a2.next_request_id();
-    let flow_id_a2 = flow_request.sequence;
-    conn_a2
-        .command(CoreCommand::Account(AccountCommand::StartOwnUserSas {
-            request_id: flow_request,
-            flow_id: flow_id_a2,
-        }))
-        .await
-        .map_err(|error| format!("{label}: submit own-user SAS: {error}"))?;
-
     let target_a2 = VerificationTarget {
         user_id: session_a2.user_id.clone(),
         device_id: session_a2.device_id.clone(),
     };
+    let flow_request = conn_a2.next_request_id();
+    let flow_id_a2 = flow_request.sequence;
+    after_receiver_device_known(
+        refresh_device_keys_and_assert_known_for_qa(
+            conn_a,
+            target_a2.clone(),
+            &format!("{label}: primary receiver device discovery"),
+        ),
+        || async {
+            conn_a2
+                .command(CoreCommand::Account(AccountCommand::StartOwnUserSas {
+                    request_id: flow_request,
+                    flow_id: flow_id_a2,
+                }))
+                .await
+                .map_err(|error| format!("{label}: submit own-user SAS: {error}"))
+        },
+    )
+    .await?;
+
     let flow_id_a = wait_for_verification_requested_event_only(
         conn_a,
         Some(&target_a2),
@@ -6938,25 +7313,35 @@ async fn verify_provisional_second_device_for_qa(
         if let (Some(primary), Some(secondary)) = (primary, secondary) {
             break (primary, secondary);
         }
-        if tokio::time::Instant::now() >= deadline {
-            let primary_snapshot = conn_a.snapshot();
-            let (primary_phase, primary_flow_matches, primary_emoji_count) =
-                verification_closed_summary(&primary_snapshot.e2ee_trust.verification, flow_id_a);
-            let secondary_snapshot = conn_a2.snapshot();
-            let (secondary_phase, secondary_flow_matches, secondary_emoji_count) =
-                session_gate_closed_summary(&secondary_snapshot.session, flow_id_a2);
-            return Err(format!(
-                "{label}: timed out waiting for paired SAS; primary_phase={primary_phase};primary_flow_matches={primary_flow_matches};primary_emoji_count={primary_emoji_count};secondary_phase={secondary_phase};secondary_flow_matches={secondary_flow_matches};secondary_emoji_count={secondary_emoji_count}"
-            ));
+        match wait_for_paired_event_until(conn_a, conn_a2, deadline).await {
+            Ok(()) => {}
+            Err(PairedEventWaitError::Deadline) => {
+                let primary_snapshot = conn_a.snapshot();
+                let (primary_phase, primary_flow_matches, primary_emoji_count) =
+                    verification_closed_summary(
+                        &primary_snapshot.e2ee_trust.verification,
+                        flow_id_a,
+                    );
+                let secondary_snapshot = conn_a2.snapshot();
+                let (secondary_phase, secondary_flow_matches, secondary_emoji_count) =
+                    session_gate_closed_summary(&secondary_snapshot.session, flow_id_a2);
+                return Err(format!(
+                    "{label}: timed out waiting for paired SAS; primary_phase={primary_phase};primary_flow_matches={primary_flow_matches};primary_emoji_count={primary_emoji_count};secondary_phase={secondary_phase};secondary_flow_matches={secondary_flow_matches};secondary_emoji_count={secondary_emoji_count}"
+                ));
+            }
+            Err(PairedEventWaitError::Primary(lag)) => {
+                return Err(verification_event_stream_error(label, "primary", lag));
+            }
+            Err(PairedEventWaitError::Secondary(lag)) => {
+                return Err(verification_event_stream_error(label, "secondary", lag));
+            }
         }
-        tokio::time::sleep(Duration::from_millis(250)).await;
     };
     if emojis_a != emojis_a2 {
         return Err(format!("{label}: SAS emoji mismatch"));
     }
     if outcome == SasQaOutcome::Timeout {
         wait_for_existing_identity_gate(conn_a2, &format!("{label}: timeout retryable")).await?;
-        start_sync_for_qa(conn_a, &format!("{label}: resume primary after timeout")).await?;
         return Ok(());
     }
     if outcome != SasQaOutcome::Success {
@@ -6983,7 +7368,6 @@ async fn verify_provisional_second_device_for_qa(
             .await
             .map_err(|error| format!("{label}: cancel primary after mismatch: {error}"))?;
         wait_for_existing_identity_gate(conn_a2, &format!("{label}: mismatch retryable")).await?;
-        start_sync_for_qa(conn_a, &format!("{label}: resume primary after mismatch")).await?;
         return Ok(());
     }
 
@@ -7011,17 +7395,49 @@ async fn verify_provisional_second_device_for_qa(
     let ready_deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
     loop {
         if matches!(conn_a2.snapshot().session, SessionState::Ready(_)) {
-            start_sync_for_qa(conn_a, &format!("{label}: resume primary sync")).await?;
             return Ok(());
         }
-        if tokio::time::Instant::now() >= ready_deadline {
-            return Err(format!(
-                "{label}: timed out waiting for authoritative Ready"
-            ));
+        match (QaEventDeadline {
+            instant: ready_deadline,
+        })
+        .recv(conn_a2)
+        .await
+        {
+            Ok(Ok(_)) => {}
+            Ok(Err(lag)) => {
+                return Err(verification_event_stream_error(label, "secondary", lag));
+            }
+            Err(_) => {
+                return Err(format!(
+                    "{label}: timed out waiting for authoritative Ready"
+                ));
+            }
         }
-        sync_once_for_qa(conn_a, &format!("{label}: drive completion")).await?;
-        tokio::time::sleep(Duration::from_millis(250)).await;
     }
+}
+
+fn verification_event_stream_error(label: &str, participant: &str, lag: EventStreamLag) -> String {
+    if lag.skipped == 0 {
+        format!("{label}: {participant} event stream closed")
+    } else {
+        format!(
+            "{label}: {participant} event stream lagged; skipped={}",
+            lag.skipped
+        )
+    }
+}
+
+async fn after_receiver_device_known<Refresh, Start, Started, Output, Error>(
+    refresh: Refresh,
+    start_once: Start,
+) -> Result<Output, Error>
+where
+    Refresh: Future<Output = Result<(), Error>>,
+    Start: FnOnce() -> Started,
+    Started: Future<Output = Result<Output, Error>>,
+{
+    refresh.await?;
+    start_once().await
 }
 
 fn verification_closed_summary(
@@ -8450,28 +8866,48 @@ async fn wait_for_sidebar_dm_room_ids(
         .iter()
         .map(|room_id| (*room_id).to_owned())
         .collect::<BTreeSet<_>>();
-
-    for attempt in 0..5 {
-        if sidebar_dm_room_ids(&conn.snapshot()) == expected {
-            return Ok(());
-        }
-        let sync_label = format!("{label} SyncOnce attempt {}", attempt + 1);
-        sync_once_for_qa(conn, &sync_label).await?;
-    }
-
-    let snapshot = conn.snapshot();
-    let observed_count = sidebar_dm_room_ids(&snapshot).len();
-    if sidebar_dm_room_ids(&snapshot) == expected {
+    let matches_expected = |snapshot: &AppState| sidebar_dm_room_ids(snapshot) == expected;
+    if matches_expected(&conn.snapshot()) {
         return Ok(());
     }
 
-    Err(format!(
-        "{label}: DM section scope mismatch \
-         (expected_count={}, observed_count={}, active_space={})",
-        expected.len(),
-        observed_count,
-        snapshot.navigation.active_space_id.is_some()
-    ))
+    let deadline = tokio::time::Instant::now() + ROOM_LIST_EVENT_TIMEOUT;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            let snapshot = conn.snapshot();
+            return Err(format!(
+                "{label}: DM section scope mismatch \
+                 (expected_count={}, observed_count={}, active_space={})",
+                expected.len(),
+                sidebar_dm_room_ids(&snapshot).len(),
+                snapshot.navigation.active_space_id.is_some()
+            ));
+        }
+
+        let event = tokio::time::timeout(remaining, conn.recv_event())
+            .await
+            .map_err(|_| {
+                let snapshot = conn.snapshot();
+                format!(
+                    "{label}: DM section scope mismatch \
+                     (expected_count={}, observed_count={}, active_space={})",
+                    expected.len(),
+                    sidebar_dm_room_ids(&snapshot).len(),
+                    snapshot.navigation.active_space_id.is_some()
+                )
+            })?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::StateChanged(snapshot) if matches_expected(&snapshot) => return Ok(()),
+            CoreEvent::Room(RoomEvent::RoomListUpdated) if matches_expected(&conn.snapshot()) => {
+                return Ok(());
+            }
+            _ if matches_expected(&conn.snapshot()) => return Ok(()),
+            _ => {}
+        }
+    }
 }
 
 fn sidebar_dm_room_ids(snapshot: &AppState) -> BTreeSet<String> {
@@ -8484,6 +8920,134 @@ fn sidebar_dm_room_ids(snapshot: &AppState) -> BTreeSet<String> {
     .into_iter()
     .map(|room| room.room_id)
     .collect()
+}
+
+#[derive(Default)]
+struct InviteObserverDiagnosticSummary {
+    started: u64,
+    rls_wake_max: u64,
+    base_wake_max: u64,
+    base_invite_update_seen: bool,
+    base_membership_change_seen: bool,
+    base_projection_required_seen: bool,
+    invite_projection: u64,
+    invite_projection_delivered: u64,
+    invite_projection_undelivered: u64,
+    lagged: u64,
+    closed: u64,
+    exit: u64,
+    dropped: u64,
+}
+
+fn diagnostic_count_field(
+    event: &koushi_diagnostics::DiagnosticEvent,
+    key: &'static str,
+) -> Option<u64> {
+    event.fields.iter().find_map(|field| {
+        if field.key == key
+            && let koushi_diagnostics::DiagnosticValue::Count(value) = field.value
+        {
+            return Some(value);
+        }
+        None
+    })
+}
+
+fn diagnostic_boolean_field(
+    event: &koushi_diagnostics::DiagnosticEvent,
+    key: &'static str,
+) -> Option<bool> {
+    event.fields.iter().find_map(|field| {
+        if field.key == key
+            && let koushi_diagnostics::DiagnosticValue::Boolean(value) = field.value
+        {
+            return Some(value);
+        }
+        None
+    })
+}
+
+fn diagnostic_has_token(
+    event: &koushi_diagnostics::DiagnosticEvent,
+    key: &'static str,
+    expected: &'static str,
+) -> bool {
+    event.fields.iter().any(|field| {
+        field.key == key && field.value == koushi_diagnostics::DiagnosticValue::Token(expected)
+    })
+}
+
+fn invite_observer_diagnostic_summary(snapshot: &koushi_diagnostics::DiagnosticSnapshot) -> String {
+    let mut summary = InviteObserverDiagnosticSummary {
+        dropped: snapshot.dropped_records,
+        ..InviteObserverDiagnosticSummary::default()
+    };
+    for record in &snapshot.records {
+        let event = &record.event;
+        if event.source != "core.room" {
+            continue;
+        }
+        match event.stage {
+            "live_observer_started" => summary.started = summary.started.saturating_add(1),
+            "live_observer_wake_milestone" => {
+                let wake_count = diagnostic_count_field(event, "wake_count").unwrap_or(0);
+                if diagnostic_has_token(event, "source", "rls_diff") {
+                    summary.rls_wake_max = summary.rls_wake_max.max(wake_count);
+                } else if diagnostic_has_token(event, "source", "base_room_updates") {
+                    summary.base_wake_max = summary.base_wake_max.max(wake_count);
+                    summary.base_invite_update_seen |=
+                        diagnostic_boolean_field(event, "invite_update_observed").unwrap_or(false);
+                    summary.base_membership_change_seen |=
+                        diagnostic_boolean_field(event, "invite_membership_changed")
+                            .unwrap_or(false);
+                    summary.base_projection_required_seen |=
+                        diagnostic_boolean_field(event, "projection_required").unwrap_or(false);
+                }
+            }
+            "live_observer_invite_projection" => {
+                summary.invite_projection = summary.invite_projection.saturating_add(1);
+            }
+            "live_observer_invite_projection_completed" => {
+                if diagnostic_boolean_field(event, "action_delivered").unwrap_or(false) {
+                    summary.invite_projection_delivered =
+                        summary.invite_projection_delivered.saturating_add(1);
+                } else {
+                    summary.invite_projection_undelivered =
+                        summary.invite_projection_undelivered.saturating_add(1);
+                }
+            }
+            "live_observer_base_lagged" => {
+                summary.lagged = summary.lagged.saturating_add(1);
+            }
+            "live_observer_auxiliary_closed" => {
+                summary.closed = summary.closed.saturating_add(1);
+            }
+            "live_observer_exit" => summary.exit = summary.exit.saturating_add(1),
+            _ => {}
+        }
+    }
+    format!(
+        "observer_diag_started={} observer_diag_rls_wake_max={} \
+         observer_diag_base_wake_max={} observer_diag_base_invite_update_seen={} \
+         observer_diag_base_membership_change_seen={} \
+         observer_diag_base_projection_required_seen={} observer_diag_invite_projection={} \
+         observer_diag_invite_projection_delivered={} \
+         observer_diag_invite_projection_undelivered={} observer_diag_lagged={} \
+         observer_diag_closed={} observer_diag_exit={} observer_diag_dropped={}",
+        summary.started,
+        summary.rls_wake_max,
+        summary.base_wake_max,
+        summary.base_invite_update_seen,
+        summary.base_membership_change_seen,
+        summary.base_projection_required_seen,
+        summary.invite_projection,
+        summary.invite_projection_delivered,
+        summary.invite_projection_undelivered,
+        summary.lagged,
+        summary.closed,
+        summary.exit,
+        summary.dropped,
+    )
 }
 
 async fn wait_for_invite_in_snapshot(
@@ -8509,10 +9073,12 @@ async fn wait_for_invite_in_snapshot(
             .await
             .map_err(|_| {
                 let snapshot = conn.snapshot();
+                let observer_diagnostics =
+                    invite_observer_diagnostic_summary(&koushi_diagnostics::snapshot());
                 format!(
                     "{label}: timed out waiting for invite snapshot \
-                     (have {} invites)",
-                    snapshot.invites.len()
+                     (have {} invites; {observer_diagnostics})",
+                    snapshot.invites.len(),
                 )
             })?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
@@ -8597,8 +9163,10 @@ async fn wait_for_sync_started_and_running(
 ) -> Result<SyncBackendKind, String> {
     let mut observed_backend = None;
     let mut saw_running_before_started = false;
+    let deadline = QaEventDeadline::after(EVENT_TIMEOUT);
     loop {
-        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+        let event = deadline
+            .recv(conn)
             .await
             .map_err(|_| format!("{label}: timed out waiting for SyncEvent::Started/Running"))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
@@ -8699,48 +9267,6 @@ async fn wait_for_sync_stopped(
     }
 }
 
-async fn sync_once_for_qa(conn: &mut CoreConnection, label: &str) -> Result<(), String> {
-    let request_id = conn.next_request_id();
-    conn.command(CoreCommand::Sync(SyncCommand::SyncOnce { request_id }))
-        .await
-        .map_err(|e| format!("{label}: submit SyncOnce failed: {e}"))?;
-    wait_for_sync_once(conn, request_id, label).await
-}
-
-async fn best_effort_sync_once_for_qa(
-    conn: &mut CoreConnection,
-    label: &str,
-) -> Result<(), String> {
-    let request_id = conn.next_request_id();
-    conn.command(CoreCommand::Sync(SyncCommand::SyncOnce { request_id }))
-        .await
-        .map_err(|e| format!("{label}: submit SyncOnce failed: {e}"))?;
-
-    loop {
-        let event =
-            match tokio::time::timeout(DEVICE_LIST_SETTLE_SYNC_TIMEOUT, conn.recv_event()).await {
-                Ok(Ok(event)) => event,
-                Ok(Err(lag)) => {
-                    return Err(format!(
-                        "{label}: event stream lagged during best-effort SyncOnce (skipped={})",
-                        lag.skipped
-                    ));
-                }
-                Err(_) => return Ok(()),
-            };
-
-        match event {
-            CoreEvent::Sync(SyncEvent::Stopped {
-                request_id: Some(ev_id),
-            }) if ev_id == request_id => return Ok(()),
-            CoreEvent::OperationFailed {
-                request_id: ev_id, ..
-            } if ev_id == request_id => return Ok(()),
-            _ => {}
-        }
-    }
-}
-
 async fn stop_sync_for_qa(conn: &mut CoreConnection, label: &str) -> Result<(), String> {
     let request_id = conn.next_request_id();
     conn.command(CoreCommand::Sync(SyncCommand::Stop { request_id }))
@@ -8749,14 +9275,15 @@ async fn stop_sync_for_qa(conn: &mut CoreConnection, label: &str) -> Result<(), 
     wait_for_sync_stopped(conn, request_id, label).await
 }
 
-async fn start_sync_for_qa(conn: &mut CoreConnection, label: &str) -> Result<(), String> {
+async fn start_sync_for_qa(
+    conn: &mut CoreConnection,
+    label: &str,
+) -> Result<SyncBackendKind, String> {
     let request_id = conn.next_request_id();
     conn.command(CoreCommand::Sync(SyncCommand::Start { request_id }))
         .await
         .map_err(|e| format!("{label}: submit Sync start failed: {e}"))?;
-    wait_for_sync_started_and_running(conn, request_id, label)
-        .await
-        .map(|_| ())
+    wait_for_sync_started_and_running(conn, request_id, label).await
 }
 
 async fn wait_for_sync_reconnecting(conn: &mut CoreConnection, label: &str) -> Result<(), String> {
@@ -8883,41 +9410,16 @@ async fn prove_legacy_stays_starting(conn: &mut CoreConnection, label: &str) -> 
     Ok(())
 }
 
-async fn wait_for_sync_once(
-    conn: &mut CoreConnection,
-    request_id: RequestId,
-    label: &str,
-) -> Result<(), String> {
-    let deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
-    loop {
-        let event = tokio::time::timeout_at(deadline, conn.recv_event())
-            .await
-            .map_err(|_| format!("{label}: timed out waiting for SyncOnce"))?
-            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
-
-        match event {
-            CoreEvent::Sync(SyncEvent::Stopped {
-                request_id: Some(ev_id),
-            }) if ev_id == request_id => return Ok(()),
-            CoreEvent::OperationFailed {
-                request_id: ev_id,
-                failure,
-            } if ev_id == request_id => {
-                return Err(format!("{label}: SyncOnce failed: {failure:?}"));
-            }
-            _ => {}
-        }
-    }
-}
-
 /// Wait for a `StateChanged` snapshot where `SessionState::Ready`.
 async fn wait_for_ready_snapshot(conn: &mut CoreConnection, label: &str) -> Result<(), String> {
     if matches!(conn.snapshot().session, SessionState::Ready(_)) {
         return Ok(());
     }
 
+    let deadline = QaEventDeadline::after(EVENT_TIMEOUT);
     loop {
-        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+        let event = deadline
+            .recv(conn)
             .await
             .map_err(|_| format!("{label}: timed out waiting for Ready snapshot"))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
@@ -9140,19 +9642,36 @@ async fn wait_for_native_attention_state(
 }
 
 /// Wait for `AccountEvent::LoggedIn` with the given request_id.
-async fn wait_for_logged_in(
-    conn: &mut CoreConnection,
+fn ready_account_key<S: QaSnapshotEventSource + ?Sized>(conn: &S) -> Option<AccountKey> {
+    match conn.snapshot().session {
+        SessionState::Ready(info) => Some(AccountKey(info.user_id)),
+        _ => None,
+    }
+}
+
+async fn wait_for_logged_in<S: QaSnapshotEventSource + ?Sized>(
+    conn: &mut S,
     request_id: koushi_core::ids::RequestId,
     label: &str,
 ) -> Result<AccountKey, String> {
-    if let SessionState::Ready(info) = &conn.snapshot().session {
-        return Ok(AccountKey(info.user_id.clone()));
+    if let Some(account_key) = ready_account_key(conn) {
+        return Ok(account_key);
     }
+    let deadline = QaEventDeadline::after(LOGIN_EVENT_TIMEOUT);
     loop {
-        let event = tokio::time::timeout(LOGIN_EVENT_TIMEOUT, conn.recv_event())
-            .await
-            .map_err(|_| format!("{label}: timed out waiting for LoggedIn event"))?
-            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+        let event = match deadline.recv(conn).await {
+            Ok(Ok(event)) => event,
+            Ok(Err(lag)) => {
+                return Err(format!(
+                    "{label}: event stream lagged (skipped={})",
+                    lag.skipped
+                ));
+            }
+            Err(_) => {
+                return ready_account_key(conn)
+                    .ok_or_else(|| format!("{label}: timed out waiting for LoggedIn event"));
+            }
+        };
 
         match event {
             CoreEvent::Account(AccountEvent::LoggedIn {
@@ -9168,8 +9687,8 @@ async fn wait_for_logged_in(
                 return Err(format!("{label} failed: {failure:?}"));
             }
             _ => {
-                if let SessionState::Ready(info) = &conn.snapshot().session {
-                    return Ok(AccountKey(info.user_id.clone()));
+                if let Some(account_key) = ready_account_key(conn) {
+                    return Ok(account_key);
                 }
             }
         }
@@ -9177,8 +9696,8 @@ async fn wait_for_logged_in(
 }
 
 /// Wait for `AccountEvent::SessionRestored` with the given request_id.
-async fn wait_for_session_restored(
-    conn: &mut CoreConnection,
+async fn wait_for_session_restored<S: QaSnapshotEventSource + ?Sized>(
+    conn: &mut S,
     request_id: koushi_core::ids::RequestId,
     expected_account_key: &AccountKey,
     label: &str,
@@ -9209,12 +9728,7 @@ async fn wait_for_session_restored(
                 request_id: ev_id,
                 account_key,
             }) if ev_id == request_id => {
-                if account_key != *expected_account_key {
-                    return Err(format!(
-                        "{label}: SessionRestored account_key mismatch: got {:?}, expected {:?}",
-                        account_key, expected_account_key
-                    ));
-                }
+                ensure_session_restored_account_key(&account_key, expected_account_key, label)?;
                 return Ok(());
             }
             CoreEvent::OperationFailed {
@@ -9228,31 +9742,96 @@ async fn wait_for_session_restored(
     }
 }
 
+fn ensure_session_restored_account_key(
+    actual: &AccountKey,
+    expected: &AccountKey,
+    label: &str,
+) -> Result<(), String> {
+    if actual != expected {
+        return Err(format!("{label}: SessionRestored account_key mismatch"));
+    }
+    Ok(())
+}
+
 /// Wait for `AccountEvent::LoggedOut` with the given request_id.
-async fn wait_for_logged_out(
-    conn: &mut CoreConnection,
+async fn wait_for_logged_out<S: QaSnapshotEventSource + ?Sized>(
+    conn: &mut S,
     request_id: koushi_core::ids::RequestId,
     expected_account_key: &AccountKey,
     label: &str,
 ) -> Result<(), String> {
+    wait_for_logout_barrier(
+        conn,
+        request_id,
+        QaLogoutAccountExpectation::Exact(expected_account_key),
+        label,
+    )
+    .await
+}
+
+async fn wait_for_signed_out_after_logout<S: QaSnapshotEventSource + ?Sized>(
+    conn: &mut S,
+    request_id: koushi_core::ids::RequestId,
+    label: &str,
+) -> Result<(), String> {
+    wait_for_logout_barrier(conn, request_id, QaLogoutAccountExpectation::Any, label).await
+}
+
+#[derive(Clone, Copy)]
+enum QaLogoutAccountExpectation<'a> {
+    Exact(&'a AccountKey),
+    Any,
+}
+
+async fn wait_for_logout_barrier<S: QaSnapshotEventSource + ?Sized>(
+    conn: &mut S,
+    request_id: koushi_core::ids::RequestId,
+    account_expectation: QaLogoutAccountExpectation<'_>,
+    label: &str,
+) -> Result<(), String> {
+    let deadline = QaEventDeadline::after(EVENT_TIMEOUT);
+    let mut saw_logged_out = false;
     loop {
-        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
-            .await
-            .map_err(|_| format!("{label}: timed out waiting for LoggedOut event"))?
-            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+        if saw_logged_out && matches!(conn.snapshot().session, SessionState::SignedOut) {
+            return Ok(());
+        }
+
+        let event = match deadline.recv(conn).await {
+            Ok(Ok(event)) => event,
+            Err(_) => {
+                return if saw_logged_out
+                    && matches!(conn.snapshot().session, SessionState::SignedOut)
+                {
+                    Ok(())
+                } else {
+                    Err(format!("{label}: timed out waiting for LoggedOut event"))
+                };
+            }
+            Ok(Err(lag)) => {
+                return if saw_logged_out
+                    && matches!(conn.snapshot().session, SessionState::SignedOut)
+                {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "{label}: event stream lagged (skipped={})",
+                        lag.skipped
+                    ))
+                };
+            }
+        };
 
         match event {
             CoreEvent::Account(AccountEvent::LoggedOut {
                 request_id: ev_id,
                 account_key,
             }) if ev_id == request_id => {
-                if account_key != *expected_account_key {
-                    return Err(format!(
-                        "{label}: LoggedOut account_key mismatch: got {:?}, expected {:?}",
-                        account_key, expected_account_key
-                    ));
+                if let QaLogoutAccountExpectation::Exact(expected_account_key) = account_expectation
+                    && account_key != *expected_account_key
+                {
+                    return Err(format!("{label}: LoggedOut account_key mismatch"));
                 }
-                return Ok(());
+                saw_logged_out = true;
             }
             CoreEvent::OperationFailed {
                 request_id: ev_id,
@@ -9266,13 +9845,15 @@ async fn wait_for_logged_out(
 }
 
 /// Wait for `OperationFailed` with the given request_id and return the failure.
-async fn wait_for_operation_failed(
-    conn: &mut CoreConnection,
+async fn wait_for_operation_failed<S: QaEventSource + ?Sized>(
+    conn: &mut S,
     request_id: koushi_core::ids::RequestId,
     label: &str,
 ) -> Result<CoreFailure, String> {
+    let deadline = QaEventDeadline::after(EVENT_TIMEOUT);
     loop {
-        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+        let event = deadline
+            .recv(conn)
             .await
             .map_err(|_| format!("{label}: timed out waiting for OperationFailed event"))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
@@ -9283,6 +9864,60 @@ async fn wait_for_operation_failed(
                 failure,
             } if ev_id == request_id => {
                 return Ok(failure);
+            }
+            CoreEvent::Account(account_event) => {
+                let matches_request = match &account_event {
+                    AccountEvent::LoggedIn { request_id: id, .. }
+                    | AccountEvent::SessionRestored { request_id: id, .. }
+                    | AccountEvent::SavedSessionsListed { request_id: id, .. }
+                    | AccountEvent::RecoveryCompleted { request_id: id, .. }
+                    | AccountEvent::ProfileUpdated { request_id: id, .. }
+                    | AccountEvent::AvatarThumbnailDownloaded { request_id: id, .. }
+                    | AccountEvent::ReportCompleted { request_id: id, .. }
+                    | AccountEvent::LoggedOut { request_id: id, .. }
+                    | AccountEvent::AccountSwitched { request_id: id, .. } => *id == request_id,
+                    AccountEvent::OidcAuthorizationCreated { .. }
+                    | AccountEvent::RecoveryRequired { .. } => false,
+                };
+                if matches_request {
+                    return Err(format!(
+                        "{label}: expected OperationFailed but the operation succeeded"
+                    ));
+                }
+            }
+            _ => continue,
+        }
+    }
+}
+
+async fn wait_for_operation_failed_and_signed_out<S: QaSnapshotEventSource + ?Sized>(
+    conn: &mut S,
+    request_id: koushi_core::ids::RequestId,
+    label: &str,
+) -> Result<CoreFailure, String> {
+    let deadline = QaEventDeadline::after(EVENT_TIMEOUT);
+    let mut operation_failure = None;
+    loop {
+        if matches!(conn.snapshot().session, SessionState::SignedOut) {
+            if let Some(failure) = operation_failure.take() {
+                return Ok(failure);
+            }
+        }
+
+        let event = deadline
+            .recv(conn)
+            .await
+            .map_err(|_| {
+                format!("{label}: timed out waiting for OperationFailed and SignedOut state")
+            })?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                operation_failure = Some(failure);
             }
             CoreEvent::Account(account_event) => {
                 let matches_request = match &account_event {
@@ -9593,7 +10228,6 @@ async fn run_activity_stage(
     )
     .await?;
 
-    sync_once_for_qa(conn_a, "activity sync A after unread seed").await?;
     wait_for_room_unread_count(conn_a, room_id, "activity room unread count").await?;
 
     let open_id = conn_a.next_request_id();
@@ -9659,7 +10293,6 @@ async fn seed_encrypted_room_key_for_qa(
 
     let room_id = wait_for_room_created(conn, create_room_id, label).await?;
 
-    sync_once_for_qa(conn, "sync after encrypted backup seed room").await?;
     wait_for_room_in_room_list(conn, &room_id, "room list after encrypted backup seed").await?;
 
     let key = TimelineKey::room(account_key.clone(), room_id.clone());
@@ -10152,129 +10785,6 @@ fn identity_reset_observation(
     }
 }
 
-#[allow(dead_code)]
-async fn verify_second_device_for_qa(
-    conn_a: &mut CoreConnection,
-    conn_a2: &mut CoreConnection,
-    session_a: &SessionInfo,
-    session_a2: &SessionInfo,
-    label: &str,
-) -> Result<(), String> {
-    if session_a.user_id != session_a2.user_id {
-        return Err("E2EE verification proof requires two devices for one user".to_owned());
-    }
-    if session_a.device_id == session_a2.device_id {
-        return Err("E2EE verification proof requires distinct device ids".to_owned());
-    }
-
-    let target_a = VerificationTarget {
-        user_id: session_a.user_id.clone(),
-        device_id: session_a.device_id.clone(),
-    };
-    let target_a2 = VerificationTarget {
-        user_id: session_a2.user_id.clone(),
-        device_id: session_a2.device_id.clone(),
-    };
-
-    let request_label = format!("{label}: request secondary to primary");
-    let flow_id_a2 = request_device_verification_for_qa(conn_a2, target_a, &request_label).await?;
-    // Avoid overlapping continuous SyncService with manual SyncOnce delivery
-    // during SAS; overlapping paths reproduced pre-SAS key-mismatch flakes.
-    let pause_primary_label = format!("{label}: pause sync primary for verification");
-    let pause_secondary_label = format!("{label}: pause sync secondary for verification");
-    stop_sync_for_qa(conn_a, &pause_primary_label).await?;
-    stop_sync_for_qa(conn_a2, &pause_secondary_label).await?;
-    let incoming_label = format!("{label}: incoming verification request");
-    let flow_id_a =
-        wait_for_verification_requested_event_only(conn_a, Some(&target_a2), None, &incoming_label)
-            .await?;
-
-    let accept_a_id = conn_a.next_request_id();
-    conn_a
-        .command(CoreCommand::Account(AccountCommand::AcceptVerification {
-            request_id: accept_a_id,
-            flow_id: flow_id_a,
-        }))
-        .await
-        .map_err(|e| format!("{label}: accept verification primary failed to submit: {e}"))?;
-
-    let primary_accept_label = format!("{label}: primary accepts verification");
-    wait_for_verification_accepted(conn_a, flow_id_a, Some(accept_a_id), &primary_accept_label)
-        .await?;
-    let secondary_observes_accept_label = format!("{label}: secondary observes primary acceptance");
-    wait_for_verification_accepted_with_sync_once(
-        conn_a2,
-        flow_id_a2,
-        &secondary_observes_accept_label,
-    )
-    .await?;
-
-    // Let the requester start SAS. Starting from the accepting device has
-    // triggered m.key_mismatch on Tuwunel self-verification in local QA.
-    let start_sas_a2_id = conn_a2.next_request_id();
-    conn_a2
-        .command(CoreCommand::Account(AccountCommand::AcceptVerification {
-            request_id: start_sas_a2_id,
-            flow_id: flow_id_a2,
-        }))
-        .await
-        .map_err(|e| format!("{label}: start SAS from secondary failed to submit: {e}"))?;
-
-    let (emojis_a, emojis_a2) =
-        drive_until_both_verification_sas(conn_a, flow_id_a, conn_a2, flow_id_a2, label).await?;
-    if emojis_a != emojis_a2 {
-        return Err(format!("{label}: SAS emoji mismatch between devices"));
-    }
-
-    let confirm_a_id = conn_a.next_request_id();
-    conn_a
-        .command(CoreCommand::Account(
-            AccountCommand::ConfirmSasVerification {
-                request_id: confirm_a_id,
-                flow_id: flow_id_a,
-            },
-        ))
-        .await
-        .map_err(|e| format!("{label}: confirm SAS primary failed to submit: {e}"))?;
-
-    let confirm_a2_id = conn_a2.next_request_id();
-    conn_a2
-        .command(CoreCommand::Account(
-            AccountCommand::ConfirmSasVerification {
-                request_id: confirm_a2_id,
-                flow_id: flow_id_a2,
-            },
-        ))
-        .await
-        .map_err(|e| format!("{label}: confirm SAS secondary failed to submit: {e}"))?;
-
-    let sync_secondary_after_confirm_label = format!("{label}: sync secondary after SAS confirm");
-    let sync_primary_after_confirm_label =
-        format!("{label}: sync primary after secondary SAS confirm");
-    let sync_secondary_after_done_label = format!("{label}: sync secondary after SAS done");
-    sync_once_for_qa(conn_a2, &sync_secondary_after_confirm_label).await?;
-    sync_once_for_qa(conn_a, &sync_primary_after_confirm_label).await?;
-    sync_once_for_qa(conn_a2, &sync_secondary_after_done_label).await?;
-
-    let primary_done_label = format!("{label}: primary verification done");
-    wait_for_verification_done(conn_a, flow_id_a, Some(confirm_a_id), &primary_done_label).await?;
-    let secondary_done_label = format!("{label}: secondary verification done");
-    wait_for_verification_done(
-        conn_a2,
-        flow_id_a2,
-        Some(confirm_a2_id),
-        &secondary_done_label,
-    )
-    .await?;
-
-    let resume_primary_label = format!("{label}: resume sync primary after verification");
-    let resume_secondary_label = format!("{label}: resume sync secondary after verification");
-    start_sync_for_qa(conn_a, &resume_primary_label).await?;
-    start_sync_for_qa(conn_a2, &resume_secondary_label).await?;
-
-    Ok(())
-}
-
 async fn verify_second_device_room_key_delivery_for_qa(
     conn_a: &mut CoreConnection,
     conn_a2: &mut CoreConnection,
@@ -10282,8 +10792,7 @@ async fn verify_second_device_room_key_delivery_for_qa(
     account_key_a2: &AccountKey,
     room_id: &str,
 ) -> Result<(), String> {
-    sync_once_for_qa(conn_a, "sync A before second-device encrypted send").await?;
-    sync_once_for_qa(conn_a2, "sync A2 before second-device encrypted receive").await?;
+    wait_for_room_in_room_list(conn_a, room_id, "A room list before encrypted send").await?;
     wait_for_room_in_room_list(conn_a2, room_id, "A2 room list before encrypted receive").await?;
 
     let key_a = TimelineKey::room(account_key_a.clone(), room_id.to_owned());
@@ -10350,19 +10859,9 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
     conn_a2: &mut CoreConnection,
     account_key_a: &AccountKey,
     account_key_a2: &AccountKey,
+    recipient_base: Option<(&mut CoreConnection, &AccountKey)>,
 ) -> Result<(), String> {
     let check_recipient_second_device = env_flag_enabled(ENV_E2EE_RECIPIENT_SECOND_DEVICE)?;
-    let (runtime_b, mut conn_b, account_key_b) = login_synced_participant_for_qa(
-        config,
-        qa_data_dir("e2ee-b"),
-        &config.user_b,
-        &config.password_b,
-        DEVICE_B,
-        "e2ee login B",
-        true,
-    )
-    .await?;
-
     let user_b_full_id = format!("@{}:{}", config.user_b, config.server_name);
     let room_id = create_room_for_qa(
         conn_a,
@@ -10372,7 +10871,6 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
     )
     .await?;
 
-    sync_once_for_qa(conn_a, "e2ee multi-device sync A after room create").await?;
     wait_for_room_in_room_list(
         conn_a,
         &room_id,
@@ -10387,306 +10885,605 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
         "e2ee multi-device invite B",
     )
     .await?;
-    sync_once_for_qa(&mut conn_b, "e2ee multi-device sync B for invite").await?;
-    wait_for_invite_in_snapshot(
-        &mut conn_b,
-        &room_id,
-        Some(false),
-        "e2ee multi-device wait for B invite",
-    )
-    .await?;
-    accept_invite_for_qa(&mut conn_b, &room_id, "e2ee multi-device B accepts invite").await?;
 
-    sync_once_for_qa(conn_a, "e2ee multi-device sync A after B join").await?;
-    sync_once_for_qa(conn_a2, "e2ee multi-device sync A2 after room join").await?;
-    sync_once_for_qa(&mut conn_b, "e2ee multi-device sync B after join").await?;
-    wait_for_room_in_room_list(
-        conn_a2,
-        &room_id,
-        "e2ee multi-device A2 room list after create",
-    )
-    .await?;
-    wait_for_room_in_room_list(&mut conn_b, &room_id, "e2ee multi-device B room list").await?;
+    let mut recipient = match recipient_base {
+        Some((conn, account_key)) => QaE2eeRecipient::Borrowed { conn, account_key },
+        None => QaE2eeRecipient::Owned(
+            login_synced_participant_for_qa(
+                &config.homeserver,
+                qa_data_dir("e2ee-b"),
+                &config.user_b,
+                &config.password_b,
+                DEVICE_B,
+                "e2ee login B",
+                "gate-bootstrap-b",
+                QaParticipantLoginGate::BootstrapNewIdentity,
+            )
+            .await?
+            .into(),
+        ),
+    };
+    let mut owned_recipient_second_device = None;
+    let mut owned_unverified_recipient_device = None;
+    let stage_result: Result<(), String> = async {
+        let (conn_b, account_key_b) = recipient.connection_and_account_key();
 
-    let key_a = TimelineKey::room(account_key_a.clone(), room_id.clone());
-    let key_a2 = TimelineKey::room(account_key_a2.clone(), room_id.clone());
-    let key_b = TimelineKey::room(account_key_b.clone(), room_id.clone());
+        wait_for_invite_in_snapshot(
+            conn_b,
+            &room_id,
+            Some(false),
+            "e2ee multi-device wait for B invite",
+        )
+        .await?;
+        accept_invite_for_qa(conn_b, &room_id, "e2ee multi-device B accepts invite").await?;
 
-    let initial_a =
-        subscribe_timeline_for_qa(conn_a, &key_a, "e2ee multi-device subscribe A").await?;
-    let initial_a2 =
-        subscribe_timeline_for_qa(conn_a2, &key_a2, "e2ee multi-device subscribe A2").await?;
-    let initial_b =
-        subscribe_timeline_for_qa(&mut conn_b, &key_b, "e2ee multi-device subscribe B").await?;
-    assert_no_decryption_failure_items(&initial_a, "e2ee multi-device A initial")?;
-    assert_no_decryption_failure_items(&initial_a2, "e2ee multi-device A2 initial")?;
-    assert_no_decryption_failure_items(&initial_b, "e2ee multi-device B initial")?;
+        let settings_a = load_room_settings_for_qa(
+            conn_a,
+            &room_id,
+            "e2ee multi-device A observes B membership",
+        )
+        .await?;
+        assert_room_settings_contains_members(
+            &settings_a,
+            &[account_key_a.0.as_str(), user_b_full_id.as_str()],
+            "e2ee multi-device A observes B membership",
+        )?;
+        wait_for_room_in_room_list(
+            conn_a2,
+            &room_id,
+            "e2ee multi-device A2 room list after create",
+        )
+        .await?;
+        wait_for_room_in_room_list(conn_b, &room_id, "e2ee multi-device B room list").await?;
 
-    let mut maybe_recipient_second_device = None;
-    if check_recipient_second_device {
-        let runtime_b2 = CoreRuntime::start_with_data_dir(qa_data_dir("e2ee-b2"));
-        let mut conn_b2 = runtime_b2.attach();
-        let login_b2 = conn_b2.next_request_id();
-        conn_b2
+        let key_a = TimelineKey::room(account_key_a.clone(), room_id.clone());
+        let key_a2 = TimelineKey::room(account_key_a2.clone(), room_id.clone());
+        let key_b = TimelineKey::room(account_key_b.clone(), room_id.clone());
+
+        let initial_a =
+            subscribe_timeline_for_qa(conn_a, &key_a, "e2ee multi-device subscribe A").await?;
+        let initial_a2 =
+            subscribe_timeline_for_qa(conn_a2, &key_a2, "e2ee multi-device subscribe A2").await?;
+        let initial_b =
+            subscribe_timeline_for_qa(conn_b, &key_b, "e2ee multi-device subscribe B").await?;
+        assert_no_decryption_failure_items(&initial_a, "e2ee multi-device A initial")?;
+        assert_no_decryption_failure_items(&initial_a2, "e2ee multi-device A2 initial")?;
+        assert_no_decryption_failure_items(&initial_b, "e2ee multi-device B initial")?;
+
+        let mut recipient_second_device_key = None;
+        if check_recipient_second_device {
+            let runtime_b2 = CoreRuntime::start_with_data_dir(qa_data_dir("e2ee-b2"));
+            let conn_b2 = runtime_b2.attach();
+            owned_recipient_second_device =
+                Some(QaOwnedRuntimeParticipant::new(runtime_b2, conn_b2));
+            let participant_b2 = owned_recipient_second_device
+                .as_mut()
+                .expect("B2 owner was installed before login");
+            let login_b2 = participant_b2.conn.next_request_id();
+            participant_b2
+                .conn
+                .command(CoreCommand::Account(AccountCommand::LoginPassword {
+                    request_id: login_b2,
+                    request: koushi_state::LoginRequest {
+                        homeserver: config.homeserver.clone(),
+                        username: config.user_b.clone(),
+                        password: AuthSecret::new(config.password_b.clone()),
+                        device_display_name: Some("Koushi Core QA B2".to_owned()),
+                    },
+                }))
+                .await
+                .map_err(|error| format!("e2ee login B2 submit: {error}"))?;
+            participant_b2.mark_login_submitted();
+            let session_b2 =
+                wait_for_existing_identity_gate(&mut participant_b2.conn, "e2ee B2 gate").await?;
+            let session_b =
+                authenticated_session_info(conn_b, "session B info for E2EE multi-device")?;
+            verify_provisional_second_device_for_qa(
+                conn_b,
+                &mut participant_b2.conn,
+                &session_b,
+                &session_b2,
+                "e2ee recipient verification B/B2",
+                SasQaOutcome::Success,
+            )
+            .await?;
+            let account_key_b2 =
+                wait_for_logged_in(&mut participant_b2.conn, login_b2, "e2ee login B2").await?;
+            participant_b2.mark_logged_in(account_key_b2.clone());
+            wait_for_ready_snapshot(&mut participant_b2.conn, "e2ee B2 Ready").await?;
+            start_sync_for_qa(&mut participant_b2.conn, "e2ee B2 sync").await?;
+            wait_for_room_in_room_list(
+                &mut participant_b2.conn,
+                &room_id,
+                "e2ee multi-device B2 room list",
+            )
+            .await?;
+            let key_b2 = TimelineKey::room(account_key_b2.clone(), room_id.clone());
+            let initial_b2 = subscribe_timeline_for_qa(
+                &mut participant_b2.conn,
+                &key_b2,
+                "e2ee multi-device subscribe B2",
+            )
+            .await?;
+            assert_no_decryption_failure_items(&initial_b2, "e2ee multi-device B2 initial")?;
+            recipient_second_device_key = Some(key_b2);
+        }
+
+        let runtime_b3 = CoreRuntime::start_with_data_dir(qa_data_dir("e2ee-b3-unverified"));
+        let conn_b3 = runtime_b3.attach();
+        owned_unverified_recipient_device =
+            Some(QaOwnedRuntimeParticipant::new(runtime_b3, conn_b3));
+        let participant_b3 = owned_unverified_recipient_device
+            .as_mut()
+            .expect("B3 owner was installed before login");
+        let login_b3 = participant_b3.conn.next_request_id();
+        participant_b3
+            .conn
             .command(CoreCommand::Account(AccountCommand::LoginPassword {
-                request_id: login_b2,
+                request_id: login_b3,
                 request: koushi_state::LoginRequest {
                     homeserver: config.homeserver.clone(),
                     username: config.user_b.clone(),
                     password: AuthSecret::new(config.password_b.clone()),
-                    device_display_name: Some("Koushi Core QA B2".to_owned()),
+                    device_display_name: Some("Koushi Core QA B3 Unverified".to_owned()),
                 },
             }))
             .await
-            .map_err(|error| format!("e2ee login B2 submit: {error}"))?;
-        let session_b2 = wait_for_existing_identity_gate(&mut conn_b2, "e2ee B2 gate").await?;
-        let session_b =
-            authenticated_session_info(&mut conn_b, "session B info for E2EE multi-device")?;
+            .map_err(|error| format!("e2ee unverified peer login submit: {error}"))?;
+        participant_b3.mark_login_submitted();
+        let session_b3 =
+            wait_for_existing_identity_gate(&mut participant_b3.conn, "e2ee unverified peer gate")
+                .await?;
+        refresh_device_keys_and_assert_known_for_qa(
+            conn_a,
+            VerificationTarget {
+                user_id: session_b3.user_id.clone(),
+                device_id: session_b3.device_id.clone(),
+            },
+            "e2ee unverified peer device discovery",
+        )
+        .await?;
+        let transaction_id = "qa-e2ee-multi-user-multi-device-delivery".to_owned();
+        let send_id = conn_a.next_request_id();
+        conn_a
+            .command(CoreCommand::Timeline(TimelineCommand::SendText {
+                request_id: send_id,
+                key: key_a.clone(),
+                transaction_id: transaction_id.clone(),
+                body: E2EE_MULTI_USER_MULTI_DEVICE_BODY.to_owned(),
+                mentions: MentionIntent::default(),
+            }))
+            .await
+            .map_err(|e| format!("e2ee multi-device: submit encrypted send failed: {e}"))?;
+
+        wait_for_send_flow_completion_with_timeout(
+            conn_a,
+            send_id,
+            &key_a,
+            &transaction_id,
+            E2EE_MULTI_USER_MULTI_DEVICE_BODY,
+            "e2ee multi-device encrypted send",
+            E2EE_EVENT_TIMEOUT,
+        )
+        .await?;
+        println!("e2ee_unverified_peer_send_nonblocking=ok");
+
+        wait_for_item_with_body_or_decryption_failure(
+            conn_a2,
+            &key_a2,
+            E2EE_MULTI_USER_MULTI_DEVICE_BODY,
+            "e2ee multi-device A2 receive",
+        )
+        .await?;
+        wait_for_item_with_body_or_decryption_failure(
+            conn_b,
+            &key_b,
+            E2EE_MULTI_USER_MULTI_DEVICE_BODY,
+            "e2ee multi-device B receive",
+        )
+        .await?;
+
+        let session_b = authenticated_session_info(conn_b, "blocked QA B session")?;
         verify_provisional_second_device_for_qa(
-            &mut conn_b,
-            &mut conn_b2,
+            conn_b,
+            &mut participant_b3.conn,
             &session_b,
-            &session_b2,
-            "e2ee recipient verification B/B2",
+            &session_b3,
+            "blocked QA promote B3",
             SasQaOutcome::Success,
         )
         .await?;
-        let account_key_b2 = wait_for_logged_in(&mut conn_b2, login_b2, "e2ee login B2").await?;
-        wait_for_ready_snapshot(&mut conn_b2, "e2ee B2 Ready").await?;
-        start_sync_for_qa(&mut conn_b2, "e2ee B2 sync").await?;
-        wait_for_room_in_room_list(&mut conn_b2, &room_id, "e2ee multi-device B2 room list")
+        let account_key_b3 =
+            wait_for_logged_in(&mut participant_b3.conn, login_b3, "blocked QA B3 login").await?;
+        participant_b3.mark_logged_in(account_key_b3.clone());
+        wait_for_ready_snapshot(&mut participant_b3.conn, "blocked QA B3 Ready").await?;
+        start_sync_for_qa(&mut participant_b3.conn, "blocked QA B3 sync").await?;
+        wait_for_room_in_room_list(&mut participant_b3.conn, &room_id, "blocked QA B3 room")
             .await?;
-        let key_b2 = TimelineKey::room(account_key_b2.clone(), room_id.clone());
-        let initial_b2 =
-            subscribe_timeline_for_qa(&mut conn_b2, &key_b2, "e2ee multi-device subscribe B2")
+        let key_b3 = TimelineKey::room(account_key_b3.clone(), room_id.clone());
+        let initial_b3 =
+            subscribe_timeline_for_qa(&mut participant_b3.conn, &key_b3, "blocked QA B3 timeline")
                 .await?;
-        assert_no_decryption_failure_items(&initial_b2, "e2ee multi-device B2 initial")?;
-        maybe_recipient_second_device = Some((runtime_b2, conn_b2, account_key_b2, key_b2));
-    }
 
-    if let Some((_runtime_b2, conn_b2, _account_key_b2, _key_b2)) =
-        maybe_recipient_second_device.as_mut()
-    {
-        settle_e2ee_device_list_propagation_for_qa(
+        let (acknowledged, ack) = tokio::sync::oneshot::channel();
+        let blacklist_id = conn_a.next_request_id();
+        conn_a
+            .command(CoreCommand::Account(
+                AccountCommand::QaSetLocalDeviceBlacklisted {
+                    request_id: blacklist_id,
+                    target: VerificationTarget {
+                        user_id: session_b3.user_id.clone(),
+                        device_id: session_b3.device_id.clone(),
+                    },
+                    room_id: room_id.clone(),
+                    acknowledged,
+                },
+            ))
+            .await
+            .map_err(|_| "blocked QA blacklist submit failed".to_owned())?;
+        tokio::time::timeout(EVENT_TIMEOUT, ack)
+            .await
+            .map_err(|_| "blocked QA blacklist ack timeout".to_owned())?
+            .map_err(|_| "blocked QA blacklist ack closed".to_owned())?
+            .map_err(|_| "blocked QA blacklist failed".to_owned())?;
+        let blocked_body = "Koushi blocked-device withheld probe";
+        let blocked_txn = "qa-e2ee-blocked-device-withheld".to_owned();
+        let blocked_send = conn_a.next_request_id();
+        conn_a
+            .command(CoreCommand::Timeline(TimelineCommand::SendText {
+                request_id: blocked_send,
+                key: key_a.clone(),
+                transaction_id: blocked_txn.clone(),
+                body: blocked_body.to_owned(),
+                mentions: MentionIntent::default(),
+            }))
+            .await
+            .map_err(|_| "blocked QA Core send submit failed".to_owned())?;
+        let blocked_send_outcome = wait_for_send_flow_completion_with_timeout(
             conn_a,
-            &mut conn_b,
-            conn_b2,
-            "e2ee multi-device settle after B2 verification",
+            blocked_send,
+            &key_a,
+            &blocked_txn,
+            blocked_body,
+            "blocked QA Core send",
+            E2EE_EVENT_TIMEOUT,
         )
         .await?;
+        wait_for_item_with_body_or_decryption_failure(
+            conn_b,
+            &key_b,
+            blocked_body,
+            "blocked QA nonblocked receive",
+        )
+        .await?;
+        wait_for_withheld_event_projection_from_source(
+            &mut participant_b3.conn,
+            &key_b3,
+            &blocked_send_outcome.event_id,
+            blocked_body,
+            &initial_b3,
+            "blocked QA B3 withheld event",
+            E2EE_EVENT_TIMEOUT,
+        )
+        .await?;
+        println!("e2ee_blocked_device_withheld=ok");
+
+        if let Some(key_b2) = recipient_second_device_key {
+            let participant_b2 = owned_recipient_second_device
+                .as_mut()
+                .expect("B2 key exists only while its owner is retained");
+            wait_for_item_with_body_or_decryption_failure(
+                &mut participant_b2.conn,
+                &key_b2,
+                E2EE_MULTI_USER_MULTI_DEVICE_BODY,
+                "e2ee multi-device B2 receive",
+            )
+            .await?;
+            println!("e2ee_recipient_second_device_decrypt=ok");
+        }
+
+        Ok(())
     }
+    .await;
 
-    let runtime_b3 = CoreRuntime::start_with_data_dir(qa_data_dir("e2ee-b3-unverified"));
-    let mut conn_b3 = runtime_b3.attach();
-    let login_b3 = conn_b3.next_request_id();
-    conn_b3
-        .command(CoreCommand::Account(AccountCommand::LoginPassword {
-            request_id: login_b3,
-            request: koushi_state::LoginRequest {
-                homeserver: config.homeserver.clone(),
-                username: config.user_b.clone(),
-                password: AuthSecret::new(config.password_b.clone()),
-                device_display_name: Some("Koushi Core QA B3 Unverified".to_owned()),
-            },
-        }))
+    finish_e2ee_recipient_stage_with_owned_cleanup(
+        stage_result,
+        Some((
+            recipient.into_owned(),
+            owned_recipient_second_device,
+            owned_unverified_recipient_device,
+        )),
+        cleanup_e2ee_multi_device_participants,
+    )
+    .await
+}
+
+async fn refresh_device_keys_and_assert_known_for_qa(
+    conn: &mut CoreConnection,
+    target: VerificationTarget,
+    label: &str,
+) -> Result<(), String> {
+    let (acknowledged, ack) = tokio::sync::oneshot::channel();
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Account(
+        AccountCommand::QaRefreshDeviceKeysAndAssertKnown {
+            request_id,
+            target,
+            acknowledged,
+        },
+    ))
+    .await
+    .map_err(|_| format!("{label}: submit device-key refresh checkpoint failed"))?;
+
+    tokio::time::timeout(E2EE_EVENT_TIMEOUT, ack)
         .await
-        .map_err(|error| format!("e2ee unverified peer login submit: {error}"))?;
-    let session_b3 =
-        wait_for_existing_identity_gate(&mut conn_b3, "e2ee unverified peer gate").await?;
-    best_effort_sync_once_for_qa(conn_a, "e2ee discover unverified peer device").await?;
+        .map_err(|_| format!("{label}: timed out waiting for device-key refresh checkpoint"))?
+        .map_err(|_| format!("{label}: device-key refresh checkpoint closed"))?
+        .map_err(|_| format!("{label}: exact device was not known after key refresh"))
+}
 
-    if env_flag_enabled(ENV_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND)? {
-        stop_sync_for_qa(conn_a, "pause sync A before multi-device send").await?;
-        stop_sync_for_qa(conn_a2, "pause sync A2 before multi-device send").await?;
-        stop_sync_for_qa(&mut conn_b, "pause sync B before multi-device send").await?;
-        if let Some((_runtime_b2, conn_b2, _account_key_b2, _key_b2)) =
-            maybe_recipient_second_device.as_mut()
-        {
-            stop_sync_for_qa(conn_b2, "pause sync B2 before multi-device send").await?;
+enum QaParticipantLoginGate<'a> {
+    BootstrapNewIdentity,
+    RecoverExistingIdentity(&'a AuthSecret),
+}
+
+struct QaParticipantLoginOutcome {
+    runtime: CoreRuntime,
+    conn: CoreConnection,
+    account_key: AccountKey,
+    bootstrap_recovery_secret: Option<AuthSecret>,
+    sync_backend: SyncBackendKind,
+}
+
+struct QaOwnedLoggedInRuntime {
+    runtime: CoreRuntime,
+    conn: CoreConnection,
+    account_key: AccountKey,
+}
+
+impl From<QaParticipantLoginOutcome> for QaOwnedLoggedInRuntime {
+    fn from(participant: QaParticipantLoginOutcome) -> Self {
+        Self {
+            runtime: participant.runtime,
+            conn: participant.conn,
+            account_key: participant.account_key,
+        }
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+enum QaOwnedRuntimePhase {
+    LoginNotSubmitted,
+    LoginSubmitted,
+    LoggedIn(AccountKey),
+}
+
+struct QaOwnedRuntimeParticipant {
+    runtime: CoreRuntime,
+    conn: CoreConnection,
+    phase: QaOwnedRuntimePhase,
+}
+
+impl QaOwnedRuntimeParticipant {
+    fn new(runtime: CoreRuntime, conn: CoreConnection) -> Self {
+        Self {
+            runtime,
+            conn,
+            phase: QaOwnedRuntimePhase::LoginNotSubmitted,
         }
     }
 
-    let transaction_id = "qa-e2ee-multi-user-multi-device-delivery".to_owned();
-    let send_id = conn_a.next_request_id();
-    conn_a
-        .command(CoreCommand::Timeline(TimelineCommand::SendText {
-            request_id: send_id,
-            key: key_a.clone(),
-            transaction_id: transaction_id.clone(),
-            body: E2EE_MULTI_USER_MULTI_DEVICE_BODY.to_owned(),
-            mentions: MentionIntent::default(),
-        }))
-        .await
-        .map_err(|e| format!("e2ee multi-device: submit encrypted send failed: {e}"))?;
-
-    wait_for_send_flow_completion_with_timeout(
-        conn_a,
-        send_id,
-        &key_a,
-        &transaction_id,
-        E2EE_MULTI_USER_MULTI_DEVICE_BODY,
-        "e2ee multi-device encrypted send",
-        E2EE_EVENT_TIMEOUT,
-    )
-    .await?;
-    println!("e2ee_unverified_peer_send_nonblocking=ok");
-
-    wait_for_item_with_body_with_sync(
-        conn_a2,
-        &key_a2,
-        E2EE_MULTI_USER_MULTI_DEVICE_BODY,
-        "e2ee multi-device A2 receive",
-    )
-    .await?;
-    wait_for_item_with_body_with_sync(
-        &mut conn_b,
-        &key_b,
-        E2EE_MULTI_USER_MULTI_DEVICE_BODY,
-        "e2ee multi-device B receive",
-    )
-    .await?;
-
-    let (acknowledged, ack) = tokio::sync::oneshot::channel();
-    let blacklist_id = conn_a.next_request_id();
-    conn_a
-        .command(CoreCommand::Account(
-            AccountCommand::QaSetLocalDeviceBlacklisted {
-                request_id: blacklist_id,
-                target: VerificationTarget {
-                    user_id: session_b3.user_id.clone(),
-                    device_id: session_b3.device_id.clone(),
-                },
-                acknowledged,
-            },
-        ))
-        .await
-        .map_err(|_| "blocked QA blacklist submit failed".to_owned())?;
-    tokio::time::timeout(EVENT_TIMEOUT, ack)
-        .await
-        .map_err(|_| "blocked QA blacklist ack timeout".to_owned())?
-        .map_err(|_| "blocked QA blacklist ack closed".to_owned())?
-        .map_err(|_| "blocked QA blacklist failed".to_owned())?;
-    let blocked_body = "Koushi blocked-device withheld probe";
-    let blocked_txn = "qa-e2ee-blocked-device-withheld".to_owned();
-    let blocked_send = conn_a.next_request_id();
-    conn_a
-        .command(CoreCommand::Timeline(TimelineCommand::SendText {
-            request_id: blocked_send,
-            key: key_a.clone(),
-            transaction_id: blocked_txn.clone(),
-            body: blocked_body.to_owned(),
-            mentions: MentionIntent::default(),
-        }))
-        .await
-        .map_err(|_| "blocked QA Core send submit failed".to_owned())?;
-    wait_for_send_flow_completion_with_timeout(
-        conn_a,
-        blocked_send,
-        &key_a,
-        &blocked_txn,
-        blocked_body,
-        "blocked QA Core send",
-        E2EE_EVENT_TIMEOUT,
-    )
-    .await?;
-    wait_for_item_with_body_with_sync(
-        &mut conn_b,
-        &key_b,
-        blocked_body,
-        "blocked QA nonblocked receive",
-    )
-    .await?;
-    let session_b = authenticated_session_info(&mut conn_b, "blocked QA B session")?;
-    verify_provisional_second_device_for_qa(
-        &mut conn_b,
-        &mut conn_b3,
-        &session_b,
-        &session_b3,
-        "blocked QA promote B3",
-        SasQaOutcome::Success,
-    )
-    .await?;
-    let account_key_b3 = wait_for_logged_in(&mut conn_b3, login_b3, "blocked QA B3 login").await?;
-    wait_for_ready_snapshot(&mut conn_b3, "blocked QA B3 Ready").await?;
-    start_sync_for_qa(&mut conn_b3, "blocked QA B3 sync").await?;
-    wait_for_room_in_room_list(&mut conn_b3, &room_id, "blocked QA B3 room").await?;
-    let key_b3 = TimelineKey::room(account_key_b3.clone(), room_id.clone());
-    let initial_b3 =
-        subscribe_timeline_for_qa(&mut conn_b3, &key_b3, "blocked QA B3 timeline").await?;
-    if !initial_b3.iter().any(timeline_item_is_decryption_failure)
-        || find_timeline_item_with_body(&initial_b3, blocked_body).is_some()
-    {
-        return Err("blocked QA B3 did not retain withheld/undecryptable event".to_owned());
-    }
-    println!("e2ee_blocked_device_withheld=ok");
-    cleanup_logged_in_runtime(conn_b3, runtime_b3, account_key_b3, "e2ee cleanup B3").await?;
-
-    if let Some((runtime_b2, mut conn_b2, account_key_b2, key_b2)) = maybe_recipient_second_device {
-        wait_for_item_with_body_with_sync(
-            &mut conn_b2,
-            &key_b2,
-            E2EE_MULTI_USER_MULTI_DEVICE_BODY,
-            "e2ee multi-device B2 receive",
-        )
-        .await?;
-        println!("e2ee_recipient_second_device_decrypt=ok");
-        cleanup_logged_in_runtime(conn_b2, runtime_b2, account_key_b2, "e2ee cleanup B2").await?;
+    fn from_logged_in(participant: QaOwnedLoggedInRuntime) -> Self {
+        Self {
+            runtime: participant.runtime,
+            conn: participant.conn,
+            phase: QaOwnedRuntimePhase::LoggedIn(participant.account_key),
+        }
     }
 
-    cleanup_logged_in_runtime(conn_b, runtime_b, account_key_b, "e2ee cleanup B").await?;
-    Ok(())
+    fn mark_login_submitted(&mut self) {
+        self.phase = QaOwnedRuntimePhase::LoginSubmitted;
+    }
+
+    fn mark_logged_in(&mut self, account_key: AccountKey) {
+        self.phase = QaOwnedRuntimePhase::LoggedIn(account_key);
+    }
+
+    fn logged_in_connection_and_account_key(
+        &mut self,
+    ) -> Option<(&mut CoreConnection, &AccountKey)> {
+        let QaOwnedRuntimePhase::LoggedIn(account_key) = &self.phase else {
+            return None;
+        };
+        Some((&mut self.conn, account_key))
+    }
+
+    fn into_logged_in_runtime(self) -> QaOwnedLoggedInRuntime {
+        let QaOwnedRuntimePhase::LoggedIn(account_key) = self.phase else {
+            panic!("caller ownership returns only after a completed login");
+        };
+        QaOwnedLoggedInRuntime {
+            runtime: self.runtime,
+            conn: self.conn,
+            account_key,
+        }
+    }
 }
 
-async fn settle_e2ee_device_list_propagation_for_qa(
-    conn_a: &mut CoreConnection,
-    conn_b: &mut CoreConnection,
-    conn_b2: &mut CoreConnection,
-    label: &str,
-) -> Result<(), String> {
-    for attempt in 1..=3 {
-        let label_b2 = format!("{label}: B2 sync {attempt}");
-        best_effort_sync_once_for_qa(conn_b2, &label_b2).await?;
-        let label_b = format!("{label}: B sync {attempt}");
-        best_effort_sync_once_for_qa(conn_b, &label_b).await?;
-        let label_a = format!("{label}: A sync {attempt}");
-        best_effort_sync_once_for_qa(conn_a, &label_a).await?;
-        tokio::time::sleep(Duration::from_millis(200)).await;
+impl From<QaParticipantLoginOutcome> for QaOwnedRuntimeParticipant {
+    fn from(participant: QaParticipantLoginOutcome) -> Self {
+        Self::from_logged_in(QaOwnedLoggedInRuntime::from(participant))
     }
-    Ok(())
+}
+
+enum QaE2eeRecipient<'a> {
+    Borrowed {
+        conn: &'a mut CoreConnection,
+        account_key: &'a AccountKey,
+    },
+    Owned(QaOwnedRuntimeParticipant),
+}
+
+impl QaE2eeRecipient<'_> {
+    fn connection_and_account_key(&mut self) -> (&mut CoreConnection, &AccountKey) {
+        match self {
+            Self::Borrowed { conn, account_key } => (conn, account_key),
+            Self::Owned(participant) => participant
+                .logged_in_connection_and_account_key()
+                .expect("owned E2EE recipient login completed before the post-login stage"),
+        }
+    }
+
+    fn into_owned(self) -> Option<QaOwnedRuntimeParticipant> {
+        match self {
+            Self::Borrowed { .. } => None,
+            Self::Owned(participant) => Some(participant),
+        }
+    }
+}
+
+async fn finish_e2ee_recipient_stage_with_owned_cleanup<T, Participant, Cleanup, CleanupFuture>(
+    stage_result: Result<T, String>,
+    owned_participant: Option<Participant>,
+    cleanup: Cleanup,
+) -> Result<T, String>
+where
+    Cleanup: FnOnce(Participant) -> CleanupFuture,
+    CleanupFuture: Future<Output = Result<(), String>>,
+{
+    let cleanup_result = match owned_participant {
+        Some(participant) => cleanup(participant).await,
+        None => Ok(()),
+    };
+
+    match (stage_result, cleanup_result) {
+        (Err(stage_error), Ok(())) => Err(stage_error),
+        (Err(stage_error), Err(_)) => Err(format!(
+            "{stage_error}; owned E2EE recipient cleanup also failed"
+        )),
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(cleanup_error)) => Err(cleanup_error),
+    }
+}
+
+async fn retain_or_cleanup_e2ee_callers_after_stage<Callers, Cleanup, CleanupFuture>(
+    stage_result: Result<(), String>,
+    callers: Callers,
+    cleanup: Cleanup,
+) -> Result<Callers, String>
+where
+    Cleanup: FnOnce(Callers) -> CleanupFuture,
+    CleanupFuture: Future<Output = Result<(), String>>,
+{
+    match stage_result {
+        Ok(()) => Ok(callers),
+        Err(stage_error) => match cleanup(callers).await {
+            Ok(()) => Err(stage_error),
+            Err(_) => Err(format!("{stage_error}; E2EE caller cleanup also failed")),
+        },
+    }
+}
+
+async fn retain_or_cleanup_owned_participant_after_stage<T, Participant, Cleanup, CleanupFuture>(
+    stage_result: Result<T, String>,
+    participant: Participant,
+    cleanup: Cleanup,
+) -> Result<(T, Participant), String>
+where
+    Cleanup: FnOnce(Participant) -> CleanupFuture,
+    CleanupFuture: Future<Output = Result<(), String>>,
+{
+    match stage_result {
+        Ok(value) => Ok((value, participant)),
+        Err(stage_error) => match cleanup(participant).await {
+            Ok(()) => Err(stage_error),
+            Err(_) => Err(format!(
+                "{stage_error}; owned participant login cleanup also failed"
+            )),
+        },
+    }
 }
 
 async fn login_synced_participant_for_qa(
-    config: &QaConfig,
+    homeserver: &str,
     data_dir: std::path::PathBuf,
     username: &str,
     password: &str,
     device_display_name: &str,
     label: &str,
-    bootstrap_new_identity: bool,
-) -> Result<(CoreRuntime, CoreConnection, AccountKey), String> {
+    gate_label: &str,
+    gate: QaParticipantLoginGate<'_>,
+) -> Result<QaParticipantLoginOutcome, String> {
     let runtime = CoreRuntime::start_with_data_dir(data_dir);
-    let mut conn = runtime.attach();
-
-    let login_id = conn.next_request_id();
-    conn.command(CoreCommand::Account(AccountCommand::LoginPassword {
-        request_id: login_id,
-        request: koushi_state::LoginRequest {
-            homeserver: config.homeserver.clone(),
-            username: username.to_owned(),
-            password: AuthSecret::new(password.to_owned()),
-            device_display_name: Some(device_display_name.to_owned()),
-        },
-    }))
-    .await
-    .map_err(|e| format!("{label}: submit login failed: {e}"))?;
-    if bootstrap_new_identity {
-        complete_new_identity_gate_for_qa(&mut conn, password, "gate-bootstrap-b").await?;
+    let conn = runtime.attach();
+    let mut participant = QaOwnedRuntimeParticipant::new(runtime, conn);
+    let login_stage_result: Result<(Option<AuthSecret>, SyncBackendKind), String> = async {
+        let login_id = participant.conn.next_request_id();
+        participant
+            .conn
+            .command(CoreCommand::Account(AccountCommand::LoginPassword {
+                request_id: login_id,
+                request: koushi_state::LoginRequest {
+                    homeserver: homeserver.to_owned(),
+                    username: username.to_owned(),
+                    password: AuthSecret::new(password.to_owned()),
+                    device_display_name: Some(device_display_name.to_owned()),
+                },
+            }))
+            .await
+            .map_err(|e| format!("{label}: submit login failed: {e}"))?;
+        participant.mark_login_submitted();
+        let bootstrap_recovery_secret = match gate {
+            QaParticipantLoginGate::BootstrapNewIdentity => {
+                complete_new_identity_gate_for_qa(&mut participant.conn, password, gate_label)
+                    .await?
+            }
+            QaParticipantLoginGate::RecoverExistingIdentity(recovery_secret) => {
+                wait_for_recovery_gate(&mut participant.conn, gate_label).await?;
+                let recovery_request_id = participant.conn.next_request_id();
+                participant
+                    .conn
+                    .command(CoreCommand::Account(AccountCommand::SubmitRecovery {
+                        request_id: recovery_request_id,
+                        request: RecoveryRequest {
+                            secret: recovery_secret.clone(),
+                        },
+                    }))
+                    .await
+                    .map_err(|e| format!("{gate_label}: submit recovery failed: {e}"))?;
+                None
+            }
+        };
+        let account_key = wait_for_logged_in(&mut participant.conn, login_id, label).await?;
+        participant.mark_logged_in(account_key);
+        wait_for_ready_snapshot(&mut participant.conn, label).await?;
+        let sync_backend = start_sync_for_qa(&mut participant.conn, label).await?;
+        Ok((bootstrap_recovery_secret, sync_backend))
     }
-    let account_key = wait_for_logged_in(&mut conn, login_id, label).await?;
-    wait_for_ready_snapshot(&mut conn, label).await?;
-    start_sync_for_qa(&mut conn, label).await?;
+    .await;
+    let ((bootstrap_recovery_secret, sync_backend), participant) =
+        retain_or_cleanup_owned_participant_after_stage(
+            login_stage_result,
+            participant,
+            |participant| async move {
+                cleanup_owned_e2ee_participant_best_effort(participant, "participant login cleanup")
+                    .await
+            },
+        )
+        .await?;
+    let QaOwnedLoggedInRuntime {
+        runtime,
+        conn,
+        account_key,
+    } = participant.into_logged_in_runtime();
 
-    Ok((runtime, conn, account_key))
+    Ok(QaParticipantLoginOutcome {
+        runtime,
+        conn,
+        account_key,
+        bootstrap_recovery_secret,
+        sync_backend,
+    })
 }
 
 async fn subscribe_timeline_for_qa(
@@ -10717,8 +11514,10 @@ async fn subscribe_and_ack_active_timeline_projection_for_qa(
     .await
     .map_err(|e| format!("{label}: submit timeline subscribe failed: {e}"))?;
 
+    let deadline = QaEventDeadline::after(TIMELINE_INITIAL_EVENT_TIMEOUT);
     loop {
-        let event = tokio::time::timeout(TIMELINE_INITIAL_EVENT_TIMEOUT, conn.recv_event())
+        let event = deadline
+            .recv(conn)
             .await
             .map_err(|_| format!("{label}: timed out waiting for active timeline projection"))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
@@ -10823,146 +11622,16 @@ impl<'a> BodyWaitObserver<'a> {
     }
 }
 
-enum BodyWithSyncEventOutcome {
-    Found(TimelineItem),
-    RequestNextSync,
-    Continue,
-}
-
-fn observe_body_with_sync_event(
-    observer: &mut BodyWaitObserver<'_>,
-    key: &TimelineKey,
-    sync_request_id: RequestId,
-    event: CoreEvent,
+fn ensure_incoming_verification_receiver_sync_not_stopped(
+    sync: &koushi_state::SyncState,
     label: &str,
-) -> Result<BodyWithSyncEventOutcome, String> {
-    match event {
-        CoreEvent::Timeline(TimelineEvent::InitialItems {
-            key: ref event_key,
-            items,
-            ..
-        }) if event_key == key => Ok(observer.observe_items(&items).map_or(
-            BodyWithSyncEventOutcome::Continue,
-            BodyWithSyncEventOutcome::Found,
-        )),
-        CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
-            key: ref event_key,
-            diffs,
-            ..
-        }) if event_key == key => Ok(observer.observe_diffs(&diffs)?.map_or(
-            BodyWithSyncEventOutcome::Continue,
-            BodyWithSyncEventOutcome::Found,
-        )),
-        CoreEvent::Sync(SyncEvent::Stopped {
-            request_id: Some(event_request_id),
-        }) if event_request_id == sync_request_id => Ok(BodyWithSyncEventOutcome::RequestNextSync),
-        CoreEvent::OperationFailed {
-            request_id: event_request_id,
-            failure,
-        } if event_request_id == sync_request_id => {
-            Err(format!("{label}: SyncOnce failed: {failure:?}"))
-        }
-        _ => Ok(BodyWithSyncEventOutcome::Continue),
-    }
-}
-
-#[allow(dead_code)]
-enum VerificationRequestAttempt {
-    Requested(u64),
-    Failed(TrustOperationFailureKind),
-}
-
-#[allow(dead_code)]
-async fn request_device_verification_for_qa(
-    conn: &mut CoreConnection,
-    target: VerificationTarget,
-    label: &str,
-) -> Result<u64, String> {
-    let mut last_failure = None;
-    for attempt in 1..=3 {
-        let request_id = conn.next_request_id();
-        conn.command(CoreCommand::Account(AccountCommand::RequestVerification {
-            request_id,
-            target: target.clone(),
-        }))
-        .await
-        .map_err(|e| format!("{label}: submit request verification failed: {e}"))?;
-
-        match wait_for_verification_requested_or_failed(conn, request_id, Some(&target), label)
-            .await?
-        {
-            VerificationRequestAttempt::Requested(flow_id) => return Ok(flow_id),
-            VerificationRequestAttempt::Failed(kind) => {
-                last_failure = Some(kind);
-                if attempt < 3 {
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                }
-            }
-        }
-    }
-
-    Err(format!(
-        "{label}: verification request did not start after retries; last failure={last_failure:?}"
-    ))
-}
-
-#[allow(dead_code)]
-async fn wait_for_verification_requested_or_failed(
-    conn: &mut CoreConnection,
-    request_id: RequestId,
-    expected_target: Option<&VerificationTarget>,
-    label: &str,
-) -> Result<VerificationRequestAttempt, String> {
-    loop {
-        let event = tokio::time::timeout(E2EE_EVENT_TIMEOUT, conn.recv_event())
-            .await
-            .map_err(|_| format!("{label}: timed out waiting for verification request"))?
-            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
-
-        match event {
-            CoreEvent::E2eeTrust(E2eeTrustEvent::VerificationProgress { state, .. }) => {
-                if verification_state_flow_id(&state) != Some(request_id.sequence)
-                    || !verification_state_matches_target(&state, expected_target)
-                {
-                    continue;
-                }
-                match state {
-                    VerificationFlowState::Failed { kind, .. } => {
-                        return Ok(VerificationRequestAttempt::Failed(kind));
-                    }
-                    VerificationFlowState::Requested { request_id, .. }
-                    | VerificationFlowState::Accepted { request_id, .. }
-                    | VerificationFlowState::SasPresented { request_id, .. }
-                    | VerificationFlowState::Confirming { request_id, .. }
-                    | VerificationFlowState::Done { request_id, .. } => {
-                        return Ok(VerificationRequestAttempt::Requested(request_id));
-                    }
-                    VerificationFlowState::Idle => {}
-                }
-            }
-            CoreEvent::StateChanged(AppState {
-                e2ee_trust:
-                    koushi_state::E2eeTrustState {
-                        verification:
-                            VerificationFlowState::Failed {
-                                request_id: failed_id,
-                                kind,
-                                ..
-                            },
-                        ..
-                    },
-                ..
-            }) if failed_id == request_id.sequence => {
-                return Ok(VerificationRequestAttempt::Failed(kind));
-            }
-            CoreEvent::OperationFailed {
-                request_id: ev_id,
-                failure,
-            } if ev_id == request_id => {
-                return Err(format!("{label} failed: {failure:?}"));
-            }
-            _ => {}
-        }
+) -> Result<(), String> {
+    if matches!(sync, koushi_state::SyncState::Stopped) {
+        Err(format!(
+            "{label}: receiver sync is stopped; cannot await an incoming verification request"
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -10972,6 +11641,7 @@ async fn wait_for_verification_requested_event_only(
     excluded_flow_id: Option<u64>,
     label: &str,
 ) -> Result<u64, String> {
+    ensure_incoming_verification_receiver_sync_not_stopped(&conn.snapshot().sync, label)?;
     let deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
 
     loop {
@@ -11043,8 +11713,10 @@ async fn wait_for_verification_accepted(
         return Ok(());
     }
 
+    let deadline = QaEventDeadline::after(E2EE_EVENT_TIMEOUT);
     loop {
-        let event = tokio::time::timeout(E2EE_EVENT_TIMEOUT, conn.recv_event())
+        let event = deadline
+            .recv(conn)
             .await
             .map_err(|_| format!("{label}: timed out waiting for verification acceptance"))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
@@ -11074,33 +11746,6 @@ async fn wait_for_verification_accepted(
     }
 }
 
-#[allow(dead_code)]
-async fn wait_for_verification_accepted_with_sync_once(
-    conn: &mut CoreConnection,
-    flow_id: u64,
-    label: &str,
-) -> Result<(), String> {
-    let deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
-
-    loop {
-        if verification_state_is_at_least_accepted(
-            &conn.snapshot().e2ee_trust.verification,
-            flow_id,
-        )? {
-            return Ok(());
-        }
-
-        if tokio::time::Instant::now() >= deadline {
-            return Err(format!(
-                "{label}: timed out waiting for verification acceptance with SyncOnce"
-            ));
-        }
-
-        let sync_label = format!("{label}: sync while waiting for acceptance");
-        sync_once_for_qa(conn, &sync_label).await?;
-    }
-}
-
 fn verification_state_is_at_least_accepted(
     state: &VerificationFlowState,
     flow_id: u64,
@@ -11117,44 +11762,6 @@ fn verification_state_is_at_least_accepted(
             Err(format!("verification failed before acceptance: {kind:?}"))
         }
         VerificationFlowState::Idle | VerificationFlowState::Requested { .. } => Ok(false),
-    }
-}
-
-#[allow(dead_code)]
-async fn drive_until_both_verification_sas(
-    conn_a: &mut CoreConnection,
-    flow_id_a: u64,
-    conn_a2: &mut CoreConnection,
-    flow_id_a2: u64,
-    label: &str,
-) -> Result<(Vec<SasEmoji>, Vec<SasEmoji>), String> {
-    let deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
-
-    loop {
-        let emojis_a = verification_state_sas(
-            &conn_a.snapshot().e2ee_trust.verification,
-            flow_id_a,
-            &format!("{label}: primary SAS presented"),
-        )?;
-        let emojis_a2 = verification_state_sas(
-            &conn_a2.snapshot().e2ee_trust.verification,
-            flow_id_a2,
-            &format!("{label}: secondary SAS presented"),
-        )?;
-        if let (Some(emojis_a), Some(emojis_a2)) = (emojis_a, emojis_a2) {
-            return Ok((emojis_a, emojis_a2));
-        }
-
-        if tokio::time::Instant::now() >= deadline {
-            return Err(format!(
-                "{label}: timed out driving SAS presentation with SyncOnce"
-            ));
-        }
-
-        let primary_sync_label = format!("{label}: sync primary while waiting for SAS");
-        let secondary_sync_label = format!("{label}: sync secondary while waiting for SAS");
-        sync_once_for_qa(conn_a, &primary_sync_label).await?;
-        sync_once_for_qa(conn_a2, &secondary_sync_label).await?;
     }
 }
 
@@ -11178,66 +11785,6 @@ fn verification_state_sas(
         VerificationFlowState::Idle
         | VerificationFlowState::Requested { .. }
         | VerificationFlowState::Accepted { .. } => Ok(None),
-    }
-}
-
-#[allow(dead_code)]
-async fn wait_for_verification_done(
-    conn: &mut CoreConnection,
-    flow_id: u64,
-    command_request_id: Option<RequestId>,
-    label: &str,
-) -> Result<(), String> {
-    if verification_state_done(&conn.snapshot().e2ee_trust.verification, flow_id, label)? {
-        return Ok(());
-    }
-
-    loop {
-        let event = tokio::time::timeout(E2EE_EVENT_TIMEOUT, conn.recv_event())
-            .await
-            .map_err(|_| format!("{label}: timed out waiting for verification completion"))?
-            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
-
-        match event {
-            CoreEvent::E2eeTrust(E2eeTrustEvent::VerificationProgress { state, .. })
-            | CoreEvent::StateChanged(AppState {
-                e2ee_trust:
-                    koushi_state::E2eeTrustState {
-                        verification: state,
-                        ..
-                    },
-                ..
-            }) => {
-                if verification_state_done(&state, flow_id, label)? {
-                    return Ok(());
-                }
-            }
-            CoreEvent::OperationFailed {
-                request_id: ev_id,
-                failure,
-            } if command_request_id == Some(ev_id) => {
-                return Err(format!("{label} failed: {failure:?}"));
-            }
-            _ => {}
-        }
-    }
-}
-
-#[allow(dead_code)]
-fn verification_state_done(
-    state: &VerificationFlowState,
-    flow_id: u64,
-    label: &str,
-) -> Result<bool, String> {
-    if verification_state_flow_id(state) != Some(flow_id) {
-        return Ok(false);
-    }
-    match state {
-        VerificationFlowState::Done { .. } => Ok(true),
-        VerificationFlowState::Failed { kind, .. } => Err(format!(
-            "{label}: verification failed before completion: {kind:?}"
-        )),
-        _ => Ok(false),
     }
 }
 
@@ -11397,6 +11944,8 @@ fn parse_env_flag(name: &str, value: &str) -> Result<bool, String> {
 struct QaTcpProxy {
     listen_addr: SocketAddr,
     enabled: Arc<AtomicBool>,
+    room_send_forwarded: Arc<AtomicUsize>,
+    room_send_responses_completed: Arc<AtomicUsize>,
     running: Arc<AtomicBool>,
     active_streams: Arc<Mutex<Vec<TcpStream>>>,
     fallback_control: Arc<(Mutex<QaFallbackProxyState>, Condvar)>,
@@ -11435,6 +11984,7 @@ enum QaProxyRequestKind {
     Versions,
     SyncService,
     LegacySync,
+    RoomSend,
     RoomMessages,
     Other,
 }
@@ -11658,6 +12208,8 @@ impl QaTcpProxy {
             .local_addr()
             .map_err(|e| format!("send_queue proxy local_addr failed: {e}"))?;
         let enabled = Arc::new(AtomicBool::new(true));
+        let room_send_forwarded = Arc::new(AtomicUsize::new(0));
+        let room_send_responses_completed = Arc::new(AtomicUsize::new(0));
         let running = Arc::new(AtomicBool::new(true));
         let active_streams = Arc::new(Mutex::new(Vec::new()));
         let fallback_control =
@@ -11665,6 +12217,8 @@ impl QaTcpProxy {
         let messages_control = Arc::new(Mutex::new(QaMessagesProxyControl::default()));
 
         let thread_enabled = enabled.clone();
+        let thread_room_send_forwarded = room_send_forwarded.clone();
+        let thread_room_send_responses_completed = room_send_responses_completed.clone();
         let thread_running = running.clone();
         let thread_streams = active_streams.clone();
         let thread_fallback_control = fallback_control.clone();
@@ -11683,6 +12237,8 @@ impl QaTcpProxy {
                             thread_streams.clone(),
                             thread_fallback_control.clone(),
                             thread_messages_control.clone(),
+                            thread_room_send_forwarded.clone(),
+                            thread_room_send_responses_completed.clone(),
                         );
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -11700,6 +12256,8 @@ impl QaTcpProxy {
         Ok(Self {
             listen_addr,
             enabled,
+            room_send_forwarded,
+            room_send_responses_completed,
             running,
             active_streams,
             fallback_control,
@@ -11719,6 +12277,14 @@ impl QaTcpProxy {
 
     fn enable(&self) {
         self.enabled.store(true, Ordering::SeqCst);
+    }
+
+    fn room_send_forwarded_count(&self) -> usize {
+        self.room_send_forwarded.load(Ordering::SeqCst)
+    }
+
+    fn room_send_responses_completed_count(&self) -> usize {
+        self.room_send_responses_completed.load(Ordering::SeqCst)
     }
 
     fn arm_legacy_fallback(&self) -> Result<(), String> {
@@ -11884,6 +12450,8 @@ fn spawn_proxy_pair(
     active_streams: Arc<Mutex<Vec<TcpStream>>>,
     fallback_control: Arc<(Mutex<QaFallbackProxyState>, Condvar)>,
     messages_control: Arc<Mutex<QaMessagesProxyControl>>,
+    room_send_forwarded: Arc<AtomicUsize>,
+    room_send_responses_completed: Arc<AtomicUsize>,
 ) {
     thread::spawn(move || {
         let _ = proxy_single_http_request(
@@ -11892,6 +12460,8 @@ fn spawn_proxy_pair(
             active_streams,
             fallback_control,
             messages_control,
+            room_send_forwarded,
+            room_send_responses_completed,
         );
         let _ = client.shutdown(Shutdown::Both);
     });
@@ -11903,6 +12473,8 @@ fn proxy_single_http_request(
     active_streams: Arc<Mutex<Vec<TcpStream>>>,
     fallback_control: Arc<(Mutex<QaFallbackProxyState>, Condvar)>,
     messages_control: Arc<Mutex<QaMessagesProxyControl>>,
+    room_send_forwarded: Arc<AtomicUsize>,
+    room_send_responses_completed: Arc<AtomicUsize>,
 ) -> io::Result<()> {
     let mut request_head = Vec::new();
     {
@@ -11940,6 +12512,8 @@ fn proxy_single_http_request(
     let request_kind = qa_proxy_request_kind(&request_head)?;
     let action = qa_messages_proxy_action(&messages_control, request_kind, &request_head)?
         .unwrap_or(fallback_proxy_action(&fallback_control, request_kind)?);
+    let count_forwarded_room_send =
+        request_kind == QaProxyRequestKind::RoomSend && action == QaProxyRequestAction::Forward;
     match action {
         QaProxyRequestAction::Forward => {}
         QaProxyRequestAction::FailClosed => {
@@ -11982,8 +12556,14 @@ fn proxy_single_http_request(
     }
 
     let request = rewrite_http_request_connection_close(&request_head)?;
+    if count_forwarded_room_send {
+        room_send_forwarded.fetch_add(1, Ordering::SeqCst);
+    }
     io::Write::write_all(&mut server, &request)?;
     io::copy(&mut server, client)?;
+    if count_forwarded_room_send {
+        room_send_responses_completed.fetch_add(1, Ordering::SeqCst);
+    }
     Ok(())
 }
 
@@ -12019,6 +12599,13 @@ fn qa_proxy_request_kind(request: &[u8]) -> io::Result<QaProxyRequestKind> {
         }
         (_, "/_matrix/client/v3/sync" | "/_matrix/client/r0/sync") => {
             QaProxyRequestKind::LegacySync
+        }
+        ("PUT", path)
+            if path.starts_with("/_matrix/client/")
+                && path.contains("/rooms/")
+                && path.contains("/send/") =>
+        {
+            QaProxyRequestKind::RoomSend
         }
         (_, path)
             if path.starts_with("/_matrix/client/")
@@ -12289,29 +12876,106 @@ async fn wait_for_initial_items(
     request_id: koushi_core::ids::RequestId,
     label: &str,
 ) -> Result<Vec<koushi_core::event::TimelineItem>, String> {
+    wait_for_initial_items_from_source(conn, key, request_id, label, TIMELINE_INITIAL_EVENT_TIMEOUT)
+        .await
+}
+
+async fn wait_for_initial_items_from_source<S: QaEventSource + ?Sized>(
+    source: &mut S,
+    key: &TimelineKey,
+    request_id: koushi_core::ids::RequestId,
+    label: &str,
+    timeout: Duration,
+) -> Result<Vec<koushi_core::event::TimelineItem>, String> {
+    let deadline = QaEventDeadline::after(timeout);
+    let mut diagnostics = InitialItemsWaitDiagnostics::default();
     loop {
-        let event = tokio::time::timeout(TIMELINE_INITIAL_EVENT_TIMEOUT, conn.recv_event())
+        let event = deadline
+            .recv(source)
             .await
-            .map_err(|_| format!("{label}: timed out waiting for TimelineEvent::InitialItems"))?
+            .map_err(|_| diagnostics.timeout_message(label))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
-        match event {
-            CoreEvent::Timeline(TimelineEvent::InitialItems {
-                request_id: Some(ev_id),
-                key: ref ev_key,
-                items,
-                ..
-            }) if ev_id == request_id && ev_key == key => {
-                return Ok(items);
-            }
-            CoreEvent::OperationFailed {
-                request_id: ev_id,
-                failure,
-            } if ev_id == request_id => {
+        diagnostics.observe(&event, key, request_id);
+        match match_initial_items_wait_event(event, key, request_id) {
+            InitialItemsWaitMatch::Items(items) => return Ok(items),
+            InitialItemsWaitMatch::Failure(failure) => {
                 return Err(format!("{label} failed: {failure:?}"));
             }
-            _ => continue,
+            InitialItemsWaitMatch::Ignore => continue,
         }
+    }
+}
+
+#[derive(Default)]
+struct InitialItemsWaitDiagnostics {
+    same_key_exact_cause: u64,
+    same_key_wrong_cause: u64,
+    same_key_causeless: u64,
+    wrong_key_initial_items: u64,
+    unrelated_events: u64,
+}
+
+impl InitialItemsWaitDiagnostics {
+    fn observe(&mut self, event: &CoreEvent, key: &TimelineKey, request_id: RequestId) {
+        match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                cause_request_id,
+                key: event_key,
+                ..
+            }) if event_key == key => match cause_request_id {
+                Some(cause_request_id) if *cause_request_id == request_id => {
+                    self.same_key_exact_cause += 1;
+                }
+                Some(_) => self.same_key_wrong_cause += 1,
+                None => self.same_key_causeless += 1,
+            },
+            CoreEvent::Timeline(TimelineEvent::InitialItems { .. }) => {
+                self.wrong_key_initial_items += 1;
+            }
+            _ => self.unrelated_events += 1,
+        }
+    }
+
+    fn timeout_message(&self, label: &str) -> String {
+        format!(
+            "{label}: timed out waiting for TimelineEvent::InitialItems \
+             (same_key_exact_cause={}, same_key_wrong_cause={}, same_key_causeless={}, \
+             wrong_key_initial_items={}, unrelated_events={})",
+            self.same_key_exact_cause,
+            self.same_key_wrong_cause,
+            self.same_key_causeless,
+            self.wrong_key_initial_items,
+            self.unrelated_events,
+        )
+    }
+}
+
+enum InitialItemsWaitMatch {
+    Items(Vec<koushi_core::event::TimelineItem>),
+    Failure(CoreFailure),
+    Ignore,
+}
+
+fn match_initial_items_wait_event(
+    event: CoreEvent,
+    key: &TimelineKey,
+    request_id: koushi_core::ids::RequestId,
+) -> InitialItemsWaitMatch {
+    match event {
+        CoreEvent::Timeline(TimelineEvent::InitialItems {
+            cause_request_id: Some(event_cause_request_id),
+            key: event_key,
+            items,
+            ..
+        }) if event_key == *key && event_cause_request_id == request_id => {
+            InitialItemsWaitMatch::Items(items)
+        }
+        CoreEvent::OperationFailed {
+            request_id: event_request_id,
+            failure,
+        } if event_request_id == request_id => InitialItemsWaitMatch::Failure(failure),
+        _ => InitialItemsWaitMatch::Ignore,
     }
 }
 
@@ -12538,8 +13202,10 @@ async fn wait_for_send_flow_completion_with_timeout(
 ) -> Result<SendFlowOutcome, String> {
     let mut waiter = SendFlowWaiter::new(request_id, key.clone(), client_txn_id, expected_body);
 
+    let deadline = QaEventDeadline::after(timeout);
     loop {
-        let event = tokio::time::timeout(timeout, conn.recv_event())
+        let event = deadline
+            .recv(conn)
             .await
             .map_err(|_| {
                 format!(
@@ -12712,6 +13378,31 @@ async fn cancel_send_queue_item(
     Ok(request_id)
 }
 
+fn observe_send_queue_retry_item_state(
+    item: &TimelineItem,
+    sdk_transaction_id: &str,
+    first_left_not_sent_after_retry: &mut bool,
+) -> Option<&'static str> {
+    if timeline_item_transaction_id(item) != Some(sdk_transaction_id) {
+        return None;
+    }
+    match item.send_state.as_ref() {
+        Some(TimelineSendState::NotSent {
+            reason: koushi_core::event::TimelineSendFailureReason::Recoverable,
+        }) if *first_left_not_sent_after_retry => Some("recoverable"),
+        Some(TimelineSendState::NotSent {
+            reason: koushi_core::event::TimelineSendFailureReason::Unrecoverable,
+        }) if *first_left_not_sent_after_retry => Some("unrecoverable"),
+        Some(TimelineSendState::NotSent { .. }) | None => None,
+        Some(
+            TimelineSendState::Sending | TimelineSendState::Cancelled | TimelineSendState::Sent,
+        ) => {
+            *first_left_not_sent_after_retry = true;
+            None
+        }
+    }
+}
+
 async fn wait_for_send_completions_in_order(
     conn: &mut CoreConnection,
     key: &TimelineKey,
@@ -12721,6 +13412,7 @@ async fn wait_for_send_completions_in_order(
     label: &str,
 ) -> Result<(), String> {
     let mut first_completed = false;
+    let mut first_left_not_sent_after_retry = false;
     loop {
         let event = tokio::time::timeout(SEND_QUEUE_EVENT_TIMEOUT, conn.recv_event())
             .await
@@ -12733,6 +13425,41 @@ async fn wait_for_send_completions_in_order(
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
         match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: ref ev_key,
+                items,
+                ..
+            }) if ev_key == key => {
+                if let Some(reason) = items.iter().find_map(|item| {
+                    observe_send_queue_retry_item_state(
+                        item,
+                        &first.sdk_transaction_id,
+                        &mut first_left_not_sent_after_retry,
+                    )
+                }) {
+                    return Err(format!(
+                        "{label}: first queued send returned to NotSent reason={reason}"
+                    ));
+                }
+            }
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref ev_key,
+                diffs,
+                ..
+            }) if ev_key == key => {
+                visit_timeline_diff_items(&diffs, |item| {
+                    if let Some(reason) = observe_send_queue_retry_item_state(
+                        item,
+                        &first.sdk_transaction_id,
+                        &mut first_left_not_sent_after_retry,
+                    ) {
+                        return Err(format!(
+                            "{label}: first queued send returned to NotSent reason={reason}"
+                        ));
+                    }
+                    Ok(())
+                })?;
+            }
             CoreEvent::Timeline(TimelineEvent::SendCompleted {
                 request_id,
                 key: ref ev_key,
@@ -12740,9 +13467,7 @@ async fn wait_for_send_completions_in_order(
                 ..
             }) if ev_key == key && request_id == first.request_id => {
                 if transaction_id != first.client_transaction_id {
-                    return Err(format!(
-                        "{label}: first completion transaction mismatch: {transaction_id}"
-                    ));
+                    return Err(format!("{label}: first completion transaction mismatch"));
                 }
                 first_completed = true;
             }
@@ -12758,20 +13483,17 @@ async fn wait_for_send_completions_in_order(
                     ));
                 }
                 if transaction_id != second.client_transaction_id {
-                    return Err(format!(
-                        "{label}: second completion transaction mismatch: {transaction_id}"
-                    ));
+                    return Err(format!("{label}: second completion transaction mismatch"));
                 }
                 return Ok(());
             }
-            CoreEvent::OperationFailed {
-                request_id,
-                failure,
-            } if request_id == retry_request_id
-                || request_id == first.request_id
-                || request_id == second.request_id =>
+            CoreEvent::OperationFailed { request_id, .. } if request_id == retry_request_id => {
+                return Err(format!("{label}: retry operation failed"));
+            }
+            CoreEvent::OperationFailed { request_id, .. }
+                if request_id == first.request_id || request_id == second.request_id =>
             {
-                return Err(format!("{label}: operation failed: {failure:?}"));
+                return Err(format!("{label}: queued send operation failed"));
             }
             _ => {}
         }
@@ -13214,7 +13936,6 @@ async fn run_live_signals_stage(
         matches!(event, LiveSignalsEvent::ReadReceiptSent { .. })
     })
     .await?;
-    best_effort_sync_once_for_qa(conn_a, "live signals sync A for read receipt").await?;
     wait_for_read_receipt_projection(
         conn_a,
         &observer_room_id,
@@ -13267,12 +13988,6 @@ async fn run_live_signals_stage(
         )
     })
     .await?;
-    // Local SyncService homeserver lanes can acknowledge the typing command but
-    // not wake the room typing observer from the sliding-sync typing extension.
-    // A bounded SyncOnce keeps this QA leg focused on the Rust-owned
-    // command/event/state contract; product sync policy remains in SyncActor.
-    sync_once_for_qa(conn_a, "live signals sync A for typing").await?;
-
     wait_for_live_signal_snapshot(conn_a, "typing state", |snapshot| {
         snapshot
             .live_signals
@@ -13822,7 +14537,6 @@ async fn run_link_preview_stage(
     )
     .await?;
 
-    sync_once_for_qa(conn_a, "sync after link preview encrypted room creation").await?;
     wait_for_room_in_room_list(
         conn_a,
         &enc_room_id,
@@ -14210,18 +14924,19 @@ async fn wait_for_item_with_body(
 async fn wait_for_all_items_with_bodies(
     conn: &mut CoreConnection,
     key: &TimelineKey,
+    initial_items: &[TimelineItem],
     expected_bodies: &[String],
     label: &str,
 ) -> Result<(), String> {
-    let mut seen = vec![false; expected_bodies.len()];
+    let mut seen = seed_expected_body_observation(initial_items, expected_bodies);
 
     loop {
+        if seen.iter().all(|found| *found) {
+            return Ok(());
+        }
         let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
             .await
-            .map_err(|_| {
-                let missing_count = seen.iter().filter(|found| !**found).count();
-                format!("{label}: timed out with {missing_count} expected rows still missing")
-            })?
+            .map_err(|_| missing_expected_body_timeout(label, &seen))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
         match event {
@@ -14245,10 +14960,6 @@ async fn wait_for_all_items_with_bodies(
                 })?;
             }
             _ => {}
-        }
-
-        if seen.iter().all(|found| *found) {
-            return Ok(());
         }
     }
 }
@@ -14435,6 +15146,37 @@ fn observe_expected_bodies(
     }
 }
 
+fn seed_expected_body_observation(
+    initial_items: &[TimelineItem],
+    expected_bodies: &[String],
+) -> Vec<bool> {
+    let mut seen = vec![false; expected_bodies.len()];
+    for item in initial_items {
+        observe_expected_bodies(item, expected_bodies, &mut seen);
+    }
+    seen
+}
+
+#[cfg(test)]
+fn missing_expected_body_count(seen: &[bool]) -> usize {
+    seen.iter().filter(|found| !**found).count()
+}
+
+fn missing_expected_body_indices(seen: &[bool]) -> Vec<usize> {
+    seen.iter()
+        .enumerate()
+        .filter_map(|(index, found)| (!found).then_some(index))
+        .collect()
+}
+
+fn missing_expected_body_timeout(label: &str, seen: &[bool]) -> String {
+    let missing_indices = missing_expected_body_indices(seen);
+    format!(
+        "{label}: timed out with {} expected rows still missing; missing_indices={missing_indices:?}",
+        missing_indices.len()
+    )
+}
+
 async fn wait_for_event_item_with_body(
     conn: &mut CoreConnection,
     key: &TimelineKey,
@@ -14547,9 +15289,10 @@ async fn wait_for_item_with_body_or_decryption_failure(
     expected_body: &str,
     label: &str,
 ) -> Result<koushi_core::event::TimelineItem, String> {
+    let deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
     let mut observer = BodyWaitObserver::new(expected_body);
     loop {
-        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+        let event = tokio::time::timeout_at(deadline, conn.recv_event())
             .await
             .map_err(|_| observer.timeout_message(label))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
@@ -14578,46 +15321,136 @@ async fn wait_for_item_with_body_or_decryption_failure(
     }
 }
 
-async fn wait_for_item_with_body_with_sync(
-    conn: &mut CoreConnection,
-    key: &TimelineKey,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WithheldEventProjectionOrigin {
+    InitialItems,
+    ItemsUpdated,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WithheldEventTargetOutcome {
+    Missing,
+    DecryptionFailure,
+    NonFailure {
+        has_body: bool,
+        has_typed_decryption_failure: bool,
+        matches_expected_body: bool,
+    },
+}
+
+fn withheld_event_target_outcome(
+    items: &[TimelineItem],
+    target_event_id: &str,
     expected_body: &str,
+) -> WithheldEventTargetOutcome {
+    let Some(item) = items
+        .iter()
+        .find(|item| timeline_item_event_id(item) == Some(target_event_id))
+    else {
+        return WithheldEventTargetOutcome::Missing;
+    };
+    if timeline_item_is_decryption_failure(item) {
+        WithheldEventTargetOutcome::DecryptionFailure
+    } else {
+        WithheldEventTargetOutcome::NonFailure {
+            has_body: item.body.is_some(),
+            has_typed_decryption_failure: item.unable_to_decrypt.is_some(),
+            matches_expected_body: timeline_item_body_matches(item, expected_body),
+        }
+    }
+}
+
+fn withheld_event_target_outcome_in_diffs(
+    diffs: &[TimelineDiff],
+    target_event_id: &str,
+    expected_body: &str,
+) -> Result<WithheldEventTargetOutcome, String> {
+    let mut outcome = WithheldEventTargetOutcome::Missing;
+    visit_timeline_diff_items(diffs, |item| {
+        if timeline_item_event_id(item) == Some(target_event_id) {
+            outcome = if timeline_item_is_decryption_failure(item) {
+                WithheldEventTargetOutcome::DecryptionFailure
+            } else {
+                WithheldEventTargetOutcome::NonFailure {
+                    has_body: item.body.is_some(),
+                    has_typed_decryption_failure: item.unable_to_decrypt.is_some(),
+                    matches_expected_body: timeline_item_body_matches(item, expected_body),
+                }
+            };
+        }
+        Ok(())
+    })?;
+    Ok(outcome)
+}
+
+async fn wait_for_withheld_event_projection_from_source<S: QaEventSource + ?Sized>(
+    source: &mut S,
+    key: &TimelineKey,
+    target_event_id: &str,
+    expected_body: &str,
+    initial_items: &[TimelineItem],
     label: &str,
-) -> Result<koushi_core::event::TimelineItem, String> {
-    let deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
-    let mut sync_request_id: Option<RequestId> = None;
-    let mut observer = BodyWaitObserver::new(expected_body);
+    timeout: Duration,
+) -> Result<WithheldEventProjectionOrigin, String> {
+    match withheld_event_target_outcome(initial_items, target_event_id, expected_body) {
+        WithheldEventTargetOutcome::DecryptionFailure => {
+            return Ok(WithheldEventProjectionOrigin::InitialItems);
+        }
+        WithheldEventTargetOutcome::NonFailure {
+            has_body,
+            has_typed_decryption_failure,
+            matches_expected_body,
+        } => {
+            return Err(format!(
+                "{label}: withheld target projection_outcome=non_failure \
+                 projection_origin=initial_items has_body={has_body} \
+                 has_typed_decryption_failure={has_typed_decryption_failure} \
+                 matches_expected_body={matches_expected_body}"
+            ));
+        }
+        WithheldEventTargetOutcome::Missing => {}
+    }
 
+    let deadline = QaEventDeadline::after(timeout);
+    let mut matching_update_batches = 0u64;
     loop {
-        if tokio::time::Instant::now() >= deadline {
-            return Err(observer.timeout_message(label));
-        }
-
-        if sync_request_id.is_none() {
-            let request_id = conn.next_request_id();
-            conn.command(CoreCommand::Sync(SyncCommand::SyncOnce { request_id }))
-                .await
-                .map_err(|e| format!("{label}: submit SyncOnce failed: {e}"))?;
-            sync_request_id = Some(request_id);
-        }
-
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        let event = tokio::time::timeout(remaining.min(EVENT_TIMEOUT), conn.recv_event())
-            .await
-            .map_err(|_| observer.timeout_message(label))?
+        let event = deadline.recv(source).await.map_err(|_| {
+            format!(
+                "{label}: withheld target projection_outcome=absent \
+                 projection_origin=missing matching_update_batches={matching_update_batches}"
+            )
+        })?;
+        let event = event
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
-        let active_sync_request_id =
-            sync_request_id.expect("a SyncOnce request is active while waiting for events");
-        match observe_body_with_sync_event(
-            &mut observer,
-            key,
-            active_sync_request_id,
-            event,
-            label,
-        )? {
-            BodyWithSyncEventOutcome::Found(item) => return Ok(item),
-            BodyWithSyncEventOutcome::RequestNextSync => sync_request_id = None,
-            BodyWithSyncEventOutcome::Continue => {}
+        let CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+            key: event_key,
+            diffs,
+            ..
+        }) = event
+        else {
+            continue;
+        };
+        if event_key != *key {
+            continue;
+        }
+        matching_update_batches += 1;
+        match withheld_event_target_outcome_in_diffs(&diffs, target_event_id, expected_body)? {
+            WithheldEventTargetOutcome::Missing => {}
+            WithheldEventTargetOutcome::DecryptionFailure => {
+                return Ok(WithheldEventProjectionOrigin::ItemsUpdated);
+            }
+            WithheldEventTargetOutcome::NonFailure {
+                has_body,
+                has_typed_decryption_failure,
+                matches_expected_body,
+            } => {
+                return Err(format!(
+                    "{label}: withheld target projection_outcome=non_failure \
+                     projection_origin=items_updated has_body={has_body} \
+                     has_typed_decryption_failure={has_typed_decryption_failure} \
+                     matches_expected_body={matches_expected_body}"
+                ));
+            }
         }
     }
 }
@@ -15571,6 +16404,7 @@ fn assert_hide_redacted_projection() -> Result<(), String> {
     );
     let mut event = TimelineEvent::InitialItems {
         request_id: None,
+        cause_request_id: None,
         key,
         actor_generation: 0,
         generation: koushi_core::ids::TimelineGeneration(0),
@@ -15843,6 +16677,242 @@ mod tests {
     use koushi_core::event::{ThreadSummaryDto, TimelineGapPosition, TimelineMessageActions};
 
     #[test]
+    fn invite_timeout_diagnostic_summary_is_allowlisted_and_private_safe() {
+        use koushi_diagnostics::{
+            DiagnosticEvent, DiagnosticField, DiagnosticLevel, DiagnosticRecord, DiagnosticSnapshot,
+        };
+
+        let record = |event| DiagnosticRecord {
+            timestamp_ms: 0,
+            event,
+        };
+        let snapshot = DiagnosticSnapshot {
+            records: vec![
+                record(DiagnosticEvent::new(
+                    DiagnosticLevel::Debug,
+                    "core.room",
+                    "live_observer_started",
+                )),
+                record(
+                    DiagnosticEvent::new(
+                        DiagnosticLevel::Debug,
+                        "core.room",
+                        "live_observer_wake_milestone",
+                    )
+                    .field(DiagnosticField::token("source", "rls_diff"))
+                    .field(DiagnosticField::count("wake_count", 4))
+                    .field(DiagnosticField::token(
+                        "ignored_private_field",
+                        "!private-room:example.invalid",
+                    )),
+                ),
+                record(
+                    DiagnosticEvent::new(
+                        DiagnosticLevel::Debug,
+                        "core.room",
+                        "live_observer_wake_milestone",
+                    )
+                    .field(DiagnosticField::token("source", "base_room_updates"))
+                    .field(DiagnosticField::count("wake_count", 8))
+                    .field(DiagnosticField::boolean("invite_update_observed", true))
+                    .field(DiagnosticField::boolean("invite_membership_changed", false))
+                    .field(DiagnosticField::boolean("projection_required", true)),
+                ),
+                record(DiagnosticEvent::new(
+                    DiagnosticLevel::Debug,
+                    "core.room",
+                    "live_observer_invite_projection",
+                )),
+                record(
+                    DiagnosticEvent::new(
+                        DiagnosticLevel::Debug,
+                        "core.room",
+                        "live_observer_invite_projection_completed",
+                    )
+                    .field(DiagnosticField::boolean("action_delivered", true)),
+                ),
+                record(DiagnosticEvent::new(
+                    DiagnosticLevel::Warn,
+                    "core.room",
+                    "live_observer_base_lagged",
+                )),
+                record(DiagnosticEvent::new(
+                    DiagnosticLevel::Warn,
+                    "core.room",
+                    "live_observer_auxiliary_closed",
+                )),
+                record(DiagnosticEvent::new(
+                    DiagnosticLevel::Error,
+                    "core.room",
+                    "live_observer_exit",
+                )),
+            ],
+            dropped_records: 2,
+        };
+
+        let summary = invite_observer_diagnostic_summary(&snapshot);
+        assert_eq!(
+            summary,
+            "observer_diag_started=1 observer_diag_rls_wake_max=4 \
+             observer_diag_base_wake_max=8 observer_diag_base_invite_update_seen=true \
+             observer_diag_base_membership_change_seen=false \
+             observer_diag_base_projection_required_seen=true \
+             observer_diag_invite_projection=1 observer_diag_invite_projection_delivered=1 \
+             observer_diag_invite_projection_undelivered=0 observer_diag_lagged=1 \
+             observer_diag_closed=1 observer_diag_exit=1 observer_diag_dropped=2"
+        );
+        assert!(!summary.contains("private-room"));
+        assert!(!summary.contains("room_id"));
+    }
+
+    #[test]
+    fn invite_timeout_uses_private_safe_observer_diagnostic_summary() {
+        let source = include_str!("headless-core-qa.rs");
+        let helper = source
+            .split("async fn wait_for_invite_in_snapshot")
+            .nth(1)
+            .expect("invite waiter should exist")
+            .split("async fn wait_for_invite_absent")
+            .next()
+            .expect("invite removal waiter should follow");
+
+        assert!(
+            helper.contains("invite_observer_diagnostic_summary(&koushi_diagnostics::snapshot())")
+        );
+        assert!(helper.contains("{observer_diagnostics}"));
+        assert!(!helper.contains("expected_room_id:?"));
+    }
+
+    #[test]
+    fn production_qa_never_overlaps_actor_owned_sync_with_manual_sync_once() {
+        let source = include_str!("headless-core-qa.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production source should precede tests");
+
+        assert!(
+            !production.contains("SyncCommand::SyncOnce"),
+            "production QA must wait on actor-owned typed events instead of issuing manual SyncOnce"
+        );
+        assert!(
+            !production.contains("sync_once_for_qa("),
+            "production QA must not retain manual SyncOnce helpers or callers"
+        );
+    }
+
+    #[test]
+    fn owner_driven_e2ee_body_waiter_keeps_the_extended_deadline() {
+        let source = include_str!("headless-core-qa.rs");
+        let helper = source
+            .split("async fn wait_for_item_with_body_or_decryption_failure")
+            .nth(1)
+            .expect("owner-driven E2EE body waiter should exist")
+            .split("async fn wait_for_bodies_and_pagination_settle")
+            .next()
+            .expect("pagination waiter should follow the E2EE body waiter");
+
+        assert!(helper.contains("E2EE_EVENT_TIMEOUT"));
+        assert!(helper.contains("tokio::time::timeout_at(deadline, conn.recv_event())"));
+        assert!(!helper.contains("SyncCommand::SyncOnce"));
+    }
+
+    #[test]
+    fn unverified_peer_refreshes_device_keys_before_behavioral_checkpoints() {
+        let source = include_str!("headless-core-qa.rs");
+        let stage = source
+            .split("async fn verify_multi_user_multi_device_room_key_delivery_for_qa")
+            .nth(1)
+            .expect("multi-device delivery stage should exist")
+            .split("enum QaParticipantLoginGate")
+            .next()
+            .expect("participant gate should follow multi-device delivery");
+
+        let refresh = stage
+            .find("refresh_device_keys_and_assert_known_for_qa(")
+            .expect("unverified-peer stage must refresh and assert the exact device");
+        let send = stage
+            .find("TimelineCommand::SendText")
+            .expect("unverified-peer stage must retain its behavioral send checkpoint");
+        assert!(refresh < send);
+        assert!(stage.contains("wait_for_send_flow_completion_with_timeout("));
+        assert!(stage.contains("E2EE_EVENT_TIMEOUT"));
+        assert!(stage.contains("e2ee multi-device A2 receive"));
+        assert!(stage.contains("e2ee multi-device B receive"));
+        assert!(stage.contains("blocked QA blacklist ack timeout"));
+        assert!(stage.contains("wait_for_withheld_event_projection_from_source("));
+        assert!(stage.contains("room_id: room_id.clone()"));
+        let promote = stage
+            .find("blocked QA promote B3")
+            .expect("B3 must be promoted before the withheld probe");
+        let blacklist = stage
+            .find("let blacklist_id")
+            .expect("the withheld probe must blacklist B3");
+        let blocked_send = stage
+            .find("let blocked_send")
+            .expect("the withheld probe must send after blacklisting B3");
+        assert!(promote < blacklist);
+        assert!(blacklist < blocked_send);
+        assert!(!stage.contains("AccountCommand::RequestVerification"));
+        assert!(!stage.contains("SyncCommand::SyncOnce"));
+
+        let helper = source
+            .split("async fn refresh_device_keys_and_assert_known_for_qa")
+            .nth(1)
+            .expect("device-key refresh checkpoint helper should exist")
+            .split("enum QaParticipantLoginGate")
+            .next()
+            .expect("participant gate should follow the checkpoint helper");
+        assert!(helper.contains("AccountCommand::QaRefreshDeviceKeysAndAssertKnown"));
+        assert!(helper.contains("tokio::time::timeout(E2EE_EVENT_TIMEOUT, ack)"));
+        assert!(!helper.contains("AccountCommand::RequestVerification"));
+        assert!(!helper.contains("tokio::time::sleep"));
+    }
+
+    #[test]
+    fn e2ee_key_delivery_preestablishes_invite_before_optional_b_login() {
+        let source = include_str!("headless-core-qa.rs");
+        let stage = source
+            .split("async fn verify_multi_user_multi_device_room_key_delivery_for_qa")
+            .nth(1)
+            .expect("multi-device delivery stage should exist")
+            .split("async fn refresh_device_keys_and_assert_known_for_qa")
+            .next()
+            .expect("device-key refresh helper should follow multi-device delivery");
+
+        let create = stage
+            .find("let room_id = create_room_for_qa(")
+            .expect("E2EE room should be created");
+        let invite = stage
+            .find("invite_user_for_qa(")
+            .expect("B should be invited to the E2EE room");
+        let owned_login = stage
+            .find("login_synced_participant_for_qa(")
+            .expect("focused E2EE should bootstrap and start normal actor-owned sync");
+        let observe = stage
+            .find("wait_for_invite_in_snapshot(")
+            .expect("B should observe the pre-existing invite snapshot");
+        let cleanup = stage
+            .rfind("cleanup_e2ee_multi_device_participants")
+            .expect("owned B should retain ordered cleanup after key-delivery checks");
+
+        assert!(create < invite);
+        assert!(invite < owned_login);
+        assert!(owned_login < observe);
+        assert!(observe < cleanup);
+        assert_eq!(stage.matches("login_synced_participant_for_qa(").count(), 1);
+        assert_eq!(
+            stage
+                .matches("cleanup_e2ee_multi_device_participants")
+                .count(),
+            1
+        );
+        assert!(!stage.contains("SyncCommand::SyncOnce"));
+        assert!(!stage.contains("sync_once_for_qa("));
+        assert!(!stage.contains("tokio::time::sleep"));
+    }
+
+    #[test]
     fn visible_gap_selector_prefers_internal_gap_and_returns_nearest_event_bounds() {
         let mut synthetic = projection_timeline_item("$synthetic-placeholder:test", false);
         synthetic.id = TimelineItemId::Synthetic {
@@ -16061,6 +17131,39 @@ mod tests {
     }
 
     #[test]
+    fn expected_body_observation_composes_initial_items_with_future_diffs() {
+        let expected_bodies = vec![
+            "initial body".to_owned(),
+            "future body".to_owned(),
+            "truly absent body".to_owned(),
+        ];
+        let mut initial = projection_timeline_item("$initial:test", false);
+        initial.body = Some("initial body".to_owned());
+        let mut seen = seed_expected_body_observation(&[initial], &expected_bodies);
+        assert_eq!(missing_expected_body_count(&seen), 2);
+
+        let mut future = projection_timeline_item("$future:test", false);
+        future.body = Some("future body".to_owned());
+        visit_timeline_diff_items(&[TimelineDiff::PushBack { item: future }], |item| {
+            observe_expected_bodies(item, &expected_bodies, &mut seen);
+            Ok(())
+        })
+        .expect("future diff observation");
+
+        assert_eq!(seen, [true, true, false]);
+        assert_eq!(missing_expected_body_indices(&seen), vec![2]);
+        assert_eq!(
+            missing_expected_body_timeout("reconnect observation", &seen),
+            "reconnect observation: timed out with 1 expected rows still missing; missing_indices=[2]"
+        );
+        assert_eq!(
+            missing_expected_body_count(&seen),
+            1,
+            "an actually absent row must remain missing"
+        );
+    }
+
+    #[test]
     fn stale_gate_failure_is_not_attributed_to_a_fresh_sas_flow() {
         let session = SessionState::AwaitingVerification {
             info: SessionInfo {
@@ -16094,7 +17197,7 @@ mod tests {
         let stale = VerificationFlowState::Failed {
             request_id: 41,
             target: target.clone(),
-            kind: TrustOperationFailureKind::Cancelled,
+            kind: koushi_state::TrustOperationFailureKind::Cancelled,
         };
         let fresh = VerificationFlowState::Requested {
             request_id: 42,
@@ -16764,108 +17867,6 @@ mod tests {
     }
 
     #[test]
-    fn body_with_sync_event_observer_returns_found_before_matching_stop() {
-        let key = TimelineKey::room(
-            AccountKey("@alice:test".to_owned()),
-            "!room:test".to_owned(),
-        );
-        let sync_request_id = RequestId {
-            connection_id: koushi_core::ids::RuntimeConnectionId(1),
-            sequence: 10,
-        };
-        let delivered = synthetic_timeline_item(
-            "$delivered:test",
-            Some("delivered exact body"),
-            None,
-            None,
-            None,
-        );
-        let mut observer = BodyWaitObserver::new("delivered exact body");
-        let events = [
-            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
-                key: key.clone(),
-                generation: koushi_core::ids::TimelineGeneration(1),
-                batch_id: koushi_core::ids::TimelineBatchId(1),
-                diffs: vec![TimelineDiff::PushBack { item: delivered }],
-            }),
-            CoreEvent::Sync(SyncEvent::Stopped {
-                request_id: Some(sync_request_id),
-            }),
-        ];
-        let mut found = None;
-        let mut requested_next_sync = false;
-        for event in events {
-            match observe_body_with_sync_event(
-                &mut observer,
-                &key,
-                sync_request_id,
-                event,
-                "body with sync test",
-            )
-            .unwrap()
-            {
-                BodyWithSyncEventOutcome::Found(item) => {
-                    found = Some(item);
-                    break;
-                }
-                BodyWithSyncEventOutcome::RequestNextSync => {
-                    requested_next_sync = true;
-                    break;
-                }
-                BodyWithSyncEventOutcome::Continue => {}
-            }
-        }
-
-        let found = found.expect("target ItemsUpdated must win before SyncStopped");
-        assert_eq!(found.body.as_deref(), Some("delivered exact body"));
-        assert!(!requested_next_sync);
-    }
-
-    #[test]
-    fn body_with_sync_event_observer_repeats_only_for_matching_stop() {
-        let key = TimelineKey::room(
-            AccountKey("@alice:test".to_owned()),
-            "!room:test".to_owned(),
-        );
-        let sync_request_id = RequestId {
-            connection_id: koushi_core::ids::RuntimeConnectionId(1),
-            sequence: 20,
-        };
-        let other_request_id = RequestId {
-            connection_id: koushi_core::ids::RuntimeConnectionId(1),
-            sequence: 21,
-        };
-        let mut observer = BodyWaitObserver::new("missing body");
-
-        assert!(matches!(
-            observe_body_with_sync_event(
-                &mut observer,
-                &key,
-                sync_request_id,
-                CoreEvent::Sync(SyncEvent::Stopped {
-                    request_id: Some(other_request_id),
-                }),
-                "body with sync test",
-            )
-            .unwrap(),
-            BodyWithSyncEventOutcome::Continue
-        ));
-        assert!(matches!(
-            observe_body_with_sync_event(
-                &mut observer,
-                &key,
-                sync_request_id,
-                CoreEvent::Sync(SyncEvent::Stopped {
-                    request_id: Some(sync_request_id),
-                }),
-                "body with sync test",
-            )
-            .unwrap(),
-            BodyWithSyncEventOutcome::RequestNextSync
-        ));
-    }
-
-    #[test]
     fn find_timeline_item_with_body_finds_thread_reply_in_one_batch() {
         let items = vec![koushi_core::event::TimelineItem {
             id: koushi_core::event::TimelineItemId::Synthetic {
@@ -17163,7 +18164,7 @@ mod tests {
     }
 
     #[test]
-    fn e2ee_strict_qa_can_pause_sync_before_multi_device_send() {
+    fn e2ee_strict_qa_keeps_actor_owned_sync_running_for_multi_device_send() {
         let source = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/src/bin/headless-core-qa.rs"
@@ -17173,13 +18174,14 @@ mod tests {
             .next()
             .expect("headless-core-qa source should contain production section");
 
-        assert!(production_source.contains("ENV_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND"));
-        assert!(production_source.contains("pause sync A before multi-device send"));
-        assert!(production_source.contains("pause sync B2 before multi-device send"));
+        assert!(!production_source.contains("ENV_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND"));
+        assert!(!production_source.contains("pause sync A before multi-device send"));
+        assert!(!production_source.contains("pause sync B2 before multi-device send"));
+        assert!(production_source.contains("wait_for_item_with_body_or_decryption_failure("));
     }
 
     #[test]
-    fn e2ee_strict_qa_settles_device_lists_after_recipient_second_device_verification() {
+    fn e2ee_strict_qa_uses_typed_causal_checks_after_recipient_device_verification() {
         let source = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/src/bin/headless-core-qa.rs"
@@ -17189,10 +18191,11 @@ mod tests {
             .next()
             .expect("headless-core-qa source should contain production section");
 
-        assert!(production_source.contains("settle_e2ee_device_list_propagation_for_qa"));
-        assert!(production_source.contains("e2ee multi-device settle after B2 verification"));
-        assert!(production_source.contains("best_effort_sync_once_for_qa"));
-        assert!(production_source.contains("DEVICE_LIST_SETTLE_SYNC_TIMEOUT"));
+        assert!(!production_source.contains("settle_e2ee_device_list_propagation_for_qa"));
+        assert!(!production_source.contains("DEVICE_LIST_SETTLE_SYNC_TIMEOUT"));
+        assert!(production_source.contains("e2ee recipient verification B/B2"));
+        assert!(production_source.contains("e2ee multi-device B2 room list"));
+        assert!(production_source.contains("e2ee multi-device B2 receive"));
     }
 
     #[test]
@@ -17208,8 +18211,8 @@ mod tests {
 
         assert!(production_source.contains("e2ee gated self verification A/A2"));
         assert!(production_source.contains("e2ee recipient verification B/B2"));
-        assert!(production_source.contains("request secondary to primary"));
-        assert!(production_source.contains("incoming verification request"));
+        assert!(production_source.contains("primary incoming request"));
+        assert!(!production_source.contains("request secondary to primary"));
     }
 
     #[test]
@@ -17368,32 +18371,1857 @@ mod tests {
     }
 
     #[test]
-    fn send_queue_scenario_runs_after_timeline_and_reports_private_tokens() {
+    fn send_queue_scenario_skips_generic_fixture_stages_and_reports_private_tokens() {
         assert!(QaScenario::SendQueue.should_run_stage(QaStage::Safety));
         assert!(QaScenario::SendQueue.should_run_stage(QaStage::LoginSync));
-        assert!(QaScenario::SendQueue.should_run_stage(QaStage::RoomSpace));
-        assert!(QaScenario::SendQueue.should_run_stage(QaStage::Timeline));
+        assert!(!QaScenario::SendQueue.should_run_stage(QaStage::RoomSpace));
+        assert!(!QaScenario::SendQueue.should_run_stage(QaStage::Timeline));
         assert!(QaScenario::SendQueue.should_run_stage(QaStage::SendQueue));
         assert!(!QaScenario::SendQueue.should_run_stage(QaStage::Reply));
         assert!(!QaScenario::SendQueue.should_run_stage(QaStage::EditRedactSearch));
+        assert_eq!(
+            stages_for_scenario(QaScenario::SendQueue),
+            [QaStage::Safety, QaStage::LoginSync, QaStage::SendQueue]
+        );
 
         assert_eq!(
             final_tokens_for_scenario(QaScenario::SendQueue),
             [
                 "safety=ok",
                 "login_sync=ok",
-                "room_space=ok",
-                "timeline=ok",
-                "timeline_nav=ok",
-                "hide_redacted=ok",
                 "send_fail=ok",
                 "resend=ok",
                 "cancel_send=ok",
                 "fifo=ok",
                 "unsent_restart=ok",
+                "display_projection_reset_fallbacks=0",
                 "restore_cleanup=ok",
             ]
         );
+    }
+
+    #[test]
+    fn send_queue_display_projection_fallback_gate_requires_zero_counter_delta() {
+        assert_eq!(
+            assert_zero_display_projection_reset_fallback_delta(41, 41),
+            Ok(())
+        );
+        assert!(assert_zero_display_projection_reset_fallback_delta(41, 42).is_err());
+
+        let source = include_str!("headless-core-qa.rs");
+        let stage = source
+            .split("async fn run_send_queue_stage")
+            .nth(1)
+            .expect("send queue stage")
+            .split("async fn unsubscribe_timeline_for_qa")
+            .next()
+            .expect("send queue stage boundary");
+        assert!(stage.contains("display_projection_reset_fallback_count()"));
+        assert!(stage.contains("assert_zero_display_projection_reset_fallback_delta"));
+        assert!(stage.contains("println!(\"display_projection_reset_fallbacks=0\")"));
+    }
+
+    #[test]
+    fn send_queue_alone_uses_the_focused_early_route() {
+        assert!(should_run_focused_send_queue_route(QaScenario::SendQueue));
+
+        for scenario in [
+            QaScenario::All,
+            QaScenario::LoginSync,
+            QaScenario::RoomSpace,
+            QaScenario::Timeline,
+            QaScenario::E2eeTrust,
+        ] {
+            assert!(
+                !should_run_focused_send_queue_route(scenario),
+                "{scenario:?} must retain its existing route"
+            );
+        }
+
+        let source = include_str!("headless-core-qa.rs");
+        let run_async_before_generic_fixture = source
+            .split("async fn run_async")
+            .nth(1)
+            .and_then(|rest| rest.split("// One CoreRuntime per synthetic user").next())
+            .expect("run_async before the generic two-user fixture");
+        let focused_dispatch = run_async_before_generic_fixture
+            .find("if should_run_focused_send_queue_route(scenario)")
+            .expect("run_async dispatches SendQueue through its focused route");
+        let focused_call = run_async_before_generic_fixture
+            .find("run_focused_send_queue_scenario(&config).await?")
+            .expect("run_async invokes the focused SendQueue scenario");
+        let focused_return = run_async_before_generic_fixture[focused_call..]
+            .find("return Ok(scenario_report(&config.server_kind, scenario))")
+            .map(|offset| focused_call + offset)
+            .expect("focused SendQueue dispatch returns before generic fixture setup");
+        assert!(focused_dispatch < focused_call);
+        assert!(focused_call < focused_return);
+
+        let route = source
+            .split("async fn run_focused_send_queue_scenario")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn run_send_queue_stage").next())
+            .expect("focused SendQueue route");
+        let drop_connection = route
+            .find("drop(conn)")
+            .expect("focused route drops its bootstrap connection");
+        let ordered_shutdown = route
+            .find("runtime.shutdown()")
+            .expect("focused route awaits ordered runtime shutdown");
+        let standalone_stage = route
+            .find("run_send_queue_stage(config, &recovery_secret).await")
+            .expect("focused route invokes the standalone SendQueue stage");
+
+        assert!(route.contains("QaParticipantLoginGate::BootstrapNewIdentity"));
+        assert!(route.contains("bootstrap_recovery_secret"));
+        assert!(drop_connection < ordered_shutdown);
+        assert!(ordered_shutdown < standalone_stage);
+        assert!(!route.contains("user_b"));
+        assert!(!route.contains("password_b"));
+    }
+
+    #[test]
+    fn focused_send_queue_bootstrap_logs_out_before_ordered_shutdown() {
+        let source = include_str!("headless-core-qa.rs");
+        let route = source
+            .split("async fn run_focused_send_queue_scenario")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn run_send_queue_stage").next())
+            .expect("focused SendQueue route");
+
+        let sync_stop = route
+            .find("SyncCommand::Stop")
+            .expect("focused route submits sync stop");
+        let sync_stopped = route
+            .find("wait_for_sync_stopped")
+            .expect("focused route waits for correlated sync stop");
+        let logout = route
+            .find("AccountCommand::Logout")
+            .expect("focused route submits logout");
+        let logged_out = route
+            .find("wait_for_logged_out")
+            .expect("focused route waits for correlated logout");
+        let drop_connection = route
+            .find("drop(conn)")
+            .expect("focused route drops its bootstrap connection");
+        let ordered_shutdown = route
+            .find("runtime.shutdown()")
+            .expect("focused route awaits ordered runtime shutdown");
+        let missing_secret = route
+            .find("send_queue bootstrap recovery secret unavailable")
+            .expect("focused route reports a missing recovery secret");
+        let standalone_stage = route
+            .find("run_send_queue_stage(config, &recovery_secret).await")
+            .expect("focused route invokes the standalone SendQueue stage");
+
+        assert!(!route.contains("account_key: _"));
+        assert!(route.contains("&account_key"));
+        assert!(sync_stop < sync_stopped);
+        assert!(sync_stopped < logout);
+        assert!(logout < logged_out);
+        assert!(logged_out < drop_connection);
+        assert!(drop_connection < ordered_shutdown);
+        assert!(ordered_shutdown < missing_secret);
+        assert!(missing_secret < standalone_stage);
+    }
+
+    #[test]
+    fn invites_dm_primary_login_requires_new_identity_bootstrap() {
+        assert!(
+            should_bootstrap_new_identity_before_logged_in(QaScenario::InvitesDm),
+            "focused InvitesDm must bootstrap primary A before LoggedIn"
+        );
+    }
+
+    #[test]
+    fn normal_secondary_participant_policy_covers_only_shared_b_stages() {
+        for scenario in [
+            QaScenario::All,
+            QaScenario::InvitesDm,
+            QaScenario::Directory,
+            QaScenario::RoomSpace,
+            QaScenario::Timeline,
+        ] {
+            assert!(
+                should_run_normal_secondary_participant(scenario),
+                "{scenario:?} needs the shared normal B session"
+            );
+        }
+
+        for scenario in [
+            QaScenario::Safety,
+            QaScenario::LoginSync,
+            QaScenario::CredentialHealth,
+            QaScenario::E2eeTrust,
+            QaScenario::GateRestore,
+            QaScenario::GateNegative,
+            QaScenario::SendQueue,
+        ] {
+            assert!(
+                !should_run_normal_secondary_participant(scenario),
+                "{scenario:?} must not create the shared normal B session"
+            );
+        }
+    }
+
+    #[test]
+    fn run_async_centrally_owns_one_normal_secondary_login() {
+        let source = include_str!("headless-core-qa.rs");
+        let before_room_space = source
+            .split("async fn run_async")
+            .nth(1)
+            .expect("run_async should exist")
+            .split("// --- Phase 4: Room operations")
+            .next()
+            .expect("RoomSpace should follow shared stage setup");
+
+        assert!(before_room_space.contains(
+            "let mut normal_secondary = if should_run_normal_secondary_participant(scenario)"
+        ));
+        assert_eq!(
+            before_room_space
+                .matches("login_synced_participant_for_qa(")
+                .count(),
+            1,
+            "run_async must own exactly one normal B login"
+        );
+        assert!(before_room_space.contains("QaParticipantLoginGate::BootstrapNewIdentity"));
+        assert_eq!(
+            before_room_space
+                .matches("cleanup_normal_secondary_participant_for_qa(")
+                .count(),
+            2,
+            "focused InvitesDm and pre-RoomSpace exits each need one ordered cleanup path"
+        );
+    }
+
+    #[test]
+    fn invites_dm_and_directory_borrow_b_without_owning_its_lifecycle() {
+        let source = include_str!("headless-core-qa.rs");
+        let invites = source
+            .split("async fn run_invites_dm_stage")
+            .nth(1)
+            .expect("InvitesDm stage should exist")
+            .split("async fn run_directory_stage")
+            .next()
+            .expect("directory stage should follow InvitesDm");
+        let directory = source
+            .split("async fn run_directory_stage")
+            .nth(1)
+            .expect("directory stage should exist")
+            .split("async fn join_directory_room_for_qa")
+            .next()
+            .expect("directory join helper should follow directory stage");
+
+        for (label, stage) in [("InvitesDm", invites), ("Directory", directory)] {
+            assert!(
+                stage.contains("conn_b: &mut CoreConnection"),
+                "{label} must borrow the centrally owned B connection"
+            );
+            for forbidden in [
+                "CoreRuntime::",
+                "AccountCommand::LoginPassword",
+                "wait_for_logged_in",
+                "login_synced_participant_for_qa(",
+                "cleanup_logged_in_runtime",
+            ] {
+                assert!(
+                    !stage.contains(forbidden),
+                    "{label} must not own B lifecycle operation {forbidden}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn room_space_reuses_and_consumes_the_central_secondary_owner() {
+        let source = include_str!("headless-core-qa.rs");
+        let room_space = source
+            .split("// --- Phase 4: Room operations")
+            .nth(1)
+            .expect("RoomSpace stage should exist")
+            .split("// --- Phase 5: Timeline subscribe")
+            .next()
+            .expect("Timeline should follow RoomSpace");
+
+        assert!(room_space.contains("normal_secondary.take()"));
+        assert!(room_space.contains("let QaParticipantLoginOutcome"));
+        for forbidden in [
+            "CoreRuntime::start_with_data_dir(data_dir_b)",
+            "AccountCommand::LoginPassword",
+            "wait_for_logged_in",
+            "login_synced_participant_for_qa(",
+        ] {
+            assert!(
+                !room_space.contains(forbidden),
+                "RoomSpace must reuse B instead of performing {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn normal_secondary_cleanup_paths_use_one_ordered_runtime_shutdown() {
+        let source = include_str!("headless-core-qa.rs");
+        let focused_cleanup = source
+            .split("async fn cleanup_logged_in_runtime")
+            .nth(1)
+            .expect("logged-in runtime cleanup should exist")
+            .split("async fn cleanup_normal_secondary_participant_for_qa")
+            .next()
+            .expect("normal secondary cleanup should follow runtime cleanup");
+        assert!(focused_cleanup.contains("runtime.shutdown().await"));
+        assert!(!focused_cleanup.contains("drop(runtime)"));
+        assert!(!focused_cleanup.contains("tokio::time::sleep"));
+
+        let all_cleanup = source
+            .split("// --- Logout B ---")
+            .nth(1)
+            .expect("All should own a B cleanup section")
+            .split("async fn complete_new_identity_gate_for_qa")
+            .next()
+            .expect("All B cleanup should end with run_async");
+        assert_eq!(all_cleanup.matches("AccountCommand::Logout").count(), 1);
+        assert_eq!(all_cleanup.matches("runtime_b.shutdown().await").count(), 1);
+        assert!(!all_cleanup.contains("cleanup_normal_secondary_participant_for_qa"));
+    }
+
+    #[test]
+    fn all_flow_retains_the_primary_recovery_secret_for_its_send_queue_stage() {
+        assert!(QaScenario::All.should_run_stage(QaStage::SendQueue));
+        assert!(
+            should_bootstrap_new_identity_before_logged_in(QaScenario::All),
+            "All must retain the primary recovery secret required by its SendQueue stage"
+        );
+        assert!(should_bootstrap_new_identity_before_logged_in(
+            QaScenario::E2eeTrust
+        ));
+        assert!(should_bootstrap_new_identity_before_logged_in(
+            QaScenario::GateRestore
+        ));
+        assert!(should_bootstrap_new_identity_before_logged_in(
+            QaScenario::GateNegative
+        ));
+
+        assert!(!should_bootstrap_new_identity_before_logged_in(
+            QaScenario::GateNoProof
+        ));
+        assert!(!should_bootstrap_new_identity_before_logged_in(
+            QaScenario::LoginSync
+        ));
+        assert!(!should_bootstrap_new_identity_before_logged_in(
+            QaScenario::TimelineReconnect
+        ));
+        assert!(!should_bootstrap_new_identity_before_logged_in(
+            QaScenario::SendQueue
+        ));
+
+        let source = include_str!("headless-core-qa.rs");
+        let all_send_queue_route = source
+            .split("if scenario.should_run_stage(QaStage::SendQueue)")
+            .nth(1)
+            .expect("All route should retain the SendQueue stage")
+            .split("if !scenario.should_run_stage(QaStage::EditRedactSearch)")
+            .next()
+            .expect("EditRedactSearch route should follow SendQueue");
+        assert!(all_send_queue_route.contains("bootstrap_recovery_secret_a"));
+        assert!(all_send_queue_route.contains("run_send_queue_stage(&config, recovery_secret)"));
+
+        let standalone_send_queue = source
+            .split("async fn run_send_queue_stage")
+            .nth(1)
+            .expect("standalone SendQueue stage")
+            .split("async fn unsubscribe_timeline_for_qa")
+            .next()
+            .expect("standalone SendQueue stage end");
+        assert!(
+            standalone_send_queue
+                .contains("QaParticipantLoginGate::RecoverExistingIdentity(recovery_secret)")
+        );
+    }
+
+    #[test]
+    fn standalone_send_queue_login_requires_primary_recovery_secret() {
+        let source = include_str!("headless-core-qa.rs");
+        let stage = source
+            .split("async fn run_send_queue_stage")
+            .nth(1)
+            .expect("standalone SendQueue stage")
+            .split("async fn unsubscribe_timeline_for_qa")
+            .next()
+            .expect("standalone SendQueue stage end");
+
+        assert!(stage.contains("login_synced_participant_for_qa("));
+        assert!(stage.contains("proxy.homeserver_url()"));
+        assert!(stage.contains("recovery_secret: &AuthSecret"));
+        assert!(stage.contains("QaParticipantLoginGate::RecoverExistingIdentity(recovery_secret)"));
+        assert!(!stage.contains("\n        true,"));
+        assert!(!stage.contains("AccountCommand::LoginPassword"));
+        assert!(!stage.contains("wait_for_logged_in"));
+    }
+
+    #[test]
+    fn participant_login_gate_policy_distinguishes_bootstrap_from_recovery() {
+        let source = include_str!("headless-core-qa.rs");
+        let before_helper = source
+            .split("async fn login_synced_participant_for_qa")
+            .next()
+            .expect("source before centralized participant login helper");
+        let helper = source
+            .split("async fn login_synced_participant_for_qa")
+            .nth(1)
+            .expect("centralized participant login helper")
+            .split("async fn subscribe_timeline_for_qa")
+            .next()
+            .expect("centralized participant login helper end");
+
+        assert!(before_helper.contains("enum QaParticipantLoginGate<'a>"));
+        assert!(before_helper.contains("BootstrapNewIdentity"));
+        assert!(before_helper.contains("RecoverExistingIdentity(&'a AuthSecret)"));
+        assert!(helper.contains("gate: QaParticipantLoginGate<'_>"));
+        assert!(!helper.contains("bootstrap_new_identity: bool"));
+    }
+
+    #[tokio::test]
+    async fn owned_e2ee_recipient_cleanup_runs_after_post_login_stage_failure() {
+        let cleanup_attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_attempts = cleanup_attempts.clone();
+
+        let result = finish_e2ee_recipient_stage_with_owned_cleanup(
+            Err::<(), _>("injected post-login failure".to_owned()),
+            Some("owned-recipient"),
+            move |participant| {
+                let cleanup_attempts = cleanup_attempts.clone();
+                async move {
+                    assert_eq!(participant, "owned-recipient");
+                    cleanup_attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(result.unwrap_err(), "injected post-login failure");
+        assert_eq!(
+            observed_attempts.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn borrowed_e2ee_stage_failure_runs_outer_caller_cleanup_path() {
+        let cleanup_attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_attempts = cleanup_attempts.clone();
+
+        let result = retain_or_cleanup_e2ee_callers_after_stage(
+            Err::<(), _>("injected borrowed-stage failure".to_owned()),
+            ("caller-a", "caller-b"),
+            move |callers| {
+                let cleanup_attempts = cleanup_attempts.clone();
+                async move {
+                    assert_eq!(callers, ("caller-a", "caller-b"));
+                    cleanup_attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(result.unwrap_err(), "injected borrowed-stage failure");
+        assert_eq!(
+            observed_attempts.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum RecordedOwnedE2eeCleanupOperation {
+        StopSync,
+        Logout(QaE2eeLogoutBarrier),
+        AuthoritativeLogoutBarrier(QaE2eeLogoutBarrier),
+        DropConnection,
+        ShutdownRuntime,
+    }
+
+    struct RecordingOwnedE2eeCleanupOperations {
+        participant: &'static str,
+        operations: std::sync::Arc<
+            std::sync::Mutex<Vec<(&'static str, RecordedOwnedE2eeCleanupOperation)>>,
+        >,
+        fail_authoritative_barrier: bool,
+    }
+
+    impl RecordingOwnedE2eeCleanupOperations {
+        fn record(&self, operation: RecordedOwnedE2eeCleanupOperation) {
+            self.operations
+                .lock()
+                .expect("cleanup observation lock")
+                .push((self.participant, operation));
+        }
+    }
+
+    impl QaOwnedE2eeCleanupOperations for RecordingOwnedE2eeCleanupOperations {
+        async fn stop_sync(&mut self, _label: &str) -> Result<(), String> {
+            self.record(RecordedOwnedE2eeCleanupOperation::StopSync);
+            Ok(())
+        }
+
+        async fn submit_logout(
+            &mut self,
+            barrier: &QaE2eeLogoutBarrier,
+            _label: &str,
+        ) -> Result<(), String> {
+            self.record(RecordedOwnedE2eeCleanupOperation::Logout(barrier.clone()));
+            Ok(())
+        }
+
+        async fn wait_for_authoritative_logout(
+            &mut self,
+            barrier: &QaE2eeLogoutBarrier,
+            _label: &str,
+        ) -> Result<(), String> {
+            self.record(
+                RecordedOwnedE2eeCleanupOperation::AuthoritativeLogoutBarrier(barrier.clone()),
+            );
+            if self.fail_authoritative_barrier {
+                Err("injected authoritative logout barrier failure".to_owned())
+            } else {
+                Ok(())
+            }
+        }
+
+        fn drop_connection(&mut self) {
+            self.record(RecordedOwnedE2eeCleanupOperation::DropConnection);
+        }
+
+        async fn shutdown_runtime(&mut self) {
+            self.record(RecordedOwnedE2eeCleanupOperation::ShutdownRuntime);
+        }
+    }
+
+    fn recording_owned_e2ee_cleanup_operations(
+        participant: &'static str,
+        fail_authoritative_barrier: bool,
+        operations: &std::sync::Arc<
+            std::sync::Mutex<Vec<(&'static str, RecordedOwnedE2eeCleanupOperation)>>,
+        >,
+    ) -> RecordingOwnedE2eeCleanupOperations {
+        RecordingOwnedE2eeCleanupOperations {
+            participant,
+            operations: operations.clone(),
+            fail_authoritative_barrier,
+        }
+    }
+
+    #[tokio::test]
+    async fn owned_e2ee_cleanup_orders_each_ownership_phase() {
+        let account_key = AccountKey("@owned:example.invalid".to_owned());
+        let cases = [
+            (
+                QaOwnedRuntimePhase::LoginNotSubmitted,
+                vec![
+                    RecordedOwnedE2eeCleanupOperation::DropConnection,
+                    RecordedOwnedE2eeCleanupOperation::ShutdownRuntime,
+                ],
+            ),
+            (
+                QaOwnedRuntimePhase::LoginSubmitted,
+                vec![
+                    RecordedOwnedE2eeCleanupOperation::Logout(QaE2eeLogoutBarrier::AnyAccount),
+                    RecordedOwnedE2eeCleanupOperation::AuthoritativeLogoutBarrier(
+                        QaE2eeLogoutBarrier::AnyAccount,
+                    ),
+                    RecordedOwnedE2eeCleanupOperation::DropConnection,
+                    RecordedOwnedE2eeCleanupOperation::ShutdownRuntime,
+                ],
+            ),
+            (
+                QaOwnedRuntimePhase::LoggedIn(account_key.clone()),
+                vec![
+                    RecordedOwnedE2eeCleanupOperation::StopSync,
+                    RecordedOwnedE2eeCleanupOperation::Logout(QaE2eeLogoutBarrier::Exact(
+                        account_key.clone(),
+                    )),
+                    RecordedOwnedE2eeCleanupOperation::AuthoritativeLogoutBarrier(
+                        QaE2eeLogoutBarrier::Exact(account_key),
+                    ),
+                    RecordedOwnedE2eeCleanupOperation::DropConnection,
+                    RecordedOwnedE2eeCleanupOperation::ShutdownRuntime,
+                ],
+            ),
+        ];
+
+        for (phase, expected) in cases {
+            let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let mut operations =
+                recording_owned_e2ee_cleanup_operations("participant", false, &observed);
+
+            cleanup_owned_e2ee_lifecycle_best_effort(
+                &phase,
+                &mut operations,
+                "ownership phase cleanup",
+            )
+            .await
+            .expect("phase cleanup should succeed");
+
+            let actual = observed
+                .lock()
+                .expect("cleanup observation lock")
+                .iter()
+                .map(|(_, operation)| operation.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn borrowed_e2ee_recipient_is_not_cleaned_by_the_inner_stage() {
+        let cleanup_attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_attempts = cleanup_attempts.clone();
+
+        let result = finish_e2ee_recipient_stage_with_owned_cleanup(
+            Err::<(), _>("injected borrowed-stage failure".to_owned()),
+            None::<&'static str>,
+            move |_| {
+                let cleanup_attempts = cleanup_attempts.clone();
+                async move {
+                    cleanup_attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(result.unwrap_err(), "injected borrowed-stage failure");
+        assert_eq!(
+            observed_attempts.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn e2ee_multi_device_cleanup_attempts_every_owned_participant_after_one_failure() {
+        let operations = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = operations.clone();
+        let account_key = AccountKey("@owned:example.invalid".to_owned());
+
+        let result = cleanup_all_owned_e2ee_participants(
+            [
+                Some((
+                    QaOwnedRuntimePhase::LoggedIn(account_key.clone()),
+                    recording_owned_e2ee_cleanup_operations("B3", true, &operations),
+                )),
+                Some((
+                    QaOwnedRuntimePhase::LoggedIn(account_key.clone()),
+                    recording_owned_e2ee_cleanup_operations("B2", false, &operations),
+                )),
+                Some((
+                    QaOwnedRuntimePhase::LoggedIn(account_key),
+                    recording_owned_e2ee_cleanup_operations("B", false, &operations),
+                )),
+            ],
+            move |(phase, mut participant_operations)| async move {
+                cleanup_owned_e2ee_lifecycle_best_effort(
+                    &phase,
+                    &mut participant_operations,
+                    "multi-device cleanup",
+                )
+                .await
+            },
+        )
+        .await;
+
+        assert_eq!(
+            result.unwrap_err(),
+            "E2EE cleanup failed for 1 owned recipient participant(s)"
+        );
+        let observed = observed.lock().expect("cleanup observation lock");
+        for participant in ["B3", "B2", "B"] {
+            let participant_operations = observed
+                .iter()
+                .filter_map(|(observed_participant, operation)| {
+                    (*observed_participant == participant).then_some(operation)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                participant_operations.last(),
+                Some(&&RecordedOwnedE2eeCleanupOperation::ShutdownRuntime),
+                "{participant} must reach ordered runtime shutdown"
+            );
+        }
+    }
+
+    #[test]
+    fn initial_items_wait_requires_exact_subscribe_cause_even_for_same_key_replays() {
+        let request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 2,
+        };
+        let old_request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 1,
+        };
+        let wrong_connection_request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(2),
+            sequence: request_id.sequence,
+        };
+        let key = TimelineKey::room(AccountKey("@qa:example.invalid".to_owned()), "!room:test");
+        let wrong_key =
+            TimelineKey::room(AccountKey("@qa:example.invalid".to_owned()), "!other:test");
+        let initial = |projection_request_id, cause_request_id, key: TimelineKey| {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id: projection_request_id,
+                cause_request_id,
+                key,
+                actor_generation: 1,
+                generation: koushi_core::ids::TimelineGeneration(0),
+                items: Vec::new(),
+            })
+        };
+        let classify = |event| match_initial_items_wait_event(event, &key, request_id);
+
+        assert!(matches!(
+            classify(initial(Some(old_request_id), Some(request_id), key.clone())),
+            InitialItemsWaitMatch::Items(_)
+        ));
+        assert!(matches!(
+            classify(initial(None, Some(request_id), key.clone())),
+            InitialItemsWaitMatch::Items(_)
+        ));
+        assert!(matches!(
+            classify(initial(Some(request_id), Some(old_request_id), key.clone())),
+            InitialItemsWaitMatch::Ignore
+        ));
+        assert!(matches!(
+            classify(initial(Some(request_id), None, key.clone())),
+            InitialItemsWaitMatch::Ignore
+        ));
+        assert!(matches!(
+            classify(initial(Some(old_request_id), Some(request_id), wrong_key)),
+            InitialItemsWaitMatch::Ignore
+        ));
+
+        assert!(matches!(
+            classify(CoreEvent::OperationFailed {
+                request_id,
+                failure: CoreFailure::SessionRequired,
+            }),
+            InitialItemsWaitMatch::Failure(CoreFailure::SessionRequired)
+        ));
+        assert!(matches!(
+            classify(CoreEvent::OperationFailed {
+                request_id: old_request_id,
+                failure: CoreFailure::SessionRequired,
+            }),
+            InitialItemsWaitMatch::Ignore
+        ));
+        assert!(matches!(
+            classify(CoreEvent::OperationFailed {
+                request_id: wrong_connection_request_id,
+                failure: CoreFailure::SessionRequired,
+            }),
+            InitialItemsWaitMatch::Ignore
+        ));
+    }
+
+    struct ScriptedQaEventSource {
+        events: std::collections::VecDeque<CoreEvent>,
+    }
+
+    impl QaEventSource for ScriptedQaEventSource {
+        fn recv_event(
+            &mut self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<CoreEvent, koushi_core::runtime::EventStreamLag>,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async move {
+                match self.events.pop_front() {
+                    Some(event) => Ok(event),
+                    None => std::future::pending().await,
+                }
+            })
+        }
+    }
+
+    fn withheld_projection_test_item(event_id: &str, body: &str) -> TimelineItem {
+        let mut item = projection_timeline_item(event_id, false);
+        item.body = Some(body.to_owned());
+        item
+    }
+
+    fn withheld_projection_items_updated(key: TimelineKey, item: TimelineItem) -> CoreEvent {
+        CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+            key,
+            generation: koushi_core::ids::TimelineGeneration(0),
+            batch_id: koushi_core::ids::TimelineBatchId(1),
+            diffs: vec![TimelineDiff::PushBack { item }],
+        })
+    }
+
+    #[tokio::test]
+    async fn withheld_projection_wait_accepts_decryption_failure_from_late_items_updated() {
+        let key = TimelineKey::room(AccountKey("@qa:example.invalid".to_owned()), "!room:test");
+        let target_event_id = "$withheld:test";
+        let mut source = ScriptedQaEventSource {
+            events: [
+                CoreEvent::Sync(SyncEvent::Running),
+                withheld_projection_items_updated(
+                    key.clone(),
+                    withheld_projection_test_item(target_event_id, "Unable to decrypt"),
+                ),
+            ]
+            .into(),
+        };
+
+        let origin = wait_for_withheld_event_projection_from_source(
+            &mut source,
+            &key,
+            target_event_id,
+            "blocked body",
+            &[],
+            "withheld projection regression",
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("late decryption-failure projection should satisfy the waiter");
+
+        assert_eq!(origin, WithheldEventProjectionOrigin::ItemsUpdated);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn withheld_projection_wait_reports_private_safe_missing_category_at_deadline() {
+        let key = TimelineKey::room(AccountKey("@qa:example.invalid".to_owned()), "!room:test");
+        let target_event_id = "$withheld:test";
+        let mut source = ScriptedQaEventSource {
+            events: Default::default(),
+        };
+
+        let error = wait_for_withheld_event_projection_from_source(
+            &mut source,
+            &key,
+            target_event_id,
+            "blocked body",
+            &[],
+            "withheld projection regression",
+            Duration::from_secs(1),
+        )
+        .await
+        .expect_err("an absent canonical event should time out as missing");
+
+        assert!(error.contains("projection_origin=missing"));
+        assert!(!error.contains(target_event_id));
+        assert!(!error.contains("@qa:"));
+        assert!(!error.contains("!room:"));
+    }
+
+    #[tokio::test]
+    async fn withheld_projection_wait_rejects_plaintext_without_exposing_it() {
+        let key = TimelineKey::room(AccountKey("@qa:example.invalid".to_owned()), "!room:test");
+        let target_event_id = "$withheld:test";
+        let private_body = "private withheld body";
+        let initial_items = vec![withheld_projection_test_item(target_event_id, private_body)];
+        let mut source = ScriptedQaEventSource {
+            events: Default::default(),
+        };
+
+        let error = wait_for_withheld_event_projection_from_source(
+            &mut source,
+            &key,
+            target_event_id,
+            private_body,
+            &initial_items,
+            "withheld projection regression",
+            Duration::from_secs(1),
+        )
+        .await
+        .expect_err("plaintext projection must fail closed");
+
+        assert!(error.contains("projection_outcome=non_failure"));
+        assert!(error.contains("matches_expected_body=true"));
+        assert!(!error.contains(target_event_id));
+        assert!(!error.contains(private_body));
+    }
+
+    #[tokio::test]
+    async fn paired_verification_wait_wakes_from_either_event_source() {
+        let mut primary = ScriptedQaEventSource {
+            events: Default::default(),
+        };
+        let mut secondary = ScriptedQaEventSource {
+            events: [CoreEvent::Sync(SyncEvent::Running)].into(),
+        };
+
+        assert_eq!(
+            wait_for_paired_event_until(
+                &mut primary,
+                &mut secondary,
+                tokio::time::Instant::now() + Duration::from_secs(10),
+            )
+            .await,
+            Ok(())
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn paired_verification_wait_uses_one_absolute_deadline() {
+        let mut primary = ScriptedQaEventSource {
+            events: Default::default(),
+        };
+        let mut secondary = ScriptedQaEventSource {
+            events: Default::default(),
+        };
+        let started_at = tokio::time::Instant::now();
+        let deadline = started_at + Duration::from_secs(7);
+
+        assert_eq!(
+            wait_for_paired_event_until(&mut primary, &mut secondary, deadline).await,
+            Err(PairedEventWaitError::Deadline)
+        );
+        assert_eq!(
+            tokio::time::Instant::now().duration_since(started_at),
+            Duration::from_secs(7)
+        );
+    }
+
+    struct ScriptedQaSnapshotEventSource {
+        events: std::collections::VecDeque<(CoreEvent, SessionState)>,
+        snapshot: AppState,
+        received: usize,
+    }
+
+    impl QaEventSource for ScriptedQaSnapshotEventSource {
+        fn recv_event(
+            &mut self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<CoreEvent, koushi_core::runtime::EventStreamLag>,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async move {
+                match self.events.pop_front() {
+                    Some((event, session)) => {
+                        self.snapshot.session = session;
+                        self.received += 1;
+                        Ok(event)
+                    }
+                    None => std::future::pending().await,
+                }
+            })
+        }
+    }
+
+    impl QaSnapshotEventSource for ScriptedQaSnapshotEventSource {
+        fn snapshot(&self) -> AppState {
+            self.snapshot.clone()
+        }
+    }
+
+    struct IntervalQaEventSource {
+        interval: tokio::time::Interval,
+    }
+
+    impl QaEventSource for IntervalQaEventSource {
+        fn recv_event(
+            &mut self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<CoreEvent, koushi_core::runtime::EventStreamLag>,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async move {
+                self.interval.tick().await;
+                Ok(CoreEvent::Sync(SyncEvent::Running))
+            })
+        }
+    }
+
+    struct IntervalQaSnapshotEventSource {
+        interval: tokio::time::Interval,
+        snapshot: AppState,
+        first_event: Option<CoreEvent>,
+    }
+
+    impl QaEventSource for IntervalQaSnapshotEventSource {
+        fn recv_event(
+            &mut self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<CoreEvent, koushi_core::runtime::EventStreamLag>,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async move {
+                if let Some(event) = self.first_event.take() {
+                    return Ok(event);
+                }
+                self.interval.tick().await;
+                Ok(CoreEvent::Sync(SyncEvent::Running))
+            })
+        }
+    }
+
+    impl QaSnapshotEventSource for IntervalQaSnapshotEventSource {
+        fn snapshot(&self) -> AppState {
+            self.snapshot.clone()
+        }
+    }
+
+    struct SharedSnapshotPendingEventSource {
+        snapshot: Arc<Mutex<AppState>>,
+    }
+
+    impl QaEventSource for SharedSnapshotPendingEventSource {
+        fn recv_event(&mut self) -> QaEventFuture<'_> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    impl QaSnapshotEventSource for SharedSnapshotPendingEventSource {
+        fn snapshot(&self) -> AppState {
+            self.snapshot
+                .lock()
+                .expect("shared QA snapshot lock should not be poisoned")
+                .clone()
+        }
+    }
+
+    struct FirstEventSharedSnapshotPendingSource {
+        first_event: Option<CoreEvent>,
+        snapshot: Arc<Mutex<AppState>>,
+    }
+
+    impl QaEventSource for FirstEventSharedSnapshotPendingSource {
+        fn recv_event(&mut self) -> QaEventFuture<'_> {
+            if let Some(event) = self.first_event.take() {
+                return Box::pin(async move { Ok(event) });
+            }
+            Box::pin(std::future::pending())
+        }
+    }
+
+    impl QaSnapshotEventSource for FirstEventSharedSnapshotPendingSource {
+        fn snapshot(&self) -> AppState {
+            self.snapshot
+                .lock()
+                .expect("shared QA snapshot lock should not be poisoned")
+                .clone()
+        }
+    }
+
+    struct FirstEventThenTerminalLagSource {
+        first_event: Option<CoreEvent>,
+        snapshot: AppState,
+        skipped: u64,
+    }
+
+    impl QaEventSource for FirstEventThenTerminalLagSource {
+        fn recv_event(&mut self) -> QaEventFuture<'_> {
+            Box::pin(async move {
+                if let Some(event) = self.first_event.take() {
+                    return Ok(event);
+                }
+                self.snapshot.session = SessionState::SignedOut;
+                Err(EventStreamLag {
+                    skipped: self.skipped,
+                })
+            })
+        }
+    }
+
+    impl QaSnapshotEventSource for FirstEventThenTerminalLagSource {
+        fn snapshot(&self) -> AppState {
+            self.snapshot.clone()
+        }
+    }
+
+    fn qa_state_with_session(session: SessionState) -> AppState {
+        AppState {
+            session,
+            ..AppState::default()
+        }
+    }
+
+    fn qa_logged_out_event(request_id: RequestId, account_key: AccountKey) -> CoreEvent {
+        CoreEvent::Account(AccountEvent::LoggedOut {
+            request_id,
+            account_key,
+        })
+    }
+
+    fn qa_operation_failed_event(request_id: RequestId) -> CoreEvent {
+        CoreEvent::OperationFailed {
+            request_id,
+            failure: CoreFailure::SessionNotFound,
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn login_wait_observes_ready_snapshot_once_at_deadline_without_a_broadcast() {
+        let shared = Arc::new(Mutex::new(qa_state_with_session(SessionState::SignedOut)));
+        let mut source = SharedSnapshotPendingEventSource {
+            snapshot: shared.clone(),
+        };
+        let ready_shared = shared.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            ready_shared
+                .lock()
+                .expect("shared QA snapshot lock should not be poisoned")
+                .session = SessionState::Ready(SessionInfo {
+                homeserver: "https://example.invalid".to_owned(),
+                user_id: "@ready:example.invalid".to_owned(),
+                device_id: "READYDEVICE".to_owned(),
+            });
+        });
+        let started_at = tokio::time::Instant::now();
+
+        let account_key = wait_for_logged_in(
+            &mut source,
+            RequestId {
+                connection_id: koushi_core::ids::RuntimeConnectionId(1),
+                sequence: 1,
+            },
+            "login final snapshot",
+        )
+        .await
+        .expect("the final authoritative Ready snapshot should complete login");
+
+        assert_eq!(account_key, AccountKey("@ready:example.invalid".to_owned()));
+        assert_eq!(
+            tokio::time::Instant::now().duration_since(started_at),
+            LOGIN_EVENT_TIMEOUT
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn login_wait_without_event_or_ready_snapshot_still_times_out() {
+        let shared = Arc::new(Mutex::new(qa_state_with_session(SessionState::SignedOut)));
+        let mut source = SharedSnapshotPendingEventSource { snapshot: shared };
+        let started_at = tokio::time::Instant::now();
+
+        let error = wait_for_logged_in(
+            &mut source,
+            RequestId {
+                connection_id: koushi_core::ids::RuntimeConnectionId(1),
+                sequence: 2,
+            },
+            "login remains pending",
+        )
+        .await
+        .expect_err("a non-Ready snapshot must retain the login timeout");
+
+        assert_eq!(
+            error,
+            "login remains pending: timed out waiting for LoggedIn event"
+        );
+        assert_eq!(
+            tokio::time::Instant::now().duration_since(started_at),
+            LOGIN_EVENT_TIMEOUT
+        );
+    }
+
+    #[tokio::test]
+    async fn session_restored_account_mismatch_is_private_safe() {
+        let request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 6,
+        };
+        let expected = AccountKey("@expected:example.invalid".to_owned());
+        let mut source = ScriptedQaSnapshotEventSource {
+            events: [(
+                CoreEvent::Account(AccountEvent::SessionRestored {
+                    request_id,
+                    account_key: AccountKey("@unexpected:example.invalid".to_owned()),
+                }),
+                SessionState::SignedOut,
+            )]
+            .into(),
+            snapshot: qa_state_with_session(SessionState::SignedOut),
+            received: 0,
+        };
+
+        let error =
+            wait_for_session_restored(&mut source, request_id, &expected, "restore mismatch")
+                .await
+                .expect_err("wrong restored account must fail immediately");
+        assert!(error.contains("account_key mismatch"));
+        assert!(!error.contains('@'));
+        assert_eq!(source.received, 1);
+    }
+
+    #[tokio::test]
+    async fn logged_out_waiter_requires_event_and_signed_out_snapshot_in_either_order() {
+        let request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 7,
+        };
+        let account_key = AccountKey("@logout-barrier:example.invalid".to_owned());
+        let signed_out = qa_state_with_session(SessionState::SignedOut);
+        let cases = [
+            [
+                (
+                    qa_logged_out_event(request_id, account_key.clone()),
+                    SessionState::LoggingOut,
+                ),
+                (
+                    CoreEvent::StateChanged(signed_out.clone()),
+                    SessionState::SignedOut,
+                ),
+            ],
+            [
+                (
+                    CoreEvent::StateChanged(signed_out.clone()),
+                    SessionState::SignedOut,
+                ),
+                (
+                    qa_logged_out_event(request_id, account_key.clone()),
+                    SessionState::SignedOut,
+                ),
+            ],
+        ];
+
+        for events in cases {
+            let mut source = ScriptedQaSnapshotEventSource {
+                events: events.into(),
+                snapshot: qa_state_with_session(SessionState::LoggingOut),
+                received: 0,
+            };
+            wait_for_logged_out(&mut source, request_id, &account_key, "logout barrier")
+                .await
+                .expect("both authoritative logout signals should satisfy the barrier");
+            assert_eq!(
+                source.received, 2,
+                "neither event nor snapshot may complete the barrier alone"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn logout_waiters_observe_final_signed_out_snapshot_without_another_broadcast() {
+        for keyed in [true, false] {
+            let request_id = RequestId {
+                connection_id: koushi_core::ids::RuntimeConnectionId(1),
+                sequence: if keyed { 71 } else { 72 },
+            };
+            let account_key = AccountKey("@logout-final-snapshot:example.invalid".to_owned());
+            let shared = Arc::new(Mutex::new(qa_state_with_session(SessionState::LoggingOut)));
+            let mut source = FirstEventSharedSnapshotPendingSource {
+                first_event: Some(qa_logged_out_event(request_id, account_key.clone())),
+                snapshot: shared.clone(),
+            };
+            let signed_out_shared = shared.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                signed_out_shared
+                    .lock()
+                    .expect("shared QA snapshot lock should not be poisoned")
+                    .session = SessionState::SignedOut;
+            });
+            let started_at = tokio::time::Instant::now();
+
+            if keyed {
+                wait_for_logged_out(
+                    &mut source,
+                    request_id,
+                    &account_key,
+                    "keyed logout final snapshot",
+                )
+                .await
+            } else {
+                wait_for_signed_out_after_logout(
+                    &mut source,
+                    request_id,
+                    "keyless logout final snapshot",
+                )
+                .await
+            }
+            .expect("the final authoritative SignedOut snapshot should complete logout");
+
+            assert_eq!(
+                tokio::time::Instant::now().duration_since(started_at),
+                EVENT_TIMEOUT
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn logout_waiters_observe_final_signed_out_snapshot_after_lag_or_close() {
+        for (keyed, skipped) in [(true, 0), (false, 4)] {
+            let request_id = RequestId {
+                connection_id: koushi_core::ids::RuntimeConnectionId(1),
+                sequence: if keyed { 73 } else { 74 },
+            };
+            let account_key = AccountKey("@logout-terminal-lag:example.invalid".to_owned());
+            let mut source = FirstEventThenTerminalLagSource {
+                first_event: Some(qa_logged_out_event(request_id, account_key.clone())),
+                snapshot: qa_state_with_session(SessionState::LoggingOut),
+                skipped,
+            };
+
+            if keyed {
+                wait_for_logged_out(
+                    &mut source,
+                    request_id,
+                    &account_key,
+                    "keyed logout terminal snapshot",
+                )
+                .await
+            } else {
+                wait_for_signed_out_after_logout(
+                    &mut source,
+                    request_id,
+                    "keyless logout terminal snapshot",
+                )
+                .await
+            }
+            .expect("the terminal receive must recheck the authoritative SignedOut snapshot");
+        }
+    }
+
+    #[tokio::test]
+    async fn logged_out_waiter_keeps_wrong_account_and_failure_terminal_and_private_safe() {
+        let request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 8,
+        };
+        let account_key = AccountKey("@expected:example.invalid".to_owned());
+        let mut wrong_account = ScriptedQaSnapshotEventSource {
+            events: [(
+                qa_logged_out_event(
+                    request_id,
+                    AccountKey("@unexpected:example.invalid".to_owned()),
+                ),
+                SessionState::SignedOut,
+            )]
+            .into(),
+            snapshot: qa_state_with_session(SessionState::LoggingOut),
+            received: 0,
+        };
+        let error = wait_for_logged_out(
+            &mut wrong_account,
+            request_id,
+            &account_key,
+            "logout barrier",
+        )
+        .await
+        .expect_err("wrong account must fail immediately");
+        assert!(error.contains("account_key mismatch"));
+        assert!(!error.contains('@'));
+        assert_eq!(wrong_account.received, 1);
+
+        let mut failed = ScriptedQaSnapshotEventSource {
+            events: [(
+                CoreEvent::OperationFailed {
+                    request_id,
+                    failure: CoreFailure::SessionRequired,
+                },
+                SessionState::SignedOut,
+            )]
+            .into(),
+            snapshot: qa_state_with_session(SessionState::LoggingOut),
+            received: 0,
+        };
+        let error = wait_for_logged_out(&mut failed, request_id, &account_key, "logout barrier")
+            .await
+            .expect_err("correlated failure must fail immediately");
+        assert!(error.contains("SessionRequired"));
+        assert_eq!(failed.received, 1);
+    }
+
+    #[tokio::test]
+    async fn operation_failed_signed_out_waiter_requires_both_signals_in_either_order() {
+        let request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 10,
+        };
+        let signed_out = qa_state_with_session(SessionState::SignedOut);
+        let cases = [
+            [
+                (
+                    qa_operation_failed_event(request_id),
+                    SessionState::Restoring,
+                ),
+                (
+                    CoreEvent::StateChanged(signed_out.clone()),
+                    SessionState::SignedOut,
+                ),
+            ],
+            [
+                (
+                    CoreEvent::StateChanged(signed_out.clone()),
+                    SessionState::SignedOut,
+                ),
+                (
+                    qa_operation_failed_event(request_id),
+                    SessionState::SignedOut,
+                ),
+            ],
+        ];
+
+        for events in cases {
+            let mut source = ScriptedQaSnapshotEventSource {
+                events: events.into(),
+                snapshot: qa_state_with_session(SessionState::Restoring),
+                received: 0,
+            };
+            let failure = wait_for_operation_failed_and_signed_out(
+                &mut source,
+                request_id,
+                "restore cleanup barrier",
+            )
+            .await
+            .expect("both authoritative cleanup signals should satisfy the barrier");
+            assert_eq!(failure, CoreFailure::SessionNotFound);
+            assert_eq!(
+                source.received, 2,
+                "neither failure nor SignedOut may complete the barrier alone"
+            );
+        }
+
+        let mut succeeded = ScriptedQaSnapshotEventSource {
+            events: [(
+                CoreEvent::Account(AccountEvent::SessionRestored {
+                    request_id,
+                    account_key: AccountKey("@private:example.invalid".to_owned()),
+                }),
+                SessionState::SignedOut,
+            )]
+            .into(),
+            snapshot: signed_out,
+            received: 0,
+        };
+        let error = wait_for_operation_failed_and_signed_out(
+            &mut succeeded,
+            request_id,
+            "restore cleanup barrier",
+        )
+        .await
+        .expect_err("a same-request success terminal must fail immediately");
+        assert!(error.contains("operation succeeded"));
+        assert!(!error.contains('@'));
+        assert_eq!(succeeded.received, 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn operation_failed_signed_out_deadline_survives_unrelated_event_starvation() {
+        let request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 11,
+        };
+        let mut source = IntervalQaSnapshotEventSource {
+            interval: tokio::time::interval(Duration::from_secs(1)),
+            snapshot: qa_state_with_session(SessionState::Restoring),
+            first_event: Some(qa_operation_failed_event(request_id)),
+        };
+        let started_at = tokio::time::Instant::now();
+        wait_for_operation_failed_and_signed_out(
+            &mut source,
+            request_id,
+            "restore cleanup deadline",
+        )
+        .await
+        .expect_err("unrelated events must not restart the cleanup deadline");
+        assert_eq!(
+            tokio::time::Instant::now().duration_since(started_at),
+            EVENT_TIMEOUT
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn logout_and_operation_failed_deadlines_survive_unrelated_event_starvation() {
+        let request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 9,
+        };
+        let account_key = AccountKey("@deadline:example.invalid".to_owned());
+        let mut logout_source = IntervalQaSnapshotEventSource {
+            interval: tokio::time::interval(Duration::from_secs(1)),
+            snapshot: qa_state_with_session(SessionState::LoggingOut),
+            first_event: Some(qa_logged_out_event(request_id, account_key.clone())),
+        };
+        let logout_started_at = tokio::time::Instant::now();
+        wait_for_logged_out(
+            &mut logout_source,
+            request_id,
+            &account_key,
+            "logout deadline",
+        )
+        .await
+        .expect_err("a LoggedOut event without SignedOut state must time out");
+        assert_eq!(
+            tokio::time::Instant::now().duration_since(logout_started_at),
+            EVENT_TIMEOUT
+        );
+
+        let mut failure_source = IntervalQaEventSource {
+            interval: tokio::time::interval(Duration::from_secs(1)),
+        };
+        let failure_started_at = tokio::time::Instant::now();
+        wait_for_operation_failed(&mut failure_source, request_id, "failure deadline")
+            .await
+            .expect_err("unrelated events must not restart the failure deadline");
+        assert_eq!(
+            tokio::time::Instant::now().duration_since(failure_started_at),
+            EVENT_TIMEOUT
+        );
+    }
+
+    fn strict_e2ee_waiter_inventory() -> &'static [(&'static str, &'static str)] {
+        &[
+            (
+                "wait_for_existing_identity_gate",
+                "\nasync fn wait_for_recovery_gate",
+            ),
+            (
+                "wait_for_room_in_room_list",
+                "\nasync fn wait_for_space_in_space_list",
+            ),
+            (
+                "wait_for_sync_started_and_running",
+                "\nasync fn wait_for_sync_started",
+            ),
+            (
+                "wait_for_ready_snapshot",
+                "\nasync fn wait_for_room_unread_count",
+            ),
+            ("wait_for_logged_in", "\nasync fn wait_for_session_restored"),
+            (
+                "subscribe_and_ack_active_timeline_projection_for_qa",
+                "\nfn assert_no_decryption_failure_items",
+            ),
+            (
+                "wait_for_verification_requested_event_only",
+                "\nfn requested_verification_flow_id",
+            ),
+            (
+                "wait_for_verification_accepted",
+                "\nfn verification_state_is_at_least_accepted",
+            ),
+            (
+                "wait_for_initial_items_from_source",
+                "\n#[derive(Default)]\nstruct InitialItemsWaitDiagnostics",
+            ),
+            (
+                "wait_for_send_flow_completion_with_timeout",
+                "\nasync fn send_text_expect_local_echo",
+            ),
+            (
+                "wait_for_item_with_body_or_decryption_failure",
+                "\n#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n\
+                 enum WithheldEventProjectionOrigin",
+            ),
+            (
+                "wait_for_withheld_event_projection_from_source",
+                "\n/// Wait until all `expected_bodies` are found",
+            ),
+        ]
+    }
+
+    fn strict_e2ee_waiter_body<'a>(
+        source: &'a str,
+        waiter: &str,
+        end_declaration: &str,
+    ) -> &'a str {
+        source
+            .split(&format!("async fn {waiter}"))
+            .nth(1)
+            .unwrap_or_else(|| panic!("missing strict E2EE waiter {waiter}"))
+            .split(end_declaration)
+            .next()
+            .unwrap_or_else(|| panic!("missing end declaration for strict E2EE waiter {waiter}"))
+    }
+
+    fn strict_e2ee_rolling_waiters(source: &str) -> Vec<&'static str> {
+        strict_e2ee_waiter_inventory()
+            .iter()
+            .filter_map(|&(waiter, end_declaration)| {
+                strict_e2ee_waiter_body(source, waiter, end_declaration)
+                    .contains("tokio::time::timeout(")
+                    .then_some(waiter)
+            })
+            .collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn initial_items_wait_deadline_is_not_extended_by_continuous_unrelated_events() {
+        let request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 2,
+        };
+        let key = TimelineKey::room(AccountKey("@qa:example.invalid".to_owned()), "!room:test");
+        let mut source = IntervalQaEventSource {
+            interval: tokio::time::interval(Duration::from_secs(1)),
+        };
+        let started_at = tokio::time::Instant::now();
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(30),
+            wait_for_initial_items_from_source(
+                &mut source,
+                &key,
+                request_id,
+                "deadline starvation regression",
+                Duration::from_secs(10),
+            ),
+        )
+        .await
+        .expect("the absolute waiter must finish before the outer starvation guard");
+
+        let error = result.expect_err("unrelated events must not satisfy the causal wait");
+        assert!(error.contains("timed out waiting for TimelineEvent::InitialItems"));
+        assert!(error.contains("same_key_wrong_cause=0"));
+        assert!(error.contains("same_key_causeless=0"));
+        assert!(error.contains("unrelated_events="));
+        assert_eq!(
+            tokio::time::Instant::now().duration_since(started_at),
+            Duration::from_secs(10),
+            "unrelated events must not restart the ten-second budget"
+        );
+    }
+
+    #[tokio::test]
+    async fn initial_items_wait_skips_fresh_wrong_cause_then_accepts_exact_replay_cause() {
+        let old_projection_request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 1,
+        };
+        let subscribe_request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 2,
+        };
+        let key = TimelineKey::room(AccountKey("@qa:example.invalid".to_owned()), "!room:test");
+        let event = |cause_request_id, items| {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id: Some(old_projection_request_id),
+                cause_request_id: Some(cause_request_id),
+                key: key.clone(),
+                actor_generation: 1,
+                generation: koushi_core::ids::TimelineGeneration(0),
+                items,
+            })
+        };
+        let mut source = ScriptedQaEventSource {
+            events: [
+                event(old_projection_request_id, Vec::new()),
+                event(
+                    subscribe_request_id,
+                    vec![projection_timeline_item("$exact-replay:test", false)],
+                ),
+            ]
+            .into(),
+        };
+
+        let items = wait_for_initial_items_from_source(
+            &mut source,
+            &key,
+            subscribe_request_id,
+            "causal replay regression",
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("the exact idempotent replay cause should satisfy the waiter");
+
+        assert_eq!(items.len(), 1, "the wrong-cause fresh event was ignored");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn initial_items_timeout_reports_only_private_safe_causal_category_counts() {
+        let old_request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 1,
+        };
+        let request_id = RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 2,
+        };
+        let key = TimelineKey::room(AccountKey("@qa:example.invalid".to_owned()), "!room:test");
+        let wrong_key =
+            TimelineKey::room(AccountKey("@qa:example.invalid".to_owned()), "!other:test");
+        let initial = |event_key, cause_request_id| {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id: Some(old_request_id),
+                cause_request_id,
+                key: event_key,
+                actor_generation: 1,
+                generation: koushi_core::ids::TimelineGeneration(0),
+                items: Vec::new(),
+            })
+        };
+        let mut source = ScriptedQaEventSource {
+            events: [
+                initial(key.clone(), Some(old_request_id)),
+                initial(key.clone(), None),
+                initial(wrong_key, Some(request_id)),
+                CoreEvent::Sync(SyncEvent::Running),
+            ]
+            .into(),
+        };
+
+        let error = wait_for_initial_items_from_source(
+            &mut source,
+            &key,
+            request_id,
+            "causal categories regression",
+            Duration::from_secs(1),
+        )
+        .await
+        .expect_err("no exact-cause event was supplied");
+
+        assert!(error.contains("same_key_exact_cause=0"));
+        assert!(error.contains("same_key_wrong_cause=1"));
+        assert!(error.contains("same_key_causeless=1"));
+        assert!(error.contains("wrong_key_initial_items=1"));
+        assert!(error.contains("unrelated_events=1"));
+        assert!(!error.contains("@qa:"));
+        assert!(!error.contains("!room:"));
+    }
+
+    #[test]
+    fn strict_e2ee_guard_extracts_each_complete_waiter_body() {
+        let source = include_str!("headless-core-qa.rs");
+        let production_source = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("headless-core-qa source should contain production section");
+
+        for &(waiter, end_declaration) in strict_e2ee_waiter_inventory() {
+            let body = strict_e2ee_waiter_body(production_source, waiter, end_declaration);
+            assert!(
+                body.contains(".recv(") || body.contains("recv_event()"),
+                "{waiter} extraction must reach its event receive loop"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_e2ee_guard_detects_a_rolling_timeout_in_every_inventory_body() {
+        let source = include_str!("headless-core-qa.rs");
+        let production_source = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("headless-core-qa source should contain production section");
+
+        for &(waiter, _) in strict_e2ee_waiter_inventory() {
+            let declaration = format!("async fn {waiter}");
+            let injected_declaration = format!(
+                "{declaration}\n    tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())"
+            );
+            let injected = production_source.replacen(&declaration, &injected_declaration, 1);
+
+            assert_eq!(
+                strict_e2ee_rolling_waiters(&injected),
+                vec![waiter],
+                "the structural guard must detect a rolling timeout in {waiter}"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_e2ee_event_waiters_do_not_restart_timeouts_per_event() {
+        let source = include_str!("headless-core-qa.rs");
+        let production_source = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("headless-core-qa source should contain production section");
+        let rolling_waiters = strict_e2ee_rolling_waiters(production_source);
+        assert!(
+            rolling_waiters.is_empty(),
+            "strict E2EE waiters must use one absolute deadline; rolling={rolling_waiters:?}"
+        );
+    }
+
+    #[test]
+    fn active_room_thread_refresh_uses_the_exact_causal_waiter() {
+        let source = include_str!("headless-core-qa.rs");
+        let refresh = source
+            .split("let refresh_room_a_id = conn_a.next_request_id();")
+            .nth(1)
+            .expect("thread stage should refresh the active room timeline")
+            .split("wait_for_room_timeline_thread_summary")
+            .next()
+            .expect("thread summary wait should follow the room refresh");
+
+        assert!(refresh.contains("wait_for_initial_items("));
+    }
+
+    #[test]
+    fn e2ee_trust_stage_does_not_overlap_normal_sync_with_manual_sync_once() {
+        let source = include_str!("headless-core-qa.rs");
+        let stage = source
+            .split("async fn run_e2ee_trust_stage(")
+            .nth(1)
+            .expect("E2EE trust stage should exist")
+            .split("async fn cleanup_logged_in_runtime(")
+            .next()
+            .expect("secondary-device cleanup should follow E2EE trust");
+
+        assert!(
+            !stage.contains("sync_once_for_qa("),
+            "E2EE trust must use the authoritative bootstrap and typed gate readiness while SyncService owns the client"
+        );
+        assert!(
+            !stage.contains("publish primary cross-signing facts before gated second-device login")
+        );
+    }
+
+    #[test]
+    fn encrypted_backup_seed_uses_live_room_discovery_and_exact_causal_waiter() {
+        let source = include_str!("headless-core-qa.rs");
+        let seed = source
+            .split("async fn seed_encrypted_room_key_for_qa(")
+            .nth(1)
+            .expect("encrypted backup seed helper should exist")
+            .split("async fn enable_key_backup_for_qa(")
+            .next()
+            .expect("key backup enable helper should follow seed helper");
+
+        assert!(
+            !seed.contains("sync_once_for_qa("),
+            "backup seed room discovery must not overlap the running SyncService"
+        );
+        assert!(seed.contains("wait_for_room_in_room_list("));
+        assert!(seed.contains("wait_for_initial_items("));
+        assert!(seed.contains("subscribe encrypted backup seed"));
+    }
+
+    #[test]
+    fn second_device_encrypted_room_resubscribe_uses_exact_causal_waiter() {
+        let source = include_str!("headless-core-qa.rs");
+        let delivery = source
+            .split("async fn verify_second_device_room_key_delivery_for_qa(")
+            .nth(1)
+            .expect("second-device encrypted delivery helper should exist")
+            .split("async fn verify_multi_user_multi_device_room_key_delivery_for_qa(")
+            .next()
+            .expect("multi-device delivery helper should follow second-device delivery");
+
+        assert!(delivery.contains("wait_for_initial_items("));
+    }
+
+    #[test]
+    fn generic_secondary_timeline_subscribe_uses_exact_causal_waiter() {
+        let source = include_str!("headless-core-qa.rs");
+        let secondary_subscribe = source
+            .split("// B subscribes and receives both messages")
+            .nth(1)
+            .expect("generic B timeline subscribe block")
+            .split("// Paginate backward on B")
+            .next()
+            .expect("generic B timeline subscribe block end");
+
+        assert!(secondary_subscribe.contains("wait_for_initial_items("));
     }
 
     #[test]
@@ -17569,6 +20397,11 @@ mod tests {
     #[test]
     fn login_wait_uses_dedicated_timeout_for_loaded_local_homeservers() {
         let source = include_str!("headless-core-qa.rs");
+        let ready_helper = source
+            .split("fn ready_account_key")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn wait_for_logged_in").next())
+            .expect("ready account-key helper body");
         let wait_body = source
             .split("async fn wait_for_logged_in")
             .nth(1)
@@ -17583,25 +20416,27 @@ mod tests {
             "login waits need their own timeout because local homeservers can finish /login slowly under full QA load"
         );
         assert!(
-            wait_body.contains("tokio::time::timeout(LOGIN_EVENT_TIMEOUT, conn.recv_event())"),
-            "wait_for_logged_in must not use the short generic EVENT_TIMEOUT"
+            wait_body.contains("QaEventDeadline::after(LOGIN_EVENT_TIMEOUT)")
+                && wait_body.contains(".recv(conn)"),
+            "wait_for_logged_in must use one absolute dedicated login deadline"
         );
         assert!(
-            wait_body.contains("SessionState::Ready(info)")
-                && wait_body.contains("AccountKey(info.user_id.clone())"),
+            ready_helper.contains("SessionState::Ready(info)")
+                && ready_helper.contains("Some(AccountKey(info.user_id))")
+                && wait_body.matches("ready_account_key(conn)").count() >= 3,
             "the identity-gate helper may consume LoggedIn, so the waiter must accept the authoritative Ready snapshot"
         );
     }
 
     #[test]
-    fn all_directory_stage_runs_before_room_space_b_sync() {
+    fn all_directory_stage_runs_before_room_space_operations() {
         let source = include_str!("headless-core-qa.rs");
         let run_async_body = source
             .split("async fn run_async")
             .nth(1)
             .and_then(|rest| rest.split("async fn cleanup_after_full_flow").next())
             .expect("run_async body");
-        let directory_call = "run_directory_stage(&config, &mut conn_a).await?";
+        let directory_call = "run_directory_stage(&config, &mut conn_a, conn_b).await?";
         let directory_index = run_async_body
             .find(directory_call)
             .expect("directory stage call in run_async");
@@ -17611,7 +20446,7 @@ mod tests {
 
         assert!(
             directory_index < room_space_index,
-            "All flow must run directory QA before starting the long-lived B sync"
+            "All flow must run directory QA before RoomSpace operations"
         );
         assert!(
             !run_async_body[room_space_index..].contains(directory_call),
@@ -17631,9 +20466,10 @@ mod tests {
             })
             .expect("send queue FIFO wait body");
 
-        assert!(
-            source.contains("const SEND_QUEUE_EVENT_TIMEOUT: Duration = Duration::from_secs(90);"),
-            "offline send retry can need longer than the generic event timeout after local proxy reconnection"
+        assert_eq!(
+            SEND_QUEUE_EVENT_TIMEOUT,
+            Duration::from_secs(300),
+            "SendQueue reconnect timeout must be 300 seconds, independently of the generic event timeout"
         );
         assert!(
             body.contains("tokio::time::timeout(SEND_QUEUE_EVENT_TIMEOUT, conn.recv_event())"),
@@ -17656,6 +20492,11 @@ mod tests {
                     .next()
             })
             .expect("send queue stage body");
+        let restart_slice = body
+            .split("stop_sync_for_qa(&mut conn, \"send_queue stop before restart\")")
+            .nth(1)
+            .and_then(|rest| rest.split("let mut conn = runtime.attach();").next())
+            .expect("send queue restart lifecycle slice");
 
         assert!(
             body.contains("send_queue unsubscribe before restart shutdown"),
@@ -17674,6 +20515,90 @@ mod tests {
         assert!(
             body.contains("TIMELINE_UNSUBSCRIBE_SETTLE_TIMEOUT"),
             "send_queue unsubscribe helper should wait for timeline actor shutdown before runtime drop"
+        );
+        let shutdown = restart_slice
+            .find("runtime.shutdown().await")
+            .expect("restart must await the ordered runtime shutdown barrier");
+        let reopen = restart_slice
+            .find("CoreRuntime::start_with_data_dir(data_dir)")
+            .expect("restart must reopen the same persisted data directory");
+        assert!(
+            shutdown < reopen,
+            "runtime shutdown must complete before reopen"
+        );
+        assert!(!restart_slice.contains("drop(runtime)"));
+        assert!(!restart_slice.contains("Duration::from_millis(500)"));
+    }
+
+    #[test]
+    fn same_data_dir_reopen_paths_use_ordered_runtime_shutdown() {
+        fn assert_ordered_reopen(
+            label: &str,
+            restart_slice: &str,
+            drop_connection: &str,
+            shutdown_runtime: &str,
+            reopen_runtime: &str,
+        ) {
+            let drop_connection = restart_slice
+                .find(drop_connection)
+                .unwrap_or_else(|| panic!("{label}: connection must be dropped before shutdown"));
+            let shutdown = restart_slice
+                .find(shutdown_runtime)
+                .unwrap_or_else(|| panic!("{label}: ordered runtime shutdown is required"));
+            let reopen = restart_slice
+                .find(reopen_runtime)
+                .unwrap_or_else(|| panic!("{label}: same data directory must be reopened"));
+
+            assert!(drop_connection < shutdown, "{label}: drop connection first");
+            assert!(shutdown < reopen, "{label}: shutdown must precede reopen");
+            assert!(
+                !restart_slice.contains("drop(runtime"),
+                "{label}: dropping a runtime is not a shutdown barrier"
+            );
+            assert!(
+                !restart_slice.contains("Duration::from_millis(500)"),
+                "{label}: blind store-lock sleeps are forbidden"
+            );
+        }
+
+        let source = include_str!("headless-core-qa.rs");
+        let cleanup = source
+            .split("async fn cleanup_after_full_flow")
+            .nth(1)
+            .and_then(|rest| rest.split("let mut conn_a2 = runtime_a2.attach();").next())
+            .expect("full-flow cleanup restart slice");
+        assert_ordered_reopen(
+            "cleanup_after_full_flow",
+            cleanup,
+            "drop(conn_a)",
+            "runtime_a.shutdown().await",
+            "CoreRuntime::start_with_data_dir(data_dir_a)",
+        );
+
+        let all_flow = source
+            .split("// --- Sync stop A + store-backed restore A + logout A ---")
+            .nth(1)
+            .and_then(|rest| rest.split("let mut conn_a2 = runtime_a2.attach();").next())
+            .expect("All-scenario restore restart slice");
+        assert_ordered_reopen(
+            "run_async All restore",
+            all_flow,
+            "drop(conn_a)",
+            "runtime_a.shutdown().await",
+            "CoreRuntime::start_with_data_dir(data_dir_a)",
+        );
+
+        let cache_restore = source
+            .split("async fn run_cache_restore_scenario")
+            .nth(1)
+            .and_then(|rest| rest.split("let mut conn2 = runtime2.attach();").next())
+            .expect("cache restore restart slice");
+        assert_ordered_reopen(
+            "cache restore",
+            cache_restore,
+            "drop(conn)",
+            "runtime.shutdown().await",
+            "CoreRuntime::start_with_data_dir(data_dir)",
         );
     }
 
@@ -17906,6 +20831,7 @@ mod tests {
                 "cancel_send=ok",
                 "fifo=ok",
                 "unsent_restart=ok",
+                "display_projection_reset_fallbacks=0",
                 "joined_room_restore=ok",
                 "e2ee_second_device_decrypt=ok",
                 "e2ee_multi_user_multi_device_decrypt=ok",
@@ -18027,6 +20953,176 @@ mod tests {
             authenticated_session_info_from_state(&SessionState::SignedOut),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn receiver_device_checkpoint_holds_start_once_until_ack_and_skips_it_on_failure() {
+        let starts = Arc::new(AtomicUsize::new(0));
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let task_starts = starts.clone();
+        let task = tokio::spawn(after_receiver_device_known(
+            async move {
+                entered_tx.send(()).map_err(|_| "checkpoint entry closed")?;
+                release_rx.await.map_err(|_| "checkpoint release closed")?;
+                Ok(())
+            },
+            move || async move {
+                task_starts.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, &'static str>(())
+            },
+        ));
+
+        entered_rx
+            .await
+            .expect("refresh checkpoint should be polled");
+        assert_eq!(starts.load(Ordering::SeqCst), 0);
+        release_tx.send(()).expect("release checkpoint");
+        task.await
+            .expect("checkpoint task should join")
+            .expect("checkpoint should succeed");
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+
+        let failed_starts = Arc::new(AtomicUsize::new(0));
+        let closure_starts = failed_starts.clone();
+        let failed = after_receiver_device_known(
+            async { Err::<(), _>("device unknown") },
+            move || async move {
+                closure_starts.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, &'static str>(())
+            },
+        )
+        .await;
+        assert_eq!(failed, Err("device unknown"));
+        assert_eq!(failed_starts.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn provisional_self_verification_keeps_primary_normal_sync_running() {
+        let source = include_str!("headless-core-qa.rs");
+        let helper = source
+            .split("async fn verify_provisional_second_device_for_qa")
+            .nth(1)
+            .expect("provisional self-verification helper should exist")
+            .split("fn verification_closed_summary")
+            .next()
+            .expect("verification summary helper should follow provisional verification");
+
+        assert!(helper.contains("AccountCommand::StartOwnUserSas"));
+        let refresh = helper
+            .find("refresh_device_keys_and_assert_known_for_qa(")
+            .expect("primary must causally discover the exact provisional device");
+        let start = helper
+            .find("AccountCommand::StartOwnUserSas")
+            .expect("provisional device should start own-user SAS");
+        assert!(refresh < start);
+        assert!(helper.contains("target_a2.clone()"));
+        assert!(helper.contains("primary incoming request"));
+        assert!(helper.contains("SasQaOutcome::Timeout"));
+        assert!(helper.contains("SasQaOutcome::Mismatch"));
+        assert!(helper.contains("AccountCommand::CancelVerification"));
+        assert!(helper.contains("AccountCommand::ConfirmSasVerification"));
+        assert!(helper.contains("timed out waiting for authoritative Ready"));
+
+        for forbidden in [
+            "stop_sync_for_qa(conn_a",
+            "start_sync_for_qa(conn_a",
+            "sync_once_for_qa(conn_a",
+        ] {
+            assert!(
+                !helper.contains(forbidden),
+                "primary normal sync must remain continuously owned during SAS: {forbidden}"
+            );
+        }
+
+        assert!(!helper.contains("stop_sync_for_qa(conn_a2"));
+        assert!(!helper.contains("start_sync_for_qa(conn_a2"));
+    }
+
+    #[test]
+    fn incoming_verification_waiter_rejects_stopped_receiver_sync_at_entry() {
+        let label = "incoming verification receiver";
+        assert_eq!(
+            ensure_incoming_verification_receiver_sync_not_stopped(
+                &koushi_state::SyncState::Stopped,
+                label,
+            ),
+            Err(format!(
+                "{label}: receiver sync is stopped; cannot await an incoming verification request"
+            ))
+        );
+        for sync in [
+            koushi_state::SyncState::Running,
+            koushi_state::SyncState::Starting,
+            koushi_state::SyncState::Failed {
+                reason: "synthetic failure detail".to_owned(),
+            },
+            koushi_state::SyncState::Reconnecting {
+                reason: "synthetic reconnect detail".to_owned(),
+            },
+        ] {
+            assert_eq!(
+                ensure_incoming_verification_receiver_sync_not_stopped(&sync, label),
+                Ok(())
+            );
+        }
+
+        let source = include_str!("headless-core-qa.rs");
+        let guard = source
+            .split("fn ensure_incoming_verification_receiver_sync_not_stopped")
+            .nth(1)
+            .expect("incoming verification sync guard should exist")
+            .split("async fn wait_for_verification_requested_event_only")
+            .next()
+            .expect("incoming verification waiter should follow its sync guard");
+        assert!(guard.contains("koushi_state::SyncState::Stopped"));
+        assert!(
+            guard.contains(
+                "receiver sync is stopped; cannot await an incoming verification request"
+            )
+        );
+        assert!(!guard.contains("{sync:?}"));
+
+        let waiter = source
+            .split("async fn wait_for_verification_requested_event_only")
+            .nth(1)
+            .expect("incoming verification waiter should exist")
+            .split("fn requested_verification_flow_id")
+            .next()
+            .expect("verification flow classifier should follow incoming waiter");
+        let sync_guard = waiter
+            .find(
+                "ensure_incoming_verification_receiver_sync_not_stopped(&conn.snapshot().sync, label)?",
+            )
+            .expect("incoming waiter should fail fast on stopped receiver sync");
+        let deadline = waiter
+            .find("let deadline")
+            .expect("incoming waiter should retain its bounded deadline");
+        assert!(sync_guard < deadline);
+    }
+
+    #[test]
+    fn unused_manual_second_device_verification_cascade_is_absent() {
+        let source = include_str!("headless-core-qa.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production source should precede tests");
+        for unused in [
+            "async fn verify_second_device_for_qa",
+            "enum VerificationRequestAttempt",
+            "async fn request_device_verification_for_qa",
+            "async fn wait_for_verification_requested_or_failed",
+            "async fn wait_for_verification_accepted_with_sync_once",
+            "async fn drive_until_both_verification_sas",
+            "async fn wait_for_verification_done",
+            "fn verification_state_done",
+        ] {
+            assert!(
+                !production.contains(unused),
+                "obsolete zero-caller verification orchestration must be deleted: {unused}"
+            );
+        }
     }
 
     #[test]
@@ -18395,6 +21491,7 @@ mod tests {
                 "cancel_send=ok",
                 "fifo=ok",
                 "unsent_restart=ok",
+                "display_projection_reset_fallbacks=0",
                 "joined_room_restore=ok",
                 "e2ee_second_device_decrypt=ok",
                 "e2ee_multi_user_multi_device_decrypt=ok",

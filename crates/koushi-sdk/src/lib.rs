@@ -246,6 +246,9 @@ use zeroize::Zeroizing;
 const LOGIN_DISCOVERY_PATH: &str = "_matrix/client/v3/login";
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 const RESTRICTED_VERIFICATION_SYNC_SERVER_TIMEOUT: Duration = Duration::from_secs(3);
+const SYNC_INVITE_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+const SYNC_INVITE_PROBE_CONNECTION_ID: &str = "koushi-invite";
+const SYNC_INVITE_PROBE_LIST_KEY: &str = "koushi_invites";
 const MATRIX_ROOM_LIST_SNAPSHOT_LIMIT: usize = 4096;
 pub const LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE: &str = "app.koushi.local_aliases";
 
@@ -538,13 +541,36 @@ impl fmt::Debug for MatrixIncomingVerificationRequest {
 
 pub struct MatrixIncomingVerificationRequestObserver {
     client: matrix_sdk::Client,
-    receiver: tokio::sync::mpsc::Receiver<MatrixIncomingVerificationRequest>,
+    receiver: Option<tokio::sync::mpsc::Receiver<MatrixIncomingVerificationRequest>>,
     handlers: Vec<matrix_sdk::event_handler::EventHandlerHandle>,
+    incoming_request_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl MatrixIncomingVerificationRequestObserver {
     pub async fn recv(&mut self) -> Option<MatrixIncomingVerificationRequest> {
-        self.receiver.recv().await
+        self.receiver.as_mut()?.recv().await
+    }
+
+    pub fn take_receiver(
+        &mut self,
+    ) -> Option<tokio::sync::mpsc::Receiver<MatrixIncomingVerificationRequest>> {
+        self.receiver.take()
+    }
+
+    /// Stop the typed delivery owner and retain its JoinHandle until abort settles.
+    pub async fn shutdown(&mut self) {
+        if let Some(task) = self.incoming_request_task.as_mut() {
+            task.abort();
+            let _ = task.await;
+        }
+        self.incoming_request_task = None;
+        self.remove_handlers();
+    }
+
+    fn remove_handlers(&mut self) {
+        for handler in self.handlers.drain(..) {
+            self.client.remove_event_handler(handler);
+        }
     }
 }
 
@@ -559,9 +585,10 @@ impl fmt::Debug for MatrixIncomingVerificationRequestObserver {
 
 impl Drop for MatrixIncomingVerificationRequestObserver {
     fn drop(&mut self) {
-        for handler in self.handlers.drain(..) {
-            self.client.remove_event_handler(handler);
+        if let Some(task) = self.incoming_request_task.take() {
+            task.abort();
         }
+        self.remove_handlers();
     }
 }
 
@@ -649,10 +676,15 @@ pub enum MatrixSasState {
     Created,
     Started,
     Accepted,
-    SasPresented { emojis: Vec<SasEmoji> },
+    SasPresented {
+        emojis: Vec<SasEmoji>,
+    },
     Confirmed,
     Done,
-    Cancelled,
+    Cancelled {
+        kind: MatrixVerificationCancelKind,
+        cancelled_by_us: bool,
+    },
     UnsupportedShortAuth,
 }
 
@@ -828,7 +860,16 @@ fn map_sdk_sas_state(state: matrix_sdk::encryption::verification::SasState) -> M
         },
         SdkSasState::Confirmed => MatrixSasState::Confirmed,
         SdkSasState::Done { .. } => MatrixSasState::Done,
-        SdkSasState::Cancelled(_) => MatrixSasState::Cancelled,
+        SdkSasState::Cancelled(info) => {
+            map_sas_cancellation(info.cancel_code().as_str(), info.cancelled_by_us())
+        }
+    }
+}
+
+fn map_sas_cancellation(code: &str, cancelled_by_us: bool) -> MatrixSasState {
+    MatrixSasState::Cancelled {
+        kind: map_verification_cancel_kind(code),
+        cancelled_by_us,
     }
 }
 
@@ -1554,27 +1595,25 @@ pub async fn cancel_own_user_sas_verification(
     cancel_verification_request(&handle.request).await
 }
 
-pub fn observe_incoming_verification_requests(
+pub async fn observe_incoming_verification_requests(
     session: &MatrixClientSession,
 ) -> MatrixIncomingVerificationRequestObserver {
     let client = session.client();
     let (sender, receiver) = tokio::sync::mpsc::channel(32);
 
-    let to_device_client = client.clone();
-    let to_device_sender = sender.clone();
-    let to_device_handler = client.add_event_handler(
-        move |event: matrix_sdk::ruma::events::key::verification::request::ToDeviceKeyVerificationRequestEvent| {
-            let client = to_device_client.clone();
-            let sender = to_device_sender.clone();
-            async move {
-                if let Some(request) =
-                    incoming_verification_request_for_flow(&client, &event.sender, event.content.transaction_id.as_str()).await
-                {
-                    let _ = sender.send(request).await;
-                }
-            }
-        },
-    );
+    // All normal and recovered to-device requests use the same typed lease stream. Generic raw
+    // SDK handlers remain compatibility fanout only and do not own Koushi product delivery.
+    let incoming_request_task = client
+        .encryption()
+        .subscribe_to_incoming_verification_requests()
+        .await
+        .map(|incoming_requests| {
+            let sender = sender.clone();
+            tokio::spawn(forward_incoming_verification_requests(
+                incoming_requests,
+                sender,
+            ))
+        });
 
     let room_client = client.clone();
     let room_sender = sender;
@@ -1604,8 +1643,43 @@ pub fn observe_incoming_verification_requests(
 
     MatrixIncomingVerificationRequestObserver {
         client,
-        receiver,
-        handlers: vec![to_device_handler, room_handler],
+        receiver: Some(receiver),
+        handlers: vec![room_handler],
+        incoming_request_task,
+    }
+}
+
+async fn forward_incoming_verification_requests(
+    incoming_requests: impl Stream<Item = matrix_sdk::encryption::IncomingVerificationRequestDelivery>,
+    sender: tokio::sync::mpsc::Sender<MatrixIncomingVerificationRequest>,
+) {
+    forward_incoming_verification_deliveries(
+        incoming_requests,
+        sender,
+        |delivery| incoming_verification_request_from_handle(delivery.request().clone()),
+        matrix_sdk::encryption::IncomingVerificationRequestDelivery::commit,
+    )
+    .await;
+}
+
+async fn forward_incoming_verification_deliveries<D, P>(
+    deliveries: impl Stream<Item = D>,
+    sender: tokio::sync::mpsc::Sender<P>,
+    mut project: impl FnMut(&D) -> Option<P>,
+    mut commit: impl FnMut(D),
+) {
+    futures_util::pin_mut!(deliveries);
+    while let Some(delivery) = deliveries.next().await {
+        let Some(product) = project(&delivery) else {
+            // Terminal/non-actionable heads are consumed so they cannot starve later requests.
+            commit(delivery);
+            continue;
+        };
+        if sender.send(product).await.is_err() {
+            // Dropping without commit releases the SDK lease for a later observer.
+            break;
+        }
+        commit(delivery);
     }
 }
 
@@ -1618,6 +1692,12 @@ async fn incoming_verification_request_for_flow(
         .encryption()
         .get_verification_request(sender, flow_id)
         .await?;
+    incoming_verification_request_from_handle(request)
+}
+
+fn incoming_verification_request_from_handle(
+    request: matrix_sdk::encryption::verification::VerificationRequest,
+) -> Option<MatrixIncomingVerificationRequest> {
     let matrix_sdk::encryption::verification::VerificationRequestState::Requested {
         other_device_data,
         ..
@@ -1628,7 +1708,7 @@ async fn incoming_verification_request_for_flow(
 
     Some(MatrixIncomingVerificationRequest {
         target: VerificationTarget {
-            user_id: sender.to_string(),
+            user_id: request.other_user_id().to_string(),
             device_id: other_device_data.device_id().to_string(),
         },
         handle: MatrixVerificationRequestHandle { inner: request },
@@ -1717,11 +1797,24 @@ pub fn map_backup_state_to_desktop(
 
 #[cfg(test)]
 mod e2ee_trust_tests {
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+    use std::time::Duration;
+
+    use futures_util::stream;
     use koushi_state::{
         AuthSecret, CrossSigningStatus, CurrentDeviceTrustState, IdentityResetAuthType,
-        KeyBackupStatus, SasEmoji, VerificationAccountKind, VerificationMethodCapability,
+        KeyBackupStatus, SasEmoji, SessionInfo, VerificationAccountKind,
+        VerificationMethodCapability,
     };
     use matrix_sdk::encryption::backups::BackupState;
+    use matrix_sdk::{
+        ruma::{owned_device_id, owned_user_id},
+        test_utils::mocks::MatrixMockServer,
+    };
+    use serde_json::json;
 
     use super::{
         E2eeTrustError, IdentityFact, KeyBackupRestoreScope, KeyBackupRestoreSummary,
@@ -1732,17 +1825,34 @@ mod e2ee_trust_tests {
         accept_verification_request, bootstrap_cross_signing, bootstrap_secure_backup,
         cancel_sas_verification, cancel_verification_request, change_secure_backup_passphrase,
         complete_identity_reset, confirm_sas_verification, cross_signing_status, delete_devices,
-        enable_key_backup, export_room_keys_to_file, import_room_keys_from_file, list_devices,
-        map_backup_state_to_desktop, map_cross_signing_status_to_desktop,
-        map_identity_reset_auth_type_to_desktop, map_sdk_sas_emojis_to_desktop,
-        map_sdk_verification_state, map_verification_method_facts, mismatch_sas_verification,
-        observe_incoming_verification_requests, rename_device, request_device_verification,
-        reset_identity, restore_key_backup, restore_session, restricted_verification_sync_filter,
-        start_sas_verification, write_recovery_key_if_requested,
+        enable_key_backup, export_room_keys_to_file, forward_incoming_verification_deliveries,
+        import_room_keys_from_file, list_devices, map_backup_state_to_desktop,
+        map_cross_signing_status_to_desktop, map_identity_reset_auth_type_to_desktop,
+        map_sdk_sas_emojis_to_desktop, map_sdk_verification_state, map_verification_method_facts,
+        mismatch_sas_verification, observe_incoming_verification_requests, rename_device,
+        request_device_verification, reset_identity, restore_key_backup, restore_session,
+        restricted_verification_sync_filter, start_sas_verification,
+        write_recovery_key_if_requested,
     };
 
     const MATRIX_KEY_EXPORT_HEADER: &str = "-----BEGIN MEGOLM SESSION DATA-----";
     const MATRIX_KEY_EXPORT_FOOTER: &str = "-----END MEGOLM SESSION DATA-----";
+
+    struct FakeIncomingDelivery {
+        id: u8,
+        product: Option<u8>,
+        committed: bool,
+        commits: Arc<Mutex<Vec<u8>>>,
+        uncommitted_drops: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl Drop for FakeIncomingDelivery {
+        fn drop(&mut self) {
+            if !self.committed {
+                self.uncommitted_drops.lock().unwrap().push(self.id);
+            }
+        }
+    }
     const ELEMENT_COMPATIBLE_KEY_EXPORT: &str = "\
 -----BEGIN MEGOLM SESSION DATA-----\n\
 Af7mGhlzQ+eGvHu93u0YXd3D/+vYMs3E7gQqOhuCtkvGAAAAASH7pEdWvFyAP1JUisAcpEo\n\
@@ -1758,6 +1868,210 @@ SwfvzBS6CjfAG+FOugpV48o7+XetaUUPZ6/tZSPhCdeV8eP9q5r0QwWeXFogzoNzWt4HYx9\n\
 MdXxzD+f0mtg5gzehrrEEARwI2bCvPpHxlt/Na9oW/GBpkjwR1LSKgg4CtpRyWngPjdEKpZ\n\
 GYW19pdjg0qdXNk/eqZsQTsNWVo6A\n\
 -----END MEGOLM SESSION DATA-----";
+
+    #[tokio::test]
+    async fn incoming_verification_observer_shutdown_joins_typed_delivery_task() {
+        let persistable = PersistableMatrixSession::from_json(
+            r#"{"homeserver":"https://matrix.example.invalid","user_id":"@alice:example.invalid","device_id":"ALICEDEVICE","access_token":"synthetic-access"}"#,
+        )
+        .expect("synthetic session should deserialize");
+        let session = restore_session(&persistable)
+            .await
+            .expect("synthetic session should restore");
+        let mut observer = observe_incoming_verification_requests(&session).await;
+        let abort_handle = observer
+            .incoming_request_task
+            .as_ref()
+            .expect("a restored session has a typed incoming-request subscription")
+            .abort_handle();
+
+        observer.shutdown().await;
+
+        assert!(abort_handle.is_finished());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_incoming_observer_shutdown_retains_inner_task_ownership() {
+        struct TaskAlive(Arc<AtomicBool>);
+        impl Drop for TaskAlive {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::SeqCst);
+            }
+        }
+
+        let persistable = PersistableMatrixSession::from_json(
+            r#"{"homeserver":"https://matrix.example.invalid","user_id":"@alice:example.invalid","device_id":"ALICEDEVICE","access_token":"synthetic-access"}"#,
+        )
+        .expect("synthetic session should deserialize");
+        let session = restore_session(&persistable)
+            .await
+            .expect("synthetic session should restore");
+        let mut observer = observe_incoming_verification_requests(&session).await;
+        let original = observer
+            .incoming_request_task
+            .take()
+            .expect("a restored session has a typed incoming-request subscription");
+        original.abort();
+        let _ = original.await;
+
+        let alive = Arc::new(AtomicBool::new(true));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        observer.incoming_request_task = Some(tokio::spawn({
+            let alive = Arc::clone(&alive);
+            async move {
+                let _alive = TaskAlive(alive);
+                let _ = started_tx.send(());
+                let _ = release_rx.recv();
+                std::future::pending::<()>().await;
+            }
+        }));
+        started_rx.await.expect("noncooperative inner task started");
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), observer.shutdown())
+                .await
+                .is_err(),
+            "the fixture must cancel shutdown while the inner task cannot settle"
+        );
+        assert!(
+            observer.incoming_request_task.is_some(),
+            "shutdown cancellation must leave the JoinHandle with its observer owner"
+        );
+        assert!(alive.load(Ordering::SeqCst));
+
+        release_tx
+            .send(())
+            .expect("release noncooperative inner task");
+        observer.shutdown().await;
+        assert!(!alive.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn terminal_incoming_head_is_committed_before_actionable_tail() {
+        let commits = Arc::new(Mutex::new(Vec::new()));
+        let uncommitted_drops = Arc::new(Mutex::new(Vec::new()));
+        let delivery = |id, product| FakeIncomingDelivery {
+            id,
+            product,
+            committed: false,
+            commits: commits.clone(),
+            uncommitted_drops: uncommitted_drops.clone(),
+        };
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+
+        forward_incoming_verification_deliveries(
+            stream::iter([delivery(1, None), delivery(2, Some(42))]),
+            sender,
+            |delivery| delivery.product,
+            |mut delivery| {
+                delivery.committed = true;
+                delivery.commits.lock().unwrap().push(delivery.id);
+            },
+        )
+        .await;
+
+        assert_eq!(receiver.recv().await, Some(42));
+        assert_eq!(*commits.lock().unwrap(), vec![1, 2]);
+        assert!(uncommitted_drops.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn actionable_incoming_delivery_commits_only_after_product_send_success() {
+        let commits = Arc::new(Mutex::new(Vec::new()));
+        let uncommitted_drops = Arc::new(Mutex::new(Vec::new()));
+        let delivery = FakeIncomingDelivery {
+            id: 1,
+            product: Some(42),
+            committed: false,
+            commits: commits.clone(),
+            uncommitted_drops: uncommitted_drops.clone(),
+        };
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        drop(receiver);
+
+        forward_incoming_verification_deliveries(
+            stream::iter([delivery]),
+            sender,
+            |delivery| delivery.product,
+            |mut delivery| {
+                delivery.committed = true;
+                delivery.commits.lock().unwrap().push(delivery.id);
+            },
+        )
+        .await;
+
+        assert!(commits.lock().unwrap().is_empty());
+        assert_eq!(*uncommitted_drops.lock().unwrap(), vec![1]);
+    }
+
+    #[tokio::test]
+    async fn verification_raw_redelivery_reuses_the_same_product_flow_identity() {
+        let server = MatrixMockServer::new().await;
+        server.mock_crypto_endpoints_preset().await;
+
+        let alice_user_id = owned_user_id!("@alice:example.org");
+        let alice_device_id = owned_device_id!("ALICEDEVICE");
+        let alice = server
+            .client_builder_for_crypto_end_to_end(&alice_user_id, &alice_device_id)
+            .build()
+            .await;
+        let bob_user_id = owned_user_id!("@bob:example.org");
+        let bob_device_id = owned_device_id!("BOBDEVICE");
+        let bob = server
+            .client_builder_for_crypto_end_to_end(&bob_user_id, &bob_device_id)
+            .build()
+            .await;
+
+        // Publish Bob's device keys without teaching Alice about Bob. The first
+        // request delivery must therefore use the passive unknown-sender
+        // recovery path after its key query completes.
+        server.mock_sync().ok_and_run(&bob, |_| {}).await;
+        let session = super::MatrixClientSession {
+            client: alice.clone(),
+            info: SessionInfo {
+                homeserver: server.server().uri(),
+                user_id: alice_user_id.to_string(),
+                device_id: alice_device_id.to_string(),
+            },
+        };
+        let mut observer = observe_incoming_verification_requests(&session).await;
+        let request_timestamp = matrix_sdk::ruma::MilliSecondsSinceUnixEpoch::now().get();
+        let request = json!({
+            "sender": bob_user_id,
+            "type": "m.key.verification.request",
+            "content": {
+                "from_device": bob_device_id,
+                "transaction_id": "sender-key-recovery-flow",
+                "methods": ["m.sas.v1"],
+                "timestamp": request_timestamp,
+            },
+        });
+
+        server
+            .mock_sync()
+            .ok_and_run(&alice, |builder| {
+                builder.add_to_device_event(request.clone());
+            })
+            .await;
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), observer.recv())
+            .await
+            .expect("typed sender-key recovery should publish without polling delay")
+            .expect("typed sender-key recovery should yield the request");
+        assert_eq!(first.handle().flow_id(), "sender-key-recovery-flow");
+
+        server
+            .mock_sync()
+            .ok_and_run(&alice, |builder| {
+                builder.add_to_device_event(request);
+            })
+            .await;
+        let repeated = tokio::time::timeout(std::time::Duration::from_secs(5), observer.recv())
+            .await
+            .expect("at-least-once transport should forward raw redelivery without polling delay")
+            .expect("raw redelivery should remain observable");
+        assert_eq!(repeated.handle().flow_id(), first.handle().flow_id());
+    }
 
     #[test]
     fn cross_signing_status_maps_to_private_data_free_desktop_status() {
@@ -2036,6 +2350,34 @@ GYW19pdjg0qdXNk/eqZsQTsNWVo6A\n\
             super::map_verification_cancel_kind("m.future_code"),
             Kind::Other
         );
+    }
+
+    #[test]
+    fn sas_cancellation_maps_to_closed_private_safe_projection() {
+        use super::{MatrixSasState as SasState, MatrixVerificationCancelKind as CancelKind};
+
+        let state = super::map_sas_cancellation("m.timeout", false);
+
+        assert_eq!(
+            state,
+            SasState::Cancelled {
+                kind: CancelKind::Timeout,
+                cancelled_by_us: false,
+            }
+        );
+        let debug = format!("{state:?}");
+        assert_eq!(debug, "Cancelled { kind: Timeout, cancelled_by_us: false }");
+        assert!(!debug.contains("m.timeout"));
+
+        let unknown = super::map_sas_cancellation("m.future_private_code", true);
+        assert_eq!(
+            unknown,
+            SasState::Cancelled {
+                kind: CancelKind::Other,
+                cancelled_by_us: true,
+            }
+        );
+        assert!(!format!("{unknown:?}").contains("future_private_code"));
     }
 
     #[test]
@@ -2478,6 +2820,14 @@ impl fmt::Debug for MatrixSearchIndexKey {
 pub struct MatrixClientSession {
     client: matrix_sdk::Client,
     pub info: SessionInfo,
+}
+
+/// Coarse result of the authenticated MSC4186 invite-list contract probe.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixSlidingSyncInviteListSupport {
+    Supported,
+    KnownIncomplete,
+    Unknown,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -4399,6 +4749,50 @@ struct MatrixErrorResponse {
     error: Option<String>,
 }
 
+/// Run one bounded, read-only MSC4186 invite-list preflight operation before
+/// the authoritative sync owner starts. Any successful response cursor and
+/// room payload are intentionally discarded.
+pub async fn probe_sliding_sync_invite_list_support(
+    client: &matrix_sdk::Client,
+) -> MatrixSlidingSyncInviteListSupport {
+    use matrix_sdk::{
+        config::RequestConfig,
+        ruma::{api::client::sync::sync_events::v5 as http, assign, presence::PresenceState, uint},
+    };
+
+    let list = assign!(http::request::List::default(), {
+        ranges: vec![(uint!(0), uint!(0))],
+        room_details: assign!(http::request::RoomDetails::default(), {
+            timeline_limit: uint!(0),
+        }),
+        filters: Some(assign!(http::request::ListFilters::default(), {
+            is_invite: Some(true),
+        })),
+    });
+    let request = assign!(http::Request::new(), {
+        conn_id: Some(SYNC_INVITE_PROBE_CONNECTION_ID.to_owned()),
+        timeout: Some(Duration::ZERO),
+        set_presence: PresenceState::Offline,
+        lists: [(SYNC_INVITE_PROBE_LIST_KEY.to_owned(), list)].into_iter().collect(),
+    });
+    let request_config = RequestConfig::new()
+        .timeout(SYNC_INVITE_PROBE_TIMEOUT)
+        .disable_retry();
+
+    match tokio::time::timeout(
+        SYNC_INVITE_PROBE_TIMEOUT,
+        client.send(request).with_request_config(request_config),
+    )
+    .await
+    {
+        Ok(Ok(response)) if response.lists.contains_key(SYNC_INVITE_PROBE_LIST_KEY) => {
+            MatrixSlidingSyncInviteListSupport::Supported
+        }
+        Ok(Ok(_)) => MatrixSlidingSyncInviteListSupport::KnownIncomplete,
+        Ok(Err(_)) | Err(_) => MatrixSlidingSyncInviteListSupport::Unknown,
+    }
+}
+
 pub fn discover_login_flows(homeserver: &str) -> Result<LoginDiscovery, LoginDiscoveryError> {
     let homeserver = Homeserver::parse(homeserver)?;
     let response = reqwest::blocking::Client::builder()
@@ -6036,6 +6430,8 @@ fn restricted_verification_sync_filter() -> matrix_sdk::ruma::api::client::filte
 
 fn restricted_verification_sync_settings() -> matrix_sdk::config::SyncSettings {
     matrix_sdk::config::SyncSettings::new()
+        .token(matrix_sdk::config::SyncToken::NoToken)
+        .save_sync_token(false)
         .timeout(RESTRICTED_VERIFICATION_SYNC_SERVER_TIMEOUT)
         .filter(
             matrix_sdk::ruma::api::client::sync::sync_events::v3::Filter::FilterDefinition(
@@ -7494,7 +7890,15 @@ fn matrix_error_message(body: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, path::PathBuf};
+    use std::{
+        collections::BTreeMap,
+        io::{Read, Write},
+        net::TcpListener,
+        path::PathBuf,
+        sync::mpsc,
+        thread,
+        time::Duration,
+    };
 
     use super::{
         LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE, MatrixConversationActivity,
@@ -7512,6 +7916,351 @@ mod tests {
         trace_sdk_conversation_activity, trace_sdk_unread_snapshot, update_room_member_power_level,
         update_room_setting,
     };
+
+    #[test]
+    fn sliding_sync_invite_probe_contract_is_typed_bounded_and_discards_cursor() {
+        let source = include_str!("lib.rs");
+        let body = source
+            .split("pub async fn probe_sliding_sync_invite_list_support")
+            .nth(1)
+            .and_then(|rest| rest.split("pub fn discover_login_flows").next())
+            .expect("typed invite-list support probe should precede login discovery");
+
+        assert!(body.contains(".send(request)"));
+        assert!(body.contains("with_request_config"));
+        assert!(body.contains("SYNC_INVITE_PROBE_TIMEOUT"));
+        assert!(body.contains("tokio::time::timeout("));
+        assert!(body.contains("disable_retry()"));
+        assert!(!body.contains(".sliding_sync("));
+        assert!(!body.contains("RoomListService::"));
+    }
+
+    #[derive(Clone, Copy)]
+    enum InviteProbeTestResponse {
+        Json(&'static [u8]),
+        HttpError,
+        Stall,
+    }
+
+    fn read_test_http_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("request read timeout");
+        let mut request = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        let header_end = loop {
+            let read = stream.read(&mut chunk).expect("read invite probe request");
+            assert!(read > 0, "request closed before its headers completed");
+            request.extend_from_slice(&chunk[..read]);
+            assert!(request.len() <= 16 * 1024, "synthetic request is bounded");
+            if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                break index + 4;
+            }
+        };
+        let head = String::from_utf8_lossy(&request[..header_end]);
+        let content_length = head
+            .lines()
+            .skip(1)
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.trim()
+                    .eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().expect("content length"))
+            })
+            .unwrap_or_default();
+        while request.len() < header_end + content_length {
+            let read = stream.read(&mut chunk).expect("read invite probe body");
+            assert!(read > 0, "request closed before its body completed");
+            request.extend_from_slice(&chunk[..read]);
+        }
+        request
+    }
+
+    fn spawn_invite_probe_server(
+        response: InviteProbeTestResponse,
+    ) -> (String, mpsc::Receiver<Vec<u8>>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("synthetic listener");
+        let address = listener.local_addr().expect("synthetic listener address");
+        let (request_tx, request_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            loop {
+                let (mut stream, _) = listener.accept().expect("invite probe request");
+                let request = read_test_http_request(&mut stream);
+                let request_line = String::from_utf8_lossy(&request)
+                    .lines()
+                    .next()
+                    .expect("request line")
+                    .to_owned();
+                if !request_line
+                    .contains("/_matrix/client/unstable/org.matrix.simplified_msc3575/sync")
+                {
+                    stream
+                        .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                        .expect("write background response");
+                    continue;
+                }
+                request_tx
+                    .send(request)
+                    .expect("capture invite probe request");
+                match response {
+                    InviteProbeTestResponse::Json(body) => {
+                        let head = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        stream.write_all(head.as_bytes()).expect("write response head");
+                        stream.write_all(body).expect("write response body");
+                    }
+                    InviteProbeTestResponse::HttpError => stream
+                        .write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                        .expect("write error response"),
+                    InviteProbeTestResponse::Stall => {
+                        thread::sleep(Duration::from_millis(2_250));
+                    }
+                }
+                break;
+            }
+        });
+        (format!("http://{address}"), request_rx, server)
+    }
+
+    async fn authenticated_probe_client(homeserver: String) -> matrix_sdk::Client {
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url(homeserver)
+            .server_versions([matrix_sdk::ruma::api::MatrixVersion::V1_12])
+            .build()
+            .await
+            .expect("synthetic client");
+        client
+            .matrix_auth()
+            .restore_session(
+                matrix_sdk::authentication::matrix::MatrixSession {
+                    meta: matrix_sdk_base::SessionMeta {
+                        user_id: matrix_sdk::ruma::owned_user_id!("@probe:example.invalid"),
+                        device_id: matrix_sdk::ruma::owned_device_id!("PROBEDEVICE"),
+                    },
+                    tokens: matrix_sdk::SessionTokens {
+                        access_token: "synthetic-probe-token".to_owned(), // secret-scan: allow
+                        refresh_token: None,
+                    },
+                },
+                matrix_sdk_base::store::RoomLoadSettings::default(),
+            )
+            .await
+            .expect("synthetic session restore");
+        client
+    }
+
+    fn spawn_refresh_stall_probe_server() -> (String, mpsc::Receiver<String>, thread::JoinHandle<()>)
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("synthetic refresh listener");
+        let address = listener
+            .local_addr()
+            .expect("synthetic refresh listener address");
+        let (request_tx, request_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            loop {
+                let (mut stream, _) = listener.accept().expect("refresh probe request");
+                let request = read_test_http_request(&mut stream);
+                let path = String::from_utf8_lossy(&request)
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_ascii_whitespace().nth(1))
+                    .expect("refresh probe request path")
+                    .to_owned();
+                if path.starts_with("/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?")
+                {
+                    request_tx.send(path).expect("capture invite probe path");
+                    let body =
+                        br#"{"errcode":"M_UNKNOWN_TOKEN","error":"expired","soft_logout":false}"#;
+                    let head = format!(
+                        "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    stream
+                        .write_all(head.as_bytes())
+                        .expect("write unknown-token head");
+                    stream.write_all(body).expect("write unknown-token body");
+                } else if path == "/_matrix/client/v3/refresh" {
+                    request_tx.send(path).expect("capture refresh path");
+                    thread::sleep(Duration::from_secs(3));
+                    break;
+                } else {
+                    stream
+                        .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                        .expect("write background response");
+                }
+            }
+        });
+        (format!("http://{address}"), request_rx, server)
+    }
+
+    async fn refresh_capable_probe_client(homeserver: String) -> matrix_sdk::Client {
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url(homeserver)
+            .server_versions([matrix_sdk::ruma::api::MatrixVersion::V1_12])
+            .handle_refresh_tokens()
+            .build()
+            .await
+            .expect("synthetic refresh-capable client");
+        client
+            .matrix_auth()
+            .restore_session(
+                matrix_sdk::authentication::matrix::MatrixSession {
+                    meta: matrix_sdk_base::SessionMeta {
+                        user_id: matrix_sdk::ruma::owned_user_id!("@probe:example.invalid"),
+                        device_id: matrix_sdk::ruma::owned_device_id!("PROBEDEVICE"),
+                    },
+                    tokens: matrix_sdk::SessionTokens {
+                        access_token: "expired-probe-token".to_owned(), // secret-scan: allow
+                        refresh_token: Some("synthetic-refresh-token".to_owned()),
+                    },
+                },
+                matrix_sdk_base::store::RoomLoadSettings::default(),
+            )
+            .await
+            .expect("synthetic refresh session restore");
+        client
+    }
+
+    #[tokio::test]
+    async fn sliding_sync_invite_probe_sends_exact_authenticated_request() {
+        let (homeserver, requests, server) =
+            spawn_invite_probe_server(InviteProbeTestResponse::Json(
+                br#"{"pos":"discarded","lists":{"koushi_invites":{"count":0}}}"#,
+            ));
+        let client = authenticated_probe_client(homeserver).await;
+
+        assert_eq!(
+            super::probe_sliding_sync_invite_list_support(&client).await,
+            super::MatrixSlidingSyncInviteListSupport::Supported
+        );
+        let request = requests
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured invite probe request");
+        let request = String::from_utf8(request).expect("ASCII HTTP request");
+        let (head, body) = request.split_once("\r\n\r\n").expect("HTTP request split");
+        let request_line = head.lines().next().expect("request line");
+        let target = request_line
+            .split_ascii_whitespace()
+            .nth(1)
+            .expect("request target");
+        let target = url::Url::parse(&format!("http://example.invalid{target}"))
+            .expect("request target URL");
+        let query = target.query_pairs().collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            target.path(),
+            "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync"
+        );
+        assert_eq!(query.get("timeout").map(|value| value.as_ref()), Some("0"));
+        assert_eq!(
+            query.get("set_presence").map(|value| value.as_ref()),
+            Some("offline")
+        );
+        assert_eq!(
+            query.len(),
+            2,
+            "probe query must contain no cursor or txn id"
+        );
+        assert!(
+            head.to_ascii_lowercase()
+                .contains("authorization: bearer synthetic-probe-token") // secret-scan: allow
+        );
+
+        let body: serde_json::Value = serde_json::from_str(body).expect("typed request JSON");
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "conn_id": "koushi-invite",
+                "lists": {
+                    "koushi_invites": {
+                        "ranges": [[0, 0]],
+                        "timeline_limit": 0,
+                        "filters": {"is_invite": true}
+                    }
+                }
+            })
+        );
+        assert!(
+            super::SYNC_INVITE_PROBE_CONNECTION_ID.len() <= 16,
+            "probe connection id must satisfy MSC4186's length bound"
+        );
+        server.join().expect("synthetic invite probe server");
+    }
+
+    #[tokio::test]
+    async fn sliding_sync_invite_probe_distinguishes_missing_list_from_supported_empty_list() {
+        for (body, expected) in [
+            (
+                br#"{"pos":"discarded","lists":{"koushi_invites":{"count":0}}}"#.as_slice(),
+                super::MatrixSlidingSyncInviteListSupport::Supported,
+            ),
+            (
+                br#"{"pos":"discarded","lists":{}}"#.as_slice(),
+                super::MatrixSlidingSyncInviteListSupport::KnownIncomplete,
+            ),
+        ] {
+            let (homeserver, _requests, server) =
+                spawn_invite_probe_server(InviteProbeTestResponse::Json(body));
+            let client = authenticated_probe_client(homeserver).await;
+            assert_eq!(
+                super::probe_sliding_sync_invite_list_support(&client).await,
+                expected
+            );
+            server.join().expect("synthetic invite probe server");
+        }
+    }
+
+    #[tokio::test]
+    async fn sliding_sync_invite_probe_maps_http_malformed_and_timeout_to_unknown() {
+        for response in [
+            InviteProbeTestResponse::HttpError,
+            InviteProbeTestResponse::Json(br#"malformed"#),
+            InviteProbeTestResponse::Stall,
+        ] {
+            let (homeserver, _requests, server) = spawn_invite_probe_server(response);
+            let client = authenticated_probe_client(homeserver).await;
+            assert_eq!(
+                super::probe_sliding_sync_invite_list_support(&client).await,
+                super::MatrixSlidingSyncInviteListSupport::Unknown
+            );
+            server.join().expect("synthetic invite probe server");
+        }
+    }
+
+    #[tokio::test]
+    async fn sliding_sync_invite_probe_bounds_unknown_token_refresh_end_to_end() {
+        let (homeserver, requests, server) = spawn_refresh_stall_probe_server();
+        let client = refresh_capable_probe_client(homeserver).await;
+        let started_at = tokio::time::Instant::now();
+
+        assert_eq!(
+            super::probe_sliding_sync_invite_list_support(&client).await,
+            super::MatrixSlidingSyncInviteListSupport::Unknown
+        );
+        let elapsed = started_at.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(1_500),
+            "the synthetic refresh endpoint should exercise the outer deadline: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_millis(2_750),
+            "the complete preflight, including token refresh, exceeded its two-second budget: {elapsed:?}"
+        );
+        assert!(
+            requests
+                .recv_timeout(Duration::from_secs(1))
+                .expect("invite probe request")
+                .starts_with("/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?")
+        );
+        assert_eq!(
+            requests
+                .recv_timeout(Duration::from_secs(1))
+                .expect("refresh request"),
+            "/_matrix/client/v3/refresh"
+        );
+        server.join().expect("synthetic refresh probe server");
+    }
 
     #[test]
     fn conversation_activity_classifies_messages_encryption_and_threads_only() {

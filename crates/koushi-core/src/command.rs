@@ -88,7 +88,10 @@ impl CoreCommand {
             ) => *request_id,
             Self::Account(command) => match command {
                 #[cfg(feature = "qa-bin")]
-                AccountCommand::QaSetLocalDeviceBlacklisted { request_id, .. } => *request_id,
+                AccountCommand::QaSetLocalDeviceBlacklisted { request_id, .. }
+                | AccountCommand::QaRefreshDeviceKeysAndAssertKnown { request_id, .. } => {
+                    *request_id
+                }
                 AccountCommand::LoginPassword { request_id, .. }
                 | AccountCommand::DiscoverLogin { request_id, .. }
                 | AccountCommand::StartOidcLogin { request_id, .. }
@@ -1106,6 +1109,13 @@ pub enum AccountCommand {
     QaSetLocalDeviceBlacklisted {
         request_id: RequestId,
         target: VerificationTarget,
+        room_id: String,
+        acknowledged: tokio::sync::oneshot::Sender<Result<(), ()>>,
+    },
+    #[cfg(feature = "qa-bin")]
+    QaRefreshDeviceKeysAndAssertKnown {
+        request_id: RequestId,
+        target: VerificationTarget,
         acknowledged: tokio::sync::oneshot::Sender<Result<(), ()>>,
     },
     ResetIdentity {
@@ -1165,6 +1175,11 @@ pub enum AccountCommand {
 
 impl AccountCommand {
     pub fn requires_ready_session(&self) -> bool {
+        #[cfg(feature = "qa-bin")]
+        if matches!(self, Self::QaRefreshDeviceKeysAndAssertKnown { .. }) {
+            return true;
+        }
+
         matches!(
             self,
             Self::RequestVerification { .. }
@@ -1455,6 +1470,12 @@ impl fmt::Debug for AccountCommand {
             #[cfg(feature = "qa-bin")]
             Self::QaSetLocalDeviceBlacklisted { request_id, .. } => formatter
                 .debug_struct("QaSetLocalDeviceBlacklisted")
+                .field("request_id", request_id)
+                .field("target", &"<redacted>")
+                .finish(),
+            #[cfg(feature = "qa-bin")]
+            Self::QaRefreshDeviceKeysAndAssertKnown { request_id, .. } => formatter
+                .debug_struct("QaRefreshDeviceKeysAndAssertKnown")
                 .field("request_id", request_id)
                 .field("target", &"<redacted>")
                 .finish(),
@@ -2791,6 +2812,32 @@ mod tests {
         });
 
         assert!(!command.requires_ready_session());
+    }
+
+    #[cfg(feature = "qa-bin")]
+    #[test]
+    fn qa_device_key_refresh_is_ready_gated_correlated_and_redacted() {
+        let request_id = fake_rid(74);
+        let (acknowledged, _ack) = tokio::sync::oneshot::channel();
+        let command = CoreCommand::Account(AccountCommand::QaRefreshDeviceKeysAndAssertKnown {
+            request_id,
+            target: VerificationTarget {
+                user_id: "@private-user:example.invalid".to_owned(),
+                device_id: "PRIVATEDEVICE".to_owned(),
+            },
+            acknowledged,
+        });
+
+        assert_eq!(command.request_id(), request_id);
+        assert!(command.requires_ready_session());
+        let debug = format!("{command:?}");
+        assert!(
+            debug.contains("QaRefreshDeviceKeysAndAssertKnown"),
+            "{debug}"
+        );
+        assert!(debug.contains("<redacted>"), "{debug}");
+        assert!(!debug.contains("private-user"), "{debug}");
+        assert!(!debug.contains("PRIVATEDEVICE"), "{debug}");
     }
 
     #[test]

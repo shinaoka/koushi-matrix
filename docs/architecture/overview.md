@@ -5,7 +5,7 @@ Dated specs and plans under `docs/superpowers/` are implementation guides
 toward this document and must not contradict it. Amend this document first
 when a design change is needed, then update or supersede the affected specs.
 
-Last amended: 2026-07-17.
+Last amended: 2026-07-20.
 
 ## Product Scope
 
@@ -158,16 +158,14 @@ Crate responsibilities:
 - `apps/desktop` — view and interaction code only, including viewport state,
   DOM measurement, and scroll anchoring.
 
-Upstream SDK deltas are consumed from a single rev-pinned git dependency on
-`github.com/shinaoka/matrix-rust-sdk-work`, with the local
-`vendor/matrix-rust-sdk` submodule kept as the editable SDK checkout for
-preparing and reviewing upstreamable patches. Local comments document the patch
-surfaces, and `docs/upstream/matrix-rust-sdk-feedback.md` remains the ledger for
-PR candidate material. The vendored fork already contains the behavior/API
-deltas needed for the current search and runtime work; Phase 9 added
-explanatory comments and management docs, not new runtime behavior. The Phase 9
-cleanup follow-up completed the SDK adapter rename, room lifecycle commands,
-runtime IPC contract drift check, and optional AppCommand decision.
+Upstream SDK deltas are consumed exclusively from the checked-out
+`vendor/matrix-rust-sdk` submodule. Root workspace Matrix SDK dependencies are
+exact paths beneath that checkout, and the parent repository gitlink is the
+single revision pin; builds must not substitute a remote git dependency for the
+code under review. The submodule tracks the upstreamable fork on
+`github.com/shinaoka/matrix-rust-sdk-work`. Local comments document patch
+surfaces, and `docs/upstream/matrix-rust-sdk-feedback.md` is the required ledger
+for every local SDK behavior or API divergence.
 
 GUI, Tauri, CLI, and QA all use the same command/event boundary. There is no
 standalone daemon; the runtime is in-process.
@@ -235,17 +233,42 @@ An in-process actor system in `koushi-core`:
   `RoomListService` instances is prohibited — they are not driven by the
   sync loop, race it, and return entries without the `required_state`
   (e.g. `m.room.create` for space classification) the live service
-  requests. Its live entries adapter uses a non-left filter so invited-room
-  diffs also wake Rust-owned invite projection; joined-only observation leaves
-  `AppState.invites` stale. Room tags are projected into
+  requests. Its live entries adapter uses a non-left filter, but a bounded
+  adapter diff is not the sole liveness signal: an invite can commit outside
+  the visible entries head without changing that head. The same observer
+  therefore consumes the base client's already-committed room-update broadcast
+  as an auxiliary wake source. It coalesces queued updates, reprojects on an
+  invite payload or invite-membership change, performs one reconciliation after
+  lag, and ignores ordinary joined-room updates whose invite fingerprint is
+  unchanged. Closing the auxiliary broadcast disables only that wake arm; it
+  never starts a second sync loop or `RoomListService`. Room tags are projected into
   `RoomSummary.tags` by the same Rust-owned room-list normalization path, and
   sidebar unread/mention affordances consume Rust-owned unread/highlight counts
   from `SidebarModel`. React must not derive favourite, low-priority, unread,
   or mention membership from local UI state.
+- `TimelineManager` (per account session) — timeline actor routing plus the
+  session-scoped outbound-send lifecycle. It directly polls supervised SDK
+  enqueue futures, the sole client-global SDK send-queue terminal observer, and the
+  composite `(room_id, sdk_transaction_id)` correlation back to the original
+  `TimelineKey`, `RequestId`, and `SubmissionId`. Its lifetime spans
+  room/thread unsubscribe and actor replacement. Enqueue futures obey the async
+  contract that each poll returns; panic isolation converts an unwind into the
+  registration's private-safe fail-closed terminal. Before an accepted route
+  returns, the manager drives that specific worker past its admission permit to
+  a one-shot signal marking the start of payload-specific preflight; completing
+  an unrelated ready worker is not sufficient. Reply preparation may still
+  suspend before the eventual SDK queue call, so this signal does not serialize
+  SDK enqueue order across workers. FIFO retry after queue insertion remains
+  SDK-owned. Orderly and unexpected
+  teardown synchronously drops any remaining manager-owned futures while the
+  observer is still owned, so no raw task handle can detach an accepted send.
 - `TimelineActor` (per room/thread/focused timeline) — subscription, diffs,
-  pagination, send/edit/redaction relay, reaction annotation projection and
+  pagination, edit/redaction relay, reaction annotation projection and
   guarded send/redact relay, media/file projection, upload progress,
-  room-scoped live signals, and Rust-only media download effects.
+  room-scoped live signals, send-state presentation, and Rust-only media
+  download effects. It provides a cloneable timeline/send context to the
+  manager and projects local echoes, but it neither owns the accepted SDK
+  enqueue future nor terminal send observation or command correlation.
   Room live timelines use
   `TimelineFocus::Live { hide_threaded_events: true }` so threaded replies
   are hidden from the main room timeline. Expanded threads use
@@ -254,8 +277,9 @@ An in-process actor system in `koushi-core`:
   `RoomListService` (`subscribe_to_rooms`, the Element X room-open pattern):
   the all-rooms list alone only guarantees the initial window on some
   servers. Thread backward pagination uses the same `TimelineKind::Thread {
-  room_id, root_event_id }` key as the thread subscription. Edits and
-  plain sends, edits, and redactions go through the SDK `Timeline` handle (not
+  room_id, root_event_id }` key as the thread subscription. Plain sends,
+  replies, media, edits, and redactions go through the SDK `Timeline` handle
+  (not
   direct room/send-queue calls) so their diffs are produced as local echoes
   instead of depending on the server echoing them back; for own sent events whose
   remote echo has not arrived, the actor resolves the event id back to the
@@ -368,7 +392,9 @@ Supervision follows the same ownership tree:
   emits a failure with a new generation marker. `SyncActor` crashes move the
   account to `SyncFailed`; the SDK's normal reconnect loop handles network
   churn, while an internal crash requires an explicit `SyncCommand::Restart`
-  or account restore path.
+  or account restore path. Replacing a `TimelineActor` does not replace the
+  session-owned outbound-send workers, terminal observer, or correlation
+  coordinator.
 - `AccountActor` failure is fatal to that account runtime: stop children,
   drop SDK handles in runtime context, emit a redacted account failure, and
   require restore/login rather than silently continuing with unknown state.
@@ -530,35 +556,66 @@ stream), and the runtime must relay that model, not fight it.
    identically to rooms.
 7. **Subscriptions have explicit lifecycles.** Every subscribe has a matching
    unsubscribe command. Unsubscribing (or account shutdown) drops the SDK
-   timeline handle, which cancels its background tasks. Room switching policy
+   timeline handle, which cancels its presentation/background tasks, but it
+   does not cancel an already accepted send or discard its manager-owned
+   terminal correlation. Room switching policy
    (drop immediately vs. keep-warm) is decided by the UI through these
    commands; the runtime never leaks timeline state in an unbounded map.
 8. **Sends go through the SDK timeline/send queue path.** Local echo, offline
    persistence, strict FIFO retry, retry-after-reconnect, and remote-echo
    matching come from the SDK send queue, reached through the SDK UI timeline
    handle for visible timeline sends. The Rust runtime owns the product state
-   projection:
+   projection. `TimelineManager` supervises every accepted text, reply, and
+   media enqueue future, observes client-global queue terminals, and preserves
+   request/submission correlation across timeline unsubscribe and actor
+   replacement. Per-timeline actors own only the presentation subscription and
+   guarded queue handles:
    `TimelineItem.send_state`, transaction-id keyed retry/cancel guards, and
    `RetrySend` / `CancelSend` command routing through SDK `SendHandle`s. After
    recoverable send errors, retry/cancel also re-enable the SDK room queue so
    FIFO successors are not stranded. React renders and dispatches only; it must
-   not infer send legality or repair queue state locally. `Transaction`
+   not infer send legality or repair queue state locally. During ordered
+   shutdown the manager gives the complete enqueue-worker set one absolute,
+   count-independent five-second graceful deadline while terminal admission
+   and the global observer remain live. The manager polls both workers and the
+   observer during that grace period, then gives the observer one final
+   non-blocking poll after worker quiescence or deadline cancellation to admit
+   an already queued exact terminal. It synchronously drops the remaining
+   directly-polled futures, settling their registrations before it drops the
+   directly-polled terminal observer. Only then does it stop
+   presentation actors and drain terminal ingress. An
+   unexpected manager drop first closes terminal admission, synchronously drops
+   every remaining enqueue future, and then drops the terminal observer. `Transaction`
    timeline identities are stable local-echo keys only; visible failed/sending
    state comes from `TimelineItem.send_state`. The runtime does not serialize
    sends behind a command loop.
-9. **Sync uses capability-probed SDK services, not ad hoc polling.** Prefer
-   `SyncService`/`RoomListService` when the homeserver supports MSC4186. If
-   `SyncService` is unavailable for a target homeserver, the `SyncActor`
-   switches to an explicit `LegacySync` backend using SDK `/sync` primitives
-   while preserving the same `CoreCommand`/`CoreEvent` contract. The selected
-   backend is emitted as a redacted diagnostic/event field so QA can assert it.
+   `RequestId` completion is connection-scoped: after process restart the SDK's
+   persisted queue/local echo converges the product projection, but the new
+   runtime does not replay completion for a dead connection. Durable
+   cross-process submission settlement would require a separate encrypted,
+   body-free outbox journal and is not part of this contract.
+9. **Sync uses behavior-probed SDK services, not ad hoc polling.** Advertising
+   an MSC4186 version is necessary but not sufficient: before starting either
+   authoritative sync owner, Core issues one bounded, authenticated MSC4186
+   request for a fixed zero-timeline invited-room list. Only a response that
+   includes the requested list selects `SyncService`/`RoomListService`.
+   Omission of that list, a malformed/error response, or expiry of the one
+   end-to-end two-second deadline fails closed to the explicit `LegacySync`
+   backend using SDK `/sync` primitives. The deadline encloses automatic token
+   refresh and retry as well as transport time; the response cursor and room
+   payload are discarded, so the preflight never becomes another sync owner.
+   Do not replace this contract probe with homeserver-name/version
+   fingerprinting. Both backends preserve the same `CoreCommand`/`CoreEvent`
+   contract, and the selected backend plus a coarse private-data-free reason is
+   emitted so QA can assert the decision.
    `sync_once`-style one-shot polling remains a QA/debug tool, not the product
    continuous-sync path. Because legacy `/sync` works against any homeserver,
    a debug/test-only override (compile-time gated out of release builds)
-   forces the `LegacySync` backend so local QA exercises the legacy path even
-   against MSC4186-capable servers — both local QA servers advertise MSC4186,
-   so without the override the fallback would never run before the real
-   homeserver gate. Note that `RoomListService` is built on sliding sync:
+   forces the `LegacySync` backend so local QA exercises that path even when
+   the contract probe succeeds. Conduit currently advertises MSC4186 but omits
+   the requested invited-room list and therefore selects `LegacySync`
+   automatically; the local Tuwunel/Synapse profiles return the list and select
+   `SyncService`. Note that `RoomListService` is built on sliding sync:
    on the `LegacySync` backend, `RoomActor` must normalize the room list from
    legacy sync state (`Client::rooms()` plus sync updates) instead. Because the
    local QA matrix includes homeservers without MSC4186, this legacy room-list
@@ -688,10 +745,21 @@ measurement, and DOM anchoring.
 
 Runtime responsibilities:
 
-- Emit an initial item set followed by FIFO, `VectorDiff`-shaped diff batches.
-  Diff batches preserve positional operations (`PushFront`, `PushBack`,
-  `Insert`, `Set`, `Remove`, `Truncate`, `Clear`, `Reset`) closely enough that
-  the UI can distinguish prepend pagination from live append/update/remove.
+- Treat SDK timeline order and indices as a canonical, Core-internal domain.
+  One Core-owned projection transaction applies each SDK batch exactly once,
+  advances the bounded display membership/mirror, and emits only display-space
+  diffs. No raw canonical SDK index crosses `TimelineEvent::ItemsUpdated`.
+- Emit an initial item set followed by FIFO, `VectorDiff`-shaped display
+  batches. Every numeric `PushFront`, `PushBack`, `Insert`, `Set`, `Remove`,
+  `Truncate`, `Clear`, or `Reset` operation is relative to the desktop display
+  sequence immediately before that operation. Applying a batch to the prior
+  display must equal Core's authoritative normalized display after the batch.
+- Validate emitted display operations and final convergence in release builds.
+  An ambiguous or invalid incremental translation recovers with one
+  authoritative display `Reset` and increments the private-data-free
+  `display_projection_reset_fallbacks` counter. Ordinary focused and local
+  homeserver gates require a zero counter delta; Reset is exceptional recovery,
+  not a normal translation strategy.
 - Emit pagination state changes with `TimelineKey`, direction, state, and
   `Option<RequestId>`: `Idle`, `Paginating`, `EndReached`, `Failed(kind)`.
 - Treat a pagination command as data-complete when the SDK has produced the
@@ -720,6 +788,13 @@ UI responsibilities:
   `ItemsUpdated` batch and no resync is pending, initialize that key from an
   empty render list and apply the diff. After `ResyncRequired` or
   `ResyncMarker`, continue to require a fresh `InitialItems`.
+- Keep command completion and projection ownership causally distinct.
+  `InitialItems` retains the original projection request identity until the
+  exact actor/generation is acknowledged, while a separate causal request
+  identity correlates each initial or idempotent replay to the Subscribe command
+  that requested it. A same-key event without the matching causal identity must
+  not settle a later Subscribe; failures remain correlated to that later
+  command's request identity.
 - A Focused main-pane anchor is not display success by itself. For Activity,
   search, and date navigation, Core publishes the anchor only after the
   app-level timeline store applies and acknowledges the exact actor-owned
@@ -845,12 +920,140 @@ architectural invariants:
   handles are held only by `AccountActor`; SDK request/SAS streams settle the
   reducer with typed actions and expose only private-data-free DTOs such as SAS
   emojis. Incoming verification request discovery is Rust-owned in
-  `AccountActor`. The local core `e2ee_trust` proof exercises same-user
+  `AccountActor`. Replayed same-peer/device/flow SAS starts are idempotent at
+  the SDK boundary, and `AccountActor` adopts only one SAS continuation per
+  flow; a replay must not replace its handle, observer, timeout, or acceptance.
+  A valid to-device verification request that races ahead of sender-device
+  discovery is retained at the crypto boundary in a bounded, timestamp-gated,
+  sender/flow-deduplicated queue. The existing key-query owner is marked for
+  that sender, and the request is revalidated and materialized
+  after matching device keys commit. A still-missing device remains pending
+  until a later matching key response or expiry; recovery must not add another
+  sync owner, blind resend, fixed delay, or identifier-bearing diagnostic.
+  Each generated key query has stable in-flight metadata mapping its exact
+  `request_id` to the users covered by that request and its dirty-state sequence.
+  Repeated, concurrent, or cancelled request collection must not overwrite an
+  earlier mapping; collectors reuse the stable request and add requests only
+  for uncovered dirty users. Registration uses a final dirty-state snapshot
+  protected from response cleanup, so an awaited collector cannot insert stale
+  metadata after a response makes its earlier snapshot clean. Complete
+  response-associated processing for one `request_id` is serialized by a
+  stable per-entry async gate. A handler clones and awaits that gate without a
+  registry or store guard, then revalidates the entry before taking its coverage
+  snapshot and verification claim. Success consumes only the pointer-matched
+  entry; failure or cancellation leaves it for the next same-ID waiter. A
+  waiter after successful consumption revalidates no entry and carries no
+  metadata obligation. Different request IDs remain concurrent. Verification
+  recovery scopes a response to the exact
+  union of users present in `device_keys` and users covered by that `request_id`,
+  so a failure-only response with an empty `device_keys` map still reaches the
+  pending sender without claiming unrelated users.
+  Pending entries are removed only after terminal validation or successful
+  materialization; a fallible store read or failed initial key-query schedule
+  leaves the original FIFO slot retryable without starting an out-of-band
+  query. Normal materialization and key-query recovery publish the same stable
+  handle through one typed incoming-request lease stream. Unknown pending
+  entries, publications, subscriber generation, and the active head claim live
+  under one bounded owner lock; their combined count is at most 32. A recovered
+  pending slot becomes a publication under that lock, so a full queue cannot
+  strand a committed replay. An active lease retains the head slot; commit
+  removes it, while drop releases the claim in place without reordering.
+  Subscriber generation check and head claim are one linearization point: a
+  claim that wins first remains owned, while a replacement that wins first
+  prevents the stale subscriber from claiming. Capacity is strict FIFO: no
+  existing pending entry, publication, or active lease is evicted to admit a
+  newcomer. At capacity, a newly materialized request is explicitly cancelled
+  with a private-data-free protocol terminal and outgoing cancel; an unknown-
+  device newcomer is not retained and does not schedule a key query. Sync cursor
+  advancement never silently loses a materialized product delivery. Cache
+  insertion decides existing-versus-inserted in
+  one critical section, and a same-flow collision never upgrades unrelated
+  cached provenance.
+  Koushi has no raw to-device verification handler. It commits a typed lease
+  only after its product observer channel accepts an actionable request, and it
+  commits terminal/non-actionable heads immediately so they cannot starve the
+  FIFO. Generic SDK raw handlers remain independent compatibility fanout:
+  cancellation after only some handlers finish may repeat them on redelivery.
+  Transport is at-least-once, keyed by stable `(sender, flow_id)` identity;
+  `AccountActor` owns product idempotence using the full incoming
+  `VerificationTarget` (peer and device) plus SDK flow id. Only an exact
+  target-and-flow replay is ignored; the same flow id from a different peer or
+  device is a conflict and is explicitly cancelled. Replayed SAS continuations
+  are no-ops; distinct conflicting SAS handles are explicitly rejected without
+  exposing raw SDK errors. An active own-user verification, including its
+  pre-SAS request phase, owns the shared verification continuation and observer
+  slots. Because that handle has no incoming target/flow identity available for
+  replay matching, every incoming request during the own-user flow is an
+  explicit conflict cancelled before any handle or observer replacement.
+  Delivery and wrapper `Debug` implementations are constant/redacted and never
+  delegate to request handles, owner state, clients, accounts, devices, or
+  identity keys. Pending query state is explicit: `NeedsQuery`,
+  `QueryInFlight`, `WaitingForExternalUpdate`, response-claimed, or
+  replay-claimed. A response RAII claim is acquired before device-key response
+  processing begins, including its durable commit and later cache/lock awaits.
+  Cancellation or error anywhere in that window returns only claimed entries to
+  `NeedsQuery`; the claim is response-token-scoped, so a failed response cannot
+  reset or steal a newer same-sender response's claim. Normal still-missing
+  completion explicitly transitions its entries to `WaitingForExternalUpdate`,
+  so duplicates neither strand nor reschedule work.
+  Overlapping responses record a per-entry committed-update generation even
+  when another response owns replay; that owner must observe and replay the
+  deferred commit before it may enter `WaitingForExternalUpdate`.
+  Session replacement has the same ordered-owner rule. Soft-logout reauth stops
+  and joins the old Account forwarder plus the SDK typed-lease worker before
+  installing an observer on the new client. Removing the room handler prevents
+  new dispatch; already-dispatched room-handler futures are owned and awaited by
+  the SDK sync dispatch, and the old `SyncActor` stop-and-join is their session-
+  replacement settlement barrier. Every observer-to-actor message carries the observer's session
+  generation and is accepted only while that generation and an active session
+  still match. A full actor mailbox send is raced against stop with stop
+  priority; observer join has a bounded abort fallback and awaits abort
+  settlement. Dropping a stop sender without awaiting the old task is not an
+  ownership barrier.
+  Manual one-shot sync is admitted only when that SDK client has no continuous
+  or restricted sync owner: `AccountActor` rejects it before routing while a
+  restricted owner is active, and `SyncActor` rejects it before any SDK call
+  while a continuous owner or owner artifact remains.
+  A filtered verification-only sync always requests `SyncToken::NoToken` and
+  sets the SDK's opt-in `save_sync_token(false)` contract. The response still
+  commits crypto, device, account-data, and to-device state and runs handlers,
+  but its filter-scoped `next_batch` never replaces the persisted global room
+  cursor. A fresh store therefore remains tokenless; a restored account keeps
+  its previous canonical cursor across restricted sync, process shutdown,
+  account switching, and SQLite reopen. Normal LegacySync may reuse that
+  canonical cursor directly, with no parallel in-memory taint ledger or repair
+  baseline. Server-family labels, empty local room lists, retries, and longer
+  waits are not cursor-provenance evidence.
+  Headless E2EE QA that needs a device-readiness barrier performs a read-only,
+  `qa-bin`-only user-key refresh and requires the exact device to be present
+  before acknowledging. The receiver-side acknowledgement causally precedes a
+  fresh device's verification request as well as encrypted sends; it does not
+  create a verification flow as a probe. Multi-party waits select the relevant
+  event streams against one absolute deadline rather than polling snapshots.
+  Composed QA scenarios carry participant ownership explicitly: a role already
+  logged in and syncing earlier in the scenario is borrowed by later stages and
+  is neither duplicated nor cleaned up there. A focused scenario with no prior
+  participant creates, bootstraps, owns, and cleans up exactly one instance.
+  Ownership begins before a fallible login submission, not after the first
+  successful post-login checkpoint. Cleanup therefore distinguishes an
+  unsubmitted runtime, a submitted provisional session, and a keyed logged-in
+  session; every owned role attempts the strongest available logout barrier
+  before connection drop and runtime shutdown. Cleanup is best-effort across
+  all owned roles so one failure cannot strand the remaining participants.
+  Logout event streams are wake signals only: timeout, lag, or closure is
+  followed by one final authoritative `SignedOut` snapshot observation against
+  the original deadline. Helpers must not infer a gate from timing or
+  manufacture another device for a role the scenario already owns.
+  Closed cancellation diagnostics may expose only a fixed cancellation kind
+  and whether cancellation originated locally, never raw protocol text or
+  identifiers. The local core `e2ee_trust` proof exercises same-user
   two-device SAS verification, cross-signing bootstrap, passphrase-backed
   key-backup enable, encrypted seed-room backup upload, wrong-secret restore
   failure, successful joined-room restore on the second device, and identity
-  reset on disposable local homeservers through the probed SyncService core leg
-  before GUI wiring. No design doc may claim exhaustive backup-wide restore
+  reset on disposable local homeservers through the behavior-probed core leg
+  before GUI wiring. That leg may select either backend from the invite-list
+  preflight; E2EE correctness must not depend on the server label. No design doc
+  may claim exhaustive backup-wide restore
   until the exact supported restore scope is proven or split into an explicit
   follow-up.
 

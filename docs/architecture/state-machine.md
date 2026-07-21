@@ -8,7 +8,7 @@ fixture/demo backend contract mentioned below is historical (dev/demo only).
 The state-transition diagrams in this document are normative and must track the
 reducer; see [Maintenance Contract](#maintenance-contract).
 
-Date: 2026-06-20
+Date: 2026-07-20
 
 ## Contract
 
@@ -93,6 +93,20 @@ stateDiagram-v2
     LoggingOut --> SignedOut: LogoutFinished
 ```
 
+- A state-changing account command is admitted only if its projected action is
+  accepted by the current reducer state. Rejection is never a silent return:
+  Core emits exactly one correlated `OperationFailed` with the stable failure
+  kind (for example `SessionRequired` for `RestoreSession` while logout has not
+  reached `SignedOut`) and does not route the rejected command to
+  `AccountActor`.
+- `LoggedOut` is an operation terminal, while `SessionState::SignedOut` is the
+  authoritative state barrier. They travel on independent runtime lanes and
+  may be observed in either order. A consumer that will immediately issue a
+  session-sensitive follow-up must observe both before proceeding; seeing only
+  `LoggedOut` does not prove reducer commit visibility. The same rule applies
+  when a restore attempt emits `OperationFailed(SessionNotFound)` while its
+  `RestoreSessionFailed` action is still advancing the reducer back to
+  `SignedOut`.
 - `Provisional`, `AwaitingVerification`, `Verifying`, and `Rejecting` are
   authenticated but not Ready. Their DTOs contain only coarse method/account
   capability and failure kinds plus app-owned opaque correlation IDs. SDK
@@ -380,6 +394,14 @@ stateDiagram-v2
 - `InviteListUpdated { invites }` is accepted only when the session is Ready.
   It replaces the whole invite snapshot and emits `RoomListChanged`; duplicate
   or stale SDK deliveries must be folded into the next Rust-owned snapshot.
+- Backend selection proves the invite-list contract before either continuous
+  owner starts. An authenticated, cursorless MSC4186 request asks for one fixed
+  zero-timeline invited-room list. Presence of that exact list selects
+  `SyncService`; omission, typed/malformed failure, or expiry of the single
+  end-to-end two-second deadline selects `LegacySync`. The deadline includes
+  automatic access-token refresh and retry. Probe cursors and room payloads are
+  discarded, and the preflight never creates a second sync owner. Server-family
+  or version-string fingerprints are not capability evidence.
 - `InvitePreview` carries room id for command correlation plus display name,
   optional topic, optional inviter display name, and `is_dm`. GUI code must
   treat those fields as render data, not as a local membership state machine.
@@ -391,10 +413,18 @@ stateDiagram-v2
   events/snapshots.
 - `RoomActor` owns projection for both sync backends. On the SyncService path,
   the single live `RoomListService` entries adapter uses the non-left filter so
-  invited-room diffs wake projection. Joined rooms/spaces are still normalized
-  from `RoomState::Joined`; invite previews are normalized from
-  `client.invited_rooms()`. A joined-only adapter is incorrect because invite
-  receipt can sync successfully without any joined-room diff.
+  visible invited-room diffs wake projection. A bounded entries head is not a
+  complete change feed: an invite may commit outside that head without emitting
+  an entries diff. The same observer also listens to the base client's
+  post-commit room-update broadcast as an auxiliary wake, coalesces queued
+  batches, and reprojects only for an invite payload, an invite-membership
+  change, or one bounded lag recovery. Ordinary joined-room updates with an
+  unchanged invite fingerprint do not rebuild the room list. A closed auxiliary
+  broadcast disables that arm without ending the authoritative entries
+  observer, and this path never creates a second sync owner or
+  `RoomListService`. Joined rooms/spaces are still normalized from
+  `RoomState::Joined`; invite previews are normalized from
+  `client.invited_rooms()`.
 - The local core `invites_dm` QA scenario is the Phase A proof:
   `invite_recv=ok invite_accept=ok invite_decline=ok dm_start=ok`. Its output
   must remain private-data-free; do not print Matrix room IDs, user IDs, invite
@@ -424,7 +454,10 @@ relay are discarded.
 ```mermaid
 stateDiagram-v2
     [*] --> Subscribed: Timeline::subscribe / snapshot + stream generation N
-    Subscribed --> Subscribed: DiffBatch(N) / ItemsUpdated(N)
+    Subscribed --> Projecting: CanonicalDiffBatch(N) / apply canonical once
+    Projecting --> Subscribed: valid display projection / ItemsUpdated(display indices)
+    Projecting --> Subscribed: ambiguous or invalid projection / display Reset + fallback counter
+    Subscribed --> Subscribed: Subscribe(request R) while active / replay InitialItems(cause R, retained projection ACK)
     Subscribed --> Overflowed: data inbox Full / lossless Overflow(N) control
     Subscribed --> Overflowed: SDK diff stream ended / lossless StreamEnded(N) control
     Overflowed --> Resubscribing: actor stops relay N and advances to N+1
@@ -452,6 +485,21 @@ stale or duplicate due tokens are ignored, and actor shutdown aborts the timer.
 Each immediately-ending replacement increases the delay, preventing a hot
 subscribe/Resync loop. The first accepted live diff batch resets backoff to the
 base delay. Queue overflow recovery remains immediate.
+
+Canonical SDK positions and bounded display positions are distinct domains.
+The timeline actor owns the only production projection transaction: it applies
+the canonical batch once, advances exact pre-normalization display membership,
+derives the authoritative bounded display, validates the display-relative
+output in release builds, and publishes only that output. Invalid incremental
+translation emits an authoritative display `Reset` and increments the
+private-data-free fallback counter; normal focused and homeserver proofs require
+the counter delta to remain zero.
+
+An active-key Subscribe replay preserves the original projection request ID so
+the WebView can acknowledge the exact actor/generation. It also carries the
+new Subscribe request as a separate causal identity. Consumers must require
+that causal identity for command success; key equality alone cannot settle a
+later Subscribe because an older same-key replay may already be queued.
 
 The replacement snapshot also reconciles actor-owned auxiliary projections
 before the replacement relay becomes live: media-source cache and media gallery
@@ -490,10 +538,18 @@ stateDiagram-v2
   shortcut resolver. `submitInFlight` and the `SubmissionId` are acquired after
   a resolved send action and before the Tauri invocation. Edit actions share
   the resolve guard but do not allocate new-text submission IDs.
-- Core admission uses a cross-actor one-shot permit. The manager reserves the
-  actor mailbox first, delivers reducer acceptance, records/emits acceptance,
-  and only then opens the permit. A closed or dropped permit prevents every SDK
-  enqueue and terminal. Reducer-delivery failure records a rejected tombstone;
+- Core admission uses a cross-actor one-shot permit. The manager first creates
+  and owns the permit-blocked enqueue future and activates its terminal
+  correlation, then delivers reducer acceptance, records/emits submission
+  acceptance, and only then opens the permit. A closed or dropped permit
+  prevents every SDK enqueue and terminal. Because manager-owned enqueue
+  futures have no independent task scheduler, the accepted route then polls
+  worker completions until that specific worker emits a one-shot signal at the
+  start of payload-specific preflight. Polling one arbitrary ready worker does
+  not establish this causal progress. Reply preparation may still suspend before
+  the SDK queue call, so preflight start does not serialize SDK enqueue order;
+  later FIFO retry policy and scheduling remain SDK-owned.
+  Reducer-delivery failure records a rejected tombstone;
   replay of that ID is explicitly rejected and cannot reach the actor again.
 - A draft is cleared only by the reducer transition that accepts the matching
   submission. An IPC return without matching reducer acceptance is not success.
@@ -1026,9 +1082,18 @@ stateDiagram-v2
 ```
 
 - `UploadAndSendMedia { key, transaction_id, request }` is routed only to a
-  subscribed `TimelineActor`. The actor fixes the SDK attachment transaction id
-  to the caller-provided `transaction_id` so local echo, upload progress, and
-  `SendCompleted` correlate through the same Rust-owned key.
+  subscribed timeline, whose cloneable SDK context is handed to a
+  `TimelineManager`-owned enqueue worker. The worker fixes the SDK attachment
+  transaction id to the caller-provided `transaction_id` so local echo and
+  upload progress use the same Rust-owned key. Request/submission correlation
+  is registered before asynchronous SDK enqueue, and both enqueue and terminal
+  observation outlive presentation-actor replacement, so unsubscribe cannot
+  lose `SendCompleted`.
+- On successful SDK enqueue, the manager-owned worker publishes
+  `MediaSendQueued` before binding the SDK transaction id. Binding may
+  synchronously release a terminal retained before enqueue completed, so this
+  boundary—not manager-loop polling order—guarantees that a terminal cannot
+  precede the queue acknowledgement and later regress the operation state.
 - Upload requests may carry filename, caption, mimetype, dimensions, and bytes
   because those are required to send the media. Those fields are private
   visible-content payloads: `Debug`, QA output, logs, and errors must redact
@@ -1555,10 +1620,15 @@ stateDiagram-v2
 
 ## Outbound Send Queue
 
-Outbound timeline send state is owned by the Rust `TimelineActor`, keyed by the
-SDK send-queue transaction id exposed on local-echo timeline items. React may
-render `TimelineItem.send_state` and dispatch typed commands, but it must not
-derive retry/cancel legality from local component state.
+Outbound timeline send presentation and retry/cancel handles are Rust-owned and
+keyed by the SDK send-queue transaction id exposed on local-echo timeline
+items. The replaceable `TimelineActor` projects that local state. A
+session-scoped `TimelineManager` owns supervised text/reply/media enqueue
+workers, the sole client-global terminal observer, and the composite
+`(room_id, sdk_transaction_id)` correlation back to the original
+`TimelineKey`, `RequestId`, and `SubmissionId`. React may render
+`TimelineItem.send_state` and dispatch typed commands, but it must not derive
+retry/cancel legality from local component state.
 Visible timeline sends go through the SDK UI `Timeline::send` path so local
 echo diffs reach the subscribed timeline store; retry/cancel still operate on
 the underlying SDK send queue handles.
@@ -1581,7 +1651,36 @@ stateDiagram-v2
 | `SendError` | `sending` | none | Records `not_sent { reason }` using only the SDK recoverable flag. Raw SDK errors stay out of DTOs, logs, QA tokens, and React state. The matching composer pending state is failed once; later retry success can still emit `SendCompleted`. |
 | `RetrySend { room_id, transaction_id }` | `not_sent` with a stored `SendHandle` | `sending`, `sent`, `cancelled`, unknown transaction | Re-enables the SDK room queue with `room.send_queue().set_enabled(true)`, then calls `SendHandle::unwedge()`. FIFO order remains the SDK send queue's responsibility; React never reorders or manually marks successors sent. |
 | `CancelSend { room_id, transaction_id }` | `sending`, `not_sent` with a stored `SendHandle` | `sent`, `cancelled`, unknown transaction | Calls `SendHandle::abort()`. A successful cancel records `cancelled`, drops the handle, re-enables the SDK room queue so successors are not stranded, and clears matching composer pending state without creating a send-failure error. |
-| `SentEvent` | any | none | Records `sent`, drops the handle, maps SDK transaction id to event id, and emits `SendCompleted` for the original request when available. |
+| `SentEvent` | any | none | The manager-owned observer records `sent`, maps the composite SDK correlation to the original request, reliably enqueues the matching reducer action, then emits `SendCompleted`. Settled correlations are bounded tombstones so duplicate SDK terminals cannot complete twice. |
+
+An explicit timeline `Unsubscribe`, room switch, resubscribe, or actor crash
+removes only the presentation actor; active send correlation remains at
+session scope. Unknown room-wide terminal updates are retained only during an
+explicit pre-bind registration window and are purged when that room has no
+active Koushi registration. SDK broadcast lag is an observation-loss terminal:
+every affected active or in-flight request receives one private-data-safe
+`QueueOverflow` failure instead of waiting for a deadline, while its composite
+mapping remains available for a later exact `SentEvent` or cancellation.
+
+Ordered shutdown gives the complete manager-owned enqueue-worker set one
+absolute, count-independent five-second graceful deadline while the global SDK
+terminal observer can still admit their results. Enqueue futures and the global
+observer are boxed futures directly polled by the manager; enqueue panic is
+caught at a fail-closed boundary. Graceful drain polls both worker and observer,
+then gives the observer one final non-blocking poll after worker quiescence or
+deadline cancellation so a queued exact terminal can be admitted. At the
+deadline the manager synchronously drops remaining cooperative enqueue futures,
+then drops the observer, stops
+presentation actors, records remaining observation
+loss, closes and drains manager terminal ingress, and only then acknowledges
+shutdown. Unexpected manager drop closes terminal admission, synchronously
+drops every worker future, then drops the global observer, so no send-lifecycle
+task detaches. Enqueue futures must obey the async contract that each poll
+returns rather than blocking a runtime thread.
+This makes terminal
+admission linear with teardown. Process restart is a separate boundary:
+SDK-persisted local echoes converge after restore, but completion for the old
+connection's `RequestId` is not replayed.
 
 `TimelineItem.send_state` is a coarse webview DTO: `sending`, `notSent`
 (`recoverable` / `unrecoverable`), `cancelled`, or `sent`. The SDK
@@ -2106,10 +2205,107 @@ stateDiagram-v2
   submission/failure correlation. Incoming SDK-originated verification requests
   use a reserved Rust-owned flow-id namespace, so React never synthesizes or
   owns verification discovery state.
-- Incoming SDK-originated verification observations are idempotent by SDK
-  flow id. `AccountActor` ignores duplicate observations for the active flow
-  and only cancels/rejects a different incoming flow while another verification
-  is active.
+- Incoming SDK-originated verification observations are idempotent by the full
+  `VerificationTarget` (peer and device) plus SDK flow id. `AccountActor`
+  ignores only an exact target-and-flow replay; a different target or flow,
+  including the same opaque flow id from another peer or device, is explicitly
+  cancelled as a conflict while another verification is active. A pre-SAS
+  own-user verification also counts as active and owns the shared request
+  observer/continuation slots; because it exposes no incoming replay identity,
+  every incoming request conflicts and is cancelled before adoption.
+- A valid to-device verification request whose sender device is not yet in the
+  crypto store is not terminally discarded. The crypto machine retains it in a
+  bounded FIFO pending set, deduplicated by sender and flow and governed by the
+  normal request timestamp window. It marks the sender through the existing
+  key-query owner, then retries only after the corresponding key response has
+  committed. Replay re-runs timestamp, self-device, and device-data validation;
+  it materializes at most one request and keeps a still-missing device pending
+  for a later matching response. Expired entries are dropped, but capacity does
+  not evict an existing obligation: the newest unknown-device request is not
+  retained and does not schedule a key query.
+  Pending entries retain their original FIFO position across a still-missing
+  response or fallible replay. A failed initial key-query schedule stays
+  explicitly unscheduled so an exact duplicate can retry that schedule; after
+  scheduling succeeds, duplicates do not create another query.
+  Every generated query records the exact `request_id -> covered users`
+  mapping, sequence, and request until all outer response-associated
+  verification recovery succeeds. Cancellation or recovery failure preserves
+  the original mapping and request ID for retry. Repeated, concurrent, and
+  cancelled collectors preserve and reuse existing mappings, and create new
+  requests only for uncovered dirty users. A collector revalidates and registers
+  its final dirty-state snapshot under the dirty-query owner, so cleanup cannot
+  leave stale unreachable metadata. A stable per-entry async gate serializes
+  complete response-associated processing for the same request ID while
+  different IDs remain concurrent. Each handler awaits the gate without a
+  registry or store guard, revalidates the entry, and only then snapshots
+  coverage and claims recovery. Success consumes the pointer-matched entry;
+  failure or cancellation preserves it so the next waiter can settle it, while
+  a waiter after successful consumption has no metadata obligation. The
+  pending-response scope is exactly the union of response `device_keys` users
+  and the matching request's covered users; this includes failure-only responses
+  whose `device_keys` map is empty without admitting users from another request.
+  This recovery may not create a second sync owner, poll, blindly resend the
+  request, or expose sender, device, flow, or raw error data in diagnostics.
+- Normal and recovered to-device request materialization feed one typed lease
+  stream. One owner lock contains unknown pending entries, stable publications,
+  subscriber generation, and the active head claim, with a combined maximum of
+  32. Pending-to-publication replay is an in-lock slot transition. Active lease
+  acquisition retains the head slot; commit pops it and drop releases it in
+  place. Generation check and claim are the same linearization point: a claim
+  that wins first remains valid through commit/drop, while a replacement that
+  wins first prevents the stale generation from claiming. No owner lock is held
+  across fallible or async work, and it is never nested with the request-cache
+  lock. Capacity is strict FIFO and never evicts an existing pending entry,
+  publication, or active lease to admit a newcomer. At capacity a new
+  materialized request is terminally cancelled with an outgoing protocol cancel
+  rather than silently discarded.
+- Deferred replay, concurrent key responses, and normal materialization share
+  stable sender/flow identity and atomic cache insertion. A same-flow collision
+  with unrelated cached provenance is not relabelled or published. Post-key-
+  query replay/cache/reschedule failures are best-effort after committed device
+  changes: the applied key response is returned and pending retry state remains
+  schedulable. Pending query ownership is an explicit state machine:
+  `NeedsQuery`, `QueryInFlight`, `WaitingForExternalUpdate`, response-claimed,
+  and replay-claimed. The response claim is acquired before identity-manager
+  response processing and therefore spans durable commit plus later awaits.
+  Cancellation/error anywhere in that window returns only that response token's
+  entries to `NeedsQuery`; it must not reset or steal a newer same-sender
+  response/replay claim. Successful still-missing replay explicitly enters
+  `WaitingForExternalUpdate` so a duplicate does not schedule another query.
+  Each pending entry also carries a committed-update generation. If an
+  overlapping response commits while another token owns replay, the owner must
+  replay that deferred generation before transitioning to
+  `WaitingForExternalUpdate`; an in-progress stale lookup cannot consume the
+  later response observation.
+  Koushi consumes only the typed lease stream for to-device product discovery;
+  it has no raw to-device handler. Actionable leases commit after product-channel
+  send, while terminal heads commit immediately so they cannot starve the FIFO.
+  Generic SDK raw handlers are independent compatibility fanout and are
+  at-least-once: cancelling a partially completed handler set may cause a
+  completed handler to run again on redelivery. `AccountActor` deduplicates by
+  stable target-and-flow identity, treats only an exact replay as a no-op, and
+  explicitly cancels a different peer, device, or flow as a conflict. A
+  replayed SAS handle is likewise a no-op; a distinct conflicting SAS handle is
+  explicitly cancelled with private-data-safe failure reporting.
+- Replacing an authenticated SDK session requires ordered observer teardown.
+  The old Account forwarder and SDK typed-lease worker are signalled and joined
+  before the new session subscribes to typed incoming handles. The old room
+  handler is removed to prevent new dispatch. Any handler future already
+  dispatched remains owned and awaited by the SDK sync dispatcher; stopping and
+  joining the old `SyncActor` is that callback's settlement barrier.
+  Observer-to-actor messages carry a dedicated session generation and are
+  ignored before adoption when stale or when no session is active. A blocked
+  actor-mailbox send is stop-aware with stop priority, and join uses a bounded
+  timeout followed by abort and owned settlement. Eventual task exit after
+  dropping the owner is insufficient because it permits stale old-client
+  delivery to overlap the new owner. Typed delivery `Debug` output is redacted
+  at both crypto and client wrapper layers.
+- A verification request adopts at most one SAS continuation for a flow. After
+  a remote SAS start has been adopted, a replayed start from the same peer,
+  device, and flow is a no-op in the SDK, and `AccountActor` must not replace
+  the adopted handle, observer, or timeout or accept it twice. Locally started
+  simultaneous-SAS negotiation and QR-to-SAS transitions retain their protocol
+  tie-break paths; replay idempotency must not collapse those distinct origins.
 - SAS peer acceptance is decided from the SDK SAS state mapped into Rust, not
   from React state or SDK direction flags. `MatrixSasState::Started` is the
   peer side that must call the SDK SAS accept path; `Created` is the local side
@@ -2118,11 +2314,45 @@ stateDiagram-v2
   A2 -> A and start SAS from the requester after the accepting device reaches
   `Accepted`. The accepting-device-start sequence reproduced Tuwunel
   `m.key_mismatch` cancellation before SAS presentation in local QA.
-- The local proof starts the verification request while continuous sync is
-  running so device data is fresh, then pauses both sync loops and drives SAS
-  delivery with bounded `SyncOnce` polling. Do not overlap continuous
-  SyncService delivery with manual `SyncOnce` nudges during SAS; that overlap
-  reproduced pre-SAS key-mismatch flakes.
+- The local proof keeps one Koushi actor owner for each sync cursor/connection
+  lane and never overlaps Koushi's manual `SyncOnce` path with a restricted or
+  continuous owner for the same SDK client. This does not prohibit the Matrix
+  SDK from running distinct, internally coordinated encryption and room-list
+  protocol lanes. The already-ready primary keeps its normal sync owner for
+  incoming to-device delivery, while the provisional second device keeps its
+  actor-owned restricted verification sync until authoritative promotion.
+  Event/state conditions, not manual `SyncOnce` nudges or fixed sleeps, prove
+  progress. Overlapping Koushi cursor owners can replay verification traffic
+  and previously exposed pre-SAS key-mismatch failures. This is an actor
+  admission invariant, not only a QA convention: `AccountActor` rejects
+  one-shot sync before routing when it owns restricted sync, and `SyncActor`
+  rejects it before the SDK call whenever a continuous lifecycle/backend/task/
+  service/stop owner is still active.
+  Where QA must prove that a newly logged-in peer device is known before an
+  encrypted send or a fresh-device verification request, use the `qa-bin`-only
+  exact-target device-key refresh and receiver acknowledgement before the
+  sender acts. Do not send/cancel a verification request as a readiness probe.
+  Paired verification progress waits consume either participant's event stream
+  against one absolute deadline; fixed-interval snapshot polling is not causal
+  evidence.
+- A QA participant becomes owned before its login command is submitted. The
+  owner advances through runtime-only, login-submitted, and keyed-logged-in
+  phases so every early return can attempt the strongest valid cleanup:
+  shutdown only before submission, keyless signed-out confirmation after a
+  provisional submission, and keyed logout confirmation after the account key
+  is known. Connection drop and ordered runtime shutdown follow the barrier.
+  Cleanup attempts every owned participant even when an earlier cleanup fails;
+  borrowed participants remain the outer caller's responsibility. Logout
+  events only wake the waiter, and timeout, lag, or stream closure requires one
+  final authoritative `SignedOut` snapshot read within the same absolute
+  deadline before failure is reported.
+- A verification-only `/sync` uses `NoToken` plus
+  `SyncSettings::save_sync_token(false)`. Its crypto/device/to-device state and
+  handlers still commit, but the filter-scoped `next_batch` is never written as
+  the global room cursor. A fresh store remains tokenless, while a restored
+  canonical cursor survives restricted sync, actor/runtime teardown, account
+  switching, and SQLite reopen. Normal LegacySync reuses that canonical cursor
+  directly; there is no separate cursor-taint state machine or repair baseline.
 - Identity reset is a typed Rust-owned state machine
   (`Idle`, `Resetting`, `AwaitingAuth`, `Failed`), not a nullable pending flag.
   `AwaitingAuth` carries only a request id and coarse auth type

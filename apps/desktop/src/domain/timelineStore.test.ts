@@ -107,6 +107,26 @@ function makeLocalEcho(txnId: string, body: string): TimelineItem {
   };
 }
 
+function withImageMedia(item: TimelineItem, filename: string): TimelineItem {
+  return {
+    ...item,
+    media: {
+      kind: "Image",
+      filename,
+      source: {
+        mxc_uri: `mxc://example.invalid/${filename}`,
+        encrypted: true,
+        encryption_version: "v2"
+      },
+      mimetype: "image/png",
+      size: 2048,
+      width: 640,
+      height: 480,
+      thumbnail: null
+    }
+  };
+}
+
 function itemId(item: TimelineItem): string {
   return timelineItemDomId(item.id);
 }
@@ -978,6 +998,82 @@ describe("timeline store — diff application", () => {
     expect(items.map((item) => itemId(item))).toEqual(["$old", "$second", "$latest"]);
     expect(items[0].body).toBe("older copy updated");
     expect(items[2].body).toBe("latest message");
+  });
+
+  test("collapsed overlap keeps later transaction-to-event Set in display index space", () => {
+    let store = createTimelineStore();
+    store = applyTimelineEvent(store, {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [
+          makeMsg("$old", "older copy"),
+          makeMsg("$neighbor", "neighbor"),
+          makeLocalEcho("desktop-overlap", "hello")
+        ]
+      }
+    });
+    store = applyTimelineEvent(store, {
+      ItemsUpdated: {
+        key: KEY,
+        generation: 1,
+        batch_id: 2,
+        diffs: [{ Insert: { index: 2, item: makeMsg("$old", "overlap") } }]
+      }
+    });
+    store = applyTimelineEvent(store, {
+      ItemsUpdated: {
+        key: KEY,
+        generation: 1,
+        batch_id: 3,
+        diffs: [{ Set: { index: 2, item: makeMsg("$confirmed", "hello") } }]
+      }
+    });
+
+    const items = getItems(store, KEY);
+    expect(items.map(itemId)).toEqual(["$old", "$neighbor", "$confirmed"]);
+    expect(items.filter((item) => "Transaction" in item.id)).toHaveLength(0);
+    expect(items.filter((item) => itemId(item) === "$confirmed")).toHaveLength(1);
+  });
+
+  test("collapsed media overlap keeps indexed transaction confirmation and media payload", () => {
+    const owner = withImageMedia(makeMsg("$media-owner", "owner"), "owner.png");
+    const duplicate = withImageMedia(makeMsg("$media-owner", "duplicate"), "duplicate.png");
+    const transaction = withImageMedia(makeLocalEcho("media-overlap", "upload"), "upload.png");
+    const confirmed = withImageMedia(makeMsg("$confirmed-media", "confirmed"), "confirmed.png");
+    let store = createTimelineStore();
+    store = applyTimelineEvent(store, {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [owner, makeMsg("$neighbor", "neighbor"), transaction]
+      }
+    });
+    store = applyTimelineEvent(store, {
+      ItemsUpdated: {
+        key: KEY,
+        generation: 1,
+        batch_id: 2,
+        diffs: [{ Insert: { index: 1, item: duplicate } }]
+      }
+    });
+    store = applyTimelineEvent(store, {
+      ItemsUpdated: {
+        key: KEY,
+        generation: 1,
+        batch_id: 3,
+        diffs: [{ Set: { index: 2, item: confirmed } }]
+      }
+    });
+
+    const items = getItems(store, KEY);
+    expect(items.map(itemId)).toEqual(["$media-owner", "$neighbor", "$confirmed-media"]);
+    expect(items.filter((item) => itemId(item) === "$media-owner")).toHaveLength(1);
+    expect(items.filter((item) => "Transaction" in item.id)).toHaveLength(0);
+    expect(items[0].media?.filename).toBe("owner.png");
+    expect(items[2].media?.filename).toBe("confirmed.png");
   });
 
   test("reaction groups survive InitialItems and Set diff application", () => {

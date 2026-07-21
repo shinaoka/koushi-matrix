@@ -977,11 +977,13 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   device reproduced Tuwunel `m.key_mismatch` cancellation before emoji
   presentation, while the requester-start sequence is stable across local
   Conduit and Tuwunel.
-- During the local SAS proof, do not overlap continuous SyncService delivery
-  with manual `SyncOnce` nudges. Start the verification request while sync is
-  running so device data is fresh, then pause both sync loops and drive SAS
-  request/ready/start/key/done with bounded `SyncOnce` polling. Overlap
-  reproduced pre-SAS key-mismatch flakes.
+- During the local SAS proof, keep exactly one Koushi-owned sync cursor per SDK
+  client. Do not overlap an actor-owned restricted or continuous lane with
+  manual `SyncOnce`; wait on typed event/state conditions instead. The ready
+  primary may keep its normal owner while the provisional peer keeps its
+  restricted owner. If QA needs to prove peer-device readiness, use the
+  `qa-bin`-only read-only exact-device key refresh/acknowledgement, not a
+  verification request/cancel probe.
 - Identity-reset auth continuation follows the same separation: GUI commands
   must use a fresh command `request_id` for submission correlation and pass the
   Rust-owned identity-reset `flow_id` from
@@ -1039,18 +1041,37 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   by `RoomActor` from SDK invited rooms; React must render it and dispatch
   typed commands (`AcceptInvite`, `DeclineInvite`, `StartDirectMessage`) instead
   of maintaining local invite lifecycle state. In the SyncService backend, the
-  live room-list entries adapter must use the non-left filter so invited-room
-  diffs wake the projection loop; a joined-only filter leaves
-  `invite_recv=ok` stuck with zero invites even after sync succeeds.
+  live room-list entries adapter uses the non-left filter, and the same observer
+  uses the base client's already-committed room-update broadcast as a bounded
+  auxiliary wake: an invite can commit outside the visible entries head without
+  changing that head. Coalesce wakes and reproject only on invite payload or
+  membership changes (plus one lag recovery); do not start another sync owner or
+  `RoomListService`.
+- Probed sync backend selection does not trust the advertised MSC4186 version by
+  itself. Before either continuous owner starts, run the bounded authenticated
+  zero-timeline invite-list contract preflight. Only presence of the requested
+  list selects SyncService; omission/error/malformed response or the end-to-end
+  two-second deadline selects LegacySync. The deadline includes token refresh
+  and retry, and cursor/room payload is discarded. Conduit currently exercises
+  automatic LegacySync fallback; Tuwunel/Synapse exercise SyncService. Do not
+  replace this with server-family/version fingerprinting.
 - The local core QA `invites_dm` scenario proves incoming room/space invite
   receipt and accept, invite decline, and DM start/invite projection through
   token-only stdout (`invite_recv=ok`, `invite_accept=ok`,
   `invite_decline=ok`, `dm_start=ok`). Do not print Matrix room IDs, user IDs,
   or raw SDK errors for this stage.
-- Run the local proof with the SyncService/probed core leg while iterating:
+- Headless logout cleanup must observe both the exact correlated `LoggedOut`
+  event and an authoritative `SessionState::SignedOut` snapshot before issuing
+  a follow-up restore. Those independent lanes may arrive in either order.
+  Event waiters use one monotonic absolute deadline across all unrelated events
+  and phases; recreating a relative timeout inside the receive loop is
+  forbidden.
+- Run the local proof with the behavior-probed core leg while iterating:
   `npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=e2ee_trust --core --core-backend=probed --timeout-ms=240000`.
   The runner supports `--core-backend=legacy|both` for non-E2EE backend
-  coverage, but the Phase A E2EE trust proof is the probed SyncService leg.
+  coverage. On Conduit the probed leg is expected to select LegacySync until its
+  MSC4186 invite-list contract is complete; do not hard-code SyncService as the
+  meaning of `probed`.
 
 ## E2EE Trust Phase B GUI Notes
 

@@ -692,6 +692,10 @@
     "event": {
       "InitialItems": {
         "actor_generation": 1,
+        "cause_request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
         "generation": 1,
         "items": [
           {
@@ -897,6 +901,7 @@
     "event": {
       "InitialItems": {
         "actor_generation": 5,
+        "cause_request_id": null,
         "generation": 5,
         "items": [
           {
@@ -1044,6 +1049,7 @@
     "event": {
       "InitialItems": {
         "actor_generation": 2,
+        "cause_request_id": null,
         "generation": 2,
         "items": [
           {
@@ -1309,6 +1315,7 @@
     "event": {
       "InitialItems": {
         "actor_generation": 4,
+        "cause_request_id": null,
         "generation": 4,
         "items": [
           {
@@ -1385,6 +1392,7 @@
     "event": {
       "InitialItems": {
         "actor_generation": 3,
+        "cause_request_id": null,
         "generation": 3,
         "items": [
           {

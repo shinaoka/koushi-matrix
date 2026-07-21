@@ -1,6 +1,6 @@
 # Matrix Rust SDK Feedback Packet
 
-Date: 2026-06-15
+Date: 2026-07-20
 
 This note separates SDK-upstreamable material from desktop-product decisions. Element Desktop/Web compatibility work in this repository is UX-only and is intentionally out of scope for the SDK feedback.
 
@@ -48,6 +48,86 @@ This note separates SDK-upstreamable material from desktop-product decisions. El
   room only as a bounded signal to inspect and repair its newest persisted
   live-edge gap after restart.
 
+- Idempotent remote SAS-start replay (2026-07-20, issue #285 hardening): a
+  repeated `m.key.verification.start` from the same peer, device, and flow no
+  longer replaces the already-adopted responder SAS continuation. Replacement
+  previously discarded accepted state and could end a valid exchange with a
+  commitment/key mismatch when overlapping sync delivery replayed the start.
+  Locally initiated simultaneous starts and QR-to-SAS transitions retain their
+  existing origin-specific tie-break paths. SDK tests cover exact remote replay
+  through successful identical emoji/key completion and separately preserve
+  simultaneous-start behavior. Upstreaming intent: submit this minimal crypto
+  state-machine patch with the replay regression after the desktop live E2EE
+  proof; keep protocol identifiers and raw cancellation text out of evidence.
+
+- Exact own-member required-state key (2026-07-20, issue #285 hardening):
+  `RoomListService` expands the MSC4186 `m.room.member` `$ME` placeholder to the
+  authenticated user's exact state key when building the all-rooms list and
+  room subscriptions, while retaining `$ME` when no authenticated user exists.
+  Other placeholders and event types are unchanged. This improves compatibility
+  with servers that advertise MSC4186 but do not expand `$ME`; it is not treated
+  as proof that their invite-list semantics are otherwise complete. Unit and
+  integration requests assert the exact expansion. Upstreaming intent: submit
+  the helper and request-shape regressions independently of Koushi's backend
+  capability preflight.
+
+- Deferred unknown-device verification request (2026-07-20, issue #285
+  hardening): a valid to-device `m.key.verification.request` is retained when
+  sender `DeviceData` has not arrived yet, instead of being irreversibly
+  discarded. The queue is FIFO-bounded, timestamp-gated, and deduplicated by
+  sender/transaction flow. It uses the existing device-key query manager and
+  replays only after matching key data has been committed, re-running normal
+  timestamp/self/device validation and materializing one stable cached handle. Tests
+  cover recovery, duplicate/query coalescing, a still-missing response followed
+  by a later successful response, expiry, and the capacity boundary. The
+  pending slot is preserved across scheduling/store errors and still-missing
+  responses; duplicates retry only a previously failed schedule. Because the
+  recovered handle can be created after the original raw-event callback, so
+  normal and recovered materialization publish into one typed incoming-request
+  lease stream. One owner lock contains pending entries, stable publications,
+  subscriber generation, and active head claim, with a combined maximum of 32.
+  Replay converts its pending slot to a publication under that lock. An active
+  lease retains its slot; commit pops it and drop releases the claim in place.
+  Subscriber generation check and claim are one linearization point. An absent
+  subscriber does not fail key-response processing, and a post-commit replay or
+  cache/reschedule failure returns the already-applied key changes while leaving
+  retry state schedulable. Capacity is strict FIFO and never evicts an existing
+  obligation to admit a newcomer. At capacity a new materialized request is
+  explicitly terminally cancelled and queues an outgoing cancel rather than
+  being silently lost after sync cursor advancement; a newest unknown-device
+  request is not retained and does not schedule a query. Cache insertion returns an atomic
+  existing-versus-inserted result and never upgrades unrelated same-flow cached
+  provenance. Query ownership is an explicit state machine rather than one
+  scheduling boolean. A response RAII claim is acquired before identity-manager
+  processing and spans durable commit plus its later awaits; cancellation or
+  error returns claimed entries to `NeedsQuery`, while normal still-missing
+  completion enters `WaitingForExternalUpdate`. Both the crypto delivery and client wrapper use
+  constant redacted `Debug` output rather than delegating to request/store/client
+  internals.
+  Generic raw handlers are deliberately independent compatibility fanout; a
+  partially cancelled handler set can repeat on redelivery. The typed stream is
+  the product-delivery API, while transport semantics remain at-least-once with
+  stable sender/flow identity. This preserves downstream exhaustive matches by
+  leaving `ProcessedToDeviceEvent` unchanged.
+  Replay failure after device keys are applied is isolated from that successful
+  key response and leaves the pending request retryable.
+  Element X and the current FFI raw-event
+  observation shape were useful comparisons, but do not yet provide this
+  no-loss notification. Upstreaming intent: propose the bounded crypto recovery
+  and unified typed incoming-request handle stream together; neither proposal
+  contains desktop UI policy.
+
+- Non-persisting sync token option (2026-07-20, issue #285 hardening):
+  `SyncSettings::save_sync_token(false)` processes and persists ordinary sync,
+  crypto, device, account-data, and to-device changes and calls application
+  handlers, but does not replace the client's global persisted sync token with
+  that response's `next_batch`. The default remains `true`. Koushi uses the
+  option with `NoToken` only for its verification-only room-suppressed sync, so
+  a restored canonical room cursor survives process exit/account switching and
+  a fresh store remains tokenless. Upstreaming intent: expose this as a generic
+  opt-in for purpose-filtered one-shot sync consumers, with SQLite-reopen and
+  handler-delivery tests.
+
 Current SDK-only patch area:
 
 - `vendor/matrix-rust-sdk/crates/matrix-sdk-search`
@@ -56,6 +136,15 @@ Current SDK-only patch area:
   (`SendHandle::transaction_id()` accessor only)
 - `vendor/matrix-rust-sdk/crates/matrix-sdk/src/event_cache/mod.rs`
 - `vendor/matrix-rust-sdk/crates/matrix-sdk/tests/integration/event_cache/mod.rs`
+- `vendor/matrix-rust-sdk/crates/matrix-sdk-crypto/src/verification/requests.rs`
+- `vendor/matrix-rust-sdk/crates/matrix-sdk-crypto/src/verification/machine.rs`
+- `vendor/matrix-rust-sdk/crates/matrix-sdk-crypto/src/verification/mod.rs`
+- `vendor/matrix-rust-sdk/crates/matrix-sdk-crypto/src/machine/mod.rs`
+- `vendor/matrix-rust-sdk/crates/matrix-sdk-crypto/src/identities/manager.rs`
+- `vendor/matrix-rust-sdk/crates/matrix-sdk-crypto/src/machine/tests/interactive_verification.rs`
+- `vendor/matrix-rust-sdk/crates/matrix-sdk/src/encryption/mod.rs`
+- `vendor/matrix-rust-sdk/crates/matrix-sdk-ui/src/room_list_service/mod.rs`
+- `vendor/matrix-rust-sdk/crates/matrix-sdk-ui/tests/integration/room_list_service.rs`
 
 ## API Questions
 
@@ -113,6 +202,9 @@ Current SDK-only patch area:
 
 - `cargo test --manifest-path vendor/matrix-rust-sdk/crates/matrix-sdk-search/Cargo.toml`
 - `cargo test --manifest-path vendor/matrix-rust-sdk/crates/matrix-sdk/Cargo.toml search_index --features experimental-search,sqlite,e2e-encryption`
+- `cargo test --manifest-path vendor/matrix-rust-sdk/crates/matrix-sdk-crypto/Cargo.toml test_replayed_sas_start_keeps_adopted_responder_sas`
+- `cargo test --manifest-path vendor/matrix-rust-sdk/crates/matrix-sdk-crypto/Cargo.toml test_simultaneous_sas_starts_keep_lexicographically_smaller_start`
+- `cargo test --manifest-path vendor/matrix-rust-sdk/crates/matrix-sdk-ui/Cargo.toml room_list_service`
 - `git -C vendor/matrix-rust-sdk diff --check`
 
 ## Remaining Before Upstream PR

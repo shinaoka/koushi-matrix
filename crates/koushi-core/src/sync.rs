@@ -8,10 +8,11 @@
 //!
 //! ## Backend selection
 //! On `SyncCommand::Start`, the actor calls
-//! `Client::available_sliding_sync_versions()`. A non-empty result means the
-//! server advertises `org.matrix.simplified_msc3575` in `/versions`
-//! `unstable_features` → select `SyncService` backend. Empty → `LegacySync`
-//! backend using `client.sync_stream`.
+//! `Client::available_sliding_sync_versions()`. Empty selects `LegacySync`.
+//! When MSC4186 is advertised, one bounded authenticated invite-only list
+//! request verifies the server contract before the authoritative sync owner
+//! starts. Only a present requested list selects `SyncService`; missing or
+//! indeterminate results fail closed to `LegacySync`.
 //!
 //! The selected backend kind is emitted in `SyncEvent::Started { backend }` so
 //! QA can assert server capability (canon, Async rule 9).
@@ -46,7 +47,7 @@ use std::sync::{
 use std::time::Duration;
 
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
-use koushi_sdk::MatrixClientSession;
+use koushi_sdk::{MatrixClientSession, MatrixSlidingSyncInviteListSupport};
 use koushi_state::{AppAction, SyncLifecycleStatus, SyncMode};
 use tokio::sync::{broadcast, mpsc};
 
@@ -211,6 +212,45 @@ enum ActiveBackend {
     None,
     SyncService,
     LegacySync,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BackendProbeReason {
+    ForcedLegacy,
+    SlidingSyncUnavailable,
+    InviteListSupported,
+    InviteListKnownIncomplete,
+    InviteListUnknown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BackendProbeResult {
+    backend: SyncBackendKind,
+    reason: BackendProbeReason,
+}
+
+fn backend_probe_reason_label(reason: BackendProbeReason) -> &'static str {
+    match reason {
+        BackendProbeReason::ForcedLegacy => "forced_legacy",
+        BackendProbeReason::SlidingSyncUnavailable => "sliding_sync_unavailable",
+        BackendProbeReason::InviteListSupported => "invite_list_supported",
+        BackendProbeReason::InviteListKnownIncomplete => "invite_list_known_incomplete",
+        BackendProbeReason::InviteListUnknown => "invite_list_unknown",
+    }
+}
+
+fn sync_once_admitted(
+    lifecycle: SyncLifecycle,
+    active_backend: ActiveBackend,
+    sync_task_active: bool,
+    sync_service_active: bool,
+    legacy_stop_active: bool,
+) -> bool {
+    matches!(lifecycle, SyncLifecycle::Stopped | SyncLifecycle::Failed)
+        && active_backend == ActiveBackend::None
+        && !sync_task_active
+        && !sync_service_active
+        && !legacy_stop_active
 }
 
 fn sync_lifecycle_label(lifecycle: SyncLifecycle) -> &'static str {
@@ -458,7 +498,7 @@ pub struct SyncActor {
 }
 
 impl SyncActor {
-    pub fn spawn(
+    pub(crate) fn spawn(
         session: Arc<MatrixClientSession>,
         action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
@@ -822,7 +862,8 @@ impl SyncActor {
 
         // Probe MSC4186 capability (Async rule 9).
         let client = self.session.client();
-        let backend_kind = probe_backend(&client).await;
+        let backend_probe = probe_backend(&client).await;
+        let backend_kind = backend_probe.backend;
         let mode = sync_mode_from_backend(backend_kind, false);
         trace_sync!(
             "probe_done",
@@ -833,10 +874,12 @@ impl SyncActor {
                     request_id.sequence
                 ),
                 DiagnosticField::token("backend", sync_backend_label(backend_kind)),
+                DiagnosticField::token("reason", backend_probe_reason_label(backend_probe.reason)),
             ],
-            "request_id={} backend={}",
+            "request_id={} backend={} reason={}",
             request_id_trace_label(Some(request_id)),
-            sync_backend_label(backend_kind)
+            sync_backend_label(backend_kind),
+            backend_probe_reason_label(backend_probe.reason)
         );
         self.reduce(vec![AppAction::SyncModeChanged { mode }]);
         self.active_start_request_id = Some(request_id);
@@ -1062,7 +1105,6 @@ impl SyncActor {
         let action_tx = self.action_tx.clone();
         let sync_generation = self.sync_generation.clone();
         let control_tx = self.control_tx.clone();
-
         let task: executor::JoinHandle<SyncTaskOutcome> = executor::spawn(async move {
             run_legacy_sync_loop(
                 client,
@@ -1158,6 +1200,22 @@ impl SyncActor {
 
     /// QA/debug: one-shot sync, does not affect the continuous sync state machine.
     async fn handle_sync_once(&self, request_id: RequestId) {
+        if !sync_once_admitted(
+            self.lifecycle,
+            self.active_backend,
+            self.sync_task.is_some(),
+            self.sync_service.is_some(),
+            self.legacy_stop_tx.is_some(),
+        ) {
+            self.emit(CoreEvent::OperationFailed {
+                request_id,
+                failure: CoreFailure::SyncFailed {
+                    kind: SyncFailureKind::Internal,
+                },
+            });
+            return;
+        }
+
         match koushi_sdk::sync_once(&self.session).await {
             Ok(()) => {
                 self.emit(CoreEvent::Sync(SyncEvent::Stopped {
@@ -1743,13 +1801,6 @@ async fn run_legacy_sync_loop(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Probe the server for MSC4186 (sliding sync / SyncService) availability.
-/// Returns `SyncService` if available, `LegacySync` otherwise.
-/// Never panics — network failures cause an empty result → LegacySync.
-///
-/// Debug/test builds honor `KOUSHI_QA_FORCE_SYNC_BACKEND=legacy`
-/// (skip the probe, select `LegacySync`); release builds compile the check
-/// out entirely and always probe.
 fn sync_mode_from_backend(backend: SyncBackendKind, failed: bool) -> SyncMode {
     if failed {
         return SyncMode::Failed {
@@ -1771,17 +1822,51 @@ fn should_fallback_to_legacy_after_sync_service_failure(
     backend == ActiveBackend::SyncService && kind == SyncFailureKind::Http && !already_attempted
 }
 
-pub(crate) async fn probe_backend(client: &matrix_sdk::Client) -> SyncBackendKind {
+fn backend_from_invite_list_support(
+    support: MatrixSlidingSyncInviteListSupport,
+) -> SyncBackendKind {
+    match support {
+        MatrixSlidingSyncInviteListSupport::Supported => SyncBackendKind::SyncService,
+        MatrixSlidingSyncInviteListSupport::KnownIncomplete
+        | MatrixSlidingSyncInviteListSupport::Unknown => SyncBackendKind::LegacySync,
+    }
+}
+
+/// Probe MSC4186 availability, then verify the authenticated invite-only list
+/// contract before any sync owner starts. Missing or indeterminate contract
+/// results fail closed to legacy sync.
+///
+/// Debug/test builds honor `KOUSHI_QA_FORCE_SYNC_BACKEND=legacy`
+/// (skip the probe, select `LegacySync`); release builds compile the check
+/// out entirely and always probe.
+async fn probe_backend(client: &matrix_sdk::Client) -> BackendProbeResult {
     #[cfg(any(debug_assertions, test))]
     if forced_legacy_backend() {
-        return SyncBackendKind::LegacySync;
+        return BackendProbeResult {
+            backend: SyncBackendKind::LegacySync,
+            reason: BackendProbeReason::ForcedLegacy,
+        };
     }
 
     let versions = client.available_sliding_sync_versions().await;
     if versions.is_empty() {
-        SyncBackendKind::LegacySync
-    } else {
-        SyncBackendKind::SyncService
+        return BackendProbeResult {
+            backend: SyncBackendKind::LegacySync,
+            reason: BackendProbeReason::SlidingSyncUnavailable,
+        };
+    }
+
+    let support = koushi_sdk::probe_sliding_sync_invite_list_support(client).await;
+    let reason = match support {
+        MatrixSlidingSyncInviteListSupport::Supported => BackendProbeReason::InviteListSupported,
+        MatrixSlidingSyncInviteListSupport::KnownIncomplete => {
+            BackendProbeReason::InviteListKnownIncomplete
+        }
+        MatrixSlidingSyncInviteListSupport::Unknown => BackendProbeReason::InviteListUnknown,
+    };
+    BackendProbeResult {
+        backend: backend_from_invite_list_support(support),
+        reason,
     }
 }
 
@@ -1854,11 +1939,113 @@ pub(crate) fn sync_failure_kind_label(kind: SyncFailureKind) -> &'static str {
 
 #[cfg(test)]
 pub mod tests {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::{Mutex, mpsc as std_mpsc},
+        thread,
+    };
+
+    use koushi_state::SessionInfo;
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
     use tokio::sync::{broadcast, mpsc};
+    use wiremock::ResponseTemplate;
 
     use super::*;
     use crate::event::{CoreEvent, SyncBackendKind, SyncEvent};
     use crate::failure::SyncFailureKind;
+
+    static FORCE_BACKEND_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn spawn_backend_probe_server(
+        invite_list_body: &'static [u8],
+    ) -> (String, std_mpsc::Receiver<String>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("synthetic probe listener");
+        let address = listener.local_addr().expect("synthetic probe address");
+        let (request_tx, request_rx) = std_mpsc::channel();
+        let server = thread::spawn(move || {
+            loop {
+                let (mut stream, _) = listener.accept().expect("backend probe request");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("probe request read timeout");
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut chunk).expect("read backend probe request");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                    assert!(request.len() <= 8 * 1024, "synthetic request is bounded");
+                }
+                let request = String::from_utf8(request).expect("ASCII backend probe request");
+                let path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_ascii_whitespace().nth(1))
+                    .expect("backend probe request path")
+                    .to_owned();
+                let (status, body, relevant, finished) = if path == "/_matrix/client/versions" {
+                    (
+                        "200 OK",
+                        br#"{"versions":["v1.12"],"unstable_features":{"org.matrix.simplified_msc3575":true}}"#.as_slice(),
+                        true,
+                        false,
+                    )
+                } else if path
+                    .starts_with("/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?")
+                {
+                    ("200 OK", invite_list_body, true, true)
+                } else {
+                    ("404 Not Found", br#"{}"#.as_slice(), false, false)
+                };
+                if relevant {
+                    request_tx
+                        .send(path)
+                        .expect("capture backend probe request");
+                }
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream
+                    .write_all(head.as_bytes())
+                    .expect("write response head");
+                stream.write_all(body).expect("write response body");
+                if finished {
+                    break;
+                }
+            }
+        });
+        (format!("http://{address}"), request_rx, server)
+    }
+
+    async fn authenticated_backend_probe_client(homeserver: String) -> matrix_sdk::Client {
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url(homeserver)
+            .build()
+            .await
+            .expect("synthetic backend probe client");
+        client
+            .matrix_auth()
+            .restore_session(
+                matrix_sdk::authentication::matrix::MatrixSession {
+                    meta: matrix_sdk_base::SessionMeta {
+                        user_id: matrix_sdk::ruma::owned_user_id!("@probe:example.invalid"),
+                        device_id: matrix_sdk::ruma::owned_device_id!("PROBEDEVICE"),
+                    },
+                    tokens: matrix_sdk::SessionTokens {
+                        access_token: "synthetic-probe-token".to_owned(), // secret-scan: allow
+                        refresh_token: None,
+                    },
+                },
+                matrix_sdk_base::store::RoomLoadSettings::default(),
+            )
+            .await
+            .expect("synthetic session restore");
+        client
+    }
 
     #[test]
     fn sync_trace_preserves_typed_status_fields_without_environment_switch() {
@@ -1906,6 +2093,583 @@ pub mod tests {
         let clean = handle.shutdown_with_timeout(Duration::from_millis(1)).await;
 
         assert!(!clean, "stuck actor task must be aborted after timeout");
+    }
+
+    #[tokio::test]
+    async fn sync_once_is_rejected_before_sdk_call_while_continuous_owner_is_active() {
+        let server = MatrixMockServer::new().await;
+        server.mock_sync().ok(|_| {}).expect(0).mount().await;
+        let session = Arc::new(MatrixClientSession::from_client_for_testing(
+            server.client_builder().build().await,
+            SessionInfo {
+                homeserver: server.uri(),
+                user_id: "@sync-owner:example.invalid".to_owned(),
+                device_id: "SYNCOWNER".to_owned(),
+            },
+        ));
+        let (action_tx, _action_rx) = mpsc::channel(4);
+        let (event_tx, mut event_rx) = broadcast::channel(4);
+        let (_command_tx, command_rx) = mpsc::channel(1);
+        let (control_tx, control_rx) = mpsc::channel(1);
+        let (room_tx, _room_rx) = mpsc::channel(1);
+        let (timeline_tx, _timeline_rx) = mpsc::channel(1);
+        let mut actor = SyncActor {
+            session,
+            action_tx,
+            event_tx,
+            command_rx,
+            control_tx,
+            control_rx,
+            room_tx,
+            timeline_tx,
+            lifecycle: SyncLifecycle::Running,
+            sync_generation: Arc::new(AtomicU64::new(0)),
+            active_backend: ActiveBackend::LegacySync,
+            sync_task: None,
+            legacy_stop_tx: None,
+            legacy_run_generation: 1,
+            sync_service_run_generation: 0,
+            sync_service: None,
+            active_start_request_id: None,
+            sync_service_runtime_fallback_attempted: false,
+            ignored_user_list_handler: None,
+        };
+        let request_id = RequestId {
+            connection_id: crate::ids::RuntimeConnectionId(7),
+            sequence: 42,
+        };
+
+        actor
+            .handle_command(SyncCommand::SyncOnce { request_id })
+            .await;
+
+        assert!(matches!(
+            event_rx.recv().await.expect("sync once rejection event"),
+            CoreEvent::OperationFailed {
+                request_id: event_request_id,
+                failure: CoreFailure::SyncFailed {
+                    kind: SyncFailureKind::Internal,
+                },
+            } if event_request_id == request_id
+        ));
+        assert!(
+            event_rx.try_recv().is_err(),
+            "one rejected SyncOnce must emit exactly one failure"
+        );
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn restricted_cursor_cannot_seed_the_first_normal_legacy_sync() {
+        use futures_util::StreamExt as _;
+        use matrix_sdk::ruma::room_id;
+        use matrix_sdk_test::JoinedRoomBuilder;
+
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let session = MatrixClientSession::from_client_for_testing(
+            client.clone(),
+            SessionInfo {
+                homeserver: server.uri(),
+                user_id: "@restricted-cursor:example.invalid".to_owned(),
+                device_id: "RESTRICTEDCURSOR".to_owned(),
+            },
+        );
+
+        let restricted = server
+            .mock_sync()
+            .ok(|_| {})
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        let restricted_token =
+            koushi_sdk::restricted_verification_sync_once_with_token(&session, None)
+                .await
+                .expect("restricted verification sync");
+        drop(restricted);
+
+        let room_id = room_id!("!normal-room:example.invalid");
+        let first_normal = server
+            .mock_sync()
+            .ok(|builder| {
+                builder.add_joined_room(JoinedRoomBuilder::new(room_id));
+            })
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        let stream = client.sync_stream(legacy_sync_settings()).await;
+        tokio::pin!(stream);
+        let first_normal_response = stream
+            .next()
+            .await
+            .expect("first normal response")
+            .expect("first normal sync succeeds");
+        drop(first_normal);
+        assert!(
+            client.get_room(room_id).is_some(),
+            "the authoritative first normal response must project joined rooms"
+        );
+
+        let second_normal = server
+            .mock_sync()
+            .ok(|_| {})
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        stream
+            .next()
+            .await
+            .expect("second normal response")
+            .expect("second normal sync succeeds");
+        drop(second_normal);
+
+        let requests = server.received_requests().await.expect("captured requests");
+        let sync_since = requests
+            .iter()
+            .filter(|request| request.url.path() == "/_matrix/client/v3/sync")
+            .map(|request| {
+                request
+                    .url
+                    .query_pairs()
+                    .find_map(|(key, value)| (key == "since").then(|| value.into_owned()))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sync_since.len(), 3);
+        assert_eq!(
+            sync_since[0], None,
+            "restricted catch-up begins without a cursor"
+        );
+        assert_eq!(
+            sync_since[1], None,
+            "a restricted-only cursor must not seed the first authoritative normal sync"
+        );
+        assert_ne!(sync_since[1].as_deref(), Some(restricted_token.as_str()));
+        assert_eq!(
+            sync_since[2].as_deref(),
+            Some(first_normal_response.next_batch.as_str()),
+            "later normal iterations must advance from the first normal response"
+        );
+    }
+
+    #[tokio::test]
+    async fn restricted_sync_preserves_canonical_cursor_across_store_reopen() {
+        use futures_util::StreamExt as _;
+
+        let server = MatrixMockServer::new().await;
+        let store = tempfile::tempdir().expect("temporary SDK store");
+        let client = server
+            .client_builder()
+            .on_builder(|builder| builder.sqlite_store(store.path(), None))
+            .build()
+            .await;
+
+        let canonical = server
+            .mock_sync()
+            .ok(|_| {})
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        let canonical_token = client
+            .sync_once(matrix_sdk::config::SyncSettings::default())
+            .await
+            .expect("canonical seed sync")
+            .next_batch;
+        drop(canonical);
+
+        let session = MatrixClientSession::from_client_for_testing(
+            client.clone(),
+            SessionInfo {
+                homeserver: server.uri(),
+                user_id: "@restricted-reopen:example.invalid".to_owned(),
+                device_id: "RESTRICTEDREOPEN".to_owned(),
+            },
+        );
+        let restricted = server
+            .mock_sync()
+            .ok(|_| {})
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        let restricted_token =
+            koushi_sdk::restricted_verification_sync_once_with_token(&session, None)
+                .await
+                .expect("restricted verification sync");
+        drop(restricted);
+        assert_ne!(restricted_token, canonical_token);
+
+        drop(session);
+        drop(client);
+        let reopened = server
+            .client_builder()
+            .on_builder(|builder| builder.sqlite_store(store.path(), None))
+            .build()
+            .await;
+        let normal = server
+            .mock_sync()
+            .ok(|_| {})
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        let stream = reopened.sync_stream(legacy_sync_settings()).await;
+        tokio::pin!(stream);
+        stream
+            .next()
+            .await
+            .expect("normal response after reopen")
+            .expect("normal sync after reopen succeeds");
+        drop(normal);
+
+        let sync_since = server
+            .received_requests()
+            .await
+            .expect("captured requests")
+            .iter()
+            .filter(|request| request.url.path() == "/_matrix/client/v3/sync")
+            .map(|request| {
+                request
+                    .url
+                    .query_pairs()
+                    .find_map(|(key, value)| (key == "since").then(|| value.into_owned()))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sync_since.len(), 3);
+        assert_eq!(
+            sync_since[0], None,
+            "canonical seed starts without a cursor"
+        );
+        assert_eq!(
+            sync_since[1], None,
+            "restricted sync always starts without a cursor"
+        );
+        assert_eq!(sync_since[2].as_deref(), Some(canonical_token.as_str()));
+        assert_ne!(sync_since[2].as_deref(), Some(restricted_token.as_str()));
+    }
+
+    #[tokio::test]
+    async fn restricted_cursor_remains_non_persisting_across_normal_failures_and_stops() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let session = Arc::new(MatrixClientSession::from_client_for_testing(
+            client.clone(),
+            SessionInfo {
+                homeserver: server.uri(),
+                user_id: "@restricted-restart:example.invalid".to_owned(),
+                device_id: "RESTRICTEDRESTART".to_owned(),
+            },
+        ));
+
+        let restricted = server
+            .mock_sync()
+            .ok(|_| {})
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        let restricted_token =
+            koushi_sdk::restricted_verification_sync_once_with_token(&session, None)
+                .await
+                .expect("restricted verification sync");
+        drop(restricted);
+
+        let (action_tx, _action_rx) = mpsc::channel(16);
+        let (event_tx, _) = broadcast::channel(16);
+        let (_command_tx, command_rx) = mpsc::channel(4);
+        let (control_tx, control_rx) = mpsc::channel(4);
+        let (room_tx, _room_rx) = mpsc::channel(4);
+        let (timeline_tx, _timeline_rx) = mpsc::channel(4);
+        let mut actor = SyncActor {
+            session,
+            action_tx,
+            event_tx,
+            command_rx,
+            control_tx,
+            control_rx,
+            room_tx,
+            timeline_tx,
+            lifecycle: SyncLifecycle::Starting,
+            sync_generation: Arc::new(AtomicU64::new(0)),
+            active_backend: ActiveBackend::LegacySync,
+            sync_task: None,
+            legacy_stop_tx: None,
+            legacy_run_generation: 0,
+            sync_service_run_generation: 0,
+            sync_service: None,
+            active_start_request_id: None,
+            sync_service_runtime_fallback_attempted: false,
+            ignored_user_list_handler: None,
+        };
+
+        let failed_baseline = server
+            .mock_sync()
+            .error_unknown_token(false)
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        actor.start_legacy_sync(client.clone()).await;
+        let failed_outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            actor.sync_task.take().expect("failed legacy task"),
+        )
+        .await
+        .expect("auth failure must terminate the legacy run")
+        .expect("legacy task must not panic");
+        assert!(matches!(
+            failed_outcome,
+            SyncTaskOutcome::Failed {
+                kind: SyncFailureKind::Auth,
+                ever_ran: false,
+            }
+        ));
+        actor.cleanup_ended_backend().await;
+        drop(failed_baseline);
+
+        let (held_request_seen_tx, held_request_seen_rx) = tokio::sync::oneshot::channel();
+        let held_request_seen_tx = Arc::new(std::sync::Mutex::new(Some(held_request_seen_tx)));
+        let held_baseline = server
+            .mock_sync()
+            .respond_with({
+                let held_request_seen_tx = held_request_seen_tx.clone();
+                move |_request: &wiremock::Request| {
+                    if let Some(sender) = held_request_seen_tx
+                        .lock()
+                        .expect("held request barrier lock")
+                        .take()
+                    {
+                        let _ = sender.send(());
+                    }
+                    ResponseTemplate::new(200)
+                        .set_delay(Duration::from_secs(60))
+                        .set_body_json(serde_json::json!({
+                            "next_batch": "held-baseline-token",
+                            "rooms": {},
+                            "to_device": { "events": [] },
+                            "presence": { "events": [] },
+                            "account_data": { "events": [] },
+                            "device_lists": { "changed": [], "left": [] },
+                            "device_one_time_keys_count": {},
+                        }))
+                }
+            })
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        actor.start_legacy_sync(client.clone()).await;
+        tokio::time::timeout(Duration::from_secs(5), held_request_seen_rx)
+            .await
+            .expect("held NoToken request must reach the server before stop")
+            .expect("held request barrier sender must remain owned by the server response");
+        actor.do_stop(None).await;
+        drop(held_baseline);
+
+        let successful_baseline = server
+            .mock_sync()
+            .ok(|_| {})
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        actor.start_legacy_sync(client.clone()).await;
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(5), actor.control_rx.recv())
+                .await
+                .expect("baseline response control must arrive"),
+            Some(SyncActorControl::FirstResponseCommitted { .. })
+        ));
+        actor.do_stop(None).await;
+        drop(successful_baseline);
+
+        let requests_before_canonical_restart = server
+            .received_requests()
+            .await
+            .expect("captured requests")
+            .into_iter()
+            .filter(|request| request.url.path() == "/_matrix/client/v3/sync")
+            .count();
+        let canonical_restart = server
+            .mock_sync()
+            .ok(|_| {})
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        actor.start_legacy_sync(client).await;
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(5), actor.control_rx.recv())
+                .await
+                .expect("canonical restart response control must arrive"),
+            Some(SyncActorControl::FirstResponseCommitted { .. })
+        ));
+        actor.do_stop(None).await;
+        drop(canonical_restart);
+
+        let sync_since = server
+            .received_requests()
+            .await
+            .expect("captured requests")
+            .iter()
+            .filter(|request| request.url.path() == "/_matrix/client/v3/sync")
+            .map(|request| {
+                request
+                    .url
+                    .query_pairs()
+                    .find_map(|(key, value)| (key == "since").then(|| value.into_owned()))
+            })
+            .collect::<Vec<_>>();
+        assert!(sync_since.len() > requests_before_canonical_restart);
+        assert_eq!(
+            sync_since[0], None,
+            "restricted sync starts without a cursor"
+        );
+        assert_eq!(
+            sync_since[1], None,
+            "the failed first normal baseline must omit the restricted cursor"
+        );
+        assert_eq!(
+            sync_since[2], None,
+            "restart after a failed normal response has no canonical cursor to reuse"
+        );
+        assert_eq!(
+            sync_since[3], None,
+            "restart after stopping before the held response must still omit since"
+        );
+        assert!(
+            sync_since[requests_before_canonical_restart].is_some(),
+            "only a restart after a committed normal response may reuse the canonical cursor"
+        );
+        assert_ne!(
+            sync_since[requests_before_canonical_restart].as_deref(),
+            Some(restricted_token.as_str()),
+            "the restricted response cursor must never seed normal sync"
+        );
+    }
+
+    #[tokio::test]
+    async fn canonical_cursor_is_reused_by_an_ordinary_legacy_start() {
+        use futures_util::StreamExt as _;
+
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let canonical = server
+            .mock_sync()
+            .ok(|_| {})
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        let canonical_response = client
+            .sync_once(matrix_sdk::config::SyncSettings::default())
+            .await
+            .expect("canonical pre-existing sync");
+        drop(canonical);
+
+        let resumed = server
+            .mock_sync()
+            .ok(|_| {})
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        let stream = client.sync_stream(legacy_sync_settings()).await;
+        tokio::pin!(stream);
+        stream
+            .next()
+            .await
+            .expect("resumed response")
+            .expect("ordinary resumed sync succeeds");
+        drop(resumed);
+
+        let requests = server.received_requests().await.expect("captured requests");
+        let sync_since = requests
+            .iter()
+            .filter(|request| request.url.path() == "/_matrix/client/v3/sync")
+            .map(|request| {
+                request
+                    .url
+                    .query_pairs()
+                    .find_map(|(key, value)| (key == "since").then(|| value.into_owned()))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sync_since.len(), 2);
+        assert_eq!(sync_since[0], None);
+        assert_eq!(
+            sync_since[1].as_deref(),
+            Some(canonical_response.next_batch.as_str()),
+            "ordinary restored sessions must reuse their canonical cursor"
+        );
+    }
+
+    #[test]
+    fn sync_once_admission_guard_precedes_the_sdk_call() {
+        let source = include_str!("sync.rs");
+        let body = source
+            .split("    async fn handle_sync_once")
+            .nth(1)
+            .expect("handle_sync_once should exist")
+            .split("    fn emit(")
+            .next()
+            .expect("emit should follow handle_sync_once");
+        let guard = body
+            .find("sync_once_admitted(")
+            .expect("SyncOnce must check continuous-owner admission");
+        let sdk_call = body
+            .find("koushi_sdk::sync_once(")
+            .expect("SDK sync_once call should remain present");
+
+        assert!(guard < sdk_call, "admission must run before the SDK call");
+        assert!(
+            body[guard..sdk_call].contains("SyncFailureKind::Internal")
+                && body[guard..sdk_call].contains("return;"),
+            "rejection must emit the fixed Internal failure and return before SDK work"
+        );
+    }
+
+    #[test]
+    fn sync_once_admission_requires_an_idle_lifecycle_and_no_owner_artifacts() {
+        assert!(sync_once_admitted(
+            SyncLifecycle::Stopped,
+            ActiveBackend::None,
+            false,
+            false,
+            false,
+        ));
+        assert!(sync_once_admitted(
+            SyncLifecycle::Failed,
+            ActiveBackend::None,
+            false,
+            false,
+            false,
+        ));
+
+        for lifecycle in [
+            SyncLifecycle::Starting,
+            SyncLifecycle::Running,
+            SyncLifecycle::Reconnecting,
+        ] {
+            assert!(!sync_once_admitted(
+                lifecycle,
+                ActiveBackend::None,
+                false,
+                false,
+                false,
+            ));
+        }
+        for backend in [ActiveBackend::SyncService, ActiveBackend::LegacySync] {
+            assert!(!sync_once_admitted(
+                SyncLifecycle::Stopped,
+                backend,
+                false,
+                false,
+                false,
+            ));
+        }
+        for owner_artifacts in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            assert!(!sync_once_admitted(
+                SyncLifecycle::Failed,
+                ActiveBackend::None,
+                owner_artifacts.0,
+                owner_artifacts.1,
+                owner_artifacts.2,
+            ));
+        }
     }
 
     #[test]
@@ -2008,6 +2772,9 @@ pub mod tests {
 
     #[test]
     fn forced_backend_override_honors_legacy_only() {
+        let _guard = FORCE_BACKEND_ENV_LOCK
+            .lock()
+            .expect("backend environment lock");
         // Unset → no force.
         unsafe { std::env::remove_var(ENV_FORCE_SYNC_BACKEND) };
         assert!(!forced_legacy_backend());
@@ -2050,6 +2817,119 @@ pub mod tests {
             SyncBackendKind::SyncService
         };
         assert_eq!(backend, SyncBackendKind::SyncService);
+    }
+
+    #[test]
+    fn invite_list_decision_selects_sync_service_only_for_supported() {
+        assert_eq!(
+            backend_from_invite_list_support(MatrixSlidingSyncInviteListSupport::Supported),
+            SyncBackendKind::SyncService
+        );
+        for support in [
+            MatrixSlidingSyncInviteListSupport::KnownIncomplete,
+            MatrixSlidingSyncInviteListSupport::Unknown,
+        ] {
+            assert_eq!(
+                backend_from_invite_list_support(support),
+                SyncBackendKind::LegacySync
+            );
+        }
+    }
+
+    #[test]
+    fn invite_list_probe_reason_labels_are_private_safe_tokens() {
+        for reason in [
+            BackendProbeReason::ForcedLegacy,
+            BackendProbeReason::SlidingSyncUnavailable,
+            BackendProbeReason::InviteListSupported,
+            BackendProbeReason::InviteListKnownIncomplete,
+            BackendProbeReason::InviteListUnknown,
+        ] {
+            let label = backend_probe_reason_label(reason);
+            assert!(
+                label
+                    .chars()
+                    .all(|character| character.is_ascii_lowercase() || character == '_')
+            );
+            assert!(!label.contains("http"));
+            assert!(!label.contains("matrix"));
+        }
+    }
+
+    #[test]
+    fn backend_probe_consults_invite_list_only_after_available_versions() {
+        let source = include_str!("sync.rs");
+        let body = source
+            .split("async fn probe_backend")
+            .nth(1)
+            .and_then(|rest| rest.split("fn legacy_sync_settings").next())
+            .expect("probe_backend body");
+        let versions = body
+            .find("available_sliding_sync_versions().await")
+            .expect("versions capability probe");
+        let unavailable = body
+            .find("if versions.is_empty()")
+            .expect("unavailable versions branch");
+        let invite_list_probe = body
+            .find("probe_sliding_sync_invite_list_support")
+            .expect("typed invite-list contract probe");
+
+        assert!(versions < unavailable);
+        assert!(unavailable < invite_list_probe);
+        assert!(
+            body[unavailable..invite_list_probe].contains("SyncBackendKind::LegacySync"),
+            "unavailable versions must return before the invite-list probe"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn backend_probe_checks_invite_list_after_versions_and_fails_closed() {
+        let _guard = FORCE_BACKEND_ENV_LOCK
+            .lock()
+            .expect("backend environment lock");
+        unsafe { std::env::remove_var(ENV_FORCE_SYNC_BACKEND) };
+
+        for (body, expected) in [
+            (
+                br#"{"pos":"discarded","lists":{"koushi_invites":{"count":0}}}"#.as_slice(),
+                BackendProbeResult {
+                    backend: SyncBackendKind::SyncService,
+                    reason: BackendProbeReason::InviteListSupported,
+                },
+            ),
+            (
+                br#"{"pos":"discarded","lists":{}}"#.as_slice(),
+                BackendProbeResult {
+                    backend: SyncBackendKind::LegacySync,
+                    reason: BackendProbeReason::InviteListKnownIncomplete,
+                },
+            ),
+            (
+                br#"malformed"#.as_slice(),
+                BackendProbeResult {
+                    backend: SyncBackendKind::LegacySync,
+                    reason: BackendProbeReason::InviteListUnknown,
+                },
+            ),
+        ] {
+            let (homeserver, requests, server) = spawn_backend_probe_server(body);
+            let client = authenticated_backend_probe_client(homeserver).await;
+
+            assert_eq!(probe_backend(&client).await, expected);
+            assert_eq!(
+                requests
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("versions request"),
+                "/_matrix/client/versions"
+            );
+            assert!(
+                requests
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("invite-list request")
+                    .starts_with("/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?")
+            );
+            server.join().expect("synthetic backend probe server");
+        }
     }
 
     // --- SyncEvent shapes ---

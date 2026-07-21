@@ -168,7 +168,7 @@ pub struct CoreRuntime {
     /// the typed runtime boundary.
     media_preparation: Arc<crate::media_preparation::MediaPreparationService>,
     media_lifecycle: executor::JoinHandle<()>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     account_actor_test_handle: AccountActorHandle,
     actor: executor::JoinHandle<()>,
 }
@@ -281,7 +281,7 @@ impl CoreRuntime {
             crate::link_preview::LinkPreviewContext::from_settings(&initial_state.settings.values),
         );
 
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-hooks"))]
         let account_actor_test_handle = account_actor.clone();
         let actor = AppActor {
             command_rx,
@@ -330,7 +330,7 @@ impl CoreRuntime {
             action_tx,
             media_preparation,
             media_lifecycle,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-hooks"))]
             account_actor_test_handle,
             actor,
         }
@@ -361,6 +361,18 @@ impl CoreRuntime {
         let _ = self.action_tx.send(actions).await;
     }
 
+    /// Test hook: override current-device trust observation through the typed
+    /// AccountActor path. Not part of the public production API.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub async fn configure_trust_observation_for_testing(
+        &self,
+        observation: koushi_sdk::CurrentDeviceTrustObservation,
+    ) -> bool {
+        self.account_actor_test_handle
+            .send(AccountMessage::ConfigureTrustObservation { observation })
+            .await
+    }
+
     pub fn shutdown_handle(&self) -> &executor::JoinHandle<()> {
         &self.actor
     }
@@ -376,7 +388,7 @@ impl CoreRuntime {
             action_tx: _,
             media_preparation: _,
             media_lifecycle,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-hooks"))]
                 account_actor_test_handle: _,
             actor,
         } = self;
@@ -1794,6 +1806,7 @@ impl AppActor {
 
     /// Returns whether `AppState` changed.
     async fn handle_command(&mut self, command: CoreCommand) -> bool {
+        let command_request_id = command.request_id();
         if command.requires_ready_session()
             && !is_ready_session_for_commands(&self.state.session)
             && !is_verification_gate_command(&command, &self.state.session)
@@ -1813,7 +1826,7 @@ impl AppActor {
                 runtime_request_id_trace_label(command.request_id())
             );
             self.emit(CoreEvent::OperationFailed {
-                request_id: command.request_id(),
+                request_id: command_request_id,
                 failure: CoreFailure::SessionRequired,
             });
             return false;
@@ -1864,6 +1877,10 @@ impl AppActor {
                 );
                 let should_route = !requires_projection_acceptance || projected_state_changed;
                 if !should_route {
+                    self.emit(CoreEvent::OperationFailed {
+                        request_id: command_request_id,
+                        failure: CoreFailure::SessionRequired,
+                    });
                     return false;
                 }
                 // Route to AccountActor; it will produce AppActions and
@@ -3900,7 +3917,8 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
             Some(AppAction::RestoreSessionRequested)
         }
         #[cfg(feature = "qa-bin")]
-        AccountCommand::QaSetLocalDeviceBlacklisted { .. } => None,
+        AccountCommand::QaSetLocalDeviceBlacklisted { .. }
+        | AccountCommand::QaRefreshDeviceKeysAndAssertKnown { .. } => None,
         AccountCommand::CompleteOidcLogin { .. }
         | AccountCommand::QuerySavedSessions { .. }
         | AccountCommand::SetPresence { .. }
@@ -3947,7 +3965,7 @@ fn default_data_dir() -> PathBuf {
 mod tests {
     use super::*;
     use crate::event::{
-        ThreadSummaryDto, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId,
+        AccountEvent, ThreadSummaryDto, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId,
     };
     use koushi_state::{
         DisplaySettings, LocalUserAliasUpdateState, OwnProfile, ProfileState,
@@ -4673,6 +4691,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn projection_rejected_restore_emits_one_correlated_failure_without_routing() {
+        let runtime = CoreRuntime::start_with_event_capacity(16);
+        let mut connection = runtime.attach();
+        runtime
+            .inject_actions(vec![AppAction::LogoutRequested])
+            .await;
+
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(1), connection.recv_event())
+                .await
+                .expect("logout projection should be published")
+                .expect("event stream should remain open");
+            if matches!(
+                event,
+                CoreEvent::StateChanged(AppState {
+                    session: SessionState::LoggingOut,
+                    ..
+                })
+            ) {
+                break;
+            }
+        }
+
+        let restore_request_id = connection.next_request_id();
+        connection
+            .command(CoreCommand::Account(AccountCommand::RestoreSession {
+                request_id: restore_request_id,
+                account_key: AccountKey("@restore-rejected:example.invalid".to_owned()),
+            }))
+            .await
+            .expect("restore command should enter the bounded runtime inbox");
+        let marker_request_id = connection.next_request_id();
+        connection
+            .command(CoreCommand::Account(AccountCommand::QuerySavedSessions {
+                request_id: marker_request_id,
+            }))
+            .await
+            .expect("ordered marker should enter the bounded runtime inbox");
+
+        let mut restore_failure_count = 0;
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(1), connection.recv_event())
+                .await
+                .expect("projection rejection should settle before the ordered marker")
+                .expect("event stream should remain open");
+            match event {
+                CoreEvent::OperationFailed {
+                    request_id,
+                    failure: CoreFailure::SessionRequired,
+                } if request_id == restore_request_id => {
+                    restore_failure_count += 1;
+                }
+                CoreEvent::OperationFailed { request_id, .. }
+                    if request_id == restore_request_id =>
+                {
+                    panic!("projection rejection emitted the wrong failure kind")
+                }
+                CoreEvent::Account(AccountEvent::SessionRestored { request_id, .. })
+                    if request_id == restore_request_id =>
+                {
+                    panic!("projection-rejected restore was routed to AccountActor")
+                }
+                CoreEvent::Account(AccountEvent::SavedSessionsListed { request_id, .. })
+                    if request_id == marker_request_id =>
+                {
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert_eq!(
+            restore_failure_count, 1,
+            "a projection-rejected command must have exactly one terminal failure"
+        );
+        assert!(matches!(
+            connection.snapshot().session,
+            SessionState::LoggingOut
+        ));
+        runtime.shutdown_handle().abort();
+    }
+
+    #[tokio::test]
     async fn connection_projects_timeline_sender_labels_from_latest_snapshot() {
         let (command_tx, _command_rx) = mpsc::channel(1);
         let (event_tx, event_rx) = broadcast::channel(4);
@@ -4766,6 +4867,7 @@ mod tests {
 
         let _ = event_tx.send(CoreEvent::Timeline(TimelineEvent::InitialItems {
             request_id: None,
+            cause_request_id: None,
             key,
             actor_generation: 0,
             generation: crate::ids::TimelineGeneration(0),
@@ -5722,6 +5824,26 @@ mod tests {
                 reason: koushi_state::VerificationCancelReason::User,
             }),
             None
+        );
+    }
+
+    #[cfg(feature = "qa-bin")]
+    #[test]
+    fn qa_device_key_refresh_has_no_speculative_app_projection() {
+        let (acknowledged, _ack) = tokio::sync::oneshot::channel();
+        assert!(
+            account_command_projected_action(&AccountCommand::QaRefreshDeviceKeysAndAssertKnown {
+                request_id: RequestId {
+                    connection_id: RuntimeConnectionId(1),
+                    sequence: 43,
+                },
+                target: koushi_state::VerificationTarget {
+                    user_id: "@private:example.invalid".to_owned(),
+                    device_id: "PRIVATEDEVICE".to_owned(),
+                },
+                acknowledged,
+            })
+            .is_none()
         );
     }
 

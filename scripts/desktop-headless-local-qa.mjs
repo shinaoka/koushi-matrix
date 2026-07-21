@@ -107,6 +107,17 @@ if (args.has("--check-tools")) {
   process.exit(0);
 }
 
+if (args.has("--check-probed-backend-map")) {
+  if (expectedSyncBackendForLeg(false) !== undefined) {
+    throw new Error("probed backend must be selected by behavior");
+  }
+  if (expectedSyncBackendForLeg(true) !== "LegacySync") {
+    throw new Error("forced legacy leg must retain its backend assertion");
+  }
+  console.log("probed sync backend is behavior-selected; forced legacy assertion ok");
+  process.exit(0);
+}
+
 if (args.has("--print-conduit-config")) {
   console.log(
     conduitConfig({ serverName: "localhost:6167", port: 6167, dataDir: "/tmp/conduit-data" })
@@ -244,8 +255,8 @@ async function runForServer(serverKind, scenario) {
     }
 
     if (runCoreQa) {
-      // Leg 1: probed backend. Local homeservers that advertise MSC4186 should
-      // run SyncService; the expectation makes drift fail QA.
+      // Leg 1: behavior-probed backend. The core's typed capability probe owns
+      // fail-closed selection; server family labels are not capability facts.
       if (shouldRunCoreBackend("probed")) {
         const coreUsers = fixture ?? (await registerQaUsers(homeserver, "core_probed"));
         if (!fixture && serverKind === "synapse") {
@@ -263,7 +274,7 @@ async function runForServer(serverKind, scenario) {
           logPath,
           scenario,
           legLabel: "probed",
-          expectSyncBackend: "SyncService",
+          expectSyncBackend: expectedSyncBackendForLeg(false),
           replayExistingStress: fixtureReplay
         });
         console.log(`core QA (probed backend): ${coreQaResult.trim()}`);
@@ -284,7 +295,7 @@ async function runForServer(serverKind, scenario) {
           scenario,
           legLabel: "legacy",
           forceLegacyBackend: true,
-          expectSyncBackend: "LegacySync"
+          expectSyncBackend: expectedSyncBackendForLeg(true)
         });
         console.log(`core QA (forced LegacySync): ${coreLegacyResult.trim()}`);
         if (!coreLegacyResult.includes("sync_backend_a=LegacySync")) {
@@ -598,6 +609,10 @@ function selectedServers(value) {
     return ["synapse"];
   }
   throw new Error("--server must be conduit, tuwunel, synapse, matrixorg, both, or all");
+}
+
+function expectedSyncBackendForLeg(forceLegacyBackend) {
+  return forceLegacyBackend ? "LegacySync" : undefined;
 }
 
 function selectedScenarios(value) {

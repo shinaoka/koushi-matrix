@@ -20,11 +20,12 @@
 //! `next_batch_id` before emitting each `ItemsUpdated`.
 //!
 //! ## Transaction ID mapping (canon pre-resolved decision D)
-//! `send_text_message` in the auth crate calls `room.send(content).with_transaction_id(txn_id)`.
-//! This makes the SDK's send queue use our client-supplied txn ID for both the
-//! local echo in timeline diffs AND the `RoomSendQueueUpdate::SentEvent` payload.
-//! No separate mapping table is needed: the client txn ID IS the SDK txn ID.
-//! `SendCompleted` carries the client txn ID directly from `SentEvent.transaction_id`.
+//! The stable timeline manager registers each client transaction/request before
+//! enqueue. Its supervised worker binds that registration to the SDK transaction
+//! returned by `Timeline::send`/the attachment SendHandle. The sole session-global
+//! send-queue observer then correlates exact SDK terminals and emits manager-owned
+//! reducer/completion handoffs. Replaceable actor-local room observers use SDK
+//! transaction IDs only for presentation state.
 //!
 //! ## Pagination
 //! `Timeline::paginate_backwards(n)` returns `Ok(true)` when the start of
@@ -48,14 +49,19 @@
 //! but never in error messages, log strings, or Debug output of error types.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, Ordering},
 };
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
+use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel};
 use koushi_sdk::{
     MatrixClientSession, MatrixCommittedRoomTimelineBackend,
@@ -98,7 +104,9 @@ use matrix_sdk::ruma::events::{
     Mentions, StateEventContentChange, room::name::RoomNameEventContent,
 };
 use matrix_sdk::ruma::html::{Html, SanitizerConfig};
-use matrix_sdk::send_queue::{LocalEcho, LocalEchoContent, RoomSendQueueUpdate, SendHandle};
+use matrix_sdk::send_queue::{
+    LocalEcho, LocalEchoContent, RoomSendQueueUpdate, SendHandle, SendQueueUpdate,
+};
 use matrix_sdk_ui::timeline::{
     AnyOtherStateEventContentChange, EmbeddedEvent, EncryptedMessage, EventItemOrigin,
     EventSendState as SdkEventSendState, EventTimelineItem, GapRepairProjectionId,
@@ -164,6 +172,10 @@ const ROOM_REPLAY_KNOWN_THREAD_ROOT_PROJECTIONS_MAX: usize = 32;
 const JAVASCRIPT_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
 const REPLY_QUOTE_PREVIEW_MAX_CHARS: usize = 160;
 const MEDIA_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
+/// One absolute deadline for the complete set of manager-owned enqueue workers.
+/// This is deliberately not a per-worker timeout, so shutdown latency cannot
+/// grow with the number of outstanding sends.
+const SEND_ENQUEUE_WORKER_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
 /// Backstop tick count for the anchor-relay wait. After the SDK signals
 /// `anchor_present == true`, the anchor's diff has been broadcast through the
 /// 3-hop relay (conclude_backwards_pagination_from_disk → event-cache task →
@@ -180,6 +192,80 @@ const RESTORE_ANCHOR_RELAY_WAIT_TICKS: u8 = 40;
 /// 50 ms is deliberately conservative (well within the 2 000 ms total
 /// budget); under normal conditions the anchor lands on tick 1.
 const RESTORE_ANCHOR_RELAY_WAIT_TICK_MS: u64 = 50;
+
+struct TimelineSendCompletionDelivery {
+    request_id: RequestId,
+    key: TimelineKey,
+    transaction_id: String,
+    event_id: String,
+}
+
+struct TimelineSendFailureDelivery {
+    request_id: RequestId,
+    failure: CoreFailure,
+}
+
+/// Internal payload accepted only through the manager-owned terminal ingress.
+/// Replaceable timeline actors cannot deliver reducer actions and completion
+/// events independently.
+struct TimelineSendTerminalHandoff {
+    submission_id: Option<koushi_state::SubmissionId>,
+    action: Option<AppAction>,
+    completion: Option<TimelineSendCompletionDelivery>,
+    failure: Option<TimelineSendFailureDelivery>,
+}
+
+#[derive(Clone)]
+struct TimelineSendTerminalIngress {
+    tx: mpsc::UnboundedSender<TimelineSendTerminalHandoff>,
+    accepting: Arc<std::sync::atomic::AtomicBool>,
+}
+
+enum TimelineSendTerminalAdmission {
+    Accepted,
+    ClosedForShutdown,
+}
+
+impl TimelineSendTerminalIngress {
+    fn channel() -> (Self, mpsc::UnboundedReceiver<TimelineSendTerminalHandoff>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (
+            Self {
+                tx,
+                accepting: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            },
+            rx,
+        )
+    }
+
+    fn admit(&self, handoff: TimelineSendTerminalHandoff) -> TimelineSendTerminalAdmission {
+        if !self.accepting.load(Ordering::Acquire) {
+            return TimelineSendTerminalAdmission::ClosedForShutdown;
+        }
+        match self.tx.send(handoff) {
+            Ok(()) => TimelineSendTerminalAdmission::Accepted,
+            Err(_) => {
+                debug_assert!(
+                    !self.accepting.load(Ordering::Acquire),
+                    "terminal ingress may close only during ordered manager shutdown"
+                );
+                TimelineSendTerminalAdmission::ClosedForShutdown
+            }
+        }
+    }
+
+    fn close_for_shutdown(
+        &self,
+        receiver: &mut mpsc::UnboundedReceiver<TimelineSendTerminalHandoff>,
+    ) {
+        self.stop_accepting();
+        receiver.close();
+    }
+
+    fn stop_accepting(&self) {
+        self.accepting.store(false, Ordering::Release);
+    }
+}
 
 /// Messages routed to the `TimelineManagerActor`.
 pub enum TimelineMessage {
@@ -238,19 +324,18 @@ pub enum TimelineMessage {
     /// unsubscribe/shutdown can cancel it deterministically.
     StartThreadRootProjectionFetch {
         key: TimelineKey,
+        actor_generation: u64,
         own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
-        activity: ThreadRootProjectionActivity,
+        activities: Vec<ThreadRootProjectionActivity>,
     },
     /// Terminal result of the manager-owned bounded root lookup. It returns to
     /// the manager mailbox rather than publishing state/frontend changes from
     /// an unowned detached task.
     ThreadRootProjectionFetchFinished {
         key: TimelineKey,
+        actor_generation: u64,
         activity: ThreadRootProjectionActivity,
         result: Result<TimelineItem, OperationFailureKind>,
-    },
-    SubmissionTerminal {
-        submission_id: koushi_state::SubmissionId,
     },
     Shutdown {
         acknowledged: Option<tokio::sync::oneshot::Sender<()>>,
@@ -260,40 +345,350 @@ pub enum TimelineMessage {
 /// Handle to the timeline manager task (owned by `AccountActor`).
 pub struct TimelineManagerHandle {
     tx: mpsc::Sender<TimelineMessage>,
+    #[cfg(test)]
+    terminal_ingress: TimelineSendTerminalIngress,
+}
+
+#[derive(Clone)]
+struct MatrixTimelineSendEnqueueContext {
+    key: TimelineKey,
+    timeline: Arc<Timeline>,
+    session: Arc<MatrixClientSession>,
+}
+
+#[derive(Clone)]
+enum TimelineSendEnqueueContext {
+    Matrix(MatrixTimelineSendEnqueueContext),
+    #[cfg(test)]
+    Synthetic {
+        requests: mpsc::UnboundedSender<SyntheticSendEnqueueRequest>,
+    },
+}
+
+enum TimelineSendEnqueuePayload {
+    Text {
+        body: String,
+        mentions: MentionIntent,
+    },
+    Reply {
+        in_reply_to_event_id: String,
+        body: String,
+        mentions: MentionIntent,
+    },
+    Media {
+        request_id: RequestId,
+        client_transaction_id: String,
+        request: UploadMediaRequest,
+    },
+}
+
+#[cfg(test)]
+struct SyntheticSendEnqueueRequest {
+    payload: TimelineSendEnqueuePayload,
+    response: oneshot::Sender<Result<SendEnqueueSuccess, TimelineFailureKind>>,
+}
+
+struct MediaSendQueuedDelivery {
+    request_id: RequestId,
+    key: TimelineKey,
+    transaction_id: String,
+}
+
+struct SendEnqueueSuccess {
+    sdk_transaction_id: String,
+    media_queued: Option<MediaSendQueuedDelivery>,
+}
+
+impl SendEnqueueSuccess {
+    fn terminal_only(sdk_transaction_id: String) -> Self {
+        Self {
+            sdk_transaction_id,
+            media_queued: None,
+        }
+    }
+}
+
+struct SendEnqueueWorkerCompletion;
+
+type SendEnqueueWorkerFuture =
+    Pin<Box<dyn Future<Output = SendEnqueueWorkerCompletion> + Send + 'static>>;
+type GlobalSendCompletionObserverFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+
+async fn poll_global_send_completion_observer(
+    observer: &mut Option<GlobalSendCompletionObserverFuture>,
+) {
+    match observer.as_mut() {
+        Some(observer) => observer.await,
+        None => futures_util::future::pending().await,
+    }
+}
+
+async fn poll_global_send_completion_observer_once(
+    observer: &mut Option<GlobalSendCompletionObserverFuture>,
+) -> bool {
+    futures_util::future::poll_fn(|context| {
+        let completed = observer
+            .as_mut()
+            .is_some_and(|observer| observer.as_mut().poll(context).is_ready());
+        Poll::Ready(completed)
+    })
+    .await
+}
+
+struct SendEnqueueWorkerSupervisor {
+    tasks: FuturesUnordered<SendEnqueueWorkerFuture>,
+    terminal_ingress: TimelineSendTerminalIngress,
+}
+
+impl SendEnqueueWorkerSupervisor {
+    fn new(terminal_ingress: TimelineSendTerminalIngress) -> Self {
+        Self {
+            tasks: FuturesUnordered::new(),
+            terminal_ingress,
+        }
+    }
+
+    fn cancel_all(&mut self) {
+        self.tasks = FuturesUnordered::new();
+    }
+}
+
+impl Drop for SendEnqueueWorkerSupervisor {
+    fn drop(&mut self) {
+        // Enqueue futures are polled directly by the manager and must return
+        // from each poll like every well-behaved async future. Closing terminal
+        // admission before synchronously dropping the set makes every active
+        // registration fail closed without a detached Tokio task.
+        self.terminal_ingress.stop_accepting();
+        self.cancel_all();
+    }
+}
+
+async fn run_send_enqueue_future<F>(
+    mut registration: SendCompletionRegistration,
+    event_tx: broadcast::Sender<CoreEvent>,
+    enqueue: F,
+) -> SendEnqueueWorkerCompletion
+where
+    F: Future<Output = Result<SendEnqueueSuccess, TimelineFailureKind>>,
+{
+    match enqueue.await {
+        Ok(success) => {
+            let SendEnqueueSuccess {
+                sdk_transaction_id,
+                media_queued,
+            } = success;
+            if let Some(media) = media_queued {
+                let _ = event_tx.send(CoreEvent::Timeline(TimelineEvent::MediaSendQueued {
+                    request_id: media.request_id,
+                    key: media.key,
+                    transaction_id: media.transaction_id,
+                }));
+            }
+            // Binding can synchronously admit an SDK terminal retained before
+            // enqueue completed. Publish the media queue acknowledgement first
+            // so no terminal can overtake it at the manager ingress boundary.
+            registration.bind(sdk_transaction_id);
+            SendEnqueueWorkerCompletion
+        }
+        Err(kind) => {
+            registration.fail_known(kind);
+            SendEnqueueWorkerCompletion
+        }
+    }
+}
+
+async fn enqueue_text_send(
+    context: MatrixTimelineSendEnqueueContext,
+    body: String,
+    mentions: MentionIntent,
+) -> Result<SendEnqueueSuccess, TimelineFailureKind> {
+    let room_id = matrix_sdk::ruma::RoomId::parse(context.key.room_id())
+        .map_err(|_| TimelineFailureKind::Sdk)?;
+    if context.session.client().get_room(&room_id).is_none() {
+        return Err(TimelineFailureKind::Sdk);
+    }
+    let content = build_room_message_content_from_composer_body(&body, mentions)?;
+    let content = matrix_sdk::ruma::events::AnyMessageLikeEventContent::RoomMessage(content);
+    context
+        .timeline
+        .send(content)
+        .await
+        .map(|handle| SendEnqueueSuccess::terminal_only(handle.transaction_id().to_string()))
+        .map_err(|error| classify_timeline_send_error(&error))
+}
+
+async fn enqueue_reply_send(
+    context: MatrixTimelineSendEnqueueContext,
+    in_reply_to_event_id: String,
+    body: String,
+    mentions: MentionIntent,
+) -> Result<SendEnqueueSuccess, TimelineFailureKind> {
+    let room_id = matrix_sdk::ruma::RoomId::parse(context.key.room_id())
+        .map_err(|_| TimelineFailureKind::Sdk)?;
+    let reply_event_id = matrix_sdk::ruma::EventId::parse(&in_reply_to_event_id)
+        .map_err(|_| TimelineFailureKind::Sdk)?;
+    if context.session.client().get_room(&room_id).is_none() {
+        return Err(TimelineFailureKind::Sdk);
+    }
+    let content = build_room_message_content_without_relation_from_composer_body(&body, mentions)?;
+    let reply = Reply {
+        event_id: reply_event_id,
+        enforce_thread: reply_enforce_thread_for_key(&context.key),
+        add_mentions: AddMentions::Yes,
+    };
+    let content = context
+        .timeline
+        .room()
+        .make_reply_event(content, reply)
+        .await
+        .map_err(|_| TimelineFailureKind::Sdk)?;
+    context
+        .timeline
+        .send(content.into())
+        .await
+        .map(|handle| SendEnqueueSuccess::terminal_only(handle.transaction_id().to_string()))
+        .map_err(|error| classify_timeline_send_error(&error))
+}
+
+async fn enqueue_media_send(
+    context: MatrixTimelineSendEnqueueContext,
+    request_id: RequestId,
+    client_transaction_id: String,
+    request: UploadMediaRequest,
+) -> Result<SendEnqueueSuccess, TimelineFailureKind> {
+    let room_id = matrix_sdk::ruma::RoomId::parse(context.key.room_id())
+        .map_err(|_| TimelineFailureKind::Sdk)?;
+    let room = context
+        .session
+        .client()
+        .get_room(&room_id)
+        .ok_or(TimelineFailureKind::Sdk)?;
+    let mime_type = request
+        .mime_type
+        .parse()
+        .map_err(|_| TimelineFailureKind::Sdk)?;
+    let caption_mentions = request
+        .caption
+        .as_ref()
+        .and_then(|caption| ruma_mentions_from_intent(&caption.mentions));
+    let config = AttachmentConfig::new()
+        .txn_id(matrix_sdk::ruma::OwnedTransactionId::from(
+            client_transaction_id.clone(),
+        ))
+        .info(attachment_info_for_upload(&request))
+        .thumbnail(thumbnail_for_upload(&request))
+        .caption(
+            request
+                .caption
+                .as_ref()
+                .map(media_caption_content_from_draft),
+        )
+        .mentions(caption_mentions)
+        .reply(attachment_reply_for_key(&context.key));
+    let handle = room
+        .send_queue()
+        .send_attachment(request.filename, mime_type, request.bytes, config)
+        .await
+        .map_err(|error| classify_send_queue_error(&error))?;
+    Ok(SendEnqueueSuccess {
+        sdk_transaction_id: handle.transaction_id().to_string(),
+        media_queued: Some(MediaSendQueuedDelivery {
+            request_id,
+            key: context.key,
+            transaction_id: client_transaction_id,
+        }),
+    })
+}
+
+async fn enqueue_timeline_send(
+    context: TimelineSendEnqueueContext,
+    payload: TimelineSendEnqueuePayload,
+) -> Result<SendEnqueueSuccess, TimelineFailureKind> {
+    match context {
+        TimelineSendEnqueueContext::Matrix(context) => match payload {
+            TimelineSendEnqueuePayload::Text { body, mentions } => {
+                enqueue_text_send(context, body, mentions).await
+            }
+            TimelineSendEnqueuePayload::Reply {
+                in_reply_to_event_id,
+                body,
+                mentions,
+            } => enqueue_reply_send(context, in_reply_to_event_id, body, mentions).await,
+            TimelineSendEnqueuePayload::Media {
+                request_id,
+                client_transaction_id,
+                request,
+            } => enqueue_media_send(context, request_id, client_transaction_id, request).await,
+        },
+        #[cfg(test)]
+        TimelineSendEnqueueContext::Synthetic { requests } => {
+            let (response, outcome) = oneshot::channel();
+            requests
+                .send(SyntheticSendEnqueueRequest { payload, response })
+                .map_err(|_| TimelineFailureKind::QueueOverflow)?;
+            outcome
+                .await
+                .unwrap_or(Err(TimelineFailureKind::QueueOverflow))
+        }
+    }
 }
 
 /// Manager-owned tasks for bounded root hydration. Removing a task before a
 /// queued completion is handled makes the completion stale by construction.
 #[derive(Default)]
 struct ThreadRootProjectionFetchRegistry {
-    tasks: HashMap<(String, String), executor::JoinHandle<()>>,
+    tasks: HashMap<(String, String), (u64, executor::JoinHandle<()>)>,
 }
 
 impl ThreadRootProjectionFetchRegistry {
-    fn contains(&self, room_id: &str, root_event_id: &str) -> bool {
+    fn contains(&self, room_id: &str, root_event_id: &str, actor_generation: u64) -> bool {
         self.tasks
-            .contains_key(&(room_id.to_owned(), root_event_id.to_owned()))
+            .get(&(room_id.to_owned(), root_event_id.to_owned()))
+            .is_some_and(|(generation, _)| *generation == actor_generation)
     }
 
-    fn insert(&mut self, room_id: String, root_event_id: String, task: executor::JoinHandle<()>) {
-        if let Some(previous) = self.tasks.insert((room_id, root_event_id), task) {
+    fn insert(
+        &mut self,
+        room_id: String,
+        root_event_id: String,
+        actor_generation: u64,
+        task: executor::JoinHandle<()>,
+    ) {
+        if let Some((previous_generation, previous)) = self
+            .tasks
+            .insert((room_id, root_event_id), (actor_generation, task))
+        {
             // This is defensive: start handling gates duplicates, but a future
             // caller must never leak the prior worker if it violates that
             // invariant.
             previous.abort();
-            debug_assert!(
-                false,
-                "a root hydration worker must be unique per room/root"
+            debug_assert_ne!(
+                previous_generation, actor_generation,
+                "a root hydration worker must be unique within one actor generation"
             );
         }
     }
 
     /// Returns false when unsubscribe/shutdown already cancelled this worker;
     /// callers must then ignore its late terminal message.
-    fn take_completion(&mut self, room_id: &str, root_event_id: &str) -> bool {
-        self.tasks
-            .remove(&(room_id.to_owned(), root_event_id.to_owned()))
-            .is_some()
+    fn take_completion(
+        &mut self,
+        room_id: &str,
+        root_event_id: &str,
+        actor_generation: u64,
+    ) -> bool {
+        let key = (room_id.to_owned(), root_event_id.to_owned());
+        if self
+            .tasks
+            .get(&key)
+            .is_some_and(|(generation, _)| *generation == actor_generation)
+        {
+            self.tasks.remove(&key);
+            true
+        } else {
+            false
+        }
     }
 
     fn abort_room(&mut self, room_id: &str) -> usize {
@@ -305,7 +700,7 @@ impl ThreadRootProjectionFetchRegistry {
             .collect::<Vec<_>>();
         let count = keys.len();
         for key in keys {
-            if let Some(task) = self.tasks.remove(&key) {
+            if let Some((_, task)) = self.tasks.remove(&key) {
                 task.abort();
             }
         }
@@ -313,7 +708,7 @@ impl ThreadRootProjectionFetchRegistry {
     }
 
     fn abort_all(&mut self) {
-        for (_, task) in self.tasks.drain() {
+        for (_, (_, task)) in self.tasks.drain() {
             task.abort();
         }
     }
@@ -373,6 +768,14 @@ struct TimelineActorGenerationGateState {
 /// sync/account lifecycle repair while the WebView canonical store survives;
 /// therefore per-manager counters are not a valid replacement fence.
 static NEXT_TIMELINE_ACTOR_GENERATION: AtomicU64 = AtomicU64::new(1);
+static DISPLAY_PROJECTION_RESET_FALLBACKS: AtomicU64 = AtomicU64::new(0);
+
+/// QA/test observation point for the process-global projection reset fallback
+/// counter. Product behavior never branches on this diagnostic value.
+#[cfg(any(test, feature = "qa-bin"))]
+pub fn display_projection_reset_fallback_count() -> u64 {
+    DISPLAY_PROJECTION_RESET_FALLBACKS.load(Ordering::Relaxed)
+}
 
 struct TimelineActorGenerationGateEntry {
     generation: u64,
@@ -625,6 +1028,42 @@ fn replay_projection_request_id(
     (!projection_acknowledged).then_some(projection_request_id)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct InitialItemsRequestIdentity {
+    projection_request_id: Option<RequestId>,
+    cause_request_id: Option<RequestId>,
+}
+
+impl InitialItemsRequestIdentity {
+    fn fresh(request_id: RequestId) -> Self {
+        Self {
+            projection_request_id: Some(request_id),
+            cause_request_id: Some(request_id),
+        }
+    }
+
+    fn replay(
+        projection_request_id: RequestId,
+        projection_acknowledged: bool,
+        cause_request_id: Option<RequestId>,
+    ) -> Self {
+        Self {
+            projection_request_id: replay_projection_request_id(
+                projection_request_id,
+                projection_acknowledged,
+            ),
+            cause_request_id,
+        }
+    }
+
+    fn recovery() -> Self {
+        Self {
+            projection_request_id: None,
+            cause_request_id: None,
+        }
+    }
+}
+
 /// The only emission gateway for TimelineActor-owned Core timeline events.
 ///
 /// The lease is held solely for the synchronous broadcast send(s). It never
@@ -697,15 +1136,15 @@ fn emit_items_updated_and_reconcile_replay_known_for_generation(
 
 /// Commits a non-SDK `Set` mutation beside its bounded replay display update
 /// and replay-known ownership transition. These mutations originate in actor
-/// policy/state handlers rather than an SDK vector diff, so canonical indexes
-/// cannot be applied to the bounded display mirror: a replay-only root can be
-/// outside that mirror while it still has index 0 in `navigation_items`.
+/// policy/state handlers rather than an SDK vector diff. Their canonical index
+/// is resolved against the exact retained slot owner; a replay-only root may
+/// be outside the bounded mirror and therefore intentionally emit no display
+/// mutation.
 ///
 /// The actor generation lease is acquired *before* the mirror is changed and
 /// retained until the display-safe `ItemsUpdated` event and scoped replay
 /// Ready/Clear events have all been synchronously broadcast. This is the same
-/// current-generation boundary used for SDK diff batches, with identity-based
-/// display updates appropriate for a bounded window.
+/// current-generation boundary used for SDK diff batches.
 fn emit_non_sdk_item_sets_and_reconcile_replay_known_for_generation(
     event_tx: &broadcast::Sender<CoreEvent>,
     registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
@@ -717,12 +1156,12 @@ fn emit_non_sdk_item_sets_and_reconcile_replay_known_for_generation(
     batch_id: TimelineBatchId,
     diffs: Vec<TimelineDiff>,
     navigation_items: &[TimelineItem],
-    display_items: &mut Vec<TimelineItem>,
+    display_projection: &mut DisplayProjectionState,
 ) -> bool {
     let Some(lease) = timeline_actor_generations.try_acquire(key, actor_generation) else {
         return false;
     };
-    let display_diffs = apply_non_sdk_item_set_diffs_to_display_items(display_items, &diffs);
+    let display_diffs = apply_non_sdk_item_set_diffs_to_display_items(display_projection, &diffs);
     emit_items_updated_and_reconcile_replay_known_with_lease(
         event_tx,
         registry,
@@ -733,7 +1172,7 @@ fn emit_non_sdk_item_sets_and_reconcile_replay_known_for_generation(
         batch_id,
         display_diffs,
         navigation_items,
-        display_items,
+        display_projection.display_items(),
     );
     true
 }
@@ -779,6 +1218,106 @@ fn emit_items_updated_and_reconcile_replay_known_with_lease(
     emit_timeline_events_with_lease(event_tx, lease, events);
 }
 
+/// The UI-visible terminal state of one anchor-restore walk.  Every member of
+/// this group is published while the same actor-generation lease is held so a
+/// replacement actor cannot expose an `ItemsUpdated` without its matching
+/// navigation/terminal state (or vice versa).
+struct RestoreSettlement {
+    navigation_snapshot: Option<TimelineNavigationSnapshot>,
+    terminal: Option<(RequestId, TimelineAnchorRestoreStatus)>,
+}
+
+/// Publish a restore terminal group for the current actor generation.
+///
+/// `None` means the actor was already stale and no state, buffer, batch id, or
+/// event was changed.  `Some(true)` means a coalesced `ItemsUpdated` batch was
+/// included; `Some(false)` means only navigation/terminal events were needed.
+fn publish_restore_settlement_for_generation(
+    restore_emit_buffer: &mut Vec<TimelineDiff>,
+    force_items_updated: bool,
+    next_batch_id: &mut TimelineBatchId,
+    event_tx: &broadcast::Sender<CoreEvent>,
+    registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
+    timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
+    key: &TimelineKey,
+    actor_generation: u64,
+    generation: TimelineGeneration,
+    navigation_items: &[TimelineItem],
+    display_items: &[TimelineItem],
+    settlement: RestoreSettlement,
+) -> Option<bool> {
+    let lease = timeline_actor_generations.try_acquire(key, actor_generation)?;
+    Some(publish_restore_settlement_with_lease(
+        restore_emit_buffer,
+        force_items_updated,
+        next_batch_id,
+        event_tx,
+        registry,
+        thread_root_projection_service,
+        &lease,
+        key,
+        generation,
+        navigation_items,
+        display_items,
+        settlement,
+    ))
+}
+
+fn publish_restore_settlement_with_lease(
+    restore_emit_buffer: &mut Vec<TimelineDiff>,
+    force_items_updated: bool,
+    next_batch_id: &mut TimelineBatchId,
+    event_tx: &broadcast::Sender<CoreEvent>,
+    registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
+    lease: &TimelineActorGenerationLease,
+    key: &TimelineKey,
+    generation: TimelineGeneration,
+    navigation_items: &[TimelineItem],
+    display_items: &[TimelineItem],
+    settlement: RestoreSettlement,
+) -> bool {
+    // A causal projection may correspond to a display no-op (for example a
+    // duplicate SDK slot collapsed by render identity).  It still needs an
+    // empty ItemsUpdated batch as the authoritative render fence.
+    let published_items = force_items_updated || !restore_emit_buffer.is_empty();
+    if published_items {
+        let batch_id = *next_batch_id;
+        let diffs = std::mem::take(restore_emit_buffer);
+        emit_items_updated_and_reconcile_replay_known_with_lease(
+            event_tx,
+            registry,
+            thread_root_projection_service,
+            lease,
+            key,
+            generation,
+            batch_id,
+            diffs,
+            navigation_items,
+            display_items,
+        );
+        *next_batch_id = TimelineBatchId(batch_id.0 + 1);
+    }
+
+    let mut terminal_events = Vec::with_capacity(2);
+    if let Some(snapshot) = settlement.navigation_snapshot {
+        terminal_events.push(TimelineEvent::NavigationUpdated {
+            key: key.clone(),
+            snapshot,
+        });
+    }
+    if let Some((request_id, status)) = settlement.terminal {
+        terminal_events.push(TimelineEvent::AnchorRestoreFinished {
+            request_id,
+            key: key.clone(),
+            status,
+        });
+    }
+    emit_timeline_events_with_lease(event_tx, lease, terminal_events);
+    published_items
+}
+
 /// Commits a fresh UI `InitialItems` window and its replay-known ownership
 /// transition under one shared synchronous boundary. The caller derives
 /// `replay_known_candidates` before entering this function; no fetch,
@@ -796,7 +1335,7 @@ fn emit_initial_items_and_reconcile_replay_known_for_generation(
     timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
     key: &TimelineKey,
     actor_generation: u64,
-    request_id: Option<RequestId>,
+    request_identity: InitialItemsRequestIdentity,
     generation: TimelineGeneration,
     items: Vec<TimelineItem>,
     replay_known_candidates: Vec<ThreadRootProjectionDto>,
@@ -808,7 +1347,7 @@ fn emit_initial_items_and_reconcile_replay_known_for_generation(
         timeline_actor_generations,
         key,
         actor_generation,
-        request_id,
+        request_identity,
         generation,
         items,
         replay_known_candidates,
@@ -827,7 +1366,7 @@ fn emit_initial_items_and_reconcile_replay_known_for_generation_after_initial<F>
     timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
     key: &TimelineKey,
     actor_generation: u64,
-    request_id: Option<RequestId>,
+    request_identity: InitialItemsRequestIdentity,
     generation: TimelineGeneration,
     items: Vec<TimelineItem>,
     replay_known_candidates: Vec<ThreadRootProjectionDto>,
@@ -839,15 +1378,50 @@ where
     let Some(lease) = timeline_actor_generations.try_acquire(key, actor_generation) else {
         return false;
     };
+    emit_initial_items_and_reconcile_replay_known_with_lease_after_initial(
+        event_tx,
+        registry,
+        thread_root_projection_service,
+        &lease,
+        key,
+        actor_generation,
+        request_identity,
+        generation,
+        items,
+        replay_known_candidates,
+        Vec::new(),
+        after_initial,
+    );
+    true
+}
+
+fn emit_initial_items_and_reconcile_replay_known_with_lease_after_initial<F>(
+    event_tx: &broadcast::Sender<CoreEvent>,
+    registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
+    lease: &TimelineActorGenerationLease,
+    key: &TimelineKey,
+    actor_generation: u64,
+    request_identity: InitialItemsRequestIdentity,
+    generation: TimelineGeneration,
+    items: Vec<TimelineItem>,
+    replay_known_candidates: Vec<ThreadRootProjectionDto>,
+    prefix_events: Vec<TimelineEvent>,
+    after_initial: F,
+) where
+    F: FnOnce(),
+{
     let mut registry = registry
         .lock()
         .expect("replay-known root registry lock must not be poisoned");
     let replay_known_update = registry.replace(key, replay_known_candidates);
+    emit_timeline_events_with_lease(event_tx, lease, prefix_events);
     emit_timeline_events_with_lease(
         event_tx,
-        &lease,
+        lease,
         vec![TimelineEvent::InitialItems {
-            request_id,
+            request_id: request_identity.projection_request_id,
+            cause_request_id: request_identity.cause_request_id,
             key: key.clone(),
             actor_generation,
             generation,
@@ -861,8 +1435,93 @@ where
         thread_root_projection_service,
         replay_known_update,
     );
-    emit_timeline_events_with_lease(event_tx, &lease, events);
+    emit_timeline_events_with_lease(event_tx, lease, events);
+}
+
+struct PreparedInitialWindow {
+    display_projection: DisplayProjectionState,
+    navigation_items: Option<Vec<TimelineItem>>,
+    emitted_items: Vec<TimelineItem>,
+    replay_known_candidates: Vec<ThreadRootProjectionDto>,
+}
+
+fn commit_prepared_initial_window_for_generation(
+    navigation_items: &mut Vec<TimelineItem>,
+    display_projection: &mut DisplayProjectionState,
+    event_tx: &broadcast::Sender<CoreEvent>,
+    registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
+    timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
+    key: &TimelineKey,
+    actor_generation: u64,
+    request_identity: InitialItemsRequestIdentity,
+    generation: TimelineGeneration,
+    prefix_events: Vec<TimelineEvent>,
+    prepared: PreparedInitialWindow,
+) -> bool {
+    let Some(lease) = timeline_actor_generations.try_acquire(key, actor_generation) else {
+        return false;
+    };
+    commit_prepared_initial_window_with_lease(
+        navigation_items,
+        display_projection,
+        event_tx,
+        registry,
+        thread_root_projection_service,
+        &lease,
+        key,
+        actor_generation,
+        request_identity,
+        generation,
+        prefix_events,
+        prepared,
+        || {},
+    );
     true
+}
+
+fn commit_prepared_initial_window_with_lease<F>(
+    navigation_items: &mut Vec<TimelineItem>,
+    display_projection: &mut DisplayProjectionState,
+    event_tx: &broadcast::Sender<CoreEvent>,
+    registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
+    lease: &TimelineActorGenerationLease,
+    key: &TimelineKey,
+    actor_generation: u64,
+    request_identity: InitialItemsRequestIdentity,
+    generation: TimelineGeneration,
+    prefix_events: Vec<TimelineEvent>,
+    prepared: PreparedInitialWindow,
+    commit_synchronous_candidates: F,
+) where
+    F: FnOnce(),
+{
+    let PreparedInitialWindow {
+        display_projection: candidate_display_projection,
+        navigation_items: candidate_navigation_items,
+        emitted_items,
+        replay_known_candidates,
+    } = prepared;
+    if let Some(candidate_navigation_items) = candidate_navigation_items {
+        *navigation_items = candidate_navigation_items;
+    }
+    *display_projection = candidate_display_projection;
+    commit_synchronous_candidates();
+    emit_initial_items_and_reconcile_replay_known_with_lease_after_initial(
+        event_tx,
+        registry,
+        thread_root_projection_service,
+        lease,
+        key,
+        actor_generation,
+        request_identity,
+        generation,
+        emitted_items,
+        replay_known_candidates,
+        prefix_events,
+        || {},
+    );
 }
 
 #[cfg(test)]
@@ -873,7 +1532,7 @@ fn emit_initial_items_and_reconcile_replay_known_for_generation_with_test_hook<F
     timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
     key: &TimelineKey,
     actor_generation: u64,
-    request_id: Option<RequestId>,
+    request_identity: InitialItemsRequestIdentity,
     generation: TimelineGeneration,
     items: Vec<TimelineItem>,
     replay_known_candidates: Vec<ThreadRootProjectionDto>,
@@ -889,7 +1548,7 @@ where
         timeline_actor_generations,
         key,
         actor_generation,
-        request_id,
+        request_identity,
         generation,
         items,
         replay_known_candidates,
@@ -1099,6 +1758,11 @@ impl TimelineManagerHandle {
     pub(crate) fn sender(&self) -> mpsc::Sender<TimelineMessage> {
         self.tx.clone()
     }
+
+    #[cfg(test)]
+    fn terminal_sender(&self) -> TimelineSendTerminalIngress {
+        self.terminal_ingress.clone()
+    }
 }
 
 /// Manages the `HashMap<TimelineKey, TimelineActorHandle>`.
@@ -1112,10 +1776,19 @@ pub struct TimelineManagerActor {
     legacy_committed_response: Option<MatrixCommittedRoomUpdatesResponse>,
     timelines: HashMap<TimelineKey, TimelineActorHandle>,
     accepted_submissions: SubmissionAdmissionLedger,
+    send_completion: SharedSendCompletionCoordinator,
+    global_send_completion_observer_future: Option<GlobalSendCompletionObserverFuture>,
+    send_enqueue_workers: SendEnqueueWorkerSupervisor,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     msg_tx: mpsc::Sender<TimelineMessage>,
     msg_rx: mpsc::Receiver<TimelineMessage>,
+    /// Non-evicting active terminal-delivery state. Admission is synchronous
+    /// under the shared send tracker lock, so its FIFO is bounded logically by
+    /// already-admitted/outstanding sends (at most one failure and one final
+    /// handoff per tracked send), not by arbitrary background work.
+    terminal_ingress: TimelineSendTerminalIngress,
+    terminal_rx: mpsc::UnboundedReceiver<TimelineSendTerminalHandoff>,
     /// Search index mutation sender. Forwarded to individual `TimelineActor`s
     /// so they can push `SearchIndexMessage`s on each diff. `None` when there
     /// is no active search index (pre-session or pre-Phase-6 builds).
@@ -1139,6 +1812,17 @@ pub struct TimelineManagerActor {
     live_tail_refreshes: LiveTailRefreshCoordinator<TimelineKey>,
     #[cfg(test)]
     test_session_available: bool,
+}
+
+impl Drop for TimelineManagerActor {
+    fn drop(&mut self) {
+        // Ordered shutdown has already drained or synchronously cancelled the
+        // directly-polled futures. On cancellation or panic, close admission,
+        // then settle worker registrations before stopping the observer.
+        self.terminal_ingress.stop_accepting();
+        self.send_enqueue_workers.cancel_all();
+        self.global_send_completion_observer_future.take();
+    }
 }
 
 fn accepts_legacy_committed_response(
@@ -1210,6 +1894,7 @@ impl TimelineManagerActor {
         messages_backpressure: MessagesBackpressure,
     ) -> TimelineManagerHandle {
         let (tx, msg_rx) = mpsc::channel(crate::runtime::ACTOR_MESSAGE_QUEUE_CAPACITY);
+        let (terminal_ingress, terminal_rx) = TimelineSendTerminalIngress::channel();
         let actor = TimelineManagerActor {
             session: None,
             room_list_service: None,
@@ -1218,10 +1903,15 @@ impl TimelineManagerActor {
             legacy_committed_response: None,
             timelines: HashMap::new(),
             accepted_submissions: SubmissionAdmissionLedger::default(),
+            send_completion: SharedSendCompletionCoordinator::default(),
+            global_send_completion_observer_future: None,
+            send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
             action_tx,
             event_tx,
             msg_tx: tx.clone(),
             msg_rx,
+            terminal_ingress: terminal_ingress.clone(),
+            terminal_rx,
             search_index_tx: None,
             ignored_user_ids: std::collections::BTreeSet::new(),
             data_dir,
@@ -1240,7 +1930,11 @@ impl TimelineManagerActor {
             test_session_available: false,
         };
         executor::spawn(actor.run());
-        TimelineManagerHandle { tx }
+        TimelineManagerHandle {
+            tx,
+            #[cfg(test)]
+            terminal_ingress,
+        }
     }
 
     /// Spawn with a session and a search index mutation sender.
@@ -1255,6 +1949,14 @@ impl TimelineManagerActor {
         messages_backpressure: MessagesBackpressure,
     ) -> TimelineManagerHandle {
         let (tx, msg_rx) = mpsc::channel(crate::runtime::ACTOR_MESSAGE_QUEUE_CAPACITY);
+        let (terminal_ingress, terminal_rx) = TimelineSendTerminalIngress::channel();
+        let send_completion = SharedSendCompletionCoordinator::default();
+        let global_send_completion_observer_future =
+            Some(Box::pin(run_global_send_completion_observer(
+                session.client().send_queue().subscribe(),
+                Arc::clone(&send_completion),
+                terminal_ingress.clone(),
+            )) as GlobalSendCompletionObserverFuture);
         let actor = TimelineManagerActor {
             session: Some(session),
             room_list_service: None,
@@ -1263,10 +1965,15 @@ impl TimelineManagerActor {
             legacy_committed_response: None,
             timelines: HashMap::new(),
             accepted_submissions: SubmissionAdmissionLedger::default(),
+            send_completion,
+            global_send_completion_observer_future,
+            send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
             action_tx,
             event_tx,
             msg_tx: tx.clone(),
             msg_rx,
+            terminal_ingress: terminal_ingress.clone(),
+            terminal_rx,
             search_index_tx: Some(search_index_tx),
             ignored_user_ids: std::collections::BTreeSet::new(),
             data_dir,
@@ -1285,14 +1992,159 @@ impl TimelineManagerActor {
             test_session_available: false,
         };
         executor::spawn(actor.run());
-        TimelineManagerHandle { tx }
+        TimelineManagerHandle {
+            tx,
+            #[cfg(test)]
+            terminal_ingress,
+        }
+    }
+
+    fn spawn_send_enqueue_future<F>(&mut self, registration: SendCompletionRegistration, enqueue: F)
+    where
+        F: Future<Output = Result<SendEnqueueSuccess, TimelineFailureKind>> + Send + 'static,
+    {
+        let event_tx = self.event_tx.clone();
+        self.send_enqueue_workers.tasks.push(Box::pin(async move {
+            // Spawned workers previously isolated enqueue panics at the JoinHandle boundary.
+            // Keep that fail-closed isolation when the manager polls futures directly.
+            let _ = AssertUnwindSafe(run_send_enqueue_future(registration, event_tx, enqueue))
+                .catch_unwind()
+                .await;
+            SendEnqueueWorkerCompletion
+        }));
+    }
+
+    fn spawn_send_enqueue(
+        &mut self,
+        context: TimelineSendEnqueueContext,
+        registration: SendCompletionRegistration,
+        admission: Option<oneshot::Receiver<()>>,
+        payload: TimelineSendEnqueuePayload,
+    ) -> oneshot::Receiver<()> {
+        let (preflight_started_tx, preflight_started_rx) = oneshot::channel();
+        self.spawn_send_enqueue_future(registration, async move {
+            if !await_submission_admission(admission).await {
+                return Err(TimelineFailureKind::QueueOverflow);
+            }
+            let _ = preflight_started_tx.send(());
+            enqueue_timeline_send(context, payload).await
+        });
+        preflight_started_rx
+    }
+
+    fn handle_send_enqueue_worker_completion(&self, _: SendEnqueueWorkerCompletion) {}
+
+    async fn drive_send_enqueue_until_preflight_started(
+        &mut self,
+        mut preflight_started: oneshot::Receiver<()>,
+    ) {
+        loop {
+            tokio::select! {
+                biased;
+                _ = &mut preflight_started => break,
+                worker = self.send_enqueue_workers.tasks.next(),
+                    if !self.send_enqueue_workers.tasks.is_empty() => {
+                    match worker {
+                        Some(completion) => {
+                            self.handle_send_enqueue_worker_completion(completion);
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
+    }
+
+    async fn drain_send_enqueue_workers_until(&mut self, deadline: executor::Instant) -> bool {
+        enum DrainProgress {
+            Worker(Option<SendEnqueueWorkerCompletion>),
+            ObserverFinished,
+        }
+
+        while !self.send_enqueue_workers.tasks.is_empty() {
+            let progress = executor::timeout_at(deadline, async {
+                tokio::select! {
+                    worker = self.send_enqueue_workers.tasks.next() => {
+                        DrainProgress::Worker(worker)
+                    }
+                    _ = poll_global_send_completion_observer(
+                        &mut self.global_send_completion_observer_future,
+                    ) => DrainProgress::ObserverFinished,
+                }
+            })
+            .await;
+            match progress {
+                Ok(DrainProgress::Worker(Some(completion))) => {
+                    self.handle_send_enqueue_worker_completion(completion);
+                }
+                Ok(DrainProgress::Worker(None)) => break,
+                Ok(DrainProgress::ObserverFinished) => {
+                    self.global_send_completion_observer_future = None;
+                }
+                Err(_) => return false,
+            }
+        }
+        if poll_global_send_completion_observer_once(
+            &mut self.global_send_completion_observer_future,
+        )
+        .await
+        {
+            self.global_send_completion_observer_future = None;
+        }
+        true
+    }
+
+    async fn join_send_enqueue_workers(&mut self) {
+        self.join_send_enqueue_workers_with_grace_period(SEND_ENQUEUE_WORKER_SHUTDOWN_DEADLINE)
+            .await;
+    }
+
+    async fn join_send_enqueue_workers_with_grace_period(&mut self, grace_period: Duration) {
+        let graceful_deadline = executor::Instant::now() + grace_period;
+        if self
+            .drain_send_enqueue_workers_until(graceful_deadline)
+            .await
+        {
+            return;
+        }
+
+        // Manager-owned futures are cancellation-safe at poll boundaries. Dropping the set
+        // synchronously settles every registration while the terminal observer remains live.
+        self.send_enqueue_workers.cancel_all();
+        if poll_global_send_completion_observer_once(
+            &mut self.global_send_completion_observer_future,
+        )
+        .await
+        {
+            self.global_send_completion_observer_future = None;
+        }
     }
 
     async fn run(mut self) {
         let mut shutdown_acknowledgement = None;
         #[cfg(test)]
         let mut live_tail_completion_dispatches = 0;
-        while let Some(msg) = self.msg_rx.recv().await {
+        loop {
+            let msg = tokio::select! {
+                biased;
+                terminal = self.terminal_rx.recv() => {
+                    let Some(terminal) = terminal else { break };
+                    self.handle_send_terminal_handoff(terminal).await;
+                    continue;
+                }
+                worker = self.send_enqueue_workers.tasks.next(), if !self.send_enqueue_workers.tasks.is_empty() => {
+                    if let Some(completion) = worker {
+                        self.handle_send_enqueue_worker_completion(completion);
+                    }
+                    continue;
+                }
+                _ = poll_global_send_completion_observer(&mut self.global_send_completion_observer_future) => {
+                    self.global_send_completion_observer_future = None;
+                    continue;
+                }
+                msg = self.msg_rx.recv() => msg,
+            };
+            let Some(msg) = msg else { break };
             match msg {
                 TimelineMessage::Shutdown { acknowledged } => {
                     shutdown_acknowledgement = acknowledged;
@@ -1365,22 +2217,31 @@ impl TimelineManagerActor {
                 }
                 TimelineMessage::StartThreadRootProjectionFetch {
                     key,
+                    actor_generation,
                     own_user_id,
-                    activity,
+                    activities,
                 } => {
-                    self.handle_thread_root_projection_fetch_start(key, own_user_id, activity)
-                        .await;
+                    self.handle_thread_root_projection_fetch_start(
+                        key,
+                        actor_generation,
+                        own_user_id,
+                        activities,
+                    )
+                    .await;
                 }
                 TimelineMessage::ThreadRootProjectionFetchFinished {
                     key,
+                    actor_generation,
                     activity,
                     result,
                 } => {
-                    self.handle_thread_root_projection_fetch_finished(key, activity, result)
-                        .await;
-                }
-                TimelineMessage::SubmissionTerminal { submission_id } => {
-                    self.accepted_submissions.terminal(&submission_id);
+                    self.handle_thread_root_projection_fetch_finished(
+                        key,
+                        actor_generation,
+                        activity,
+                        result,
+                    )
+                    .await;
                 }
                 TimelineMessage::Command(command) => {
                     self.handle_command(command).await;
@@ -1420,8 +2281,35 @@ impl TimelineManagerActor {
             .filter(|key| matches!(key.kind, TimelineKind::Room { .. }))
             .cloned()
             .collect::<Vec<_>>();
-        // Drop child handles first so relay/SDK work cannot race cleanup or acknowledgement.
-        self.timelines.clear();
+        // Stop accepting commands, then join session-owned enqueue workers
+        // while the sole global terminal observer remains live. A worker may
+        // still bind a durably saved SDK transaction during this phase.
+        self.join_send_enqueue_workers().await;
+        // Once enqueue workers are quiescent, stop the observer before actor
+        // presentation producers. Every remaining bound request then receives
+        // one explicit observation-loss settlement before ingress closes.
+        self.global_send_completion_observer_future.take();
+        let timeline_actors = self
+            .timelines
+            .drain()
+            .map(|(_, handle)| handle)
+            .collect::<Vec<_>>();
+        for handle in timeline_actors {
+            handle.stop().await;
+        }
+        apply_send_completion_observation_loss_and_handoff(
+            &self.send_completion,
+            &self.terminal_ingress,
+            None,
+        );
+        // Reject later actor admissions, then drain every handoff accepted before
+        // the close. Shutdown acknowledgement is deliberately held until the
+        // reducer channel has accepted every action-required terminal in FIFO order.
+        self.terminal_ingress
+            .close_for_shutdown(&mut self.terminal_rx);
+        while let Some(terminal) = self.terminal_rx.recv().await {
+            self.handle_send_terminal_handoff(terminal).await;
+        }
         for key in room_keys {
             self.clear_thread_root_projections_for_room(&key).await;
         }
@@ -1434,74 +2322,134 @@ impl TimelineManagerActor {
         }
     }
 
+    async fn handle_send_terminal_handoff(&mut self, handoff: TimelineSendTerminalHandoff) {
+        let TimelineSendTerminalHandoff {
+            submission_id,
+            action,
+            completion,
+            failure,
+        } = handoff;
+        if let Some(action) = action
+            && !deliver_submission_terminal_action(&self.action_tx, action).await
+        {
+            // A required reducer action that cannot be enqueued fails closed:
+            // neither the admission ledger nor CoreEvent may claim settlement.
+            if let Some(failure) = failure {
+                self.emit(CoreEvent::OperationFailed {
+                    request_id: failure.request_id,
+                    failure: failure.failure,
+                });
+            }
+            return;
+        }
+        if let Some(submission_id) = submission_id {
+            self.accepted_submissions.terminal(&submission_id);
+        }
+        if let Some(completion) = completion {
+            self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
+                request_id: completion.request_id,
+                key: completion.key,
+                transaction_id: completion.transaction_id,
+                event_id: completion.event_id,
+            }));
+        }
+        if let Some(failure) = failure {
+            self.emit(CoreEvent::OperationFailed {
+                request_id: failure.request_id,
+                failure: failure.failure,
+            });
+        }
+    }
+
     async fn handle_thread_root_projection_fetch_start(
         &mut self,
         key: TimelineKey,
+        actor_generation: u64,
         own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
-        activity: ThreadRootProjectionActivity,
+        activities: Vec<ThreadRootProjectionActivity>,
     ) {
-        if !matches!(key.kind, TimelineKind::Room { .. })
-            || !self.timelines.contains_key(&key)
-            || self
-                .thread_root_projection_fetches
-                .contains(&activity.room_id, &activity.root_event_id)
-        {
+        let Some(_lease) = self
+            .timeline_actor_generations
+            .try_acquire(&key, actor_generation)
+        else {
             return;
-        }
-        let should_start = self
-            .thread_root_projection_service
-            .lock()
-            .expect("thread-root projection service lock must not be poisoned")
-            .has_pending_attempt(&activity);
-        if !should_start {
+        };
+        if !matches!(key.kind, TimelineKind::Room { .. }) || !self.timelines.contains_key(&key) {
             return;
         }
         let Some(session) = self.session.clone() else {
             return;
         };
-        let task = spawn_thread_root_projection_fetch(
-            session,
-            key.clone(),
-            own_user_id,
-            self.msg_tx.clone(),
-            activity.clone(),
-        );
-        self.thread_root_projection_fetches
-            .insert(activity.room_id, activity.root_event_id, task);
+        for activity in activities {
+            if self.thread_root_projection_fetches.contains(
+                &activity.room_id,
+                &activity.root_event_id,
+                actor_generation,
+            ) {
+                continue;
+            }
+            let should_start = self
+                .thread_root_projection_service
+                .lock()
+                .expect("thread-root projection service lock must not be poisoned")
+                .has_pending_attempt(&activity);
+            if !should_start {
+                continue;
+            }
+            let task = spawn_thread_root_projection_fetch(
+                session.clone(),
+                key.clone(),
+                actor_generation,
+                own_user_id.clone(),
+                self.msg_tx.clone(),
+                activity.clone(),
+            );
+            self.thread_root_projection_fetches.insert(
+                activity.room_id,
+                activity.root_event_id,
+                actor_generation,
+                task,
+            );
+        }
     }
 
     async fn handle_thread_root_projection_fetch_finished(
         &mut self,
         key: TimelineKey,
+        actor_generation: u64,
         activity: ThreadRootProjectionActivity,
         result: Result<TimelineItem, OperationFailureKind>,
     ) {
-        if !self
-            .thread_root_projection_fetches
-            .take_completion(&activity.room_id, &activity.root_event_id)
-            || !self.timelines.contains_key(&key)
+        if !self.thread_root_projection_fetches.take_completion(
+            &activity.room_id,
+            &activity.root_event_id,
+            actor_generation,
+        ) || !self.timelines.contains_key(&key)
         {
             return;
         }
-        let record = {
-            let mut service = self
-                .thread_root_projection_service
-                .lock()
-                .expect("thread-root projection service lock must not be poisoned");
-            match result {
-                Ok(item) => service.mark_ready(&activity, item),
-                Err(failure_kind) => service.mark_failed(&activity, failure_kind),
-            }
+        let Ok(action_permit) = self.action_tx.clone().reserve_owned().await else {
+            return;
+        };
+        let Some(lease) = self
+            .timeline_actor_generations
+            .try_acquire(&key, actor_generation)
+        else {
+            return;
+        };
+        let mut service = self
+            .thread_root_projection_service
+            .lock()
+            .expect("thread-root projection service lock must not be poisoned");
+        let record = match result {
+            Ok(item) => service.mark_ready(&activity, item),
+            Err(failure_kind) => service.mark_failed(&activity, failure_kind),
         };
         let Some(record) = record else {
             return;
         };
-        if !self
-            .emit_action_reliable(thread_root_projection_action_from_record(&record))
-            .await
-        {
-            return;
-        }
+        action_permit.send(vec![thread_root_projection_action_from_record(&record)]);
+        drop(service);
         // A bounded replay may have acquired display ownership while this
         // manager-owned cache/network lookup was in flight. The shared
         // registry mutex covers both this decision and the synchronous
@@ -1515,6 +2463,7 @@ impl TimelineManagerActor {
             &key,
             thread_root_projection_dto_from_record(&record),
         );
+        drop(lease);
     }
 
     async fn clear_thread_root_projections_for_room(&mut self, key: &TimelineKey) {
@@ -1974,7 +2923,7 @@ impl TimelineManagerActor {
     }
 
     async fn subscribe_existing_timeline_rooms(
-        &self,
+        &mut self,
         service: &Arc<matrix_sdk_ui::room_list_service::RoomListService>,
     ) {
         let mut seen_room_ids = HashSet::new();
@@ -2027,7 +2976,9 @@ impl TimelineManagerActor {
         {
             Ok(handle) => {
                 self.emit_timeline_subscribed_action(&key).await;
-                self.timelines.insert(key.clone(), handle);
+                if let Some(previous) = self.timelines.insert(key.clone(), handle) {
+                    previous.stop().await;
+                }
                 self.restore_foreground_gap_demand(&key).await;
                 self.replay_retained_room_subscription_checkpoint(&key)
                     .await;
@@ -2114,7 +3065,7 @@ impl TimelineManagerActor {
         }
     }
 
-    async fn restore_foreground_gap_demand(&self, key: &TimelineKey) {
+    async fn restore_foreground_gap_demand(&mut self, key: &TimelineKey) {
         if self.live_tail_refreshes.active_key() != Some(key) {
             return;
         }
@@ -2159,7 +3110,9 @@ impl TimelineManagerActor {
                         .invalidate_and_quiesce(&key)
                         .await;
                 }
-                self.timelines.remove(&key);
+                if let Some(handle) = self.timelines.remove(&key) {
+                    handle.stop().await;
+                }
             }
             TimelineCommand::Paginate {
                 request_id,
@@ -2258,20 +3211,13 @@ impl TimelineManagerActor {
                     self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
                     return;
                 }
-                self.route_send_to_actor_or_fail(
+                self.route_send_to_worker_or_fail(
                     request_id,
                     &key,
                     transaction_id.clone(),
                     body.clone(),
                     SendComposerProjection::for_send_text(&key),
-                    TimelineActorMessage::SendText {
-                        request_id,
-                        submission_id: None,
-                        admission: None,
-                        transaction_id,
-                        body,
-                        mentions,
-                    },
+                    TimelineSendEnqueuePayload::Text { body, mentions },
                 )
                 .await;
             }
@@ -2292,21 +3238,14 @@ impl TimelineManagerActor {
                     }));
                     return;
                 }
-                self.route_submission_to_actor(
+                self.route_submission_to_worker(
                     request_id,
                     submission_id.clone(),
                     &key,
                     transaction_id.clone(),
                     body.clone(),
                     SendComposerProjection::for_send_text(&key),
-                    TimelineActorMessage::SendText {
-                        request_id,
-                        submission_id: Some(submission_id.clone()),
-                        admission: None,
-                        transaction_id,
-                        body,
-                        mentions,
-                    },
+                    TimelineSendEnqueuePayload::Text { body, mentions },
                 )
                 .await;
             }
@@ -2322,17 +3261,13 @@ impl TimelineManagerActor {
                     self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
                     return;
                 }
-                self.route_send_to_actor_or_fail(
+                self.route_send_to_worker_or_fail(
                     request_id,
                     &key,
                     transaction_id.clone(),
                     body.clone(),
                     SendComposerProjection::for_send_reply(&key),
-                    TimelineActorMessage::SendReply {
-                        request_id,
-                        submission_id: None,
-                        admission: None,
-                        transaction_id,
+                    TimelineSendEnqueuePayload::Reply {
                         in_reply_to_event_id,
                         body,
                         mentions,
@@ -2358,18 +3293,14 @@ impl TimelineManagerActor {
                     }));
                     return;
                 }
-                self.route_submission_to_actor(
+                self.route_submission_to_worker(
                     request_id,
                     submission_id.clone(),
                     &key,
                     transaction_id.clone(),
                     body.clone(),
                     SendComposerProjection::for_send_reply(&key),
-                    TimelineActorMessage::SendReply {
-                        request_id,
-                        submission_id: Some(submission_id.clone()),
-                        admission: None,
-                        transaction_id,
+                    TimelineSendEnqueuePayload::Reply {
                         in_reply_to_event_id,
                         body,
                         mentions,
@@ -2462,12 +3393,13 @@ impl TimelineManagerActor {
                 transaction_id,
                 request,
             } => {
-                self.route_to_actor_or_fail(
+                self.route_media_send_to_worker_or_fail(
                     request_id,
                     &key,
-                    TimelineActorMessage::UploadAndSendMedia {
+                    transaction_id.clone(),
+                    TimelineSendEnqueuePayload::Media {
                         request_id,
-                        transaction_id,
+                        client_transaction_id: transaction_id,
                         request,
                     },
                 )
@@ -2681,16 +3613,20 @@ impl TimelineManagerActor {
         }
     }
 
-    async fn route_send_to_actor_or_fail(
-        &self,
+    async fn route_send_to_worker_or_fail(
+        &mut self,
         request_id: RequestId,
         key: &TimelineKey,
         transaction_id: String,
         body: String,
         projection: SendComposerProjection,
-        msg: TimelineActorMessage,
+        payload: TimelineSendEnqueuePayload,
     ) {
-        let Some(handle) = self.timelines.get(key) else {
+        let Some(context) = self
+            .timelines
+            .get(key)
+            .and_then(|handle| handle.enqueue_context.clone())
+        else {
             self.emit_failure(
                 request_id,
                 CoreFailure::TimelineOperationFailed {
@@ -2711,26 +3647,60 @@ impl TimelineManagerActor {
                 return;
             }
         }
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&self.send_completion),
+            self.terminal_ingress.clone(),
+            key.clone(),
+            transaction_id,
+            None,
+            request_id,
+            true,
+        );
+        registration.activate();
+        let preflight_started = self.spawn_send_enqueue(context, registration, None, payload);
+        // Directly-owned futures are not independently scheduled Tokio tasks. Drive this
+        // admitted worker through its permit to the start of payload-specific preflight before
+        // returning to the command loop. This does not serialize later SDK queue insertion.
+        self.drive_send_enqueue_until_preflight_started(preflight_started)
+            .await;
+    }
 
-        if !handle.send(msg).await {
-            if let Some(action) = send_failed_action(
-                key,
-                projection,
-                transaction_id,
-                "timeline send route closed".to_owned(),
-            ) {
-                let _ = self.action_tx.send(vec![action]).await;
-            }
+    async fn route_media_send_to_worker_or_fail(
+        &mut self,
+        request_id: RequestId,
+        key: &TimelineKey,
+        transaction_id: String,
+        payload: TimelineSendEnqueuePayload,
+    ) {
+        let Some(context) = self
+            .timelines
+            .get(key)
+            .and_then(|handle| handle.enqueue_context.clone())
+        else {
             self.emit_failure(
                 request_id,
                 CoreFailure::TimelineOperationFailed {
-                    kind: TimelineFailureKind::QueueOverflow,
+                    kind: TimelineFailureKind::NotSubscribed,
                 },
             );
-        }
+            return;
+        };
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&self.send_completion),
+            self.terminal_ingress.clone(),
+            key.clone(),
+            transaction_id,
+            None,
+            request_id,
+            false,
+        );
+        registration.activate();
+        let preflight_started = self.spawn_send_enqueue(context, registration, None, payload);
+        self.drive_send_enqueue_until_preflight_started(preflight_started)
+            .await;
     }
 
-    async fn route_submission_to_actor(
+    async fn route_submission_to_worker(
         &mut self,
         request_id: RequestId,
         submission_id: koushi_state::SubmissionId,
@@ -2738,7 +3708,7 @@ impl TimelineManagerActor {
         transaction_id: String,
         body: String,
         projection: SendComposerProjection,
-        msg: TimelineActorMessage,
+        payload: TimelineSendEnqueuePayload,
     ) {
         if let Some(rejected_key) = self.accepted_submissions.rejected(&submission_id) {
             self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
@@ -2760,7 +3730,11 @@ impl TimelineManagerActor {
             }));
             return;
         }
-        let Some(handle) = self.timelines.get(key) else {
+        let Some(context) = self
+            .timelines
+            .get(key)
+            .and_then(|handle| handle.enqueue_context.clone())
+        else {
             self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
                 request_id,
                 key: key.clone(),
@@ -2770,7 +3744,28 @@ impl TimelineManagerActor {
             return;
         };
         let (permit_tx, permit_rx) = oneshot::channel();
-        if !handle.send(msg.with_submission_admission(permit_rx)).await {
+        let registration = SendCompletionRegistration::begin(
+            Arc::clone(&self.send_completion),
+            self.terminal_ingress.clone(),
+            key.clone(),
+            transaction_id.clone(),
+            Some(submission_id.clone()),
+            request_id,
+            true,
+        );
+        let registration_id = registration
+            .registration_id()
+            .expect("new send registration must own its id");
+        // The stable manager owns the permit-blocked worker before it exposes
+        // acceptance. Unsubscribe may now remove only presentation state.
+        let preflight_started =
+            self.spawn_send_enqueue(context, registration, Some(permit_rx), payload);
+        if !self
+            .send_completion
+            .lock()
+            .expect("send completion coordinator lock must not be poisoned")
+            .activate_registration(registration_id)
+        {
             self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
                 request_id,
                 key: key.clone(),
@@ -2805,6 +3800,10 @@ impl TimelineManagerActor {
         };
         if let Some(action) = action {
             if self.action_tx.send(vec![action]).await.is_err() {
+                self.send_completion
+                    .lock()
+                    .expect("send completion coordinator lock must not be poisoned")
+                    .cancel_registration(registration_id);
                 self.accepted_submissions
                     .reject(submission_id.clone(), key.clone());
                 self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
@@ -2828,18 +3827,22 @@ impl TimelineManagerActor {
             transaction_id,
         }));
         let _ = permit_tx.send(());
+        self.drive_send_enqueue_until_preflight_started(preflight_started)
+            .await;
     }
 
-    async fn handle_replay_subscribed(&mut self, request_id: RequestId) {
+    async fn handle_replay_subscribed(&mut self, _request_id: RequestId) {
         for handle in self.timelines.values() {
             let _ = handle
-                .send(TimelineActorMessage::ReplayInitialItems { request_id })
+                .send(TimelineActorMessage::ReplayInitialItems {
+                    cause_request_id: None,
+                })
                 .await;
         }
     }
 
     async fn acknowledge_projection(
-        &self,
+        &mut self,
         projection_request_id: RequestId,
         key: &TimelineKey,
         generation: TimelineGeneration,
@@ -2862,7 +3865,7 @@ impl TimelineManagerActor {
     }
 
     async fn acknowledge_batch_rendered(
-        &self,
+        &mut self,
         key: &TimelineKey,
         actor_generation: u64,
         timeline_generation: TimelineGeneration,
@@ -2914,7 +3917,9 @@ impl TimelineManagerActor {
             if replay_existing {
                 handle
                     .tx
-                    .try_send(TimelineActorMessage::ReplayInitialItems { request_id })
+                    .try_send(TimelineActorMessage::ReplayInitialItems {
+                        cause_request_id: Some(request_id),
+                    })
             } else {
                 Ok(())
             }
@@ -2949,7 +3954,9 @@ impl TimelineManagerActor {
         {
             Ok(handle) => {
                 self.emit_timeline_subscribed_action(&key).await;
-                self.timelines.insert(key.clone(), handle);
+                if let Some(previous) = self.timelines.insert(key.clone(), handle) {
+                    previous.stop().await;
+                }
                 self.replay_retained_room_subscription_checkpoint(&key)
                     .await;
                 trace("subscribed_done");
@@ -2963,7 +3970,7 @@ impl TimelineManagerActor {
     }
 
     async fn build_timeline_actor_handle(
-        &self,
+        &mut self,
         request_id: RequestId,
         key: &TimelineKey,
         actor_generation: u64,
@@ -3045,7 +4052,6 @@ impl TimelineManagerActor {
             Ok(t) => Arc::new(t),
             Err(_) => return Err(TimelineFailureKind::Sdk),
         };
-
         trace("spawn_begin");
         let handle = TimelineActor::spawn(
             key.clone(),
@@ -3064,6 +4070,8 @@ impl TimelineManagerActor {
             Arc::clone(&self.timeline_actor_generations),
             actor_generation,
             subscription_generation,
+            Arc::clone(&self.send_completion),
+            self.terminal_ingress.clone(),
             self.msg_tx.clone(),
         )
         .await;
@@ -3073,7 +4081,7 @@ impl TimelineManagerActor {
     }
 
     async fn route_to_actor_or_fail(
-        &self,
+        &mut self,
         request_id: RequestId,
         key: &TimelineKey,
         msg: TimelineActorMessage,
@@ -3105,7 +4113,7 @@ impl TimelineManagerActor {
     }
 
     async fn emit_subscription_failure(
-        &self,
+        &mut self,
         request_id: RequestId,
         key: &TimelineKey,
         kind: TimelineFailureKind,
@@ -3116,7 +4124,7 @@ impl TimelineManagerActor {
         self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
     }
 
-    async fn emit_timeline_subscribed_action(&self, key: &TimelineKey) {
+    async fn emit_timeline_subscribed_action(&mut self, key: &TimelineKey) {
         let action = match &key.kind {
             TimelineKind::Room { room_id } => AppAction::TimelineSubscribed {
                 room_id: room_id.clone(),
@@ -3136,7 +4144,7 @@ impl TimelineManagerActor {
         let _ = self.action_tx.send(vec![action]).await;
     }
 
-    async fn emit_action_reliable(&self, action: AppAction) -> bool {
+    async fn emit_action_reliable(&mut self, action: AppAction) -> bool {
         emit_app_action_reliable(&self.action_tx, action).await
     }
 }
@@ -3567,23 +4575,6 @@ enum TimelineActorMessage {
     },
     BeginGapRepairDemand,
     EndGapRepairDemand,
-    SendText {
-        request_id: RequestId,
-        submission_id: Option<koushi_state::SubmissionId>,
-        admission: Option<oneshot::Receiver<()>>,
-        transaction_id: String,
-        body: String,
-        mentions: MentionIntent,
-    },
-    SendReply {
-        request_id: RequestId,
-        submission_id: Option<koushi_state::SubmissionId>,
-        admission: Option<oneshot::Receiver<()>>,
-        transaction_id: String,
-        in_reply_to_event_id: String,
-        body: String,
-        mentions: MentionIntent,
-    },
     ForwardMessage {
         request_id: RequestId,
         source_event_id: String,
@@ -3608,11 +4599,6 @@ enum TimelineActorMessage {
     CancelSend {
         request_id: RequestId,
         transaction_id: String,
-    },
-    UploadAndSendMedia {
-        request_id: RequestId,
-        transaction_id: String,
-        request: UploadMediaRequest,
     },
     DownloadMedia {
         request_id: RequestId,
@@ -3690,13 +4676,11 @@ enum TimelineActorMessage {
     /// Internal: send queue broadcast lagged and the actor must resync the
     /// SDK-owned local echo snapshot before projecting outbound send states.
     SendQueueLagged,
-    /// Internal: re-emit the current navigation_items as InitialItems for a
-    /// new request_id without tearing down the SDK subscription.  Sent by
-    /// `handle_subscribe` when the key is already subscribed (idempotency
-    /// path) so a freshly re-mounted TimelineView still receives an
-    /// InitialItems batch.
+    /// Internal: re-emit the current navigation_items as InitialItems without
+    /// tearing down the SDK subscription. A user-command Subscribe supplies
+    /// its exact cause; internal recovery replay is causeless.
     ReplayInitialItems {
-        request_id: RequestId,
+        cause_request_id: Option<RequestId>,
     },
     AcknowledgeProjection {
         projection_request_id: RequestId,
@@ -3724,7 +4708,10 @@ enum TimelineActorMessage {
     #[cfg(test)]
     TestRestoreCausalState(oneshot::Sender<(bool, bool, usize, BTreeSet<CausalProjectionId>)>),
     #[cfg(test)]
-    TestFlushRestore(oneshot::Sender<bool>),
+    TestFinishRestore {
+        request_id: RequestId,
+        response: oneshot::Sender<bool>,
+    },
     #[cfg(test)]
     TestArmGapRepairCompletionPause {
         pause: TestGapRepairCompletionPause,
@@ -3732,21 +4719,6 @@ enum TimelineActorMessage {
     },
     #[cfg(test)]
     Barrier(oneshot::Sender<()>),
-}
-
-impl TimelineActorMessage {
-    fn with_submission_admission(mut self, permit: oneshot::Receiver<()>) -> Self {
-        match &mut self {
-            Self::SendText { admission, .. } | Self::SendReply { admission, .. } => {
-                *admission = Some(permit);
-            }
-            _ => debug_assert!(
-                false,
-                "admission permits only apply to composer submissions"
-            ),
-        }
-        self
-    }
 }
 
 async fn await_submission_admission(admission: Option<oneshot::Receiver<()>>) -> bool {
@@ -5388,6 +6360,37 @@ async fn emit_app_action_reliable(
     action_tx.send(vec![action]).await.is_ok()
 }
 
+/// Composer terminals belong to the manager-owned submission ledger, not to
+/// one replaceable timeline actor. The manager waits for reducer capacity and
+/// only then tombstones the submission.
+async fn deliver_submission_terminal_action(
+    action_tx: &mpsc::Sender<Vec<AppAction>>,
+    action: AppAction,
+) -> bool {
+    emit_app_action_reliable(action_tx, action).await
+}
+
+/// Wait for channel capacity without publishing, then synchronously validate
+/// actor ownership and publish while the short generation lease is held.
+/// Replacement may win during the capacity await; in that case the prepared
+/// value is discarded and no stale continuation escapes.
+async fn send_generation_fenced<T>(
+    tx: &mpsc::Sender<T>,
+    timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
+    key: &TimelineKey,
+    actor_generation: u64,
+    value: T,
+) -> bool {
+    let Ok(permit) = tx.clone().reserve_owned().await else {
+        return false;
+    };
+    let Some(_lease) = timeline_actor_generations.try_acquire(key, actor_generation) else {
+        return false;
+    };
+    permit.send(value);
+    true
+}
+
 fn spawn_link_preview_fetch(
     session: Arc<MatrixClientSession>,
     msg_tx: mpsc::Sender<TimelineActorMessage>,
@@ -5459,6 +6462,7 @@ fn spawn_reply_detail_fetch(
 fn spawn_thread_root_projection_fetch(
     session: Arc<MatrixClientSession>,
     key: TimelineKey,
+    actor_generation: u64,
     own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
     manager_tx: mpsc::Sender<TimelineMessage>,
     activity: ThreadRootProjectionActivity,
@@ -5470,6 +6474,7 @@ fn spawn_thread_root_projection_fetch(
         let _ = manager_tx
             .send(TimelineMessage::ThreadRootProjectionFetchFinished {
                 key,
+                actor_generation,
                 activity,
                 result,
             })
@@ -5499,6 +6504,134 @@ fn thread_root_projection_dto_from_record(
         source: ThreadRootProjectionSourceDto::Hydration,
         state,
     }
+}
+
+fn thread_root_projection_pending_dto(
+    activity: &ThreadRootProjectionActivity,
+) -> ThreadRootProjectionDto {
+    ThreadRootProjectionDto {
+        root_event_id: activity.root_event_id.clone(),
+        activity_event_id: activity.activity_event_id.clone(),
+        activity_timestamp_ms: activity.activity_timestamp_ms,
+        retain_without_reply: false,
+        source: ThreadRootProjectionSourceDto::Hydration,
+        state: ThreadRootProjectionStateDto::Pending,
+    }
+}
+
+fn hydration_projection_event(
+    key: &TimelineKey,
+    projection: ThreadRootProjectionDto,
+) -> TimelineEvent {
+    TimelineEvent::ThreadRootProjection {
+        key: key.clone(),
+        projection,
+    }
+}
+
+struct PreparedThreadRootHydration {
+    activities_by_root: HashMap<String, ThreadRootProjectionActivity>,
+    missing_activities: Vec<ThreadRootProjectionActivity>,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn commit_prepared_thread_root_hydration_for_generation(
+    service: &Arc<Mutex<ThreadRootProjectionService>>,
+    replay_registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    generations: &Arc<TimelineActorGenerationGate>,
+    action_tx: &mpsc::Sender<Vec<AppAction>>,
+    manager_tx: &mpsc::Sender<TimelineMessage>,
+    event_tx: &broadcast::Sender<CoreEvent>,
+    key: &TimelineKey,
+    actor_generation: u64,
+    own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
+    prepared: PreparedThreadRootHydration,
+) -> bool {
+    let fetch_permit = if prepared.missing_activities.is_empty() {
+        None
+    } else {
+        let Ok(permit) = manager_tx.clone().reserve_owned().await else {
+            return false;
+        };
+        Some(permit)
+    };
+    // Manager capacity is reserved first. The reducer permit is the final
+    // await, so hydration can never hold reducer capacity while a manager
+    // message that needs that same reducer is ahead of it in the mailbox.
+    let Ok(action_permit) = action_tx.clone().reserve_owned().await else {
+        return false;
+    };
+    let Some(lease) = generations.try_acquire(key, actor_generation) else {
+        return false;
+    };
+    let mut actions = vec![AppAction::ThreadRootProjectionsReconciled {
+        room_id: key.room_id().to_owned(),
+        activities: prepared
+            .activities_by_root
+            .values()
+            .map(|activity| ThreadRootProjectionActivityState {
+                root_event_id: activity.root_event_id.clone(),
+                activity_event_id: activity.activity_event_id.clone(),
+                activity_timestamp_ms: activity.activity_timestamp_ms,
+            })
+            .collect(),
+    }];
+    let mut events = Vec::new();
+    let mut terminal_projections = Vec::new();
+    let mut fetches = Vec::new();
+    let mut service_guard = service
+        .lock()
+        .expect("thread-root projection service lock must not be poisoned");
+    service_guard.reconcile_room_activities(key.room_id(), &prepared.activities_by_root);
+    for activity in prepared.missing_activities {
+        let decision = service_guard.observe(activity);
+        match decision {
+            ThreadRootProjectionDecision::StartFetch(activity) => {
+                actions.push(AppAction::ThreadRootProjectionObserved {
+                    room_id: activity.room_id.clone(),
+                    root_event_id: activity.root_event_id.clone(),
+                    activity_event_id: activity.activity_event_id.clone(),
+                    activity_timestamp_ms: activity.activity_timestamp_ms,
+                });
+                events.push(hydration_projection_event(
+                    key,
+                    thread_root_projection_pending_dto(&activity),
+                ));
+                fetches.push(activity);
+            }
+            ThreadRootProjectionDecision::ActivityUpdated(record)
+            | ThreadRootProjectionDecision::Existing(record) => {
+                actions.push(thread_root_projection_action_from_record(&record));
+                if record.is_pending() {
+                    events.push(hydration_projection_event(
+                        key,
+                        thread_root_projection_dto_from_record(&record),
+                    ));
+                    fetches.push(record.activity.clone());
+                } else {
+                    terminal_projections.push(thread_root_projection_dto_from_record(&record));
+                }
+            }
+        }
+    }
+    action_permit.send(actions);
+    emit_timeline_events_with_lease(event_tx, &lease, events);
+    drop(service_guard);
+    for projection in terminal_projections {
+        let _ =
+            emit_hydration_terminal_unless_replay_owned(event_tx, replay_registry, key, projection);
+    }
+    if let Some(permit) = fetch_permit {
+        if !fetches.is_empty() {
+            permit.send(TimelineMessage::StartThreadRootProjectionFetch {
+                key: key.clone(),
+                actor_generation,
+                own_user_id,
+                activities: fetches,
+            });
+        }
+    }
+    true
 }
 
 fn thread_root_projection_action_from_record(record: &ThreadRootProjectionRecord) -> AppAction {
@@ -5942,41 +7075,6 @@ fn emit_hydration_terminal_unless_replay_owned(
     true
 }
 
-/// Actor-side variant of [`emit_hydration_terminal_unless_replay_owned`].
-/// Existing service records can be re-emitted by a replacement actor, so they
-/// must also take the actor generation lease before they inspect or mutate the
-/// shared replay owner. This keeps stale actors from publishing a terminal
-/// after `SyncStarted` has fenced their generation.
-fn emit_hydration_terminal_unless_replay_owned_for_generation(
-    event_tx: &broadcast::Sender<CoreEvent>,
-    registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
-    timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
-    key: &TimelineKey,
-    actor_generation: u64,
-    projection: ThreadRootProjectionDto,
-) -> bool {
-    let Some(lease) = timeline_actor_generations.try_acquire(key, actor_generation) else {
-        return false;
-    };
-    let mut registry = registry
-        .lock()
-        .expect("replay-known root registry lock must not be poisoned");
-    if registry.owns_root(key, &projection.root_event_id) {
-        registry.mark_hydration_terminal_suppressed(key, projection.root_event_id.clone());
-        return false;
-    }
-    registry.mark_hydration_terminal_emitted(key, projection.root_event_id.clone());
-    emit_timeline_events_with_lease(
-        event_tx,
-        &lease,
-        vec![TimelineEvent::ThreadRootProjection {
-            key: key.clone(),
-            projection,
-        }],
-    );
-    true
-}
-
 fn thread_root_activity_preview(item: &TimelineItem) -> Option<String> {
     let source = item
         .formatted
@@ -6275,20 +7373,34 @@ fn thread_summary_from_loaded_root_raw(raw: &serde_json::Value) -> Option<Thread
 
 struct TimelineActorHandle {
     tx: mpsc::Sender<TimelineActorMessage>,
-    task: executor::JoinHandle<()>,
+    task: Option<executor::JoinHandle<()>>,
     auxiliary_tasks: Vec<executor::JoinHandle<()>>,
     subscription_generation: Option<u64>,
+    enqueue_context: Option<TimelineSendEnqueueContext>,
 }
 
 impl TimelineActorHandle {
     async fn send(&self, msg: TimelineActorMessage) -> bool {
         self.tx.send(msg).await.is_ok()
     }
+
+    async fn stop(mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        for task in self.auxiliary_tasks.drain(..) {
+            task.abort();
+            let _ = task.await;
+        }
+    }
 }
 
 impl Drop for TimelineActorHandle {
     fn drop(&mut self) {
-        self.task.abort();
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
         for task in &self.auxiliary_tasks {
             task.abort();
         }
@@ -9854,6 +10966,7 @@ mod timeline_gap_repair_tracker_tests {
         let (action_tx, mut action_rx) = mpsc::channel(32);
         let (event_tx, mut event_rx) = broadcast::channel(64);
         let (manager_tx, _manager_rx) = mpsc::channel(8);
+        let (terminal_ingress, _terminal_rx) = TimelineSendTerminalIngress::channel();
         let generations = Arc::new(TimelineActorGenerationGate::default());
         let actor_generation = generations.activate_after_quiescence(&key).await.generation;
         let handle = TimelineActor::spawn(
@@ -9875,6 +10988,8 @@ mod timeline_gap_repair_tracker_tests {
             generations,
             actor_generation,
             None,
+            Default::default(),
+            terminal_ingress,
             manager_tx,
         )
         .await;
@@ -10670,7 +11785,7 @@ struct TimelineActor {
     projection_acknowledged: bool,
     next_batch_id: TimelineBatchId,
     /// Correlates send queue completions across the enqueue / SentEvent race.
-    send_completion: SendCompletionTracker,
+    send_completion: SharedSendCompletionCoordinator,
     /// SDK transaction id -> Rust-owned outbound send state.
     send_statuses: HashMap<String, TimelineSendState>,
     /// SDK transaction id -> SDK send handle used for retry/cancel.
@@ -10701,10 +11816,10 @@ struct TimelineActor {
     /// Rust-owned navigation projection source. The webview reports viewport
     /// facts; item ordering, unread marker semantics, and counts stay here.
     navigation_items: Vec<TimelineItem>,
-    /// The bounded sequence last emitted to the Room UI, advanced with the
-    /// same TimelineDiffs. It is display evidence for replay-known roots and
-    /// must not be replaced by the wider navigation cache.
-    replay_known_display_items: Vec<TimelineItem>,
+    /// Canonical-slot membership plus the normalized bounded sequence last
+    /// emitted to the Room UI. SDK indices are translated through this state;
+    /// raw navigation indices never reach `ItemsUpdated`.
+    display_projection: DisplayProjectionState,
     media_gallery_items: Vec<TimelineMediaGalleryItem>,
     fully_read_event_id: Option<String>,
     viewport_observation: TimelineViewportObservation,
@@ -10733,6 +11848,9 @@ struct TimelineActor {
     /// Bounded root hydration workers are manager-owned so their completion is
     /// ordered with unsubscribe/shutdown lifecycle commands.
     manager_tx: mpsc::Sender<TimelineMessage>,
+    /// Stable manager-owned FIFO for send terminal ownership transfer. Unlike
+    /// `manager_tx`, admission never awaits actor mailbox capacity.
+    terminal_ingress: TimelineSendTerminalIngress,
     /// Reply event IDs already handed to the SDK for replied-to details during
     /// this actor lifetime. This avoids retry loops on every viewport tick.
     reply_detail_fetch_attempted_event_ids: HashSet<String>,
@@ -10745,7 +11863,8 @@ struct TimelineActor {
     next_restore_anchor_serial: u64,
     /// Buffered `TimelineDiff`s accumulated during a restore walk. While
     /// `restore_anchor.is_some()`, each `handle_diff_batch` call appends its
-    /// `core_diffs` here instead of emitting `ItemsUpdated` per chunk. The
+    /// projected display-space diffs here instead of emitting `ItemsUpdated`
+    /// per chunk. Canonical state advances immediately; the
     /// buffer is flushed as ONE `ItemsUpdated` when the restore terminates
     /// (Found/EndReached/BudgetExhausted/Failed/Superseded), so React receives
     /// a single settled update rather than O(chunks) intermediate renders.
@@ -11198,6 +12317,8 @@ impl TimelineActor {
         timeline_actor_generations: Arc<TimelineActorGenerationGate>,
         actor_generation: u64,
         subscription_generation: Option<u64>,
+        send_completion: SharedSendCompletionCoordinator,
+        terminal_ingress: TimelineSendTerminalIngress,
         manager_tx: mpsc::Sender<TimelineMessage>,
     ) -> TimelineActorHandle {
         let mut auxiliary_tasks: Vec<executor::JoinHandle<()>> = Vec::new();
@@ -11345,7 +12466,10 @@ impl TimelineActor {
         }
         trace_timeline_items("initial", &key, &initial_items);
         let navigation_items = initial_items.clone();
-        let replay_known_display_items = normalize_display_timeline_items(&initial_items);
+        let display_projection = DisplayProjectionState::from_canonical_window(
+            &navigation_items,
+            0..navigation_items.len(),
+        );
         let initial_activity_rows = activity_rows_from_timeline_items(&key, &initial_items);
         let initial_media_gallery_items =
             media_gallery_items_from_timeline_items(&key, &initial_items);
@@ -11377,7 +12501,7 @@ impl TimelineActor {
         let replay_known_candidates = replay_known_candidates_for_display_items(
             &key,
             &navigation_items,
-            &replay_known_display_items,
+            display_projection.display_items(),
         );
         let initial_emitted = emit_initial_items_and_reconcile_replay_known_for_generation(
             &event_tx,
@@ -11386,7 +12510,7 @@ impl TimelineActor {
             &timeline_actor_generations,
             &key,
             actor_generation,
-            Some(subscribe_request_id),
+            InitialItemsRequestIdentity::fresh(subscribe_request_id),
             generation,
             initial_items.clone(),
             replay_known_candidates,
@@ -11479,6 +12603,12 @@ impl TimelineActor {
         if matches!(key.kind, TimelineKind::Room { .. }) {
             gap_repair.observe_live_edge_target(rendered_live_edge_target(&navigation_items));
         }
+        let enqueue_context =
+            TimelineSendEnqueueContext::Matrix(MatrixTimelineSendEnqueueContext {
+                key: key.clone(),
+                timeline: Arc::clone(&timeline),
+                session: Arc::clone(&session),
+            });
         let mut actor = TimelineActor {
             key: key.clone(),
             timeline,
@@ -11500,7 +12630,7 @@ impl TimelineActor {
             projection_request_id: subscribe_request_id,
             projection_acknowledged: false,
             next_batch_id: TimelineBatchId(0),
-            send_completion: SendCompletionTracker::default(),
+            send_completion: Arc::clone(&send_completion),
             send_statuses,
             send_handles,
             own_user_id,
@@ -11511,7 +12641,7 @@ impl TimelineActor {
             search_index_tx,
             thread_attention,
             navigation_items,
-            replay_known_display_items,
+            display_projection,
             media_gallery_items: initial_media_gallery_items,
             fully_read_event_id: initial_fully_read_event_id,
             viewport_observation: TimelineViewportObservation::default(),
@@ -11529,6 +12659,7 @@ impl TimelineActor {
             deferred_room_subscription_checkpoint: None,
             missing_committed_response_retry: None,
             manager_tx,
+            terminal_ingress,
             reply_detail_fetch_attempted_event_ids: HashSet::new(),
             pagination_task: None,
             next_pagination_serial: 0,
@@ -11564,9 +12695,10 @@ impl TimelineActor {
 
         TimelineActorHandle {
             tx: actor_tx,
-            task,
+            task: Some(task),
             auxiliary_tasks,
             subscription_generation,
+            enqueue_context: Some(enqueue_context),
         }
     }
 
@@ -12074,42 +13206,6 @@ impl TimelineActor {
                 self.foreground_gap_demand_active = false;
                 self.gap_repair.pending_trigger = None;
             }
-            TimelineActorMessage::SendText {
-                request_id,
-                submission_id,
-                admission,
-                transaction_id,
-                body,
-                mentions,
-            } => {
-                if !await_submission_admission(admission).await {
-                    return;
-                }
-                self.handle_send_text(request_id, submission_id, transaction_id, body, mentions)
-                    .await;
-            }
-            TimelineActorMessage::SendReply {
-                request_id,
-                submission_id,
-                admission,
-                transaction_id,
-                in_reply_to_event_id,
-                body,
-                mentions,
-            } => {
-                if !await_submission_admission(admission).await {
-                    return;
-                }
-                self.handle_send_reply(
-                    request_id,
-                    submission_id,
-                    transaction_id,
-                    in_reply_to_event_id,
-                    body,
-                    mentions,
-                )
-                .await;
-            }
             TimelineActorMessage::ForwardMessage {
                 request_id,
                 source_event_id,
@@ -12150,14 +13246,6 @@ impl TimelineActor {
                 transaction_id,
             } => {
                 self.handle_cancel_send(request_id, transaction_id).await;
-            }
-            TimelineActorMessage::UploadAndSendMedia {
-                request_id,
-                transaction_id,
-                request,
-            } => {
-                self.handle_upload_and_send_media(request_id, transaction_id, request)
-                    .await;
             }
             TimelineActorMessage::DownloadMedia {
                 request_id,
@@ -12287,8 +13375,8 @@ impl TimelineActor {
             TimelineActorMessage::SendQueueLagged => {
                 self.handle_send_queue_lagged().await;
             }
-            TimelineActorMessage::ReplayInitialItems { request_id } => {
-                self.handle_replay_initial_items(request_id);
+            TimelineActorMessage::ReplayInitialItems { cause_request_id } => {
+                self.handle_replay_initial_items(cause_request_id);
             }
             TimelineActorMessage::AcknowledgeProjection {
                 projection_request_id,
@@ -12378,8 +13466,13 @@ impl TimelineActor {
                 ));
             }
             #[cfg(test)]
-            TimelineActorMessage::TestFlushRestore(response) => {
-                let _ = response.send(self.flush_restore_emit_buffer());
+            TimelineActorMessage::TestFinishRestore {
+                request_id,
+                response,
+            } => {
+                let had_buffered_diffs = !self.restore_emit_buffer.is_empty();
+                self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::EndReached);
+                let _ = response.send(had_buffered_diffs);
             }
             #[cfg(test)]
             TimelineActorMessage::TestArmGapRepairCompletionPause {
@@ -14131,259 +15224,6 @@ impl TimelineActor {
             .await;
     }
 
-    async fn handle_send_text(
-        &mut self,
-        request_id: RequestId,
-        submission_id: Option<koushi_state::SubmissionId>,
-        client_txn_id: String,
-        body: String,
-        mentions: MentionIntent,
-    ) {
-        let room_id_str = match &self.key.kind {
-            TimelineKind::Room { room_id }
-            | TimelineKind::Thread { room_id, .. }
-            | TimelineKind::Focused { room_id, .. } => room_id.clone(),
-        };
-
-        let room_id = match matrix_sdk::ruma::RoomId::parse(&room_id_str) {
-            Ok(id) => id,
-            Err(_) => {
-                self.emit_send_failed_action_with_submission(
-                    &client_txn_id,
-                    submission_id.as_ref(),
-                )
-                .await;
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
-                return;
-            }
-        };
-        let client = self.session.client();
-        if client.get_room(&room_id).is_none() {
-            self.emit_send_failed_action_with_submission(&client_txn_id, submission_id.as_ref())
-                .await;
-            self.emit_failure(
-                request_id,
-                CoreFailure::TimelineOperationFailed {
-                    kind: TimelineFailureKind::Sdk,
-                },
-            );
-            return;
-        };
-
-        // Send through the SDK UI timeline so local echo is owned by the
-        // timeline controller and still backed by the send queue. Canon
-        // decision D: the client-supplied txn_id maps to the SDK-generated
-        // txn_id returned by Timeline::send. The SendHandle gives us the SDK
-        // txn_id; we store client_txn_id -> sdk_txn_id here so the SentEvent
-        // handler can emit SendCompleted with the client's txn_id.
-        let content = match build_room_message_content_from_composer_body(&body, mentions) {
-            Ok(content) => content,
-            Err(kind) => {
-                self.emit_send_failed_action_with_submission(
-                    &client_txn_id,
-                    submission_id.as_ref(),
-                )
-                .await;
-                self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
-                return;
-            }
-        };
-        let content = matrix_sdk::ruma::events::AnyMessageLikeEventContent::RoomMessage(content);
-
-        match self.timeline.send(content).await {
-            Ok(handle) => {
-                let sdk_txn_id = handle.transaction_id().to_string();
-                remember_send_handle(
-                    &mut self.send_statuses,
-                    &mut self.send_handles,
-                    &handle,
-                    TimelineSendState::Sending,
-                );
-                if let Some((client_txn_id, completed_submission_id, request_id, event_id)) =
-                    self.send_completion.remember_pending_send(
-                        sdk_txn_id,
-                        client_txn_id,
-                        submission_id.clone(),
-                        request_id,
-                        true,
-                    )
-                {
-                    self.emit_send_finished_action_with_submission(
-                        &client_txn_id,
-                        completed_submission_id.as_ref(),
-                    )
-                    .await;
-                    self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
-                        request_id,
-                        key: self.key.clone(),
-                        transaction_id: client_txn_id,
-                        event_id,
-                    }));
-                }
-            }
-            Err(err) => {
-                let kind = classify_timeline_send_error(&err);
-                self.emit_send_failed_action_with_submission(
-                    &client_txn_id,
-                    submission_id.as_ref(),
-                )
-                .await;
-                self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
-            }
-        }
-        // On success: local echo appears via diff (Transaction id = SDK txn_id).
-        // SendCompleted arrives via SendQueueUpdate::SentEvent.
-    }
-
-    async fn handle_send_reply(
-        &mut self,
-        request_id: RequestId,
-        submission_id: Option<koushi_state::SubmissionId>,
-        client_txn_id: String,
-        in_reply_to_event_id: String,
-        body: String,
-        mentions: MentionIntent,
-    ) {
-        let room_id_str = match &self.key.kind {
-            TimelineKind::Room { room_id }
-            | TimelineKind::Thread { room_id, .. }
-            | TimelineKind::Focused { room_id, .. } => room_id.clone(),
-        };
-
-        let room_id = match matrix_sdk::ruma::RoomId::parse(&room_id_str) {
-            Ok(id) => id,
-            Err(_) => {
-                self.emit_send_failed_action_with_submission(
-                    &client_txn_id,
-                    submission_id.as_ref(),
-                )
-                .await;
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
-                return;
-            }
-        };
-
-        let reply_event_id = match matrix_sdk::ruma::EventId::parse(&in_reply_to_event_id) {
-            Ok(id) => id,
-            Err(_) => {
-                self.emit_send_failed_action_with_submission(
-                    &client_txn_id,
-                    submission_id.as_ref(),
-                )
-                .await;
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
-                return;
-            }
-        };
-
-        let client = self.session.client();
-        if client.get_room(&room_id).is_none() {
-            self.emit_send_failed_action_with_submission(&client_txn_id, submission_id.as_ref())
-                .await;
-            self.emit_failure(
-                request_id,
-                CoreFailure::TimelineOperationFailed {
-                    kind: TimelineFailureKind::Sdk,
-                },
-            );
-            return;
-        }
-
-        let content =
-            match build_room_message_content_without_relation_from_composer_body(&body, mentions) {
-                Ok(content) => content,
-                Err(kind) => {
-                    self.emit_send_failed_action_with_submission(
-                        &client_txn_id,
-                        submission_id.as_ref(),
-                    )
-                    .await;
-                    self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
-                    return;
-                }
-            };
-        let reply = Reply {
-            event_id: reply_event_id,
-            enforce_thread: reply_enforce_thread_for_key(&self.key),
-            add_mentions: AddMentions::Yes,
-        };
-
-        let content = match self.timeline.room().make_reply_event(content, reply).await {
-            Ok(content) => content,
-            Err(_) => {
-                self.emit_send_failed_action_with_submission(
-                    &client_txn_id,
-                    submission_id.as_ref(),
-                )
-                .await;
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
-                return;
-            }
-        };
-
-        match self.timeline.send(content.into()).await {
-            Ok(handle) => {
-                let sdk_txn_id = handle.transaction_id().to_string();
-                remember_send_handle(
-                    &mut self.send_statuses,
-                    &mut self.send_handles,
-                    &handle,
-                    TimelineSendState::Sending,
-                );
-                if let Some((client_txn_id, completed_submission_id, request_id, event_id)) =
-                    self.send_completion.remember_pending_send(
-                        sdk_txn_id,
-                        client_txn_id,
-                        submission_id.clone(),
-                        request_id,
-                        true,
-                    )
-                {
-                    self.emit_send_finished_action_with_submission(
-                        &client_txn_id,
-                        completed_submission_id.as_ref(),
-                    )
-                    .await;
-                    self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
-                        request_id,
-                        key: self.key.clone(),
-                        transaction_id: client_txn_id,
-                        event_id,
-                    }));
-                }
-            }
-            Err(err) => {
-                let kind = classify_timeline_send_error(&err);
-                self.emit_send_failed_action_with_submission(
-                    &client_txn_id,
-                    submission_id.as_ref(),
-                )
-                .await;
-                self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
-            }
-        }
-    }
-
     async fn handle_load_message_source(&mut self, request_id: RequestId, event_id: String) {
         let Some(source) = self.project_message_source_for_event(&event_id).await else {
             self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
@@ -14565,14 +15405,14 @@ impl TimelineActor {
                 if let Some(room) = self.sdk_room_for_key() {
                     room.send_queue().set_enabled(true);
                 }
-                if let Some((client_txn_id, submission_id, _request_id, settles_composer)) =
-                    self.send_completion.record_cancelled_event(&transaction_id)
-                {
-                    if settles_composer {
-                        self.emit_send_cancelled_action(&client_txn_id, submission_id.as_ref())
-                            .await;
-                    }
-                }
+                apply_send_completion_observation_and_handoff(
+                    &self.send_completion,
+                    &self.terminal_ingress,
+                    self.key.room_id(),
+                    SendCompletionObservation::Cancelled {
+                        sdk_transaction_id: transaction_id,
+                    },
+                );
             }
             Ok(false) => {
                 self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendState);
@@ -14591,120 +15431,6 @@ impl TimelineActor {
         };
         let room_id = matrix_sdk::ruma::RoomId::parse(room_id_str).ok()?;
         self.session.client().get_room(&room_id)
-    }
-
-    async fn handle_upload_and_send_media(
-        &mut self,
-        request_id: RequestId,
-        client_txn_id: String,
-        request: UploadMediaRequest,
-    ) {
-        let room_id_str = match &self.key.kind {
-            TimelineKind::Room { room_id }
-            | TimelineKind::Thread { room_id, .. }
-            | TimelineKind::Focused { room_id, .. } => room_id.clone(),
-        };
-
-        let room_id = match matrix_sdk::ruma::RoomId::parse(&room_id_str) {
-            Ok(id) => id,
-            Err(_) => {
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
-                return;
-            }
-        };
-
-        let client = self.session.client();
-        let Some(room) = client.get_room(&room_id) else {
-            self.emit_failure(
-                request_id,
-                CoreFailure::TimelineOperationFailed {
-                    kind: TimelineFailureKind::Sdk,
-                },
-            );
-            return;
-        };
-
-        let mime_type = match request.mime_type.parse() {
-            Ok(mime_type) => mime_type,
-            Err(_) => {
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
-                return;
-            }
-        };
-
-        let caption_mentions = request
-            .caption
-            .as_ref()
-            .and_then(|caption| ruma_mentions_from_intent(&caption.mentions));
-        let config = AttachmentConfig::new()
-            .txn_id(matrix_sdk::ruma::OwnedTransactionId::from(
-                client_txn_id.clone(),
-            ))
-            .info(attachment_info_for_upload(&request))
-            .thumbnail(thumbnail_for_upload(&request))
-            .caption(
-                request
-                    .caption
-                    .as_ref()
-                    .map(media_caption_content_from_draft),
-            )
-            .mentions(caption_mentions)
-            .reply(attachment_reply_for_key(&self.key));
-
-        match room
-            .send_queue()
-            .send_attachment(request.filename, mime_type, request.bytes, config)
-            .await
-        {
-            Ok(handle) => {
-                let sdk_txn_id = handle.transaction_id().to_string();
-                remember_send_handle(
-                    &mut self.send_statuses,
-                    &mut self.send_handles,
-                    &handle,
-                    TimelineSendState::Sending,
-                );
-                if let Some((client_txn_id, _submission_id, request_id, event_id)) =
-                    self.send_completion.remember_pending_send(
-                        sdk_txn_id,
-                        client_txn_id.clone(),
-                        None,
-                        request_id,
-                        false,
-                    )
-                {
-                    self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
-                        request_id,
-                        key: self.key.clone(),
-                        transaction_id: client_txn_id,
-                        event_id,
-                    }));
-                }
-                self.emit(CoreEvent::Timeline(TimelineEvent::MediaSendQueued {
-                    request_id,
-                    key: self.key.clone(),
-                    transaction_id: client_txn_id,
-                }));
-            }
-            Err(err) => {
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: classify_send_queue_error(&err),
-                    },
-                );
-            }
-        }
     }
 
     async fn handle_download_media(
@@ -15592,44 +16318,57 @@ impl TimelineActor {
         }
     }
 
-    /// Re-emit `navigation_items` as `InitialItems` for `request_id` without
-    /// touching the SDK subscription or tearing down the actor.  Called when
-    /// `handle_subscribe` detects that this key is already subscribed (the
-    /// idempotency fast path).  The generation is unchanged; the caller only
-    /// needs a fresh InitialItems batch so a re-mounted TimelineView is
-    /// populated.
-    fn handle_replay_initial_items(&mut self, _request_id: RequestId) {
-        let _ = self.thread_attention.reconcile(
-            &self.key,
-            &self.navigation_items,
-            self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
-            ThreadAttentionObservation::Replay,
-        );
-        let items = replay_initial_items_window(
+    /// Re-emit `navigation_items` as `InitialItems` without touching the SDK
+    /// subscription or tearing down the actor. Idempotent Subscribe supplies
+    /// an exact cause; internal replay recovery does not. The projection ACK
+    /// identity remains owned by the actor in both cases.
+    fn handle_replay_initial_items(&mut self, cause_request_id: Option<RequestId>) {
+        let window = replay_initial_items_window_range(
             &self.key.kind,
-            &self.navigation_items,
+            self.navigation_items.len(),
             &self.viewport_observation,
         );
+        let items = self.navigation_items[window.clone()].to_vec();
         let item_count = items.len();
         trace_timeline_items("replay_initial", &self.key, &items);
-        self.replay_known_display_items = normalize_display_timeline_items(&items);
+        let candidate_display_projection =
+            DisplayProjectionState::from_canonical_window(&self.navigation_items, window);
         let replay_known_candidates = replay_known_candidates_for_display_items(
             &self.key,
             &self.navigation_items,
-            &self.replay_known_display_items,
+            candidate_display_projection.display_items(),
         );
-        let emitted = emit_initial_items_and_reconcile_replay_known_for_generation(
+        let emitted = commit_prepared_initial_window_for_generation(
+            &mut self.navigation_items,
+            &mut self.display_projection,
             &self.event_tx,
             &self.replay_known_thread_root_projections,
             &self.thread_root_projection_service,
             &self.timeline_actor_generations,
             &self.key,
             self.actor_generation,
-            replay_projection_request_id(self.projection_request_id, self.projection_acknowledged),
+            InitialItemsRequestIdentity::replay(
+                self.projection_request_id,
+                self.projection_acknowledged,
+                cause_request_id,
+            ),
             self.generation,
-            items,
-            replay_known_candidates,
+            Vec::new(),
+            PreparedInitialWindow {
+                display_projection: candidate_display_projection,
+                navigation_items: None,
+                emitted_items: items,
+                replay_known_candidates,
+            },
         );
+        if emitted {
+            let _ = self.thread_attention.reconcile(
+                &self.key,
+                &self.navigation_items,
+                self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
+                ThreadAttentionObservation::Replay,
+            );
+        }
         record_subscribe_stage(
             if emitted {
                 "replay_initial_emitted"
@@ -15666,9 +16405,7 @@ impl TimelineActor {
         if diffs.is_empty() {
             return;
         }
-        // Advance the diff-batch sequence counter on every non-empty batch so
-        // settle ticks can detect when the final async DiffBatch has landed.
-        self.diff_batch_seq = self.diff_batch_seq.wrapping_add(1);
+        let sdk_diffs = diffs;
         let has_historical_gap_repair_projection = gap_repair_projections
             .iter()
             .any(|projection| projection.operation.domain == CausalProjectionDomain::HistoricalGap);
@@ -15676,29 +16413,13 @@ impl TimelineActor {
             .iter()
             .any(|projection| projection.operation.domain == CausalProjectionDomain::LiveTail);
 
-        for diff in &diffs {
-            self.apply_media_cache_diff(diff);
-        }
-        self.emit_receipts_from_sdk_diffs(&diffs);
-
-        // Phase 6: forward search index mutations before converting diffs.
-        if self.search_index_tx.is_some() {
-            for diff in &diffs {
-                self.forward_diff_to_search(diff).await;
-            }
-        }
-
-        let mut core_diffs: Vec<TimelineDiff> = diffs
-            .into_iter()
-            .map(|diff| {
-                sdk_vector_diff_to_timeline_diff(
-                    diff,
-                    &self.key,
-                    self.own_user_id.as_deref(),
-                    &self.send_statuses,
-                )
-            })
-            .collect();
+        let mut core_diffs = sdk_vector_diffs_to_timeline_diffs(
+            &sdk_diffs,
+            self.navigation_items.len(),
+            &self.key,
+            self.own_user_id.as_deref(),
+            &self.send_statuses,
+        );
         for diff in &mut core_diffs {
             apply_ignored_sender_suppression_to_diff(diff, &self.ignored_user_ids);
         }
@@ -15733,41 +16454,117 @@ impl TimelineActor {
         }
         trace_timeline_diffs("diff_batch", &self.key, &core_diffs);
         let activity_rows = activity_rows_from_timeline_diffs(&self.key, &core_diffs);
-        if !activity_rows.is_empty() {
-            let _ = self
-                .action_tx
-                .try_send(vec![AppAction::ActivityRowsObserved {
-                    rows: activity_rows,
-                }]);
+        let receipts_action = Self::live_receipts_action_from_sdk_diffs(&self.key, &sdk_diffs);
+        let search_messages = sdk_diffs
+            .iter()
+            .flat_map(|diff| self.search_index_messages_for_diff(diff))
+            .collect::<Vec<_>>();
+        let restore_diff_is_relevant = timeline_diffs_include_prepend(&core_diffs);
+        let restore_active = self.restore_anchor.is_some();
+        let display_context = DisplayProjectionContext::for_timeline(
+            &self.key.kind,
+            &self.viewport_observation,
+            restore_active,
+        );
+        let Some((emitted, emitted_batch_id)) = commit_sdk_batch_for_generation(
+            &self.timeline_actor_generations,
+            &self.key,
+            self.actor_generation,
+            &mut self.navigation_items,
+            &mut self.display_projection,
+            &core_diffs,
+            &display_context,
+            |projection_lease, projected_batch, navigation_items, display_projection| {
+                // State and synchronous batch-derived publications share this
+                // one generation lease; a stale actor commits neither half.
+                self.diff_batch_seq = self.diff_batch_seq.wrapping_add(1);
+                for diff in &sdk_diffs {
+                    Self::apply_sdk_media_cache_diff(&mut self.media_sources, diff);
+                }
+                if let Some(action) = receipts_action {
+                    let _ = self.action_tx.try_send(vec![action]);
+                }
+                if !activity_rows.is_empty() {
+                    let _ = self
+                        .action_tx
+                        .try_send(vec![AppAction::ActivityRowsObserved {
+                            rows: activity_rows,
+                        }]);
+                }
+
+                let display_diffs = projected_batch.display_diffs;
+                let emitted_batch_id = self.next_batch_id;
+                let emitted = if restore_active {
+                    self.next_batch_id = TimelineBatchId(self.next_batch_id.0 + 1);
+                    self.restore_emit_buffer.extend(display_diffs);
+                    false
+                } else {
+                    emit_items_updated_and_reconcile_replay_known_with_lease(
+                        &self.event_tx,
+                        &self.replay_known_thread_root_projections,
+                        &self.thread_root_projection_service,
+                        projection_lease,
+                        &self.key,
+                        self.generation,
+                        emitted_batch_id,
+                        display_diffs,
+                        navigation_items,
+                        display_projection.display_items(),
+                    );
+                    self.next_batch_id = TimelineBatchId(emitted_batch_id.0 + 1);
+                    true
+                };
+                (emitted, emitted_batch_id)
+            },
+        ) else {
+            return;
+        };
+
+        if !self.emit_search_messages_reliable(search_messages).await {
+            return;
         }
-        apply_timeline_diffs_to_items(&mut self.navigation_items, &core_diffs);
+
+        let Some(continuation_lease) = self
+            .timeline_actor_generations
+            .try_acquire(&self.key, self.actor_generation)
+        else {
+            return;
+        };
         let live_edge_target_changed = matches!(self.key.kind, TimelineKind::Room { .. })
             && !has_historical_gap_repair_projection
             && self
                 .gap_repair
                 .observe_live_edge_target(rendered_live_edge_target(&self.navigation_items));
-        if let Some(action) = self.thread_attention.reconcile_batch(
+        let thread_attention_action = self.thread_attention.reconcile_batch(
             &self.key,
             &self.navigation_items,
             self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
             &thread_attention_provenance,
-        ) {
-            let _ = self.emit_action_reliable(action).await;
-        }
-        apply_timeline_diffs_to_display_items(&mut self.replay_known_display_items, &core_diffs);
+        );
         self.maybe_fetch_visible_reply_details();
-        self.emit_media_gallery_if_changed().await;
+        drop(continuation_lease);
 
-        let restore_diff_is_relevant = timeline_diffs_include_prepend(&core_diffs);
+        if let Some(action) = thread_attention_action {
+            if !self.emit_action_reliable(action).await {
+                return;
+            }
+        }
+        self.emit_media_gallery_if_changed().await;
+        let Some(post_media_lease) = self
+            .timeline_actor_generations
+            .try_acquire(&self.key, self.actor_generation)
+        else {
+            return;
+        };
+        let mut post_media_lease = Some(post_media_lease);
+
         let mut live_tail_completion_published = false;
 
-        if self.restore_anchor.is_some() {
+        if restore_active {
             // While a restore walk is in-flight, buffer this batch's diffs
             // instead of emitting ItemsUpdated per chunk. React receives ONE
             // settled update when the restore terminates. The batch_id counter
             // is still advanced so later non-restore emits remain monotonic.
-            self.next_batch_id = TimelineBatchId(self.next_batch_id.0 + 1);
-            self.restore_emit_buffer.extend(core_diffs);
             for projection in &gap_repair_projections {
                 let correlation = match projection.operation.domain {
                     CausalProjectionDomain::HistoricalGap => &self.gap_projection_correlation,
@@ -15807,13 +16604,12 @@ impl TimelineActor {
                             );
                         }
                     } else {
+                        drop(post_media_lease.take());
                         self.maybe_continue_restore_anchor_after_diff().await;
                     }
                 }
             }
         } else {
-            let emitted_batch_id = self.next_batch_id;
-            let emitted = self.emit_items_updated_and_reconcile_replay_known(core_diffs);
             self.emit_navigation_if_changed();
             if emitted {
                 let mut ready_gap_projection_batch = None;
@@ -15854,12 +16650,27 @@ impl TimelineActor {
                         ready_gap_projection_batch = observation.historical_gap_batch_id;
                     }
                 }
+                drop(post_media_lease.take());
                 if let Some(batch_id) = ready_gap_projection_batch {
                     self.finish_pending_gap_projection(batch_id).await;
+                    if self
+                        .timeline_actor_generations
+                        .try_acquire(&self.key, self.actor_generation)
+                        .is_none()
+                    {
+                        return;
+                    }
                 }
                 if live_tail_projection_ready {
                     live_tail_completion_published =
                         self.finish_pending_live_tail_projection().await;
+                    if self
+                        .timeline_actor_generations
+                        .try_acquire(&self.key, self.actor_generation)
+                        .is_none()
+                    {
+                        return;
+                    }
                 }
                 self.maybe_hydrate_missing_thread_roots().await;
             } else {
@@ -15882,6 +16693,7 @@ impl TimelineActor {
                 }
             }
         }
+        drop(post_media_lease.take());
         if let Some(trigger) = post_diff_gap_inspection_trigger(
             has_live_tail_projection,
             live_tail_completion_published,
@@ -15913,116 +16725,27 @@ impl TimelineActor {
                 }
                 selected
             });
-        {
-            let mut service = self
-                .thread_root_projection_service
-                .lock()
-                .expect("thread-root projection service lock must not be poisoned");
-            service.reconcile_room_activities(self.key.room_id(), &activities_by_root);
-        }
-        if !self
-            .emit_action_reliable(AppAction::ThreadRootProjectionsReconciled {
-                room_id: self.key.room_id().to_owned(),
-                activities: activities_by_root
-                    .values()
-                    .map(|activity| ThreadRootProjectionActivityState {
-                        root_event_id: activity.root_event_id.clone(),
-                        activity_event_id: activity.activity_event_id.clone(),
-                        activity_timestamp_ms: activity.activity_timestamp_ms,
-                    })
-                    .collect(),
-            })
-            .await
-        {
-            return;
-        }
-
-        for activity in activities_by_root
-            .into_values()
-            .into_iter()
+        let missing_activities = activities_by_root
+            .values()
             .filter(|activity| !self.timeline_contains_event_id(&activity.root_event_id))
-        {
-            let decision = self
-                .thread_root_projection_service
-                .lock()
-                .expect("thread-root projection service lock must not be poisoned")
-                .observe(activity);
-            match decision {
-                ThreadRootProjectionDecision::StartFetch(activity) => {
-                    if !self
-                        .emit_action_reliable(AppAction::ThreadRootProjectionObserved {
-                            room_id: activity.room_id.clone(),
-                            root_event_id: activity.root_event_id.clone(),
-                            activity_event_id: activity.activity_event_id.clone(),
-                            activity_timestamp_ms: activity.activity_timestamp_ms,
-                        })
-                        .await
-                    {
-                        return;
-                    }
-                    self.emit_thread_root_projection_pending(&activity);
-                    if self
-                        .manager_tx
-                        .send(TimelineMessage::StartThreadRootProjectionFetch {
-                            key: self.key.clone(),
-                            own_user_id: self.own_user_id.clone(),
-                            activity,
-                        })
-                        .await
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
-                ThreadRootProjectionDecision::ActivityUpdated(record)
-                | ThreadRootProjectionDecision::Existing(record) => {
-                    if !self
-                        .emit_action_reliable(thread_root_projection_action_from_record(&record))
-                        .await
-                    {
-                        return;
-                    }
-                    self.emit_thread_root_projection_record(&record);
-                }
-            }
-        }
-    }
-
-    fn emit_thread_root_projection_pending(&self, activity: &ThreadRootProjectionActivity) {
-        self.emit(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
-            key: self.key.clone(),
-            projection: ThreadRootProjectionDto {
-                root_event_id: activity.root_event_id.clone(),
-                activity_event_id: activity.activity_event_id.clone(),
-                activity_timestamp_ms: activity.activity_timestamp_ms,
-                retain_without_reply: false,
-                source: ThreadRootProjectionSourceDto::Hydration,
-                state: ThreadRootProjectionStateDto::Pending,
-            },
-        }));
-    }
-
-    fn emit_thread_root_projection_record(&self, record: &ThreadRootProjectionRecord) {
-        let projection = thread_root_projection_dto_from_record(record);
-        if record.is_pending() {
-            self.emit(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
-                key: self.key.clone(),
-                projection,
-            }));
-            return;
-        }
-        // A replacement actor can re-observe a retained terminal record while
-        // a replay-known Ready owns this root. Reuse the manager's ownership
-        // boundary so that resend is suppressed and marked exactly once; the
-        // later scoped replay Clear then hands the terminal back exactly once.
-        let _ = emit_hydration_terminal_unless_replay_owned_for_generation(
-            &self.event_tx,
+            .cloned()
+            .collect();
+        let _ = commit_prepared_thread_root_hydration_for_generation(
+            &self.thread_root_projection_service,
             &self.replay_known_thread_root_projections,
             &self.timeline_actor_generations,
+            &self.action_tx,
+            &self.manager_tx,
+            &self.event_tx,
             &self.key,
             self.actor_generation,
-            projection,
-        );
+            self.own_user_id.clone(),
+            PreparedThreadRootHydration {
+                activities_by_root,
+                missing_activities,
+            },
+        )
+        .await;
     }
 
     async fn handle_ignored_users_updated(&mut self, user_ids: std::collections::BTreeSet<String>) {
@@ -16394,7 +17117,10 @@ impl TimelineActor {
         }
     }
 
-    fn apply_media_cache_diff(&mut self, diff: &eyeball_im::VectorDiff<Arc<SdkTimelineItem>>) {
+    fn apply_sdk_media_cache_diff(
+        media_sources: &mut HashMap<String, PrivateMediaEntry>,
+        diff: &eyeball_im::VectorDiff<Arc<SdkTimelineItem>>,
+    ) {
         use eyeball_im::VectorDiff;
 
         match diff {
@@ -16402,21 +17128,21 @@ impl TimelineActor {
             | VectorDiff::PushBack { value }
             | VectorDiff::Insert { value, .. }
             | VectorDiff::Set { value, .. } => {
-                cache_sdk_item_media_source(&mut self.media_sources, value);
+                cache_sdk_item_media_source(media_sources, value);
             }
             VectorDiff::Append { values } => {
                 for item in values {
-                    cache_sdk_item_media_source(&mut self.media_sources, item);
+                    cache_sdk_item_media_source(media_sources, item);
                 }
             }
             VectorDiff::Reset { values } => {
-                self.media_sources.clear();
+                media_sources.clear();
                 for item in values {
-                    cache_sdk_item_media_source(&mut self.media_sources, item);
+                    cache_sdk_item_media_source(media_sources, item);
                 }
             }
             VectorDiff::Clear => {
-                self.media_sources.clear();
+                media_sources.clear();
             }
             VectorDiff::Remove { .. }
             | VectorDiff::Truncate { .. }
@@ -16425,16 +17151,15 @@ impl TimelineActor {
         }
     }
 
-    async fn reconcile_authoritative_snapshot(
-        &mut self,
+    fn prepare_authoritative_snapshot_reconciliation(
+        &self,
         old_window_event_ids: &std::collections::BTreeSet<String>,
         items: &eyeball_im::Vector<Arc<SdkTimelineItem>>,
-    ) {
+    ) -> PreparedAuthoritativeSnapshotReconciliation {
         let mut replacement_media_sources = HashMap::new();
         for item in items {
             cache_sdk_item_media_source(&mut replacement_media_sources, item);
         }
-        replace_authoritative_cache(&mut self.media_sources, replacement_media_sources);
         let new_window_event_ids = items
             .iter()
             .filter_map(|item| match item.kind() {
@@ -16446,25 +17171,26 @@ impl TimelineActor {
             .collect::<std::collections::BTreeSet<_>>();
         let reconciliation =
             authoritative_window_reconciliation(old_window_event_ids, &new_window_event_ids);
-        if let Some(room_id) = timeline_room_id(&self.key) {
-            let _ = self
-                .emit_action_reliable(authoritative_receipts_action(
-                    &room_id,
-                    &reconciliation,
-                    live_event_receipts_from_sdk_items(items.iter()),
-                ))
-                .await;
+        let receipts_action = timeline_room_id(&self.key).map(|room_id| {
+            authoritative_receipts_action(
+                &room_id,
+                &reconciliation,
+                live_event_receipts_from_sdk_items(items.iter()),
+            )
+        });
+        let mut search_messages = Vec::new();
+        if self.search_index_tx.is_some() {
+            search_messages.extend(authoritative_search_removals(&reconciliation));
+            search_messages.extend(self.search_index_messages_for_diff(
+                &eyeball_im::VectorDiff::Reset {
+                    values: items.clone(),
+                },
+            ));
         }
-        if let Some(tx) = &self.search_index_tx {
-            for message in authoritative_search_removals(&reconciliation) {
-                if tx.send(message).await.is_err() {
-                    return;
-                }
-            }
-            self.forward_diff_to_search(&eyeball_im::VectorDiff::Reset {
-                values: items.clone(),
-            })
-            .await;
+        PreparedAuthoritativeSnapshotReconciliation {
+            replacement_media_sources,
+            receipts_action,
+            search_messages,
         }
     }
 
@@ -16472,15 +17198,9 @@ impl TimelineActor {
     /// Redactions are privacy-sensitive removals and must not be silently
     /// dropped as freshness-only updates.
     async fn forward_diff_to_search(&self, diff: &eyeball_im::VectorDiff<Arc<SdkTimelineItem>>) {
-        let Some(tx) = &self.search_index_tx else {
-            return;
-        };
-
-        for message in self.search_index_messages_for_diff(diff) {
-            if tx.send(message).await.is_err() {
-                break;
-            }
-        }
+        let _ = self
+            .emit_search_messages_reliable(self.search_index_messages_for_diff(diff))
+            .await;
     }
 
     fn search_index_messages_for_diff(
@@ -16854,14 +17574,6 @@ impl TimelineActor {
                 self.send_statuses
                     .insert(sdk_txn_str.clone(), TimelineSendState::Cancelled);
                 self.send_handles.remove(&sdk_txn_str);
-                if let Some((client_txn_id, submission_id, _request_id, settles_composer)) =
-                    self.send_completion.record_cancelled_event(&sdk_txn_str)
-                {
-                    if settles_composer {
-                        self.emit_send_cancelled_action(&client_txn_id, submission_id.as_ref())
-                            .await;
-                    }
-                }
             }
             RoomSendQueueUpdate::ReplacedLocalEvent { transaction_id, .. } => {
                 self.send_statuses
@@ -16879,17 +17591,6 @@ impl TimelineActor {
                         reason: send_failure_reason(is_recoverable),
                     },
                 );
-                if let Some((client_txn_id, submission_id, _request_id, settles_composer)) =
-                    self.send_completion.record_send_error(&sdk_txn_str)
-                {
-                    if settles_composer {
-                        self.emit_send_failed_action_with_submission(
-                            &client_txn_id,
-                            submission_id.as_ref(),
-                        )
-                        .await;
-                    }
-                }
             }
             RoomSendQueueUpdate::RetryEvent { transaction_id } => {
                 self.send_statuses
@@ -16899,37 +17600,14 @@ impl TimelineActor {
                 transaction_id,
                 event_id,
             } => {
-                // The SDK fires SentEvent with its own txn_id; look up the client txn_id.
+                // Presentation-only mirror: manager-global correlation owns the
+                // request/client transaction terminal.
                 let sdk_txn_str = transaction_id.to_string();
                 self.send_statuses
                     .insert(sdk_txn_str.clone(), TimelineSendState::Sent);
                 self.send_handles.remove(&sdk_txn_str);
                 self.sent_event_txns
                     .insert(event_id.to_string(), transaction_id.clone());
-                if let Some((
-                    client_txn_id,
-                    submission_id,
-                    request_id,
-                    event_id,
-                    settles_composer,
-                )) = self
-                    .send_completion
-                    .record_sent_event(sdk_txn_str, event_id.to_string())
-                {
-                    if settles_composer {
-                        self.emit_send_finished_action_with_submission(
-                            &client_txn_id,
-                            submission_id.as_ref(),
-                        )
-                        .await;
-                    }
-                    self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
-                        request_id,
-                        key: self.key.clone(),
-                        transaction_id: client_txn_id,
-                        event_id,
-                    }));
-                }
             }
             RoomSendQueueUpdate::MediaUpload {
                 related_to,
@@ -16940,10 +17618,8 @@ impl TimelineActor {
                 let sdk_txn_str = related_to.to_string();
                 self.send_statuses
                     .insert(sdk_txn_str.clone(), TimelineSendState::Sending);
-                let pending = self.send_completion.pending_send(&sdk_txn_str);
-                let (transaction_id, request_id) = pending
-                    .map(|(client_txn_id, request_id)| (client_txn_id.to_owned(), Some(request_id)))
-                    .unwrap_or((sdk_txn_str, None));
+                let (transaction_id, request_id) =
+                    media_upload_progress_identity(&self.send_completion, &self.key, &sdk_txn_str);
 
                 self.emit(CoreEvent::Timeline(TimelineEvent::MediaUploadProgress {
                     request_id,
@@ -16991,24 +17667,31 @@ impl TimelineActor {
             .await;
         }
         trace_timeline_items("send_queue_lagged_initial", &self.key, &items);
-        self.navigation_items = items.clone();
-        self.replay_known_display_items = normalize_display_timeline_items(&items);
+        let candidate_display_projection =
+            DisplayProjectionState::from_canonical_window(&items, 0..items.len());
         let replay_known_candidates = replay_known_candidates_for_display_items(
             &self.key,
-            &self.navigation_items,
-            &self.replay_known_display_items,
+            &items,
+            candidate_display_projection.display_items(),
         );
-        let _ = emit_initial_items_and_reconcile_replay_known_for_generation(
+        let _ = commit_prepared_initial_window_for_generation(
+            &mut self.navigation_items,
+            &mut self.display_projection,
             &self.event_tx,
             &self.replay_known_thread_root_projections,
             &self.thread_root_projection_service,
             &self.timeline_actor_generations,
             &self.key,
             self.actor_generation,
-            None,
+            InitialItemsRequestIdentity::recovery(),
             self.generation,
-            items,
-            replay_known_candidates,
+            Vec::new(),
+            PreparedInitialWindow {
+                display_projection: candidate_display_projection,
+                navigation_items: Some(items.clone()),
+                emitted_items: items,
+                replay_known_candidates,
+            },
         );
     }
 
@@ -17041,6 +17724,16 @@ impl TimelineActor {
         if !accept_relay_generation(self.generation, overflow_generation) {
             return;
         }
+        // Avoid even tearing down a relay for an actor generation that has
+        // already been replaced. The authoritative commit below reacquires
+        // the lease after the SDK await and remains the final state fence.
+        if self
+            .timeline_actor_generations
+            .try_acquire(&self.key, self.actor_generation)
+            .is_none()
+        {
+            return;
+        }
         if let Some(task) = self.relay_restart_task.take() {
             task.abort();
         }
@@ -17056,10 +17749,7 @@ impl TimelineActor {
         else {
             return;
         };
-        self.generation = prepared.generation;
-        // 2. Reset batch_id to 0.
-        self.next_batch_id = TimelineBatchId(0);
-        self.gap_repair.clear_projected_gaps();
+        let recovery_generation = prepared.generation;
 
         // 3. Acquire the authoritative snapshot and its matching replacement
         //    stream from one SDK subscription boundary.
@@ -17083,8 +17773,12 @@ impl TimelineActor {
             .filter_map(timeline_item_event_id)
             .map(str::to_owned)
             .collect::<std::collections::BTreeSet<_>>();
-        self.reconcile_authoritative_snapshot(&old_window_event_ids, &current_items)
-            .await;
+        let PreparedAuthoritativeSnapshotReconciliation {
+            replacement_media_sources,
+            receipts_action,
+            search_messages,
+        } = self
+            .prepare_authoritative_snapshot_reconciliation(&old_window_event_ids, &current_items);
 
         // 5. Emit fresh InitialItems for the new generation.
         let link_preview_context = self.link_preview_policy.for_room(self.key.room_id());
@@ -17114,37 +17808,77 @@ impl TimelineActor {
             .await;
         }
         trace_timeline_items("overflow_initial", &self.key, &items);
-        if let Some(replacement) =
-            authoritative_media_gallery_replacement(&self.key, &self.media_gallery_items, &items)
-        {
-            if self.emit_action_reliable(replacement.action).await {
-                self.media_gallery_items = replacement.items;
-            }
-        }
-        if let Some(action) = self.thread_attention.reconcile(
-            &self.key,
-            &items,
-            self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
-            ThreadAttentionObservation::Replay,
-        ) {
-            let _ = self.emit_action_reliable(action).await;
-        }
-        commit_authoritative_recovery_window(
+        if !commit_authoritative_recovery_window(
             &mut self.navigation_items,
-            &mut self.replay_known_display_items,
+            &mut self.display_projection,
             &self.event_tx,
             &self.replay_known_thread_root_projections,
             &self.thread_root_projection_service,
             &self.timeline_actor_generations,
             &self.key,
             self.actor_generation,
-            self.generation,
+            recovery_generation,
             reason,
             items,
-        );
+            || {
+                // Generation-local mirrors must become authoritative in the
+                // same lease as ResyncRequired + InitialItems. A replacement
+                // actor therefore sees all of this recovery or none of it.
+                self.generation = recovery_generation;
+                self.next_batch_id = TimelineBatchId(0);
+                self.gap_repair.clear_projected_gaps();
+                replace_authoritative_cache(&mut self.media_sources, replacement_media_sources);
+            },
+        ) {
+            return;
+        }
+        if let Some(action) = receipts_action {
+            if !self.emit_action_reliable(action).await {
+                return;
+            }
+        }
+        if !self.emit_search_messages_reliable(search_messages).await {
+            return;
+        }
+        if let Some(replacement) = authoritative_media_gallery_replacement(
+            &self.key,
+            &self.media_gallery_items,
+            &self.navigation_items,
+        ) {
+            if self.emit_action_reliable(replacement.action).await {
+                self.media_gallery_items = replacement.items;
+            } else {
+                return;
+            }
+        }
+        let Some(continuation_lease) = self
+            .timeline_actor_generations
+            .try_acquire(&self.key, self.actor_generation)
+        else {
+            return;
+        };
+        if let Some(action) = self.thread_attention.reconcile(
+            &self.key,
+            &self.navigation_items,
+            self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
+            ThreadAttentionObservation::Replay,
+        ) {
+            drop(continuation_lease);
+            if !self.emit_action_reliable(action).await {
+                return;
+            }
+        } else {
+            drop(continuation_lease);
+        }
         if !snapshot_gap_repair_projections.is_empty() {
             let recovery_batch_id = self.next_batch_id;
             if self.emit_items_updated_and_reconcile_replay_known(Vec::new()) {
+                let Some(projection_lease) = self
+                    .timeline_actor_generations
+                    .try_acquire(&self.key, self.actor_generation)
+                else {
+                    return;
+                };
                 let mut ready_gap_projection_batch = None;
                 let mut live_tail_projection_ready = false;
                 for projection in snapshot_gap_repair_projections {
@@ -17158,6 +17892,7 @@ impl TimelineActor {
                         ready_gap_projection_batch.or(observation.historical_gap_batch_id);
                     live_tail_projection_ready |= observation.live_tail_batch_id.is_some();
                 }
+                drop(projection_lease);
                 if let Some(batch_id) = ready_gap_projection_batch {
                     self.finish_pending_gap_projection(batch_id).await;
                 }
@@ -17181,6 +17916,13 @@ impl TimelineActor {
             debug_assert_eq!(operation.domain, CausalProjectionDomain::HistoricalGap);
             self.release_gap_relay_settlement(actor_generation, operation.serial, trigger)
                 .await;
+            if self
+                .timeline_actor_generations
+                .try_acquire(&self.key, self.actor_generation)
+                .is_none()
+            {
+                return;
+            }
         }
         if let Some(fence) = self.gap_repair.awaiting_projection {
             let trigger = self
@@ -17188,7 +17930,20 @@ impl TimelineActor {
                 .pending_trigger
                 .unwrap_or(TimelineGapRepairTrigger::Automatic);
             self.recover_gap_render_settlement(fence, trigger).await;
+            if self
+                .timeline_actor_generations
+                .try_acquire(&self.key, self.actor_generation)
+                .is_none()
+            {
+                return;
+            }
         }
+        let Some(finalize_lease) = self
+            .timeline_actor_generations
+            .try_acquire(&self.key, self.actor_generation)
+        else {
+            return;
+        };
         let (relay_data_tx, relay_data_rx) = mpsc::channel(256);
         self.relay_data_rx = Some(relay_data_rx);
         self.relay_task = Some(executor::spawn(run_diff_relay(
@@ -17197,7 +17952,9 @@ impl TimelineActor {
             self.generation,
             diff_stream,
         )));
-        if let Some(restore) = self.restore_anchor.take() {
+        let restore = self.restore_anchor.take();
+        drop(finalize_lease);
+        if let Some(restore) = restore {
             self.finish_anchor_restore(
                 restore.request_id,
                 TimelineAnchorRestoreStatus::Failed {
@@ -17236,36 +17993,57 @@ impl TimelineActor {
         }));
     }
 
-    /// Flush the restore-walk diff buffer as ONE `ItemsUpdated` event (Change
-    /// 2). Called at every restore terminal path (Found/EndReached/
-    /// BudgetExhausted/Failed/Superseded). If the buffer is empty nothing is
-    /// emitted; navigation is always refreshed after a restore so React
-    /// receives a consistent settled state. Never drops buffered diffs.
-    fn flush_restore_emit_buffer(&mut self) -> bool {
-        if !self.restore_emit_buffer.is_empty() {
-            let diffs = std::mem::take(&mut self.restore_emit_buffer);
-            let published_batch_id = self.next_batch_id;
-            // A restore has deliberately deferred its UI diffs. Reconcile only
-            // now, immediately beside the one settled ItemsUpdated emission,
-            // so a replacement actor can never observe a replay transition
-            // without the canonical batch that caused it.
-            let emitted = self.emit_items_updated_and_reconcile_replay_known(diffs);
-            self.emit_navigation_if_changed();
-            if emitted {
-                let observation = self.restore_causal_projections.observe_after_publication(
-                    &mut self.gap_projection_correlation,
-                    &mut self.live_tail_projection_correlation,
-                    published_batch_id,
-                );
-                self.ready_restore_gap_projection_batch = observation.historical_gap_batch_id;
-            }
-            return emitted;
+    /// Publish the deferred display batch, changed navigation projection, and
+    /// optional restore terminal under one actor-generation lease.  Returning
+    /// `None` means a replacement actor won the generation fence; in that case
+    /// the buffer and all actor-owned mirrors remain untouched.
+    fn publish_restore_settlement(
+        &mut self,
+        terminal: Option<(RequestId, TimelineAnchorRestoreStatus)>,
+    ) -> Option<bool> {
+        let navigation_snapshot = derive_timeline_navigation_snapshot(
+            &self.navigation_items,
+            self.fully_read_event_id.as_deref(),
+            &self.viewport_observation,
+            self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
+        );
+        let changed_navigation = (self.last_navigation_snapshot.as_ref()
+            != Some(&navigation_snapshot))
+        .then_some(navigation_snapshot);
+        let published_batch_id = self.next_batch_id;
+        let published_items = publish_restore_settlement_for_generation(
+            &mut self.restore_emit_buffer,
+            !self.restore_causal_projections.projections.is_empty(),
+            &mut self.next_batch_id,
+            &self.event_tx,
+            &self.replay_known_thread_root_projections,
+            &self.thread_root_projection_service,
+            &self.timeline_actor_generations,
+            &self.key,
+            self.actor_generation,
+            self.generation,
+            &self.navigation_items,
+            self.display_projection.display_items(),
+            RestoreSettlement {
+                navigation_snapshot: changed_navigation.clone(),
+                terminal,
+            },
+        )?;
+
+        if let Some(snapshot) = changed_navigation {
+            self.last_navigation_snapshot = Some(snapshot);
+        }
+        if published_items {
+            let observation = self.restore_causal_projections.observe_after_publication(
+                &mut self.gap_projection_correlation,
+                &mut self.live_tail_projection_correlation,
+                published_batch_id,
+            );
+            self.ready_restore_gap_projection_batch = observation.historical_gap_batch_id;
         } else {
-            self.restore_emit_buffer.clear();
             self.restore_causal_projections = RestoreCausalProjectionBuffer::default();
         }
-        self.emit_navigation_if_changed();
-        false
+        Some(published_items)
     }
 
     /// Emit one canonical batch plus replay-known ownership changes. This is
@@ -17285,7 +18063,7 @@ impl TimelineActor {
             batch_id,
             diffs,
             &self.navigation_items,
-            &self.replay_known_display_items,
+            self.display_projection.display_items(),
         ) {
             self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
             true
@@ -17295,9 +18073,10 @@ impl TimelineActor {
     }
 
     /// Commit a local actor mutation through the same generation-fenced
-    /// display/replay group as an SDK diff. The bounded replay mirror uses
-    /// render identity rather than canonical index, because it can omit old
-    /// roots that remain present in `navigation_items`.
+    /// display/replay group as an SDK diff. The bounded replay mirror resolves
+    /// each local Set through the exact canonical owner retained on its slot;
+    /// roots omitted from the bounded window intentionally produce no display
+    /// diff and are handled by replay reconciliation.
     fn emit_non_sdk_item_sets_and_reconcile_replay_known(
         &mut self,
         diffs: Vec<TimelineDiff>,
@@ -17314,7 +18093,7 @@ impl TimelineActor {
             batch_id,
             diffs,
             &self.navigation_items,
-            &mut self.replay_known_display_items,
+            &mut self.display_projection,
         ) {
             self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
             true
@@ -17332,10 +18111,12 @@ impl TimelineActor {
         request_id: RequestId,
         status: TimelineAnchorRestoreStatus,
     ) {
-        if self.flush_restore_emit_buffer() {
+        if self
+            .publish_restore_settlement(Some((request_id, status)))
+            .unwrap_or(false)
+        {
             self.hydrate_after_restore_flush = true;
         }
-        self.emit_anchor_restore_finished(request_id, status);
     }
 
     /// Reliably deliver an `AppAction` to the reducer.  Uses `send` (not
@@ -17344,7 +18125,39 @@ impl TimelineActor {
     /// dropped action would leave the UI stuck in a pending/inconsistent state
     /// (REPOSITORY_RULES L124-128).
     async fn emit_action_reliable(&self, action: AppAction) -> bool {
-        emit_app_action_reliable(&self.action_tx, action).await
+        send_generation_fenced(
+            &self.action_tx,
+            &self.timeline_actor_generations,
+            &self.key,
+            self.actor_generation,
+            vec![action],
+        )
+        .await
+    }
+
+    async fn emit_search_messages_reliable(&self, messages: Vec<SearchIndexMessage>) -> bool {
+        let Some(tx) = &self.search_index_tx else {
+            return self
+                .timeline_actor_generations
+                .try_acquire(&self.key, self.actor_generation)
+                .is_some();
+        };
+        for message in messages {
+            if !send_generation_fenced(
+                tx,
+                &self.timeline_actor_generations,
+                &self.key,
+                self.actor_generation,
+                message,
+            )
+            .await
+            {
+                return false;
+            }
+        }
+        self.timeline_actor_generations
+            .try_acquire(&self.key, self.actor_generation)
+            .is_some()
     }
 
     fn emit_failure(&self, request_id: RequestId, failure: CoreFailure) {
@@ -17358,104 +18171,6 @@ impl TimelineActor {
         self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
     }
 
-    /// Drive the reducer's composer completion transition for the matching
-    /// pending send. Room timelines settle the main composer; thread timelines
-    /// settle the open thread composer; focused timelines own no composer state.
-    async fn emit_send_finished_action_with_submission(
-        &self,
-        client_txn_id: &str,
-        submission_id: Option<&koushi_state::SubmissionId>,
-    ) {
-        let action = submission_id
-            .zip(submission_target(&self.key))
-            .map(
-                |(submission_id, target)| AppAction::ComposerSubmissionSettled {
-                    submission_id: submission_id.clone(),
-                    transaction_id: client_txn_id.to_owned(),
-                    target,
-                    outcome: koushi_state::ComposerSubmissionTerminalOutcome::Succeeded,
-                },
-            )
-            .or_else(|| send_finished_action(&self.key, client_txn_id.to_owned()));
-        if let Some(action) = action {
-            let _ = self.emit_action_reliable(action).await;
-        }
-        if let Some(submission_id) = submission_id {
-            self.notify_submission_terminal(submission_id).await;
-        }
-    }
-
-    async fn emit_send_finished_action(&self, client_txn_id: &str) {
-        self.emit_send_finished_action_with_submission(client_txn_id, None)
-            .await;
-    }
-
-    /// Drive the reducer's composer failure transition for the matching pending
-    /// send. Room timelines settle the main composer; thread timelines settle
-    /// the open thread composer; focused timelines own no composer state.
-    async fn emit_send_failed_action_with_submission(
-        &self,
-        client_txn_id: &str,
-        submission_id: Option<&koushi_state::SubmissionId>,
-    ) {
-        if let Some((submission_id, target)) = submission_id.zip(submission_target(&self.key)) {
-            let _ = self
-                .emit_action_reliable(AppAction::ComposerSubmissionSettled {
-                    submission_id: submission_id.clone(),
-                    transaction_id: client_txn_id.to_owned(),
-                    target,
-                    outcome: koushi_state::ComposerSubmissionTerminalOutcome::Failed {
-                        message: "send failed".to_owned(),
-                    },
-                })
-                .await;
-            self.notify_submission_terminal(submission_id).await;
-            return;
-        }
-        let projection = match self.key.kind {
-            TimelineKind::Room { .. } => SendComposerProjection::Room,
-            TimelineKind::Thread { .. } => SendComposerProjection::ThreadReply,
-            TimelineKind::Focused { .. } => SendComposerProjection::None,
-        };
-        if let Some(action) = send_failed_action(
-            &self.key,
-            projection,
-            client_txn_id.to_owned(),
-            "send failed".to_owned(),
-        ) {
-            let _ = self.emit_action_reliable(action).await;
-        }
-    }
-
-    async fn emit_send_cancelled_action(
-        &self,
-        client_txn_id: &str,
-        submission_id: Option<&koushi_state::SubmissionId>,
-    ) {
-        if let Some((submission_id, target)) = submission_id.zip(submission_target(&self.key)) {
-            let _ = self
-                .emit_action_reliable(AppAction::ComposerSubmissionSettled {
-                    submission_id: submission_id.clone(),
-                    transaction_id: client_txn_id.to_owned(),
-                    target,
-                    outcome: koushi_state::ComposerSubmissionTerminalOutcome::Cancelled,
-                })
-                .await;
-            self.notify_submission_terminal(submission_id).await;
-        } else {
-            self.emit_send_finished_action(client_txn_id).await;
-        }
-    }
-
-    async fn notify_submission_terminal(&self, submission_id: &koushi_state::SubmissionId) {
-        let _ = self
-            .manager_tx
-            .send(TimelineMessage::SubmissionTerminal {
-                submission_id: submission_id.clone(),
-            })
-            .await;
-    }
-
     fn emit_typing_users_action(&self, user_ids: Vec<String>) {
         let Some(room_id) = timeline_room_id(&self.key) else {
             return;
@@ -17465,23 +18180,24 @@ impl TimelineActor {
             .try_send(vec![AppAction::TypingUsersUpdated { room_id, user_ids }]);
     }
 
-    fn emit_receipts_from_sdk_diffs(&self, diffs: &[eyeball_im::VectorDiff<Arc<SdkTimelineItem>>]) {
-        let Some(room_id) = timeline_room_id(&self.key) else {
-            return;
+    fn live_receipts_action_from_sdk_diffs(
+        key: &TimelineKey,
+        diffs: &[eyeball_im::VectorDiff<Arc<SdkTimelineItem>>],
+    ) -> Option<AppAction> {
+        let Some(room_id) = timeline_room_id(key) else {
+            return None;
         };
         let mut receipts_by_event = Vec::new();
         for diff in diffs {
             collect_live_event_receipts_from_diff(diff, &mut receipts_by_event);
         }
         if receipts_by_event.is_empty() {
-            return;
+            return None;
         }
-        let _ = self
-            .action_tx
-            .try_send(vec![AppAction::LiveRoomReceiptsUpdated {
-                room_id,
-                receipts_by_event,
-            }]);
+        Some(AppAction::LiveRoomReceiptsUpdated {
+            room_id,
+            receipts_by_event,
+        })
     }
 }
 
@@ -17503,6 +18219,12 @@ struct PreparedRelayRecovery<Snapshot, Stream> {
 struct AuthoritativeWindowReconciliation {
     scoped_event_ids: Vec<String>,
     removed_event_ids: Vec<String>,
+}
+
+struct PreparedAuthoritativeSnapshotReconciliation {
+    replacement_media_sources: HashMap<String, PrivateMediaEntry>,
+    receipts_action: Option<AppAction>,
+    search_messages: Vec<SearchIndexMessage>,
 }
 
 fn authoritative_window_reconciliation(
@@ -17577,9 +18299,9 @@ fn accepted_relay_batch<T>(
     accept_relay_generation(current_generation, incoming_generation).then_some(batch)
 }
 
-fn commit_authoritative_recovery_window(
+fn commit_authoritative_recovery_window<F>(
     navigation_items: &mut Vec<TimelineItem>,
-    replay_known_display_items: &mut Vec<TimelineItem>,
+    display_projection: &mut DisplayProjectionState,
     event_tx: &broadcast::Sender<CoreEvent>,
     replay_known_thread_root_projections: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
     thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
@@ -17589,62 +18311,47 @@ fn commit_authoritative_recovery_window(
     generation: TimelineGeneration,
     reason: TimelineResyncReason,
     authoritative_items: Vec<TimelineItem>,
-) {
-    *navigation_items = authoritative_items;
-    *replay_known_display_items = normalize_display_timeline_items(navigation_items);
+    commit_synchronous_candidates: F,
+) -> bool
+where
+    F: FnOnce(),
+{
+    let candidate_display = DisplayProjectionState::from_canonical_window(
+        &authoritative_items,
+        0..authoritative_items.len(),
+    );
     let replay_known_candidates = replay_known_candidates_for_display_items(
         key,
-        navigation_items,
-        replay_known_display_items,
+        &authoritative_items,
+        candidate_display.display_items(),
     );
-    emit_relay_recovery_snapshot(
+    let Some(lease) = timeline_actor_generations.try_acquire(key, actor_generation) else {
+        return false;
+    };
+    commit_prepared_initial_window_with_lease(
+        navigation_items,
+        display_projection,
         event_tx,
         replay_known_thread_root_projections,
         thread_root_projection_service,
-        timeline_actor_generations,
+        &lease,
         key,
         actor_generation,
+        InitialItemsRequestIdentity::recovery(),
         generation,
-        reason,
-        navigation_items.clone(),
-        replay_known_candidates,
-    );
-}
-
-fn emit_relay_recovery_snapshot(
-    event_tx: &broadcast::Sender<CoreEvent>,
-    replay_known_thread_root_projections: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
-    thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
-    timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
-    key: &TimelineKey,
-    actor_generation: u64,
-    generation: TimelineGeneration,
-    reason: TimelineResyncReason,
-    items: Vec<TimelineItem>,
-    replay_known_candidates: Vec<ThreadRootProjectionDto>,
-) {
-    let _ = emit_timeline_events_for_generation(
-        event_tx,
-        timeline_actor_generations,
-        key,
-        actor_generation,
         vec![TimelineEvent::ResyncRequired {
             key: key.clone(),
             reason,
         }],
+        PreparedInitialWindow {
+            display_projection: candidate_display,
+            navigation_items: Some(authoritative_items.clone()),
+            emitted_items: authoritative_items,
+            replay_known_candidates,
+        },
+        commit_synchronous_candidates,
     );
-    let _ = emit_initial_items_and_reconcile_replay_known_for_generation(
-        event_tx,
-        replay_known_thread_root_projections,
-        thread_root_projection_service,
-        timeline_actor_generations,
-        key,
-        actor_generation,
-        None,
-        generation,
-        items,
-        replay_known_candidates,
-    );
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -17724,6 +18431,62 @@ async fn run_diff_relay(
 // Send queue monitor task
 // ---------------------------------------------------------------------------
 
+async fn run_global_send_completion_observer(
+    mut update_rx: broadcast::Receiver<SendQueueUpdate>,
+    coordinator: SharedSendCompletionCoordinator,
+    terminal_ingress: TimelineSendTerminalIngress,
+) {
+    loop {
+        match update_rx.recv().await {
+            Ok(SendQueueUpdate { room_id, update }) => {
+                let observation = match update {
+                    RoomSendQueueUpdate::SentEvent {
+                        transaction_id,
+                        event_id,
+                    } => Some(SendCompletionObservation::Sent {
+                        sdk_transaction_id: transaction_id.to_string(),
+                        event_id: event_id.to_string(),
+                    }),
+                    RoomSendQueueUpdate::SendError { transaction_id, .. } => {
+                        Some(SendCompletionObservation::SendError {
+                            sdk_transaction_id: transaction_id.to_string(),
+                        })
+                    }
+                    RoomSendQueueUpdate::CancelledLocalEvent { transaction_id } => {
+                        Some(SendCompletionObservation::Cancelled {
+                            sdk_transaction_id: transaction_id.to_string(),
+                        })
+                    }
+                    RoomSendQueueUpdate::NewLocalEvent(_)
+                    | RoomSendQueueUpdate::ReplacedLocalEvent { .. }
+                    | RoomSendQueueUpdate::RetryEvent { .. }
+                    | RoomSendQueueUpdate::MediaUpload { .. } => None,
+                };
+                if let Some(observation) = observation {
+                    apply_send_completion_observation_and_handoff(
+                        &coordinator,
+                        &terminal_ingress,
+                        room_id.as_str(),
+                        observation,
+                    );
+                }
+            }
+            Err(broadcast::error::RecvError::Lagged(_)) => {
+                // A global terminal broadcast gap is explicit observation loss,
+                // never a guessed SDK SendError. Fail every active request once
+                // with the private-safe queue-overflow contract while retaining
+                // bound correlation for a later exact terminal.
+                apply_send_completion_observation_loss_and_handoff(
+                    &coordinator,
+                    &terminal_ingress,
+                    None,
+                );
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
+        }
+    }
+}
+
 async fn run_send_queue_monitor(
     actor_tx: mpsc::Sender<TimelineActorMessage>,
     mut update_rx: tokio::sync::broadcast::Receiver<RoomSendQueueUpdate>,
@@ -17793,19 +18556,29 @@ fn timeline_room_id(key: &TimelineKey) -> Option<String> {
     }
 }
 
+#[cfg(test)]
 fn replay_initial_items_window(
     kind: &TimelineKind,
     items: &[TimelineItem],
     observation: &TimelineViewportObservation,
 ) -> Vec<TimelineItem> {
-    if matches!(kind, TimelineKind::Room { .. })
+    items[replay_initial_items_window_range(kind, items.len(), observation)].to_vec()
+}
+
+fn replay_initial_items_window_range(
+    kind: &TimelineKind,
+    item_count: usize,
+    observation: &TimelineViewportObservation,
+) -> std::ops::Range<usize> {
+    let start = if matches!(kind, TimelineKind::Room { .. })
         && observation.at_bottom
-        && items.len() > ROOM_REPLAY_INITIAL_ITEMS_MAX
+        && item_count > ROOM_REPLAY_INITIAL_ITEMS_MAX
     {
-        items[items.len() - ROOM_REPLAY_INITIAL_ITEMS_MAX..].to_vec()
+        item_count - ROOM_REPLAY_INITIAL_ITEMS_MAX
     } else {
-        items.to_vec()
-    }
+        0
+    };
+    start..item_count
 }
 
 fn should_hydrate_empty_initial_room_timeline(kind: &TimelineKind, item_count: usize) -> bool {
@@ -18109,6 +18882,1086 @@ fn unread_position_for_index(
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DisplayProjectionSlot {
+    canonical_index: usize,
+    item: TimelineItem,
+}
+
+/// Pre-normalization ownership for the exact canonical slots represented by
+/// the desktop's current display window. Duplicate render identities remain
+/// separate slots here even though `display_items` contains only their first
+/// rendered owner.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct DisplayProjectionState {
+    slots: Vec<DisplayProjectionSlot>,
+    display_items: Vec<TimelineItem>,
+}
+
+impl DisplayProjectionState {
+    fn from_canonical_window(
+        canonical_items: &[TimelineItem],
+        window: std::ops::Range<usize>,
+    ) -> Self {
+        let start = window.start.min(canonical_items.len());
+        let end = window.end.min(canonical_items.len()).max(start);
+        let slots = canonical_items[start..end]
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(offset, item)| DisplayProjectionSlot {
+                canonical_index: start + offset,
+                item,
+            })
+            .collect::<Vec<_>>();
+        let display_items = normalize_display_projection_slots(&slots);
+        Self {
+            slots,
+            display_items,
+        }
+    }
+
+    fn display_items(&self) -> &[TimelineItem] {
+        &self.display_items
+    }
+
+    fn refresh_display_items(&mut self) {
+        self.display_items = normalize_display_projection_slots(&self.slots);
+    }
+}
+
+fn flush_pending_canonical_push_fronts(
+    canonical_items: &mut Vec<TimelineItem>,
+    pending_push_fronts: &mut Vec<TimelineItem>,
+) {
+    if pending_push_fronts.is_empty() {
+        return;
+    }
+    pending_push_fronts.reverse();
+    let prefix = std::mem::take(pending_push_fronts);
+    canonical_items.splice(0..0, prefix);
+}
+
+/// Sparse weighted sequence for display membership. `Gap` compresses any
+/// canonical-only run while subtree weights translate the next SDK index
+/// without rescanning the bounded display or traversing/cloning the N-item
+/// canonical history. SplitMix priorities give expected logarithmic split /
+/// merge depth. Projection overhead is therefore expected
+/// `O(W + B log(W + B) + D)` time and `O(W + B + D)` temporary space, where W
+/// is represented pre-normalization membership, B is the SDK batch, and D is
+/// the emitted display diff (`D = O(W)` for the private builder below). Room
+/// live-edge W is hard-capped at `ROOM_REPLAY_INITIAL_ITEMS_MAX` (120).
+///
+/// This bound is deliberately only for projection. The existing canonical
+/// `Vec<TimelineItem>` still pays its normal Vec costs for prefix/interior
+/// Insert/Remove and scans a Reset payload once; none of those costs is hidden
+/// in the projection counter or repeated as a projection scan per diff.
+enum DisplayMembershipCell {
+    Gap(usize),
+    Slot(TimelineItem),
+}
+
+impl DisplayMembershipCell {
+    fn canonical_len(&self) -> usize {
+        match self {
+            Self::Gap(len) => *len,
+            Self::Slot(_) => 1,
+        }
+    }
+
+    fn visible_len(&self) -> usize {
+        usize::from(matches!(self, Self::Slot(_)))
+    }
+}
+
+type DisplayMembershipLink = Option<Box<DisplayMembershipNode>>;
+
+struct DisplayMembershipNode {
+    cell: DisplayMembershipCell,
+    left: DisplayMembershipLink,
+    right: DisplayMembershipLink,
+    priority: u64,
+    canonical_len: usize,
+    visible_len: usize,
+}
+
+struct PendingDisplayMembershipNode {
+    cell: Option<DisplayMembershipCell>,
+    left: Option<usize>,
+    right: Option<usize>,
+    priority: u64,
+}
+
+impl DisplayMembershipNode {
+    fn new(cell: DisplayMembershipCell, priority: u64) -> Box<Self> {
+        let canonical_len = cell.canonical_len();
+        let visible_len = cell.visible_len();
+        Box::new(Self {
+            cell,
+            left: None,
+            right: None,
+            priority,
+            canonical_len,
+            visible_len,
+        })
+    }
+
+    fn refresh(&mut self) {
+        self.canonical_len = display_membership_canonical_len(&self.left)
+            .saturating_add(self.cell.canonical_len())
+            .saturating_add(display_membership_canonical_len(&self.right));
+        self.visible_len = display_membership_visible_len(&self.left)
+            .saturating_add(self.cell.visible_len())
+            .saturating_add(display_membership_visible_len(&self.right));
+    }
+}
+
+fn display_membership_canonical_len(link: &DisplayMembershipLink) -> usize {
+    link.as_ref().map_or(0, |node| node.canonical_len)
+}
+
+fn display_membership_visible_len(link: &DisplayMembershipLink) -> usize {
+    link.as_ref().map_or(0, |node| node.visible_len)
+}
+
+struct DisplayMembershipRope {
+    root: DisplayMembershipLink,
+    next_seed: u64,
+    /// Test-only count of visible payloads inspected while binding and
+    /// materializing membership. Structural tree-node visits are deliberately
+    /// excluded: this counter proves that payload normalization never rescans
+    /// all W display rows for every diff; it is not a wall-clock complexity
+    /// counter for the expected-logarithmic implicit treap.
+    #[cfg(test)]
+    display_payload_visits: usize,
+    /// Deterministic test-only count of implicit-treap nodes traversed or
+    /// constructed. Unlike payload visits, this exposes expected-logarithmic
+    /// structural work for indexed batches without measuring wall-clock time.
+    #[cfg(test)]
+    structural_node_visits: usize,
+}
+
+impl DisplayMembershipRope {
+    fn empty(display_payload_visits: usize) -> Self {
+        #[cfg(not(test))]
+        let _ = display_payload_visits;
+        Self {
+            root: None,
+            next_seed: 1,
+            #[cfg(test)]
+            display_payload_visits,
+            #[cfg(test)]
+            structural_node_visits: 0,
+        }
+    }
+
+    fn record_structural_node_visit(&mut self) {
+        #[cfg(test)]
+        {
+            self.structural_node_visits = self.structural_node_visits.saturating_add(1);
+        }
+    }
+
+    fn merge(
+        &mut self,
+        left: DisplayMembershipLink,
+        right: DisplayMembershipLink,
+    ) -> DisplayMembershipLink {
+        match (left, right) {
+            (None, right) => right,
+            (left, None) => left,
+            (Some(mut left), Some(mut right)) => {
+                self.record_structural_node_visit();
+                if left.priority >= right.priority {
+                    left.right = self.merge(left.right.take(), Some(right));
+                    left.refresh();
+                    Some(left)
+                } else {
+                    right.left = self.merge(Some(left), right.left.take());
+                    right.refresh();
+                    Some(right)
+                }
+            }
+        }
+    }
+
+    fn from_projection_state(
+        canonical_len: usize,
+        display_state: &mut DisplayProjectionState,
+    ) -> (Self, bool) {
+        let slots = std::mem::take(&mut display_state.slots);
+        let payload_visits = slots.len();
+        let mut cells = Vec::with_capacity(slots.len().saturating_mul(2).saturating_add(1));
+        let mut cursor = 0;
+        let mut ambiguous = false;
+        for slot in slots {
+            if slot.canonical_index < cursor || slot.canonical_index >= canonical_len {
+                ambiguous = true;
+                continue;
+            }
+            cells.push(DisplayMembershipCell::Gap(slot.canonical_index - cursor));
+            cells.push(DisplayMembershipCell::Slot(slot.item));
+            cursor = slot.canonical_index + 1;
+        }
+        cells.push(DisplayMembershipCell::Gap(
+            canonical_len.saturating_sub(cursor),
+        ));
+        (Self::from_cells(cells, payload_visits), ambiguous)
+    }
+
+    fn from_canonical_window(
+        canonical_items: &[TimelineItem],
+        window: std::ops::Range<usize>,
+    ) -> Self {
+        let start = window.start.min(canonical_items.len());
+        let end = window.end.min(canonical_items.len()).max(start);
+        let mut cells = Vec::with_capacity(end.saturating_sub(start).saturating_add(2));
+        cells.push(DisplayMembershipCell::Gap(start));
+        for item in canonical_items[start..end].iter().cloned() {
+            cells.push(DisplayMembershipCell::Slot(item));
+        }
+        cells.push(DisplayMembershipCell::Gap(canonical_items.len() - end));
+        Self::from_cells(cells, end - start)
+    }
+
+    fn canonical_len(&self) -> usize {
+        display_membership_canonical_len(&self.root)
+    }
+
+    fn visible_len(&self) -> usize {
+        display_membership_visible_len(&self.root)
+    }
+
+    fn next_priority(&mut self) -> u64 {
+        let mut value = self.next_seed;
+        self.next_seed = self.next_seed.wrapping_add(1);
+        value = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        value ^ (value >> 31)
+    }
+
+    fn node(&mut self, cell: DisplayMembershipCell) -> DisplayMembershipLink {
+        self.record_structural_node_visit();
+        Some(DisplayMembershipNode::new(cell, self.next_priority()))
+    }
+
+    /// Build the initial implicit treap in one Cartesian-tree pass. Repeated
+    /// `merge` appends would add an avoidable `W log W` construction term.
+    fn from_cells(cells: Vec<DisplayMembershipCell>, display_payload_visits: usize) -> Self {
+        let mut rope = Self::empty(display_payload_visits);
+        let mut pending = Vec::<PendingDisplayMembershipNode>::with_capacity(cells.len());
+        let mut stack = Vec::<usize>::with_capacity(cells.len());
+        for cell in cells {
+            if matches!(cell, DisplayMembershipCell::Gap(0)) {
+                continue;
+            }
+            rope.record_structural_node_visit();
+            let priority = rope.next_priority();
+            let mut left = None;
+            while stack
+                .last()
+                .is_some_and(|index| pending[*index].priority < priority)
+            {
+                left = stack.pop();
+            }
+            let index = pending.len();
+            pending.push(PendingDisplayMembershipNode {
+                cell: Some(cell),
+                left,
+                right: None,
+                priority,
+            });
+            if let Some(parent) = stack.last().copied() {
+                pending[parent].right = Some(index);
+            }
+            stack.push(index);
+        }
+
+        fn build(
+            index: usize,
+            pending: &mut [PendingDisplayMembershipNode],
+        ) -> Box<DisplayMembershipNode> {
+            let left = pending[index].left;
+            let right = pending[index].right;
+            let priority = pending[index].priority;
+            let cell = pending[index]
+                .cell
+                .take()
+                .expect("Cartesian membership node is materialized once");
+            let mut node = DisplayMembershipNode::new(cell, priority);
+            node.left = left.map(|child| build(child, pending));
+            node.right = right.map(|child| build(child, pending));
+            node.refresh();
+            node
+        }
+
+        if let Some(root) = stack.first().copied() {
+            rope.root = Some(build(root, &mut pending));
+        }
+        rope
+    }
+
+    fn split(
+        &mut self,
+        link: DisplayMembershipLink,
+        index: usize,
+    ) -> (DisplayMembershipLink, DisplayMembershipLink) {
+        let Some(mut node) = link else {
+            return (None, None);
+        };
+        self.record_structural_node_visit();
+        let left_len = display_membership_canonical_len(&node.left);
+        let cell_len = node.cell.canonical_len();
+        if index < left_len {
+            let (left, middle) = self.split(node.left.take(), index);
+            node.left = middle;
+            node.refresh();
+            return (left, Some(node));
+        }
+        if index > left_len.saturating_add(cell_len) {
+            let (middle, right) = self.split(
+                node.right.take(),
+                index.saturating_sub(left_len).saturating_sub(cell_len),
+            );
+            node.right = middle;
+            node.refresh();
+            return (Some(node), right);
+        }
+        if index == left_len {
+            let left = node.left.take();
+            node.refresh();
+            return (left, Some(node));
+        }
+        if index == left_len.saturating_add(cell_len) {
+            let right = node.right.take();
+            node.refresh();
+            return (Some(node), right);
+        }
+
+        let DisplayMembershipCell::Gap(gap_len) = node.cell else {
+            unreachable!("a visible slot cannot be split inside its unit length");
+        };
+        let offset = index - left_len;
+        let left_gap = self.node(DisplayMembershipCell::Gap(offset));
+        let right_gap = self.node(DisplayMembershipCell::Gap(gap_len - offset));
+        let left = self.merge(node.left.take(), left_gap);
+        let right = self.merge(right_gap, node.right.take());
+        (left, right)
+    }
+
+    fn split_root(&mut self, index: usize) -> (DisplayMembershipLink, DisplayMembershipLink) {
+        let root = self.root.take();
+        self.split(root, index)
+    }
+
+    fn edge_is_visible(&mut self, link: &DisplayMembershipLink, first: bool) -> bool {
+        let Some(mut node) = link.as_deref() else {
+            return false;
+        };
+        loop {
+            self.record_structural_node_visit();
+            let next = if first {
+                node.left.as_deref()
+            } else {
+                node.right.as_deref()
+            };
+            let Some(next) = next else {
+                return matches!(node.cell, DisplayMembershipCell::Slot(_));
+            };
+            node = next;
+        }
+    }
+
+    fn insert(&mut self, index: usize, item: TimelineItem, include: Option<bool>) -> bool {
+        if index > self.canonical_len() {
+            return false;
+        }
+        let was_empty = self.canonical_len() == 0;
+        let (left, right) = self.split_root(index);
+        let include = include.unwrap_or_else(|| {
+            was_empty || self.edge_is_visible(&left, false) || self.edge_is_visible(&right, true)
+        });
+        let cell = if include {
+            #[cfg(test)]
+            {
+                self.display_payload_visits = self.display_payload_visits.saturating_add(1);
+            }
+            DisplayMembershipCell::Slot(item)
+        } else {
+            DisplayMembershipCell::Gap(1)
+        };
+        let middle = self.node(cell);
+        let left = self.merge(left, middle);
+        self.root = self.merge(left, right);
+        true
+    }
+
+    fn split_one(
+        &mut self,
+        index: usize,
+    ) -> Option<(
+        DisplayMembershipLink,
+        Box<DisplayMembershipNode>,
+        DisplayMembershipLink,
+    )> {
+        if index >= self.canonical_len() {
+            return None;
+        }
+        let (left, tail) = self.split_root(index);
+        let (middle, right) = self.split(tail, 1);
+        let middle = middle?;
+        (middle.canonical_len == 1).then_some((left, middle, right))
+    }
+
+    fn set(&mut self, index: usize, item: TimelineItem, expected_render_id: &str) -> bool {
+        let Some((left, mut middle, right)) = self.split_one(index) else {
+            return false;
+        };
+        let valid = match &mut middle.cell {
+            DisplayMembershipCell::Gap(_) => true,
+            DisplayMembershipCell::Slot(old_item) => {
+                #[cfg(test)]
+                {
+                    self.display_payload_visits = self.display_payload_visits.saturating_add(1);
+                }
+                let valid = timeline_item_render_id(old_item) == expected_render_id;
+                *old_item = item;
+                valid
+            }
+        };
+        middle.refresh();
+        let left = self.merge(left, Some(middle));
+        self.root = self.merge(left, right);
+        valid
+    }
+
+    fn remove(&mut self, index: usize, expected_render_id: &str) -> bool {
+        let Some((left, middle, right)) = self.split_one(index) else {
+            return false;
+        };
+        let valid = match middle.cell {
+            DisplayMembershipCell::Gap(_) => true,
+            DisplayMembershipCell::Slot(old_item) => {
+                #[cfg(test)]
+                {
+                    self.display_payload_visits = self.display_payload_visits.saturating_add(1);
+                }
+                timeline_item_render_id(&old_item) == expected_render_id
+            }
+        };
+        self.root = self.merge(left, right);
+        valid
+    }
+
+    fn truncate(&mut self, length: usize) {
+        let (left, _) = self.split_root(length.min(self.canonical_len()));
+        self.root = left;
+    }
+
+    fn clear(&mut self) {
+        self.root = None;
+    }
+
+    fn hide_first_visible(&mut self, link: &mut DisplayMembershipLink, remaining: &mut usize) {
+        if *remaining == 0 || display_membership_visible_len(link) == 0 {
+            return;
+        }
+        let Some(node) = link.as_mut() else {
+            return;
+        };
+        self.record_structural_node_visit();
+        self.hide_first_visible(&mut node.left, remaining);
+        if *remaining > 0 && matches!(node.cell, DisplayMembershipCell::Slot(_)) {
+            node.cell = DisplayMembershipCell::Gap(1);
+            *remaining -= 1;
+        }
+        self.hide_first_visible(&mut node.right, remaining);
+        node.refresh();
+    }
+
+    fn trim_to_live_edge(&mut self, max_items: Option<usize>) {
+        let Some(max_items) = max_items else {
+            return;
+        };
+        let mut excess = self.visible_len().saturating_sub(max_items);
+        let mut root = self.root.take();
+        self.hide_first_visible(&mut root, &mut excess);
+        self.root = root;
+    }
+
+    fn materialize(mut self, display_state: &mut DisplayProjectionState) -> (usize, usize) {
+        let visible_len = self.visible_len();
+        let mut slots = Vec::with_capacity(visible_len);
+        let mut display_items = Vec::with_capacity(visible_len);
+        let mut seen = HashSet::new();
+        let mut canonical_index = 0_usize;
+        let mut pending = Vec::new();
+        let mut cursor = self.root.take();
+        while cursor.is_some() || !pending.is_empty() {
+            while let Some(mut node) = cursor {
+                cursor = node.left.take();
+                pending.push(node);
+            }
+            let mut node = pending.pop().expect("membership traversal has a node");
+            self.record_structural_node_visit();
+            match node.cell {
+                DisplayMembershipCell::Gap(len) => {
+                    canonical_index = canonical_index.saturating_add(len);
+                }
+                DisplayMembershipCell::Slot(item) => {
+                    #[cfg(test)]
+                    {
+                        self.display_payload_visits = self.display_payload_visits.saturating_add(1);
+                    }
+                    if seen.insert(timeline_item_render_id(&item)) {
+                        display_items.push(item.clone());
+                    }
+                    slots.push(DisplayProjectionSlot {
+                        canonical_index,
+                        item,
+                    });
+                    canonical_index = canonical_index.saturating_add(1);
+                }
+            }
+            cursor = node.right.take();
+        }
+        display_state.slots = slots;
+        display_state.display_items = display_items;
+        #[cfg(test)]
+        {
+            (self.display_payload_visits, self.structural_node_visits)
+        }
+        #[cfg(not(test))]
+        {
+            (0, 0)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DisplayProjectionContext {
+    max_live_edge_items: Option<usize>,
+    include_prepend: bool,
+    include_append: bool,
+}
+
+impl DisplayProjectionContext {
+    fn for_timeline(
+        kind: &TimelineKind,
+        observation: &TimelineViewportObservation,
+        restoring_anchor: bool,
+    ) -> Self {
+        let bounded_live_edge =
+            matches!(kind, TimelineKind::Room { .. }) && observation.at_bottom && !restoring_anchor;
+        Self {
+            max_live_edge_items: bounded_live_edge.then_some(ROOM_REPLAY_INITIAL_ITEMS_MAX),
+            include_prepend: !bounded_live_edge,
+            include_append: true,
+        }
+    }
+
+    #[cfg(test)]
+    fn bounded_live_edge() -> Self {
+        Self {
+            max_live_edge_items: Some(ROOM_REPLAY_INITIAL_ITEMS_MAX),
+            include_prepend: false,
+            include_append: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DisplayProjectionBatch {
+    display_after: Vec<TimelineItem>,
+    display_diffs: Vec<TimelineDiff>,
+    used_reset_fallback: bool,
+    #[cfg(test)]
+    display_payload_visits: usize,
+    #[cfg(test)]
+    structural_node_visits: usize,
+}
+
+fn commit_sdk_batch_for_generation<R>(
+    timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
+    key: &TimelineKey,
+    actor_generation: u64,
+    canonical_items: &mut Vec<TimelineItem>,
+    display_state: &mut DisplayProjectionState,
+    canonical_diffs: &[TimelineDiff],
+    context: &DisplayProjectionContext,
+    publish: impl FnOnce(
+        &TimelineActorGenerationLease,
+        DisplayProjectionBatch,
+        &[TimelineItem],
+        &DisplayProjectionState,
+    ) -> R,
+) -> Option<R> {
+    let lease = timeline_actor_generations.try_acquire(key, actor_generation)?;
+    let projection = project_sdk_batch(canonical_items, display_state, canonical_diffs, context);
+    Some(publish(&lease, projection, canonical_items, display_state))
+}
+
+fn project_sdk_batch(
+    canonical_items: &mut Vec<TimelineItem>,
+    display_state: &mut DisplayProjectionState,
+    canonical_diffs: &[TimelineDiff],
+    context: &DisplayProjectionContext,
+) -> DisplayProjectionBatch {
+    let display_before = display_state.display_items.clone();
+    let (mut membership, mut translation_ambiguous) =
+        DisplayMembershipRope::from_projection_state(canonical_items.len(), display_state);
+    let mut pending_push_fronts = Vec::new();
+
+    for diff in canonical_diffs {
+        if let TimelineDiff::PushFront { item } = diff {
+            pending_push_fronts.push(item.clone());
+            if !membership.insert(0, item.clone(), Some(context.include_prepend)) {
+                translation_ambiguous = true;
+            }
+            membership.trim_to_live_edge(context.max_live_edge_items);
+            continue;
+        }
+        flush_pending_canonical_push_fronts(canonical_items, &mut pending_push_fronts);
+        match diff {
+            TimelineDiff::PushFront { .. } => unreachable!("PushFront is batched above"),
+            TimelineDiff::PushBack { item } => {
+                let canonical_index = canonical_items.len();
+                canonical_items.push(item.clone());
+                if !membership.insert(canonical_index, item.clone(), Some(context.include_append)) {
+                    translation_ambiguous = true;
+                }
+            }
+            TimelineDiff::Insert { index, item } => {
+                let old_len = canonical_items.len();
+                let canonical_index = (*index).min(old_len);
+                if *index > old_len {
+                    translation_ambiguous = true;
+                }
+                canonical_items.insert(canonical_index, item.clone());
+                let include = (canonical_index == 0 && context.include_prepend).then_some(true);
+                if !membership.insert(canonical_index, item.clone(), include) {
+                    translation_ambiguous = true;
+                }
+            }
+            TimelineDiff::Set { index, item } => {
+                // Read the pre-batch owner before changing canonical state. A
+                // Set may change render identity (notably Transaction -> Event).
+                let Some(old_item) = canonical_items.get(*index).cloned() else {
+                    translation_ambiguous = true;
+                    continue;
+                };
+                let old_render_identity = timeline_item_render_id(&old_item);
+                canonical_items[*index] = item.clone();
+                if !membership.set(*index, item.clone(), &old_render_identity) {
+                    translation_ambiguous = true;
+                }
+            }
+            TimelineDiff::Remove { index } => {
+                // Capture the removed canonical identity before the Vec shifts.
+                let Some(old_item) = canonical_items.get(*index).cloned() else {
+                    translation_ambiguous = true;
+                    continue;
+                };
+                let old_render_identity = timeline_item_render_id(&old_item);
+                if !membership.remove(*index, &old_render_identity) {
+                    translation_ambiguous = true;
+                }
+                canonical_items.remove(*index);
+            }
+            TimelineDiff::Truncate { length } => {
+                if *length > canonical_items.len() {
+                    translation_ambiguous = true;
+                }
+                canonical_items.truncate(*length);
+                membership.truncate(*length);
+            }
+            TimelineDiff::Clear => {
+                canonical_items.clear();
+                membership.clear();
+            }
+            TimelineDiff::Reset { items } => {
+                *canonical_items = items.clone();
+                let start = context
+                    .max_live_edge_items
+                    .map(|max_items| canonical_items.len().saturating_sub(max_items))
+                    .unwrap_or(0);
+                membership = DisplayMembershipRope::from_canonical_window(
+                    canonical_items,
+                    start..canonical_items.len(),
+                );
+            }
+        }
+        membership.trim_to_live_edge(context.max_live_edge_items);
+    }
+
+    flush_pending_canonical_push_fronts(canonical_items, &mut pending_push_fronts);
+    if membership.canonical_len() != canonical_items.len() {
+        translation_ambiguous = true;
+    }
+    let (display_payload_visits, structural_node_visits) = membership.materialize(display_state);
+    #[cfg(not(test))]
+    let _ = (display_payload_visits, structural_node_visits);
+    let display_after = display_state.display_items.clone();
+    let (display_diffs, used_reset_fallback) =
+        finalize_display_projection_diffs(&display_before, &display_after, translation_ambiguous);
+
+    DisplayProjectionBatch {
+        display_after,
+        display_diffs,
+        used_reset_fallback,
+        #[cfg(test)]
+        display_payload_visits,
+        #[cfg(test)]
+        structural_node_visits,
+    }
+}
+
+fn normalize_display_projection_slots(slots: &[DisplayProjectionSlot]) -> Vec<TimelineItem> {
+    let mut seen = HashSet::new();
+    slots
+        .iter()
+        .filter(|slot| seen.insert(timeline_item_render_id(&slot.item)))
+        .map(|slot| slot.item.clone())
+        .collect()
+}
+
+/// Diff program produced by the one projection builder. Keeping the wrapper's
+/// field private prevents the validator from silently becoming a generic
+/// arbitrary-diff interpreter: the builder emits only a constant number of
+/// structural groups, so validation is `O(W + D)` rather than `O(W * D)`.
+struct BuiltDisplayProjectionDiffs(Vec<TimelineDiff>);
+
+fn finalize_display_projection_diffs(
+    display_before: &[TimelineItem],
+    display_after: &[TimelineItem],
+    translation_ambiguous: bool,
+) -> (Vec<TimelineDiff>, bool) {
+    let mut display_diffs = build_display_projection_diffs(display_before, display_after);
+    let incrementally_valid = display_diffs.as_ref().is_some_and(|diffs| {
+        validate_display_projection_diffs(display_before, diffs, display_after)
+    });
+    let used_reset_fallback = translation_ambiguous || !incrementally_valid;
+    let display_diffs = if used_reset_fallback {
+        record_display_projection_reset_fallback();
+        vec![TimelineDiff::Reset {
+            items: display_after.to_vec(),
+        }]
+    } else {
+        display_diffs
+            .take()
+            .map(|built| built.0)
+            .unwrap_or_default()
+    };
+    (display_diffs, used_reset_fallback)
+}
+
+fn build_display_projection_diffs(
+    display_before: &[TimelineItem],
+    display_after: &[TimelineItem],
+) -> Option<BuiltDisplayProjectionDiffs> {
+    let unique_after = display_after
+        .iter()
+        .map(timeline_item_render_id)
+        .collect::<HashSet<_>>();
+    if unique_after.len() != display_after.len() {
+        return None;
+    }
+    if display_after.is_empty() {
+        return Some(BuiltDisplayProjectionDiffs(
+            (!display_before.is_empty())
+                .then_some(TimelineDiff::Clear)
+                .into_iter()
+                .collect(),
+        ));
+    }
+
+    let common_limit = display_before.len().min(display_after.len());
+    let prefix_len = display_before
+        .iter()
+        .zip(display_after)
+        .take_while(|(before, after)| before == after)
+        .count();
+    let suffix_len = display_before[prefix_len..]
+        .iter()
+        .rev()
+        .zip(display_after[prefix_len..].iter().rev())
+        .take(common_limit.saturating_sub(prefix_len))
+        .take_while(|(before, after)| before == after)
+        .count();
+    let before_middle_end = display_before.len() - suffix_len;
+    let after_middle_end = display_after.len() - suffix_len;
+    let before_middle = &display_before[prefix_len..before_middle_end];
+    let after_middle = &display_after[prefix_len..after_middle_end];
+    let mut diffs = Vec::new();
+
+    if before_middle.len() != after_middle.len() {
+        diffs.extend((0..before_middle.len()).map(|_| TimelineDiff::Remove { index: prefix_len }));
+        diffs.extend(
+            after_middle
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(offset, item)| TimelineDiff::Insert {
+                    index: prefix_len + offset,
+                    item,
+                }),
+        );
+        return Some(BuiltDisplayProjectionDiffs(diffs));
+    }
+
+    let before_ids = before_middle
+        .iter()
+        .map(timeline_item_render_id)
+        .collect::<HashSet<_>>();
+    let positional_sets_are_safe = before_middle
+        .iter()
+        .zip(after_middle)
+        .all(|(before, after)| {
+            timeline_item_render_id(before) == timeline_item_render_id(after)
+                || !before_ids.contains(&timeline_item_render_id(after))
+        });
+    if positional_sets_are_safe {
+        for (offset, (before, after)) in before_middle.iter().zip(after_middle).enumerate() {
+            if before != after {
+                diffs.push(TimelineDiff::Set {
+                    index: prefix_len + offset,
+                    item: after.clone(),
+                });
+            }
+        }
+        return Some(BuiltDisplayProjectionDiffs(diffs));
+    }
+
+    // Identity movement cannot use positional Set: the desktop's duplicate
+    // defense would update the existing owner instead of moving it. Retain the
+    // longest contiguous identity run, then remove/insert only around it.
+    let before_index_by_id = before_middle
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (timeline_item_render_id(item), index))
+        .collect::<HashMap<_, _>>();
+    let mut best = (0, 0, 0);
+    let mut current = (0, 0, 0);
+    let mut previous_before_index = None;
+    for (after_index, item) in after_middle.iter().enumerate() {
+        let Some(&before_index) = before_index_by_id.get(&timeline_item_render_id(item)) else {
+            previous_before_index = None;
+            current = (0, 0, 0);
+            continue;
+        };
+        if previous_before_index.is_some_and(|previous| previous + 1 == before_index) {
+            current.2 += 1;
+        } else {
+            current = (before_index, after_index, 1);
+        }
+        previous_before_index = Some(before_index);
+        if current.2 > best.2 {
+            best = current;
+        }
+    }
+    let (before_keep, after_keep, keep_len) = best;
+    let kept_end = before_keep + keep_len;
+    diffs.extend(
+        (kept_end..before_middle.len()).map(|_| TimelineDiff::Remove {
+            index: prefix_len + kept_end,
+        }),
+    );
+    diffs.extend((0..before_keep).map(|_| TimelineDiff::Remove { index: prefix_len }));
+    diffs.extend(
+        after_middle[..after_keep]
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(offset, item)| TimelineDiff::Insert {
+                index: prefix_len + offset,
+                item,
+            }),
+    );
+    diffs.extend(
+        after_middle[after_keep + keep_len..]
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(offset, item)| TimelineDiff::Insert {
+                index: prefix_len + after_keep + keep_len + offset,
+                item,
+            }),
+    );
+    for offset in 0..keep_len {
+        let before = &before_middle[before_keep + offset];
+        let after = &after_middle[after_keep + offset];
+        if before != after {
+            diffs.push(TimelineDiff::Set {
+                index: prefix_len + after_keep + offset,
+                item: after.clone(),
+            });
+        }
+    }
+    Some(BuiltDisplayProjectionDiffs(diffs))
+}
+
+fn validate_display_projection_diffs(
+    display_before: &[TimelineItem],
+    diffs: &BuiltDisplayProjectionDiffs,
+    expected_after: &[TimelineItem],
+) -> bool {
+    let diffs = &diffs.0;
+    let mut items = display_before.to_vec();
+    let mut index_by_id = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (timeline_item_render_id(item), index))
+        .collect::<HashMap<_, _>>();
+    let mut cursor = 0;
+    while cursor < diffs.len() {
+        match &diffs[cursor] {
+            TimelineDiff::PushFront { .. } => {
+                let mut prefix = Vec::new();
+                let mut prefix_ids = HashSet::new();
+                while let Some(TimelineDiff::PushFront { item }) = diffs.get(cursor + prefix.len())
+                {
+                    let item_id = timeline_item_render_id(item);
+                    if index_by_id.contains_key(&item_id) || !prefix_ids.insert(item_id) {
+                        return false;
+                    }
+                    prefix.push(item.clone());
+                }
+                cursor += prefix.len();
+                prefix.reverse();
+                items.splice(0..0, prefix);
+                rebuild_display_projection_index(&items, &mut index_by_id);
+            }
+            TimelineDiff::PushBack { .. } => {
+                let start = items.len();
+                while let Some(TimelineDiff::PushBack { item }) = diffs.get(cursor) {
+                    let item_id = timeline_item_render_id(item);
+                    if index_by_id.contains_key(&item_id) {
+                        return false;
+                    }
+                    index_by_id.insert(item_id, items.len());
+                    items.push(item.clone());
+                    cursor += 1;
+                }
+                if items.len() == start {
+                    return false;
+                }
+            }
+            TimelineDiff::Insert { index, .. } => {
+                let start = *index;
+                if start > items.len() {
+                    return false;
+                }
+                let mut inserted = Vec::new();
+                let mut inserted_ids = HashSet::new();
+                while let Some(TimelineDiff::Insert { index, item }) = diffs.get(cursor) {
+                    if *index != start + inserted.len() {
+                        break;
+                    }
+                    let item_id = timeline_item_render_id(item);
+                    if index_by_id.contains_key(&item_id) || !inserted_ids.insert(item_id) {
+                        return false;
+                    }
+                    inserted.push(item.clone());
+                    cursor += 1;
+                }
+                if inserted.is_empty() {
+                    return false;
+                }
+                items.splice(start..start, inserted);
+                rebuild_display_projection_index(&items, &mut index_by_id);
+            }
+            TimelineDiff::Set { index, item } => {
+                if *index >= items.len() {
+                    return false;
+                }
+                let item_id = timeline_item_render_id(item);
+                let target_index = index_by_id
+                    .get(&item_id)
+                    .copied()
+                    .filter(|existing_index| *existing_index != *index)
+                    .unwrap_or(*index);
+                let old_id = timeline_item_render_id(&items[target_index]);
+                items[target_index] = item.clone();
+                if index_by_id.get(&old_id) == Some(&target_index) {
+                    index_by_id.remove(&old_id);
+                }
+                index_by_id.insert(item_id, target_index);
+                cursor += 1;
+            }
+            TimelineDiff::Remove { index } => {
+                let start = *index;
+                let mut count = 0;
+                while matches!(
+                    diffs.get(cursor + count),
+                    Some(TimelineDiff::Remove { index }) if *index == start
+                ) {
+                    count += 1;
+                }
+                if start >= items.len() || count > items.len() - start {
+                    return false;
+                }
+                items.drain(start..start + count);
+                cursor += count;
+                rebuild_display_projection_index(&items, &mut index_by_id);
+            }
+            TimelineDiff::Truncate { length } => {
+                if *length > items.len() {
+                    return false;
+                }
+                items.truncate(*length);
+                cursor += 1;
+                rebuild_display_projection_index(&items, &mut index_by_id);
+            }
+            TimelineDiff::Clear => {
+                items.clear();
+                index_by_id.clear();
+                cursor += 1;
+            }
+            TimelineDiff::Reset { items: reset_items } => {
+                let mut seen = HashSet::new();
+                items = reset_items
+                    .iter()
+                    .filter(|item| seen.insert(timeline_item_render_id(item)))
+                    .cloned()
+                    .collect();
+                cursor += 1;
+                rebuild_display_projection_index(&items, &mut index_by_id);
+            }
+        }
+    }
+    items == expected_after
+}
+
+fn rebuild_display_projection_index(
+    items: &[TimelineItem],
+    index_by_id: &mut HashMap<String, usize>,
+) {
+    index_by_id.clear();
+    index_by_id.extend(
+        items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (timeline_item_render_id(item), index)),
+    );
+}
+
+fn record_display_projection_reset_fallback() {
+    let fallback_count = DISPLAY_PROJECTION_RESET_FALLBACKS.fetch_add(1, Ordering::Relaxed) + 1;
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Warn,
+            "core.timeline_display_projection",
+            "reset_fallback",
+        )
+        .field(DiagnosticField::count(
+            "display_projection_reset_fallbacks",
+            fallback_count,
+        )),
+    );
+}
+
+#[cfg(test)]
 fn apply_timeline_diffs_to_items(items: &mut Vec<TimelineItem>, diffs: &[TimelineDiff]) {
     for diff in diffs {
         match diff {
@@ -18145,6 +19998,7 @@ fn apply_timeline_diffs_to_items(items: &mut Vec<TimelineItem>, diffs: &[Timelin
 /// TimelineStore. A bounded replay can overlap later scrollback diffs, so this
 /// mirror must not retain duplicate event, transaction, or synthetic rows that
 /// the webview collapses before it derives latest-reply placement.
+#[cfg(test)]
 fn apply_timeline_diffs_to_display_items(items: &mut Vec<TimelineItem>, diffs: &[TimelineDiff]) {
     for diff in diffs {
         match diff {
@@ -18172,39 +20026,34 @@ fn apply_timeline_diffs_to_display_items(items: &mut Vec<TimelineItem>, diffs: &
 
 /// Applies actor-originated item revisions to the bounded display mirror.
 ///
-/// Unlike SDK vector diffs, the index in a local mutation is an index into the
-/// actor's wider `navigation_items` cache. It is therefore unsafe to use it
-/// against a bounded replay window. Update only an already-rendered row with
-/// the same identity; a replay-only root is intentionally absent from this
-/// mirror and will instead be refreshed from `navigation_items` by the replay
-/// registry reconciliation that follows in the same generation lease. Returns
-/// the matching display-index `Set` diffs that are safe to deliver to the
-/// webview; omitted roots deliberately produce no canonical display diff.
+/// The local `Set` index names an exact owner in the actor's canonical
+/// `navigation_items`. The bounded display mirror retains that canonical index
+/// on every pre-normalization slot, so duplicate render identities cannot make
+/// us revise the wrong owner. An owner outside the bounded window is omitted;
+/// replay reconciliation refreshes it separately from canonical state.
 fn apply_non_sdk_item_set_diffs_to_display_items(
-    items: &mut [TimelineItem],
+    display_projection: &mut DisplayProjectionState,
     diffs: &[TimelineDiff],
 ) -> Vec<TimelineDiff> {
-    let mut display_diffs = Vec::new();
+    let display_before = display_projection.display_items.clone();
     for diff in diffs {
-        let TimelineDiff::Set { item, .. } = diff else {
+        let TimelineDiff::Set { index, item } = diff else {
             continue;
         };
-        let item_id = timeline_item_render_id(item);
-        if let Some((index, existing)) = items
+        if let Some(existing) = display_projection
+            .slots
             .iter_mut()
-            .enumerate()
-            .find(|(_, existing)| timeline_item_render_id(existing) == item_id)
+            .find(|slot| slot.canonical_index == *index)
         {
-            *existing = item.clone();
-            display_diffs.push(TimelineDiff::Set {
-                index,
-                item: item.clone(),
-            });
+            existing.item = item.clone();
         }
     }
-    display_diffs
+    display_projection.refresh_display_items();
+    let display_after = display_projection.display_items.clone();
+    finalize_display_projection_diffs(&display_before, &display_after, false).0
 }
 
+#[cfg(test)]
 fn insert_display_timeline_item(items: &mut Vec<TimelineItem>, item: &TimelineItem, index: usize) {
     let item_id = timeline_item_render_id(item);
     if items
@@ -18216,6 +20065,7 @@ fn insert_display_timeline_item(items: &mut Vec<TimelineItem>, item: &TimelineIt
     items.insert(index.min(items.len()), item.clone());
 }
 
+#[cfg(test)]
 fn set_display_timeline_item(items: &mut [TimelineItem], index: usize, item: &TimelineItem) {
     if index >= items.len() {
         return;
@@ -18235,6 +20085,7 @@ fn set_display_timeline_item(items: &mut [TimelineItem], index: usize, item: &Ti
     items[index] = item.clone();
 }
 
+#[cfg(test)]
 fn normalize_display_timeline_items(items: &[TimelineItem]) -> Vec<TimelineItem> {
     let mut seen = HashSet::new();
     items
@@ -19562,17 +21413,6 @@ fn send_failure_reason(is_recoverable: bool) -> TimelineSendFailureReason {
     }
 }
 
-fn remember_send_handle(
-    statuses: &mut HashMap<String, TimelineSendState>,
-    handles: &mut HashMap<String, SendHandle>,
-    handle: &SendHandle,
-    state: TimelineSendState,
-) {
-    let transaction_id = handle.transaction_id().to_string();
-    statuses.insert(transaction_id.clone(), state);
-    handles.insert(transaction_id, handle.clone());
-}
-
 fn remember_local_echo(
     statuses: &mut HashMap<String, TimelineSendState>,
     handles: &mut HashMap<String, SendHandle>,
@@ -19870,103 +21710,123 @@ pub(crate) fn reaction_groups_from_sdk(
         .collect()
 }
 
-/// Convert an SDK `VectorDiff` to our `TimelineDiff`.
-fn sdk_vector_diff_to_timeline_diff(
-    diff: eyeball_im::VectorDiff<Arc<SdkTimelineItem>>,
+/// Convert one ordered SDK diff batch while tracking the evolving canonical
+/// length. `PopBack` has no explicit index and `Append` has no equivalent wire
+/// variant, so both must be expanded with the batch's actual preceding state.
+fn sdk_vector_diffs_to_timeline_diffs(
+    diffs: &[eyeball_im::VectorDiff<Arc<SdkTimelineItem>>],
+    initial_canonical_len: usize,
     key: &TimelineKey,
     own_user_id: Option<&matrix_sdk::ruma::UserId>,
     send_statuses: &HashMap<String, TimelineSendState>,
-) -> TimelineDiff {
-    match diff {
-        eyeball_im::VectorDiff::PushFront { value } => TimelineDiff::PushFront {
-            item: sdk_item_to_timeline_item_with_send_states(
-                key,
-                &value,
-                own_user_id,
-                send_statuses,
-            ),
-        },
-        eyeball_im::VectorDiff::PushBack { value } => TimelineDiff::PushBack {
-            item: sdk_item_to_timeline_item_with_send_states(
-                key,
-                &value,
-                own_user_id,
-                send_statuses,
-            ),
-        },
-        eyeball_im::VectorDiff::Insert { index, value } => TimelineDiff::Insert {
-            index,
-            item: sdk_item_to_timeline_item_with_send_states(
-                key,
-                &value,
-                own_user_id,
-                send_statuses,
-            ),
-        },
-        eyeball_im::VectorDiff::Set { index, value } => TimelineDiff::Set {
-            index,
-            item: sdk_item_to_timeline_item_with_send_states(
-                key,
-                &value,
-                own_user_id,
-                send_statuses,
-            ),
-        },
-        eyeball_im::VectorDiff::Remove { index } => TimelineDiff::Remove { index },
-        eyeball_im::VectorDiff::Truncate { length } => TimelineDiff::Truncate { length },
-        eyeball_im::VectorDiff::Clear => TimelineDiff::Clear,
-        eyeball_im::VectorDiff::Reset { values } => TimelineDiff::Reset {
-            items: values
-                .iter()
-                .map(|value| {
-                    sdk_item_to_timeline_item_with_send_states(
+) -> Vec<TimelineDiff> {
+    let mut canonical_len = initial_canonical_len;
+    let mut converted = Vec::with_capacity(diffs.len());
+    for diff in diffs {
+        match diff {
+            eyeball_im::VectorDiff::PushFront { value } => {
+                converted.push(TimelineDiff::PushFront {
+                    item: sdk_item_to_timeline_item_with_send_states(
                         key,
                         value,
                         own_user_id,
                         send_statuses,
-                    )
-                })
-                .collect(),
-        },
-        eyeball_im::VectorDiff::PopFront => {
-            // SDK VectorDiff::PopFront is not in the spec enum; map to Remove{0}.
-            TimelineDiff::Remove { index: 0 }
-        }
-        eyeball_im::VectorDiff::PopBack => {
-            // SDK VectorDiff::PopBack not in spec enum; we don't know the index.
-            // Emit a Clear+Reset is too aggressive; emit a no-op Truncate that
-            // leaves it to the SDK's Reset to resync if needed. The real "pop"
-            // case is extremely rare (SDK mainly uses Set/Insert/Remove).
-            // The safe approach: emit a Reset with the current items. But we
-            // don't hold the current list here. Emit Truncate(0) as a conservative
-            // sentinel that tells the UI to resync — the next Reset diff will fix it.
-            // This is a known gap; escalate if PopBack becomes common in practice.
-            TimelineDiff::Truncate { length: 0 }
-        }
-        eyeball_im::VectorDiff::Append { values } => {
-            // Append is equivalent to multiple PushBacks followed by a batch.
-            // Convert to Reset to keep ordering safe (the spec allows Reset as a
-            // position-preserving fallback). This is consistent with what the SDK
-            // actually emits: Append only fires during initial populate, after which
-            // the live stream uses PushBack/Insert/Set/Remove.
-            // We emit a Reset here; the UI applies it as a full list replacement.
-            // Alternatively we could split into PushBacks, but that risks sending
-            // oversized batches for large initial appends; Reset is more robust.
-            TimelineDiff::Reset {
-                items: values
-                    .iter()
-                    .map(|value| {
-                        sdk_item_to_timeline_item_with_send_states(
-                            key,
-                            value,
-                            own_user_id,
-                            send_statuses,
-                        )
-                    })
-                    .collect(),
+                    ),
+                });
+                canonical_len += 1;
+            }
+            eyeball_im::VectorDiff::PushBack { value } => {
+                converted.push(TimelineDiff::PushBack {
+                    item: sdk_item_to_timeline_item_with_send_states(
+                        key,
+                        value,
+                        own_user_id,
+                        send_statuses,
+                    ),
+                });
+                canonical_len += 1;
+            }
+            eyeball_im::VectorDiff::Insert { index, value } => {
+                converted.push(TimelineDiff::Insert {
+                    index: *index,
+                    item: sdk_item_to_timeline_item_with_send_states(
+                        key,
+                        value,
+                        own_user_id,
+                        send_statuses,
+                    ),
+                });
+                canonical_len += 1;
+            }
+            eyeball_im::VectorDiff::Set { index, value } => {
+                converted.push(TimelineDiff::Set {
+                    index: *index,
+                    item: sdk_item_to_timeline_item_with_send_states(
+                        key,
+                        value,
+                        own_user_id,
+                        send_statuses,
+                    ),
+                });
+            }
+            eyeball_im::VectorDiff::Remove { index } => {
+                converted.push(TimelineDiff::Remove { index: *index });
+                if *index < canonical_len {
+                    canonical_len -= 1;
+                }
+            }
+            eyeball_im::VectorDiff::Truncate { length } => {
+                converted.push(TimelineDiff::Truncate { length: *length });
+                canonical_len = canonical_len.min(*length);
+            }
+            eyeball_im::VectorDiff::Clear => {
+                converted.push(TimelineDiff::Clear);
+                canonical_len = 0;
+            }
+            eyeball_im::VectorDiff::Reset { values } => {
+                converted.push(TimelineDiff::Reset {
+                    items: values
+                        .iter()
+                        .map(|value| {
+                            sdk_item_to_timeline_item_with_send_states(
+                                key,
+                                value,
+                                own_user_id,
+                                send_statuses,
+                            )
+                        })
+                        .collect(),
+                });
+                canonical_len = values.len();
+            }
+            eyeball_im::VectorDiff::PopFront => {
+                if canonical_len > 0 {
+                    converted.push(TimelineDiff::Remove { index: 0 });
+                    canonical_len -= 1;
+                }
+            }
+            eyeball_im::VectorDiff::PopBack => {
+                if canonical_len > 0 {
+                    canonical_len -= 1;
+                    converted.push(TimelineDiff::Remove {
+                        index: canonical_len,
+                    });
+                }
+            }
+            eyeball_im::VectorDiff::Append { values } => {
+                converted.extend(values.iter().map(|value| TimelineDiff::PushBack {
+                    item: sdk_item_to_timeline_item_with_send_states(
+                        key,
+                        value,
+                        own_user_id,
+                        send_statuses,
+                    ),
+                }));
+                canonical_len += values.len();
             }
         }
     }
+    converted
 }
 
 // ---------------------------------------------------------------------------
@@ -20031,16 +21891,32 @@ fn classify_send_queue_error(
     }
 }
 
-#[derive(Default)]
-struct SendCompletionTracker {
-    /// Pending send requests: sdk_txn_id → completion metadata.
-    pending_sends: HashMap<String, PendingSendCompletion>,
-    /// SentEvent updates that arrived before the pending mapping existed:
-    /// sdk_txn_id → event_id.
-    completed_sends: HashMap<String, String>,
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct SendCorrelationKey {
+    room_id: String,
+    sdk_transaction_id: String,
 }
 
-struct PendingSendCompletion {
+type SharedSendCompletionCoordinator = Arc<Mutex<SendCompletionCoordinator>>;
+
+// Correlation is deliberately session-memory state. A process restart drops
+// request/submission response ownership; SDK unsent/local echoes are restored
+// and reprojected independently. Cross-process SendCompleted responses would
+// require a durable database outbox, which is outside this lifecycle contract.
+#[derive(Default)]
+struct SendCompletionCoordinator {
+    next_registration_id: u64,
+    registrations: std::collections::BTreeMap<u64, CoordinatedPendingSend>,
+    pending_sends: HashMap<SendCorrelationKey, CoordinatedPendingSend>,
+    unmatched_terminals: HashMap<SendCorrelationKey, VecDeque<ObservedSendTerminal>>,
+    settled_send_tombstones: HashSet<SendCorrelationKey>,
+    settled_send_order: VecDeque<SendCorrelationKey>,
+}
+
+struct CoordinatedPendingSend {
+    registration_id: u64,
+    active: bool,
+    key: TimelineKey,
     client_txn_id: String,
     submission_id: Option<koushi_state::SubmissionId>,
     request_id: RequestId,
@@ -20048,26 +21924,57 @@ struct PendingSendCompletion {
     failure_reported: bool,
 }
 
-impl SendCompletionTracker {
-    fn remember_pending_send(
-        &mut self,
-        sdk_txn_id: String,
+enum SendCompletionObservation {
+    Sent {
+        sdk_transaction_id: String,
+        event_id: String,
+    },
+    SendError {
+        sdk_transaction_id: String,
+    },
+    Cancelled {
+        sdk_transaction_id: String,
+    },
+}
+
+enum ObservedSendTerminal {
+    Sent { event_id: String },
+    SendError,
+    Cancelled,
+}
+
+struct SendCompletionRegistration {
+    coordinator: SharedSendCompletionCoordinator,
+    terminal_ingress: TimelineSendTerminalIngress,
+    registration_id: Option<u64>,
+}
+
+impl SendCompletionRegistration {
+    #[allow(clippy::too_many_arguments)]
+    fn begin(
+        coordinator: SharedSendCompletionCoordinator,
+        terminal_ingress: TimelineSendTerminalIngress,
+        key: TimelineKey,
         client_txn_id: String,
         submission_id: Option<koushi_state::SubmissionId>,
         request_id: RequestId,
         settles_composer: bool,
-    ) -> Option<(
-        String,
-        Option<koushi_state::SubmissionId>,
-        RequestId,
-        String,
-    )> {
-        if let Some(event_id) = self.completed_sends.remove(&sdk_txn_id) {
-            Some((client_txn_id, submission_id, request_id, event_id))
-        } else {
-            self.pending_sends.insert(
-                sdk_txn_id,
-                PendingSendCompletion {
+    ) -> Self {
+        let registration_id = {
+            let mut coordinator = coordinator
+                .lock()
+                .expect("send completion coordinator lock must not be poisoned");
+            coordinator.next_registration_id = coordinator
+                .next_registration_id
+                .checked_add(1)
+                .expect("send registration id space exhausted");
+            let registration_id = coordinator.next_registration_id;
+            coordinator.registrations.insert(
+                registration_id,
+                CoordinatedPendingSend {
+                    registration_id,
+                    active: false,
+                    key,
                     client_txn_id,
                     submission_id,
                     request_id,
@@ -20075,71 +21982,531 @@ impl SendCompletionTracker {
                     failure_reported: false,
                 },
             );
-            None
+            registration_id
+        };
+        Self {
+            coordinator,
+            terminal_ingress,
+            registration_id: Some(registration_id),
         }
     }
 
-    fn record_sent_event(
-        &mut self,
-        sdk_txn_id: String,
-        event_id: String,
-    ) -> Option<(
-        String,
-        Option<koushi_state::SubmissionId>,
-        RequestId,
-        String,
-        bool,
-    )> {
-        if let Some(pending) = self.pending_sends.remove(&sdk_txn_id) {
-            let settles_composer = pending.settles_composer && !pending.failure_reported;
-            Some((
-                pending.client_txn_id,
-                pending.submission_id,
-                pending.request_id,
-                event_id,
-                settles_composer,
-            ))
-        } else {
-            self.completed_sends.insert(sdk_txn_id, event_id);
-            None
+    fn activate(&mut self) {
+        let Some(registration_id) = self.registration_id else {
+            return;
+        };
+        self.coordinator
+            .lock()
+            .expect("send completion coordinator lock must not be poisoned")
+            .activate_registration(registration_id);
+    }
+
+    fn registration_id(&self) -> Option<u64> {
+        self.registration_id
+    }
+
+    fn bind(&mut self, sdk_transaction_id: String) {
+        let Some(registration_id) = self.registration_id.take() else {
+            return;
+        };
+        let mut coordinator = self
+            .coordinator
+            .lock()
+            .expect("send completion coordinator lock must not be poisoned");
+        let handoffs = coordinator.bind_registration(registration_id, sdk_transaction_id);
+        for handoff in handoffs {
+            let _admission = self.terminal_ingress.admit(handoff);
         }
     }
 
-    fn record_send_error(
-        &mut self,
-        sdk_txn_id: &str,
-    ) -> Option<(String, Option<koushi_state::SubmissionId>, RequestId, bool)> {
-        let pending = self.pending_sends.get_mut(sdk_txn_id)?;
-        if pending.failure_reported {
-            return None;
+    fn fail_known(&mut self, kind: TimelineFailureKind) {
+        let Some(registration_id) = self.registration_id.take() else {
+            return;
+        };
+        let mut coordinator = self
+            .coordinator
+            .lock()
+            .expect("send completion coordinator lock must not be poisoned");
+        if let Some(handoff) = coordinator.fail_registration(registration_id, kind) {
+            let _admission = self.terminal_ingress.admit(handoff);
         }
-        pending.failure_reported = true;
-        Some((
-            pending.client_txn_id.clone(),
-            pending.submission_id.clone(),
-            pending.request_id,
-            pending.settles_composer,
-        ))
     }
+}
 
-    fn record_cancelled_event(
-        &mut self,
-        sdk_txn_id: &str,
-    ) -> Option<(String, Option<koushi_state::SubmissionId>, RequestId, bool)> {
-        let pending = self.pending_sends.remove(sdk_txn_id)?;
-        Some((
-            pending.client_txn_id,
-            pending.submission_id,
-            pending.request_id,
-            pending.settles_composer && !pending.failure_reported,
-        ))
+impl Drop for SendCompletionRegistration {
+    fn drop(&mut self) {
+        let Some(registration_id) = self.registration_id.take() else {
+            return;
+        };
+        let mut coordinator = self
+            .coordinator
+            .lock()
+            .expect("send completion coordinator lock must not be poisoned");
+        if let Some(handoff) = coordinator.abandon_registration(registration_id) {
+            let _admission = self.terminal_ingress.admit(handoff);
+        }
     }
+}
 
-    fn pending_send(&self, sdk_txn_id: &str) -> Option<(&str, RequestId)> {
+impl SendCompletionCoordinator {
+    fn pending_send(
+        &self,
+        room_id: &str,
+        sdk_transaction_id: &str,
+    ) -> Option<(&TimelineKey, &str, RequestId)> {
         self.pending_sends
-            .get(sdk_txn_id)
-            .map(|pending| (pending.client_txn_id.as_str(), pending.request_id))
+            .get(&SendCorrelationKey {
+                room_id: room_id.to_owned(),
+                sdk_transaction_id: sdk_transaction_id.to_owned(),
+            })
+            .map(|pending| {
+                (
+                    &pending.key,
+                    pending.client_txn_id.as_str(),
+                    pending.request_id,
+                )
+            })
     }
+
+    fn activate_registration(&mut self, registration_id: u64) -> bool {
+        let Some(registration) = self.registrations.get_mut(&registration_id) else {
+            return false;
+        };
+        registration.active = true;
+        true
+    }
+
+    fn cancel_registration(&mut self, registration_id: u64) {
+        let room_id = self
+            .registrations
+            .remove(&registration_id)
+            .map(|registration| registration.key.room_id().to_owned());
+        if let Some(room_id) = room_id {
+            self.purge_unmatched_for_inactive_room(&room_id);
+        }
+    }
+
+    fn fail_registration(
+        &mut self,
+        registration_id: u64,
+        kind: TimelineFailureKind,
+    ) -> Option<TimelineSendTerminalHandoff> {
+        let registration = self.registrations.remove(&registration_id)?;
+        let room_id = registration.key.room_id().to_owned();
+        let handoff = (!registration.failure_reported)
+            .then(|| timeline_send_failure_handoff(&registration, kind));
+        self.purge_unmatched_for_inactive_room(&room_id);
+        handoff
+    }
+
+    fn abandon_registration(
+        &mut self,
+        registration_id: u64,
+    ) -> Option<TimelineSendTerminalHandoff> {
+        let registration = self.registrations.remove(&registration_id)?;
+        let room_id = registration.key.room_id().to_owned();
+        let handoff = (registration.active && !registration.failure_reported)
+            .then(|| timeline_send_observation_loss_handoff(&registration));
+        self.purge_unmatched_for_inactive_room(&room_id);
+        handoff
+    }
+
+    fn room_has_active_registration(&self, room_id: &str) -> bool {
+        self.registrations
+            .values()
+            .any(|registration| registration.active && registration.key.room_id() == room_id)
+            || self
+                .pending_sends
+                .values()
+                .any(|pending| pending.key.room_id() == room_id)
+    }
+
+    fn room_unbound_capacity(&self, room_id: &str) -> usize {
+        self.registrations
+            .values()
+            .filter(|registration| registration.active && registration.key.room_id() == room_id)
+            .count()
+    }
+
+    fn purge_unmatched_for_inactive_room(&mut self, room_id: &str) {
+        if self.room_has_active_registration(room_id) {
+            return;
+        }
+        self.unmatched_terminals
+            .retain(|correlation, _| correlation.room_id != room_id);
+    }
+
+    fn remember_settled(&mut self, correlation: SendCorrelationKey) {
+        if !self.settled_send_tombstones.insert(correlation.clone()) {
+            return;
+        }
+        self.settled_send_order.push_back(correlation);
+        while self.settled_send_order.len() > MAX_SETTLED_SEND_TOMBSTONES {
+            if let Some(expired) = self.settled_send_order.pop_front() {
+                self.settled_send_tombstones.remove(&expired);
+            }
+        }
+    }
+
+    fn bind_registration(
+        &mut self,
+        registration_id: u64,
+        sdk_transaction_id: String,
+    ) -> Vec<TimelineSendTerminalHandoff> {
+        let Some(registration) = self.registrations.remove(&registration_id) else {
+            return Vec::new();
+        };
+        if !registration.active {
+            self.purge_unmatched_for_inactive_room(registration.key.room_id());
+            return Vec::new();
+        }
+        let correlation = SendCorrelationKey {
+            room_id: registration.key.room_id().to_owned(),
+            sdk_transaction_id,
+        };
+        if self.settled_send_tombstones.contains(&correlation)
+            || self.pending_sends.contains_key(&correlation)
+        {
+            let handoffs = (!registration.failure_reported)
+                .then(|| timeline_send_observation_loss_handoff(&registration))
+                .into_iter()
+                .collect();
+            self.purge_unmatched_for_inactive_room(&correlation.room_id);
+            return handoffs;
+        }
+        self.pending_sends.insert(correlation.clone(), registration);
+        let observed = self
+            .unmatched_terminals
+            .remove(&correlation)
+            .unwrap_or_default();
+        let mut handoffs = Vec::new();
+        for terminal in observed {
+            if let Some(handoff) = self.apply_terminal(&correlation, terminal) {
+                handoffs.push(handoff);
+            }
+        }
+        handoffs
+    }
+
+    fn observe(
+        &mut self,
+        room_id: &str,
+        observation: SendCompletionObservation,
+    ) -> Vec<TimelineSendTerminalHandoff> {
+        let (sdk_transaction_id, terminal) = match observation {
+            SendCompletionObservation::Sent {
+                sdk_transaction_id,
+                event_id,
+            } => (sdk_transaction_id, ObservedSendTerminal::Sent { event_id }),
+            SendCompletionObservation::SendError { sdk_transaction_id } => {
+                (sdk_transaction_id, ObservedSendTerminal::SendError)
+            }
+            SendCompletionObservation::Cancelled { sdk_transaction_id } => {
+                (sdk_transaction_id, ObservedSendTerminal::Cancelled)
+            }
+        };
+        let correlation = SendCorrelationKey {
+            room_id: room_id.to_owned(),
+            sdk_transaction_id,
+        };
+        if self.settled_send_tombstones.contains(&correlation) {
+            return Vec::new();
+        }
+        if self.pending_sends.contains_key(&correlation) {
+            return self
+                .apply_terminal(&correlation, terminal)
+                .into_iter()
+                .collect();
+        }
+        let capacity = self.room_unbound_capacity(room_id);
+        if capacity == 0 {
+            return Vec::new();
+        }
+        if let Some(observed) = self.unmatched_terminals.get_mut(&correlation) {
+            if observed.len() < 2 {
+                observed.push_back(terminal);
+                return Vec::new();
+            }
+            return self.observation_lost(Some(room_id));
+        }
+        let retained_for_room = self
+            .unmatched_terminals
+            .keys()
+            .filter(|candidate| candidate.room_id == room_id)
+            .count();
+        if retained_for_room >= capacity {
+            return self.observation_lost(Some(room_id));
+        }
+        self.unmatched_terminals
+            .entry(correlation)
+            .or_default()
+            .push_back(terminal);
+        Vec::new()
+    }
+
+    fn observation_lost(&mut self, room_id: Option<&str>) -> Vec<TimelineSendTerminalHandoff> {
+        let mut registration_ids = self
+            .registrations
+            .values()
+            .filter(|registration| {
+                registration.active
+                    && room_id.is_none_or(|room_id| registration.key.room_id() == room_id)
+            })
+            .map(|registration| registration.registration_id)
+            .chain(
+                self.pending_sends
+                    .values()
+                    .filter(|pending| {
+                        room_id.is_none_or(|room_id| pending.key.room_id() == room_id)
+                    })
+                    .map(|pending| pending.registration_id),
+            )
+            .collect::<Vec<_>>();
+        registration_ids.sort_unstable();
+        let mut handoffs = Vec::new();
+        for registration_id in registration_ids {
+            let registration = self.registrations.get_mut(&registration_id).or_else(|| {
+                self.pending_sends
+                    .values_mut()
+                    .find(|pending| pending.registration_id == registration_id)
+            });
+            let Some(registration) = registration else {
+                continue;
+            };
+            if registration.failure_reported {
+                continue;
+            }
+            registration.failure_reported = true;
+            handoffs.push(timeline_send_observation_loss_handoff(registration));
+        }
+        handoffs
+    }
+
+    fn apply_terminal(
+        &mut self,
+        correlation: &SendCorrelationKey,
+        terminal: ObservedSendTerminal,
+    ) -> Option<TimelineSendTerminalHandoff> {
+        match terminal {
+            ObservedSendTerminal::Sent { event_id } => {
+                let pending = self.pending_sends.remove(correlation)?;
+                let settles_composer = pending.settles_composer && !pending.failure_reported;
+                self.remember_settled(correlation.clone());
+                self.purge_unmatched_for_inactive_room(&correlation.room_id);
+                Some(timeline_send_terminal_handoff(
+                    &pending.key,
+                    pending.client_txn_id,
+                    pending.submission_id,
+                    SendCompletionTerminal::Succeeded {
+                        request_id: pending.request_id,
+                        event_id,
+                        settles_composer,
+                    },
+                ))
+            }
+            ObservedSendTerminal::SendError => {
+                let pending = self.pending_sends.get_mut(correlation)?;
+                if pending.failure_reported {
+                    return None;
+                }
+                pending.failure_reported = true;
+                Some(timeline_send_terminal_handoff(
+                    &pending.key,
+                    pending.client_txn_id.clone(),
+                    pending.submission_id.clone(),
+                    SendCompletionTerminal::Failed {
+                        settles_composer: pending.settles_composer,
+                    },
+                ))
+            }
+            ObservedSendTerminal::Cancelled => {
+                let pending = self.pending_sends.remove(correlation)?;
+                let settles_composer = pending.settles_composer && !pending.failure_reported;
+                self.remember_settled(correlation.clone());
+                self.purge_unmatched_for_inactive_room(&correlation.room_id);
+                Some(timeline_send_terminal_handoff(
+                    &pending.key,
+                    pending.client_txn_id,
+                    pending.submission_id,
+                    SendCompletionTerminal::Cancelled { settles_composer },
+                ))
+            }
+        }
+    }
+}
+
+fn media_upload_progress_identity(
+    coordinator: &SharedSendCompletionCoordinator,
+    actor_key: &TimelineKey,
+    sdk_transaction_id: &str,
+) -> (String, Option<RequestId>) {
+    coordinator
+        .lock()
+        .expect("send completion coordinator lock must not be poisoned")
+        .pending_send(actor_key.room_id(), sdk_transaction_id)
+        .and_then(|(pending_key, client_transaction_id, request_id)| {
+            (pending_key == actor_key).then(|| (client_transaction_id.to_owned(), Some(request_id)))
+        })
+        .unwrap_or_else(|| (sdk_transaction_id.to_owned(), None))
+}
+
+fn apply_send_completion_observation_and_handoff(
+    coordinator: &SharedSendCompletionCoordinator,
+    terminal_ingress: &TimelineSendTerminalIngress,
+    room_id: &str,
+    observation: SendCompletionObservation,
+) {
+    let mut coordinator = coordinator
+        .lock()
+        .expect("send completion coordinator lock must not be poisoned");
+    for handoff in coordinator.observe(room_id, observation) {
+        let _admission = terminal_ingress.admit(handoff);
+    }
+}
+
+fn apply_send_completion_observation_loss_and_handoff(
+    coordinator: &SharedSendCompletionCoordinator,
+    terminal_ingress: &TimelineSendTerminalIngress,
+    room_id: Option<&str>,
+) {
+    let mut coordinator = coordinator
+        .lock()
+        .expect("send completion coordinator lock must not be poisoned");
+    for handoff in coordinator.observation_lost(room_id) {
+        let _admission = terminal_ingress.admit(handoff);
+    }
+}
+
+const MAX_SETTLED_SEND_TOMBSTONES: usize = 128;
+
+enum SendCompletionTerminal {
+    Succeeded {
+        request_id: RequestId,
+        event_id: String,
+        settles_composer: bool,
+    },
+    Failed {
+        settles_composer: bool,
+    },
+    Cancelled {
+        settles_composer: bool,
+    },
+}
+
+fn send_terminal_action(
+    key: &TimelineKey,
+    client_transaction_id: &str,
+    submission_id: Option<&koushi_state::SubmissionId>,
+    terminal: &SendCompletionTerminal,
+) -> Option<AppAction> {
+    let settles_composer = match terminal {
+        SendCompletionTerminal::Succeeded {
+            settles_composer, ..
+        }
+        | SendCompletionTerminal::Failed { settles_composer }
+        | SendCompletionTerminal::Cancelled { settles_composer } => *settles_composer,
+    };
+    if !settles_composer {
+        return None;
+    }
+    if let Some((submission_id, target)) = submission_id.zip(submission_target(key)) {
+        let outcome = match terminal {
+            SendCompletionTerminal::Succeeded { .. } => {
+                koushi_state::ComposerSubmissionTerminalOutcome::Succeeded
+            }
+            SendCompletionTerminal::Failed { .. } => {
+                koushi_state::ComposerSubmissionTerminalOutcome::Failed {
+                    message: "send failed".to_owned(),
+                }
+            }
+            SendCompletionTerminal::Cancelled { .. } => {
+                koushi_state::ComposerSubmissionTerminalOutcome::Cancelled
+            }
+        };
+        return Some(AppAction::ComposerSubmissionSettled {
+            submission_id: submission_id.clone(),
+            transaction_id: client_transaction_id.to_owned(),
+            target,
+            outcome,
+        });
+    }
+    match terminal {
+        SendCompletionTerminal::Succeeded { .. } | SendCompletionTerminal::Cancelled { .. } => {
+            send_finished_action(key, client_transaction_id.to_owned())
+        }
+        SendCompletionTerminal::Failed { .. } => {
+            let projection = match key.kind {
+                TimelineKind::Room { .. } => SendComposerProjection::Room,
+                TimelineKind::Thread { .. } => SendComposerProjection::ThreadReply,
+                TimelineKind::Focused { .. } => SendComposerProjection::None,
+            };
+            send_failed_action(
+                key,
+                projection,
+                client_transaction_id.to_owned(),
+                "send failed".to_owned(),
+            )
+        }
+    }
+}
+
+fn timeline_send_terminal_handoff(
+    key: &TimelineKey,
+    client_transaction_id: String,
+    submission_id: Option<koushi_state::SubmissionId>,
+    terminal: SendCompletionTerminal,
+) -> TimelineSendTerminalHandoff {
+    let action = send_terminal_action(
+        key,
+        &client_transaction_id,
+        submission_id.as_ref(),
+        &terminal,
+    );
+    let ledger_submission_id = action.as_ref().and(submission_id);
+    let completion = match terminal {
+        SendCompletionTerminal::Succeeded {
+            request_id,
+            event_id,
+            ..
+        } => Some(TimelineSendCompletionDelivery {
+            request_id,
+            key: key.clone(),
+            transaction_id: client_transaction_id,
+            event_id,
+        }),
+        SendCompletionTerminal::Failed { .. } | SendCompletionTerminal::Cancelled { .. } => None,
+    };
+    TimelineSendTerminalHandoff {
+        submission_id: ledger_submission_id,
+        action,
+        completion,
+        failure: None,
+    }
+}
+
+fn timeline_send_observation_loss_handoff(
+    pending: &CoordinatedPendingSend,
+) -> TimelineSendTerminalHandoff {
+    timeline_send_failure_handoff(pending, TimelineFailureKind::QueueOverflow)
+}
+
+fn timeline_send_failure_handoff(
+    pending: &CoordinatedPendingSend,
+    kind: TimelineFailureKind,
+) -> TimelineSendTerminalHandoff {
+    let mut handoff = timeline_send_terminal_handoff(
+        &pending.key,
+        pending.client_txn_id.clone(),
+        pending.submission_id.clone(),
+        SendCompletionTerminal::Failed {
+            settles_composer: pending.settles_composer,
+        },
+    );
+    handoff.failure = Some(TimelineSendFailureDelivery {
+        request_id: pending.request_id,
+        failure: CoreFailure::TimelineOperationFailed { kind },
+    });
+    handoff
 }
 
 // ---------------------------------------------------------------------------
@@ -20148,8 +22515,11 @@ impl SendCompletionTracker {
 
 #[cfg(test)]
 mod tests {
+    use std::future::{Future, poll_fn};
+    use std::pin::Pin;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::task::Poll;
     use std::time::Duration;
 
     use koushi_diagnostics::DiagnosticValue;
@@ -20181,6 +22551,17 @@ mod tests {
     use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineBatchId};
     use crate::runtime::CoreRuntime;
 
+    async fn assert_pending_on_first_poll<F: Future>(
+        mut future: Pin<&mut F>,
+        context: &'static str,
+    ) {
+        poll_fn(move |cx| match future.as_mut().poll(cx) {
+            Poll::Pending => Poll::Ready(()),
+            Poll::Ready(_) => panic!("{context} must be pending on its full channel"),
+        })
+        .await;
+    }
+
     #[test]
     fn backward_pagination_detects_only_a_changed_oldest_edge_as_prepend() {
         assert!(!backward_pagination_changed_oldest_edge(None, None));
@@ -20204,6 +22585,27 @@ mod tests {
 
     fn room_key() -> TimelineKey {
         TimelineKey::room(AccountKey("@a:test".to_owned()), "!r:test")
+    }
+
+    async fn replacement_generation_fixture(
+        key: &TimelineKey,
+    ) -> (Arc<TimelineActorGenerationGate>, u64, u64) {
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let stale = generations.activate_after_quiescence(key).await.generation;
+        let current = generations.activate_after_quiescence(key).await.generation;
+        (generations, stale, current)
+    }
+
+    fn replay_projection_services() -> (
+        Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+        Arc<Mutex<ThreadRootProjectionService>>,
+    ) {
+        (
+            Arc::new(Mutex::new(
+                ReplayKnownThreadRootProjectionRegistry::default(),
+            )),
+            Arc::new(Mutex::new(ThreadRootProjectionService::default())),
+        )
     }
 
     #[test]
@@ -20809,8 +23211,11 @@ mod tests {
             index: 0,
             item: ignored_root.clone(),
         }];
-        let navigation_items = vec![ignored_root.clone()];
-        let mut display_items = vec![before.clone(), after.clone()];
+        let navigation_items = vec![ignored_root.clone(), before.clone(), after.clone()];
+        let mut display_projection = DisplayProjectionState::from_canonical_window(
+            &navigation_items,
+            1..navigation_items.len(),
+        );
         let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
         let generations = Arc::new(TimelineActorGenerationGate::default());
         let actor_generation = generations.activate_after_quiescence(&key).await.generation;
@@ -20828,7 +23233,7 @@ mod tests {
                 TimelineBatchId(0),
                 diffs.clone(),
                 &navigation_items,
-                &mut display_items,
+                &mut display_projection,
             )
         );
 
@@ -20848,7 +23253,7 @@ mod tests {
                 ..
             })) if item == ignored_root && item.is_hidden
         ));
-        assert_eq!(display_items, vec![before, after]);
+        assert_eq!(display_projection.display_items(), &[before, after]);
         assert!(
             registry
                 .lock()
@@ -20905,8 +23310,11 @@ mod tests {
             index: 0,
             item: revised_root.clone(),
         }];
-        let navigation_items = vec![revised_root.clone()];
-        let mut display_items = vec![before, after];
+        let navigation_items = vec![revised_root.clone(), before, after];
+        let mut display_projection = DisplayProjectionState::from_canonical_window(
+            &navigation_items,
+            1..navigation_items.len(),
+        );
         let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
         let generations = Arc::new(TimelineActorGenerationGate::default());
         let actor_generation = generations.activate_after_quiescence(&key).await.generation;
@@ -20924,7 +23332,7 @@ mod tests {
                 TimelineBatchId(0),
                 diffs,
                 &navigation_items,
-                &mut display_items,
+                &mut display_projection,
             )
         );
 
@@ -20951,7 +23359,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_sdk_set_updates_an_ordinary_bounded_display_item_by_render_identity() {
+    async fn non_sdk_set_updates_an_ordinary_bounded_display_item_by_canonical_owner() {
         let key = room_key();
         let mut root = timeline_item("$known-root:test", Some("root"), "@a:test", false);
         root.thread_summary = Some(ThreadSummaryDto {
@@ -20982,8 +23390,12 @@ mod tests {
             index: 1,
             item: revised_ordinary.clone(),
         }];
+        let canonical_before = vec![root.clone(), ordinary, after.clone()];
+        let mut display_projection = DisplayProjectionState::from_canonical_window(
+            &canonical_before,
+            1..canonical_before.len(),
+        );
         let navigation_items = vec![root, revised_ordinary.clone(), after.clone()];
-        let mut display_items = vec![ordinary, after.clone()];
         let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
         let generations = Arc::new(TimelineActorGenerationGate::default());
         let actor_generation = generations.activate_after_quiescence(&key).await.generation;
@@ -21001,11 +23413,14 @@ mod tests {
                 TimelineBatchId(0),
                 diffs.clone(),
                 &navigation_items,
-                &mut display_items,
+                &mut display_projection,
             )
         );
 
-        assert_eq!(display_items, vec![revised_ordinary.clone(), after]);
+        assert_eq!(
+            display_projection.display_items(),
+            &[revised_ordinary.clone(), after]
+        );
         assert!(matches!(
             event_rx.try_recv(),
             Ok(CoreEvent::Timeline(TimelineEvent::ItemsUpdated { diffs: emitted, .. }))
@@ -21054,7 +23469,9 @@ mod tests {
         let _current_generation = generations.activate_after_quiescence(&key).await.generation;
         let mut stale_root = root.clone();
         stale_root.is_hidden = true;
-        let mut display_items = vec![before.clone(), after.clone()];
+        let display_items = vec![before.clone(), after.clone()];
+        let mut display_projection =
+            DisplayProjectionState::from_canonical_window(&display_items, 0..display_items.len());
         let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
         let (event_tx, mut event_rx) = broadcast::channel(8);
 
@@ -21073,10 +23490,10 @@ mod tests {
                     item: stale_root,
                 }],
                 &[root],
-                &mut display_items,
+                &mut display_projection,
             )
         );
-        assert_eq!(display_items, vec![before, after]);
+        assert_eq!(display_projection.display_items(), &[before, after]);
         assert!(
             registry
                 .lock()
@@ -21092,95 +23509,53 @@ mod tests {
     }
 
     #[test]
-    fn non_sdk_item_mutation_paths_use_the_atomic_replay_reconcile_gateway() {
-        let source = include_str!("timeline.rs");
-        let actor_source = source
-            .split("impl TimelineActor {")
-            .nth(1)
-            .expect("timeline actor implementation must exist")
-            .split("\n#[cfg(test)]")
-            .next()
-            .expect("production source must precede tests");
-        for (name, start, end) in [
-            (
-                "ignored users",
-                "async fn handle_ignored_users_updated",
-                "fn emit_timeline_item_set",
-            ),
-            (
-                "single item set",
-                "fn emit_timeline_item_set",
-                "async fn handle_load_link_previews",
-            ),
-            (
-                "cancel previews",
-                "fn handle_cancel_link_previews",
-                "async fn handle_hide_link_preview",
-            ),
-            (
-                "hide preview",
-                "async fn handle_hide_link_preview",
-                "async fn handle_link_preview_policy_changed",
-            ),
-            (
-                "preview policy",
-                "async fn handle_link_preview_policy_changed",
-                "async fn emit_media_gallery_if_changed",
-            ),
-        ] {
-            let handler = actor_source
-                .split(start)
-                .nth(1)
-                .expect("mutation handler must exist")
-                .split(end)
-                .next()
-                .expect("mutation handler must have a stable boundary");
-            assert!(
-                handler.contains("self.emit_non_sdk_item_sets_and_reconcile_replay_known"),
-                "{name} must use the generation-fenced display-mirror and replay-registry gateway"
-            );
-            assert!(
-                !handler.contains("self.emit(CoreEvent::Timeline(TimelineEvent::ItemsUpdated"),
-                "{name} must not bypass replay reconciliation with a direct ItemsUpdated"
-            );
-        }
+    fn non_sdk_item_sets_update_the_exact_canonical_duplicate_owner() {
+        let first_owner = timeline_item("$duplicate:test", Some("first"), "@a:test", false);
+        let second_owner = timeline_item("$duplicate:test", Some("second"), "@a:test", false);
+        let replacement = timeline_item("$replacement:test", Some("replacement"), "@a:test", false);
+        let canonical = vec![first_owner.clone(), second_owner];
+        let mut display_projection =
+            DisplayProjectionState::from_canonical_window(&canonical, 0..canonical.len());
+        let projected = apply_non_sdk_item_set_diffs_to_display_items(
+            &mut display_projection,
+            &[TimelineDiff::Set {
+                index: 1,
+                item: replacement.clone(),
+            }],
+        );
+
+        assert_eq!(
+            display_projection.display_items(),
+            &[first_owner, replacement.clone()],
+            "the Set index must select the second canonical owner, not the first matching identity"
+        );
+        assert_eq!(
+            projected,
+            vec![TimelineDiff::Insert {
+                index: 1,
+                item: replacement,
+            }]
+        );
     }
 
     #[test]
-    fn non_sdk_item_sets_project_to_the_bounded_display_by_render_identity() {
-        let mut before = timeline_item("$before:test", Some("before"), "@a:test", false);
-        before.timestamp_ms = Some(200);
-        let mut after = timeline_item("$after:test", Some("after"), "@a:test", false);
-        after.timestamp_ms = Some(500);
-        let mut ignored_root = timeline_item("$old-root:test", Some("root"), "@ignored:test", true);
-        ignored_root.timestamp_ms = Some(400);
-        let mut revised_after = after.clone();
-        revised_after.body = Some("revised after".to_owned());
-
-        let mut display_items = vec![before.clone(), after.clone()];
+    fn non_sdk_item_sets_ignore_exact_owners_outside_the_display_window() {
+        let visible = timeline_item("$visible:test", Some("visible"), "@a:test", false);
+        let hidden_duplicate = timeline_item("$duplicate:test", Some("hidden"), "@a:test", false);
+        let replacement = timeline_item("$replacement:test", Some("replacement"), "@a:test", false);
+        let canonical = vec![visible.clone(), hidden_duplicate];
+        let mut display_projection =
+            DisplayProjectionState::from_canonical_window(&canonical, 0..1);
         let projected = apply_non_sdk_item_set_diffs_to_display_items(
-            &mut display_items,
-            &[
-                TimelineDiff::Set {
-                    index: 0,
-                    item: ignored_root,
-                },
-                TimelineDiff::Set {
-                    index: 41,
-                    item: revised_after.clone(),
-                },
-            ],
+            &mut display_projection,
+            &[TimelineDiff::Set {
+                index: 1,
+                item: replacement,
+            }],
         );
 
-        assert_eq!(display_items, vec![before, revised_after.clone()]);
-        assert_eq!(
-            projected,
-            vec![TimelineDiff::Set {
-                index: 1,
-                item: revised_after,
-            }],
-            "a navigation-only root must not replace bounded display index zero"
-        );
+        assert_eq!(display_projection.display_items(), &[visible]);
+        assert!(projected.is_empty());
     }
 
     #[tokio::test]
@@ -21424,6 +23799,800 @@ mod tests {
     }
 
     #[test]
+    fn sdk_canonical_indices_project_to_bounded_display_and_converge_local_echo() {
+        let mut canonical_items = synthetic_projection_items(9_039);
+        let mut transaction = timeline_item(
+            "$transaction-placeholder:test",
+            Some("synthetic local echo"),
+            "@sender:test",
+            false,
+        );
+        transaction.id = TimelineItemId::Transaction {
+            transaction_id: "transaction:test".to_owned(),
+        };
+        canonical_items.push(transaction);
+
+        let window_start = canonical_items.len() - ROOM_REPLAY_INITIAL_ITEMS_MAX;
+        let mut projection = DisplayProjectionState::from_canonical_window(
+            &canonical_items,
+            window_start..canonical_items.len(),
+        );
+        let mut desktop_model = projection.display_items().to_vec();
+        let confirmed = timeline_item(
+            "$confirmed:test",
+            Some("synthetic confirmed event"),
+            "@sender:test",
+            false,
+        );
+
+        for canonical_diffs in [
+            vec![TimelineDiff::Set {
+                index: 9_039,
+                item: confirmed.clone(),
+            }],
+            vec![
+                TimelineDiff::Remove { index: 9_039 },
+                TimelineDiff::PushBack {
+                    item: confirmed.clone(),
+                },
+            ],
+        ] {
+            let projected = project_sdk_batch(
+                &mut canonical_items,
+                &mut projection,
+                &canonical_diffs,
+                &DisplayProjectionContext::bounded_live_edge(),
+            );
+            apply_timeline_diffs_to_items(&mut desktop_model, &projected.display_diffs);
+
+            assert!(!projected.used_reset_fallback);
+            assert_eq!(desktop_model, projection.display_items());
+            assert!(
+                projection
+                    .display_items()
+                    .iter()
+                    .all(|item| !matches!(item.id, TimelineItemId::Transaction { .. }))
+            );
+            assert_eq!(
+                projection
+                    .display_items()
+                    .iter()
+                    .filter(|item| timeline_item_event_id(item) == Some("$confirmed:test"))
+                    .count(),
+                1
+            );
+        }
+    }
+
+    fn synthetic_projection_items(count: usize) -> Vec<TimelineItem> {
+        (0..count)
+            .map(|index| {
+                timeline_item(
+                    &format!("$canonical-{index}:test"),
+                    Some("synthetic"),
+                    "@sender:test",
+                    false,
+                )
+            })
+            .collect()
+    }
+
+    fn historical_display_projection_context() -> DisplayProjectionContext {
+        DisplayProjectionContext {
+            max_live_edge_items: None,
+            include_prepend: true,
+            include_append: true,
+        }
+    }
+
+    fn deep_display_projection_fixture() -> (Vec<TimelineItem>, DisplayProjectionState) {
+        let canonical_items = synthetic_projection_items(9_040);
+        let start = canonical_items.len() - ROOM_REPLAY_INITIAL_ITEMS_MAX;
+        let state = DisplayProjectionState::from_canonical_window(
+            &canonical_items,
+            start..canonical_items.len(),
+        );
+        (canonical_items, state)
+    }
+
+    fn additive_display_payload_visit_bound(batch_len: usize) -> usize {
+        ROOM_REPLAY_INITIAL_ITEMS_MAX
+            .saturating_add(batch_len)
+            .saturating_mul(2)
+    }
+
+    fn expected_log_display_structural_visit_bound(
+        represented_width: usize,
+        batch_len: usize,
+    ) -> usize {
+        let represented_nodes = represented_width
+            .saturating_add(batch_len.saturating_mul(3))
+            .saturating_add(2);
+        let expected_log =
+            usize::BITS.saturating_sub(represented_nodes.max(1).leading_zeros()) as usize;
+        represented_width
+            .saturating_mul(4)
+            .saturating_add(
+                batch_len
+                    .saturating_mul(expected_log.max(1))
+                    .saturating_mul(48),
+            )
+            .saturating_add(256)
+    }
+
+    fn assert_display_projection_converges(
+        display_before: Vec<TimelineItem>,
+        projection: &DisplayProjectionBatch,
+    ) {
+        let mut desktop_model = display_before;
+        apply_timeline_diffs_to_items(&mut desktop_model, &projection.display_diffs);
+        assert_eq!(desktop_model, projection.display_after);
+    }
+
+    #[test]
+    fn display_projection_retains_duplicate_identity_until_its_last_owner_is_removed() {
+        let first_owner = timeline_item("$duplicate:test", Some("first"), "@sender:test", false);
+        let neighbor = timeline_item("$neighbor:test", Some("neighbor"), "@sender:test", false);
+        let second_owner = timeline_item("$duplicate:test", Some("second"), "@sender:test", false);
+        let mut canonical_items = vec![first_owner, neighbor.clone(), second_owner.clone()];
+        let mut state = DisplayProjectionState::from_canonical_window(
+            &canonical_items,
+            0..canonical_items.len(),
+        );
+        let display_before = state.display_items().to_vec();
+
+        let projection = project_sdk_batch(
+            &mut canonical_items,
+            &mut state,
+            &[TimelineDiff::Remove { index: 0 }],
+            &historical_display_projection_context(),
+        );
+
+        assert!(!projection.used_reset_fallback);
+        assert_display_projection_converges(display_before, &projection);
+        assert_eq!(state.display_items(), &[neighbor, second_owner]);
+        assert_eq!(
+            state
+                .display_items()
+                .iter()
+                .filter(|item| timeline_item_event_id(item) == Some("$duplicate:test"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn display_projection_media_duplicate_keeps_indexed_confirmation_in_display_space() {
+        let owner = timeline_media_item(
+            "$media-owner:test",
+            "@sender:test",
+            None,
+            1,
+            "owner.png",
+            TimelineMediaKind::Image,
+        );
+        let duplicate = timeline_media_item(
+            "$media-owner:test",
+            "@sender:test",
+            None,
+            2,
+            "duplicate.png",
+            TimelineMediaKind::Image,
+        );
+        let neighbor = timeline_item("$neighbor:test", Some("neighbor"), "@sender:test", false);
+        let mut transaction = timeline_media_item(
+            "$transaction-placeholder:test",
+            "@sender:test",
+            None,
+            3,
+            "upload.png",
+            TimelineMediaKind::Image,
+        );
+        transaction.id = TimelineItemId::Transaction {
+            transaction_id: "media-transaction:test".to_owned(),
+        };
+        let confirmed = timeline_media_item(
+            "$confirmed-media:test",
+            "@sender:test",
+            None,
+            4,
+            "confirmed.png",
+            TimelineMediaKind::Image,
+        );
+        let mut canonical_items = vec![owner.clone(), neighbor.clone(), transaction];
+        let mut state = DisplayProjectionState::from_canonical_window(
+            &canonical_items,
+            0..canonical_items.len(),
+        );
+        let display_before = state.display_items().to_vec();
+
+        let projection = project_sdk_batch(
+            &mut canonical_items,
+            &mut state,
+            &[
+                TimelineDiff::Insert {
+                    index: 1,
+                    item: duplicate,
+                },
+                TimelineDiff::Set {
+                    index: 3,
+                    item: confirmed.clone(),
+                },
+            ],
+            &historical_display_projection_context(),
+        );
+
+        assert!(!projection.used_reset_fallback);
+        assert_display_projection_converges(display_before, &projection);
+        assert_eq!(state.display_items(), &[owner, neighbor, confirmed]);
+        assert_eq!(
+            state
+                .display_items()
+                .iter()
+                .filter(|item| timeline_item_event_id(item) == Some("$media-owner:test"))
+                .count(),
+            1
+        );
+        assert!(
+            state
+                .display_items()
+                .iter()
+                .all(|item| !matches!(item.id, TimelineItemId::Transaction { .. }))
+        );
+        assert_eq!(
+            state
+                .display_items()
+                .last()
+                .and_then(|item| item.media.as_ref())
+                .map(|media| media.filename.as_str()),
+            Some("confirmed.png")
+        );
+    }
+
+    #[test]
+    fn display_projection_ignores_out_of_window_index_mutations() {
+        let mut canonical_items = synthetic_projection_items(200);
+        let mut state = DisplayProjectionState::from_canonical_window(&canonical_items, 50..100);
+        let display_before = state.display_items().to_vec();
+        let replacement = timeline_item(
+            "$replacement:test",
+            Some("replacement"),
+            "@sender:test",
+            false,
+        );
+        let inserted = timeline_item("$inserted:test", Some("inserted"), "@sender:test", false);
+
+        let projection = project_sdk_batch(
+            &mut canonical_items,
+            &mut state,
+            &[
+                TimelineDiff::Set {
+                    index: 10,
+                    item: replacement,
+                },
+                TimelineDiff::Remove { index: 10 },
+                TimelineDiff::Insert {
+                    index: 10,
+                    item: inserted,
+                },
+                TimelineDiff::Truncate { length: 150 },
+            ],
+            &historical_display_projection_context(),
+        );
+
+        assert!(!projection.used_reset_fallback);
+        assert_display_projection_converges(display_before.clone(), &projection);
+        assert_eq!(projection.display_after, display_before);
+    }
+
+    #[test]
+    fn display_projection_includes_boundary_adjacent_insert() {
+        let mut canonical_items = synthetic_projection_items(200);
+        let mut state = DisplayProjectionState::from_canonical_window(&canonical_items, 50..100);
+        let display_before = state.display_items().to_vec();
+        let boundary = timeline_item("$boundary:test", Some("boundary"), "@sender:test", false);
+
+        let projection = project_sdk_batch(
+            &mut canonical_items,
+            &mut state,
+            &[TimelineDiff::Insert {
+                index: 50,
+                item: boundary.clone(),
+            }],
+            &historical_display_projection_context(),
+        );
+
+        assert!(!projection.used_reset_fallback);
+        assert_display_projection_converges(display_before, &projection);
+        assert_eq!(state.display_items().first(), Some(&boundary));
+    }
+
+    #[test]
+    fn display_projection_live_edge_push_back_stays_bounded() {
+        let mut canonical_items = synthetic_projection_items(200);
+        let mut state = DisplayProjectionState::from_canonical_window(&canonical_items, 80..200);
+        let display_before = state.display_items().to_vec();
+        let live = timeline_item("$live:test", Some("live"), "@sender:test", false);
+
+        let projection = project_sdk_batch(
+            &mut canonical_items,
+            &mut state,
+            &[TimelineDiff::PushBack { item: live.clone() }],
+            &DisplayProjectionContext::bounded_live_edge(),
+        );
+
+        assert!(!projection.used_reset_fallback);
+        assert_display_projection_converges(display_before, &projection);
+        assert_eq!(state.display_items().len(), ROOM_REPLAY_INITIAL_ITEMS_MAX);
+        assert_eq!(state.display_items().last(), Some(&live));
+        assert_eq!(
+            state
+                .display_items()
+                .first()
+                .and_then(timeline_item_event_id),
+            Some("$canonical-81:test")
+        );
+    }
+
+    #[test]
+    fn display_projection_payload_work_does_not_rescan_window_per_prepend() {
+        let (mut canonical_items, mut state) = deep_display_projection_fixture();
+        let diffs = (0..512)
+            .map(|index| TimelineDiff::PushFront {
+                item: timeline_item(
+                    &format!("$older-{index}:test"),
+                    Some("older"),
+                    "@sender:test",
+                    false,
+                ),
+            })
+            .collect::<Vec<_>>();
+
+        let projection = project_sdk_batch(
+            &mut canonical_items,
+            &mut state,
+            &diffs,
+            &historical_display_projection_context(),
+        );
+
+        assert!(!projection.used_reset_fallback);
+        assert!(
+            projection.display_payload_visits <= additive_display_payload_visit_bound(diffs.len()),
+            "visible payload work must stay within binding plus materialization passes"
+        );
+    }
+
+    #[test]
+    fn display_projection_payload_work_does_not_rescan_window_per_indexed_diff() {
+        let (mut canonical_items, mut state) = deep_display_projection_fixture();
+        let mut diffs = Vec::new();
+        for index in 0..128 {
+            diffs.extend([
+                TimelineDiff::Set {
+                    index: 10,
+                    item: timeline_item(
+                        &format!("$outside-set-{index}:test"),
+                        Some("outside"),
+                        "@sender:test",
+                        false,
+                    ),
+                },
+                TimelineDiff::Remove { index: 10 },
+                TimelineDiff::Insert {
+                    index: 10,
+                    item: timeline_item(
+                        &format!("$outside-insert-{index}:test"),
+                        Some("outside"),
+                        "@sender:test",
+                        false,
+                    ),
+                },
+            ]);
+        }
+        let display_before = state.display_items().to_vec();
+
+        let projection = project_sdk_batch(
+            &mut canonical_items,
+            &mut state,
+            &diffs,
+            &historical_display_projection_context(),
+        );
+
+        assert!(!projection.used_reset_fallback);
+        assert_eq!(projection.display_after, display_before);
+        assert!(
+            projection.display_payload_visits <= additive_display_payload_visit_bound(diffs.len()),
+            "indexed diffs must not rescan all visible payloads per operation"
+        );
+    }
+
+    #[test]
+    fn uncapped_restore_structural_visits_stay_inside_expected_log_envelope() {
+        let represented_width = 2_048;
+        let mut canonical_items = synthetic_projection_items(represented_width);
+        let mut state = DisplayProjectionState::from_canonical_window(
+            &canonical_items,
+            0..canonical_items.len(),
+        );
+        let display_before = state.display_items().to_vec();
+        let mut diffs = Vec::new();
+        for serial in 0..128 {
+            let index = (serial * 37) % represented_width;
+            diffs.extend([
+                TimelineDiff::Set {
+                    index,
+                    item: timeline_item(
+                        &format!("$restore-set-{serial}:test"),
+                        Some("restore"),
+                        "@sender:test",
+                        false,
+                    ),
+                },
+                TimelineDiff::Remove { index },
+                TimelineDiff::Insert {
+                    index,
+                    item: timeline_item(
+                        &format!("$restore-insert-{serial}:test"),
+                        Some("restore"),
+                        "@sender:test",
+                        false,
+                    ),
+                },
+            ]);
+        }
+        let restore_context = DisplayProjectionContext::for_timeline(
+            &room_key().kind,
+            &TimelineViewportObservation {
+                at_bottom: true,
+                ..TimelineViewportObservation::default()
+            },
+            true,
+        );
+        assert_eq!(restore_context.max_live_edge_items, None);
+
+        let projection =
+            project_sdk_batch(&mut canonical_items, &mut state, &diffs, &restore_context);
+
+        assert!(!projection.used_reset_fallback);
+        assert_display_projection_converges(display_before, &projection);
+        assert!(
+            projection.structural_node_visits
+                <= expected_log_display_structural_visit_bound(represented_width, diffs.len()),
+            "uncapped restore structural work exceeded the deterministic expected-log envelope"
+        );
+    }
+
+    #[test]
+    fn sparse_indexed_structural_envelope_is_independent_of_canonical_history_length() {
+        let represented_width = 256;
+        let batch_len = 256;
+        let measure = |canonical_len: usize| {
+            let mut canonical_items = synthetic_projection_items(canonical_len);
+            let start = canonical_len - represented_width;
+            let mut state = DisplayProjectionState::from_canonical_window(
+                &canonical_items,
+                start..canonical_items.len(),
+            );
+            let diffs = (0..batch_len)
+                .map(|serial| {
+                    let hidden_width = canonical_len - represented_width;
+                    TimelineDiff::Set {
+                        index: 1 + (serial * 7_919) % hidden_width.saturating_sub(1),
+                        item: timeline_item(
+                            &format!("$sparse-set-{serial}:test"),
+                            Some("sparse"),
+                            "@sender:test",
+                            false,
+                        ),
+                    }
+                })
+                .collect::<Vec<_>>();
+            let projection = project_sdk_batch(
+                &mut canonical_items,
+                &mut state,
+                &diffs,
+                &historical_display_projection_context(),
+            );
+            assert!(!projection.used_reset_fallback);
+            projection.structural_node_visits
+        };
+        let bound = expected_log_display_structural_visit_bound(represented_width, batch_len);
+
+        for visits in [measure(4_096), measure(65_536)] {
+            assert!(
+                visits <= bound,
+                "structural work must be bounded by represented W and B, not canonical N"
+            );
+        }
+    }
+
+    #[test]
+    fn display_projection_backward_push_front_prepends_historical_page() {
+        let mut canonical_items = synthetic_projection_items(200);
+        let mut state = DisplayProjectionState::from_canonical_window(&canonical_items, 80..200);
+        let display_before = state.display_items().to_vec();
+        let older = timeline_item("$older:test", Some("older"), "@sender:test", false);
+
+        let projection = project_sdk_batch(
+            &mut canonical_items,
+            &mut state,
+            &[TimelineDiff::PushFront {
+                item: older.clone(),
+            }],
+            &historical_display_projection_context(),
+        );
+
+        assert!(!projection.used_reset_fallback);
+        assert_display_projection_converges(display_before, &projection);
+        assert_eq!(state.display_items().first(), Some(&older));
+        assert_eq!(
+            state.display_items().len(),
+            ROOM_REPLAY_INITIAL_ITEMS_MAX + 1
+        );
+    }
+
+    #[test]
+    fn display_projection_clear_and_reset_replace_authoritative_display() {
+        let mut canonical_items = vec![
+            timeline_item("$one:test", Some("one"), "@sender:test", false),
+            timeline_item("$two:test", Some("two"), "@sender:test", false),
+        ];
+        let mut state = DisplayProjectionState::from_canonical_window(
+            &canonical_items,
+            0..canonical_items.len(),
+        );
+        let clear_before = state.display_items().to_vec();
+        let cleared = project_sdk_batch(
+            &mut canonical_items,
+            &mut state,
+            &[TimelineDiff::Clear],
+            &historical_display_projection_context(),
+        );
+        assert!(!cleared.used_reset_fallback);
+        assert_display_projection_converges(clear_before, &cleared);
+        assert!(state.display_items().is_empty());
+
+        let reset_items = vec![
+            timeline_item("$reset-one:test", Some("one"), "@sender:test", false),
+            timeline_item("$reset-two:test", Some("two"), "@sender:test", false),
+        ];
+        let reset_before = state.display_items().to_vec();
+        let reset = project_sdk_batch(
+            &mut canonical_items,
+            &mut state,
+            &[TimelineDiff::Reset {
+                items: reset_items.clone(),
+            }],
+            &historical_display_projection_context(),
+        );
+        assert!(!reset.used_reset_fallback);
+        assert_display_projection_converges(reset_before, &reset);
+        assert_eq!(state.display_items(), reset_items);
+    }
+
+    #[test]
+    fn display_projection_invalid_translation_uses_validated_reset_fallback() {
+        let mut canonical_items = vec![timeline_item(
+            "$one:test",
+            Some("one"),
+            "@sender:test",
+            false,
+        )];
+        let mut state = DisplayProjectionState::from_canonical_window(&canonical_items, 0..1);
+        let display_before = state.display_items().to_vec();
+
+        let projection = project_sdk_batch(
+            &mut canonical_items,
+            &mut state,
+            &[TimelineDiff::Remove { index: 9 }],
+            &historical_display_projection_context(),
+        );
+
+        assert!(projection.used_reset_fallback);
+        assert!(matches!(
+            projection.display_diffs.as_slice(),
+            [TimelineDiff::Reset { items }] if items == &projection.display_after
+        ));
+        assert_display_projection_converges(display_before, &projection);
+    }
+
+    #[tokio::test]
+    async fn restore_terminal_flush_publishes_two_projected_batches_once_then_rebounds_live_edge() {
+        let key = room_key();
+        let mut canonical_items = synthetic_projection_items(200);
+        let mut state = DisplayProjectionState::from_canonical_window(&canonical_items, 80..200);
+        let mut desktop_model = state.display_items().to_vec();
+        let restore_context = DisplayProjectionContext::for_timeline(
+            &key.kind,
+            &TimelineViewportObservation {
+                at_bottom: true,
+                ..TimelineViewportObservation::default()
+            },
+            true,
+        );
+        let mut restore_emit_buffer = Vec::new();
+        for event_id in ["$restore-1:test", "$restore-2:test"] {
+            let projected = project_sdk_batch(
+                &mut canonical_items,
+                &mut state,
+                &[TimelineDiff::PushFront {
+                    item: timeline_item(event_id, Some("restore"), "@sender:test", false),
+                }],
+                &restore_context,
+            );
+            assert!(!projected.used_reset_fallback);
+            restore_emit_buffer.extend(projected.display_diffs);
+        }
+        let expected_buffer = restore_emit_buffer.clone();
+        let (actor_generations, stale_generation, current_generation) =
+            replacement_generation_fixture(&key).await;
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        let (replay_registry, projection_service) = replay_projection_services();
+        let mut next_batch_id = TimelineBatchId(7);
+
+        assert_eq!(
+            publish_restore_settlement_for_generation(
+                &mut restore_emit_buffer,
+                false,
+                &mut next_batch_id,
+                &event_tx,
+                &replay_registry,
+                &projection_service,
+                &actor_generations,
+                &key,
+                stale_generation,
+                TimelineGeneration(3),
+                &canonical_items,
+                state.display_items(),
+                RestoreSettlement {
+                    navigation_snapshot: None,
+                    terminal: Some((fake_rid(70), TimelineAnchorRestoreStatus::Found)),
+                },
+            ),
+            None
+        );
+        assert_eq!(restore_emit_buffer, expected_buffer);
+        assert_eq!(next_batch_id, TimelineBatchId(7));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+
+        let lease = actor_generations
+            .try_acquire(&key, current_generation)
+            .expect("current restore lease");
+        let replacement_gate = actor_generations.clone();
+        let replacement_key = key.clone();
+        let replacement = tokio::spawn(async move {
+            replacement_gate
+                .activate_after_quiescence(&replacement_key)
+                .await
+        });
+        for _ in 0..10 {
+            if actor_generations
+                .try_acquire(&key, current_generation)
+                .is_none()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let navigation_snapshot = derive_timeline_navigation_snapshot(
+            &canonical_items,
+            None,
+            &TimelineViewportObservation::default(),
+            None,
+        );
+        assert!(publish_restore_settlement_with_lease(
+            &mut restore_emit_buffer,
+            false,
+            &mut next_batch_id,
+            &event_tx,
+            &replay_registry,
+            &projection_service,
+            &lease,
+            &key,
+            TimelineGeneration(3),
+            &canonical_items,
+            state.display_items(),
+            RestoreSettlement {
+                navigation_snapshot: Some(navigation_snapshot.clone()),
+                terminal: Some((fake_rid(71), TimelineAnchorRestoreStatus::Found)),
+            },
+        ));
+        let CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+            batch_id, diffs, ..
+        }) = event_rx.recv().await.expect("one terminal restore update")
+        else {
+            panic!("restore flush must publish ItemsUpdated");
+        };
+        assert_eq!(batch_id, TimelineBatchId(7));
+        assert_eq!(next_batch_id, TimelineBatchId(8));
+        assert!(restore_emit_buffer.is_empty());
+        apply_timeline_diffs_to_items(&mut desktop_model, &diffs);
+        assert_eq!(desktop_model, state.display_items());
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(CoreEvent::Timeline(TimelineEvent::NavigationUpdated {
+                snapshot,
+                ..
+            })) if snapshot == navigation_snapshot
+        ));
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(CoreEvent::Timeline(TimelineEvent::AnchorRestoreFinished {
+                request_id,
+                status: TimelineAnchorRestoreStatus::Found,
+                ..
+            })) if request_id == fake_rid(71)
+        ));
+        assert!(
+            !replacement.is_finished(),
+            "replacement must wait for the full restore terminal group"
+        );
+        drop(lease);
+        replacement.await.expect("replacement task");
+
+        let live = timeline_item(
+            "$live-after-restore:test",
+            Some("live"),
+            "@sender:test",
+            false,
+        );
+        let live_projection = project_sdk_batch(
+            &mut canonical_items,
+            &mut state,
+            &[TimelineDiff::PushBack { item: live.clone() }],
+            &DisplayProjectionContext::bounded_live_edge(),
+        );
+        assert_display_projection_converges(desktop_model, &live_projection);
+        assert_eq!(state.display_items().len(), ROOM_REPLAY_INITIAL_ITEMS_MAX);
+        assert_eq!(state.display_items().last(), Some(&live));
+    }
+
+    #[tokio::test]
+    async fn sdk_batch_generation_fence_rejects_activity_and_state_together() {
+        let key = room_key();
+        let (generations, stale_generation, _current_generation) =
+            replacement_generation_fixture(&key).await;
+        let mut canonical_items = vec![timeline_item(
+            "$before:test",
+            Some("before"),
+            "@sender:test",
+            false,
+        )];
+        let canonical_before = canonical_items.clone();
+        let mut state = DisplayProjectionState::from_canonical_window(&canonical_items, 0..1);
+        let state_before = state.clone();
+        let (action_tx, mut action_rx) = mpsc::channel(1);
+
+        let committed = commit_sdk_batch_for_generation(
+            &generations,
+            &key,
+            stale_generation,
+            &mut canonical_items,
+            &mut state,
+            &[TimelineDiff::PushBack {
+                item: timeline_item("$stale:test", Some("stale"), "@sender:test", false),
+            }],
+            &historical_display_projection_context(),
+            |_lease, _projected, _canonical, _display| {
+                action_tx
+                    .try_send(vec![AppAction::ActivityRowsObserved { rows: Vec::new() }])
+                    .expect("current batch publication");
+            },
+        );
+
+        assert!(committed.is_none());
+        assert_eq!(canonical_items, canonical_before);
+        assert_eq!(state, state_before);
+        assert!(matches!(
+            action_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
     fn replay_known_display_mirror_matches_webview_identity_normalization() {
         let mut before = timeline_item("$before:test", Some("before"), "@a:test", false);
         before.timestamp_ms = Some(200);
@@ -21662,6 +24831,628 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn generation_fenced_send_discards_a_continuation_replaced_during_capacity_await() {
+        let key = room_key();
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let old_generation = generations.activate_after_quiescence(&key).await.generation;
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.send("occupied").await.expect("fill bounded channel");
+
+        let send_task = tokio::spawn({
+            let tx = tx.clone();
+            let generations = Arc::clone(&generations);
+            let key = key.clone();
+            async move { send_generation_fenced(&tx, &generations, &key, old_generation, "stale").await }
+        });
+        tokio::task::yield_now().await;
+        let replacement_generation = generations.activate_after_quiescence(&key).await.generation;
+        assert_ne!(replacement_generation, old_generation);
+
+        assert_eq!(rx.recv().await, Some("occupied"));
+        assert!(!send_task.await.expect("fenced send task"));
+        assert!(
+            rx.try_recv().is_err(),
+            "stale value must never be published"
+        );
+    }
+
+    #[tokio::test]
+    async fn composer_terminals_survive_replacement_during_reducer_capacity_wait() {
+        use koushi_state::{
+            ComposerSubmissionTarget, ComposerSubmissionTerminalOutcome, SubmissionId,
+        };
+
+        for (label, outcome) in [
+            ("success", ComposerSubmissionTerminalOutcome::Succeeded),
+            (
+                "failure",
+                ComposerSubmissionTerminalOutcome::Failed {
+                    message: "send failed".to_owned(),
+                },
+            ),
+            ("cancel", ComposerSubmissionTerminalOutcome::Cancelled),
+        ] {
+            let key = room_key();
+            let submission_id = SubmissionId::new(format!("{label}-submission"));
+            let mut ledger = SubmissionAdmissionLedger::default();
+            ledger.accept(submission_id.clone(), key.clone(), format!("{label}-txn"));
+            let (action_tx, mut action_rx) = mpsc::channel(1);
+            action_tx
+                .send(vec![AppAction::ThreadRootProjectionsCleared {
+                    room_id: "!occupied:test".to_owned(),
+                }])
+                .await
+                .expect("fill reducer channel");
+            let delivery = tokio::spawn({
+                let action_tx = action_tx.clone();
+                let submission_id = submission_id.clone();
+                let outcome = outcome.clone();
+                async move {
+                    deliver_submission_terminal_action(
+                        &action_tx,
+                        AppAction::ComposerSubmissionSettled {
+                            submission_id,
+                            transaction_id: format!("{label}-txn"),
+                            target: ComposerSubmissionTarget::Main {
+                                room_id: "!room:test".to_owned(),
+                            },
+                            outcome,
+                        },
+                    )
+                    .await
+                }
+            });
+            tokio::task::yield_now().await;
+
+            let generations = Arc::new(TimelineActorGenerationGate::default());
+            let _old = generations.activate_after_quiescence(&key).await.generation;
+            let _replacement = generations.activate_after_quiescence(&key).await.generation;
+            assert!(
+                ledger.active.contains_key(&submission_id),
+                "ledger must remain active until reducer delivery"
+            );
+
+            let _occupied = action_rx.recv().await.expect("occupied reducer slot");
+            assert!(delivery.await.expect("terminal delivery task"));
+            let delivered = action_rx.recv().await.expect("terminal reducer action");
+            assert!(matches!(
+                delivered.as_slice(),
+                [AppAction::ComposerSubmissionSettled {
+                    submission_id: delivered_id,
+                    ..
+                }] if delivered_id == &submission_id
+            ));
+            ledger.terminal(&submission_id);
+            assert!(!ledger.active.contains_key(&submission_id));
+            assert!(ledger.get(&submission_id).is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn send_terminal_handoff_survives_origin_abort_and_delivers_exactly_once() {
+        let key = room_key();
+        let sdk_transaction_id = "sdk-terminal-handoff".to_owned();
+        let client_transaction_id = "client-terminal-handoff".to_owned();
+        let event_id = "$event-terminal-handoff:test".to_owned();
+        let request_id = fake_rid(775);
+        let coordinator = SharedSendCompletionCoordinator::default();
+
+        let (action_tx, mut action_rx) = mpsc::channel(1);
+        action_tx
+            .send(vec![AppAction::ThreadRootProjectionsCleared {
+                room_id: "!occupied:test".to_owned(),
+            }])
+            .await
+            .expect("fill reducer channel");
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        let manager =
+            TimelineManagerActor::spawn(action_tx, event_tx, None, MessagesBackpressure::default());
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            manager.terminal_sender(),
+            key.clone(),
+            client_transaction_id.clone(),
+            None,
+            request_id,
+            true,
+        );
+        registration.activate();
+        registration.bind(sdk_transaction_id.clone());
+
+        let (settled_tx, settled_rx) = oneshot::channel();
+        let origin = executor::spawn({
+            let coordinator = Arc::clone(&coordinator);
+            let terminal_tx = manager.terminal_sender();
+            let key = key.clone();
+            let sdk_transaction_id = sdk_transaction_id.clone();
+            let event_id = event_id.clone();
+            async move {
+                apply_send_completion_observation_and_handoff(
+                    &coordinator,
+                    &terminal_tx,
+                    key.room_id(),
+                    SendCompletionObservation::Sent {
+                        sdk_transaction_id,
+                        event_id,
+                    },
+                );
+                let _ = settled_tx.send(());
+                std::future::pending::<()>().await;
+            }
+        });
+        settled_rx.await.expect("origin settled SDK terminal");
+        origin.abort();
+
+        // Model a duplicate global/direct terminal observation. The manager
+        // coordinator must suppress it before another handoff is scheduled.
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &manager.terminal_sender(),
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id,
+                event_id: event_id.clone(),
+            },
+        );
+
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+        assert!(
+            manager
+                .send(TimelineMessage::Shutdown {
+                    acknowledged: Some(shutdown_tx),
+                })
+                .await
+        );
+        assert!(matches!(
+            shutdown_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+
+        let _occupied = action_rx.recv().await.expect("occupied reducer action");
+        let delivered = tokio::time::timeout(Duration::from_secs(1), action_rx.recv())
+            .await
+            .expect("manager terminal action timeout")
+            .expect("manager terminal action");
+        assert!(matches!(
+            delivered.as_slice(),
+            [AppAction::SendTextFinished { transaction_id, .. }]
+                if transaction_id == &client_transaction_id
+        ));
+        let completed = tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("manager SendCompleted timeout")
+            .expect("manager SendCompleted");
+        assert!(matches!(
+            completed,
+            CoreEvent::Timeline(TimelineEvent::SendCompleted {
+                request_id: delivered_request_id,
+                key: delivered_key,
+                transaction_id,
+                event_id: delivered_event_id,
+            }) if delivered_request_id == request_id
+                && delivered_key == key
+                && transaction_id == client_transaction_id
+                && delivered_event_id == event_id
+        ));
+
+        shutdown_rx.await.expect("manager shutdown barrier");
+        assert!(
+            matches!(
+                action_rx.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+                    | Err(mpsc::error::TryRecvError::Disconnected)
+            ),
+            "duplicate terminal must not enqueue a second reducer action"
+        );
+        assert!(
+            matches!(
+                event_rx.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+                    | Err(broadcast::error::TryRecvError::Closed)
+            ),
+            "duplicate terminal must not survive the manager shutdown barrier"
+        );
+    }
+
+    #[tokio::test]
+    async fn media_enqueue_publishes_queued_before_a_prebind_terminal() {
+        let key = room_key();
+        let request_id = fake_rid(7751);
+        let client_transaction_id = "client-media-order".to_owned();
+        let sdk_transaction_id = "sdk-media-order".to_owned();
+        let event_id = "$event-media-order:test".to_owned();
+        let mut manager = live_tail_test_manager(HashMap::new());
+        let mut event_rx = manager.event_tx.subscribe();
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&manager.send_completion),
+            manager.terminal_ingress.clone(),
+            key.clone(),
+            client_transaction_id.clone(),
+            None,
+            request_id,
+            false,
+        );
+        registration.activate();
+
+        apply_send_completion_observation_and_handoff(
+            &manager.send_completion,
+            &manager.terminal_ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: sdk_transaction_id.clone(),
+                event_id: event_id.clone(),
+            },
+        );
+        assert!(
+            manager.terminal_rx.try_recv().is_err(),
+            "the SDK terminal must remain held until the enqueue worker binds its transaction"
+        );
+
+        manager.spawn_send_enqueue_future(registration, {
+            let key = key.clone();
+            let client_transaction_id = client_transaction_id.clone();
+            async move {
+                Ok(SendEnqueueSuccess {
+                    sdk_transaction_id,
+                    media_queued: Some(MediaSendQueuedDelivery {
+                        request_id,
+                        key,
+                        transaction_id: client_transaction_id,
+                    }),
+                })
+            }
+        });
+        let manager_tx = manager.msg_tx.clone();
+        let manager_task = executor::spawn(manager.run());
+
+        let first = event_rx.recv().await.expect("first media lifecycle event");
+        let second = event_rx.recv().await.expect("second media lifecycle event");
+        assert!(matches!(
+            first,
+            CoreEvent::Timeline(TimelineEvent::MediaSendQueued {
+                request_id: queued_request_id,
+                key: queued_key,
+                transaction_id: queued_transaction_id,
+            }) if queued_request_id == request_id
+                && queued_key == key
+                && queued_transaction_id == client_transaction_id
+        ));
+        assert!(matches!(
+            second,
+            CoreEvent::Timeline(TimelineEvent::SendCompleted {
+                request_id: completed_request_id,
+                key: completed_key,
+                transaction_id: completed_transaction_id,
+                event_id: completed_event_id,
+            }) if completed_request_id == request_id
+                && completed_key == key
+                && completed_transaction_id == client_transaction_id
+                && completed_event_id == event_id
+        ));
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        manager_tx
+            .send(TimelineMessage::Shutdown {
+                acknowledged: Some(shutdown_tx),
+            })
+            .await
+            .expect("manager shutdown command");
+        shutdown_rx.await.expect("manager shutdown acknowledgement");
+        manager_task.await.expect("manager shutdown task");
+    }
+
+    #[tokio::test]
+    async fn send_terminal_required_action_failure_suppresses_completion_and_shutdowns() {
+        let key = room_key();
+        let request_id = fake_rid(776);
+        let submission_id = SubmissionId::new("closed-reducer-terminal");
+        let transaction_id = "client-closed-reducer".to_owned();
+        let mut manager = live_tail_test_manager(HashMap::new());
+        manager.accepted_submissions.accept(
+            submission_id.clone(),
+            key.clone(),
+            transaction_id.clone(),
+        );
+        let mut event_rx = manager.event_tx.subscribe();
+        assert!(matches!(
+            manager.terminal_ingress.admit(TimelineSendTerminalHandoff {
+                submission_id: Some(submission_id.clone()),
+                action: Some(AppAction::SendTextFinished {
+                    room_id: key.room_id().to_owned(),
+                    transaction_id: transaction_id.clone(),
+                }),
+                completion: Some(TimelineSendCompletionDelivery {
+                    request_id,
+                    key,
+                    transaction_id,
+                    event_id: "$event-closed-reducer:test".to_owned(),
+                }),
+                failure: None,
+            }),
+            TimelineSendTerminalAdmission::Accepted
+        ));
+        let handoff = manager.terminal_rx.recv().await;
+        manager
+            .handle_send_terminal_handoff(handoff.expect("accepted terminal handoff"))
+            .await;
+        assert!(
+            matches!(
+                event_rx.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ),
+            "SendCompleted must fail closed when its required reducer action cannot be enqueued"
+        );
+        assert!(
+            manager
+                .accepted_submissions
+                .active
+                .contains_key(&submission_id)
+        );
+        assert!(
+            !manager
+                .accepted_submissions
+                .tombstones
+                .iter()
+                .any(|(settled, _, _)| settled == &submission_id),
+            "the admission ledger must not claim a terminal whose reducer action was rejected"
+        );
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let manager_tx = manager.msg_tx.clone();
+        let manager_task = executor::spawn(manager.run());
+        manager_tx
+            .send(TimelineMessage::Shutdown {
+                acknowledged: Some(shutdown_tx),
+            })
+            .await
+            .expect("manager shutdown command");
+        tokio::time::timeout(Duration::from_secs(1), shutdown_rx)
+            .await
+            .expect("manager shutdown timeout")
+            .expect("manager shutdown acknowledgement");
+        manager_task.await.expect("manager shutdown task");
+    }
+
+    #[tokio::test]
+    async fn observation_loss_failure_survives_required_action_channel_shutdown() {
+        let key = room_key();
+        let request_id = fake_rid(777);
+        let mut manager = live_tail_test_manager(HashMap::new());
+        let mut event_rx = manager.event_tx.subscribe();
+
+        manager
+            .handle_send_terminal_handoff(TimelineSendTerminalHandoff {
+                submission_id: None,
+                action: Some(AppAction::SendTextFailed {
+                    room_id: key.room_id().to_owned(),
+                    transaction_id: "client-observation-loss".to_owned(),
+                    message: "send failed".to_owned(),
+                }),
+                completion: None,
+                failure: Some(TimelineSendFailureDelivery {
+                    request_id,
+                    failure: CoreFailure::TimelineOperationFailed {
+                        kind: TimelineFailureKind::QueueOverflow,
+                    },
+                }),
+            })
+            .await;
+
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::OperationFailed {
+                request_id: delivered_request_id,
+                failure: CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::QueueOverflow,
+                },
+            }) if delivered_request_id == request_id
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn hydration_preparation_replaced_during_capacity_wait_publishes_nothing() {
+        let key = room_key();
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let old_generation = generations.activate_after_quiescence(&key).await.generation;
+        let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        let replay_registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let activity = ThreadRootProjectionActivity {
+            room_id: key.room_id().to_owned(),
+            root_event_id: "$stale-root:test".to_owned(),
+            activity_event_id: "$stale-reply:test".to_owned(),
+            activity_timestamp_ms: Some(300),
+            activity_sender: None,
+            activity_sender_label: None,
+            activity_body_preview: None,
+        };
+        let mut second_activity = activity.clone();
+        second_activity.root_event_id = "$second-stale-root:test".to_owned();
+        second_activity.activity_event_id = "$second-stale-reply:test".to_owned();
+        let (action_tx, mut action_rx) = mpsc::channel(1);
+        action_tx
+            .send(vec![AppAction::ThreadRootProjectionsCleared {
+                room_id: "!occupied:test".to_owned(),
+            }])
+            .await
+            .expect("fill reducer channel");
+        let (manager_tx, mut manager_rx) = mpsc::channel(1);
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        let commit = tokio::spawn({
+            let service = Arc::clone(&service);
+            let replay_registry = Arc::clone(&replay_registry);
+            let generations = Arc::clone(&generations);
+            let action_tx = action_tx.clone();
+            let manager_tx = manager_tx.clone();
+            let event_tx = event_tx.clone();
+            let key = key.clone();
+            let activity = activity.clone();
+            let second_activity = second_activity.clone();
+            async move {
+                commit_prepared_thread_root_hydration_for_generation(
+                    &service,
+                    &replay_registry,
+                    &generations,
+                    &action_tx,
+                    &manager_tx,
+                    &event_tx,
+                    &key,
+                    old_generation,
+                    None,
+                    PreparedThreadRootHydration {
+                        activities_by_root: HashMap::from([
+                            (activity.root_event_id.clone(), activity.clone()),
+                            (
+                                second_activity.root_event_id.clone(),
+                                second_activity.clone(),
+                            ),
+                        ]),
+                        // More fetches than manager mailbox capacity must still
+                        // reserve one atomic batch rather than deadlocking on
+                        // unpublished per-fetch permits.
+                        missing_activities: vec![activity, second_activity],
+                    },
+                )
+                .await
+            }
+        });
+        tokio::task::yield_now().await;
+        let replacement = generations.activate_after_quiescence(&key).await.generation;
+        assert_ne!(replacement, old_generation);
+
+        let _occupied = action_rx.recv().await.expect("occupied reducer action");
+        assert!(
+            !tokio::time::timeout(Duration::from_secs(1), commit)
+                .await
+                .expect("batched fetch reservation must not deadlock")
+                .expect("stale hydration commit")
+        );
+        assert!(
+            !service
+                .lock()
+                .expect("service lock")
+                .has_pending_attempt(&activity)
+        );
+        assert!(action_rx.try_recv().is_err(), "no stale projection action");
+        assert!(manager_rx.try_recv().is_err(), "no stale manager fetch");
+        assert!(event_rx.try_recv().is_err(), "no stale projection event");
+    }
+
+    #[tokio::test]
+    async fn hydration_does_not_hold_action_capacity_while_waiting_for_manager_capacity() {
+        let key = room_key();
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = generations.activate_after_quiescence(&key).await.generation;
+        let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        let replay_registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let activity = ThreadRootProjectionActivity {
+            room_id: key.room_id().to_owned(),
+            root_event_id: "$root:test".to_owned(),
+            activity_event_id: "$reply:test".to_owned(),
+            activity_timestamp_ms: Some(300),
+            activity_sender: None,
+            activity_sender_label: None,
+            activity_body_preview: None,
+        };
+        let (action_tx, mut action_rx) = mpsc::channel(1);
+        action_tx
+            .send(vec![AppAction::ThreadRootProjectionsCleared {
+                room_id: "!occupied:test".to_owned(),
+            }])
+            .await
+            .expect("fill reducer channel");
+        let (manager_tx, mut manager_rx) = mpsc::channel(1);
+        manager_tx
+            .send(TimelineMessage::IgnoredUsersUpdated {
+                user_ids: std::collections::BTreeSet::new(),
+            })
+            .await
+            .expect("fill manager mailbox");
+        let earlier_manager_tx = manager_tx.clone();
+        let mut earlier_manager_sender = Box::pin(earlier_manager_tx.send(
+            TimelineMessage::IgnoredUsersUpdated {
+                user_ids: std::collections::BTreeSet::new(),
+            },
+        ));
+        assert_pending_on_first_poll(earlier_manager_sender.as_mut(), "earlier manager sender")
+            .await;
+
+        let (event_tx, _) = broadcast::channel(8);
+        let mut hydration = Box::pin(commit_prepared_thread_root_hydration_for_generation(
+            &service,
+            &replay_registry,
+            &generations,
+            &action_tx,
+            &manager_tx,
+            &event_tx,
+            &key,
+            actor_generation,
+            None,
+            PreparedThreadRootHydration {
+                activities_by_root: HashMap::from([(
+                    activity.root_event_id.clone(),
+                    activity.clone(),
+                )]),
+                missing_activities: vec![activity.clone()],
+            },
+        ));
+        assert_pending_on_first_poll(hydration.as_mut(), "hydration reservation").await;
+
+        let _initial_manager_message = manager_rx.recv().await.expect("manager message");
+        earlier_manager_sender.await.expect("manager mailbox open");
+        let manager_action_tx = action_tx.clone();
+        let mut manager_action = Box::pin(
+            manager_action_tx.send(vec![AppAction::ActivityRowsObserved { rows: Vec::new() }]),
+        );
+        assert_pending_on_first_poll(manager_action.as_mut(), "manager reducer action").await;
+        let _occupied_action = action_rx.recv().await.expect("occupied reducer action");
+        let manager_action_poll = poll_fn(|cx| Poll::Ready(manager_action.as_mut().poll(cx))).await;
+        assert!(
+            matches!(manager_action_poll, Poll::Ready(Ok(()))),
+            "manager must own the first freed reducer slot"
+        );
+
+        let _earlier_manager_message = manager_rx.recv().await.expect("earlier manager message");
+        assert_pending_on_first_poll(hydration.as_mut(), "hydration reducer reservation").await;
+        let manager_reducer_action = action_rx.recv().await.expect("manager reducer action");
+        assert!(matches!(
+            manager_reducer_action.as_slice(),
+            [AppAction::ActivityRowsObserved { .. }]
+        ));
+        assert!(hydration.await);
+        let hydration_action = action_rx.recv().await.expect("hydration reducer action");
+        assert!(matches!(
+            hydration_action.first(),
+            Some(AppAction::ThreadRootProjectionsReconciled { .. })
+        ));
+        assert!(matches!(
+            manager_rx.recv().await,
+            Some(TimelineMessage::StartThreadRootProjectionFetch {
+                actor_generation: generation,
+                activities,
+                ..
+            }) if generation == actor_generation && activities == vec![activity.clone()]
+        ));
+        assert!(
+            service
+                .lock()
+                .expect("service lock")
+                .has_pending_attempt(&activity)
+        );
+    }
+
+    #[tokio::test]
     async fn actor_owner_generation_remains_monotonic_across_manager_gate_recreation() {
         let key = focused_key();
         let first_gate = TimelineActorGenerationGate::default();
@@ -21723,6 +25514,121 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn initial_items_keep_projection_ack_identity_separate_from_subscribe_cause() {
+        let key = focused_key();
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = generations.activate_after_quiescence(&key).await.generation;
+        let projection_request_id = fake_rid(92);
+        let replay_request_id = fake_rid(93);
+        let acknowledged_replay_request_id = fake_rid(94);
+        let generation = TimelineGeneration(2);
+        let (event_tx, mut event_rx) = broadcast::channel(4);
+        let (registry, projection_service) = replay_projection_services();
+
+        assert!(
+            emit_initial_items_and_reconcile_replay_known_for_generation(
+                &event_tx,
+                &registry,
+                &projection_service,
+                &generations,
+                &key,
+                actor_generation,
+                InitialItemsRequestIdentity::fresh(projection_request_id),
+                generation,
+                Vec::new(),
+                Vec::new(),
+            )
+        );
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id: Some(found_projection_request_id),
+                cause_request_id: Some(found_cause_request_id),
+                ..
+            })) if found_projection_request_id == projection_request_id
+                && found_cause_request_id == projection_request_id
+        ));
+
+        assert!(
+            emit_initial_items_and_reconcile_replay_known_for_generation(
+                &event_tx,
+                &registry,
+                &projection_service,
+                &generations,
+                &key,
+                actor_generation,
+                InitialItemsRequestIdentity::replay(
+                    projection_request_id,
+                    false,
+                    Some(replay_request_id),
+                ),
+                generation,
+                Vec::new(),
+                Vec::new(),
+            )
+        );
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id: Some(found_projection_request_id),
+                cause_request_id: Some(found_cause_request_id),
+                ..
+            })) if found_projection_request_id == projection_request_id
+                && found_cause_request_id == replay_request_id
+        ));
+
+        assert!(
+            emit_initial_items_and_reconcile_replay_known_for_generation(
+                &event_tx,
+                &registry,
+                &projection_service,
+                &generations,
+                &key,
+                actor_generation,
+                InitialItemsRequestIdentity::replay(
+                    projection_request_id,
+                    true,
+                    Some(acknowledged_replay_request_id),
+                ),
+                generation,
+                Vec::new(),
+                Vec::new(),
+            )
+        );
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id: None,
+                cause_request_id: Some(found_cause_request_id),
+                ..
+            })) if found_cause_request_id == acknowledged_replay_request_id
+        ));
+
+        assert!(
+            emit_initial_items_and_reconcile_replay_known_for_generation(
+                &event_tx,
+                &registry,
+                &projection_service,
+                &generations,
+                &key,
+                actor_generation,
+                InitialItemsRequestIdentity::replay(projection_request_id, false, None),
+                generation,
+                Vec::new(),
+                Vec::new(),
+            )
+        );
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id: Some(found_projection_request_id),
+                cause_request_id: None,
+                ..
+            })) if found_projection_request_id == projection_request_id
+        ));
+    }
+
+    #[tokio::test]
     async fn lost_delivery_reprojection_emits_same_core_event_under_active_actor_lease() {
         let key = focused_key();
         let generations = Arc::new(TimelineActorGenerationGate::default());
@@ -21732,6 +25638,7 @@ mod tests {
         let (event_tx, mut event_rx) = broadcast::channel(4);
         let projection = TimelineEvent::InitialItems {
             request_id: Some(projection_request_id),
+            cause_request_id: Some(projection_request_id),
             key: key.clone(),
             actor_generation,
             generation: projection_generation,
@@ -21767,11 +25674,13 @@ mod tests {
             replay,
             CoreEvent::Timeline(TimelineEvent::InitialItems {
                 request_id: Some(found_request_id),
+                cause_request_id: Some(found_cause_request_id),
                 key: found_key,
                 actor_generation: found_actor_generation,
                 generation: found_generation,
                 items,
             }) if found_request_id == projection_request_id
+                && found_cause_request_id == projection_request_id
                 && found_key == key
                 && found_actor_generation == actor_generation
                 && found_generation == projection_generation
@@ -21849,6 +25758,7 @@ mod tests {
             old_generation,
             vec![TimelineEvent::InitialItems {
                 request_id: None,
+                cause_request_id: None,
                 key: key.clone(),
                 actor_generation: old_generation,
                 generation: TimelineGeneration(0),
@@ -21872,6 +25782,7 @@ mod tests {
             new_generation,
             vec![TimelineEvent::InitialItems {
                 request_id: None,
+                cause_request_id: None,
                 key: key.clone(),
                 actor_generation: new_generation,
                 generation: TimelineGeneration(0),
@@ -22105,6 +26016,7 @@ mod tests {
         let (action_tx, mut action_rx) = mpsc::channel(8);
         let (event_tx, mut event_rx) = broadcast::channel(8);
         let (msg_tx, msg_rx) = mpsc::channel(8);
+        let (terminal_ingress, terminal_rx) = TimelineSendTerminalIngress::channel();
         let replay_known_thread_root_projections = Arc::new(Mutex::new(
             ReplayKnownThreadRootProjectionRegistry::default(),
         ));
@@ -22118,10 +26030,15 @@ mod tests {
             legacy_committed_response: None,
             timelines: HashMap::from([(key.clone(), test_timeline_actor_handle())]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
+            send_completion: SharedSendCompletionCoordinator::default(),
+            global_send_completion_observer_future: None,
+            send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
             action_tx,
             event_tx,
             msg_tx,
             msg_rx,
+            terminal_ingress,
+            terminal_rx,
             search_index_tx: None,
             ignored_user_ids: Default::default(),
             data_dir: None,
@@ -22135,6 +26052,11 @@ mod tests {
             #[cfg(test)]
             test_session_available: false,
         };
+        let actor_generation = manager
+            .timeline_actor_generations
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
 
         for (root_event_id, result) in [
             (
@@ -22181,11 +26103,17 @@ mod tests {
             manager.thread_root_projection_fetches.insert(
                 activity.room_id.clone(),
                 activity.root_event_id.clone(),
+                actor_generation,
                 executor::spawn(async {}),
             );
 
             manager
-                .handle_thread_root_projection_fetch_finished(key.clone(), activity.clone(), result)
+                .handle_thread_root_projection_fetch_finished(
+                    key.clone(),
+                    actor_generation,
+                    activity.clone(),
+                    result,
+                )
                 .await;
 
             let action = action_rx.recv().await;
@@ -22267,11 +26195,13 @@ mod tests {
         manager.thread_root_projection_fetches.insert(
             ordinary_activity.room_id.clone(),
             ordinary_activity.root_event_id.clone(),
+            actor_generation,
             executor::spawn(async {}),
         );
         manager
             .handle_thread_root_projection_fetch_finished(
                 key.clone(),
+                actor_generation,
                 ordinary_activity,
                 Ok(timeline_item(
                     "$ordinary-root:test",
@@ -22301,6 +26231,84 @@ mod tests {
                 ..
             })) if root_event_id == "$ordinary-root:test"
         ));
+    }
+
+    #[tokio::test]
+    async fn manager_rejects_stale_generation_hydration_start_and_completion() {
+        let key = room_key();
+        let mut manager =
+            live_tail_test_manager(HashMap::from([(key.clone(), test_timeline_actor_handle())]));
+        let mut event_rx = manager.event_tx.subscribe();
+        let old_generation = manager
+            .timeline_actor_generations
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
+        let replacement_generation = manager
+            .timeline_actor_generations
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
+        assert_ne!(old_generation, replacement_generation);
+        let activity = ThreadRootProjectionActivity {
+            room_id: key.room_id().to_owned(),
+            root_event_id: "$stale-root:test".to_owned(),
+            activity_event_id: "$stale-reply:test".to_owned(),
+            activity_timestamp_ms: Some(300),
+            activity_sender: None,
+            activity_sender_label: None,
+            activity_body_preview: None,
+        };
+        assert!(matches!(
+            manager
+                .thread_root_projection_service
+                .lock()
+                .expect("service lock")
+                .observe(activity.clone()),
+            ThreadRootProjectionDecision::StartFetch(_)
+        ));
+
+        manager
+            .handle_thread_root_projection_fetch_start(
+                key.clone(),
+                old_generation,
+                None,
+                vec![activity.clone()],
+            )
+            .await;
+        assert!(!manager.thread_root_projection_fetches.contains(
+            &activity.room_id,
+            &activity.root_event_id,
+            old_generation,
+        ));
+
+        manager.thread_root_projection_fetches.insert(
+            activity.room_id.clone(),
+            activity.root_event_id.clone(),
+            old_generation,
+            executor::spawn(async {}),
+        );
+        manager
+            .handle_thread_root_projection_fetch_finished(
+                key.clone(),
+                old_generation,
+                activity.clone(),
+                Ok(timeline_item(
+                    "$stale-root:test",
+                    Some("stale"),
+                    "@a:test",
+                    false,
+                )),
+            )
+            .await;
+        assert!(
+            manager
+                .thread_root_projection_service
+                .lock()
+                .expect("service lock")
+                .has_pending_attempt(&activity)
+        );
+        assert!(event_rx.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -22366,7 +26374,7 @@ mod tests {
                 &actor_generations,
                 &key,
                 actor_generation,
-                Some(fake_rid(14)),
+                InitialItemsRequestIdentity::fresh(fake_rid(14)),
                 TimelineGeneration(0),
                 vec![replay_root.clone()],
                 vec![replay_snapshot],
@@ -22668,7 +26676,7 @@ mod tests {
                     &actor_generations,
                     &key,
                     actor_generation,
-                    Some(fake_rid(15)),
+                    InitialItemsRequestIdentity::fresh(fake_rid(15)),
                     TimelineGeneration(0),
                     vec![replay_root.clone()],
                     vec![replay_snapshot],
@@ -23038,15 +27046,11 @@ mod tests {
             &key,
             terminal.clone(),
         ));
+        let _lease = actor_generations
+            .try_acquire(&key, actor_generation)
+            .expect("current actor lease");
         assert!(
-            !emit_hydration_terminal_unless_replay_owned_for_generation(
-                &event_tx,
-                &registry,
-                &actor_generations,
-                &key,
-                actor_generation,
-                terminal,
-            ),
+            !emit_hydration_terminal_unless_replay_owned(&event_tx, &registry, &key, terminal),
             "an Existing terminal reemit must share the same one-time suppression marker"
         );
 
@@ -23384,6 +27388,7 @@ mod tests {
                 .expect("actor lifecycle helper boundary");
             assert!(
                 section.contains("emit_initial_items_and_reconcile_replay_known_for_generation")
+                    || section.contains("commit_prepared_initial_window_for_generation")
                     || (name == "queue_overflow"
                         && (section.contains("emit_relay_recovery_snapshot")
                             || section.contains("commit_authoritative_recovery_window"))),
@@ -23397,30 +27402,28 @@ mod tests {
             .split("async fn handle_ignored_users_updated")
             .next()
             .expect("next actor handler must bound diff handler");
+        let diff_commit = "commit_sdk_batch_for_generation";
         assert!(
-            diff_handler.contains("self.emit_items_updated_and_reconcile_replay_known(core_diffs)"),
+            diff_handler.contains(diff_commit),
             "normal diffs must commit replay-known ownership beside ItemsUpdated"
         );
         assert!(
             diff_handler
                 .find("self.maybe_hydrate_missing_thread_roots().await")
-                .zip(
-                    diff_handler
-                        .find("self.emit_items_updated_and_reconcile_replay_known(core_diffs)"),
-                )
+                .zip(diff_handler.find(diff_commit))
                 .is_some_and(|(hydration, commit)| commit < hydration),
             "the canonical ItemsUpdated group must reach the store before hydration emits Pending"
         );
-        let restore_flush = source
-            .split("fn flush_restore_emit_buffer")
-            .nth(1)
-            .expect("restore flush helper")
+        let restore_finish = source
             .split("fn finish_anchor_restore")
+            .nth(1)
+            .expect("restore finish helper")
+            .split("async fn emit_action_reliable")
             .next()
-            .expect("restore finish helper must follow flush");
+            .expect("action helper must follow restore finish");
         assert!(
-            restore_flush.contains("self.emit_items_updated_and_reconcile_replay_known(diffs)"),
-            "restore-buffer flushes must use the same atomic diff/replay group"
+            restore_finish.contains("publish_restore_settlement"),
+            "restore terminal must use the same atomic terminal group"
         );
         let actor_message_handler = source
             .split("async fn handle_msg")
@@ -23455,6 +27458,7 @@ mod tests {
         let (action_tx, _action_rx) = mpsc::channel(8);
         let (event_tx, mut event_rx) = broadcast::channel(8);
         let (msg_tx, msg_rx) = mpsc::channel(8);
+        let (terminal_ingress, terminal_rx) = TimelineSendTerminalIngress::channel();
         let replay_known_thread_root_projections = Arc::new(Mutex::new(
             ReplayKnownThreadRootProjectionRegistry::default(),
         ));
@@ -23470,10 +27474,15 @@ mod tests {
             legacy_committed_response: None,
             timelines: HashMap::from([(key.clone(), test_timeline_actor_handle())]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
+            send_completion: SharedSendCompletionCoordinator::default(),
+            global_send_completion_observer_future: None,
+            send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
             action_tx,
             event_tx,
             msg_tx,
             msg_rx,
+            terminal_ingress,
+            terminal_rx,
             search_index_tx: None,
             ignored_user_ids: Default::default(),
             data_dir: None,
@@ -23872,9 +27881,10 @@ mod tests {
 
         let handle = TimelineActorHandle {
             tx,
-            task: actor_task,
+            task: Some(actor_task),
             auxiliary_tasks: vec![auxiliary_task],
             subscription_generation: None,
+            enqueue_context: None,
         };
         drop(handle);
         executor::sleep(Duration::from_millis(25)).await;
@@ -23884,7 +27894,7 @@ mod tests {
         assert!(
             auxiliary_sender
                 .try_send(TimelineActorMessage::ReplayInitialItems {
-                    request_id: fake_rid(99),
+                    cause_request_id: Some(fake_rid(99)),
                 })
                 .is_err()
         );
@@ -23934,10 +27944,19 @@ mod tests {
         let task = executor::spawn(async move { while rx.recv().await.is_some() {} });
         TimelineActorHandle {
             tx,
-            task,
+            task: Some(task),
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
+            enqueue_context: None,
         }
+    }
+
+    fn synthetic_send_timeline_actor_handle(
+        requests: mpsc::UnboundedSender<SyntheticSendEnqueueRequest>,
+    ) -> TimelineActorHandle {
+        let mut handle = test_timeline_actor_handle();
+        handle.enqueue_context = Some(TimelineSendEnqueueContext::Synthetic { requests });
+        handle
     }
 
     fn live_tail_test_actor_handle(
@@ -23978,9 +27997,10 @@ mod tests {
         });
         TimelineActorHandle {
             tx,
-            task,
+            task: Some(task),
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
+            enqueue_context: None,
         }
     }
 
@@ -24021,9 +28041,10 @@ mod tests {
         });
         TimelineActorHandle {
             tx,
-            task,
+            task: Some(task),
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
+            enqueue_context: None,
         }
     }
 
@@ -24052,9 +28073,10 @@ mod tests {
         });
         TimelineActorHandle {
             tx,
-            task,
+            task: Some(task),
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
+            enqueue_context: None,
         }
     }
 
@@ -24064,6 +28086,7 @@ mod tests {
         let (action_tx, _action_rx) = mpsc::channel(8);
         let (event_tx, _event_rx) = broadcast::channel(8);
         let (msg_tx, msg_rx) = mpsc::channel(8);
+        let (terminal_ingress, terminal_rx) = TimelineSendTerminalIngress::channel();
         TimelineManagerActor {
             session: None,
             room_list_service: None,
@@ -24072,10 +28095,15 @@ mod tests {
             legacy_committed_response: None,
             timelines,
             accepted_submissions: SubmissionAdmissionLedger::default(),
+            send_completion: SharedSendCompletionCoordinator::default(),
+            global_send_completion_observer_future: None,
+            send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
             action_tx,
             event_tx,
             msg_tx,
             msg_rx,
+            terminal_ingress,
+            terminal_rx,
             search_index_tx: None,
             ignored_user_ids: Default::default(),
             data_dir: None,
@@ -24092,6 +28120,54 @@ mod tests {
             live_tail_refreshes: LiveTailRefreshCoordinator::new(),
             test_session_available: true,
         }
+    }
+
+    async fn poll_manager_enqueue_workers_once(manager: &mut TimelineManagerActor) {
+        std::future::poll_fn(|context| {
+            if let Poll::Ready(Some(completion)) =
+                manager.send_enqueue_workers.tasks.poll_next_unpin(context)
+            {
+                manager.handle_send_enqueue_worker_completion(completion);
+            }
+            Poll::Ready(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn idempotent_subscribe_replay_carries_exact_command_cause() {
+        let key = room_key();
+        let first_subscribe_request_id = fake_rid(28_500);
+        let second_subscribe_request_id = fake_rid(28_501);
+        let (actor_tx, mut actor_rx) = mpsc::channel(2);
+        let actor_handle = TimelineActorHandle {
+            tx: actor_tx,
+            task: None,
+            auxiliary_tasks: Vec::new(),
+            subscription_generation: None,
+            enqueue_context: None,
+        };
+        let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), actor_handle)]));
+
+        manager
+            .handle_subscribe(first_subscribe_request_id, key.clone(), true)
+            .await;
+        manager
+            .handle_subscribe(second_subscribe_request_id, key, true)
+            .await;
+
+        assert!(matches!(
+            actor_rx.recv().await,
+            Some(TimelineActorMessage::ReplayInitialItems {
+                cause_request_id: Some(cause_request_id),
+            }) if cause_request_id == first_subscribe_request_id
+        ));
+        assert!(matches!(
+            actor_rx.recv().await,
+            Some(TimelineActorMessage::ReplayInitialItems {
+                cause_request_id: Some(cause_request_id),
+            }) if cause_request_id == second_subscribe_request_id
+        ));
     }
 
     #[tokio::test]
@@ -24559,6 +28635,8 @@ mod tests {
             Arc::clone(&manager.timeline_actor_generations),
             actor_generation,
             None,
+            Default::default(),
+            manager.terminal_ingress.clone(),
             manager.msg_tx.clone(),
         )
         .await;
@@ -24621,7 +28699,7 @@ mod tests {
                 .expect("room A actor")
                 .send(TimelineActorMessage::TestInjectRestoreDiff {
                     diffs: vec![eyeball_im::VectorDiff::PushBack {
-                        value: real_sdk_item,
+                        value: real_sdk_item.clone(),
                     }],
                     projections: wrong_projections.clone(),
                     acknowledged: inject_tx,
@@ -24644,7 +28722,10 @@ mod tests {
             state_rx.await.expect("wrong-tag snapshot");
         assert!(pending);
         assert!(!completion_waiting);
-        assert_eq!(buffered_diff_count, 1);
+        assert_eq!(
+            buffered_diff_count, 0,
+            "a duplicate canonical slot is a valid projected display no-op"
+        );
         assert_eq!(buffered_projections, wrong_projections);
         assert_eq!(
             manager.live_tail_refreshes.freshness(&room_a),
@@ -24654,6 +28735,28 @@ mod tests {
             }),
             "wrong actor, operation, and batch identities cannot prove freshness",
         );
+
+        for diffs in [
+            vec![eyeball_im::VectorDiff::PopBack],
+            vec![eyeball_im::VectorDiff::PushBack {
+                value: real_sdk_item.clone(),
+            }],
+        ] {
+            let (inject_tx, inject_rx) = oneshot::channel();
+            assert!(
+                manager
+                    .timelines
+                    .get(&room_a)
+                    .expect("room A actor")
+                    .send(TimelineActorMessage::TestInjectRestoreDiff {
+                        diffs,
+                        projections: BTreeSet::new(),
+                        acknowledged: inject_tx,
+                    })
+                    .await
+            );
+            inject_rx.await.expect("restore batch handled");
+        }
 
         let matching_projection = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -24669,11 +28772,14 @@ mod tests {
                         && projection.operation == operation
                         && projection.projection_batch != u32::MAX
                 }) && completion_waiting
-                    && buffered_diff_count > 1
                 {
                     assert!(
                         pending,
                         "matching metadata remains pending until publication"
+                    );
+                    assert!(
+                        buffered_diff_count >= 2,
+                        "two real SDK batches must reach the actor restore buffer before terminal publication"
                     );
                     break projection;
                 }
@@ -24693,12 +28799,16 @@ mod tests {
             .clone();
         let _manager_task = executor::spawn(manager.run());
 
+        while event_rx.try_recv().is_ok() {}
         let (flush_tx, flush_rx) = oneshot::channel();
         actor_tx
-            .send(TimelineActorMessage::TestFlushRestore(flush_tx))
+            .send(TimelineActorMessage::TestFinishRestore {
+                request_id: fake_rid(41),
+                response: flush_tx,
+            })
             .await
-            .expect("flush request");
-        assert!(flush_rx.await.expect("production restore flush result"));
+            .expect("finish restore request");
+        assert!(flush_rx.await.expect("production restore terminal result"));
 
         let (freshness, completion_dispatches) =
             tokio::time::timeout(Duration::from_secs(2), async {
@@ -24741,19 +28851,42 @@ mod tests {
             ["start:B:epoch=7:limit=128"],
         );
 
-        let mut items_updated_count = 0;
+        let mut settlement_events = Vec::new();
         while let Ok(event) = event_rx.try_recv() {
-            if matches!(
-                event,
-                CoreEvent::Timeline(TimelineEvent::ItemsUpdated { .. })
-            ) {
-                items_updated_count += 1;
+            match event {
+                CoreEvent::Timeline(TimelineEvent::ItemsUpdated { .. }) => {
+                    settlement_events.push("items")
+                }
+                CoreEvent::Timeline(TimelineEvent::NavigationUpdated { .. }) => {
+                    settlement_events.push("navigation")
+                }
+                CoreEvent::Timeline(TimelineEvent::AnchorRestoreFinished { .. }) => {
+                    settlement_events.push("terminal")
+                }
+                _ => {}
             }
         }
         assert_eq!(
-            items_updated_count, 1,
-            "restore publishes one coalesced batch"
+            settlement_events
+                .iter()
+                .filter(|event| **event == "items")
+                .count(),
+            1,
+            "restore publishes one convergent coalesced batch"
         );
+        let items_position = settlement_events
+            .iter()
+            .position(|event| *event == "items")
+            .expect("coalesced ItemsUpdated");
+        let navigation_position = settlement_events
+            .iter()
+            .position(|event| *event == "navigation")
+            .expect("settled NavigationUpdated");
+        let terminal_position = settlement_events
+            .iter()
+            .position(|event| *event == "terminal")
+            .expect("AnchorRestoreFinished terminal");
+        assert!(items_position < navigation_position && navigation_position < terminal_position);
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         manager_tx
@@ -24906,13 +29039,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn duplicate_submission_routes_one_actor_message() {
+    async fn duplicate_submission_routes_one_manager_enqueue_worker() {
         let key = room_key();
-        let (actor_tx, mut actor_rx) = mpsc::channel(4);
-        let actor_task = executor::spawn(std::future::pending());
+        let (enqueue_tx, mut enqueue_rx) = mpsc::unbounded_channel();
         let (action_tx, mut action_rx) = mpsc::channel(4);
         let (event_tx, mut event_rx) = broadcast::channel(4);
         let (msg_tx, msg_rx) = mpsc::channel(1);
+        let (terminal_ingress, terminal_rx) = TimelineSendTerminalIngress::channel();
         let mut manager = TimelineManagerActor {
             session: None,
             room_list_service: None,
@@ -24921,18 +29054,18 @@ mod tests {
             legacy_committed_response: None,
             timelines: HashMap::from([(
                 key.clone(),
-                TimelineActorHandle {
-                    tx: actor_tx,
-                    task: actor_task,
-                    auxiliary_tasks: Vec::new(),
-                    subscription_generation: None,
-                },
+                synthetic_send_timeline_actor_handle(enqueue_tx),
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
+            send_completion: SharedSendCompletionCoordinator::default(),
+            global_send_completion_observer_future: None,
+            send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
             action_tx,
             event_tx,
             msg_tx,
             msg_rx,
+            terminal_ingress,
+            terminal_rx,
             search_index_tx: None,
             ignored_user_ids: Default::default(),
             data_dir: None,
@@ -24949,6 +29082,10 @@ mod tests {
             live_tail_refreshes: LiveTailRefreshCoordinator::new(),
             test_session_available: true,
         };
+        manager
+            .send_enqueue_workers
+            .tasks
+            .push(Box::pin(async { SendEnqueueWorkerCompletion }));
         let submission_id = SubmissionId::new("opaque-submission");
         for request_id in [fake_rid(7300), fake_rid(7301)] {
             manager
@@ -24962,22 +29099,34 @@ mod tests {
                 })
                 .await;
         }
-
-        let admission = match actor_rx.try_recv() {
-            Ok(TimelineActorMessage::SendText { admission, .. }) => admission,
-            _ => panic!("one actor mailbox reservation expected"),
-        };
-        assert!(await_submission_admission(admission).await);
-        assert!(actor_rx.try_recv().is_err());
+        let request = tokio::time::timeout(Duration::from_secs(1), enqueue_rx.recv())
+            .await
+            .expect("manager enqueue worker must be driven")
+            .expect("one manager enqueue worker");
+        assert!(matches!(
+            request.payload,
+            TimelineSendEnqueuePayload::Text { ref body, .. } if body == "body"
+        ));
+        assert!(enqueue_rx.try_recv().is_err());
         assert!(matches!(
             action_rx.try_recv(),
             Ok(actions) if matches!(actions.as_slice(), [AppAction::ComposerSubmissionAccepted { submission_id: accepted, .. }] if accepted == &submission_id)
         ));
         assert!(action_rx.try_recv().is_err());
+        assert!(
+            request
+                .response
+                .send(Ok(SendEnqueueSuccess::terminal_only(
+                    "sdk-transaction".to_owned(),
+                )))
+                .is_ok(),
+            "complete synthetic enqueue"
+        );
+        manager.join_send_enqueue_workers().await;
 
         while event_rx.try_recv().is_ok() {}
-        drop(actor_rx);
-        let rejected_id = SubmissionId::new("closed-actor-submission");
+        manager.timelines.remove(&key);
+        let rejected_id = SubmissionId::new("unsubscribed-submission");
         manager
             .handle_command(TimelineCommand::SubmitText {
                 request_id: fake_rid(7302),
@@ -24998,16 +29147,10 @@ mod tests {
         ));
 
         let failed_id = SubmissionId::new("reducer-closed-submission");
-        let (actor_tx, mut actor_rx) = mpsc::channel(1);
-        let actor_task = executor::spawn(async {});
+        let (enqueue_tx, mut enqueue_rx) = mpsc::unbounded_channel();
         manager.timelines.insert(
             key.clone(),
-            TimelineActorHandle {
-                tx: actor_tx,
-                task: actor_task,
-                auxiliary_tasks: Vec::new(),
-                subscription_generation: None,
-            },
+            synthetic_send_timeline_actor_handle(enqueue_tx),
         );
         let (closed_action_tx, closed_action_rx) = mpsc::channel(1);
         drop(closed_action_rx);
@@ -25022,11 +29165,11 @@ mod tests {
                 mentions: MentionIntent::default(),
             })
             .await;
-        let admission = match actor_rx.recv().await {
-            Some(TimelineActorMessage::SendText { admission, .. }) => admission,
-            _ => panic!("reserved actor message expected"),
-        };
-        assert!(!await_submission_admission(admission).await);
+        manager.join_send_enqueue_workers().await;
+        assert!(
+            enqueue_rx.try_recv().is_err(),
+            "a rejected reducer action never releases the SDK enqueue permit"
+        );
         manager
             .handle_command(TimelineCommand::SubmitText {
                 request_id: fake_rid(7304),
@@ -25038,7 +29181,7 @@ mod tests {
             })
             .await;
         assert!(
-            actor_rx.try_recv().is_err(),
+            enqueue_rx.try_recv().is_err(),
             "rejected replay never reaches SDK actor"
         );
         assert!(matches!(
@@ -25046,6 +29189,20 @@ mod tests {
             Ok(CoreEvent::Timeline(TimelineEvent::SubmissionRejected { submission_id, .. }))
                 if submission_id == failed_id
         ));
+    }
+
+    #[tokio::test]
+    async fn drive_send_enqueue_until_preflight_started_returns_when_sender_closes() {
+        let mut manager = live_tail_test_manager(HashMap::new());
+        let (preflight_started_tx, preflight_started_rx) = oneshot::channel();
+        drop(preflight_started_tx);
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            manager.drive_send_enqueue_until_preflight_started(preflight_started_rx),
+        )
+        .await
+        .expect("a dropped preflight-start sender must not stall the manager command loop");
     }
 
     #[tokio::test]
@@ -25090,6 +29247,154 @@ mod tests {
             .expect("timeline manager acknowledges shutdown");
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_deadline_aborts_stalled_enqueue_worker_before_stopping_terminal_observer() {
+        struct ObserverDrop(Arc<AtomicBool>);
+        impl Drop for ObserverDrop {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::SeqCst);
+            }
+        }
+        struct WorkerDrop {
+            alive: Arc<AtomicBool>,
+            observer_alive: Arc<AtomicBool>,
+            settled_before_observer_stop: Arc<AtomicBool>,
+        }
+        impl Drop for WorkerDrop {
+            fn drop(&mut self) {
+                self.settled_before_observer_stop
+                    .store(self.observer_alive.load(Ordering::SeqCst), Ordering::SeqCst);
+                self.alive.store(false, Ordering::SeqCst);
+            }
+        }
+
+        let mut manager = live_tail_test_manager(HashMap::new());
+        let observer_alive = Arc::new(AtomicBool::new(true));
+        let worker_alive = Arc::new(AtomicBool::new(true));
+        let settled_before_observer_stop = Arc::new(AtomicBool::new(false));
+        let (observer_started, observer_ready) = oneshot::channel();
+        manager.global_send_completion_observer_future = Some(Box::pin({
+            let observer_alive = Arc::clone(&observer_alive);
+            async move {
+                let _drop = ObserverDrop(observer_alive);
+                let _ = observer_started.send(());
+                futures_util::future::pending::<()>().await;
+            }
+        }));
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&manager.send_completion),
+            manager.terminal_ingress.clone(),
+            room_key(),
+            "client-stalled-shutdown".to_owned(),
+            None,
+            fake_rid(7470),
+            true,
+        );
+        registration.activate();
+        let (worker_started, worker_ready) = oneshot::channel();
+        manager.spawn_send_enqueue_future(registration, {
+            let alive = Arc::clone(&worker_alive);
+            let observer_alive = Arc::clone(&observer_alive);
+            let settled_before_observer_stop = Arc::clone(&settled_before_observer_stop);
+            async move {
+                let _drop = WorkerDrop {
+                    alive,
+                    observer_alive,
+                    settled_before_observer_stop,
+                };
+                let _ = worker_started.send(());
+                futures_util::future::pending::<Result<SendEnqueueSuccess, TimelineFailureKind>>()
+                    .await
+            }
+        });
+        let msg_tx = manager.msg_tx.clone();
+        let run = executor::spawn(manager.run());
+        observer_ready.await.expect("terminal observer started");
+        worker_ready.await.expect("enqueue worker started");
+        let (ack_tx, mut ack_rx) = oneshot::channel();
+        msg_tx
+            .send(TimelineMessage::Shutdown {
+                acknowledged: Some(ack_tx),
+            })
+            .await
+            .expect("shutdown command");
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(SEND_ENQUEUE_WORKER_SHUTDOWN_DEADLINE).await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            matches!(ack_rx.try_recv(), Ok(())),
+            "a stalled SDK enqueue must not hold shutdown acknowledgement forever"
+        );
+        assert!(!worker_alive.load(Ordering::SeqCst));
+        assert!(settled_before_observer_stop.load(Ordering::SeqCst));
+        assert!(!observer_alive.load(Ordering::SeqCst));
+        run.await.expect("bounded manager shutdown");
+    }
+
+    #[tokio::test]
+    async fn shutdown_grace_polls_exact_terminal_observer_before_worker_quiescence() {
+        let mut manager = live_tail_test_manager(HashMap::new());
+        let key = room_key();
+        let sdk_transaction_id = "sdk-shutdown-grace";
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&manager.send_completion),
+            manager.terminal_ingress.clone(),
+            key.clone(),
+            "client-shutdown-grace".to_owned(),
+            None,
+            fake_rid(7472),
+            true,
+        );
+        registration.activate();
+
+        let (updates_tx, updates_rx) = broadcast::channel(4);
+        manager.global_send_completion_observer_future =
+            Some(Box::pin(run_global_send_completion_observer(
+                updates_rx,
+                Arc::clone(&manager.send_completion),
+                manager.terminal_ingress.clone(),
+            )));
+        let (release_tx, release_rx) = oneshot::channel();
+        manager.spawn_send_enqueue_future(registration, async move {
+            let _ = release_rx.await;
+            Ok(SendEnqueueSuccess::terminal_only(
+                sdk_transaction_id.to_owned(),
+            ))
+        });
+
+        let queue_terminal = async move {
+            tokio::task::yield_now().await;
+            updates_tx
+                .send(SendQueueUpdate {
+                    room_id: matrix_sdk::ruma::OwnedRoomId::try_from(key.room_id())
+                        .expect("room id"),
+                    update: RoomSendQueueUpdate::SentEvent {
+                        transaction_id: matrix_sdk::ruma::OwnedTransactionId::from(
+                            sdk_transaction_id,
+                        ),
+                        event_id: matrix_sdk::ruma::OwnedEventId::try_from("$shutdown-grace:test")
+                            .expect("event id"),
+                    },
+                })
+                .expect("queue exact SDK terminal");
+            let _ = release_tx.send(());
+        };
+        let ((), ()) = tokio::join!(manager.join_send_enqueue_workers(), queue_terminal);
+
+        let terminal = manager
+            .terminal_rx
+            .try_recv()
+            .expect("graceful drain observes the exact terminal before observer teardown");
+        assert!(terminal.failure.is_none());
+        assert!(matches!(
+            terminal.completion,
+            Some(TimelineSendCompletionDelivery { event_id, .. })
+                if event_id == "$shutdown-grace:test"
+        ));
+    }
+
     #[tokio::test]
     async fn shutdown_cleans_captured_room_keys_before_acknowledging() {
         struct DropSignal(Option<oneshot::Sender<()>>);
@@ -25113,6 +29418,7 @@ mod tests {
         let (action_tx, mut action_rx) = mpsc::channel(4);
         let (event_tx, _) = broadcast::channel(4);
         let (msg_tx, msg_rx) = mpsc::channel(4);
+        let (terminal_ingress, terminal_rx) = TimelineSendTerminalIngress::channel();
         let manager = TimelineManagerActor {
             session: None,
             room_list_service: None,
@@ -25123,16 +29429,22 @@ mod tests {
                 key.clone(),
                 TimelineActorHandle {
                     tx: actor_tx,
-                    task: child,
+                    task: Some(child),
                     auxiliary_tasks: Vec::new(),
                     subscription_generation: None,
+                    enqueue_context: None,
                 },
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
+            send_completion: SharedSendCompletionCoordinator::default(),
+            global_send_completion_observer_future: None,
+            send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
             action_tx,
             event_tx,
             msg_tx: msg_tx.clone(),
             msg_rx,
+            terminal_ingress,
+            terminal_rx,
             search_index_tx: None,
             ignored_user_ids: Default::default(),
             data_dir: None,
@@ -25177,16 +29489,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reserved_actor_message_waits_for_reducer_acceptance_delivery() {
+    async fn manager_enqueue_worker_waits_for_reducer_acceptance_delivery() {
         let key = room_key();
-        let (actor_tx, mut actor_rx) = mpsc::channel(1);
-        let actor_task = executor::spawn(std::future::pending());
+        let (enqueue_tx, mut enqueue_rx) = mpsc::unbounded_channel();
         let (action_tx, mut action_rx) = mpsc::channel(1);
         action_tx
             .try_send(Vec::new())
             .expect("pause reducer delivery");
         let (event_tx, mut event_rx) = broadcast::channel(4);
         let (msg_tx, msg_rx) = mpsc::channel(1);
+        let (terminal_ingress, terminal_rx) = TimelineSendTerminalIngress::channel();
         let mut manager = TimelineManagerActor {
             session: None,
             room_list_service: None,
@@ -25195,18 +29507,18 @@ mod tests {
             legacy_committed_response: None,
             timelines: HashMap::from([(
                 key.clone(),
-                TimelineActorHandle {
-                    tx: actor_tx,
-                    task: actor_task,
-                    auxiliary_tasks: Vec::new(),
-                    subscription_generation: None,
-                },
+                synthetic_send_timeline_actor_handle(enqueue_tx),
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
+            send_completion: SharedSendCompletionCoordinator::default(),
+            global_send_completion_observer_future: None,
+            send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
             action_tx,
             event_tx,
             msg_tx,
             msg_rx,
+            terminal_ingress,
+            terminal_rx,
             search_index_tx: None,
             ignored_user_ids: Default::default(),
             data_dir: None,
@@ -25236,28 +29548,40 @@ mod tests {
                     mentions: MentionIntent::default(),
                 })
                 .await;
+            manager
         });
-        let mut admission = match actor_rx.recv().await {
-            Some(TimelineActorMessage::SendText {
-                admission: Some(admission),
-                ..
-            }) => admission,
-            _ => panic!("actor mailbox must be reserved"),
-        };
-        assert!(matches!(
-            admission.try_recv(),
-            Err(oneshot::error::TryRecvError::Empty)
-        ));
+        tokio::task::yield_now().await;
+        assert!(
+            enqueue_rx.try_recv().is_err(),
+            "the manager worker must stay permit-blocked before reducer acceptance"
+        );
         assert!(event_rx.try_recv().is_err());
         assert!(action_rx.recv().await.expect("pause marker").is_empty());
         assert!(
             matches!(action_rx.recv().await, Some(actions) if matches!(actions.as_slice(), [AppAction::ComposerSubmissionAccepted { submission_id: accepted, .. }] if accepted == &submission_id))
         );
-        route.await.expect("manager route");
+        let mut manager = route.await.expect("manager route");
         assert!(
             matches!(event_rx.try_recv(), Ok(CoreEvent::Timeline(TimelineEvent::SubmissionAccepted { submission_id: accepted, .. })) if accepted == submission_id)
         );
-        assert!(await_submission_admission(Some(admission)).await);
+        let request = tokio::time::timeout(Duration::from_secs(1), enqueue_rx.recv())
+            .await
+            .expect("accepted enqueue worker must be driven")
+            .expect("accepted submission releases manager enqueue worker");
+        assert!(matches!(
+            request.payload,
+            TimelineSendEnqueuePayload::Text { ref body, .. } if body == "body"
+        ));
+        assert!(
+            request
+                .response
+                .send(Ok(SendEnqueueSuccess::terminal_only(
+                    "sdk-transaction".to_owned(),
+                )))
+                .is_ok(),
+            "complete synthetic enqueue"
+        );
+        manager.join_send_enqueue_workers().await;
     }
 
     #[test]
@@ -26425,6 +30749,7 @@ mod tests {
         let (action_tx, _action_rx) = mpsc::channel(1);
         let (event_tx, _event_rx) = broadcast::channel(1);
         let (manager_tx, manager_rx) = mpsc::channel(1);
+        let (terminal_ingress, terminal_rx) = TimelineSendTerminalIngress::channel();
         let mut manager = TimelineManagerActor {
             session: None,
             room_list_service: None,
@@ -26435,16 +30760,22 @@ mod tests {
                 key.clone(),
                 TimelineActorHandle {
                     tx: actor_tx,
-                    task: actor_task,
+                    task: Some(actor_task),
                     auxiliary_tasks: Vec::new(),
                     subscription_generation: None,
+                    enqueue_context: None,
                 },
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
+            send_completion: SharedSendCompletionCoordinator::default(),
+            global_send_completion_observer_future: None,
+            send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
             action_tx,
             event_tx,
             msg_tx: manager_tx.clone(),
             msg_rx: manager_rx,
+            terminal_ingress,
+            terminal_rx,
             search_index_tx: None,
             ignored_user_ids: Default::default(),
             data_dir: None,
@@ -26605,6 +30936,7 @@ mod tests {
         let (action_tx, _action_rx) = mpsc::channel(8);
         let (event_tx, _event_rx) = broadcast::channel(8);
         let (_manager_tx, manager_rx) = mpsc::channel(1);
+        let (terminal_ingress, terminal_rx) = TimelineSendTerminalIngress::channel();
         let mut manager = TimelineManagerActor {
             session: None,
             room_list_service: None,
@@ -26615,16 +30947,22 @@ mod tests {
                 key.clone(),
                 TimelineActorHandle {
                     tx: actor_tx,
-                    task: actor_task,
+                    task: Some(actor_task),
                     auxiliary_tasks: Vec::new(),
                     subscription_generation: None,
+                    enqueue_context: None,
                 },
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
+            send_completion: SharedSendCompletionCoordinator::default(),
+            global_send_completion_observer_future: None,
+            send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
             action_tx,
             event_tx,
             msg_tx: _manager_tx,
             msg_rx: manager_rx,
+            terminal_ingress,
+            terminal_rx,
             search_index_tx: None,
             ignored_user_ids: Default::default(),
             data_dir: None,
@@ -27039,8 +31377,8 @@ mod tests {
             .expect("message builder should follow forwarder");
 
         assert!(
-            forwarder.contains("tx.send(message).await"),
-            "live search index mutations, including redactions, must use reliable send"
+            forwarder.contains("emit_search_messages_reliable"),
+            "live search index mutations, including redactions, must use the generation-fenced reliable sender"
         );
         assert!(
             !forwarder.contains("try_send(SearchIndexMessage"),
@@ -27218,17 +31556,29 @@ mod tests {
             .split("fn maybe_hydrate_missing_thread_roots")
             .nth(1)
             .expect("Room root hydration detection must exist")
-            .split("fn emit_thread_root_projection_pending")
+            .split("async fn handle_ignored_users_updated")
             .next()
             .expect("root hydration handler boundary");
         assert!(
-            hydration.contains("ThreadRootProjectionDecision::StartFetch")
-                && hydration.contains("TimelineMessage::StartThreadRootProjectionFetch"),
+            hydration.contains("missing_activities")
+                && hydration.contains("commit_prepared_thread_root_hydration_for_generation"),
             "an absent root must request one manager-owned bounded fetch"
         );
+        let commit = production
+            .split("async fn commit_prepared_thread_root_hydration_for_generation")
+            .nth(1)
+            .expect("generation-scoped hydration commit must exist")
+            .split("fn thread_root_projection_action_from_record")
+            .next()
+            .expect("hydration commit boundary");
         assert!(
-            hydration.contains("emit_action_reliable") && !hydration.contains("try_send"),
-            "projection state transitions must not be dropped when the reducer channel is full"
+            commit.contains("reserve_owned().await")
+                && commit.contains("ThreadRootProjectionDecision::StartFetch")
+                && commit.contains("fetches.push(activity)")
+                && commit.contains("TimelineMessage::StartThreadRootProjectionFetch")
+                && commit.contains("actor_generation")
+                && !commit.contains("try_send"),
+            "projection state and tagged fetch requests must commit reliably for one actor generation"
         );
         assert!(
             !hydration.contains("paginate_backwards(")
@@ -27293,7 +31643,7 @@ mod tests {
             std::future::pending::<()>().await;
         });
         let mut registry = ThreadRootProjectionFetchRegistry::default();
-        registry.insert("!room:test".to_owned(), "$root:test".to_owned(), task);
+        registry.insert("!room:test".to_owned(), "$root:test".to_owned(), 7, task);
         started_rx
             .await
             .expect("worker must be in flight before cancellation");
@@ -27304,7 +31654,7 @@ mod tests {
             .expect("abort must end the in-flight hydration worker")
             .expect("worker cancellation probe should be delivered");
         assert!(
-            !registry.take_completion("!room:test", "$root:test"),
+            !registry.take_completion("!room:test", "$root:test", 7),
             "a completion queued before unsubscribe must not publish a stale terminal state"
         );
     }
@@ -27941,7 +32291,7 @@ mod tests {
     fn sync_started_subscribes_existing_timeline_rooms_with_live_room_list_service() {
         let source = include_str!("timeline.rs");
         let run_source = source
-            .split("async fn run")
+            .split("async fn run(mut self)")
             .nth(1)
             .expect("TimelineManagerActor::run should exist")
             .split("async fn handle_sync_started")
@@ -28056,7 +32406,7 @@ mod tests {
     }
 
     #[test]
-    fn replay_subscribed_command_replays_initial_items_for_all_existing_timelines() {
+    fn replay_subscribed_recovery_replays_initial_items_causeless_for_all_timelines() {
         let source = include_str!("timeline.rs");
         let handle_command = source
             .split("async fn handle_command")
@@ -28080,10 +32430,10 @@ mod tests {
         );
         assert!(
             replay_handler.contains("for handle in self.timelines.values()")
-                && replay_handler
-                    .contains(".send(TimelineActorMessage::ReplayInitialItems { request_id })")
+                && replay_handler.contains("TimelineActorMessage::ReplayInitialItems")
+                && replay_handler.contains("cause_request_id: None")
                 && replay_handler.contains(".await"),
-            "replay helper must reliably ask every subscribed TimelineActor to re-emit InitialItems"
+            "recovery must ask every subscribed TimelineActor for a causeless InitialItems replay"
         );
     }
 
@@ -28777,76 +33127,56 @@ mod tests {
     }
 
     #[test]
-    fn send_submission_is_not_reduced_before_actor_route_accepts_it() {
+    fn send_submission_is_not_reduced_before_manager_worker_route_exists() {
         let source = include_str!("timeline.rs");
-        let send_text_arm = source
-            .split("TimelineCommand::SendText")
+        let helper_source = source
+            .split("async fn route_send_to_worker_or_fail")
             .nth(1)
-            .expect("SendText arm should exist")
-            .split("TimelineCommand::SendReply")
+            .expect("manager send-worker route helper should exist")
+            .split("async fn route_media_send_to_worker_or_fail")
             .next()
-            .expect("SendReply arm should follow SendText");
-
-        if send_text_arm.contains("route_send_to_actor_or_fail") {
-            let helper_source = source
-                .split("async fn route_send_to_actor_or_fail")
-                .nth(1)
-                .expect("send route helper should exist")
-                .split("async fn handle_subscribe")
-                .next()
-                .expect("handle_subscribe should follow the send route helper");
-            let route_lookup_offset = helper_source
-                .find("self.timelines.get")
-                .expect("send route helper should look up the actor before reducing state");
-            let submitted_offset = helper_source.find("send_submitted_action").expect(
-                "send route helper should reduce submitted state through a projection helper",
-            );
-
-            assert!(
-                route_lookup_offset < submitted_offset,
-                "submitted send state must not be reduced before the actor route is known to exist"
-            );
-            assert!(
-                source.contains("AppAction::SendTextSubmitted"),
-                "room send projection should reduce SendTextSubmitted"
-            );
-            return;
-        }
-
-        let submitted_offset = send_text_arm
-            .find("SendTextSubmitted")
-            .expect("send path should reduce SendTextSubmitted");
-        let route_offset = send_text_arm
-            .find("route_to_actor_or_fail")
-            .expect("send path should route to a timeline actor");
+            .expect("media worker route helper should follow text/reply routing");
+        let route_lookup_offset = helper_source
+            .find("handle.enqueue_context.clone()")
+            .expect("send route helper should resolve manager enqueue context first");
+        let submitted_offset = helper_source
+            .find("send_submitted_action")
+            .expect("send route helper should reduce submitted state through a projection helper");
+        let worker_offset = helper_source
+            .find("self.spawn_send_enqueue")
+            .expect("manager route should spawn a supervised enqueue worker");
 
         assert!(
-            route_offset < submitted_offset,
-            "SendTextSubmitted must not be reduced before the actor route is known to exist"
+            route_lookup_offset < submitted_offset && submitted_offset < worker_offset,
+            "submitted state must follow manager route resolution and precede SDK enqueue"
+        );
+        assert!(
+            source.contains("AppAction::SendTextSubmitted"),
+            "room send projection should reduce SendTextSubmitted"
         );
     }
 
     #[test]
-    fn thread_reply_submission_is_not_reduced_before_actor_route_accepts_it() {
+    fn thread_reply_submission_is_not_reduced_before_manager_worker_route_exists() {
         let source = include_str!("timeline.rs");
         let helper_source = source
-            .split("async fn route_send_to_actor_or_fail")
+            .split("async fn route_send_to_worker_or_fail")
             .nth(1)
             .expect("send route helper should exist")
-            .split("async fn handle_subscribe")
+            .split("async fn route_media_send_to_worker_or_fail")
             .next()
-            .expect("handle_subscribe should follow the send route helper");
+            .expect("media worker route helper should follow text/reply routing");
 
         let route_lookup_offset = helper_source
-            .find("self.timelines.get")
-            .expect("send route helper should look up the actor before reducing state");
+            .find("handle.enqueue_context.clone()")
+            .expect("send route helper should resolve manager enqueue context first");
         let submitted_offset = helper_source
             .find("send_submitted_action")
             .expect("send route helper should reduce submitted state through a projection helper");
 
         assert!(
             route_lookup_offset < submitted_offset,
-            "submitted send state must not be reduced before the actor route is known to exist"
+            "submitted send state must not be reduced before the manager worker route exists"
         );
         assert!(
             source.contains("AppAction::ThreadReplySubmitted"),
@@ -28858,12 +33188,12 @@ mod tests {
     fn thread_timeline_keys_project_send_reply_to_thread_composer_actions() {
         let source = include_str!("timeline.rs");
         let helper_source = source
-            .split("async fn route_send_to_actor_or_fail")
+            .split("async fn route_send_to_worker_or_fail")
             .nth(1)
             .expect("send route helper should exist")
-            .split("async fn handle_subscribe")
+            .split("async fn route_media_send_to_worker_or_fail")
             .next()
-            .expect("handle_subscribe should follow the send route helper");
+            .expect("media worker route helper should follow text/reply routing");
         let projection_source = source
             .split("fn send_submitted_action")
             .nth(1)
@@ -28885,13 +33215,13 @@ mod tests {
             .split("// ---------------------------------------------------------------------------")
             .next()
             .expect("projection helper section should end");
-        let actor_completion_source = source
-            .split("fn emit_send_finished_action")
+        let terminal_action_source = source
+            .split("fn send_terminal_action")
             .nth(1)
-            .expect("send completion helper should exist")
-            .split("// ---------------------------------------------------------------------------")
+            .expect("send terminal action helper should exist")
+            .split("fn timeline_send_terminal_handoff")
             .next()
-            .expect("timeline actor helper section should end");
+            .expect("send terminal handoff builder should follow action helper");
 
         assert!(
             helper_source.contains("send_submitted_action")
@@ -28904,10 +33234,10 @@ mod tests {
             "thread SendReply route failures must clear thread composer pending state"
         );
         assert!(
-            actor_completion_source.contains("ComposerSubmissionSettled")
-                && actor_completion_source.contains("ComposerSubmissionTerminalOutcome")
-                && actor_completion_source.contains("submission_target"),
-            "thread actor completion and failure must settle thread composer state"
+            terminal_action_source.contains("ComposerSubmissionSettled")
+                && terminal_action_source.contains("ComposerSubmissionTerminalOutcome")
+                && terminal_action_source.contains("submission_target"),
+            "manager-owned send terminals must settle thread composer state"
         );
         assert!(
             source.contains("TimelineKind::Focused { .. } => Self::None")
@@ -28919,6 +33249,10 @@ mod tests {
     #[test]
     fn outbound_send_state_uses_sdk_truth_and_reliable_settles() {
         let source = include_str!("timeline.rs");
+        let production = source
+            .rsplit_once("\n#[cfg(test)]\nmod tests")
+            .map(|(production, _)| production)
+            .unwrap_or(source);
         let send_queue_monitor = source
             .split("async fn run_send_queue_monitor")
             .nth(1)
@@ -28933,13 +33267,34 @@ mod tests {
             .split("let receipts")
             .next()
             .expect("receipts projection should follow send state");
-        let actor_completion_source = source
-            .split("async fn emit_send_finished_action")
+        let terminal_boundary_source = source
+            .split("fn apply_send_completion_observation_and_handoff")
             .nth(1)
-            .expect("send completion helper should be async")
-            .split("fn emit_typing_users_action")
+            .expect("send completion boundary should exist")
+            .split("fn apply_send_completion_observation_loss_and_handoff")
             .next()
-            .expect("typing helper should follow send completion helpers");
+            .expect("observation-loss boundary should follow exact terminals");
+        let global_observer_source = source
+            .split("async fn run_global_send_completion_observer")
+            .nth(1)
+            .expect("global send completion observer should exist")
+            .split("async fn run_send_queue_monitor")
+            .next()
+            .expect("presentation monitor should follow global observer");
+        let actor_update_source = source
+            .split("async fn handle_send_queue_update")
+            .nth(1)
+            .expect("actor send-state projection handler should exist")
+            .split("async fn handle_send_queue_lagged")
+            .next()
+            .expect("actor lag resync should follow update handling");
+        let manager_delivery_source = source
+            .split("async fn handle_send_terminal_handoff")
+            .nth(1)
+            .expect("manager should own send terminal delivery")
+            .split("async fn handle_thread_root_projection_fetch_start")
+            .next()
+            .expect("thread-root handling should follow terminal delivery");
 
         assert!(
             send_queue_monitor.contains("TimelineActorMessage::SendQueueLagged"),
@@ -28960,12 +33315,187 @@ mod tests {
             "SDK timeline item send state must win over the actor mirror after relay gaps"
         );
         assert!(
-            actor_completion_source.contains("self.emit_action_reliable(action).await"),
-            "send/reply completion and failure must use the reliable reducer action path"
+            terminal_boundary_source.contains("terminal_ingress.admit(handoff)")
+                && !terminal_boundary_source.contains(".await"),
+            "tracker settlement must synchronously admit the manager-owned terminal handoff"
         );
         assert!(
-            !actor_completion_source.contains("try_send"),
-            "send/reply settlement must not silently drop reducer actions on a full channel"
+            !terminal_boundary_source.contains("executor::spawn"),
+            "terminal ownership transfer must not depend on a detached task reaching the manager mailbox"
+        );
+        assert!(
+            global_observer_source.contains("SendQueueUpdate")
+                && global_observer_source.contains("RecvError::Lagged")
+                && global_observer_source
+                    .contains("apply_send_completion_observation_loss_and_handoff"),
+            "the session-global observer must own exact terminals and explicit lag failure"
+        );
+        assert!(
+            !actor_update_source.contains("apply_send_completion_observation_and_handoff")
+                && !actor_update_source.contains("SendCompleted"),
+            "replaceable actor-local monitors are presentation-only terminal consumers"
+        );
+        assert!(
+            manager_delivery_source.contains("deliver_submission_terminal_action")
+                && manager_delivery_source.contains(".await")
+                && !manager_delivery_source.contains("try_send"),
+            "the stable manager must wait for reducer capacity before completion emission"
+        );
+        let manager_run_source = source
+            .split("async fn run(mut self)")
+            .nth(1)
+            .expect("timeline manager run loop should exist")
+            .split("async fn handle_thread_root_projection_fetch_start")
+            .next()
+            .expect("thread-root handler should follow manager run loop");
+        assert!(
+            manager_run_source.contains("tokio::select!")
+                && manager_run_source.contains("biased;")
+                && manager_run_source.contains("terminal_rx.recv()"),
+            "the manager must prioritize its owned terminal ingress"
+        );
+        assert_eq!(
+            production
+                .matches("session.client().send_queue().subscribe()")
+                .count(),
+            1,
+            "one client-global send terminal subscription belongs to the session manager"
+        );
+        assert!(!production.contains("SharedSendCompletionTracker"));
+    }
+
+    #[test]
+    fn outbound_sdk_enqueues_are_session_manager_owned_and_supervised() {
+        let source = include_str!("timeline.rs");
+        let production = source
+            .rsplit_once("\n#[cfg(test)]\nmod tests")
+            .map(|(production, _)| production)
+            .unwrap_or(source);
+        let submission_route = production
+            .split("async fn route_submission_to_worker")
+            .nth(1)
+            .expect("submission worker route should exist")
+            .split("async fn handle_replay_subscribed")
+            .next()
+            .expect("replay handling should follow submission routing");
+        let spawn_worker = submission_route
+            .find("self.spawn_send_enqueue")
+            .expect("manager must own the permit-blocked enqueue worker");
+        let activate = submission_route
+            .find("activate_registration")
+            .expect("registration activation should be explicit");
+        let reducer_action = submission_route
+            .find("self.action_tx.send")
+            .expect("acceptance must enter the reliable reducer channel");
+        let release_permit = submission_route
+            .find("permit_tx.send")
+            .expect("SDK enqueue should be released after acceptance");
+
+        assert!(
+            spawn_worker < activate && activate < reducer_action && reducer_action < release_permit,
+            "the supervised worker must exist before acceptance and stay permit-blocked until reducer delivery"
+        );
+        for actor_variant in [
+            "TimelineActorMessage::SendText",
+            "TimelineActorMessage::SendReply",
+            "TimelineActorMessage::UploadAndSendMedia",
+        ] {
+            assert!(
+                !production.contains(actor_variant),
+                "replaceable timeline actors must not own SDK enqueue: {actor_variant}"
+            );
+        }
+        for route in [
+            "route_send_to_worker_or_fail",
+            "route_submission_to_worker",
+            "route_media_send_to_worker_or_fail",
+        ] {
+            assert!(
+                production.contains(route),
+                "text, reply, and media commands must route through manager workers: {route}"
+            );
+        }
+        assert!(
+            production.contains("enqueue_timeline_send(context, payload).await"),
+            "all enqueue payloads must pass through the common supervised future"
+        );
+
+        let manager_run = production
+            .split("async fn run(mut self)")
+            .nth(1)
+            .expect("timeline manager run loop should exist")
+            .split("async fn handle_send_terminal_handoff")
+            .next()
+            .expect("terminal delivery should follow the manager run loop");
+        let worker_poll = manager_run
+            .find("worker = self.send_enqueue_workers.tasks.next()")
+            .expect("manager run loop should reap enqueue workers");
+        let mailbox_poll = manager_run
+            .find("msg = self.msg_rx.recv()")
+            .expect("manager run loop should poll commands");
+        let worker_join = manager_run
+            .find("self.join_send_enqueue_workers().await")
+            .expect("shutdown should join enqueue workers");
+        let observer_stop = manager_run
+            .find("self.global_send_completion_observer_future.take()")
+            .expect("shutdown should stop the global observer explicitly");
+        let actor_drain = manager_run
+            .find("let timeline_actors = self")
+            .expect("shutdown should stop replaceable actors explicitly");
+        assert!(
+            manager_run.contains("if !self.send_enqueue_workers.tasks.is_empty()")
+                && worker_poll < mailbox_poll,
+            "a guarded, biased worker branch must poll owned futures without empty-stream spinning"
+        );
+        assert!(
+            worker_join < observer_stop && observer_stop < actor_drain,
+            "shutdown must join enqueue workers while the global observer is live, then stop presentation actors"
+        );
+        let supervisor_impl = production
+            .split("impl SendEnqueueWorkerSupervisor")
+            .nth(1)
+            .expect("enqueue worker supervisor implementation should exist")
+            .split("impl Drop for SendEnqueueWorkerSupervisor")
+            .next()
+            .expect("enqueue worker supervisor Drop should follow its methods");
+        let supervisor_drop = production
+            .split("impl Drop for SendEnqueueWorkerSupervisor")
+            .nth(1)
+            .expect("enqueue worker supervisor must have a cancellation fallback")
+            .split("async fn run_send_enqueue_future")
+            .next()
+            .expect("enqueue runner should follow the supervisor");
+        assert!(
+            supervisor_impl.contains("fn cancel_all(&mut self)")
+                && supervisor_impl.contains("self.tasks = FuturesUnordered::new()")
+                && supervisor_drop.contains("self.terminal_ingress.stop_accepting()")
+                && supervisor_drop.contains("self.cancel_all()"),
+            "abnormal manager drop must close terminal admission and synchronously drop every owned worker future"
+        );
+        let manager_drop = production
+            .split("impl Drop for TimelineManagerActor")
+            .nth(1)
+            .expect("timeline manager must have an abnormal-drop fallback")
+            .split("fn accepts_legacy_committed_response")
+            .next()
+            .expect("legacy response helper should follow manager Drop");
+        let admission_close = manager_drop
+            .find("self.terminal_ingress.stop_accepting()")
+            .expect("manager Drop closes terminal admission");
+        let worker_cancel = manager_drop
+            .find("self.send_enqueue_workers.cancel_all()")
+            .expect("manager Drop synchronously cancels workers");
+        let observer_drop = manager_drop
+            .find("self.global_send_completion_observer_future.take()")
+            .expect("manager Drop synchronously drops the observer");
+        assert!(
+            admission_close < worker_cancel && worker_cancel < observer_drop,
+            "manager Drop must close admission, settle workers, then drop the observer"
+        );
+        assert!(
+            production.contains("AssertUnwindSafe(run_send_enqueue_future")
+                && production.contains(".catch_unwind()"),
+            "directly-polled enqueue futures must retain panic isolation"
         );
     }
 
@@ -29306,7 +33836,7 @@ mod tests {
 
         command_tx
             .try_send(TimelineActorMessage::ReplayInitialItems {
-                request_id: fake_rid(1),
+                cause_request_id: Some(fake_rid(1)),
             })
             .expect("command must queue independently of relay data");
 
@@ -29372,7 +33902,7 @@ mod tests {
         let (command_tx, mut command_rx) = mpsc::channel::<TimelineActorMessage>(1);
         command_tx
             .try_send(TimelineActorMessage::ReplayInitialItems {
-                request_id: fake_rid(88),
+                cause_request_id: Some(fake_rid(88)),
             })
             .expect("command must queue independently");
 
@@ -29429,7 +33959,7 @@ mod tests {
         let (command_tx, mut command_rx) = mpsc::channel(1);
         command_tx
             .try_send(TimelineActorMessage::ReplayInitialItems {
-                request_id: fake_rid(89),
+                cause_request_id: Some(fake_rid(89)),
             })
             .expect("command queued during restart delay");
         let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
@@ -29504,7 +34034,11 @@ mod tests {
             snapshot,
             stream,
         } = prepared;
-        emit_relay_recovery_snapshot(
+        let mut navigation_items = Vec::new();
+        let mut display_projection = DisplayProjectionState::default();
+        assert!(commit_authoritative_recovery_window(
+            &mut navigation_items,
+            &mut display_projection,
             &event_tx,
             &replay_registry,
             &projection_service,
@@ -29514,8 +34048,8 @@ mod tests {
             generation,
             TimelineResyncReason::QueueOverflow,
             snapshot,
-            Vec::new(),
-        );
+            || {},
+        ));
         assert!(matches!(
             event_rx.recv().await,
             Ok(CoreEvent::Timeline(TimelineEvent::ResyncRequired { .. }))
@@ -29539,11 +34073,9 @@ mod tests {
         else {
             panic!("replacement stream must produce a generation-tagged batch");
         };
-        let diffs = accepted_relay_batch(generation, batch_generation, diffs)
-            .expect("replacement generation must be accepted")
-            .into_iter()
-            .map(|diff| sdk_vector_diff_to_timeline_diff(diff, &key, None, &HashMap::new()))
-            .collect();
+        let sdk_diffs = accepted_relay_batch(generation, batch_generation, diffs)
+            .expect("replacement generation must be accepted");
+        let diffs = sdk_vector_diffs_to_timeline_diffs(&sdk_diffs, 0, &key, None, &HashMap::new());
         assert!(
             emit_items_updated_and_reconcile_replay_known_for_generation(
                 &event_tx,
@@ -29651,7 +34183,8 @@ mod tests {
         transaction.send_state = Some(TimelineSendState::Sending);
         let remote = timeline_item("$remote-echo:test", Some("same body"), "@me:test", false);
         let mut current = vec![transaction, remote.clone()];
-        let mut display = normalize_display_timeline_items(&current);
+        let mut display_projection =
+            DisplayProjectionState::from_canonical_window(&current, 0..current.len());
         let key = room_key();
         let (event_tx, mut event_rx) = broadcast::channel(8);
         let actor_generations = Arc::new(TimelineActorGenerationGate::default());
@@ -29666,7 +34199,7 @@ mod tests {
 
         commit_authoritative_recovery_window(
             &mut current,
-            &mut display,
+            &mut display_projection,
             &event_tx,
             &replay_registry,
             &projection_service,
@@ -29676,6 +34209,7 @@ mod tests {
             TimelineGeneration(2),
             TimelineResyncReason::QueueOverflow,
             vec![remote],
+            || {},
         );
 
         assert_eq!(current.len(), 1);
@@ -29687,7 +34221,7 @@ mod tests {
             current[0].send_state,
             Some(TimelineSendState::Sending)
         ));
-        assert_eq!(display, current);
+        assert_eq!(display_projection.display_items(), current);
         assert!(matches!(
             event_rx.recv().await,
             Ok(CoreEvent::Timeline(TimelineEvent::ResyncRequired { .. }))
@@ -29695,12 +34229,104 @@ mod tests {
         assert!(matches!(
             event_rx.recv().await,
             Ok(CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id: None,
+                cause_request_id: None,
                 generation: TimelineGeneration(2),
                 items,
                 ..
             })) if items.len() == 1
                 && matches!(items[0].id, TimelineItemId::Event { .. })
                 && !matches!(items[0].send_state, Some(TimelineSendState::Sending))
+        ));
+    }
+
+    #[tokio::test]
+    async fn stale_generation_recovery_does_not_commit_candidate_or_publish() {
+        let key = room_key();
+        let (actor_generations, stale_generation, _current_generation) =
+            replacement_generation_fixture(&key).await;
+        let original = timeline_item("$original:test", Some("original"), "@me:test", false);
+        let candidate = timeline_item("$candidate:test", Some("candidate"), "@me:test", false);
+        let mut navigation_items = vec![original.clone()];
+        let mut display_projection = DisplayProjectionState::from_canonical_window(
+            &navigation_items,
+            0..navigation_items.len(),
+        );
+        let display_before = display_projection.clone();
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        let (replay_registry, projection_service) = replay_projection_services();
+        let mut synchronous_candidate_committed = false;
+
+        assert!(!commit_authoritative_recovery_window(
+            &mut navigation_items,
+            &mut display_projection,
+            &event_tx,
+            &replay_registry,
+            &projection_service,
+            &actor_generations,
+            &key,
+            stale_generation,
+            TimelineGeneration(2),
+            TimelineResyncReason::QueueOverflow,
+            vec![candidate],
+            || synchronous_candidate_committed = true,
+        ));
+
+        assert_eq!(navigation_items, vec![original]);
+        assert_eq!(display_projection, display_before);
+        assert!(!synchronous_candidate_committed);
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn stale_generation_prepared_initial_window_does_not_commit_or_publish() {
+        let key = room_key();
+        let (actor_generations, stale_generation, _current_generation) =
+            replacement_generation_fixture(&key).await;
+        let original = timeline_item("$original:test", Some("original"), "@me:test", false);
+        let candidate = timeline_item("$candidate:test", Some("candidate"), "@me:test", false);
+        let mut navigation_items = vec![original.clone()];
+        let mut display_projection = DisplayProjectionState::from_canonical_window(
+            &navigation_items,
+            0..navigation_items.len(),
+        );
+        let display_before = display_projection.clone();
+        let candidate_navigation = vec![candidate.clone()];
+        let prepared = PreparedInitialWindow {
+            display_projection: DisplayProjectionState::from_canonical_window(
+                &candidate_navigation,
+                0..candidate_navigation.len(),
+            ),
+            navigation_items: Some(candidate_navigation),
+            emitted_items: vec![candidate],
+            replay_known_candidates: Vec::new(),
+        };
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        let (replay_registry, projection_service) = replay_projection_services();
+
+        assert!(!commit_prepared_initial_window_for_generation(
+            &mut navigation_items,
+            &mut display_projection,
+            &event_tx,
+            &replay_registry,
+            &projection_service,
+            &actor_generations,
+            &key,
+            stale_generation,
+            InitialItemsRequestIdentity::recovery(),
+            TimelineGeneration(2),
+            Vec::new(),
+            prepared,
+        ));
+
+        assert_eq!(navigation_items, vec![original]);
+        assert_eq!(display_projection, display_before);
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
         ));
     }
 
@@ -29758,100 +34384,1131 @@ mod tests {
 
     // --- Txn-ID mapping ---
 
+    #[tokio::test]
+    async fn manager_coordinator_survives_unsubscribe_until_sdk_terminal() {
+        let key = room_key();
+        let mut manager = live_tail_test_manager(HashMap::from([(
+            key.clone(),
+            gap_demand_test_actor_handle("send-owner", Arc::new(Mutex::new(Vec::new()))),
+        )]));
+        let request_id = fake_rid(7410);
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&manager.send_completion),
+            manager.terminal_ingress.clone(),
+            key.clone(),
+            "client-unsubscribe-unit".to_owned(),
+            None,
+            request_id,
+            true,
+        );
+        registration.activate();
+        registration.bind("sdk-unsubscribe-unit".to_owned());
+
+        manager
+            .handle_command(TimelineCommand::Unsubscribe {
+                request_id: fake_rid(7411),
+                key: key.clone(),
+            })
+            .await;
+        assert!(!manager.timelines.contains_key(&key));
+        apply_send_completion_observation_and_handoff(
+            &manager.send_completion,
+            &manager.terminal_ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-unsubscribe-unit".to_owned(),
+                event_id: "$event-unsubscribe-unit:test".to_owned(),
+            },
+        );
+
+        let handoff = manager
+            .terminal_rx
+            .recv()
+            .await
+            .expect("manager-owned completion after unsubscribe");
+        assert!(matches!(
+            handoff.completion,
+            Some(TimelineSendCompletionDelivery {
+                request_id: delivered_request_id,
+                key: delivered_key,
+                transaction_id,
+                event_id,
+            }) if delivered_request_id == request_id
+                && delivered_key == key
+                && transaction_id == "client-unsubscribe-unit"
+                && event_id == "$event-unsubscribe-unit:test"
+        ));
+    }
+
+    #[tokio::test]
+    async fn manager_owned_prebind_enqueue_survives_room_and_thread_unsubscribe() {
+        let account = AccountKey("@prebind-owner:test".to_owned());
+        let keys = [
+            TimelineKey::room(account.clone(), "!prebind-room:test"),
+            TimelineKey {
+                account_key: account,
+                kind: TimelineKind::Thread {
+                    room_id: "!prebind-room:test".to_owned(),
+                    root_event_id: "$prebind-root:test".to_owned(),
+                },
+            },
+        ];
+
+        for (serial, key) in keys.into_iter().enumerate() {
+            let mut manager = live_tail_test_manager(HashMap::from([(
+                key.clone(),
+                gap_demand_test_actor_handle("prebind", Arc::new(Mutex::new(Vec::new()))),
+            )]));
+            let request_id = fake_rid(7430 + serial as u64);
+            let sdk_transaction_id = format!("sdk-prebind-{serial}");
+            let mut registration = SendCompletionRegistration::begin(
+                Arc::clone(&manager.send_completion),
+                manager.terminal_ingress.clone(),
+                key.clone(),
+                format!("client-prebind-{serial}"),
+                None,
+                request_id,
+                true,
+            );
+            registration.activate();
+            let (durably_saved, saved) = oneshot::channel();
+            let (release, released) = oneshot::channel();
+            manager.spawn_send_enqueue_future(registration, async move {
+                let _ = durably_saved.send(());
+                let _ = released.await;
+                Ok(SendEnqueueSuccess::terminal_only(sdk_transaction_id))
+            });
+            poll_manager_enqueue_workers_once(&mut manager).await;
+            tokio::time::timeout(Duration::from_secs(1), saved)
+                .await
+                .expect("pre-bind enqueue worker must be driven")
+                .expect("synthetic QueueStorage save committed");
+
+            manager
+                .handle_command(TimelineCommand::Unsubscribe {
+                    request_id: fake_rid(7440 + serial as u64),
+                    key: key.clone(),
+                })
+                .await;
+            assert!(
+                manager.terminal_rx.try_recv().is_err(),
+                "actor removal must not abandon the manager-owned pre-bind registration"
+            );
+
+            let _ = release.send(());
+            manager.join_send_enqueue_workers().await;
+            apply_send_completion_observation_and_handoff(
+                &manager.send_completion,
+                &manager.terminal_ingress,
+                key.room_id(),
+                SendCompletionObservation::Sent {
+                    sdk_transaction_id: format!("sdk-prebind-{serial}"),
+                    event_id: format!("$event-prebind-{serial}:test"),
+                },
+            );
+            let terminal = manager
+                .terminal_rx
+                .try_recv()
+                .expect("correlated terminal after pre-bind unsubscribe");
+            assert!(terminal.failure.is_none());
+            assert!(matches!(
+                terminal.completion,
+                Some(TimelineSendCompletionDelivery {
+                    request_id: completed_request_id,
+                    key: completed_key,
+                    ..
+                }) if completed_request_id == request_id && completed_key == key
+            ));
+            assert!(manager.terminal_rx.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn manager_drop_aborts_owned_observer_and_send_enqueue_workers() {
+        struct OwnedTaskDropFlag(Arc<AtomicBool>);
+
+        impl Drop for OwnedTaskDropFlag {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::SeqCst);
+            }
+        }
+
+        let mut manager = live_tail_test_manager(HashMap::new());
+        let observer_alive = Arc::new(AtomicBool::new(true));
+        manager.global_send_completion_observer_future = Some(Box::pin({
+            let observer_drop = OwnedTaskDropFlag(Arc::clone(&observer_alive));
+            async move {
+                let _drop = observer_drop;
+                futures_util::future::pending::<()>().await;
+            }
+        }));
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&manager.send_completion),
+            manager.terminal_ingress.clone(),
+            room_key(),
+            "client-manager-drop".to_owned(),
+            None,
+            fake_rid(7465),
+            true,
+        );
+        registration.activate();
+        let worker_alive = Arc::new(AtomicBool::new(true));
+        manager.spawn_send_enqueue_future(registration, {
+            let worker_drop = OwnedTaskDropFlag(Arc::clone(&worker_alive));
+            async move {
+                let _drop = worker_drop;
+                futures_util::future::pending::<Result<SendEnqueueSuccess, TimelineFailureKind>>()
+                    .await
+            }
+        });
+        drop(manager);
+
+        assert!(
+            !observer_alive.load(Ordering::SeqCst),
+            "dropping the manager must synchronously drop the owned observer future"
+        );
+        assert!(
+            !worker_alive.load(Ordering::SeqCst),
+            "dropping the manager must synchronously drop every owned enqueue future"
+        );
+
+        let quiesced = tokio::time::timeout(Duration::from_secs(1), async {
+            while observer_alive.load(Ordering::SeqCst) || worker_alive.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(
+            quiesced.is_ok(),
+            "unexpected manager drop must quiesce observer={} worker={}",
+            !observer_alive.load(Ordering::SeqCst),
+            !worker_alive.load(Ordering::SeqCst),
+        );
+    }
+
+    #[tokio::test]
+    async fn panicked_enqueue_future_is_fail_closed_without_stopping_manager_workers() {
+        let mut manager = live_tail_test_manager(HashMap::new());
+        let mut panicked_registration = SendCompletionRegistration::begin(
+            Arc::clone(&manager.send_completion),
+            manager.terminal_ingress.clone(),
+            room_key(),
+            "client-panicked-enqueue".to_owned(),
+            None,
+            fake_rid(7466),
+            true,
+        );
+        panicked_registration.activate();
+        manager.spawn_send_enqueue_future(panicked_registration, async move {
+            panic!("synthetic enqueue panic");
+            #[allow(unreachable_code)]
+            Err(TimelineFailureKind::Sdk)
+        });
+
+        let completion = manager
+            .send_enqueue_workers
+            .tasks
+            .next()
+            .await
+            .expect("caught panic still settles the supervised future");
+        manager.handle_send_enqueue_worker_completion(completion);
+        let panic_terminal = manager
+            .terminal_rx
+            .try_recv()
+            .expect("registration drop emits one private-safe terminal");
+        assert!(matches!(
+            panic_terminal.failure,
+            Some(TimelineSendFailureDelivery {
+                failure: CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::QueueOverflow,
+                },
+                ..
+            })
+        ));
+
+        let mut next_registration = SendCompletionRegistration::begin(
+            Arc::clone(&manager.send_completion),
+            manager.terminal_ingress.clone(),
+            room_key(),
+            "client-after-panic".to_owned(),
+            None,
+            fake_rid(7467),
+            true,
+        );
+        next_registration.activate();
+        manager.spawn_send_enqueue_future(next_registration, async move {
+            Err(TimelineFailureKind::Sdk)
+        });
+        let completion = manager
+            .send_enqueue_workers
+            .tasks
+            .next()
+            .await
+            .expect("manager continues polling workers after an isolated panic");
+        manager.handle_send_enqueue_worker_completion(completion);
+        let next_terminal = manager
+            .terminal_rx
+            .try_recv()
+            .expect("later worker terminal is still delivered");
+        assert!(matches!(
+            next_terminal.failure,
+            Some(TimelineSendFailureDelivery {
+                failure: CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Sdk,
+                },
+                ..
+            })
+        ));
+        assert!(manager.terminal_rx.try_recv().is_err());
+    }
+
     #[test]
-    fn pending_sends_map_sdk_txn_to_client_txn_and_request_id() {
-        let mut tracker = SendCompletionTracker::default();
-        let sdk_txn = "sdk-auto-generated-txn".to_owned();
-        let client_txn = "client-txn-42".to_owned();
-        let rid = fake_rid(42);
-        let event_id = "$event-42".to_owned();
+    fn manager_coordinator_keeps_same_room_room_and_thread_keys_collision_safe() {
+        let account = AccountKey("@send-owner:test".to_owned());
+        let room_key = TimelineKey::room(account.clone(), "!shared-room:test");
+        let thread_key = TimelineKey {
+            account_key: account,
+            kind: TimelineKind::Thread {
+                room_id: "!shared-room:test".to_owned(),
+                root_event_id: "$thread-root:test".to_owned(),
+            },
+        };
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut room_registration = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            room_key.clone(),
+            "client-room".to_owned(),
+            None,
+            fake_rid(7420),
+            true,
+        );
+        room_registration.activate();
+        room_registration.bind("sdk-room".to_owned());
+        let mut thread_registration = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            thread_key.clone(),
+            "client-thread".to_owned(),
+            None,
+            fake_rid(7421),
+            true,
+        );
+        thread_registration.activate();
+        thread_registration.bind("sdk-thread".to_owned());
+
+        for (sdk_transaction_id, event_id) in [
+            ("sdk-thread", "$event-thread:test"),
+            ("sdk-room", "$event-room:test"),
+        ] {
+            apply_send_completion_observation_and_handoff(
+                &coordinator,
+                &ingress,
+                "!shared-room:test",
+                SendCompletionObservation::Sent {
+                    sdk_transaction_id: sdk_transaction_id.to_owned(),
+                    event_id: event_id.to_owned(),
+                },
+            );
+        }
+
+        let thread_handoff = terminal_rx.try_recv().expect("thread terminal first");
+        let room_handoff = terminal_rx.try_recv().expect("room terminal second");
+        assert!(matches!(
+            thread_handoff.completion,
+            Some(TimelineSendCompletionDelivery { key, .. }) if key == thread_key
+        ));
+        assert!(matches!(
+            room_handoff.completion,
+            Some(TimelineSendCompletionDelivery { key, .. }) if key == room_key
+        ));
+    }
+
+    #[test]
+    fn unmatched_terminal_cohort_overflow_fails_safe_once_without_unbounded_growth() {
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
+            "client-cohort".to_owned(),
+            None,
+            fake_rid(7430),
+            true,
+        );
+        registration.activate();
+
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-cohort-candidate".to_owned(),
+                event_id: "$event-cohort-candidate:test".to_owned(),
+            },
+        );
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-cohort-overflow".to_owned(),
+                event_id: "$event-cohort-overflow:test".to_owned(),
+            },
+        );
+        let overflow = terminal_rx.try_recv().expect("cohort overflow terminal");
+        assert!(matches!(
+            overflow.failure,
+            Some(TimelineSendFailureDelivery {
+                request_id,
+                failure: CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::QueueOverflow,
+                },
+            }) if request_id == fake_rid(7430)
+        ));
+        assert_eq!(
+            coordinator
+                .lock()
+                .expect("send completion coordinator")
+                .unmatched_terminals
+                .len(),
+            1,
+            "one active unbound registration admits only one unmatched transaction cohort"
+        );
+
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-cohort-overflow-again".to_owned(),
+                event_id: "$event-cohort-overflow-again:test".to_owned(),
+            },
+        );
+        assert!(
+            terminal_rx.try_recv().is_err(),
+            "cohort overflow failure must be reported once per active request"
+        );
+
+        registration.bind("sdk-cohort-candidate".to_owned());
+        let completion = terminal_rx.try_recv().expect("retained exact terminal");
+        assert!(completion.failure.is_none());
+        assert!(matches!(
+            completion.completion,
+            Some(TimelineSendCompletionDelivery { key: delivered_key, .. })
+                if delivered_key == key
+        ));
+    }
+
+    #[test]
+    fn known_enqueue_failure_and_active_registration_abort_have_distinct_terminals() {
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut known_failure = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
+            "client-known-failure".to_owned(),
+            None,
+            fake_rid(7435),
+            true,
+        );
+        known_failure.activate();
+        known_failure.fail_known(TimelineFailureKind::Forbidden);
+        drop(known_failure);
+        assert!(matches!(
+            terminal_rx.try_recv().expect("known failure").failure,
+            Some(TimelineSendFailureDelivery {
+                failure: CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Forbidden,
+                },
+                ..
+            })
+        ));
+        assert!(terminal_rx.try_recv().is_err());
+
+        let mut abandoned = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress,
+            key,
+            "client-abandoned".to_owned(),
+            None,
+            fake_rid(7436),
+            true,
+        );
+        abandoned.activate();
+        drop(abandoned);
+        assert!(matches!(
+            terminal_rx.try_recv().expect("abandoned failure").failure,
+            Some(TimelineSendFailureDelivery {
+                failure: CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::QueueOverflow,
+                },
+                ..
+            })
+        ));
+        assert!(terminal_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn global_send_observer_lag_fails_bound_and_unbound_in_registration_order() {
+        let account = AccountKey("@lag-owner:test".to_owned());
+        let first_key = TimelineKey::room(account.clone(), "!lag-room:test");
+        let second_key = TimelineKey {
+            account_key: account,
+            kind: TimelineKind::Focused {
+                room_id: "!lag-room:test".to_owned(),
+                event_id: "$focus:test".to_owned(),
+            },
+        };
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut first = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            first_key,
+            "client-lag-first".to_owned(),
+            None,
+            fake_rid(7440),
+            true,
+        );
+        first.activate();
+        first.bind("sdk-lag-first".to_owned());
+        let mut second = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            second_key,
+            "client-lag-second".to_owned(),
+            None,
+            fake_rid(7441),
+            false,
+        );
+        second.activate();
+
+        let (updates_tx, updates_rx) = broadcast::channel(1);
+        let room_id =
+            matrix_sdk::ruma::OwnedRoomId::try_from("!lag-room:test").expect("lag room id");
+        for transaction_id in ["sdk-overflow-one", "sdk-overflow-two"] {
+            updates_tx
+                .send(matrix_sdk::send_queue::SendQueueUpdate {
+                    room_id: room_id.clone(),
+                    update: RoomSendQueueUpdate::RetryEvent {
+                        transaction_id: matrix_sdk::ruma::OwnedTransactionId::from(transaction_id),
+                    },
+                })
+                .expect("queue lag update");
+        }
+        drop(updates_tx);
+        run_global_send_completion_observer(updates_rx, Arc::clone(&coordinator), ingress.clone())
+            .await;
+
+        let first_failure = terminal_rx.try_recv().expect("first lag failure");
+        let second_failure = terminal_rx.try_recv().expect("second lag failure");
+        assert!(matches!(
+            first_failure.failure,
+            Some(TimelineSendFailureDelivery { request_id, .. }) if request_id == fake_rid(7440)
+        ));
+        assert!(first_failure.action.is_some());
+        assert!(matches!(
+            second_failure.failure,
+            Some(TimelineSendFailureDelivery { request_id, .. }) if request_id == fake_rid(7441)
+        ));
+        assert!(second_failure.action.is_none());
+        assert!(terminal_rx.try_recv().is_err());
+
+        apply_send_completion_observation_loss_and_handoff(&coordinator, &ingress, None);
+        assert!(
+            terminal_rx.try_recv().is_err(),
+            "a repeated lag notification must not report either request twice"
+        );
+        second.bind("sdk-lag-second".to_owned());
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            "!lag-room:test",
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-lag-second".to_owned(),
+                event_id: "$event-after-lag:test".to_owned(),
+            },
+        );
+        let recovered = terminal_rx.try_recv().expect("exact terminal after lag");
+        assert!(recovered.action.is_none());
+        assert!(recovered.failure.is_none());
+        assert!(recovered.completion.is_some());
+    }
+
+    #[tokio::test]
+    async fn shutdown_joins_observer_then_actor_and_drains_registration_failure_before_ack() {
+        struct OrderedDrop {
+            label: &'static str,
+            log: Arc<Mutex<Vec<&'static str>>>,
+        }
+
+        impl Drop for OrderedDrop {
+            fn drop(&mut self) {
+                self.log
+                    .lock()
+                    .expect("shutdown ordering log")
+                    .push(self.label);
+            }
+        }
+
+        let key = room_key();
+        let mut manager = live_tail_test_manager(HashMap::new());
+        let (action_tx, mut action_rx) = mpsc::channel(8);
+        manager.action_tx = action_tx;
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let (observer_started_tx, observer_started_rx) = oneshot::channel();
+        manager.global_send_completion_observer_future = Some(Box::pin({
+            let order = Arc::clone(&order);
+            async move {
+                let _drop = OrderedDrop {
+                    label: "observer",
+                    log: order,
+                };
+                let _ = observer_started_tx.send(());
+                std::future::pending::<()>().await;
+            }
+        }));
+
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&manager.send_completion),
+            manager.terminal_ingress.clone(),
+            key.clone(),
+            "client-shutdown-order".to_owned(),
+            None,
+            fake_rid(7450),
+            true,
+        );
+        registration.activate();
+        let (actor_started_tx, actor_started_rx) = oneshot::channel();
+        let (actor_tx, _actor_rx) = mpsc::channel(1);
+        let actor_task = executor::spawn({
+            let order = Arc::clone(&order);
+            async move {
+                let _drop = OrderedDrop {
+                    label: "actor",
+                    log: order,
+                };
+                let _registration = registration;
+                let _ = actor_started_tx.send(());
+                std::future::pending::<()>().await;
+            }
+        });
+        manager.timelines.insert(
+            key,
+            TimelineActorHandle {
+                tx: actor_tx,
+                task: Some(actor_task),
+                auxiliary_tasks: Vec::new(),
+                subscription_generation: None,
+                enqueue_context: None,
+            },
+        );
+        let manager_tx = manager.msg_tx.clone();
+        let manager_task = executor::spawn(manager.run());
+        observer_started_rx.await.expect("observer started");
+        actor_started_rx.await.expect("actor started");
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        manager_tx
+            .send(TimelineMessage::Shutdown {
+                acknowledged: Some(shutdown_tx),
+            })
+            .await
+            .expect("shutdown command");
+        shutdown_rx.await.expect("shutdown acknowledgement");
+        manager_task.await.expect("manager shutdown task");
+
+        let observed_order = order.lock().expect("shutdown ordering log").clone();
+        assert_eq!(
+            observed_order,
+            ["observer", "actor"],
+            "the sole observer must stop before actor registration producers"
+        );
+        let mut send_failure_count = 0;
+        while let Ok(actions) = action_rx.try_recv() {
+            send_failure_count += actions
+                .iter()
+                .filter(|action| {
+                    matches!(
+                        action,
+                        AppAction::SendTextFailed { transaction_id, .. }
+                            if transaction_id == "client-shutdown-order"
+                    )
+                })
+                .count();
+        }
+        assert_eq!(
+            send_failure_count, 1,
+            "shutdown must drain one fail-safe terminal"
+        );
+    }
+
+    #[test]
+    fn coordinator_maps_sdk_transaction_to_client_request_and_completion() {
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
+            "client-txn-42".to_owned(),
+            None,
+            fake_rid(42),
+            true,
+        );
+        registration.activate();
+        registration.bind("sdk-auto-generated-txn".to_owned());
 
         assert_eq!(
-            tracker.remember_pending_send(sdk_txn.clone(), client_txn.clone(), None, rid, true),
-            None
+            coordinator
+                .lock()
+                .expect("send completion coordinator")
+                .pending_send(key.room_id(), "sdk-auto-generated-txn"),
+            Some((&key, "client-txn-42", fake_rid(42)))
         );
-        assert_eq!(
-            tracker.pending_send(&sdk_txn),
-            Some((client_txn.as_str(), rid))
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-auto-generated-txn".to_owned(),
+                event_id: "$event-42:test".to_owned(),
+            },
         );
-        assert_eq!(
-            tracker.record_sent_event(sdk_txn.clone(), event_id.clone()),
-            Some((client_txn.clone(), None, rid, event_id, true))
-        );
-
-        assert!(tracker.pending_sends.is_empty());
-        assert!(tracker.completed_sends.is_empty());
+        assert!(matches!(
+            terminal_rx.try_recv().expect("mapped completion").completion,
+            Some(TimelineSendCompletionDelivery {
+                request_id,
+                transaction_id,
+                event_id,
+                ..
+            }) if request_id == fake_rid(42)
+                && transaction_id == "client-txn-42"
+                && event_id == "$event-42:test"
+        ));
     }
 
     #[test]
     fn send_completion_race_delivers_completion_when_sent_event_arrives_first() {
-        let mut tracker = SendCompletionTracker::default();
-        let sdk_txn = "sdk-race-txn".to_owned();
-        let client_txn = "client-race-txn".to_owned();
-        let request_id = fake_rid(77);
-        let event_id = "$event-race".to_owned();
-
-        assert_eq!(
-            tracker.record_sent_event(sdk_txn.clone(), event_id.clone()),
-            None
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
+            "client-race-txn".to_owned(),
+            None,
+            fake_rid(77),
+            true,
         );
-        assert_eq!(
-            tracker.remember_pending_send(
-                sdk_txn.clone(),
-                client_txn.clone(),
-                None,
+        registration.activate();
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-race-txn".to_owned(),
+                event_id: "$event-race:test".to_owned(),
+            },
+        );
+        assert!(terminal_rx.try_recv().is_err());
+
+        registration.bind("sdk-race-txn".to_owned());
+        assert!(matches!(
+            terminal_rx.try_recv().expect("early completion correlated").completion,
+            Some(TimelineSendCompletionDelivery {
                 request_id,
+                transaction_id,
+                event_id,
+                ..
+            }) if request_id == fake_rid(77)
+                && transaction_id == "client-race-txn"
+                && event_id == "$event-race:test"
+        ));
+    }
+
+    #[test]
+    fn replacement_owner_preserves_pending_send_completion_correlation() {
+        let key = room_key();
+        let current_owner = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&current_owner),
+            ingress.clone(),
+            key.clone(),
+            "client-owner-handoff-txn".to_owned(),
+            None,
+            fake_rid(773),
+            true,
+        );
+        registration.activate();
+        registration.bind("sdk-owner-handoff-txn".to_owned());
+
+        let replacement_owner = Arc::clone(&current_owner);
+        drop(registration);
+        drop(current_owner);
+        apply_send_completion_observation_and_handoff(
+            &replacement_owner,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-owner-handoff-txn".to_owned(),
+                event_id: "$event-owner-handoff:test".to_owned(),
+            },
+        );
+        assert!(matches!(
+            terminal_rx.try_recv().expect("replacement completion").completion,
+            Some(TimelineSendCompletionDelivery {
+                request_id,
+                transaction_id,
+                event_id,
+                ..
+            }) if request_id == fake_rid(773)
+                && transaction_id == "client-owner-handoff-txn"
+                && event_id == "$event-owner-handoff:test"
+        ));
+    }
+
+    #[test]
+    fn duplicate_sent_event_after_completion_is_idempotent() {
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
+            "client-duplicate-txn".to_owned(),
+            None,
+            fake_rid(770),
+            true,
+        );
+        registration.activate();
+        registration.bind("sdk-duplicate-txn".to_owned());
+        for _ in 0..2 {
+            apply_send_completion_observation_and_handoff(
+                &coordinator,
+                &ingress,
+                key.room_id(),
+                SendCompletionObservation::Sent {
+                    sdk_transaction_id: "sdk-duplicate-txn".to_owned(),
+                    event_id: "$event-duplicate:test".to_owned(),
+                },
+            );
+        }
+
+        assert!(
+            terminal_rx
+                .try_recv()
+                .expect("first completion")
+                .completion
+                .is_some()
+        );
+        assert!(
+            terminal_rx.try_recv().is_err(),
+            "an overlapping observer must not emit twice"
+        );
+    }
+
+    #[test]
+    fn sent_event_before_pending_race_remains_idempotent_after_settlement() {
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
+            "client-early-duplicate-txn".to_owned(),
+            None,
+            fake_rid(771),
+            true,
+        );
+        registration.activate();
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-early-duplicate-txn".to_owned(),
+                event_id: "$event-early-duplicate:test".to_owned(),
+            },
+        );
+        registration.bind("sdk-early-duplicate-txn".to_owned());
+        assert!(
+            terminal_rx
+                .try_recv()
+                .expect("early completion")
+                .completion
+                .is_some()
+        );
+
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-early-duplicate-txn".to_owned(),
+                event_id: "$event-early-duplicate:test".to_owned(),
+            },
+        );
+        assert!(terminal_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn cancelled_completion_is_tombstoned_against_late_sent_event() {
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
+            "client-cancelled-txn".to_owned(),
+            None,
+            fake_rid(772),
+            true,
+        );
+        registration.activate();
+        registration.bind("sdk-cancelled-txn".to_owned());
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Cancelled {
+                sdk_transaction_id: "sdk-cancelled-txn".to_owned(),
+            },
+        );
+        assert!(
+            terminal_rx
+                .try_recv()
+                .expect("cancel terminal")
+                .action
+                .is_some()
+        );
+
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-cancelled-txn".to_owned(),
+                event_id: "$late-event:test".to_owned(),
+            },
+        );
+        assert!(terminal_rx.try_recv().is_err());
+        assert!(
+            coordinator
+                .lock()
+                .expect("send completion coordinator")
+                .settled_send_tombstones
+                .contains(&SendCorrelationKey {
+                    room_id: key.room_id().to_owned(),
+                    sdk_transaction_id: "sdk-cancelled-txn".to_owned(),
+                })
+        );
+    }
+
+    #[test]
+    fn unmatched_early_send_completions_survive_beyond_tombstone_history_bound() {
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let observed = MAX_SETTLED_SEND_TOMBSTONES + 64;
+        let mut registrations = Vec::with_capacity(observed);
+        for index in 0..observed {
+            let mut registration = SendCompletionRegistration::begin(
+                Arc::clone(&coordinator),
+                ingress.clone(),
+                key.clone(),
+                format!("client-early-{index}"),
+                None,
+                fake_rid(900 + index as u64),
                 true,
-            ),
-            Some((client_txn.clone(), None, request_id, event_id.clone()))
-        );
-        assert!(tracker.pending_sends.is_empty());
-        assert!(tracker.completed_sends.is_empty());
-    }
-
-    #[test]
-    fn media_pending_send_does_not_settle_text_composer() {
-        let mut tracker = SendCompletionTracker::default();
-        let sdk_txn = "sdk-media-txn".to_owned();
-        let client_txn = "client-media-txn".to_owned();
-        let request_id = fake_rid(78);
-        let event_id = "$event-media".to_owned();
-
+            );
+            registration.activate();
+            registrations.push(registration);
+        }
+        for index in 0..observed {
+            apply_send_completion_observation_and_handoff(
+                &coordinator,
+                &ingress,
+                key.room_id(),
+                SendCompletionObservation::Sent {
+                    sdk_transaction_id: format!("sdk-early-{index}"),
+                    event_id: format!("$event-early-{index}:test"),
+                },
+            );
+        }
         assert_eq!(
-            tracker.remember_pending_send(
-                sdk_txn.clone(),
-                client_txn.clone(),
-                None,
+            coordinator
+                .lock()
+                .expect("send completion coordinator")
+                .unmatched_terminals
+                .len(),
+            observed,
+            "active unmatched correlations are not tombstone history and must not be evicted"
+        );
+
+        registrations[0].bind("sdk-early-0".to_owned());
+        assert!(matches!(
+            terminal_rx.try_recv().expect("oldest early completion").completion,
+            Some(TimelineSendCompletionDelivery {
                 request_id,
-                false,
-            ),
-            None
-        );
-        assert_eq!(
-            tracker.record_sent_event(sdk_txn.clone(), event_id.clone()),
-            Some((client_txn, None, request_id, event_id, false))
-        );
+                event_id,
+                ..
+            }) if request_id == fake_rid(900) && event_id == "$event-early-0:test"
+        ));
     }
 
     #[test]
-    fn send_completion_tracker_preserves_submission_id_for_terminal_paths() {
-        let mut tracker = SendCompletionTracker::default();
+    fn settled_send_tombstones_are_bounded() {
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        for index in 0..=MAX_SETTLED_SEND_TOMBSTONES {
+            let sdk_transaction_id = format!("sdk-bounded-{index}");
+            let mut registration = SendCompletionRegistration::begin(
+                Arc::clone(&coordinator),
+                ingress.clone(),
+                key.clone(),
+                format!("client-bounded-{index}"),
+                None,
+                fake_rid(1200 + index as u64),
+                true,
+            );
+            registration.activate();
+            registration.bind(sdk_transaction_id.clone());
+            apply_send_completion_observation_and_handoff(
+                &coordinator,
+                &ingress,
+                key.room_id(),
+                SendCompletionObservation::Sent {
+                    sdk_transaction_id,
+                    event_id: format!("$event-bounded-{index}:test"),
+                },
+            );
+            assert!(
+                terminal_rx
+                    .try_recv()
+                    .expect("bounded completion")
+                    .completion
+                    .is_some()
+            );
+        }
+
+        let first = SendCorrelationKey {
+            room_id: key.room_id().to_owned(),
+            sdk_transaction_id: "sdk-bounded-0".to_owned(),
+        };
+        let newest = SendCorrelationKey {
+            room_id: key.room_id().to_owned(),
+            sdk_transaction_id: format!("sdk-bounded-{MAX_SETTLED_SEND_TOMBSTONES}"),
+        };
+        let coordinator_guard = coordinator.lock().expect("send completion coordinator");
+        assert_eq!(
+            coordinator_guard.settled_send_tombstones.len(),
+            MAX_SETTLED_SEND_TOMBSTONES
+        );
+        assert!(!coordinator_guard.settled_send_tombstones.contains(&first));
+        assert!(coordinator_guard.settled_send_tombstones.contains(&newest));
+        drop(coordinator_guard);
+
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: newest.sdk_transaction_id,
+                event_id: "$duplicate:test".to_owned(),
+            },
+        );
+        assert!(terminal_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn send_completion_coordinator_preserves_submission_id_for_terminal_paths() {
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
         let submission_id = SubmissionId::new("submission-terminal");
-        tracker.remember_pending_send(
-            "sdk-txn".to_owned(),
-            "client-txn".to_owned(),
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
+            "client-submission-terminal".to_owned(),
             Some(submission_id.clone()),
             fake_rid(7400),
             true,
         );
+        registration.activate();
+        registration.bind("sdk-submission-terminal".to_owned());
+
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::SendError {
+                sdk_transaction_id: "sdk-submission-terminal".to_owned(),
+            },
+        );
+        let failure = terminal_rx.try_recv().expect("submission send error");
         assert!(matches!(
-            tracker.record_send_error("sdk-txn"),
-            Some((_, Some(ref found), _, true)) if found == &submission_id
+            failure.action,
+            Some(AppAction::ComposerSubmissionSettled {
+                submission_id: found,
+                ..
+            }) if found == submission_id
         ));
-        assert!(matches!(
-            tracker.record_cancelled_event("sdk-txn"),
-            Some((_, Some(found), _, false)) if found == submission_id
-        ));
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Cancelled {
+                sdk_transaction_id: "sdk-submission-terminal".to_owned(),
+            },
+        );
+        let cancelled = terminal_rx.try_recv().expect("submission cancellation");
+        assert!(cancelled.action.is_none());
+        assert!(cancelled.completion.is_none());
+    }
+
+    #[test]
+    fn media_pending_send_does_not_settle_text_composer() {
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
+            "client-media-txn".to_owned(),
+            None,
+            fake_rid(78),
+            false,
+        );
+        registration.activate();
+        registration.bind("sdk-media-txn".to_owned());
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-media-txn".to_owned(),
+                event_id: "$event-media:test".to_owned(),
+            },
+        );
+        let terminal = terminal_rx.try_recv().expect("media completion");
+        assert!(terminal.action.is_none());
+        assert!(terminal.completion.is_some());
     }
 
     #[test]
@@ -30117,11 +35774,9 @@ mod tests {
     // --- Debug redaction of new types ---
 
     #[test]
-    fn timeline_actor_message_bodies_not_visible_in_send_text_debug() {
-        // TimelineActorMessage::SendText carries a body — it must not leak.
-        // The type is not pub, so we test the Debug output of the outer TimelineCommand
-        // which is already tested in tests.rs; this is an extra check for internal types.
-        // Since TimelineActorMessage is not exported, we only verify the public command.
+    fn timeline_send_command_bodies_are_not_visible_in_debug() {
+        // Manager-owned enqueue payloads originate from the public command, so
+        // its Debug implementation is the privacy boundary for the send body.
         let cmd = TimelineCommand::SendText {
             request_id: fake_rid(1),
             key: room_key(),
@@ -30197,6 +35852,107 @@ mod tests {
                 "missing timeline trace token {token}"
             );
         }
+    }
+
+    #[test]
+    fn manager_coordinator_fails_new_registration_on_exact_correlation_collision() {
+        let key = room_key();
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, mut terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut first = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
+            "client-collision-first".to_owned(),
+            None,
+            fake_rid(7422),
+            true,
+        );
+        first.activate();
+        first.bind("sdk-collision".to_owned());
+        let mut second = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
+            "client-collision-second".to_owned(),
+            None,
+            fake_rid(7423),
+            true,
+        );
+        second.activate();
+        second.bind("sdk-collision".to_owned());
+
+        let collision = terminal_rx
+            .try_recv()
+            .expect("exact correlation collision must fail safe");
+        assert!(matches!(
+            collision.failure,
+            Some(TimelineSendFailureDelivery {
+                request_id,
+                failure: CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::QueueOverflow,
+                },
+            }) if request_id == fake_rid(7423)
+        ));
+        assert!(matches!(
+            collision.action,
+            Some(AppAction::SendTextFailed { transaction_id, .. })
+                if transaction_id == "client-collision-second"
+        ));
+
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: "sdk-collision".to_owned(),
+                event_id: "$event-collision-first:test".to_owned(),
+            },
+        );
+        let first_completion = terminal_rx
+            .try_recv()
+            .expect("the original correlation owner must remain pending");
+        assert!(matches!(
+            first_completion.completion,
+            Some(TimelineSendCompletionDelivery { request_id, .. })
+                if request_id == fake_rid(7422)
+        ));
+    }
+
+    #[test]
+    fn same_room_thread_media_progress_does_not_borrow_room_request_correlation() {
+        let account = AccountKey("@media-progress:test".to_owned());
+        let room_key = TimelineKey::room(account.clone(), "!media-progress:test");
+        let thread_key = TimelineKey {
+            account_key: account,
+            kind: TimelineKind::Thread {
+                room_id: "!media-progress:test".to_owned(),
+                root_event_id: "$media-root:test".to_owned(),
+            },
+        };
+        let coordinator = SharedSendCompletionCoordinator::default();
+        let (ingress, _terminal_rx) = TimelineSendTerminalIngress::channel();
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&coordinator),
+            ingress,
+            room_key.clone(),
+            "client-media-progress".to_owned(),
+            None,
+            fake_rid(7424),
+            false,
+        );
+        registration.activate();
+        registration.bind("sdk-media-progress".to_owned());
+
+        assert_eq!(
+            media_upload_progress_identity(&coordinator, &room_key, "sdk-media-progress"),
+            ("client-media-progress".to_owned(), Some(fake_rid(7424)))
+        );
+        assert_eq!(
+            media_upload_progress_identity(&coordinator, &thread_key, "sdk-media-progress"),
+            ("sdk-media-progress".to_owned(), None),
+            "same-room thread presentation must not borrow room request correlation"
+        );
     }
 
     #[test]
@@ -30434,43 +36190,55 @@ mod tests {
             "handle_diff_batch must still emit ItemsUpdated on the non-restore branch"
         );
 
-        // 3. flush_restore_emit_buffer must emit ONE ItemsUpdated from the buffer.
-        let flush_src = production
-            .split("fn flush_restore_emit_buffer(")
-            .nth(1)
-            .expect("flush_restore_emit_buffer helper must exist")
+        // 3. Every real terminal delegates directly to the one
+        //    generation-fenced settlement boundary. The boundary drains the
+        //    buffer and emits ItemsUpdated, changed navigation, and terminal
+        //    as one lease-held group.
+        let finish_src = production
             .split("fn finish_anchor_restore(")
+            .nth(1)
+            .expect("finish_anchor_restore must exist")
+            .split("async fn emit_action_reliable")
             .next()
-            .expect("flush_restore_emit_buffer must end before finish_anchor_restore");
+            .expect("action helper must follow restore finish");
         assert!(
-            flush_src.contains("std::mem::take"),
-            "flush must drain the buffer with mem::take to avoid cloning"
+            finish_src.contains("publish_restore_settlement(Some((request_id, status)))"),
+            "real restore terminals must delegate to the atomic settlement"
+        );
+        let settlement_src = production
+            .split("fn publish_restore_settlement_with_lease(")
+            .nth(1)
+            .expect("restore settlement helper must exist")
+            .split("fn emit_initial_items_and_reconcile_replay_known_for_generation")
+            .next()
+            .expect("initial-items helper must follow restore settlement");
+        assert!(
+            settlement_src.contains("std::mem::take"),
+            "settlement must drain the buffer only after acquiring the lease"
         );
         assert!(
-            flush_src.contains("ItemsUpdated"),
-            "flush must emit exactly one ItemsUpdated from the drained buffer"
-        );
-        assert!(
-            flush_src.contains("emit_navigation_if_changed"),
-            "flush must refresh navigation after emitting the coalesced batch"
+            settlement_src.contains("TimelineEvent::NavigationUpdated")
+                && settlement_src.contains("TimelineEvent::AnchorRestoreFinished"),
+            "settlement must publish navigation and terminal under the same lease"
         );
 
-        // 4. finish_anchor_restore must call flush then emit_anchor_restore_finished.
+        // 4. finish_anchor_restore must use the atomic terminal settlement;
+        //    a second raw terminal emit would permit half-publication.
         let finish_src = production
             .split("fn finish_anchor_restore(")
             .nth(1)
             .expect("finish_anchor_restore wrapper must exist")
-            .split("fn flush_restore_emit_buffer(")
+            .split("fn emit_action_reliable")
             .next()
-            // May appear before the flush fn in source; accept any order.
-            .unwrap_or("");
-        // The wrapper is defined; search broadly for both calls in production.
+            .expect("reliable action helper must follow restore finish");
         assert!(
-            production.contains("flush_restore_emit_buffer()")
-                || production.contains("self.flush_restore_emit_buffer()"),
-            "finish_anchor_restore must call flush_restore_emit_buffer"
+            finish_src.contains("publish_restore_settlement(Some((request_id, status)))"),
+            "finish_anchor_restore must publish one atomic terminal settlement"
         );
-        let _ = finish_src; // used for the existence assertion above
+        assert!(
+            !finish_src.contains("emit_anchor_restore_finished"),
+            "finish_anchor_restore must not publish a second raw terminal"
+        );
 
         // 5. Every ACTIVE-restore terminal path must call finish_anchor_restore (not raw
         //    emit_anchor_restore_finished), ensuring the buffer is always flushed.
@@ -30596,15 +36364,105 @@ mod tests {
 
     // --- VectorDiff → TimelineDiff conversion ---
 
-    #[test]
-    fn sdk_vector_diff_converts_correctly() {
-        // We can't construct real SdkTimelineItems without the SDK runtime;
-        // instead test the conversion path shape by examining the match arms
-        // in sdk_vector_diff_to_timeline_diff are exhaustive for all diff kinds.
-        // This is verified by the compiler (no dead_code warnings).
-        // We document the PopBack → Truncate(0) and Append → Reset mappings here.
-        let _popback_maps_to_truncate: bool = true;
-        let _append_maps_to_reset: bool = true;
+    #[tokio::test]
+    async fn sdk_vector_diff_batch_preserves_prefix_for_append_and_pop_variants() {
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+        use matrix_sdk_test::{ALICE, JoinedRoomBuilder, event_factory::EventFactory};
+
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        client
+            .event_cache()
+            .subscribe()
+            .expect("event cache subscription");
+        let room_id = matrix_sdk::ruma::room_id!("!sdk-diff-shapes:example.org");
+        let room = server.sync_joined_room(&client, room_id).await;
+        let factory = EventFactory::new().room(room_id).sender(&ALICE);
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(room_id)
+                    .add_timeline_event(
+                        factory
+                            .text_msg("prefix-a")
+                            .event_id(matrix_sdk::ruma::event_id!("$prefix-a:example.org"))
+                            .into_raw_sync(),
+                    )
+                    .add_timeline_event(
+                        factory
+                            .text_msg("prefix-b")
+                            .event_id(matrix_sdk::ruma::event_id!("$prefix-b:example.org"))
+                            .into_raw_sync(),
+                    )
+                    .add_timeline_event(
+                        factory
+                            .text_msg("append-a")
+                            .event_id(matrix_sdk::ruma::event_id!("$append-a:example.org"))
+                            .into_raw_sync(),
+                    )
+                    .add_timeline_event(
+                        factory
+                            .text_msg("append-b")
+                            .event_id(matrix_sdk::ruma::event_id!("$append-b:example.org"))
+                            .into_raw_sync(),
+                    ),
+            )
+            .await;
+        let timeline = koushi_timeline_builder(
+            &room,
+            TimelineFocus::Live {
+                hide_threaded_events: false,
+            },
+        )
+        .build()
+        .await
+        .expect("room timeline");
+        let (sdk_items, _stream) = timeline.subscribe().await;
+        let event = |event_id: &str| {
+            sdk_items
+                .iter()
+                .find(|item| {
+                    item.as_event()
+                        .and_then(|event| event.event_id())
+                        .is_some_and(|candidate| candidate.as_str() == event_id)
+                })
+                .cloned()
+                .expect("fixture SDK event")
+        };
+        let key = TimelineKey::room(AccountKey(ALICE.to_string()), room_id.to_string());
+        let mut canonical = vec![
+            sdk_item_to_timeline_item(&key, &event("$prefix-a:example.org"), Some(&ALICE)),
+            sdk_item_to_timeline_item(&key, &event("$prefix-b:example.org"), Some(&ALICE)),
+        ];
+        let diffs = sdk_vector_diffs_to_timeline_diffs(
+            &[
+                eyeball_im::VectorDiff::Append {
+                    values: eyeball_im::Vector::from(vec![
+                        event("$append-a:example.org"),
+                        event("$append-b:example.org"),
+                    ]),
+                },
+                eyeball_im::VectorDiff::PopBack,
+                eyeball_im::VectorDiff::PopFront,
+            ],
+            canonical.len(),
+            &key,
+            Some(&ALICE),
+            &HashMap::new(),
+        );
+        apply_timeline_diffs_to_items(&mut canonical, &diffs);
+
+        assert_eq!(
+            canonical
+                .iter()
+                .filter_map(|item| match &item.id {
+                    TimelineItemId::Event { event_id } => Some(event_id.as_str()),
+                    TimelineItemId::Transaction { .. } | TimelineItemId::Synthetic { .. } => None,
+                })
+                .collect::<Vec<_>>(),
+            vec!["$prefix-b:example.org", "$append-a:example.org"],
+            "Append must retain the existing prefix and PopBack must remove only the live edge"
+        );
     }
 
     // --- Navigation snapshot read-marker display anchor ---

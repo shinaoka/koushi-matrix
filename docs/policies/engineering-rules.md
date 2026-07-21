@@ -7,7 +7,7 @@ build gates. AGENTS.md remains the operational how-to (permissions, install
 caveats, recovery steps); durable rules discovered there are promoted to
 REPOSITORY_RULES.md or this document.
 
-Last amended: 2026-07-17.
+Last amended: 2026-07-20.
 
 ## Secrets and Private Data
 
@@ -309,7 +309,12 @@ Rules:
 ## Async and Runtime
 
 1. No fixed sleeps in QA or product code waiting for Matrix effects — wait
-   on events with timeouts.
+   on events with timeouts. A multi-event waiter owns one monotonic absolute
+   deadline for the whole operation and passes that same deadline through
+   every loop iteration and nested phase. Never recreate a relative timeout
+   around each received event: an unrelated continuous sync stream would then
+   postpone failure forever. Timeout diagnostics identify the typed phase and
+   private-data-free observed state needed to locate the missing transition.
 2. Store-backed Matrix SDK clients must be dropped while a Tokio runtime
    context is entered; otherwise `deadpool-runtime` panics with
    "there is no reactor running".
@@ -415,7 +420,40 @@ Rules:
 9. State-critical actor actions are reliable messages, not lossy hints. Do not
    ignore failed reducer-action sends for transitions that set or clear pending
    user-visible state. Await the send, retry through the owner, or emit a
-   correlated operation failure that leaves no stuck pending state.
+   correlated operation failure that leaves no stuck pending state. Once a
+   command accepts a user-intent submission, terminal observation and
+   request/submission correlation must be owned by a component whose lifetime
+   spans every replaceable presentation actor involved in that operation. An
+   unsubscribe, room switch, actor crash, or resubscribe must not discard the
+   accepted operation. Lossy observer lag becomes an immediate, correlated,
+   private-data-safe failure rather than a fixed-delay wait. Shutdown must drain
+   accepted operation futures while terminal admission remains live,
+   synchronously drop cooperative futures remaining at the shared deadline,
+   then drop terminal observers, drain their reliable handoff, and only then
+   acknowledge the owning actor's teardown. The enqueue future itself shares
+   that stable owner: a replaceable presentation actor must not await it, and
+   dropping a raw task handle must not detach it. Prefer owner-polled boxed
+   futures when unexpected synchronous teardown is required; isolate their
+   panics with a fail-closed unwind boundary. Such futures must obey the async
+   contract that every poll returns. After admission, the owner must drive the
+   specific accepted future through its reducer permit to a one-shot signal at
+   the start of payload-specific preflight before returning to unrelated command
+   traffic; polling one arbitrary ready future is not causal proof for the new
+   worker. Payload preflight may suspend, so this signal does not promise
+   cross-worker SDK enqueue order. Later FIFO retry scheduling remains SDK-owned.
+   An unexpected stable-owner drop closes
+   terminal admission, synchronously drops operation futures, then drops the
+   terminal observer. A waiter that combines an authoritative snapshot
+   with an event stream treats the stream only as a wake signal: check the
+   predicate before blocking and perform one final authoritative observation
+   after timeout, closure, or lag before reporting failure. That final check
+   uses the same monotonic absolute deadline and must not create a fresh wait
+   interval. This prevents a commit that lands immediately after the last
+   broadcast from becoming a false timeout. When a media enqueue succeeds, its
+   manager-owned worker publishes `MediaSendQueued` before binding the SDK
+   transaction to any terminal already retained by the completion coordinator.
+   A pre-bind `Sent`/failure/cancel observation must never overtake the queue
+   acknowledgement; select-branch priority is not an ordering fence.
 10. If a reducer returns an `AppEffect` that matters in production, the
    production runtime executes it or the behavior is redesigned as an explicit
    `CoreCommand`/actor command. Discarding such effects is allowed only for
@@ -436,8 +474,9 @@ Rules:
    every small-account headless lane.
 12. User-intent commands resolve to a correlated, observable terminal outcome —
    never a silent no-op. A foreground one-shot command
-   (`SelectRoom`/`SelectSpace`, send/edit/redact, pin/unpin, mark-read, invite
-   accept/decline, start DM, join/leave) carries its `request_id` end to end and
+   (account restore/login/logout, `SelectRoom`/`SelectSpace`, send/edit/redact,
+   pin/unpin, mark-read, invite accept/decline, start DM, join/leave) carries
+   its `request_id` end to end and
    settles as exactly one of `committed`, `benign-noop(reason)`, or
    `failed-noop(reason)`. A reducer that returns `Vec::new()` for such a command
    (room absent from `state.rooms`, session not ready) MUST surface that as a
@@ -448,7 +487,12 @@ Rules:
    #116 blocker was three stacked silent no-ops (`handle_select_room`
    `Vec::new()` → empty `build_state_delta` → neither `StateDelta` nor
    `StateChanged` → opaque 10s timeout) that collapsed four distinct failure
-   modes into one undiagnosable string.
+   modes into one undiagnosable string. Reducer projection is also an admission
+   boundary: if the projected action is rejected in the current state, emit
+   exactly one correlated typed failure and do not route the command. Separate
+   operation-event and snapshot lanes may arrive in either order; a follow-up
+   that depends on authoritative state must observe both its terminal and the
+   required snapshot state before submitting.
 13. Telemetry and diagnostics travel on a dedicated lane, not the product-state
    channel. Lifecycle/diagnostic events such as `CoreEvent::IntentLifecycle` are
    never folded into product `StateDelta`/`StateChanged`, never drive product
@@ -461,7 +505,14 @@ Rules:
    single-value, target-keyed correlation map that overwrites an in-flight
    `request_id` — leaving the older request unsettled until its timeout — is
    forbidden; use a per-target FIFO queue or carry the `request_id` on the
-   projected action.
+   projected action. Ordered timeline shutdown gives the entire manager-owned
+   enqueue-worker set one absolute, count-independent five-second graceful
+   deadline while terminal ingress and its global observer remain live. On
+   expiry, synchronously drop remaining manager-polled futures before dropping
+   the observer and draining terminal ingress. A future that blocks inside
+   `poll` violates the async contract and is not a supported worker shape;
+   production enqueue futures must return `Pending` instead. Per-worker graceful timeouts remain forbidden because they
+   make shutdown latency scale with worker count.
 15. Every user-intent command class ships a real-account-shaped scale stress
    test (about 110 rooms / 5 spaces / 57 DMs) that drives the real command path
    and asserts the lifecycle invariant — every submission reaches a terminal
@@ -474,8 +525,140 @@ Rules:
    Ready is projected, and normal SyncActor ownership begins only after the
    projection acknowledgement. Do not add an admission-only full-state sync,
    share an incompatible restricted token with normal sync, or retain a
-   restricted lane beside normal sync. Network catch-up failure does not revoke
-   authoritative Verified trust; it is normal Ready-shell sync state.
+   restricted lane beside normal sync. A manual `SyncOnce` is permitted only
+   when no continuous or restricted owner is active for that SDK client; QA
+   must await typed event/state conditions instead of overlapping cursor
+   owners. Enforce that rule at both routing boundaries: reject before
+   `SyncActor` routing while `AccountActor` owns restricted sync, and reject
+   before the SDK one-shot call while a continuous owner or any of its task,
+   service, backend, or stop-handle artifacts remains. Network catch-up failure
+   does not revoke authoritative Verified trust; it is normal Ready-shell sync
+   state. Replayed verification starts are
+   idempotent: the SDK and owning actor adopt one SAS continuation per flow and
+   never replace its handle, observer, timeout, or acceptance on replay.
+   A QA device-readiness checkpoint may use the `qa-bin`-only read-only
+   user-key refresh plus exact-device acknowledgement. It must not use a
+   verification request/cancellation pair as a probe or expose the target in
+   diagnostics. That receiver acknowledgement must precede a fresh device's
+   verification send, and paired progress must wait on either event stream with
+   one absolute deadline rather than fixed-interval polling. If a valid
+   to-device verification request arrives before sender-device discovery, the
+   crypto boundary retains a bounded, timestamp-valid, sender/flow-deduplicated
+   pending entry, schedules only the existing key-query owner, and revalidates
+   it after matching keys commit. Missing, expired, duplicate, and capacity
+   cases must be tested. A failed schedule or replay must retain the original
+   FIFO slot, while a successfully scheduled duplicate must not create another
+   query. Recovery must not add a sync owner, blind resend, fixed sleep, raw SDK
+   error, or protocol identifier to diagnostics. Successful deferred
+   materialization and normal materialization queue the same stable SDK handle
+   in one typed lease stream. Unknown pending entries, publications, subscriber
+   generation, and active head claim share one owner lock and one total bound of
+   32; an active lease consumes its slot, commit pops it, and drop releases it in
+   place. Pending replay changes its existing slot into a publication under the
+   same lock. Generation check and claim are one linearization point. Do not
+   nest this owner lock with the request cache or hold it across async/fallible
+   work. Capacity is strict FIFO: never evict an existing pending entry,
+   publication, or active lease to admit a newcomer. At capacity, explicitly
+   terminally cancel a newly materialized request and queue its protocol cancel;
+   do not retain or schedule a key query for a newest unknown-device request.
+   Never rely on server redelivery after cursor advancement for a materialized
+   request. Same-flow insertion must not upgrade unrelated cached provenance.
+   Koushi consumes only the typed to-device stream and commits after its product
+   channel accepts an actionable handle; terminal heads commit immediately.
+   Generic raw SDK handlers are independent compatibility fanout and may repeat
+   after partial cancellation. Treat transport as at-least-once with stable
+   `(sender, flow_id)` identity, and enforce product idempotence in
+   `AccountActor` with the full `VerificationTarget` plus flow id: only the same
+   peer, device, and flow is a no-op. A different target or flow, including a
+   colliding flow id from another peer or device, is explicitly cancelled as a
+   conflict. Treat an active own-user verification, including its pre-SAS
+   request phase, as a conflict with every incoming request: it owns the shared
+   continuation/observer slots and has no typed incoming identity for replay
+   matching, so cancellation must precede handle or observer adoption. Replayed
+   SAS adoption is also a no-op; distinct conflicting SAS handles must be
+   rejected without raw error data. Do not
+   extend an existing public exhaustive SDK enum to carry internal dispatch
+   state. Replacing a session or observer requires stop-and-join of the old
+   Account forwarder and SDK typed-lease worker before installing the new owner.
+   Remove the old room handler before replacement; SDK sync dispatch owns and
+   awaits any callback future already dispatched, so old `SyncActor`
+   stop-and-join is the callback settlement barrier. Carry a
+   dedicated session generation on observer-to-actor messages and reject stale
+   or sessionless work before adoption. A mailbox send must race stop with stop
+   priority; join uses a bounded timeout, then aborts and awaits settlement.
+   Crypto/client delivery `Debug` output must not expose request, owner, client,
+   account, device, transaction, or identity-key internals. Model pending query
+   ownership explicitly rather than with one scheduling boolean. Acquire a
+   response RAII claim before key-response processing; cancellation/error before
+   or after durable commit returns only that token's claimed entries to
+   `NeedsQuery`, while normal still-missing completion explicitly enters
+   `WaitingForExternalUpdate`. Never perform a sender-wide retry reset: a newer
+   same-sender response may own a distinct response or replay claim.
+   Generated key queries must retain an exact, stable
+   `request_id -> covered users` mapping, dirty-state sequence, and request until
+   all outer response-associated verification recovery succeeds. Cancellation
+   or recovery failure must preserve the original mapping and request ID for
+   retry. Repeated, concurrent, or cancelled request collection must not clear
+   or replace another in-flight mapping; reuse existing requests and create
+   requests only for uncovered dirty users. Revalidate and register the final
+   dirty snapshot while response cleanup is excluded; never insert from a stale
+   pre-await snapshot. Serialize complete same-ID response-associated processing
+   with the stable entry's async gate, awaited without any registry or store
+   guard. Revalidate the pointer-matched entry after acquisition before taking
+   coverage or claiming recovery. Success consumes that entry; failure or
+   cancellation preserves it for the next waiter, and a waiter after successful
+   consumption has no metadata obligation. Different request IDs must remain
+   concurrent. Scope verification
+   recovery to exactly the union of the response `device_keys`
+   users and that request's covered users, including failure-only responses
+   with no returned keys. Overlapping committed responses require a per-entry
+   generation handoff: a replay owner must consume a deferred newer generation
+   before entering `WaitingForExternalUpdate`. Do not log request IDs, covered
+   users, sender/device/flow IDs, or raw response/error data on these paths.
+   Multi-stage QA must thread participant ownership through typed helper inputs.
+   A later stage borrows an already-live role without creating or cleaning up a
+   duplicate; a focused stage may own one participant when none exists. It must
+   not hard-code bootstrap for an initialized account, manufacture a duplicate
+   device, stop another valid owner to avoid a protocol race, guess the gate
+   from timing, or hide a setup mismatch with retries or a longer timeout.
+   Ownership starts before fallible login submission and records enough phase
+   to clean an unsubmitted runtime, a submitted provisional session, or a keyed
+   logged-in session without guessing. Error paths attempt cleanup for every
+   owned participant, preserve borrowed participants for their outer owner, and
+   order logout confirmation before connection drop and runtime shutdown.
+   Logout confirmation follows the authoritative-snapshot waiter rule above,
+   including a final `SignedOut` read after timeout, lag, or closure under the
+   original deadline. Failure-injection acceptance drives each ownership phase
+   through the behavioral cleanup boundary and asserts logout/barrier/drop/
+   shutdown order plus continuation to the remaining owners. Source-text
+   inventory guards alone are not evidence.
+   A verification-only filtered sync must use `NoToken` and the SDK's opt-in
+   non-persisting-token mode. It still saves crypto/device/to-device state and
+   invokes handlers, but it must not write its filter-scoped `next_batch` as the
+   global room cursor. Do not compensate after the write with a process-local or
+   separately persisted taint ledger. A fresh store stays tokenless; a restored
+   canonical cursor survives restricted sync, runtime destruction, account
+   switching, and store reopen and remains incremental for normal sync. Never
+   infer cursor validity from a server family, an empty room list, elapsed time,
+   or a successful crypto gate.
+17. A bounded materialized view's diff stream is not proof that every source
+   domain represented beside that view is unchanged. If authoritative state can
+   commit outside the bounded window, the owning observer must consume a
+   post-commit source signal as a wake-up and reconcile only the affected
+   fingerprint. Coalesce queued wakes, perform one bounded reconciliation after
+   lag, and keep auxiliary-channel closure from killing the authoritative
+   observer. The auxiliary signal must not create a second network/sync owner,
+   and high-frequency unrelated updates must be proven not to trigger full-view
+   normalization.
+18. A protocol version advertisement is not proof that the operation semantics
+   needed by the product are complete. Probe the narrow authenticated behavior
+   before creating its authoritative owner, with one end-to-end deadline that
+   includes authentication refresh/retry. Treat omitted required response
+   structure, typed/malformed failure, and deadline expiry as unsupported;
+   discard any cursor or product payload returned by the preflight. Capability
+   checks must not fingerprint server families or become a second polling/sync
+   owner. Cover success, omission, malformed/error, timeout, and stalled token
+   refresh with behavioral tests.
 
 ## GUI Automation
 
