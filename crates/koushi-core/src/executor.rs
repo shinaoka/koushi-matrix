@@ -9,6 +9,7 @@ use std::future::Future;
 use std::time::Duration;
 
 pub use tokio::task::JoinHandle;
+pub use tokio::time::Instant;
 
 pub fn spawn<F>(future: F) -> JoinHandle<F::Output>
 where
@@ -35,6 +36,15 @@ pub async fn timeout<F: Future>(
     future: F,
 ) -> Result<F::Output, TimeoutElapsed> {
     tokio::time::timeout(duration, future)
+        .await
+        .map_err(|_| TimeoutElapsed)
+}
+
+pub async fn timeout_at<F: Future>(
+    deadline: Instant,
+    future: F,
+) -> Result<F::Output, TimeoutElapsed> {
+    tokio::time::timeout_at(deadline, future)
         .await
         .map_err(|_| TimeoutElapsed)
 }

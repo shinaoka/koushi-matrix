@@ -1109,6 +1109,7 @@ pub enum AccountCommand {
     QaSetLocalDeviceBlacklisted {
         request_id: RequestId,
         target: VerificationTarget,
+        room_id: String,
         acknowledged: tokio::sync::oneshot::Sender<Result<(), ()>>,
     },
     #[cfg(feature = "qa-bin")]

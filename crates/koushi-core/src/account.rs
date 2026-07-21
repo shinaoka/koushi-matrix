@@ -95,6 +95,7 @@ const SERVER_LOGOUT_TIMEOUT: Duration = Duration::from_secs(10);
 const ACCOUNT_HYDRATION_TIMEOUT: Duration = Duration::from_secs(10);
 const VERIFICATION_METHOD_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 const IDENTITY_RESET_AUTH_TIMEOUT: Duration = Duration::from_secs(300);
+const INCOMING_VERIFICATION_OBSERVER_JOIN_TIMEOUT: Duration = Duration::from_millis(100);
 const OIDC_REDIRECT_URI: &str = "koushi-desktop://auth/callback";
 /// Redacted message used in reducer error projections (never raw SDK text).
 const RESTORE_FAILED_MESSAGE: &str = "session restore failed";
@@ -417,6 +418,7 @@ pub enum AccountMessage {
         flow_id: u64,
     },
     IncomingVerificationRequest {
+        generation: u64,
         target: VerificationTarget,
         handle: koushi_sdk::MatrixVerificationRequestHandle,
     },
@@ -480,6 +482,44 @@ struct VerificationObservation {
 struct IncomingVerificationObservation {
     stop_tx: oneshot::Sender<()>,
     task: crate::executor::JoinHandle<()>,
+    observer: koushi_sdk::MatrixIncomingVerificationRequestObserver,
+}
+
+async fn send_incoming_verification_message_until_stopped<T>(
+    sender: &mpsc::Sender<T>,
+    message: T,
+    stop_rx: &mut oneshot::Receiver<()>,
+) -> bool {
+    tokio::select! {
+        biased;
+        _ = stop_rx => false,
+        result = sender.send(message) => result.is_ok(),
+    }
+}
+
+async fn stop_incoming_verification_observation(observation: IncomingVerificationObservation) {
+    stop_incoming_verification_observation_with_timeout(
+        observation,
+        INCOMING_VERIFICATION_OBSERVER_JOIN_TIMEOUT,
+    )
+    .await;
+}
+
+async fn stop_incoming_verification_observation_with_timeout(
+    observation: IncomingVerificationObservation,
+    timeout: Duration,
+) {
+    let IncomingVerificationObservation {
+        stop_tx,
+        mut task,
+        mut observer,
+    } = observation;
+    let _ = stop_tx.send(());
+    if executor::timeout(timeout, &mut task).await.is_err() {
+        task.abort();
+        let _ = task.await;
+    }
+    observer.shutdown().await;
 }
 
 struct SessionChangeObservation {
@@ -616,6 +656,49 @@ enum SasAdoptionDecision {
     Conflict,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IncomingVerificationRequestDecision {
+    Adopt,
+    Replay,
+    Conflict,
+}
+
+#[derive(Clone, Copy)]
+struct IncomingVerificationActivity<'a> {
+    active_request: Option<(&'a VerificationTarget, &'a str)>,
+    sas_active: bool,
+    own_user_active: bool,
+}
+
+fn classify_incoming_verification_request(
+    activity: IncomingVerificationActivity<'_>,
+    incoming_target: &VerificationTarget,
+    incoming_flow_id: &str,
+) -> IncomingVerificationRequestDecision {
+    if activity.own_user_active {
+        return IncomingVerificationRequestDecision::Conflict;
+    }
+
+    match activity.active_request {
+        Some((active_target, active_flow_id))
+            if active_target == incoming_target && active_flow_id == incoming_flow_id =>
+        {
+            IncomingVerificationRequestDecision::Replay
+        }
+        Some(_) => IncomingVerificationRequestDecision::Conflict,
+        None if activity.sas_active => IncomingVerificationRequestDecision::Conflict,
+        None => IncomingVerificationRequestDecision::Adopt,
+    }
+}
+
+fn incoming_verification_request_is_current(
+    message_generation: u64,
+    current_generation: u64,
+    has_session: bool,
+) -> bool {
+    has_session && message_generation == current_generation
+}
+
 fn classify_sas_adoption(
     active_flow_id: Option<u64>,
     incoming_flow_id: u64,
@@ -625,6 +708,23 @@ fn classify_sas_adoption(
         Some(active_flow_id) if active_flow_id == incoming_flow_id => SasAdoptionDecision::Replay,
         Some(_) => SasAdoptionDecision::Conflict,
     }
+}
+
+async fn resolve_sas_adoption<F, Fut>(
+    active_flow_id: Option<u64>,
+    incoming_flow_id: u64,
+    reject_conflict: F,
+) -> (SasAdoptionDecision, Option<bool>)
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = bool>,
+{
+    let decision = classify_sas_adoption(active_flow_id, incoming_flow_id);
+    let rejection_succeeded = match decision {
+        SasAdoptionDecision::Conflict => Some(reject_conflict().await),
+        SasAdoptionDecision::Adopt | SasAdoptionDecision::Replay => None,
+    };
+    (decision, rejection_succeeded)
 }
 
 fn sas_verification_event(stage: &'static str, flow_id: u64) -> DiagnosticEvent {
@@ -782,6 +882,10 @@ fn should_report_restricted_sync_failure(failure_reported: &mut bool, succeeded:
 
 fn restricted_sync_blocks_sync_once(restricted_sync_active: bool, command: &SyncCommand) -> bool {
     restricted_sync_active && matches!(command, SyncCommand::SyncOnce { .. })
+}
+
+fn begin_restricted_sync_cursor_attempt(restricted_sync_active: bool) -> bool {
+    !restricted_sync_active
 }
 
 #[cfg(feature = "qa-bin")]
@@ -943,6 +1047,8 @@ pub struct AccountActor {
     synthetic_verification: Option<(u64, VerificationTarget)>,
     /// SDK incoming verification request observer for the active session.
     incoming_verification_observer: Option<IncomingVerificationObservation>,
+    /// Epoch attached to incoming verification messages from the active SDK client.
+    incoming_verification_session_generation: u64,
     /// SDK session-change observer for auth invalidation / soft logout.
     session_change_observer: Option<SessionChangeObservation>,
     /// Optional profile/account-data hydration task for the active session.
@@ -1064,6 +1170,7 @@ impl AccountActor {
             #[cfg(test)]
             synthetic_verification: None,
             incoming_verification_observer: None,
+            incoming_verification_session_generation: 0,
             session_change_observer: None,
             account_hydration_task: None,
             account_hydration_generation: 0,
@@ -1650,10 +1757,20 @@ impl AccountActor {
                         .await;
                     }
                 }
-                AccountMessage::IncomingVerificationRequest { target, handle } => {
-                    let request_id = self.next_incoming_verification_request_id();
-                    self.handle_incoming_verification_request(request_id, target, handle)
-                        .await;
+                AccountMessage::IncomingVerificationRequest {
+                    generation,
+                    target,
+                    handle,
+                } => {
+                    if incoming_verification_request_is_current(
+                        generation,
+                        self.incoming_verification_session_generation,
+                        self.session.is_some(),
+                    ) {
+                        let request_id = self.next_incoming_verification_request_id();
+                        self.handle_incoming_verification_request(request_id, target, handle)
+                            .await;
+                    }
                 }
                 AccountMessage::SessionInvalidated { soft_logout } => {
                     self.handle_session_invalidated(soft_logout).await;
@@ -2592,24 +2709,34 @@ impl AccountActor {
         self.recovery_observer = Some(RecoveryStateObservation { stop_tx, task });
     }
 
-    fn start_incoming_verification_observer(&mut self, session: Arc<MatrixClientSession>) {
+    async fn start_incoming_verification_observer(&mut self, session: Arc<MatrixClientSession>) {
+        self.incoming_verification_session_generation = self
+            .incoming_verification_session_generation
+            .wrapping_add(1);
+        let generation = self.incoming_verification_session_generation;
         let (stop_tx, mut stop_rx) = oneshot::channel();
-        let mut observer = koushi_sdk::observe_incoming_verification_requests(&session);
+        let mut observer = koushi_sdk::observe_incoming_verification_requests(&session).await;
+        let mut receiver = observer
+            .take_receiver()
+            .expect("incoming verification observer receiver is available once");
         let tx = self.self_tx.clone();
         let task = crate::executor::spawn(async move {
             loop {
                 tokio::select! {
                     _ = &mut stop_rx => break,
-                    request = observer.recv() => {
+                    request = receiver.recv() => {
                         let Some(request) = request else { break };
                         let (target, handle) = request.into_parts();
-                        if tx
-                            .send(AccountMessage::IncomingVerificationRequest {
+                        if !send_incoming_verification_message_until_stopped(
+                            &tx,
+                            AccountMessage::IncomingVerificationRequest {
+                                generation,
                                 target,
                                 handle,
-                            })
-                            .await
-                            .is_err()
+                            },
+                            &mut stop_rx,
+                        )
+                        .await
                         {
                             break;
                         }
@@ -2617,8 +2744,11 @@ impl AccountActor {
                 }
             }
         });
-        self.incoming_verification_observer =
-            Some(IncomingVerificationObservation { stop_tx, task });
+        self.incoming_verification_observer = Some(IncomingVerificationObservation {
+            stop_tx,
+            task,
+            observer,
+        });
     }
 
     fn start_session_change_observer(&mut self, session: Arc<MatrixClientSession>) {
@@ -2678,9 +2808,11 @@ impl AccountActor {
     }
 
     async fn stop_incoming_verification_observer(&mut self) {
+        self.incoming_verification_session_generation = self
+            .incoming_verification_session_generation
+            .wrapping_add(1);
         if let Some(observation) = self.incoming_verification_observer.take() {
-            let _ = observation.stop_tx.send(());
-            let _ = observation.task.await;
+            stop_incoming_verification_observation(observation).await;
         }
     }
 
@@ -2963,6 +3095,7 @@ impl AccountActor {
             #[cfg(feature = "qa-bin")]
             AccountCommand::QaSetLocalDeviceBlacklisted {
                 target,
+                room_id,
                 acknowledged,
                 ..
             } => {
@@ -2981,7 +3114,10 @@ impl AccountActor {
                     device
                         .set_local_trust(matrix_sdk_base::crypto::LocalTrust::BlackListed)
                         .await
-                        .map_err(|_| ())
+                        .map_err(|_| ())?;
+                    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| ())?;
+                    let room = session.client().get_room(&room_id).ok_or(())?;
+                    room.discard_room_key().await.map_err(|_| ())
                 }
                 .await;
                 let _ = acknowledged.send(result);
@@ -3356,17 +3492,26 @@ impl AccountActor {
         target: VerificationTarget,
         handle: koushi_sdk::MatrixVerificationRequestHandle,
     ) {
-        if self
+        let active_request = self
             .verification_request
             .as_ref()
-            .is_some_and(|pending| pending.handle.flow_id() == handle.flow_id())
-        {
-            return;
-        }
-
-        if self.verification_request.is_some() || self.sas_verification.is_some() {
-            let _ = koushi_sdk::cancel_verification_request(&handle).await;
-            return;
+            .map(|pending| (&pending.target, pending.handle.flow_id()));
+        let decision = classify_incoming_verification_request(
+            IncomingVerificationActivity {
+                active_request,
+                sas_active: self.sas_verification.is_some(),
+                own_user_active: self.own_user_verification.is_some(),
+            },
+            &target,
+            handle.flow_id(),
+        );
+        match decision {
+            IncomingVerificationRequestDecision::Adopt => {}
+            IncomingVerificationRequestDecision::Replay => return,
+            IncomingVerificationRequestDecision::Conflict => {
+                let _ = koushi_sdk::cancel_verification_request(&handle).await;
+                return;
+            }
         }
 
         self.verification_request = Some(PendingVerificationRequest {
@@ -4357,11 +4502,29 @@ impl AccountActor {
             .sas_verification
             .as_ref()
             .map(|pending| pending.request_id.sequence);
-        if !matches!(
-            classify_sas_adoption(active_flow_id, request_id.sequence),
-            SasAdoptionDecision::Adopt
-        ) {
-            return;
+        let (decision, conflict_rejection_succeeded) =
+            resolve_sas_adoption(active_flow_id, request_id.sequence, || async {
+                koushi_sdk::cancel_sas_verification(&handle).await.is_ok()
+            })
+            .await;
+        match decision {
+            SasAdoptionDecision::Adopt => {}
+            SasAdoptionDecision::Replay => return,
+            SasAdoptionDecision::Conflict => {
+                record_sas_verification_event(
+                    sas_verification_event("conflicting_sas_rejected", request_id.sequence).field(
+                        DiagnosticField::token(
+                            "outcome",
+                            if conflict_rejection_succeeded == Some(true) {
+                                "success"
+                            } else {
+                                "failed"
+                            },
+                        ),
+                    ),
+                );
+                return;
+            }
         }
 
         self.stop_sas_verification_observer().await;
@@ -6027,6 +6190,14 @@ impl AccountActor {
             }
         };
 
+        // The locked session's observers own SDK streams and therefore keep the old client
+        // alive. Stop and join them before replacing the session or subscribing successors.
+        self.record_lifecycle_probe("recovery_observer_stop_requested");
+        self.stop_recovery_observer().await;
+        self.record_lifecycle_probe("recovery_observer_terminated");
+        self.record_lifecycle_probe("incoming_verification_observer_stop_requested");
+        self.stop_incoming_verification_observer().await;
+        self.record_lifecycle_probe("incoming_verification_observer_terminated");
         self.stop_session_change_observer().await;
         self.invalidate_account_hydration();
         drop(self.session.take());
@@ -6052,6 +6223,9 @@ impl AccountActor {
         self.pending_uia_operations.clear();
         self.session = Some(session_arc.clone());
         self.session_key_id = Some(key_id);
+        self.record_lifecycle_probe("incoming_verification_observer_subscribing");
+        self.start_incoming_verification_observer(session_arc.clone())
+            .await;
         self.spawn_sync_actor(session_arc.clone()).await;
 
         let account_key = account_key_from_info(&info);
@@ -6072,7 +6246,7 @@ impl AccountActor {
         self.spawn_account_hydration(session_arc.clone());
 
         self.start_recovery_observer(session_arc.clone());
-        self.start_incoming_verification_observer(session_arc.clone());
+        self.record_lifecycle_probe("recovery_observer_started");
         self.start_session_change_observer(session_arc);
     }
 
@@ -6663,7 +6837,7 @@ impl AccountActor {
         generation: u64,
         transition_id: u64,
     ) {
-        if self.restricted_sync.is_some() {
+        if !begin_restricted_sync_cursor_attempt(self.restricted_sync.is_some()) {
             return;
         }
         record_verification_admission_event(verification_admission_event(
@@ -7007,6 +7181,8 @@ impl AccountActor {
             self.restricted_sync.is_none(),
             "normal sync cannot start before restricted sync ownership is released"
         );
+        self.start_incoming_verification_observer(session.clone())
+            .await;
         self.spawn_sync_actor(session.clone()).await;
         record_verification_admission_event(verification_admission_event(
             "normal_sync_started",
@@ -7015,7 +7191,6 @@ impl AccountActor {
         ));
         self.spawn_account_hydration(session.clone());
         self.start_recovery_observer(session.clone());
-        self.start_incoming_verification_observer(session.clone());
         self.start_session_change_observer(session);
         self.session_promoted = true;
         for event in std::mem::take(&mut self.pending_ready_events) {
@@ -8052,6 +8227,7 @@ fn classify_auth_error(error: &koushi_sdk::PasswordLoginError) -> AuthFailureKin
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering;
     use std::{fs, path::Path};
 
     use futures_util::stream;
@@ -8215,6 +8391,12 @@ mod tests {
     }
 
     #[test]
+    fn restricted_sync_attempt_starts_only_without_an_active_owner() {
+        assert!(begin_restricted_sync_cursor_attempt(false));
+        assert!(!begin_restricted_sync_cursor_attempt(true));
+    }
+
+    #[test]
     fn first_restricted_sync_ack_rejects_stale_torn_down_and_promoted_sessions() {
         assert!(first_restricted_sync_is_current(4, 4, true, false));
         assert!(!first_restricted_sync_is_current(3, 4, true, false));
@@ -8285,14 +8467,18 @@ mod tests {
             .expect("project_sas_state should follow SAS handle adoption");
 
         let classify = body
-            .find("classify_sas_adoption(")
+            .find("resolve_sas_adoption(")
             .expect("SAS handle adoption must classify the incoming flow");
         let early_return = body
             .find("return;")
-            .expect("replayed or conflicting active SAS flows must be no-ops");
+            .expect("replayed or conflicting active SAS flows must exit before adoption");
         assert!(
             classify < early_return,
             "the adoption decision must be made before its no-op return"
+        );
+        assert!(
+            body.contains("koushi_sdk::cancel_sas_verification(&handle)"),
+            "a distinct conflicting SAS handle must be explicitly rejected"
         );
 
         for side_effect in [
@@ -8322,6 +8508,261 @@ mod tests {
         assert_eq!(
             classify_sas_adoption(Some(41), 42),
             SasAdoptionDecision::Conflict
+        );
+    }
+
+    #[tokio::test]
+    async fn sas_replay_is_noop_but_conflict_runs_explicit_rejection() {
+        let replay_rejections = Arc::new(AtomicU64::new(0));
+        let replay = resolve_sas_adoption(Some(41), 41, {
+            let replay_rejections = Arc::clone(&replay_rejections);
+            move || async move {
+                replay_rejections.fetch_add(1, Ordering::SeqCst);
+                true
+            }
+        })
+        .await;
+        assert_eq!(replay, (SasAdoptionDecision::Replay, None));
+        assert_eq!(replay_rejections.load(Ordering::SeqCst), 0);
+
+        let conflict_rejections = Arc::new(AtomicU64::new(0));
+        let conflict = resolve_sas_adoption(Some(41), 42, {
+            let conflict_rejections = Arc::clone(&conflict_rejections);
+            move || async move {
+                conflict_rejections.fetch_add(1, Ordering::SeqCst);
+                false
+            }
+        })
+        .await;
+        assert_eq!(conflict, (SasAdoptionDecision::Conflict, Some(false)));
+        assert_eq!(conflict_rejections.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn at_least_once_incoming_transport_uses_target_and_flow_identity() {
+        let active_target = VerificationTarget {
+            user_id: "@alice:example.test".to_owned(),
+            device_id: "ALICE".to_owned(),
+        };
+        let peer_collision = VerificationTarget {
+            user_id: "@mallory:example.test".to_owned(),
+            device_id: "MALLORY".to_owned(),
+        };
+        let device_collision = VerificationTarget {
+            user_id: active_target.user_id.clone(),
+            device_id: "ALICE-SECOND".to_owned(),
+        };
+        assert_eq!(
+            classify_incoming_verification_request(
+                IncomingVerificationActivity {
+                    active_request: Some((&active_target, "stable-flow")),
+                    sas_active: false,
+                    own_user_active: false,
+                },
+                &peer_collision,
+                "stable-flow",
+            ),
+            IncomingVerificationRequestDecision::Conflict,
+            "the same opaque flow ID from a different peer/device must be rejected",
+        );
+        assert_eq!(
+            classify_incoming_verification_request(
+                IncomingVerificationActivity {
+                    active_request: Some((&active_target, "stable-flow")),
+                    sas_active: false,
+                    own_user_active: false,
+                },
+                &device_collision,
+                "stable-flow",
+            ),
+            IncomingVerificationRequestDecision::Conflict,
+            "the same opaque flow ID from a different device must be rejected",
+        );
+        assert_eq!(
+            classify_incoming_verification_request(
+                IncomingVerificationActivity {
+                    active_request: Some((&active_target, "stable-flow")),
+                    sas_active: false,
+                    own_user_active: false,
+                },
+                &active_target,
+                "stable-flow",
+            ),
+            IncomingVerificationRequestDecision::Replay,
+        );
+        assert_eq!(
+            classify_incoming_verification_request(
+                IncomingVerificationActivity {
+                    active_request: Some((&active_target, "stable-flow")),
+                    sas_active: false,
+                    own_user_active: false,
+                },
+                &active_target,
+                "other-flow",
+            ),
+            IncomingVerificationRequestDecision::Conflict,
+        );
+        assert_eq!(
+            classify_incoming_verification_request(
+                IncomingVerificationActivity {
+                    active_request: None,
+                    sas_active: false,
+                    own_user_active: false,
+                },
+                &active_target,
+                "new-flow",
+            ),
+            IncomingVerificationRequestDecision::Adopt,
+        );
+        assert_eq!(
+            classify_incoming_verification_request(
+                IncomingVerificationActivity {
+                    active_request: None,
+                    sas_active: true,
+                    own_user_active: false,
+                },
+                &active_target,
+                "new-flow",
+            ),
+            IncomingVerificationRequestDecision::Conflict,
+            "an active SAS continuation must continue to reject a new request",
+        );
+    }
+
+    #[test]
+    fn active_own_user_verification_conflicts_with_incoming_request() {
+        let incoming_target = VerificationTarget {
+            user_id: "@alice:example.test".to_owned(),
+            device_id: "ALICE".to_owned(),
+        };
+        assert_eq!(
+            classify_incoming_verification_request(
+                IncomingVerificationActivity {
+                    active_request: None,
+                    sas_active: false,
+                    own_user_active: true,
+                },
+                &incoming_target,
+                "incoming-flow",
+            ),
+            IncomingVerificationRequestDecision::Conflict,
+            "an own-user verification owns the shared continuation/observer slots",
+        );
+    }
+
+    #[test]
+    fn incoming_actor_admission_checks_own_user_before_replacing_runtime() {
+        let source = include_str!("account.rs");
+        let start = source
+            .find("    async fn handle_incoming_verification_request(")
+            .expect("incoming verification actor handler");
+        let end = source[start..]
+            .find("\n    async fn handle_set_presence(")
+            .expect("end of incoming verification actor handler");
+        let body = &source[start..start + end];
+
+        let own_user_state = body
+            .find("own_user_active: self.own_user_verification.is_some()")
+            .expect("actor admission must include active own-user verification state");
+        let decision_match = body
+            .find("match decision")
+            .expect("incoming admission decision");
+        let cancel = body
+            .find("koushi_sdk::cancel_verification_request(&handle).await")
+            .expect("conflicting incoming request cancellation");
+        let adopt_handle = body
+            .find("self.verification_request = Some")
+            .expect("incoming request handle adoption");
+        let replace_observer = body
+            .find("self.observe_verification_request(")
+            .expect("incoming request observer adoption");
+
+        assert!(
+            own_user_state < decision_match,
+            "own-user activity must feed admission"
+        );
+        assert!(
+            cancel < adopt_handle,
+            "conflict cancellation must precede handle adoption"
+        );
+        assert!(
+            cancel < replace_observer,
+            "conflict cancellation must precede observer adoption"
+        );
+    }
+
+    #[test]
+    fn incoming_verification_transport_rejects_stale_or_sessionless_messages() {
+        assert!(incoming_verification_request_is_current(7, 7, true));
+        assert!(!incoming_verification_request_is_current(6, 7, true));
+        assert!(!incoming_verification_request_is_current(7, 7, false));
+    }
+
+    #[tokio::test]
+    async fn incoming_verification_mailbox_send_is_stop_aware_when_full() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let (_first_stop_tx, mut first_stop_rx) = oneshot::channel();
+        assert!(
+            send_incoming_verification_message_until_stopped(&sender, 1_u8, &mut first_stop_rx,)
+                .await,
+            "the first ready delivery must fill the product mailbox"
+        );
+        let (stop_tx, mut stop_rx) = oneshot::channel();
+        let blocked_send = executor::spawn(async move {
+            send_incoming_verification_message_until_stopped(&sender, 2, &mut stop_rx).await
+        });
+        tokio::task::yield_now().await;
+
+        stop_tx.send(()).expect("request observer stop");
+        let delivered = executor::timeout(Duration::from_millis(20), blocked_send)
+            .await
+            .expect("a stop request must interrupt the full-mailbox send")
+            .expect("send task");
+        assert!(
+            !delivered,
+            "a stopped observer must not report the blocked send as delivered"
+        );
+        assert_eq!(receiver.recv().await, Some(1));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn incoming_verification_observer_join_has_a_bounded_abort_fallback() {
+        let persistable = PersistableMatrixSession::from_json(
+            r#"{"homeserver":"https://matrix.example.invalid","user_id":"@alice:example.invalid","device_id":"ALICEDEVICE","access_token":"synthetic-access"}"#,
+        )
+        .expect("synthetic session should deserialize");
+        let session = koushi_sdk::restore_session(&persistable)
+            .await
+            .expect("synthetic session should restore");
+        let mut observer = koushi_sdk::observe_incoming_verification_requests(&session).await;
+        let receiver = observer
+            .take_receiver()
+            .expect("observer receiver is available once");
+        let (stop_tx, _stop_rx) = oneshot::channel();
+        let child = executor::spawn(async move {
+            let _receiver = receiver;
+            std::future::pending::<()>().await
+        });
+        let child_abort = child.abort_handle();
+        let observation = IncomingVerificationObservation {
+            stop_tx,
+            task: child,
+            observer,
+        };
+        let mut stop = executor::spawn(stop_incoming_verification_observation_with_timeout(
+            observation,
+            Duration::from_millis(1),
+        ));
+
+        let result = executor::timeout(Duration::from_millis(20), &mut stop).await;
+        if result.is_err() {
+            stop.abort();
+            child_abort.abort();
+        }
+        assert!(
+            result.is_ok(),
+            "a nonresponsive observer must be aborted after a bounded join"
         );
     }
 
@@ -11091,6 +11532,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn soft_logout_reauth_joins_old_observers_before_subscribing_replacements() {
+        let homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        assert!(
+            handle
+                .send(AccountMessage::AttachLifecycleProbe { probe_tx })
+                .await
+        );
+        configure_verified_trust(&handle).await;
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id: test_request_id(),
+                request: LoginRequest {
+                    homeserver,
+                    username: "fixture-user".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: None,
+                },
+            }))
+            .await;
+        acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+        while probe_rx.try_recv().is_ok() {}
+
+        assert!(
+            handle
+                .send(AccountMessage::SessionInvalidated { soft_logout: true })
+                .await
+        );
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::SessionLocked])
+        ) {}
+
+        let request_id = RequestId {
+            connection_id: crate::ids::RuntimeConnectionId(1),
+            sequence: 2,
+        };
+        assert!(
+            handle
+                .send(AccountMessage::Command(AccountCommand::SoftLogoutReauth {
+                    request_id,
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                }))
+                .await
+        );
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([
+                AppAction::SoftLogoutReauthSucceeded { request_id: 2 },
+                AppAction::LoginSucceeded { .. }
+            ])
+        ) {}
+        let _ = inspect_session_runtime(&handle).await;
+
+        let tokens: Vec<_> = std::iter::from_fn(|| probe_rx.try_recv().ok()).collect();
+        let recovery_stop = tokens
+            .iter()
+            .position(|token| *token == "recovery_observer_stop_requested")
+            .expect("the old recovery observer must be stopped");
+        let recovery_join = tokens
+            .iter()
+            .position(|token| *token == "recovery_observer_terminated")
+            .expect("the old recovery observer must be joined");
+        let recovery_start = tokens
+            .iter()
+            .position(|token| *token == "recovery_observer_started")
+            .expect("the replacement recovery observer must start");
+        let verification_stop = tokens
+            .iter()
+            .position(|token| *token == "incoming_verification_observer_stop_requested")
+            .expect("the old verification observer must be stopped");
+        let verification_join = tokens
+            .iter()
+            .position(|token| *token == "incoming_verification_observer_terminated")
+            .expect("the old verification observer must be joined");
+        let verification_subscribe = tokens
+            .iter()
+            .position(|token| *token == "incoming_verification_observer_subscribing")
+            .expect("the replacement verification observer must subscribe");
+        assert!(
+            recovery_stop < recovery_join && recovery_join < recovery_start,
+            "{tokens:?}"
+        );
+        assert!(
+            verification_stop < verification_join && verification_join < verification_subscribe,
+            "{tokens:?}"
+        );
+
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
     async fn server_logout_best_effort_returns_on_timeout() {
         let outcome = wait_for_server_logout_best_effort(
             std::time::Duration::from_millis(1),
@@ -11492,6 +12029,7 @@ mod tests {
             sas_timeout_task: None,
             synthetic_verification: None,
             incoming_verification_observer: None,
+            incoming_verification_session_generation: 0,
             session_change_observer: None,
             account_hydration_task: None,
             account_hydration_generation: 0,

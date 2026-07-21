@@ -60,6 +60,190 @@ If the post-logout restore is admitted and then returns `SessionNotFound`, its
 failure terminal and the reducer's resulting `SignedOut` projection are the
 same two-signal barrier; observing the failure alone is not permission to read
 the dependent state.
+The focused E2EE rerun then exposed the inverse observation race: the Ready
+snapshot could commit immediately after the final broadcast and before the
+timeout branch returned. Snapshot-plus-event waiters must therefore use events
+only as wakes and perform one final authoritative snapshot read on timeout,
+closure, or lag, without extending the original absolute deadline. The focused
+waiter test holds exactly that Ready-without-a-following-broadcast ordering.
+The final `all` lane exposed one further E2EE prerequisite race. A newly logged
+in second device could send an own-user verification request before the
+receiving device had learned that device's keys. `matrix-sdk-crypto` deliberately
+discarded the otherwise valid request when `DeviceData` was missing, and the
+event could not be reconstructed above the SDK. The approved root correction is
+therefore a second narrow crypto exception: retain timestamp-valid unknown-device
+to-device verification requests in a bounded, flow-deduplicated pending set;
+mark the sender for the SDK's existing coalesced key-query lane; and, immediately
+after a matching key-query response commits device changes, re-run the normal
+timestamp, self-device, and device-data validation before each retry. Pending requests
+expire under the existing verification-request age bound, duplicates do not
+extend their lifetime, and the collection has a fixed capacity with strict FIFO
+preservation: it rejects the newest overflow instead of evicting an existing
+obligation. It must not start another sync owner, add a manual `SyncOnce`, blindly
+resend competing flows, or retain still-invalid requests indefinitely. Headless
+QA also establishes an exact receiver-device-known acknowledgement before issuing
+`StartOwnUserSas`; this is a causal setup barrier, not a substitute for the SDK
+no-loss contract. The vendored change requires focused unknown-device recovery,
+deduplication, expiry/capacity, and still-missing-device tests plus an upstream
+feedback ledger entry.
+The next composed `all` runs exposed scenario ownership defects rather than
+product transition failures. Their normal B participant was already
+bootstrapped, logged in, and syncing, but the later E2EE stage opened another B
+device while first hard-coding new-identity bootstrap and then recovering that
+duplicate device. The first form waited for the wrong gate; the second caused a
+fresh B3 own-user SAS request to reach two eligible base devices and legitimately
+cancel one as accepted elsewhere. The approved root correction makes recipient
+ownership explicit: composed `all` borrows its existing normal B connection and
+account key without creating or cleaning it up, while focused E2EE, which has no
+prior B participant, creates, bootstraps, owns, and cleans up exactly one B.
+Scenario helpers must not duplicate an already-live role, infer a gate from
+timing, stop a competing owner as a workaround, retry, sleep, or lengthen a
+timeout.
+The final quality review found two further ownership holes in the first crypto
+recovery draft. It removed pending entries before fallible replay and swallowed
+an initial key-query scheduling failure, while the Koushi adapter compensated
+with a direct out-of-band key refresh. The approved correction keeps pending
+FIFO slots until terminal validation or successful materialization, records
+whether the coalesced query owner was scheduled so only a failed schedule is
+retryable. Normal and recovered request materialization publish the same stable
+handle through a typed incoming-request SDK lease stream. Koushi consumes that
+stream without issuing a query or reconstructing identifiers. Tests must cover
+schedule and store failures, multi-entry preservation, lease/capacity behavior,
+and observer shutdown before live QA is rerun.
+The same final review exposed cleanup ownership beginning too late: focused
+E2EE participants were registered only after successful login, so a failure
+between login submission and the next checkpoint could leave a runtime or
+provisional server session behind and poison the following 300-second run. The
+approved correction introduces a typed participant owner before any fallible
+login step. It tracks runtime-only, login-submitted, and keyed-logged-in phases,
+then attempts keyless or keyed logout confirmation as appropriate before
+dropping the connection and shutting down the runtime. All owned participants
+are cleaned even if an earlier cleanup reports an error; borrowed participants
+remain the outer scenario's responsibility. The logout waiter uses events only
+as wake signals and performs a final `SignedOut` snapshot observation after
+timeout, lag, or closure without resetting its absolute deadline. Focused tests
+must inject failures at each ownership phase and reproduce a final snapshot
+commit without a following broadcast before live server evidence is accepted.
+The concurrency review then found that sequential replay tests were not enough
+to prove linearized bounded ownership. Two key responses could clone the
+same pending entry, and raw redelivery could race a deferred replay after its
+snapshot. Cache insertion also checked and inserted under separate locks, while
+the then-proposed recovery-only stream could replace its subscriber after a
+publisher cloned the old sender. That recovery-only/passive design is
+superseded by the final unified typed stream below. The retained correction
+returns existing-versus-inserted from one cache write transaction and
+linearizes subscriber generation with the typed head claim. Deterministic
+rendezvous tests must prove
+replay-versus-replay, replay-versus-raw, same-flow concurrent insertion, and
+replacement-versus-claim. A fallible pre-commit replay releases its claim
+without changing FIFO order. A winning committed deferred insertion records a
+pending publication obligation in the unified bounded owner; an unrelated
+pre-existing cache entry carries no incoming provenance and is not published.
+Soft-logout reauth must
+also stop and join the old incoming observer before the replacement session
+installs handlers, with a lifecycle-order test.
+The final end-to-end review rejected coupling generic raw handler completion to
+product delivery. Normal and recovered materialization now feed one typed
+incoming-request lease stream. Pending entries, publications, subscriber
+generation, and active head claim share one owner lock and one total bound of
+32. Replay changes its existing slot into a publication under that lock; active
+leases retain the head slot, commit pops it, and drop releases in place.
+Generation check and claim are one linearization point. Capacity never evicts
+an existing pending entry, publication, or active lease. At capacity a new
+materialized request is explicitly cancelled with an outgoing protocol cancel,
+because cursor advancement makes silent shedding unrecoverable; a newest unknown-
+device request is not retained and does not schedule a query. A same-flow
+collision never upgrades unrelated cached provenance. Applied key-query changes
+are returned even if later replay/cache/reschedule work fails, and retry state
+remains schedulable. Pending work uses explicit `NeedsQuery`, `QueryInFlight`,
+`WaitingForExternalUpdate`, `ResponseClaimed`, and `ReplayClaimed` states. A
+response-scoped RAII token claims entries before key-response processing and
+returns only its own claimed entries to `NeedsQuery` on cancellation or error,
+including after the durable commit. Normal still-missing completion enters
+`WaitingForExternalUpdate`. A sender-wide retry reset is forbidden because it
+can steal a newer concurrent response's claim for the same sender. Delivery `Debug`
+implementations at the crypto and client wrapper layers are constant/redacted.
+Every generated key query retains stable per-request metadata containing its
+exact `request_id -> covered users` mapping, dirty-state sequence, and request.
+Repeated, concurrent, or cancelled collection reuses existing requests and
+creates only uncovered chunks; it never clears another live mapping. Final
+dirty-snapshot revalidation and registry insertion share the dirty-query owner,
+preventing a paused collector from registering stale metadata after cleanup.
+Complete response-associated processing for the same request ID is serialized
+by a stable per-entry async gate. Gate acquisition is awaited without a
+registry or store guard, and no such guard crosses async identity processing or
+verification recovery. Brief registry guards taken while the gate is held are
+limited to pointer revalidation and successful consumption. A handler
+revalidates the pointer-matched entry only after acquiring the gate.
+Success consumes it; failure or cancellation preserves it for the next waiter,
+while a waiter after successful consumption carries no metadata obligation.
+Different request IDs remain concurrent. Recovery scopes the
+response to exactly the union of returned `device_keys` users and that request's
+covered users, so failure-only responses with empty returned keys still claim
+the intended pending sender. Overlapping responses use a per-entry
+committed-update generation: if one response commits while another owns replay,
+that owner consumes the deferred generation before entering
+`WaitingForExternalUpdate`. Request/user/sender/device/flow identifiers and raw
+errors remain absent from creation, response, receive-span, and recovery
+diagnostics.
+Koushi removes its raw to-device handler and consumes only this typed stream.
+It commits actionable leases after product-channel send and commits terminal
+heads immediately. Generic SDK raw handlers remain independent compatibility
+fanout and may repeat after partial cancellation, so transport is at-least-once
+with stable sender/flow identity. `AccountActor` owns product idempotence using
+the full peer/device `VerificationTarget` plus flow id: only an exact replay is
+a no-op, while the same flow id from another peer/device or any other distinct
+conflict is explicitly cancelled without raw error disclosure. Replayed SAS
+continuations remain no-ops under their existing adoption rule. A pre-SAS
+own-user verification owns the shared continuation and request-observer slots
+without a typed incoming replay identity, so every incoming request is
+cancelled as a conflict before either slot can be replaced. Do not extend
+`ProcessedToDeviceEvent`, add a Koushi seen set, or rely on redelivery after an
+overflow. Observer-to-actor delivery carries a dedicated authenticated-session
+generation and rejects stale/sessionless work before adoption. Its actor-mailbox
+send is stop-aware even when full, and stop uses bounded join followed by abort
+and owned settlement.
+The same review bounded timeline graceful shutdown: the complete manager-owned
+enqueue worker set and its global terminal observer are boxed futures directly
+polled under one absolute five-second deadline while terminal ingress stays
+live. The observer remains polled while workers settle, and receives one final
+non-blocking poll after worker quiescence or deadline cancellation so an already
+queued exact terminal can be admitted. Remaining cooperative worker futures are
+then synchronously dropped before observer stop, observation-loss handoff,
+ingress drain, and acknowledgement. A per-worker deadline, detached task, or
+`JoinHandle` abort/await lifecycle is not accepted.
+Because these enqueue futures have no independent scheduler, an accepted route
+also drives its specific worker through the reducer permit to a one-shot signal
+at the start of payload-specific preflight. Draining one unrelated ready
+completion does not satisfy that causal-start contract. Reply preflight may
+suspend before the eventual SDK queue call, so the signal does not serialize
+SDK enqueue order across workers; SDK transport owns subsequent FIFO retry
+policy and timing.
+The final branch review also found a send-lifecycle ordering race outside the
+projection itself. A media enqueue worker bound its SDK transaction before the
+manager loop published `MediaSendQueued`; an already-retained terminal could
+therefore win the biased terminal branch and publish completion first. The
+corrected manager-owned worker publishes the queue acknowledgement synchronously
+before binding can admit any terminal. A deterministic pre-bind-terminal RED
+must prove queued-before-terminal ordering; changing select priority is not an
+accepted substitute.
+The first behavior-probed Tuwunel Core run exposed cursor provenance.
+A fresh device's verification-only filtered `/sync` persisted its `next_batch`
+in the SDK store. Normal LegacySync then reused that restricted cursor and
+permanently skipped existing room state excluded by the filter, leaving A2 with
+zero rooms after SAS succeeded. SDK inspection then showed that `next_batch` is
+persisted before fallible event handlers, so even an error return can leave the
+shared cursor restricted. An initial memory-taint correction survived task
+restart but failed the process/account lifetime boundary because the SDK token
+was durable while the taint was not. The final design removes the compensation:
+`SyncSettings::save_sync_token(false)` preserves all other sync processing while
+preventing a verification-only response from writing the global cursor. The
+restricted request also uses `NoToken`. SDK REDs must prove canonical-token
+preservation across SQLite reopen, a fresh store remaining tokenless, and
+to-device handler delivery. A Koushi mock-server RED must run the restricted
+helper, destroy and reopen the session/store, then prove the next normal request
+uses the original canonical `since`, never the restricted token, before
+Tuwunel is rerun.
 
 ## Global Constraints
 

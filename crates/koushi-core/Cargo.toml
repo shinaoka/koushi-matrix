@@ -55,3 +55,4 @@ matrix-sdk = { workspace = true, features = ["testing"] }
 matrix-sdk-test = { workspace = true }
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "rt", "sync", "time", "macros", "test-util"] }
+wiremock = "0.6"

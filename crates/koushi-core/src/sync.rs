@@ -498,7 +498,7 @@ pub struct SyncActor {
 }
 
 impl SyncActor {
-    pub fn spawn(
+    pub(crate) fn spawn(
         session: Arc<MatrixClientSession>,
         action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
@@ -1105,7 +1105,6 @@ impl SyncActor {
         let action_tx = self.action_tx.clone();
         let sync_generation = self.sync_generation.clone();
         let control_tx = self.control_tx.clone();
-
         let task: executor::JoinHandle<SyncTaskOutcome> = executor::spawn(async move {
             run_legacy_sync_loop(
                 client,
@@ -1950,6 +1949,7 @@ pub mod tests {
     use koushi_state::SessionInfo;
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
     use tokio::sync::{broadcast, mpsc};
+    use wiremock::ResponseTemplate;
 
     use super::*;
     use crate::event::{CoreEvent, SyncBackendKind, SyncEvent};
@@ -2157,6 +2157,440 @@ pub mod tests {
             "one rejected SyncOnce must emit exactly one failure"
         );
         server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn restricted_cursor_cannot_seed_the_first_normal_legacy_sync() {
+        use futures_util::StreamExt as _;
+        use matrix_sdk::ruma::room_id;
+        use matrix_sdk_test::JoinedRoomBuilder;
+
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let session = MatrixClientSession::from_client_for_testing(
+            client.clone(),
+            SessionInfo {
+                homeserver: server.uri(),
+                user_id: "@restricted-cursor:example.invalid".to_owned(),
+                device_id: "RESTRICTEDCURSOR".to_owned(),
+            },
+        );
+
+        let restricted = server
+            .mock_sync()
+            .ok(|_| {})
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        let restricted_token =
+            koushi_sdk::restricted_verification_sync_once_with_token(&session, None)
+                .await
+                .expect("restricted verification sync");
+        drop(restricted);
+
+        let room_id = room_id!("!normal-room:example.invalid");
+        let first_normal = server
+            .mock_sync()
+            .ok(|builder| {
+                builder.add_joined_room(JoinedRoomBuilder::new(room_id));
+            })
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        let stream = client.sync_stream(legacy_sync_settings()).await;
+        tokio::pin!(stream);
+        let first_normal_response = stream
+            .next()
+            .await
+            .expect("first normal response")
+            .expect("first normal sync succeeds");
+        drop(first_normal);
+        assert!(
+            client.get_room(room_id).is_some(),
+            "the authoritative first normal response must project joined rooms"
+        );
+
+        let second_normal = server
+            .mock_sync()
+            .ok(|_| {})
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        stream
+            .next()
+            .await
+            .expect("second normal response")
+            .expect("second normal sync succeeds");
+        drop(second_normal);
+
+        let requests = server.received_requests().await.expect("captured requests");
+        let sync_since = requests
+            .iter()
+            .filter(|request| request.url.path() == "/_matrix/client/v3/sync")
+            .map(|request| {
+                request
+                    .url
+                    .query_pairs()
+                    .find_map(|(key, value)| (key == "since").then(|| value.into_owned()))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sync_since.len(), 3);
+        assert_eq!(
+            sync_since[0], None,
+            "restricted catch-up begins without a cursor"
+        );
+        assert_eq!(
+            sync_since[1], None,
+            "a restricted-only cursor must not seed the first authoritative normal sync"
+        );
+        assert_ne!(sync_since[1].as_deref(), Some(restricted_token.as_str()));
+        assert_eq!(
+            sync_since[2].as_deref(),
+            Some(first_normal_response.next_batch.as_str()),
+            "later normal iterations must advance from the first normal response"
+        );
+    }
+
+    #[tokio::test]
+    async fn restricted_sync_preserves_canonical_cursor_across_store_reopen() {
+        use futures_util::StreamExt as _;
+
+        let server = MatrixMockServer::new().await;
+        let store = tempfile::tempdir().expect("temporary SDK store");
+        let client = server
+            .client_builder()
+            .on_builder(|builder| builder.sqlite_store(store.path(), None))
+            .build()
+            .await;
+
+        let canonical = server
+            .mock_sync()
+            .ok(|_| {})
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        let canonical_token = client
+            .sync_once(matrix_sdk::config::SyncSettings::default())
+            .await
+            .expect("canonical seed sync")
+            .next_batch;
+        drop(canonical);
+
+        let session = MatrixClientSession::from_client_for_testing(
+            client.clone(),
+            SessionInfo {
+                homeserver: server.uri(),
+                user_id: "@restricted-reopen:example.invalid".to_owned(),
+                device_id: "RESTRICTEDREOPEN".to_owned(),
+            },
+        );
+        let restricted = server
+            .mock_sync()
+            .ok(|_| {})
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        let restricted_token =
+            koushi_sdk::restricted_verification_sync_once_with_token(&session, None)
+                .await
+                .expect("restricted verification sync");
+        drop(restricted);
+        assert_ne!(restricted_token, canonical_token);
+
+        drop(session);
+        drop(client);
+        let reopened = server
+            .client_builder()
+            .on_builder(|builder| builder.sqlite_store(store.path(), None))
+            .build()
+            .await;
+        let normal = server
+            .mock_sync()
+            .ok(|_| {})
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        let stream = reopened.sync_stream(legacy_sync_settings()).await;
+        tokio::pin!(stream);
+        stream
+            .next()
+            .await
+            .expect("normal response after reopen")
+            .expect("normal sync after reopen succeeds");
+        drop(normal);
+
+        let sync_since = server
+            .received_requests()
+            .await
+            .expect("captured requests")
+            .iter()
+            .filter(|request| request.url.path() == "/_matrix/client/v3/sync")
+            .map(|request| {
+                request
+                    .url
+                    .query_pairs()
+                    .find_map(|(key, value)| (key == "since").then(|| value.into_owned()))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sync_since.len(), 3);
+        assert_eq!(
+            sync_since[0], None,
+            "canonical seed starts without a cursor"
+        );
+        assert_eq!(
+            sync_since[1], None,
+            "restricted sync always starts without a cursor"
+        );
+        assert_eq!(sync_since[2].as_deref(), Some(canonical_token.as_str()));
+        assert_ne!(sync_since[2].as_deref(), Some(restricted_token.as_str()));
+    }
+
+    #[tokio::test]
+    async fn restricted_cursor_remains_non_persisting_across_normal_failures_and_stops() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let session = Arc::new(MatrixClientSession::from_client_for_testing(
+            client.clone(),
+            SessionInfo {
+                homeserver: server.uri(),
+                user_id: "@restricted-restart:example.invalid".to_owned(),
+                device_id: "RESTRICTEDRESTART".to_owned(),
+            },
+        ));
+
+        let restricted = server
+            .mock_sync()
+            .ok(|_| {})
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        let restricted_token =
+            koushi_sdk::restricted_verification_sync_once_with_token(&session, None)
+                .await
+                .expect("restricted verification sync");
+        drop(restricted);
+
+        let (action_tx, _action_rx) = mpsc::channel(16);
+        let (event_tx, _) = broadcast::channel(16);
+        let (_command_tx, command_rx) = mpsc::channel(4);
+        let (control_tx, control_rx) = mpsc::channel(4);
+        let (room_tx, _room_rx) = mpsc::channel(4);
+        let (timeline_tx, _timeline_rx) = mpsc::channel(4);
+        let mut actor = SyncActor {
+            session,
+            action_tx,
+            event_tx,
+            command_rx,
+            control_tx,
+            control_rx,
+            room_tx,
+            timeline_tx,
+            lifecycle: SyncLifecycle::Starting,
+            sync_generation: Arc::new(AtomicU64::new(0)),
+            active_backend: ActiveBackend::LegacySync,
+            sync_task: None,
+            legacy_stop_tx: None,
+            legacy_run_generation: 0,
+            sync_service_run_generation: 0,
+            sync_service: None,
+            active_start_request_id: None,
+            sync_service_runtime_fallback_attempted: false,
+            ignored_user_list_handler: None,
+        };
+
+        let failed_baseline = server
+            .mock_sync()
+            .error_unknown_token(false)
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        actor.start_legacy_sync(client.clone()).await;
+        let failed_outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            actor.sync_task.take().expect("failed legacy task"),
+        )
+        .await
+        .expect("auth failure must terminate the legacy run")
+        .expect("legacy task must not panic");
+        assert!(matches!(
+            failed_outcome,
+            SyncTaskOutcome::Failed {
+                kind: SyncFailureKind::Auth,
+                ever_ran: false,
+            }
+        ));
+        actor.cleanup_ended_backend().await;
+        drop(failed_baseline);
+
+        let (held_request_seen_tx, held_request_seen_rx) = tokio::sync::oneshot::channel();
+        let held_request_seen_tx = Arc::new(std::sync::Mutex::new(Some(held_request_seen_tx)));
+        let held_baseline = server
+            .mock_sync()
+            .respond_with({
+                let held_request_seen_tx = held_request_seen_tx.clone();
+                move |_request: &wiremock::Request| {
+                    if let Some(sender) = held_request_seen_tx
+                        .lock()
+                        .expect("held request barrier lock")
+                        .take()
+                    {
+                        let _ = sender.send(());
+                    }
+                    ResponseTemplate::new(200)
+                        .set_delay(Duration::from_secs(60))
+                        .set_body_json(serde_json::json!({
+                            "next_batch": "held-baseline-token",
+                            "rooms": {},
+                            "to_device": { "events": [] },
+                            "presence": { "events": [] },
+                            "account_data": { "events": [] },
+                            "device_lists": { "changed": [], "left": [] },
+                            "device_one_time_keys_count": {},
+                        }))
+                }
+            })
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        actor.start_legacy_sync(client.clone()).await;
+        tokio::time::timeout(Duration::from_secs(5), held_request_seen_rx)
+            .await
+            .expect("held NoToken request must reach the server before stop")
+            .expect("held request barrier sender must remain owned by the server response");
+        actor.do_stop(None).await;
+        drop(held_baseline);
+
+        let successful_baseline = server
+            .mock_sync()
+            .ok(|_| {})
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        actor.start_legacy_sync(client.clone()).await;
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(5), actor.control_rx.recv())
+                .await
+                .expect("baseline response control must arrive"),
+            Some(SyncActorControl::FirstResponseCommitted { .. })
+        ));
+        actor.do_stop(None).await;
+        drop(successful_baseline);
+
+        let requests_before_canonical_restart = server
+            .received_requests()
+            .await
+            .expect("captured requests")
+            .into_iter()
+            .filter(|request| request.url.path() == "/_matrix/client/v3/sync")
+            .count();
+        let canonical_restart = server
+            .mock_sync()
+            .ok(|_| {})
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        actor.start_legacy_sync(client).await;
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(5), actor.control_rx.recv())
+                .await
+                .expect("canonical restart response control must arrive"),
+            Some(SyncActorControl::FirstResponseCommitted { .. })
+        ));
+        actor.do_stop(None).await;
+        drop(canonical_restart);
+
+        let sync_since = server
+            .received_requests()
+            .await
+            .expect("captured requests")
+            .iter()
+            .filter(|request| request.url.path() == "/_matrix/client/v3/sync")
+            .map(|request| {
+                request
+                    .url
+                    .query_pairs()
+                    .find_map(|(key, value)| (key == "since").then(|| value.into_owned()))
+            })
+            .collect::<Vec<_>>();
+        assert!(sync_since.len() > requests_before_canonical_restart);
+        assert_eq!(
+            sync_since[0], None,
+            "restricted sync starts without a cursor"
+        );
+        assert_eq!(
+            sync_since[1], None,
+            "the failed first normal baseline must omit the restricted cursor"
+        );
+        assert_eq!(
+            sync_since[2], None,
+            "restart after a failed normal response has no canonical cursor to reuse"
+        );
+        assert_eq!(
+            sync_since[3], None,
+            "restart after stopping before the held response must still omit since"
+        );
+        assert!(
+            sync_since[requests_before_canonical_restart].is_some(),
+            "only a restart after a committed normal response may reuse the canonical cursor"
+        );
+        assert_ne!(
+            sync_since[requests_before_canonical_restart].as_deref(),
+            Some(restricted_token.as_str()),
+            "the restricted response cursor must never seed normal sync"
+        );
+    }
+
+    #[tokio::test]
+    async fn canonical_cursor_is_reused_by_an_ordinary_legacy_start() {
+        use futures_util::StreamExt as _;
+
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let canonical = server
+            .mock_sync()
+            .ok(|_| {})
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        let canonical_response = client
+            .sync_once(matrix_sdk::config::SyncSettings::default())
+            .await
+            .expect("canonical pre-existing sync");
+        drop(canonical);
+
+        let resumed = server
+            .mock_sync()
+            .ok(|_| {})
+            .mock_once()
+            .mount_as_scoped()
+            .await;
+        let stream = client.sync_stream(legacy_sync_settings()).await;
+        tokio::pin!(stream);
+        stream
+            .next()
+            .await
+            .expect("resumed response")
+            .expect("ordinary resumed sync succeeds");
+        drop(resumed);
+
+        let requests = server.received_requests().await.expect("captured requests");
+        let sync_since = requests
+            .iter()
+            .filter(|request| request.url.path() == "/_matrix/client/v3/sync")
+            .map(|request| {
+                request
+                    .url
+                    .query_pairs()
+                    .find_map(|(key, value)| (key == "since").then(|| value.into_owned()))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sync_since.len(), 2);
+        assert_eq!(sync_since[0], None);
+        assert_eq!(
+            sync_since[1].as_deref(),
+            Some(canonical_response.next_batch.as_str()),
+            "ordinary restored sessions must reuse their canonical cursor"
+        );
     }
 
     #[test]

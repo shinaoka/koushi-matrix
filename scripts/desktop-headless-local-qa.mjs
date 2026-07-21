@@ -108,24 +108,13 @@ if (args.has("--check-tools")) {
 }
 
 if (args.has("--check-probed-backend-map")) {
-  for (const [serverKind, expected] of [
-    ["conduit", "LegacySync"],
-    ["tuwunel", "SyncService"],
-    ["synapse", "SyncService"]
-  ]) {
-    if (expectedProbedSyncBackend(serverKind) !== expected) {
-      throw new Error(`unexpected probed backend expectation for ${serverKind}`);
-    }
+  if (expectedSyncBackendForLeg(false) !== undefined) {
+    throw new Error("probed backend must be selected by behavior");
   }
-  try {
-    expectedProbedSyncBackend("unknown");
-    throw new Error("unknown server kind unexpectedly has a probed backend expectation");
-  } catch (error) {
-    if (!error.message.startsWith("no probed backend expectation")) {
-      throw error;
-    }
+  if (expectedSyncBackendForLeg(true) !== "LegacySync") {
+    throw new Error("forced legacy leg must retain its backend assertion");
   }
-  console.log("probed sync backend expectation map ok");
+  console.log("probed sync backend is behavior-selected; forced legacy assertion ok");
   process.exit(0);
 }
 
@@ -266,8 +255,8 @@ async function runForServer(serverKind, scenario) {
     }
 
     if (runCoreQa) {
-      // Leg 1: probed backend. Conduit omits the requested invite-only list and
-      // must fail closed; Tuwunel and Synapse satisfy the typed MSC4186 probe.
+      // Leg 1: behavior-probed backend. The core's typed capability probe owns
+      // fail-closed selection; server family labels are not capability facts.
       if (shouldRunCoreBackend("probed")) {
         const coreUsers = fixture ?? (await registerQaUsers(homeserver, "core_probed"));
         if (!fixture && serverKind === "synapse") {
@@ -285,7 +274,7 @@ async function runForServer(serverKind, scenario) {
           logPath,
           scenario,
           legLabel: "probed",
-          expectSyncBackend: expectedProbedSyncBackend(serverKind),
+          expectSyncBackend: expectedSyncBackendForLeg(false),
           replayExistingStress: fixtureReplay
         });
         console.log(`core QA (probed backend): ${coreQaResult.trim()}`);
@@ -306,7 +295,7 @@ async function runForServer(serverKind, scenario) {
           scenario,
           legLabel: "legacy",
           forceLegacyBackend: true,
-          expectSyncBackend: "LegacySync"
+          expectSyncBackend: expectedSyncBackendForLeg(true)
         });
         console.log(`core QA (forced LegacySync): ${coreLegacyResult.trim()}`);
         if (!coreLegacyResult.includes("sync_backend_a=LegacySync")) {
@@ -622,14 +611,8 @@ function selectedServers(value) {
   throw new Error("--server must be conduit, tuwunel, synapse, matrixorg, both, or all");
 }
 
-function expectedProbedSyncBackend(serverKind) {
-  if (serverKind === "conduit") {
-    return "LegacySync";
-  }
-  if (serverKind === "tuwunel" || serverKind === "synapse") {
-    return "SyncService";
-  }
-  throw new Error(`no probed backend expectation for ${serverKind}`);
+function expectedSyncBackendForLeg(forceLegacyBackend) {
+  return forceLegacyBackend ? "LegacySync" : undefined;
 }
 
 function selectedScenarios(value) {

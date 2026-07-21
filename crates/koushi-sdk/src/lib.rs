@@ -541,13 +541,36 @@ impl fmt::Debug for MatrixIncomingVerificationRequest {
 
 pub struct MatrixIncomingVerificationRequestObserver {
     client: matrix_sdk::Client,
-    receiver: tokio::sync::mpsc::Receiver<MatrixIncomingVerificationRequest>,
+    receiver: Option<tokio::sync::mpsc::Receiver<MatrixIncomingVerificationRequest>>,
     handlers: Vec<matrix_sdk::event_handler::EventHandlerHandle>,
+    incoming_request_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl MatrixIncomingVerificationRequestObserver {
     pub async fn recv(&mut self) -> Option<MatrixIncomingVerificationRequest> {
-        self.receiver.recv().await
+        self.receiver.as_mut()?.recv().await
+    }
+
+    pub fn take_receiver(
+        &mut self,
+    ) -> Option<tokio::sync::mpsc::Receiver<MatrixIncomingVerificationRequest>> {
+        self.receiver.take()
+    }
+
+    /// Stop the typed delivery owner and retain its JoinHandle until abort settles.
+    pub async fn shutdown(&mut self) {
+        if let Some(task) = self.incoming_request_task.as_mut() {
+            task.abort();
+            let _ = task.await;
+        }
+        self.incoming_request_task = None;
+        self.remove_handlers();
+    }
+
+    fn remove_handlers(&mut self) {
+        for handler in self.handlers.drain(..) {
+            self.client.remove_event_handler(handler);
+        }
     }
 }
 
@@ -562,9 +585,10 @@ impl fmt::Debug for MatrixIncomingVerificationRequestObserver {
 
 impl Drop for MatrixIncomingVerificationRequestObserver {
     fn drop(&mut self) {
-        for handler in self.handlers.drain(..) {
-            self.client.remove_event_handler(handler);
+        if let Some(task) = self.incoming_request_task.take() {
+            task.abort();
         }
+        self.remove_handlers();
     }
 }
 
@@ -1571,27 +1595,25 @@ pub async fn cancel_own_user_sas_verification(
     cancel_verification_request(&handle.request).await
 }
 
-pub fn observe_incoming_verification_requests(
+pub async fn observe_incoming_verification_requests(
     session: &MatrixClientSession,
 ) -> MatrixIncomingVerificationRequestObserver {
     let client = session.client();
     let (sender, receiver) = tokio::sync::mpsc::channel(32);
 
-    let to_device_client = client.clone();
-    let to_device_sender = sender.clone();
-    let to_device_handler = client.add_event_handler(
-        move |event: matrix_sdk::ruma::events::key::verification::request::ToDeviceKeyVerificationRequestEvent| {
-            let client = to_device_client.clone();
-            let sender = to_device_sender.clone();
-            async move {
-                if let Some(request) =
-                    incoming_verification_request_for_flow(&client, &event.sender, event.content.transaction_id.as_str()).await
-                {
-                    let _ = sender.send(request).await;
-                }
-            }
-        },
-    );
+    // All normal and recovered to-device requests use the same typed lease stream. Generic raw
+    // SDK handlers remain compatibility fanout only and do not own Koushi product delivery.
+    let incoming_request_task = client
+        .encryption()
+        .subscribe_to_incoming_verification_requests()
+        .await
+        .map(|incoming_requests| {
+            let sender = sender.clone();
+            tokio::spawn(forward_incoming_verification_requests(
+                incoming_requests,
+                sender,
+            ))
+        });
 
     let room_client = client.clone();
     let room_sender = sender;
@@ -1621,8 +1643,43 @@ pub fn observe_incoming_verification_requests(
 
     MatrixIncomingVerificationRequestObserver {
         client,
-        receiver,
-        handlers: vec![to_device_handler, room_handler],
+        receiver: Some(receiver),
+        handlers: vec![room_handler],
+        incoming_request_task,
+    }
+}
+
+async fn forward_incoming_verification_requests(
+    incoming_requests: impl Stream<Item = matrix_sdk::encryption::IncomingVerificationRequestDelivery>,
+    sender: tokio::sync::mpsc::Sender<MatrixIncomingVerificationRequest>,
+) {
+    forward_incoming_verification_deliveries(
+        incoming_requests,
+        sender,
+        |delivery| incoming_verification_request_from_handle(delivery.request().clone()),
+        matrix_sdk::encryption::IncomingVerificationRequestDelivery::commit,
+    )
+    .await;
+}
+
+async fn forward_incoming_verification_deliveries<D, P>(
+    deliveries: impl Stream<Item = D>,
+    sender: tokio::sync::mpsc::Sender<P>,
+    mut project: impl FnMut(&D) -> Option<P>,
+    mut commit: impl FnMut(D),
+) {
+    futures_util::pin_mut!(deliveries);
+    while let Some(delivery) = deliveries.next().await {
+        let Some(product) = project(&delivery) else {
+            // Terminal/non-actionable heads are consumed so they cannot starve later requests.
+            commit(delivery);
+            continue;
+        };
+        if sender.send(product).await.is_err() {
+            // Dropping without commit releases the SDK lease for a later observer.
+            break;
+        }
+        commit(delivery);
     }
 }
 
@@ -1635,6 +1692,12 @@ async fn incoming_verification_request_for_flow(
         .encryption()
         .get_verification_request(sender, flow_id)
         .await?;
+    incoming_verification_request_from_handle(request)
+}
+
+fn incoming_verification_request_from_handle(
+    request: matrix_sdk::encryption::verification::VerificationRequest,
+) -> Option<MatrixIncomingVerificationRequest> {
     let matrix_sdk::encryption::verification::VerificationRequestState::Requested {
         other_device_data,
         ..
@@ -1645,7 +1708,7 @@ async fn incoming_verification_request_for_flow(
 
     Some(MatrixIncomingVerificationRequest {
         target: VerificationTarget {
-            user_id: sender.to_string(),
+            user_id: request.other_user_id().to_string(),
             device_id: other_device_data.device_id().to_string(),
         },
         handle: MatrixVerificationRequestHandle { inner: request },
@@ -1734,11 +1797,24 @@ pub fn map_backup_state_to_desktop(
 
 #[cfg(test)]
 mod e2ee_trust_tests {
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+    use std::time::Duration;
+
+    use futures_util::stream;
     use koushi_state::{
         AuthSecret, CrossSigningStatus, CurrentDeviceTrustState, IdentityResetAuthType,
-        KeyBackupStatus, SasEmoji, VerificationAccountKind, VerificationMethodCapability,
+        KeyBackupStatus, SasEmoji, SessionInfo, VerificationAccountKind,
+        VerificationMethodCapability,
     };
     use matrix_sdk::encryption::backups::BackupState;
+    use matrix_sdk::{
+        ruma::{owned_device_id, owned_user_id},
+        test_utils::mocks::MatrixMockServer,
+    };
+    use serde_json::json;
 
     use super::{
         E2eeTrustError, IdentityFact, KeyBackupRestoreScope, KeyBackupRestoreSummary,
@@ -1749,17 +1825,34 @@ mod e2ee_trust_tests {
         accept_verification_request, bootstrap_cross_signing, bootstrap_secure_backup,
         cancel_sas_verification, cancel_verification_request, change_secure_backup_passphrase,
         complete_identity_reset, confirm_sas_verification, cross_signing_status, delete_devices,
-        enable_key_backup, export_room_keys_to_file, import_room_keys_from_file, list_devices,
-        map_backup_state_to_desktop, map_cross_signing_status_to_desktop,
-        map_identity_reset_auth_type_to_desktop, map_sdk_sas_emojis_to_desktop,
-        map_sdk_verification_state, map_verification_method_facts, mismatch_sas_verification,
-        observe_incoming_verification_requests, rename_device, request_device_verification,
-        reset_identity, restore_key_backup, restore_session, restricted_verification_sync_filter,
-        start_sas_verification, write_recovery_key_if_requested,
+        enable_key_backup, export_room_keys_to_file, forward_incoming_verification_deliveries,
+        import_room_keys_from_file, list_devices, map_backup_state_to_desktop,
+        map_cross_signing_status_to_desktop, map_identity_reset_auth_type_to_desktop,
+        map_sdk_sas_emojis_to_desktop, map_sdk_verification_state, map_verification_method_facts,
+        mismatch_sas_verification, observe_incoming_verification_requests, rename_device,
+        request_device_verification, reset_identity, restore_key_backup, restore_session,
+        restricted_verification_sync_filter, start_sas_verification,
+        write_recovery_key_if_requested,
     };
 
     const MATRIX_KEY_EXPORT_HEADER: &str = "-----BEGIN MEGOLM SESSION DATA-----";
     const MATRIX_KEY_EXPORT_FOOTER: &str = "-----END MEGOLM SESSION DATA-----";
+
+    struct FakeIncomingDelivery {
+        id: u8,
+        product: Option<u8>,
+        committed: bool,
+        commits: Arc<Mutex<Vec<u8>>>,
+        uncommitted_drops: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl Drop for FakeIncomingDelivery {
+        fn drop(&mut self) {
+            if !self.committed {
+                self.uncommitted_drops.lock().unwrap().push(self.id);
+            }
+        }
+    }
     const ELEMENT_COMPATIBLE_KEY_EXPORT: &str = "\
 -----BEGIN MEGOLM SESSION DATA-----\n\
 Af7mGhlzQ+eGvHu93u0YXd3D/+vYMs3E7gQqOhuCtkvGAAAAASH7pEdWvFyAP1JUisAcpEo\n\
@@ -1775,6 +1868,210 @@ SwfvzBS6CjfAG+FOugpV48o7+XetaUUPZ6/tZSPhCdeV8eP9q5r0QwWeXFogzoNzWt4HYx9\n\
 MdXxzD+f0mtg5gzehrrEEARwI2bCvPpHxlt/Na9oW/GBpkjwR1LSKgg4CtpRyWngPjdEKpZ\n\
 GYW19pdjg0qdXNk/eqZsQTsNWVo6A\n\
 -----END MEGOLM SESSION DATA-----";
+
+    #[tokio::test]
+    async fn incoming_verification_observer_shutdown_joins_typed_delivery_task() {
+        let persistable = PersistableMatrixSession::from_json(
+            r#"{"homeserver":"https://matrix.example.invalid","user_id":"@alice:example.invalid","device_id":"ALICEDEVICE","access_token":"synthetic-access"}"#,
+        )
+        .expect("synthetic session should deserialize");
+        let session = restore_session(&persistable)
+            .await
+            .expect("synthetic session should restore");
+        let mut observer = observe_incoming_verification_requests(&session).await;
+        let abort_handle = observer
+            .incoming_request_task
+            .as_ref()
+            .expect("a restored session has a typed incoming-request subscription")
+            .abort_handle();
+
+        observer.shutdown().await;
+
+        assert!(abort_handle.is_finished());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_incoming_observer_shutdown_retains_inner_task_ownership() {
+        struct TaskAlive(Arc<AtomicBool>);
+        impl Drop for TaskAlive {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::SeqCst);
+            }
+        }
+
+        let persistable = PersistableMatrixSession::from_json(
+            r#"{"homeserver":"https://matrix.example.invalid","user_id":"@alice:example.invalid","device_id":"ALICEDEVICE","access_token":"synthetic-access"}"#,
+        )
+        .expect("synthetic session should deserialize");
+        let session = restore_session(&persistable)
+            .await
+            .expect("synthetic session should restore");
+        let mut observer = observe_incoming_verification_requests(&session).await;
+        let original = observer
+            .incoming_request_task
+            .take()
+            .expect("a restored session has a typed incoming-request subscription");
+        original.abort();
+        let _ = original.await;
+
+        let alive = Arc::new(AtomicBool::new(true));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        observer.incoming_request_task = Some(tokio::spawn({
+            let alive = Arc::clone(&alive);
+            async move {
+                let _alive = TaskAlive(alive);
+                let _ = started_tx.send(());
+                let _ = release_rx.recv();
+                std::future::pending::<()>().await;
+            }
+        }));
+        started_rx.await.expect("noncooperative inner task started");
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), observer.shutdown())
+                .await
+                .is_err(),
+            "the fixture must cancel shutdown while the inner task cannot settle"
+        );
+        assert!(
+            observer.incoming_request_task.is_some(),
+            "shutdown cancellation must leave the JoinHandle with its observer owner"
+        );
+        assert!(alive.load(Ordering::SeqCst));
+
+        release_tx
+            .send(())
+            .expect("release noncooperative inner task");
+        observer.shutdown().await;
+        assert!(!alive.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn terminal_incoming_head_is_committed_before_actionable_tail() {
+        let commits = Arc::new(Mutex::new(Vec::new()));
+        let uncommitted_drops = Arc::new(Mutex::new(Vec::new()));
+        let delivery = |id, product| FakeIncomingDelivery {
+            id,
+            product,
+            committed: false,
+            commits: commits.clone(),
+            uncommitted_drops: uncommitted_drops.clone(),
+        };
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+
+        forward_incoming_verification_deliveries(
+            stream::iter([delivery(1, None), delivery(2, Some(42))]),
+            sender,
+            |delivery| delivery.product,
+            |mut delivery| {
+                delivery.committed = true;
+                delivery.commits.lock().unwrap().push(delivery.id);
+            },
+        )
+        .await;
+
+        assert_eq!(receiver.recv().await, Some(42));
+        assert_eq!(*commits.lock().unwrap(), vec![1, 2]);
+        assert!(uncommitted_drops.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn actionable_incoming_delivery_commits_only_after_product_send_success() {
+        let commits = Arc::new(Mutex::new(Vec::new()));
+        let uncommitted_drops = Arc::new(Mutex::new(Vec::new()));
+        let delivery = FakeIncomingDelivery {
+            id: 1,
+            product: Some(42),
+            committed: false,
+            commits: commits.clone(),
+            uncommitted_drops: uncommitted_drops.clone(),
+        };
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        drop(receiver);
+
+        forward_incoming_verification_deliveries(
+            stream::iter([delivery]),
+            sender,
+            |delivery| delivery.product,
+            |mut delivery| {
+                delivery.committed = true;
+                delivery.commits.lock().unwrap().push(delivery.id);
+            },
+        )
+        .await;
+
+        assert!(commits.lock().unwrap().is_empty());
+        assert_eq!(*uncommitted_drops.lock().unwrap(), vec![1]);
+    }
+
+    #[tokio::test]
+    async fn verification_raw_redelivery_reuses_the_same_product_flow_identity() {
+        let server = MatrixMockServer::new().await;
+        server.mock_crypto_endpoints_preset().await;
+
+        let alice_user_id = owned_user_id!("@alice:example.org");
+        let alice_device_id = owned_device_id!("ALICEDEVICE");
+        let alice = server
+            .client_builder_for_crypto_end_to_end(&alice_user_id, &alice_device_id)
+            .build()
+            .await;
+        let bob_user_id = owned_user_id!("@bob:example.org");
+        let bob_device_id = owned_device_id!("BOBDEVICE");
+        let bob = server
+            .client_builder_for_crypto_end_to_end(&bob_user_id, &bob_device_id)
+            .build()
+            .await;
+
+        // Publish Bob's device keys without teaching Alice about Bob. The first
+        // request delivery must therefore use the passive unknown-sender
+        // recovery path after its key query completes.
+        server.mock_sync().ok_and_run(&bob, |_| {}).await;
+        let session = super::MatrixClientSession {
+            client: alice.clone(),
+            info: SessionInfo {
+                homeserver: server.server().uri(),
+                user_id: alice_user_id.to_string(),
+                device_id: alice_device_id.to_string(),
+            },
+        };
+        let mut observer = observe_incoming_verification_requests(&session).await;
+        let request_timestamp = matrix_sdk::ruma::MilliSecondsSinceUnixEpoch::now().get();
+        let request = json!({
+            "sender": bob_user_id,
+            "type": "m.key.verification.request",
+            "content": {
+                "from_device": bob_device_id,
+                "transaction_id": "sender-key-recovery-flow",
+                "methods": ["m.sas.v1"],
+                "timestamp": request_timestamp,
+            },
+        });
+
+        server
+            .mock_sync()
+            .ok_and_run(&alice, |builder| {
+                builder.add_to_device_event(request.clone());
+            })
+            .await;
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), observer.recv())
+            .await
+            .expect("typed sender-key recovery should publish without polling delay")
+            .expect("typed sender-key recovery should yield the request");
+        assert_eq!(first.handle().flow_id(), "sender-key-recovery-flow");
+
+        server
+            .mock_sync()
+            .ok_and_run(&alice, |builder| {
+                builder.add_to_device_event(request);
+            })
+            .await;
+        let repeated = tokio::time::timeout(std::time::Duration::from_secs(5), observer.recv())
+            .await
+            .expect("at-least-once transport should forward raw redelivery without polling delay")
+            .expect("raw redelivery should remain observable");
+        assert_eq!(repeated.handle().flow_id(), first.handle().flow_id());
+    }
 
     #[test]
     fn cross_signing_status_maps_to_private_data_free_desktop_status() {
@@ -6133,6 +6430,8 @@ fn restricted_verification_sync_filter() -> matrix_sdk::ruma::api::client::filte
 
 fn restricted_verification_sync_settings() -> matrix_sdk::config::SyncSettings {
     matrix_sdk::config::SyncSettings::new()
+        .token(matrix_sdk::config::SyncToken::NoToken)
+        .save_sync_token(false)
         .timeout(RESTRICTED_VERIFICATION_SYNC_SERVER_TIMEOUT)
         .filter(
             matrix_sdk::ruma::api::client::sync::sync_events::v3::Filter::FilterDefinition(

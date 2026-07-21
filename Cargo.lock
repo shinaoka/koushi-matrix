@@ -3127,6 +3127,7 @@ dependencies = [
  "tokio",
  "tracing-subscriber",
  "url",
+ "wiremock",
 ]
 
 [[package]]

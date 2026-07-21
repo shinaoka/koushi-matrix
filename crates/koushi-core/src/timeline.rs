@@ -51,14 +51,17 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, Ordering},
 };
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
-use futures_util::{StreamExt, stream::FuturesUnordered};
+use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel};
 use koushi_sdk::{
     MatrixClientSession, MatrixCommittedRoomTimelineBackend,
@@ -169,6 +172,10 @@ const ROOM_REPLAY_KNOWN_THREAD_ROOT_PROJECTIONS_MAX: usize = 32;
 const JAVASCRIPT_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
 const REPLY_QUOTE_PREVIEW_MAX_CHARS: usize = 160;
 const MEDIA_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
+/// One absolute deadline for the complete set of manager-owned enqueue workers.
+/// This is deliberately not a per-worker timeout, so shutdown latency cannot
+/// grow with the number of outstanding sends.
+const SEND_ENQUEUE_WORKER_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
 /// Backstop tick count for the anchor-relay wait. After the SDK signals
 /// `anchor_present == true`, the anchor's diff has been broadcast through the
 /// 3-hop relay (conclude_backwards_pagination_from_disk → event-cache task →
@@ -401,13 +408,35 @@ impl SendEnqueueSuccess {
     }
 }
 
-#[derive(Default)]
-struct SendEnqueueWorkerCompletion {
-    media_queued: Option<MediaSendQueuedDelivery>,
+struct SendEnqueueWorkerCompletion;
+
+type SendEnqueueWorkerFuture =
+    Pin<Box<dyn Future<Output = SendEnqueueWorkerCompletion> + Send + 'static>>;
+type GlobalSendCompletionObserverFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+
+async fn poll_global_send_completion_observer(
+    observer: &mut Option<GlobalSendCompletionObserverFuture>,
+) {
+    match observer.as_mut() {
+        Some(observer) => observer.await,
+        None => futures_util::future::pending().await,
+    }
+}
+
+async fn poll_global_send_completion_observer_once(
+    observer: &mut Option<GlobalSendCompletionObserverFuture>,
+) -> bool {
+    futures_util::future::poll_fn(|context| {
+        let completed = observer
+            .as_mut()
+            .is_some_and(|observer| observer.as_mut().poll(context).is_ready());
+        Poll::Ready(completed)
+    })
+    .await
 }
 
 struct SendEnqueueWorkerSupervisor {
-    tasks: FuturesUnordered<executor::JoinHandle<SendEnqueueWorkerCompletion>>,
+    tasks: FuturesUnordered<SendEnqueueWorkerFuture>,
     terminal_ingress: TimelineSendTerminalIngress,
 }
 
@@ -419,25 +448,25 @@ impl SendEnqueueWorkerSupervisor {
         }
     }
 
-    fn abort_all(&self) {
-        for task in self.tasks.iter() {
-            task.abort();
-        }
+    fn cancel_all(&mut self) {
+        self.tasks = FuturesUnordered::new();
     }
 }
 
 impl Drop for SendEnqueueWorkerSupervisor {
     fn drop(&mut self) {
-        // A cancelled/panicked manager cannot await its workers. Close terminal
-        // admission first so registration Drop fails closed, then abort every
-        // owned task instead of detaching raw Tokio JoinHandles.
+        // Enqueue futures are polled directly by the manager and must return
+        // from each poll like every well-behaved async future. Closing terminal
+        // admission before synchronously dropping the set makes every active
+        // registration fail closed without a detached Tokio task.
         self.terminal_ingress.stop_accepting();
-        self.abort_all();
+        self.cancel_all();
     }
 }
 
 async fn run_send_enqueue_future<F>(
     mut registration: SendCompletionRegistration,
+    event_tx: broadcast::Sender<CoreEvent>,
     enqueue: F,
 ) -> SendEnqueueWorkerCompletion
 where
@@ -445,14 +474,26 @@ where
 {
     match enqueue.await {
         Ok(success) => {
-            registration.bind(success.sdk_transaction_id);
-            SendEnqueueWorkerCompletion {
-                media_queued: success.media_queued,
+            let SendEnqueueSuccess {
+                sdk_transaction_id,
+                media_queued,
+            } = success;
+            if let Some(media) = media_queued {
+                let _ = event_tx.send(CoreEvent::Timeline(TimelineEvent::MediaSendQueued {
+                    request_id: media.request_id,
+                    key: media.key,
+                    transaction_id: media.transaction_id,
+                }));
             }
+            // Binding can synchronously admit an SDK terminal retained before
+            // enqueue completed. Publish the media queue acknowledgement first
+            // so no terminal can overtake it at the manager ingress boundary.
+            registration.bind(sdk_transaction_id);
+            SendEnqueueWorkerCompletion
         }
         Err(kind) => {
             registration.fail_known(kind);
-            SendEnqueueWorkerCompletion::default()
+            SendEnqueueWorkerCompletion
         }
     }
 }
@@ -1736,7 +1777,7 @@ pub struct TimelineManagerActor {
     timelines: HashMap<TimelineKey, TimelineActorHandle>,
     accepted_submissions: SubmissionAdmissionLedger,
     send_completion: SharedSendCompletionCoordinator,
-    global_send_completion_observer_task: Option<executor::JoinHandle<()>>,
+    global_send_completion_observer_future: Option<GlobalSendCompletionObserverFuture>,
     send_enqueue_workers: SendEnqueueWorkerSupervisor,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
@@ -1775,16 +1816,12 @@ pub struct TimelineManagerActor {
 
 impl Drop for TimelineManagerActor {
     fn drop(&mut self) {
-        // Ordered shutdown has already joined workers and taken/awaited the
-        // observer. Cancellation or panic cannot await, so close admission
-        // before aborting every manager-owned send task. Aborting a raw Tokio
-        // JoinHandle before it is dropped prevents detach-on-drop ownership
-        // leaks while preserving the normal shutdown ordering in `run`.
+        // Ordered shutdown has already drained or synchronously cancelled the
+        // directly-polled futures. On cancellation or panic, close admission,
+        // then settle worker registrations before stopping the observer.
         self.terminal_ingress.stop_accepting();
-        if let Some(observer) = &self.global_send_completion_observer_task {
-            observer.abort();
-        }
-        self.send_enqueue_workers.abort_all();
+        self.send_enqueue_workers.cancel_all();
+        self.global_send_completion_observer_future.take();
     }
 }
 
@@ -1867,7 +1904,7 @@ impl TimelineManagerActor {
             timelines: HashMap::new(),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             send_completion: SharedSendCompletionCoordinator::default(),
-            global_send_completion_observer_task: None,
+            global_send_completion_observer_future: None,
             send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
             action_tx,
             event_tx,
@@ -1914,12 +1951,12 @@ impl TimelineManagerActor {
         let (tx, msg_rx) = mpsc::channel(crate::runtime::ACTOR_MESSAGE_QUEUE_CAPACITY);
         let (terminal_ingress, terminal_rx) = TimelineSendTerminalIngress::channel();
         let send_completion = SharedSendCompletionCoordinator::default();
-        let global_send_completion_observer_task =
-            Some(executor::spawn(run_global_send_completion_observer(
+        let global_send_completion_observer_future =
+            Some(Box::pin(run_global_send_completion_observer(
                 session.client().send_queue().subscribe(),
                 Arc::clone(&send_completion),
                 terminal_ingress.clone(),
-            )));
+            )) as GlobalSendCompletionObserverFuture);
         let actor = TimelineManagerActor {
             session: Some(session),
             room_list_service: None,
@@ -1929,7 +1966,7 @@ impl TimelineManagerActor {
             timelines: HashMap::new(),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             send_completion,
-            global_send_completion_observer_task,
+            global_send_completion_observer_future,
             send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
             action_tx,
             event_tx,
@@ -1966,12 +2003,15 @@ impl TimelineManagerActor {
     where
         F: Future<Output = Result<SendEnqueueSuccess, TimelineFailureKind>> + Send + 'static,
     {
-        self.send_enqueue_workers
-            .tasks
-            .push(executor::spawn(run_send_enqueue_future(
-                registration,
-                enqueue,
-            )));
+        let event_tx = self.event_tx.clone();
+        self.send_enqueue_workers.tasks.push(Box::pin(async move {
+            // Spawned workers previously isolated enqueue panics at the JoinHandle boundary.
+            // Keep that fail-closed isolation when the manager polls futures directly.
+            let _ = AssertUnwindSafe(run_send_enqueue_future(registration, event_tx, enqueue))
+                .catch_unwind()
+                .await;
+            SendEnqueueWorkerCompletion
+        }));
     }
 
     fn spawn_send_enqueue(
@@ -1980,36 +2020,103 @@ impl TimelineManagerActor {
         registration: SendCompletionRegistration,
         admission: Option<oneshot::Receiver<()>>,
         payload: TimelineSendEnqueuePayload,
-    ) {
+    ) -> oneshot::Receiver<()> {
+        let (preflight_started_tx, preflight_started_rx) = oneshot::channel();
         self.spawn_send_enqueue_future(registration, async move {
             if !await_submission_admission(admission).await {
                 return Err(TimelineFailureKind::QueueOverflow);
             }
+            let _ = preflight_started_tx.send(());
             enqueue_timeline_send(context, payload).await
         });
+        preflight_started_rx
     }
 
-    fn handle_send_enqueue_worker_result(
-        &self,
-        result: Result<SendEnqueueWorkerCompletion, tokio::task::JoinError>,
+    fn handle_send_enqueue_worker_completion(&self, _: SendEnqueueWorkerCompletion) {}
+
+    async fn drive_send_enqueue_until_preflight_started(
+        &mut self,
+        mut preflight_started: oneshot::Receiver<()>,
     ) {
-        let Ok(completion) = result else {
-            // Registration Drop is the private-safe fail-closed terminal for a
-            // cancelled or panicked worker. Never expose the raw join error.
-            return;
-        };
-        if let Some(media) = completion.media_queued {
-            self.emit(CoreEvent::Timeline(TimelineEvent::MediaSendQueued {
-                request_id: media.request_id,
-                key: media.key,
-                transaction_id: media.transaction_id,
-            }));
+        loop {
+            tokio::select! {
+                biased;
+                _ = &mut preflight_started => break,
+                worker = self.send_enqueue_workers.tasks.next(),
+                    if !self.send_enqueue_workers.tasks.is_empty() => {
+                    match worker {
+                        Some(completion) => {
+                            self.handle_send_enqueue_worker_completion(completion);
+                        }
+                        None => break,
+                    }
+                }
+            }
         }
     }
 
+    async fn drain_send_enqueue_workers_until(&mut self, deadline: executor::Instant) -> bool {
+        enum DrainProgress {
+            Worker(Option<SendEnqueueWorkerCompletion>),
+            ObserverFinished,
+        }
+
+        while !self.send_enqueue_workers.tasks.is_empty() {
+            let progress = executor::timeout_at(deadline, async {
+                tokio::select! {
+                    worker = self.send_enqueue_workers.tasks.next() => {
+                        DrainProgress::Worker(worker)
+                    }
+                    _ = poll_global_send_completion_observer(
+                        &mut self.global_send_completion_observer_future,
+                    ) => DrainProgress::ObserverFinished,
+                }
+            })
+            .await;
+            match progress {
+                Ok(DrainProgress::Worker(Some(completion))) => {
+                    self.handle_send_enqueue_worker_completion(completion);
+                }
+                Ok(DrainProgress::Worker(None)) => break,
+                Ok(DrainProgress::ObserverFinished) => {
+                    self.global_send_completion_observer_future = None;
+                }
+                Err(_) => return false,
+            }
+        }
+        if poll_global_send_completion_observer_once(
+            &mut self.global_send_completion_observer_future,
+        )
+        .await
+        {
+            self.global_send_completion_observer_future = None;
+        }
+        true
+    }
+
     async fn join_send_enqueue_workers(&mut self) {
-        while let Some(result) = self.send_enqueue_workers.tasks.next().await {
-            self.handle_send_enqueue_worker_result(result);
+        self.join_send_enqueue_workers_with_grace_period(SEND_ENQUEUE_WORKER_SHUTDOWN_DEADLINE)
+            .await;
+    }
+
+    async fn join_send_enqueue_workers_with_grace_period(&mut self, grace_period: Duration) {
+        let graceful_deadline = executor::Instant::now() + grace_period;
+        if self
+            .drain_send_enqueue_workers_until(graceful_deadline)
+            .await
+        {
+            return;
+        }
+
+        // Manager-owned futures are cancellation-safe at poll boundaries. Dropping the set
+        // synchronously settles every registration while the terminal observer remains live.
+        self.send_enqueue_workers.cancel_all();
+        if poll_global_send_completion_observer_once(
+            &mut self.global_send_completion_observer_future,
+        )
+        .await
+        {
+            self.global_send_completion_observer_future = None;
         }
     }
 
@@ -2026,9 +2133,13 @@ impl TimelineManagerActor {
                     continue;
                 }
                 worker = self.send_enqueue_workers.tasks.next(), if !self.send_enqueue_workers.tasks.is_empty() => {
-                    if let Some(result) = worker {
-                        self.handle_send_enqueue_worker_result(result);
+                    if let Some(completion) = worker {
+                        self.handle_send_enqueue_worker_completion(completion);
                     }
+                    continue;
+                }
+                _ = poll_global_send_completion_observer(&mut self.global_send_completion_observer_future) => {
+                    self.global_send_completion_observer_future = None;
                     continue;
                 }
                 msg = self.msg_rx.recv() => msg,
@@ -2177,10 +2288,7 @@ impl TimelineManagerActor {
         // Once enqueue workers are quiescent, stop the observer before actor
         // presentation producers. Every remaining bound request then receives
         // one explicit observation-loss settlement before ingress closes.
-        if let Some(task) = self.global_send_completion_observer_task.take() {
-            task.abort();
-            let _ = task.await;
-        }
+        self.global_send_completion_observer_future.take();
         let timeline_actors = self
             .timelines
             .drain()
@@ -2815,7 +2923,7 @@ impl TimelineManagerActor {
     }
 
     async fn subscribe_existing_timeline_rooms(
-        &self,
+        &mut self,
         service: &Arc<matrix_sdk_ui::room_list_service::RoomListService>,
     ) {
         let mut seen_room_ids = HashSet::new();
@@ -2957,7 +3065,7 @@ impl TimelineManagerActor {
         }
     }
 
-    async fn restore_foreground_gap_demand(&self, key: &TimelineKey) {
+    async fn restore_foreground_gap_demand(&mut self, key: &TimelineKey) {
         if self.live_tail_refreshes.active_key() != Some(key) {
             return;
         }
@@ -3549,7 +3657,12 @@ impl TimelineManagerActor {
             true,
         );
         registration.activate();
-        self.spawn_send_enqueue(context, registration, None, payload);
+        let preflight_started = self.spawn_send_enqueue(context, registration, None, payload);
+        // Directly-owned futures are not independently scheduled Tokio tasks. Drive this
+        // admitted worker through its permit to the start of payload-specific preflight before
+        // returning to the command loop. This does not serialize later SDK queue insertion.
+        self.drive_send_enqueue_until_preflight_started(preflight_started)
+            .await;
     }
 
     async fn route_media_send_to_worker_or_fail(
@@ -3582,7 +3695,9 @@ impl TimelineManagerActor {
             false,
         );
         registration.activate();
-        self.spawn_send_enqueue(context, registration, None, payload);
+        let preflight_started = self.spawn_send_enqueue(context, registration, None, payload);
+        self.drive_send_enqueue_until_preflight_started(preflight_started)
+            .await;
     }
 
     async fn route_submission_to_worker(
@@ -3643,7 +3758,8 @@ impl TimelineManagerActor {
             .expect("new send registration must own its id");
         // The stable manager owns the permit-blocked worker before it exposes
         // acceptance. Unsubscribe may now remove only presentation state.
-        self.spawn_send_enqueue(context, registration, Some(permit_rx), payload);
+        let preflight_started =
+            self.spawn_send_enqueue(context, registration, Some(permit_rx), payload);
         if !self
             .send_completion
             .lock()
@@ -3711,6 +3827,8 @@ impl TimelineManagerActor {
             transaction_id,
         }));
         let _ = permit_tx.send(());
+        self.drive_send_enqueue_until_preflight_started(preflight_started)
+            .await;
     }
 
     async fn handle_replay_subscribed(&mut self, _request_id: RequestId) {
@@ -3724,7 +3842,7 @@ impl TimelineManagerActor {
     }
 
     async fn acknowledge_projection(
-        &self,
+        &mut self,
         projection_request_id: RequestId,
         key: &TimelineKey,
         generation: TimelineGeneration,
@@ -3747,7 +3865,7 @@ impl TimelineManagerActor {
     }
 
     async fn acknowledge_batch_rendered(
-        &self,
+        &mut self,
         key: &TimelineKey,
         actor_generation: u64,
         timeline_generation: TimelineGeneration,
@@ -3852,7 +3970,7 @@ impl TimelineManagerActor {
     }
 
     async fn build_timeline_actor_handle(
-        &self,
+        &mut self,
         request_id: RequestId,
         key: &TimelineKey,
         actor_generation: u64,
@@ -3963,7 +4081,7 @@ impl TimelineManagerActor {
     }
 
     async fn route_to_actor_or_fail(
-        &self,
+        &mut self,
         request_id: RequestId,
         key: &TimelineKey,
         msg: TimelineActorMessage,
@@ -3995,7 +4113,7 @@ impl TimelineManagerActor {
     }
 
     async fn emit_subscription_failure(
-        &self,
+        &mut self,
         request_id: RequestId,
         key: &TimelineKey,
         kind: TimelineFailureKind,
@@ -4006,7 +4124,7 @@ impl TimelineManagerActor {
         self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
     }
 
-    async fn emit_timeline_subscribed_action(&self, key: &TimelineKey) {
+    async fn emit_timeline_subscribed_action(&mut self, key: &TimelineKey) {
         let action = match &key.kind {
             TimelineKind::Room { room_id } => AppAction::TimelineSubscribed {
                 room_id: room_id.clone(),
@@ -4026,7 +4144,7 @@ impl TimelineManagerActor {
         let _ = self.action_tx.send(vec![action]).await;
     }
 
-    async fn emit_action_reliable(&self, action: AppAction) -> bool {
+    async fn emit_action_reliable(&mut self, action: AppAction) -> bool {
         emit_app_action_reliable(&self.action_tx, action).await
     }
 }
@@ -24941,6 +25059,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn media_enqueue_publishes_queued_before_a_prebind_terminal() {
+        let key = room_key();
+        let request_id = fake_rid(7751);
+        let client_transaction_id = "client-media-order".to_owned();
+        let sdk_transaction_id = "sdk-media-order".to_owned();
+        let event_id = "$event-media-order:test".to_owned();
+        let mut manager = live_tail_test_manager(HashMap::new());
+        let mut event_rx = manager.event_tx.subscribe();
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&manager.send_completion),
+            manager.terminal_ingress.clone(),
+            key.clone(),
+            client_transaction_id.clone(),
+            None,
+            request_id,
+            false,
+        );
+        registration.activate();
+
+        apply_send_completion_observation_and_handoff(
+            &manager.send_completion,
+            &manager.terminal_ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: sdk_transaction_id.clone(),
+                event_id: event_id.clone(),
+            },
+        );
+        assert!(
+            manager.terminal_rx.try_recv().is_err(),
+            "the SDK terminal must remain held until the enqueue worker binds its transaction"
+        );
+
+        manager.spawn_send_enqueue_future(registration, {
+            let key = key.clone();
+            let client_transaction_id = client_transaction_id.clone();
+            async move {
+                Ok(SendEnqueueSuccess {
+                    sdk_transaction_id,
+                    media_queued: Some(MediaSendQueuedDelivery {
+                        request_id,
+                        key,
+                        transaction_id: client_transaction_id,
+                    }),
+                })
+            }
+        });
+        let manager_tx = manager.msg_tx.clone();
+        let manager_task = executor::spawn(manager.run());
+
+        let first = event_rx.recv().await.expect("first media lifecycle event");
+        let second = event_rx.recv().await.expect("second media lifecycle event");
+        assert!(matches!(
+            first,
+            CoreEvent::Timeline(TimelineEvent::MediaSendQueued {
+                request_id: queued_request_id,
+                key: queued_key,
+                transaction_id: queued_transaction_id,
+            }) if queued_request_id == request_id
+                && queued_key == key
+                && queued_transaction_id == client_transaction_id
+        ));
+        assert!(matches!(
+            second,
+            CoreEvent::Timeline(TimelineEvent::SendCompleted {
+                request_id: completed_request_id,
+                key: completed_key,
+                transaction_id: completed_transaction_id,
+                event_id: completed_event_id,
+            }) if completed_request_id == request_id
+                && completed_key == key
+                && completed_transaction_id == client_transaction_id
+                && completed_event_id == event_id
+        ));
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        manager_tx
+            .send(TimelineMessage::Shutdown {
+                acknowledged: Some(shutdown_tx),
+            })
+            .await
+            .expect("manager shutdown command");
+        shutdown_rx.await.expect("manager shutdown acknowledgement");
+        manager_task.await.expect("manager shutdown task");
+    }
+
+    #[tokio::test]
     async fn send_terminal_required_action_failure_suppresses_completion_and_shutdowns() {
         let key = room_key();
         let request_id = fake_rid(776);
@@ -25826,7 +26031,7 @@ mod tests {
             timelines: HashMap::from([(key.clone(), test_timeline_actor_handle())]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             send_completion: SharedSendCompletionCoordinator::default(),
-            global_send_completion_observer_task: None,
+            global_send_completion_observer_future: None,
             send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
             action_tx,
             event_tx,
@@ -27270,7 +27475,7 @@ mod tests {
             timelines: HashMap::from([(key.clone(), test_timeline_actor_handle())]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             send_completion: SharedSendCompletionCoordinator::default(),
-            global_send_completion_observer_task: None,
+            global_send_completion_observer_future: None,
             send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
             action_tx,
             event_tx,
@@ -27891,7 +28096,7 @@ mod tests {
             timelines,
             accepted_submissions: SubmissionAdmissionLedger::default(),
             send_completion: SharedSendCompletionCoordinator::default(),
-            global_send_completion_observer_task: None,
+            global_send_completion_observer_future: None,
             send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
             action_tx,
             event_tx,
@@ -27915,6 +28120,18 @@ mod tests {
             live_tail_refreshes: LiveTailRefreshCoordinator::new(),
             test_session_available: true,
         }
+    }
+
+    async fn poll_manager_enqueue_workers_once(manager: &mut TimelineManagerActor) {
+        std::future::poll_fn(|context| {
+            if let Poll::Ready(Some(completion)) =
+                manager.send_enqueue_workers.tasks.poll_next_unpin(context)
+            {
+                manager.handle_send_enqueue_worker_completion(completion);
+            }
+            Poll::Ready(())
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -28841,7 +29058,7 @@ mod tests {
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             send_completion: SharedSendCompletionCoordinator::default(),
-            global_send_completion_observer_task: None,
+            global_send_completion_observer_future: None,
             send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
             action_tx,
             event_tx,
@@ -28865,6 +29082,10 @@ mod tests {
             live_tail_refreshes: LiveTailRefreshCoordinator::new(),
             test_session_available: true,
         };
+        manager
+            .send_enqueue_workers
+            .tasks
+            .push(Box::pin(async { SendEnqueueWorkerCompletion }));
         let submission_id = SubmissionId::new("opaque-submission");
         for request_id in [fake_rid(7300), fake_rid(7301)] {
             manager
@@ -28878,8 +29099,10 @@ mod tests {
                 })
                 .await;
         }
-
-        let request = enqueue_rx.recv().await.expect("one manager enqueue worker");
+        let request = tokio::time::timeout(Duration::from_secs(1), enqueue_rx.recv())
+            .await
+            .expect("manager enqueue worker must be driven")
+            .expect("one manager enqueue worker");
         assert!(matches!(
             request.payload,
             TimelineSendEnqueuePayload::Text { ref body, .. } if body == "body"
@@ -28969,6 +29192,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn drive_send_enqueue_until_preflight_started_returns_when_sender_closes() {
+        let mut manager = live_tail_test_manager(HashMap::new());
+        let (preflight_started_tx, preflight_started_rx) = oneshot::channel();
+        drop(preflight_started_tx);
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            manager.drive_send_enqueue_until_preflight_started(preflight_started_rx),
+        )
+        .await
+        .expect("a dropped preflight-start sender must not stall the manager command loop");
+    }
+
+    #[tokio::test]
     async fn submission_admission_permit_blocks_until_reducer_acceptance_and_aborts_on_drop() {
         let (permit_tx, mut permit_rx) = tokio::sync::oneshot::channel();
         assert!(matches!(
@@ -29008,6 +29245,154 @@ mod tests {
             .await
             .expect("shutdown acknowledgement must not hang")
             .expect("timeline manager acknowledges shutdown");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_deadline_aborts_stalled_enqueue_worker_before_stopping_terminal_observer() {
+        struct ObserverDrop(Arc<AtomicBool>);
+        impl Drop for ObserverDrop {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::SeqCst);
+            }
+        }
+        struct WorkerDrop {
+            alive: Arc<AtomicBool>,
+            observer_alive: Arc<AtomicBool>,
+            settled_before_observer_stop: Arc<AtomicBool>,
+        }
+        impl Drop for WorkerDrop {
+            fn drop(&mut self) {
+                self.settled_before_observer_stop
+                    .store(self.observer_alive.load(Ordering::SeqCst), Ordering::SeqCst);
+                self.alive.store(false, Ordering::SeqCst);
+            }
+        }
+
+        let mut manager = live_tail_test_manager(HashMap::new());
+        let observer_alive = Arc::new(AtomicBool::new(true));
+        let worker_alive = Arc::new(AtomicBool::new(true));
+        let settled_before_observer_stop = Arc::new(AtomicBool::new(false));
+        let (observer_started, observer_ready) = oneshot::channel();
+        manager.global_send_completion_observer_future = Some(Box::pin({
+            let observer_alive = Arc::clone(&observer_alive);
+            async move {
+                let _drop = ObserverDrop(observer_alive);
+                let _ = observer_started.send(());
+                futures_util::future::pending::<()>().await;
+            }
+        }));
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&manager.send_completion),
+            manager.terminal_ingress.clone(),
+            room_key(),
+            "client-stalled-shutdown".to_owned(),
+            None,
+            fake_rid(7470),
+            true,
+        );
+        registration.activate();
+        let (worker_started, worker_ready) = oneshot::channel();
+        manager.spawn_send_enqueue_future(registration, {
+            let alive = Arc::clone(&worker_alive);
+            let observer_alive = Arc::clone(&observer_alive);
+            let settled_before_observer_stop = Arc::clone(&settled_before_observer_stop);
+            async move {
+                let _drop = WorkerDrop {
+                    alive,
+                    observer_alive,
+                    settled_before_observer_stop,
+                };
+                let _ = worker_started.send(());
+                futures_util::future::pending::<Result<SendEnqueueSuccess, TimelineFailureKind>>()
+                    .await
+            }
+        });
+        let msg_tx = manager.msg_tx.clone();
+        let run = executor::spawn(manager.run());
+        observer_ready.await.expect("terminal observer started");
+        worker_ready.await.expect("enqueue worker started");
+        let (ack_tx, mut ack_rx) = oneshot::channel();
+        msg_tx
+            .send(TimelineMessage::Shutdown {
+                acknowledged: Some(ack_tx),
+            })
+            .await
+            .expect("shutdown command");
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(SEND_ENQUEUE_WORKER_SHUTDOWN_DEADLINE).await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            matches!(ack_rx.try_recv(), Ok(())),
+            "a stalled SDK enqueue must not hold shutdown acknowledgement forever"
+        );
+        assert!(!worker_alive.load(Ordering::SeqCst));
+        assert!(settled_before_observer_stop.load(Ordering::SeqCst));
+        assert!(!observer_alive.load(Ordering::SeqCst));
+        run.await.expect("bounded manager shutdown");
+    }
+
+    #[tokio::test]
+    async fn shutdown_grace_polls_exact_terminal_observer_before_worker_quiescence() {
+        let mut manager = live_tail_test_manager(HashMap::new());
+        let key = room_key();
+        let sdk_transaction_id = "sdk-shutdown-grace";
+        let mut registration = SendCompletionRegistration::begin(
+            Arc::clone(&manager.send_completion),
+            manager.terminal_ingress.clone(),
+            key.clone(),
+            "client-shutdown-grace".to_owned(),
+            None,
+            fake_rid(7472),
+            true,
+        );
+        registration.activate();
+
+        let (updates_tx, updates_rx) = broadcast::channel(4);
+        manager.global_send_completion_observer_future =
+            Some(Box::pin(run_global_send_completion_observer(
+                updates_rx,
+                Arc::clone(&manager.send_completion),
+                manager.terminal_ingress.clone(),
+            )));
+        let (release_tx, release_rx) = oneshot::channel();
+        manager.spawn_send_enqueue_future(registration, async move {
+            let _ = release_rx.await;
+            Ok(SendEnqueueSuccess::terminal_only(
+                sdk_transaction_id.to_owned(),
+            ))
+        });
+
+        let queue_terminal = async move {
+            tokio::task::yield_now().await;
+            updates_tx
+                .send(SendQueueUpdate {
+                    room_id: matrix_sdk::ruma::OwnedRoomId::try_from(key.room_id())
+                        .expect("room id"),
+                    update: RoomSendQueueUpdate::SentEvent {
+                        transaction_id: matrix_sdk::ruma::OwnedTransactionId::from(
+                            sdk_transaction_id,
+                        ),
+                        event_id: matrix_sdk::ruma::OwnedEventId::try_from("$shutdown-grace:test")
+                            .expect("event id"),
+                    },
+                })
+                .expect("queue exact SDK terminal");
+            let _ = release_tx.send(());
+        };
+        let ((), ()) = tokio::join!(manager.join_send_enqueue_workers(), queue_terminal);
+
+        let terminal = manager
+            .terminal_rx
+            .try_recv()
+            .expect("graceful drain observes the exact terminal before observer teardown");
+        assert!(terminal.failure.is_none());
+        assert!(matches!(
+            terminal.completion,
+            Some(TimelineSendCompletionDelivery { event_id, .. })
+                if event_id == "$shutdown-grace:test"
+        ));
     }
 
     #[tokio::test]
@@ -29052,7 +29437,7 @@ mod tests {
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             send_completion: SharedSendCompletionCoordinator::default(),
-            global_send_completion_observer_task: None,
+            global_send_completion_observer_future: None,
             send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
             action_tx,
             event_tx,
@@ -29126,7 +29511,7 @@ mod tests {
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             send_completion: SharedSendCompletionCoordinator::default(),
-            global_send_completion_observer_task: None,
+            global_send_completion_observer_future: None,
             send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
             action_tx,
             event_tx,
@@ -29179,9 +29564,9 @@ mod tests {
         assert!(
             matches!(event_rx.try_recv(), Ok(CoreEvent::Timeline(TimelineEvent::SubmissionAccepted { submission_id: accepted, .. })) if accepted == submission_id)
         );
-        let request = enqueue_rx
-            .recv()
+        let request = tokio::time::timeout(Duration::from_secs(1), enqueue_rx.recv())
             .await
+            .expect("accepted enqueue worker must be driven")
             .expect("accepted submission releases manager enqueue worker");
         assert!(matches!(
             request.payload,
@@ -30383,7 +30768,7 @@ mod tests {
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             send_completion: SharedSendCompletionCoordinator::default(),
-            global_send_completion_observer_task: None,
+            global_send_completion_observer_future: None,
             send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
             action_tx,
             event_tx,
@@ -30570,7 +30955,7 @@ mod tests {
             )]),
             accepted_submissions: SubmissionAdmissionLedger::default(),
             send_completion: SharedSendCompletionCoordinator::default(),
-            global_send_completion_observer_task: None,
+            global_send_completion_observer_future: None,
             send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
             action_tx,
             event_tx,
@@ -33052,7 +33437,7 @@ mod tests {
             .find("self.join_send_enqueue_workers().await")
             .expect("shutdown should join enqueue workers");
         let observer_stop = manager_run
-            .find("self.global_send_completion_observer_task.take()")
+            .find("self.global_send_completion_observer_future.take()")
             .expect("shutdown should stop the global observer explicitly");
         let actor_drain = manager_run
             .find("let timeline_actors = self")
@@ -33060,7 +33445,7 @@ mod tests {
         assert!(
             manager_run.contains("if !self.send_enqueue_workers.tasks.is_empty()")
                 && worker_poll < mailbox_poll,
-            "a guarded, biased worker branch must reap completed handles without empty-stream spinning"
+            "a guarded, biased worker branch must poll owned futures without empty-stream spinning"
         );
         assert!(
             worker_join < observer_stop && observer_stop < actor_drain,
@@ -33081,12 +33466,11 @@ mod tests {
             .next()
             .expect("enqueue runner should follow the supervisor");
         assert!(
-            supervisor_impl.contains("fn abort_all(&self)")
-                && supervisor_impl.contains("self.tasks.iter()")
-                && supervisor_impl.contains("task.abort()")
+            supervisor_impl.contains("fn cancel_all(&mut self)")
+                && supervisor_impl.contains("self.tasks = FuturesUnordered::new()")
                 && supervisor_drop.contains("self.terminal_ingress.stop_accepting()")
-                && supervisor_drop.contains("self.abort_all()"),
-            "abnormal manager drop must close terminal admission and abort every owned worker"
+                && supervisor_drop.contains("self.cancel_all()"),
+            "abnormal manager drop must close terminal admission and synchronously drop every owned worker future"
         );
         let manager_drop = production
             .split("impl Drop for TimelineManagerActor")
@@ -33095,12 +33479,23 @@ mod tests {
             .split("fn accepts_legacy_committed_response")
             .next()
             .expect("legacy response helper should follow manager Drop");
+        let admission_close = manager_drop
+            .find("self.terminal_ingress.stop_accepting()")
+            .expect("manager Drop closes terminal admission");
+        let worker_cancel = manager_drop
+            .find("self.send_enqueue_workers.cancel_all()")
+            .expect("manager Drop synchronously cancels workers");
+        let observer_drop = manager_drop
+            .find("self.global_send_completion_observer_future.take()")
+            .expect("manager Drop synchronously drops the observer");
         assert!(
-            manager_drop.contains("self.terminal_ingress.stop_accepting()")
-                && manager_drop.contains("self.global_send_completion_observer_task")
-                && manager_drop.contains("observer.abort()")
-                && manager_drop.contains("self.send_enqueue_workers.abort_all()"),
-            "manager Drop must close terminal admission before aborting observer and enqueue workers"
+            admission_close < worker_cancel && worker_cancel < observer_drop,
+            "manager Drop must close admission, settle workers, then drop the observer"
+        );
+        assert!(
+            production.contains("AssertUnwindSafe(run_send_enqueue_future")
+                && production.contains(".catch_unwind()"),
+            "directly-polled enqueue futures must retain panic isolation"
         );
     }
 
@@ -34083,7 +34478,11 @@ mod tests {
                 let _ = released.await;
                 Ok(SendEnqueueSuccess::terminal_only(sdk_transaction_id))
             });
-            saved.await.expect("synthetic QueueStorage save committed");
+            poll_manager_enqueue_workers_once(&mut manager).await;
+            tokio::time::timeout(Duration::from_secs(1), saved)
+                .await
+                .expect("pre-bind enqueue worker must be driven")
+                .expect("synthetic QueueStorage save committed");
 
             manager
                 .handle_command(TimelineCommand::Unsubscribe {
@@ -34136,12 +34535,10 @@ mod tests {
 
         let mut manager = live_tail_test_manager(HashMap::new());
         let observer_alive = Arc::new(AtomicBool::new(true));
-        let (observer_started, observer_ready) = oneshot::channel();
-        manager.global_send_completion_observer_task = Some(executor::spawn({
-            let observer_alive = Arc::clone(&observer_alive);
+        manager.global_send_completion_observer_future = Some(Box::pin({
+            let observer_drop = OwnedTaskDropFlag(Arc::clone(&observer_alive));
             async move {
-                let _drop = OwnedTaskDropFlag(observer_alive);
-                let _ = observer_started.send(());
+                let _drop = observer_drop;
                 futures_util::future::pending::<()>().await;
             }
         }));
@@ -34156,20 +34553,24 @@ mod tests {
         );
         registration.activate();
         let worker_alive = Arc::new(AtomicBool::new(true));
-        let (worker_started, worker_ready) = oneshot::channel();
         manager.spawn_send_enqueue_future(registration, {
-            let worker_alive = Arc::clone(&worker_alive);
+            let worker_drop = OwnedTaskDropFlag(Arc::clone(&worker_alive));
             async move {
-                let _drop = OwnedTaskDropFlag(worker_alive);
-                let _ = worker_started.send(());
+                let _drop = worker_drop;
                 futures_util::future::pending::<Result<SendEnqueueSuccess, TimelineFailureKind>>()
                     .await
             }
         });
-        observer_ready.await.expect("manager observer started");
-        worker_ready.await.expect("manager worker started");
-
         drop(manager);
+
+        assert!(
+            !observer_alive.load(Ordering::SeqCst),
+            "dropping the manager must synchronously drop the owned observer future"
+        );
+        assert!(
+            !worker_alive.load(Ordering::SeqCst),
+            "dropping the manager must synchronously drop every owned enqueue future"
+        );
 
         let quiesced = tokio::time::timeout(Duration::from_secs(1), async {
             while observer_alive.load(Ordering::SeqCst) || worker_alive.load(Ordering::SeqCst) {
@@ -34183,6 +34584,82 @@ mod tests {
             !observer_alive.load(Ordering::SeqCst),
             !worker_alive.load(Ordering::SeqCst),
         );
+    }
+
+    #[tokio::test]
+    async fn panicked_enqueue_future_is_fail_closed_without_stopping_manager_workers() {
+        let mut manager = live_tail_test_manager(HashMap::new());
+        let mut panicked_registration = SendCompletionRegistration::begin(
+            Arc::clone(&manager.send_completion),
+            manager.terminal_ingress.clone(),
+            room_key(),
+            "client-panicked-enqueue".to_owned(),
+            None,
+            fake_rid(7466),
+            true,
+        );
+        panicked_registration.activate();
+        manager.spawn_send_enqueue_future(panicked_registration, async move {
+            panic!("synthetic enqueue panic");
+            #[allow(unreachable_code)]
+            Err(TimelineFailureKind::Sdk)
+        });
+
+        let completion = manager
+            .send_enqueue_workers
+            .tasks
+            .next()
+            .await
+            .expect("caught panic still settles the supervised future");
+        manager.handle_send_enqueue_worker_completion(completion);
+        let panic_terminal = manager
+            .terminal_rx
+            .try_recv()
+            .expect("registration drop emits one private-safe terminal");
+        assert!(matches!(
+            panic_terminal.failure,
+            Some(TimelineSendFailureDelivery {
+                failure: CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::QueueOverflow,
+                },
+                ..
+            })
+        ));
+
+        let mut next_registration = SendCompletionRegistration::begin(
+            Arc::clone(&manager.send_completion),
+            manager.terminal_ingress.clone(),
+            room_key(),
+            "client-after-panic".to_owned(),
+            None,
+            fake_rid(7467),
+            true,
+        );
+        next_registration.activate();
+        manager.spawn_send_enqueue_future(next_registration, async move {
+            Err(TimelineFailureKind::Sdk)
+        });
+        let completion = manager
+            .send_enqueue_workers
+            .tasks
+            .next()
+            .await
+            .expect("manager continues polling workers after an isolated panic");
+        manager.handle_send_enqueue_worker_completion(completion);
+        let next_terminal = manager
+            .terminal_rx
+            .try_recv()
+            .expect("later worker terminal is still delivered");
+        assert!(matches!(
+            next_terminal.failure,
+            Some(TimelineSendFailureDelivery {
+                failure: CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Sdk,
+                },
+                ..
+            })
+        ));
+        assert!(manager.terminal_rx.try_recv().is_err());
     }
 
     #[test]
@@ -34486,7 +34963,7 @@ mod tests {
         manager.action_tx = action_tx;
         let order = Arc::new(Mutex::new(Vec::new()));
         let (observer_started_tx, observer_started_rx) = oneshot::channel();
-        manager.global_send_completion_observer_task = Some(executor::spawn({
+        manager.global_send_completion_observer_future = Some(Box::pin({
             let order = Arc::clone(&order);
             async move {
                 let _drop = OrderedDrop {
@@ -34532,11 +35009,11 @@ mod tests {
                 enqueue_context: None,
             },
         );
+        let manager_tx = manager.msg_tx.clone();
+        let manager_task = executor::spawn(manager.run());
         observer_started_rx.await.expect("observer started");
         actor_started_rx.await.expect("actor started");
 
-        let manager_tx = manager.msg_tx.clone();
-        let manager_task = executor::spawn(manager.run());
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         manager_tx
             .send(TimelineMessage::Shutdown {

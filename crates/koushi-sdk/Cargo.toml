@@ -39,6 +39,7 @@ url = "2"
 zeroize = "1"
 
 [dev-dependencies]
+matrix-sdk = { workspace = true, features = ["testing"] }
 tempfile = "3"
 
 # cargo-machete ignore list: ruma types are accessed through matrix_sdk::ruma
