@@ -3513,7 +3513,7 @@ mod matrix_live_tail_refresh_mapping_tests {
 }
 
 impl MatrixClientSession {
-    #[cfg(feature = "test-hooks")]
+    #[cfg(any(test, feature = "test-hooks"))]
     #[doc(hidden)]
     pub fn from_client_for_testing(client: matrix_sdk::Client, info: SessionInfo) -> Self {
         Self { client, info }
@@ -4753,6 +4753,54 @@ struct MatrixErrorResponse {
 /// the authoritative sync owner starts. Any successful response cursor and
 /// room payload are intentionally discarded.
 pub async fn probe_sliding_sync_invite_list_support(
+    session: &MatrixClientSession,
+) -> MatrixSlidingSyncInviteListSupport {
+    match tokio::time::timeout(SYNC_INVITE_PROBE_TIMEOUT, async {
+        let Some(probe) = build_sliding_sync_invite_probe_client(session).await else {
+            return MatrixSlidingSyncInviteListSupport::Unknown;
+        };
+        send_sliding_sync_invite_list_probe(&probe).await
+    })
+    .await
+    {
+        Ok(support) => support,
+        Err(_) => MatrixSlidingSyncInviteListSupport::Unknown,
+    }
+}
+
+async fn build_sliding_sync_invite_probe_client(
+    session: &MatrixClientSession,
+) -> Option<matrix_sdk::Client> {
+    use matrix_sdk::authentication::matrix::MatrixSession;
+    use matrix_sdk_base::store::RoomLoadSettings;
+
+    let authoritative = session.client();
+    let meta = authoritative.session_meta()?.clone();
+    let access_token = authoritative.access_token()?;
+    let probe = matrix_sdk::Client::builder()
+        .homeserver_url(authoritative.homeserver())
+        .build()
+        .await
+        .ok()?;
+
+    probe
+        .matrix_auth()
+        .restore_session(
+            MatrixSession {
+                meta,
+                tokens: matrix_sdk::SessionTokens {
+                    access_token,
+                    refresh_token: None,
+                },
+            },
+            RoomLoadSettings::default(),
+        )
+        .await
+        .ok()?;
+    Some(probe)
+}
+
+async fn send_sliding_sync_invite_list_probe(
     client: &matrix_sdk::Client,
 ) -> MatrixSlidingSyncInviteListSupport {
     use matrix_sdk::{
@@ -7901,17 +7949,18 @@ mod tests {
     };
 
     use super::{
-        LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE, MatrixConversationActivity,
+        LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE, MatrixClientSession, MatrixConversationActivity,
         MatrixConversationActivitySource, MatrixCreateRoomOptions, MatrixCreateRoomParentSpace,
         MatrixCreateRoomVisibility, MatrixEventCacheError, MatrixLocalUserAliases,
         MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryRoom, MatrixRoomHistoryVisibility,
         MatrixRoomJoinRule, MatrixRoomMemberRole, MatrixRoomModerationAction,
         MatrixRoomPermissionFacts, MatrixRoomSettingChange, MatrixRoomSettingsSnapshot,
         MatrixRoomTagInfo, MatrixRoomTags, MatrixSearchIndexKey, MatrixSearchIndexStoreConfig,
-        SdkUnreadTrace, create_public_directory_room, create_room_request,
-        get_room_settings_snapshot, join_room_by_alias, matrix_conversation_activity_source,
-        matrix_room_list_room_from_counts, matrix_room_member_role, moderate_room_member,
-        newest_conversation_activity, normalized_local_user_aliases, query_public_room_directory,
+        SYNC_INVITE_PROBE_TIMEOUT, SdkUnreadTrace, SessionInfo, create_public_directory_room,
+        create_room_request, get_room_settings_snapshot, join_room_by_alias,
+        matrix_conversation_activity_source, matrix_room_list_room_from_counts,
+        matrix_room_member_role, moderate_room_member, newest_conversation_activity,
+        normalized_local_user_aliases, query_public_room_directory,
         room_settings_snapshot_with_change, room_settings_snapshot_with_member_power_level,
         trace_sdk_conversation_activity, trace_sdk_unread_snapshot, update_room_member_power_level,
         update_room_setting,
@@ -7920,19 +7969,35 @@ mod tests {
     #[test]
     fn sliding_sync_invite_probe_contract_is_typed_bounded_and_discards_cursor() {
         let source = include_str!("lib.rs");
-        let body = source
+        let implementation = source
             .split("pub async fn probe_sliding_sync_invite_list_support")
             .nth(1)
             .and_then(|rest| rest.split("pub fn discover_login_flows").next())
             .expect("typed invite-list support probe should precede login discovery");
+        let body = implementation
+            .split("async fn build_sliding_sync_invite_probe_client")
+            .next()
+            .expect("typed invite-list support probe should precede login discovery");
 
-        assert!(body.contains(".send(request)"));
-        assert!(body.contains("with_request_config"));
-        assert!(body.contains("SYNC_INVITE_PROBE_TIMEOUT"));
-        assert!(body.contains("tokio::time::timeout("));
-        assert!(body.contains("disable_retry()"));
-        assert!(!body.contains(".sliding_sync("));
-        assert!(!body.contains("RoomListService::"));
+        let timeout = body
+            .find("tokio::time::timeout(SYNC_INVITE_PROBE_TIMEOUT, async {")
+            .expect("the public probe must start one outer end-to-end timeout");
+        let build = body
+            .find("build_sliding_sync_invite_probe_client(session).await")
+            .expect("the public probe must build its disposable client");
+        let send = body
+            .find("send_sliding_sync_invite_list_probe(&probe).await")
+            .expect("the public probe must send its disposable request");
+        assert!(
+            timeout < build && build < send,
+            "the one outer timeout must enclose disposable-client setup and its request"
+        );
+        assert!(implementation.contains(".send(request)"));
+        assert!(implementation.contains("with_request_config"));
+        assert!(implementation.contains("SYNC_INVITE_PROBE_TIMEOUT"));
+        assert!(implementation.contains("disable_retry()"));
+        assert!(!implementation.contains(".sliding_sync("));
+        assert!(!implementation.contains("RoomListService::"));
     }
 
     #[derive(Clone, Copy)]
@@ -7991,6 +8056,22 @@ mod tests {
                     .next()
                     .expect("request line")
                     .to_owned();
+                if request_line.contains("/_matrix/client/versions") {
+                    let body = br#"{"versions":["v1.12"]}"#;
+                    stream
+                        .write_all(
+                            format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                body.len()
+                            )
+                            .as_bytes(),
+                        )
+                        .expect("write versions response head");
+                    stream
+                        .write_all(body)
+                        .expect("write versions response body");
+                    continue;
+                }
                 if !request_line
                     .contains("/_matrix/client/unstable/org.matrix.simplified_msc3575/sync")
                 {
@@ -8051,48 +8132,85 @@ mod tests {
         client
     }
 
-    fn spawn_refresh_stall_probe_server() -> (String, mpsc::Receiver<String>, thread::JoinHandle<()>)
-    {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("synthetic refresh listener");
+    fn probe_session(client: matrix_sdk::Client) -> MatrixClientSession {
+        MatrixClientSession::from_client_for_testing(
+            client.clone(),
+            SessionInfo {
+                homeserver: client.homeserver().to_string(),
+                user_id: "@probe:example.invalid".to_owned(),
+                device_id: "PROBEDEVICE".to_owned(),
+            },
+        )
+    }
+
+    fn spawn_unknown_token_invite_probe_server()
+    -> (String, mpsc::Receiver<String>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("synthetic unknown-token listener");
         let address = listener
             .local_addr()
-            .expect("synthetic refresh listener address");
-        let (request_tx, request_rx) = mpsc::channel();
+            .expect("synthetic unknown-token listener address");
+        let (path_tx, path_rx) = mpsc::channel();
         let server = thread::spawn(move || {
-            loop {
-                let (mut stream, _) = listener.accept().expect("refresh probe request");
-                let request = read_test_http_request(&mut stream);
-                let path = String::from_utf8_lossy(&request)
-                    .lines()
-                    .next()
-                    .and_then(|line| line.split_ascii_whitespace().nth(1))
-                    .expect("refresh probe request path")
-                    .to_owned();
-                if path.starts_with("/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?")
-                {
-                    request_tx.send(path).expect("capture invite probe path");
-                    let body =
-                        br#"{"errcode":"M_UNKNOWN_TOKEN","error":"expired","soft_logout":false}"#;
-                    let head = format!(
-                        "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        body.len()
-                    );
-                    stream
-                        .write_all(head.as_bytes())
-                        .expect("write unknown-token head");
-                    stream.write_all(body).expect("write unknown-token body");
-                } else if path == "/_matrix/client/v3/refresh" {
-                    request_tx.send(path).expect("capture refresh path");
-                    thread::sleep(Duration::from_secs(3));
-                    break;
-                } else {
-                    stream
-                        .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
-                        .expect("write background response");
+            listener
+                .set_nonblocking(true)
+                .expect("bounded synthetic listener");
+            let deadline = std::time::Instant::now() + Duration::from_millis(500);
+            while std::time::Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_nonblocking(false)
+                            .expect("blocking unknown-token stream");
+                        let request = read_test_http_request(&mut stream);
+                        let path = String::from_utf8_lossy(&request)
+                            .lines()
+                            .next()
+                            .and_then(|line| line.split_ascii_whitespace().nth(1))
+                            .expect("unknown-token request path")
+                            .to_owned();
+                        path_tx.send(path.clone()).expect("capture request path");
+                        if path == "/_matrix/client/versions" {
+                            let body = br#"{"versions":["v1.12"]}"#;
+                            stream
+                                .write_all(
+                                    format!(
+                                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                        body.len()
+                                    )
+                                    .as_bytes(),
+                                )
+                                .expect("write versions response head");
+                            stream
+                                .write_all(body)
+                                .expect("write versions response body");
+                        } else if path.starts_with(
+                            "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?",
+                        ) {
+                            let body = br#"{"errcode":"M_UNKNOWN_TOKEN","error":"expired","soft_logout":false}"#;
+                            let head = format!(
+                                "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                body.len()
+                            );
+                            stream
+                                .write_all(head.as_bytes())
+                                .expect("write unknown-token response head");
+                            stream
+                                .write_all(body)
+                                .expect("write unknown-token response body");
+                        } else {
+                            stream
+                                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                                .expect("write unexpected-path response");
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("accept unknown-token request: {error}"),
                 }
             }
         });
-        (format!("http://{address}"), request_rx, server)
+        (format!("http://{address}"), path_rx, server)
     }
 
     async fn refresh_capable_probe_client(homeserver: String) -> matrix_sdk::Client {
@@ -8130,9 +8248,10 @@ mod tests {
                 br#"{"pos":"discarded","lists":{"koushi_invites":{"count":0}}}"#,
             ));
         let client = authenticated_probe_client(homeserver).await;
+        let session = probe_session(client);
 
         assert_eq!(
-            super::probe_sliding_sync_invite_list_support(&client).await,
+            super::probe_sliding_sync_invite_list_support(&session).await,
             super::MatrixSlidingSyncInviteListSupport::Supported
         );
         let request = requests
@@ -8203,8 +8322,9 @@ mod tests {
             let (homeserver, _requests, server) =
                 spawn_invite_probe_server(InviteProbeTestResponse::Json(body));
             let client = authenticated_probe_client(homeserver).await;
+            let session = probe_session(client);
             assert_eq!(
-                super::probe_sliding_sync_invite_list_support(&client).await,
+                super::probe_sliding_sync_invite_list_support(&session).await,
                 expected
             );
             server.join().expect("synthetic invite probe server");
@@ -8220,8 +8340,9 @@ mod tests {
         ] {
             let (homeserver, _requests, server) = spawn_invite_probe_server(response);
             let client = authenticated_probe_client(homeserver).await;
+            let session = probe_session(client);
             assert_eq!(
-                super::probe_sliding_sync_invite_list_support(&client).await,
+                super::probe_sliding_sync_invite_list_support(&session).await,
                 super::MatrixSlidingSyncInviteListSupport::Unknown
             );
             server.join().expect("synthetic invite probe server");
@@ -8229,37 +8350,74 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sliding_sync_invite_probe_bounds_unknown_token_refresh_end_to_end() {
-        let (homeserver, requests, server) = spawn_refresh_stall_probe_server();
-        let client = refresh_capable_probe_client(homeserver).await;
+    async fn sliding_sync_invite_probe_unknown_token_never_refreshes_disposable_client() {
+        let (homeserver, paths, server) = spawn_unknown_token_invite_probe_server();
+        let authoritative = refresh_capable_probe_client(homeserver).await;
+        let before = authoritative
+            .session_tokens()
+            .expect("authoritative tokens");
+        let mut changes = authoritative.subscribe_to_session_changes();
+        let session = probe_session(authoritative.clone());
         let started_at = tokio::time::Instant::now();
 
         assert_eq!(
-            super::probe_sliding_sync_invite_list_support(&client).await,
+            super::probe_sliding_sync_invite_list_support(&session).await,
             super::MatrixSlidingSyncInviteListSupport::Unknown
         );
         let elapsed = started_at.elapsed();
         assert!(
-            elapsed >= Duration::from_millis(1_500),
-            "the synthetic refresh endpoint should exercise the outer deadline: {elapsed:?}"
+            elapsed < SYNC_INVITE_PROBE_TIMEOUT + Duration::from_millis(500),
+            "the disposable probe exceeded its bounded deadline: {elapsed:?}"
         );
+        assert!(matches!(
+            changes.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+        assert_eq!(authoritative.session_tokens().as_ref(), Some(&before));
+        server.join().expect("synthetic unknown-token server");
+        let observed_paths = paths.try_iter().collect::<Vec<_>>();
+        assert!(observed_paths.iter().any(|path| {
+            path.starts_with("/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?")
+        }));
         assert!(
-            elapsed < Duration::from_millis(2_750),
-            "the complete preflight, including token refresh, exceeded its two-second budget: {elapsed:?}"
+            !observed_paths
+                .iter()
+                .any(|path| path == "/_matrix/client/v3/refresh"),
+            "the disposable probe must not refresh tokens: {observed_paths:?}"
         );
-        assert!(
-            requests
-                .recv_timeout(Duration::from_secs(1))
-                .expect("invite probe request")
-                .starts_with("/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?")
-        );
+    }
+
+    #[tokio::test]
+    async fn sliding_sync_invite_probe_unknown_token_isolated_from_authoritative_session() {
+        let (homeserver, paths, server) = spawn_unknown_token_invite_probe_server();
+        let authoritative = authenticated_probe_client(homeserver).await;
+        let before = authoritative
+            .session_tokens()
+            .expect("authoritative tokens");
+        let mut changes = authoritative.subscribe_to_session_changes();
+        let session = probe_session(authoritative.clone());
+
         assert_eq!(
-            requests
-                .recv_timeout(Duration::from_secs(1))
-                .expect("refresh request"),
-            "/_matrix/client/v3/refresh"
+            super::probe_sliding_sync_invite_list_support(&session).await,
+            super::MatrixSlidingSyncInviteListSupport::Unknown,
         );
-        server.join().expect("synthetic refresh probe server");
+        assert!(matches!(
+            changes.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+        assert_eq!(authoritative.session_tokens().as_ref(), Some(&before));
+
+        server.join().expect("synthetic unknown-token server");
+        let observed_paths = paths.try_iter().collect::<Vec<_>>();
+        assert!(observed_paths.iter().any(|path| {
+            path.starts_with("/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?")
+        }));
+        assert!(
+            !observed_paths
+                .iter()
+                .any(|path| path == "/_matrix/client/v3/refresh"),
+            "the isolated probe must not refresh tokens: {observed_paths:?}"
+        );
     }
 
     #[test]

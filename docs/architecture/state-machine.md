@@ -398,10 +398,16 @@ stateDiagram-v2
   owner starts. An authenticated, cursorless MSC4186 request asks for one fixed
   zero-timeline invited-room list. Presence of that exact list selects
   `SyncService`; omission, typed/malformed failure, or expiry of the single
-  end-to-end two-second deadline selects `LegacySync`. The deadline includes
-  automatic access-token refresh and retry. Probe cursors and room payloads are
-  discarded, and the preflight never creates a second sync owner. Server-family
-  or version-string fingerprints are not capability evidence.
+  end-to-end two-second deadline selects `LegacySync`. The disposable
+  authenticated probe receives no refresh token, so automatic refresh is
+  impossible/disabled, and request retries are disabled; its single end-to-end
+  two-second deadline covers disposable-client setup plus one transport request.
+  Probe cursors and room payloads are discarded, and the preflight never creates
+  a second sync owner. Behavioral coverage proves success, omission,
+  malformed/error, and timeout, plus that `M_UNKNOWN_TOKEN` causes zero refresh
+  calls, no authoritative session-change/token mutation, and fail-closed
+  `LegacySync` selection. Server-family or version-string fingerprints are not
+  capability evidence.
 - `InvitePreview` carries room id for command correlation plus display name,
   optional topic, optional inviter display name, and `is_dm`. GUI code must
   treat those fields as render data, not as a local membership state machine.

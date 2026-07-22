@@ -861,8 +861,7 @@ impl SyncActor {
             .await;
 
         // Probe MSC4186 capability (Async rule 9).
-        let client = self.session.client();
-        let backend_probe = probe_backend(&client).await;
+        let backend_probe = probe_backend(&self.session).await;
         let backend_kind = backend_probe.backend;
         let mode = sync_mode_from_backend(backend_kind, false);
         trace_sync!(
@@ -893,6 +892,7 @@ impl SyncActor {
         self.emit(CoreEvent::Sync(SyncEvent::ModeChanged { mode }));
 
         // Launch the appropriate background sync task.
+        let client = self.session.client();
         match backend_kind {
             SyncBackendKind::SyncService => {
                 match self.start_sync_service(client).await {
@@ -1839,7 +1839,7 @@ fn backend_from_invite_list_support(
 /// Debug/test builds honor `KOUSHI_QA_FORCE_SYNC_BACKEND=legacy`
 /// (skip the probe, select `LegacySync`); release builds compile the check
 /// out entirely and always probe.
-async fn probe_backend(client: &matrix_sdk::Client) -> BackendProbeResult {
+async fn probe_backend(session: &MatrixClientSession) -> BackendProbeResult {
     #[cfg(any(debug_assertions, test))]
     if forced_legacy_backend() {
         return BackendProbeResult {
@@ -1848,6 +1848,7 @@ async fn probe_backend(client: &matrix_sdk::Client) -> BackendProbeResult {
         };
     }
 
+    let client = session.client();
     let versions = client.available_sliding_sync_versions().await;
     if versions.is_empty() {
         return BackendProbeResult {
@@ -1856,7 +1857,7 @@ async fn probe_backend(client: &matrix_sdk::Client) -> BackendProbeResult {
         };
     }
 
-    let support = koushi_sdk::probe_sliding_sync_invite_list_support(client).await;
+    let support = koushi_sdk::probe_sliding_sync_invite_list_support(session).await;
     let reason = match support {
         MatrixSlidingSyncInviteListSupport::Supported => BackendProbeReason::InviteListSupported,
         MatrixSlidingSyncInviteListSupport::KnownIncomplete => {
@@ -1959,6 +1960,7 @@ pub mod tests {
 
     fn spawn_backend_probe_server(
         invite_list_body: &'static [u8],
+        continue_to_legacy_sync: bool,
     ) -> (String, std_mpsc::Receiver<String>, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("synthetic probe listener");
         let address = listener.local_addr().expect("synthetic probe address");
@@ -1980,29 +1982,43 @@ pub mod tests {
                     assert!(request.len() <= 8 * 1024, "synthetic request is bounded");
                 }
                 let request = String::from_utf8(request).expect("ASCII backend probe request");
-                let path = request
+                let mut request_parts = request
                     .lines()
                     .next()
-                    .and_then(|line| line.split_ascii_whitespace().nth(1))
-                    .expect("backend probe request path")
-                    .to_owned();
-                let (status, body, relevant, finished) = if path == "/_matrix/client/versions" {
+                    .expect("backend probe request line")
+                    .split_ascii_whitespace();
+                let method = request_parts.next().expect("backend probe request method");
+                let path = request_parts.next().expect("backend probe request path");
+                let (status, body, relevant, finished) = if method == "GET"
+                    && path == "/_matrix/client/versions"
+                {
                     (
                         "200 OK",
                         br#"{"versions":["v1.12"],"unstable_features":{"org.matrix.simplified_msc3575":true}}"#.as_slice(),
                         true,
                         false,
                     )
-                } else if path
-                    .starts_with("/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?")
+                } else if method == "POST"
+                    && path
+                        .starts_with("/_matrix/client/unstable/org.matrix.simplified_msc3575/sync")
                 {
-                    ("200 OK", invite_list_body, true, true)
+                    ("200 OK", invite_list_body, true, !continue_to_legacy_sync)
+                } else if continue_to_legacy_sync
+                    && method == "GET"
+                    && path.starts_with("/_matrix/client/v3/sync?")
+                {
+                    (
+                        "200 OK",
+                        br#"{"next_batch":"legacy-first-response","rooms":{"join":{},"invite":{},"leave":{},"knock":{}},"to_device":{"events":[]},"presence":{"events":[]},"account_data":{"events":[]},"device_lists":{"changed":[],"left":[]},"device_one_time_keys_count":{}}"#.as_slice(),
+                        true,
+                        true,
+                    )
                 } else {
                     ("404 Not Found", br#"{}"#.as_slice(), false, false)
                 };
                 if relevant {
                     request_tx
-                        .send(path)
+                        .send(format!("{method} {path}"))
                         .expect("capture backend probe request");
                 }
                 let head = format!(
@@ -2912,24 +2928,172 @@ pub mod tests {
                 },
             ),
         ] {
-            let (homeserver, requests, server) = spawn_backend_probe_server(body);
+            let (homeserver, requests, server) = spawn_backend_probe_server(body, false);
             let client = authenticated_backend_probe_client(homeserver).await;
+            assert_eq!(
+                requests
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("session restore versions request"),
+                "GET /_matrix/client/versions"
+            );
 
-            assert_eq!(probe_backend(&client).await, expected);
+            let session = MatrixClientSession::from_client_for_testing(
+                client,
+                SessionInfo {
+                    homeserver: "http://synthetic-probe.invalid".to_owned(),
+                    user_id: "@probe:example.invalid".to_owned(),
+                    device_id: "PROBEDEVICE".to_owned(),
+                },
+            );
+            assert_eq!(probe_backend(&session).await, expected);
             assert_eq!(
                 requests
                     .recv_timeout(Duration::from_secs(2))
                     .expect("versions request"),
-                "/_matrix/client/versions"
+                "GET /_matrix/client/versions"
             );
             assert!(
                 requests
                     .recv_timeout(Duration::from_secs(2))
                     .expect("invite-list request")
-                    .starts_with("/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?")
+                    .starts_with(
+                        "POST /_matrix/client/unstable/org.matrix.simplified_msc3575/sync"
+                    )
             );
             server.join().expect("synthetic backend probe server");
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unknown_isolated_invite_probe_falls_back_and_commits_first_legacy_response() {
+        let _guard = FORCE_BACKEND_ENV_LOCK
+            .lock()
+            .expect("backend environment lock");
+        unsafe { std::env::remove_var(ENV_FORCE_SYNC_BACKEND) };
+
+        let (homeserver, requests, server) = spawn_backend_probe_server(br#"malformed"#, true);
+        let client = authenticated_backend_probe_client(homeserver.clone()).await;
+        assert_eq!(
+            requests
+                .recv_timeout(Duration::from_secs(2))
+                .expect("session restore versions request"),
+            "GET /_matrix/client/versions"
+        );
+        let session = Arc::new(MatrixClientSession::from_client_for_testing(
+            client,
+            SessionInfo {
+                homeserver,
+                user_id: "@probe:example.invalid".to_owned(),
+                device_id: "PROBEDEVICE".to_owned(),
+            },
+        ));
+        let (action_tx, _action_rx) = mpsc::channel(4);
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        let (_command_tx, command_rx) = mpsc::channel(1);
+        let (control_tx, control_rx) = mpsc::channel(4);
+        let (room_tx, _room_rx) = mpsc::channel(4);
+        let (timeline_tx, _timeline_rx) = mpsc::channel(4);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut actor = SyncActor {
+            session,
+            action_tx,
+            event_tx,
+            command_rx,
+            control_tx,
+            control_rx,
+            room_tx,
+            timeline_tx,
+            lifecycle: SyncLifecycle::Stopped,
+            sync_generation: Arc::new(AtomicU64::new(0)),
+            active_backend: ActiveBackend::None,
+            sync_task: None,
+            legacy_stop_tx: None,
+            legacy_run_generation: 0,
+            sync_service_run_generation: 0,
+            sync_service: None,
+            active_start_request_id: None,
+            sync_service_runtime_fallback_attempted: false,
+            ignored_user_list_handler: None,
+        };
+
+        actor
+            .handle_start(RequestId {
+                connection_id: crate::ids::RuntimeConnectionId(1),
+                sequence: 1,
+            })
+            .await;
+        assert!(matches!(
+            tokio::time::timeout_at(deadline, event_rx.recv())
+                .await
+                .expect("LegacySync Started event must arrive"),
+            Ok(CoreEvent::Sync(SyncEvent::Started {
+                backend: SyncBackendKind::LegacySync,
+                ..
+            }))
+        ));
+        assert_eq!(
+            requests
+                .recv_timeout(Duration::from_secs(2))
+                .expect("versions request"),
+            "GET /_matrix/client/versions"
+        );
+        let invite_request = requests
+            .recv_timeout(Duration::from_secs(2))
+            .expect("invite-list request");
+        assert!(
+            invite_request
+                .starts_with("POST /_matrix/client/unstable/org.matrix.simplified_msc3575/sync"),
+            "unexpected request after versions: {invite_request}"
+        );
+        assert!(
+            requests
+                .recv_timeout(Duration::from_secs(2))
+                .expect("legacy sync request")
+                .starts_with("GET /_matrix/client/v3/sync?")
+        );
+
+        let control = tokio::time::timeout_at(deadline, actor.control_rx.recv())
+            .await
+            .expect("first legacy response control must arrive")
+            .expect("legacy control channel remains open");
+        assert!(matches!(
+            control,
+            SyncActorControl::FirstResponseCommitted { .. }
+        ));
+        actor.handle_control(control).await;
+
+        assert_eq!(actor.lifecycle, SyncLifecycle::Running);
+        assert!(matches!(
+            tokio::time::timeout_at(deadline, event_rx.recv())
+                .await
+                .expect("SyncEvent::ModeChanged must arrive"),
+            Ok(CoreEvent::Sync(SyncEvent::ModeChanged { .. })
+                | CoreEvent::Sync(SyncEvent::Running))
+        ));
+        assert!(matches!(
+            tokio::time::timeout_at(deadline, event_rx.recv())
+                .await
+                .expect("SyncEvent::Running must arrive"),
+            Ok(CoreEvent::Sync(SyncEvent::Running))
+        ));
+        loop {
+            match event_rx.try_recv() {
+                Ok(CoreEvent::Sync(SyncEvent::Stopped { .. } | SyncEvent::Failed)) => {
+                    panic!("isolated invite probe must not stop or fail after LegacySync starts")
+                }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) => {
+                    panic!("event receiver lagged while checking probe continuation: {skipped}")
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                    panic!("event receiver closed while checking probe continuation")
+                }
+            }
+        }
+
+        actor.do_stop(None).await;
+        server.join().expect("synthetic probe and legacy server");
     }
 
     // --- SyncEvent shapes ---

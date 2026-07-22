@@ -1051,10 +1051,16 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   itself. Before either continuous owner starts, run the bounded authenticated
   zero-timeline invite-list contract preflight. Only presence of the requested
   list selects SyncService; omission/error/malformed response or the end-to-end
-  two-second deadline selects LegacySync. The deadline includes token refresh
-  and retry, and cursor/room payload is discarded. Conduit currently exercises
-  automatic LegacySync fallback; Tuwunel/Synapse exercise SyncService. Do not
-  replace this with server-family/version fingerprinting.
+  two-second deadline selects LegacySync. The disposable authenticated probe
+  receives no refresh token, so automatic refresh is impossible/disabled, and
+  request retries are disabled; its single end-to-end two-second deadline covers
+  disposable-client setup plus one transport request. Cursor/room payload is
+  discarded. Behavioral coverage proves success, omission, malformed/error, and
+  timeout, plus that `M_UNKNOWN_TOKEN` causes zero refresh calls, no
+  authoritative session-change/token mutation, and fail-closed `LegacySync`
+  selection. Conduit currently exercises automatic LegacySync fallback;
+  Tuwunel/Synapse exercise SyncService. Do not replace this with
+  server-family/version fingerprinting.
 - The local core QA `invites_dm` scenario proves incoming room/space invite
   receipt and accept, invite decline, and DM start/invite projection through
   token-only stdout (`invite_recv=ok`, `invite_accept=ok`,
