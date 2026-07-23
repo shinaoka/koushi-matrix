@@ -92,16 +92,21 @@ for #291 and one implementation commit for #292, then open one non-squash PR.
 
 **Files:**
 
-- Modify: `crates/koushi-core/src/timeline.rs` (private test seams and pure unit
-  tests only where a helper is private)
-- Add: `crates/koushi-core/tests/timeline_navigation_priority.rs`
-- Add: `crates/koushi-core/tests/read_state_convergence.rs`
+- Modify: `crates/koushi-core/src/timeline.rs` (private actor seams and inline
+  behavioral tests; an integration-test build cannot see library `cfg(test)`
+  hooks)
+- Add only for production-visible end-to-end contracts:
+  `crates/koushi-core/tests/timeline_navigation_priority.rs`
+- Add only for production-visible end-to-end contracts:
+  `crates/koushi-core/tests/read_state_convergence.rs`
 - Modify only if existing intent-lifecycle fixtures require extension:
   `crates/koushi-core/tests/runtime_intent_lifecycle.rs`
 
-1. Add a test-only timeline network port whose public receipt, private/thread
-   receipt, fully-read bundle, live-tail refresh, and cancellation ACK can each
-   be held by a controlled never-resolving future. Use events and absolute
+1. Add a private actor harness whose public receipt, private/thread receipt,
+   fully-read bundle, live-tail refresh, and cancellation ACK can each be held
+   by a controlled never-resolving future. Keep these behavioral tests inline
+   unless the seam is a production-visible port; do not expose test-only
+   internals merely to satisfy an integration binary. Use events and absolute
    deadlines, never sleeps.
 2. Submit a stalled public receipt, then a cached room selection, and assert the
    selection receives one terminal result and initial projection before the
@@ -178,18 +183,23 @@ for #291 and one implementation commit for #292, then open one non-squash PR.
 4. Keep only the greatest provable target. For currently unordered candidates,
    retain a small explicit bounded set rather than guessing from timestamps,
    event-id text, submission order, or completion order.
-5. Preserve every accepted `request_id`: a dominating success settles its
+5. Add a named bound for correlated request waiters per key/kind. Reject new
+   admission with one correlated terminal failure before acceptance when that
+   bound is full; never evict an already accepted waiter.
+6. Preserve every accepted `request_id`: a dominating success settles its
    dominated waiters once; timeout/failure settles once while internal desired
    convergence may continue without a second terminal result.
-6. Move all SDK waits to supervisor-owned cancellable workers. Permit one
+7. Move all SDK waits to supervisor-owned cancellable workers. Permit one
    in-flight operation per key/kind, tag it with session/actor/operation
    generations, and use one absolute timeout per operation.
-7. On supersession, cancellation, disconnect, logout, account switch, or
+8. On supersession, cancellation, disconnect, logout, account switch, or
    shutdown, settle ownership and reject stale completions.
-8. Add capped exponential retry driven by backoff plus reconnect,
+9. Add capped exponential retry driven by backoff plus reconnect,
    subscription-checkpoint, and authoritative-receipt wakes. Coalesce repeated
    viewport observations.
-9. Run the focused convergence and existing receipt/live-signal checks.
+10. Replace the fully-read success path's lossy reducer `try_send` with reliable
+    delivery before emitting its success event.
+11. Run the focused convergence and existing receipt/live-signal checks.
 
 ## Task 6: Persist pending convergence safely
 
