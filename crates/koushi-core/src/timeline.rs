@@ -176,6 +176,11 @@ const MEDIA_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 /// This is deliberately not a per-worker timeout, so shutdown latency cannot
 /// grow with the number of outstanding sends.
 const SEND_ENQUEUE_WORKER_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
+/// One absolute foreground bound for delivering a live-tail cancellation and
+/// receiving the actor acknowledgement. The scheduler invalidates the
+/// operation generation before entering this wait, so expiry is safe: a late
+/// actor completion is stale and room navigation may continue.
+const LIVE_TAIL_CANCELLATION_DEADLINE: Duration = Duration::from_millis(100);
 /// Backstop tick count for the anchor-relay wait. After the SDK signals
 /// `anchor_present == true`, the anchor's diff has been broadcast through the
 /// 3-hop relay (conclude_backwards_pagination_from_disk → event-cache task →
@@ -314,7 +319,7 @@ pub enum TimelineMessage {
     TestLiveTailDispatchState {
         key: TimelineKey,
         epoch: u64,
-        response: oneshot::Sender<(bool, usize)>,
+        response: oneshot::Sender<(bool, usize, Option<usize>)>,
     },
     IgnoredUsersUpdated {
         user_ids: std::collections::BTreeSet<String>,
@@ -340,6 +345,59 @@ pub enum TimelineMessage {
     Shutdown {
         acknowledged: Option<tokio::sync::oneshot::Sender<()>>,
     },
+}
+
+/// Private projection work admitted only after Rust-owned room navigation has
+/// committed. `generation` is owned by AppActor and is the sole ordering key;
+/// request ids remain correlation data and may cross connection epochs.
+#[derive(Clone)]
+pub(crate) struct NavigationProjectionIntent {
+    pub(crate) generation: u64,
+    pub(crate) key: TimelineKey,
+    pub(crate) cause_request_id: RequestId,
+    pub(crate) replay_existing: bool,
+}
+
+/// Stable latest-wins ingress shared across session-scoped timeline-manager
+/// replacement. A watch channel is a one-slot value plus a coalesced wake:
+/// replacing a value cannot fill or block the AppActor/AccountActor mailbox.
+#[derive(Clone)]
+pub(crate) struct NavigationProjectionIngress {
+    tx: watch::Sender<Option<NavigationProjectionIntent>>,
+}
+
+impl NavigationProjectionIngress {
+    pub(crate) fn channel() -> (Self, watch::Receiver<Option<NavigationProjectionIntent>>) {
+        let (tx, rx) = watch::channel(None);
+        (Self { tx }, rx)
+    }
+
+    pub(crate) fn subscribe(&self) -> watch::Receiver<Option<NavigationProjectionIntent>> {
+        let receiver = self.tx.subscribe();
+        // A replacement manager must observe the retained latest desired
+        // projection even when it subscribed after that value was admitted.
+        self.tx.send_modify(|_| {});
+        receiver
+    }
+
+    pub(crate) fn admit(&self, intent: NavigationProjectionIntent) -> bool {
+        let retained = self.tx.borrow().clone();
+        let next = match retained {
+            Some(current) if current.generation > intent.generation => return true,
+            Some(mut current)
+                if current.generation == intent.generation && current.key == intent.key =>
+            {
+                current.replay_existing |= intent.replay_existing;
+                current
+            }
+            _ => intent,
+        };
+        // `send_replace` retains the value even during the brief interval in
+        // which a session-scoped manager is being replaced and no receiver
+        // exists. A later `subscribe` explicitly wakes on that retained value.
+        self.tx.send_replace(Some(next));
+        true
+    }
 }
 
 /// Handle to the timeline manager task (owned by `AccountActor`).
@@ -1765,6 +1823,19 @@ impl TimelineManagerHandle {
     }
 }
 
+async fn receive_navigation_projection(
+    receiver: &mut Option<watch::Receiver<Option<NavigationProjectionIntent>>>,
+) -> Option<NavigationProjectionIntent> {
+    let Some(active) = receiver.as_mut() else {
+        return futures_util::future::pending().await;
+    };
+    if active.changed().await.is_err() {
+        *receiver = None;
+        return None;
+    }
+    active.borrow_and_update().clone()
+}
+
 /// Manages the `HashMap<TimelineKey, TimelineActorHandle>`.
 /// Colocated as a child task under `AccountActor` (spec: "actor deployment
 /// is flexible; boundaries define ownership not one task per actor").
@@ -1783,6 +1854,8 @@ pub struct TimelineManagerActor {
     event_tx: broadcast::Sender<CoreEvent>,
     msg_tx: mpsc::Sender<TimelineMessage>,
     msg_rx: mpsc::Receiver<TimelineMessage>,
+    navigation_projection_rx: Option<watch::Receiver<Option<NavigationProjectionIntent>>>,
+    last_navigation_projection_generation: u64,
     /// Non-evicting active terminal-delivery state. Admission is synchronous
     /// under the shared send tracker lock, so its FIFO is bounded logically by
     /// already-admitted/outstanding sends (at most one failure and one final
@@ -1892,6 +1965,7 @@ impl TimelineManagerActor {
         event_tx: broadcast::Sender<CoreEvent>,
         data_dir: Option<std::path::PathBuf>,
         messages_backpressure: MessagesBackpressure,
+        navigation_projection_rx: Option<watch::Receiver<Option<NavigationProjectionIntent>>>,
     ) -> TimelineManagerHandle {
         let (tx, msg_rx) = mpsc::channel(crate::runtime::ACTOR_MESSAGE_QUEUE_CAPACITY);
         let (terminal_ingress, terminal_rx) = TimelineSendTerminalIngress::channel();
@@ -1910,6 +1984,8 @@ impl TimelineManagerActor {
             event_tx,
             msg_tx: tx.clone(),
             msg_rx,
+            navigation_projection_rx,
+            last_navigation_projection_generation: 0,
             terminal_ingress: terminal_ingress.clone(),
             terminal_rx,
             search_index_tx: None,
@@ -1947,6 +2023,7 @@ impl TimelineManagerActor {
         data_dir: Option<std::path::PathBuf>,
         link_preview_policy: LinkPreviewContext,
         messages_backpressure: MessagesBackpressure,
+        navigation_projection_rx: Option<watch::Receiver<Option<NavigationProjectionIntent>>>,
     ) -> TimelineManagerHandle {
         let (tx, msg_rx) = mpsc::channel(crate::runtime::ACTOR_MESSAGE_QUEUE_CAPACITY);
         let (terminal_ingress, terminal_rx) = TimelineSendTerminalIngress::channel();
@@ -1972,6 +2049,8 @@ impl TimelineManagerActor {
             event_tx,
             msg_tx: tx.clone(),
             msg_rx,
+            navigation_projection_rx,
+            last_navigation_projection_generation: 0,
             terminal_ingress: terminal_ingress.clone(),
             terminal_rx,
             search_index_tx: Some(search_index_tx),
@@ -2124,9 +2203,24 @@ impl TimelineManagerActor {
         let mut shutdown_acknowledgement = None;
         #[cfg(test)]
         let mut live_tail_completion_dispatches = 0;
+        #[cfg(test)]
+        let mut navigation_projection_completion_dispatches = None;
         loop {
             let msg = tokio::select! {
                 biased;
+                projection = receive_navigation_projection(
+                    &mut self.navigation_projection_rx
+                ) => {
+                    if let Some(projection) = projection {
+                        #[cfg(test)]
+                        {
+                            navigation_projection_completion_dispatches =
+                                Some(live_tail_completion_dispatches);
+                        }
+                        self.handle_navigation_projection(projection).await;
+                    }
+                    continue;
+                }
                 terminal = self.terminal_rx.recv() => {
                     let Some(terminal) = terminal else { break };
                     self.handle_send_terminal_handoff(terminal).await;
@@ -2210,6 +2304,7 @@ impl TimelineManagerActor {
                         self.live_tail_refreshes.freshness(&key)
                             == Some(LiveTailFreshnessState::Fresh { epoch }),
                         live_tail_completion_dispatches,
+                        navigation_projection_completion_dispatches,
                     ));
                 }
                 TimelineMessage::IgnoredUsersUpdated { user_ids } => {
@@ -2320,6 +2415,21 @@ impl TimelineManagerActor {
         if let Some(acknowledged) = shutdown_acknowledgement {
             let _ = acknowledged.send(());
         }
+    }
+
+    async fn handle_navigation_projection(&mut self, intent: NavigationProjectionIntent) {
+        if intent.generation < self.last_navigation_projection_generation {
+            return;
+        }
+        if intent.generation > self.last_navigation_projection_generation {
+            self.last_navigation_projection_generation = intent.generation;
+        }
+        self.handle_committed_room_selection(
+            intent.cause_request_id,
+            intent.key,
+            intent.replay_existing,
+        )
+        .await;
     }
 
     async fn handle_send_terminal_handoff(&mut self, handoff: TimelineSendTerminalHandoff) {
@@ -2804,15 +2914,31 @@ impl TimelineManagerActor {
                         continue;
                     };
                     let (acknowledged, acknowledgement) = oneshot::channel();
-                    if handle
-                        .send(TimelineActorMessage::CancelLiveTailNetwork {
-                            operation_generation,
-                            acknowledged,
-                        })
-                        .await
-                    {
-                        let _ = acknowledgement.await;
-                    }
+                    let started = Instant::now();
+                    let deadline = executor::Instant::now() + LIVE_TAIL_CANCELLATION_DEADLINE;
+                    let outcome = executor::timeout_at(deadline, async {
+                        if !handle
+                            .send(TimelineActorMessage::CancelLiveTailNetwork {
+                                operation_generation,
+                                acknowledged,
+                            })
+                            .await
+                        {
+                            return "actor_closed";
+                        }
+                        if acknowledgement.await.is_ok() {
+                            "acknowledged"
+                        } else {
+                            "actor_closed"
+                        }
+                    })
+                    .await
+                    .unwrap_or("timed_out");
+                    record_live_tail_cancellation(
+                        outcome,
+                        operation_generation,
+                        started.elapsed().as_millis(),
+                    );
                 }
                 LiveTailSchedulerAction::Start {
                     key,
@@ -5122,6 +5248,26 @@ fn record_live_tail_queue(
             queue_depth.try_into().unwrap_or(u64::MAX),
         ))
         .field(DiagnosticField::boolean("preempted", preempted)),
+    );
+}
+
+fn record_live_tail_cancellation(
+    outcome: &'static str,
+    operation_generation: u64,
+    duration_ms: u128,
+) {
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "core.timeline",
+            "timeline_live_tail_cancellation",
+        )
+        .field(DiagnosticField::token("outcome", outcome))
+        .field(DiagnosticField::count(
+            "operation_generation",
+            operation_generation,
+        ))
+        .field(DiagnosticField::milliseconds("duration_ms", duration_ms)),
     );
 }
 
@@ -10160,6 +10306,7 @@ mod timeline_gap_repair_tracker_tests {
             None,
             LinkPreviewContext::default(),
             MessagesBackpressure::default(),
+            None,
         );
         let committed_from_response_sequence = client
             .latest_room_updates_response_sequence()
@@ -24963,8 +25110,13 @@ mod tests {
             .await
             .expect("fill reducer channel");
         let (event_tx, mut event_rx) = broadcast::channel(8);
-        let manager =
-            TimelineManagerActor::spawn(action_tx, event_tx, None, MessagesBackpressure::default());
+        let manager = TimelineManagerActor::spawn(
+            action_tx,
+            event_tx,
+            None,
+            MessagesBackpressure::default(),
+            None,
+        );
         let mut registration = SendCompletionRegistration::begin(
             Arc::clone(&coordinator),
             manager.terminal_sender(),
@@ -26055,6 +26207,8 @@ mod tests {
             event_tx,
             msg_tx,
             msg_rx,
+            navigation_projection_rx: None,
+            last_navigation_projection_generation: 0,
             terminal_ingress,
             terminal_rx,
             search_index_tx: None,
@@ -27499,6 +27653,8 @@ mod tests {
             event_tx,
             msg_tx,
             msg_rx,
+            navigation_projection_rx: None,
+            last_navigation_projection_generation: 0,
             terminal_ingress,
             terminal_rx,
             search_index_tx: None,
@@ -28022,6 +28178,45 @@ mod tests {
         }
     }
 
+    fn stalled_live_tail_cancel_actor_handle(
+        label: &'static str,
+        log: Arc<Mutex<Vec<String>>>,
+    ) -> TimelineActorHandle {
+        let (tx, mut rx) = mpsc::channel(8);
+        let task = executor::spawn(async move {
+            let mut held_acknowledgements = Vec::new();
+            while let Some(message) = rx.recv().await {
+                match message {
+                    TimelineActorMessage::StartLiveTailRefresh {
+                        epoch,
+                        operation_generation: _,
+                        limit,
+                    } => log
+                        .lock()
+                        .expect("stalled live-tail log lock")
+                        .push(format!("start:{label}:epoch={epoch}:limit={limit}")),
+                    TimelineActorMessage::CancelLiveTailNetwork {
+                        operation_generation: _,
+                        acknowledged,
+                    } => {
+                        log.lock()
+                            .expect("stalled live-tail log lock")
+                            .push(format!("cancel-network:{label}"));
+                        held_acknowledgements.push(acknowledged);
+                    }
+                    _ => {}
+                }
+            }
+        });
+        TimelineActorHandle {
+            tx,
+            task: Some(task),
+            auxiliary_tasks: Vec::new(),
+            subscription_generation: None,
+            enqueue_context: None,
+        }
+    }
+
     fn live_tail_replacement_test_actor_handle(
         key: TimelineKey,
         labels: Arc<Mutex<HashMap<TimelineKey, &'static str>>>,
@@ -28120,6 +28315,8 @@ mod tests {
             event_tx,
             msg_tx,
             msg_rx,
+            navigation_projection_rx: None,
+            last_navigation_projection_generation: 0,
             terminal_ingress,
             terminal_rx,
             search_index_tx: None,
@@ -28189,6 +28386,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ordinary_completion_burst_does_not_run_before_committed_room_selection() {
+        let key = room_key();
+        let request_id = fake_rid(28_510);
+        let (actor_tx, mut actor_rx) = mpsc::channel(2);
+        let actor_handle = TimelineActorHandle {
+            tx: actor_tx,
+            task: None,
+            auxiliary_tasks: Vec::new(),
+            subscription_generation: None,
+            enqueue_context: None,
+        };
+        let (navigation_projection, navigation_projection_rx) =
+            NavigationProjectionIngress::channel();
+        let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), actor_handle)]));
+        manager.navigation_projection_rx = Some(navigation_projection_rx);
+
+        for operation_generation in 1..=4 {
+            manager
+                .msg_tx
+                .try_send(TimelineMessage::LiveTailRefreshCompleted {
+                    key: key.clone(),
+                    actor_generation: u64::MAX,
+                    epoch: 1,
+                    operation_generation,
+                    outcome: MatrixLiveTailRefreshOutcome::Failed,
+                    requested_limit: FOREGROUND_LIVE_TAIL_LIMIT,
+                    returned_events: 0,
+                    duration_ms: 0,
+                })
+                .expect("ordinary completion should fit the test mailbox");
+        }
+        assert!(navigation_projection.admit(NavigationProjectionIntent {
+            generation: 1,
+            key: key.clone(),
+            cause_request_id: request_id,
+            replay_existing: true,
+        }));
+        let (state_tx, state_rx) = oneshot::channel();
+        manager
+            .msg_tx
+            .try_send(TimelineMessage::TestLiveTailDispatchState {
+                key,
+                epoch: 1,
+                response: state_tx,
+            })
+            .expect("state probe should fit the test mailbox");
+
+        let manager_task = executor::spawn(manager.run());
+        let replay = executor::timeout(Duration::from_secs(1), actor_rx.recv())
+            .await
+            .expect("cached actor replay should be bounded")
+            .expect("cached actor should receive replay");
+        assert!(matches!(
+            replay,
+            TimelineActorMessage::ReplayInitialItems {
+                cause_request_id: Some(cause),
+            } if cause == request_id
+        ));
+        let (_, _, ordinary_completions_before_navigation_projection) =
+            executor::timeout(Duration::from_secs(1), state_rx)
+                .await
+                .expect("manager probe should be bounded")
+                .expect("manager should answer the probe");
+        manager_task.abort();
+
+        assert_eq!(
+            ordinary_completions_before_navigation_projection,
+            Some(0),
+            "a committed cached-room selection must overtake queued ordinary completions"
+        );
+    }
+
+    #[tokio::test]
+    async fn navigation_projection_retains_latest_value_across_manager_replacement() {
+        let (ingress, initial_receiver) = NavigationProjectionIngress::channel();
+        drop(initial_receiver);
+        let newest_key = room_key();
+        let newest_cause = fake_rid(28_511);
+
+        assert!(ingress.admit(NavigationProjectionIntent {
+            generation: 7,
+            key: newest_key.clone(),
+            cause_request_id: newest_cause,
+            replay_existing: false,
+        }));
+        assert!(ingress.admit(NavigationProjectionIntent {
+            generation: 6,
+            key: TimelineKey::room(AccountKey("@a:test".to_owned()), "!stale:test"),
+            cause_request_id: fake_rid(28_512),
+            replay_existing: true,
+        }));
+        assert!(ingress.admit(NavigationProjectionIntent {
+            generation: 7,
+            key: newest_key.clone(),
+            cause_request_id: fake_rid(28_513),
+            replay_existing: true,
+        }));
+
+        let mut replacement_receiver = Some(ingress.subscribe());
+        let retained = executor::timeout(
+            Duration::from_secs(1),
+            receive_navigation_projection(&mut replacement_receiver),
+        )
+        .await
+        .expect("replacement manager wake should be bounded")
+        .expect("latest desired projection should remain retained");
+
+        assert_eq!(retained.generation, 7);
+        assert_eq!(retained.key, newest_key);
+        assert_eq!(
+            retained.cause_request_id, newest_cause,
+            "equal-generation replay strengthens the retained intent without replacing its cause"
+        );
+        assert!(retained.replay_existing);
+    }
+
+    #[tokio::test]
     async fn live_tail_preemption_cancels_network_before_new_active_room_starts() {
         let account = AccountKey("@a:test".to_owned());
         let room_a = TimelineKey::room(account.clone(), "!a:test");
@@ -28229,6 +28543,46 @@ mod tests {
             [
                 "start:A:epoch=7:limit=128",
                 "cancel-network:A:epoch=7",
+                "start:B:epoch=9:limit=128",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn live_tail_preemption_missing_cancel_ack_does_not_block_new_room() {
+        let account = AccountKey("@stalled-cancel:test".to_owned());
+        let room_a = TimelineKey::room(account.clone(), "!stalled-a:test");
+        let room_b = TimelineKey::room(account, "!stalled-b:test");
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut manager = live_tail_test_manager(HashMap::from([
+            (
+                room_a.clone(),
+                stalled_live_tail_cancel_actor_handle("A", log.clone()),
+            ),
+            (
+                room_b.clone(),
+                live_tail_test_actor_handle("B", log.clone()),
+            ),
+        ]));
+
+        manager.room_subscription_service_epoch = 7;
+        manager
+            .handle_committed_room_selection(fake_rid(1), room_a, false)
+            .await;
+        manager.room_subscription_service_epoch = 9;
+        executor::timeout(
+            Duration::from_millis(250),
+            manager.handle_committed_room_selection(fake_rid(2), room_b, false),
+        )
+        .await
+        .expect("missing cancellation acknowledgement must not block room selection");
+
+        tokio::task::yield_now().await;
+        assert_eq!(
+            *log.lock().expect("stalled live-tail log lock"),
+            [
+                "start:A:epoch=7:limit=128",
+                "cancel-network:A",
                 "start:B:epoch=9:limit=128",
             ]
         );
@@ -28828,7 +29182,7 @@ mod tests {
             .expect("finish restore request");
         assert!(flush_rx.await.expect("production restore terminal result"));
 
-        let (freshness, completion_dispatches) =
+        let (freshness, completion_dispatches, _) =
             tokio::time::timeout(Duration::from_secs(2), async {
                 loop {
                     let (state_tx, state_rx) = oneshot::channel();
@@ -29082,6 +29436,8 @@ mod tests {
             event_tx,
             msg_tx,
             msg_rx,
+            navigation_projection_rx: None,
+            last_navigation_projection_generation: 0,
             terminal_ingress,
             terminal_rx,
             search_index_tx: None,
@@ -29257,8 +29613,13 @@ mod tests {
     async fn shutdown_acknowledges_after_timeline_children_are_dropped() {
         let (action_tx, _action_rx) = mpsc::channel(1);
         let (event_tx, _) = broadcast::channel(1);
-        let handle =
-            TimelineManagerActor::spawn(action_tx, event_tx, None, MessagesBackpressure::default());
+        let handle = TimelineManagerActor::spawn(
+            action_tx,
+            event_tx,
+            None,
+            MessagesBackpressure::default(),
+            None,
+        );
         let (acknowledged, acknowledgement) = tokio::sync::oneshot::channel();
         assert!(
             handle
@@ -29469,6 +29830,8 @@ mod tests {
             event_tx,
             msg_tx: msg_tx.clone(),
             msg_rx,
+            navigation_projection_rx: None,
+            last_navigation_projection_generation: 0,
             terminal_ingress,
             terminal_rx,
             search_index_tx: None,
@@ -29543,6 +29906,8 @@ mod tests {
             event_tx,
             msg_tx,
             msg_rx,
+            navigation_projection_rx: None,
+            last_navigation_projection_generation: 0,
             terminal_ingress,
             terminal_rx,
             search_index_tx: None,
@@ -30802,6 +31167,8 @@ mod tests {
             event_tx,
             msg_tx: manager_tx.clone(),
             msg_rx: manager_rx,
+            navigation_projection_rx: None,
+            last_navigation_projection_generation: 0,
             terminal_ingress,
             terminal_rx,
             search_index_tx: None,
@@ -30989,6 +31356,8 @@ mod tests {
             event_tx,
             msg_tx: _manager_tx,
             msg_rx: manager_rx,
+            navigation_projection_rx: None,
+            last_navigation_projection_generation: 0,
             terminal_ingress,
             terminal_rx,
             search_index_tx: None,

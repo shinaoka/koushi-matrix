@@ -311,6 +311,7 @@ impl CoreRuntime {
             activity_projection: ActivityProjection::default(),
             activity_resolution_generation: 0,
             next_internal_request_sequence: 1,
+            navigation_projection_generation: 0,
             pending_select: HashMap::new(),
             pending_focused_navigation: None,
             pending_date_navigation_request_id: None,
@@ -546,6 +547,9 @@ struct AppActor {
     activity_projection: ActivityProjection,
     activity_resolution_generation: u64,
     next_internal_request_sequence: u64,
+    /// Private ordering fence for committed room projections. Request ids are
+    /// correlation values and are not monotonic across connections.
+    navigation_projection_generation: u64,
     /// Correlation map for SelectRoom intents: room_id → FIFO queue of request_ids.
     /// Multiple concurrent SelectRoom commands for the same room are queued in
     /// submission order; each `AppAction::SelectRoom` pops the oldest entry so
@@ -1349,7 +1353,31 @@ impl AppActor {
                             } else {
                                 None
                             };
+                        let active_room_before_reduce =
+                            self.state.navigation.active_room_id.clone();
                         let post_projection_effects = self.reduce_app_action(action).await;
+                        let active_room_changed = active_room_before_reduce
+                            != self.state.navigation.active_room_id;
+                        let navigation_projection_generation = if active_room_changed {
+                            match self.navigation_projection_generation.checked_add(1) {
+                                Some(generation) => {
+                                    self.navigation_projection_generation = generation;
+                                    Some(generation)
+                                }
+                                None => {
+                                    record(DiagnosticEvent::new(
+                                        DiagnosticLevel::Error,
+                                        "core.navigation",
+                                        "projection_generation_exhausted",
+                                    ));
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                        let mut navigation_projection_cause = None;
+                        let mut selection_committed = false;
                         if let Some((generation, transition_id)) = trust_projection_transition {
                             let _ = self
                                 .account_actor
@@ -1409,36 +1437,6 @@ impl AppActor {
                             {
                                 self.pending_select.remove(&room_id);
                             }
-                            if committed {
-                                if let Some(key) = cancel_replaced_room_timeline_pagination {
-                                    let cancel_request_id = request_id_to_emit.unwrap_or(RequestId {
-                                        connection_id: RuntimeConnectionId(0),
-                                        sequence: 0,
-                                    });
-                                    self.send_timeline_command_or_fail(
-                                        cancel_request_id,
-                                        TimelineCommand::CancelPagination {
-                                            request_id: cancel_request_id,
-                                            key,
-                                        },
-                                    )
-                                    .await;
-                                }
-                                if let Some(key) = cancel_replaced_room_timeline_link_previews {
-                                    let cancel_request_id = request_id_to_emit.unwrap_or(RequestId {
-                                        connection_id: RuntimeConnectionId(0),
-                                        sequence: 0,
-                                    });
-                                    self.send_timeline_command_or_fail(
-                                        cancel_request_id,
-                                        TimelineCommand::CancelLinkPreviews {
-                                            request_id: cancel_request_id,
-                                            key,
-                                        },
-                                    )
-                                    .await;
-                                }
-                            }
                             if let Some(request_id) = request_id_to_emit {
                                 record(
                                     DiagnosticEvent::new(
@@ -1458,6 +1456,10 @@ impl AppActor {
                                 );
                                 self.emit(CoreEvent::IntentLifecycle { request_id, outcome });
                             }
+                            if committed {
+                                navigation_projection_cause = request_id_to_emit;
+                                selection_committed = true;
+                            }
                         }
                         if let Some(activity_update) = self
                             .activity_projection
@@ -1466,8 +1468,39 @@ impl AppActor {
                             let _activity_effects =
                                 self.reduce_app_action(activity_update).await;
                         }
-                        self.handle_post_projection_effects(&post_projection_effects)
-                            .await;
+                        self.handle_post_projection_effects(
+                            &post_projection_effects,
+                            navigation_projection_generation,
+                            navigation_projection_cause,
+                        )
+                        .await;
+                        if selection_committed {
+                            let cancel_request_id =
+                                navigation_projection_cause.unwrap_or(RequestId {
+                                    connection_id: RuntimeConnectionId(0),
+                                    sequence: 0,
+                                });
+                            if let Some(key) = cancel_replaced_room_timeline_pagination {
+                                self.send_timeline_command_or_fail(
+                                    cancel_request_id,
+                                    TimelineCommand::CancelPagination {
+                                        request_id: cancel_request_id,
+                                        key,
+                                    },
+                                )
+                                .await;
+                            }
+                            if let Some(key) = cancel_replaced_room_timeline_link_previews {
+                                self.send_timeline_command_or_fail(
+                                    cancel_request_id,
+                                    TimelineCommand::CancelLinkPreviews {
+                                        request_id: cancel_request_id,
+                                        key,
+                                    },
+                                )
+                                .await;
+                            }
+                        }
                         self.handle_ui_event_effects(&post_projection_effects).await;
                         self.load_room_preferences_for_current_session().await;
                         self.load_navigation_for_current_session().await;
@@ -3261,7 +3294,12 @@ impl AppActor {
         }
     }
 
-    async fn handle_post_projection_effects(&mut self, effects: &[AppEffect]) {
+    async fn handle_post_projection_effects(
+        &mut self,
+        effects: &[AppEffect],
+        navigation_projection_generation: Option<u64>,
+        navigation_projection_cause: Option<RequestId>,
+    ) {
         for effect in effects {
             match effect {
                 AppEffect::StartSync => {
@@ -3311,7 +3349,14 @@ impl AppActor {
                         .await;
                 }
                 AppEffect::SubscribeTimeline { room_id } => {
-                    let request_id = self.next_internal_request_id();
+                    if self.state.navigation.active_room_id.as_deref() != Some(room_id.as_str()) {
+                        continue;
+                    }
+                    if self.navigation_projection_generation == 0 {
+                        self.navigation_projection_generation = 1;
+                    }
+                    let request_id = navigation_projection_cause
+                        .unwrap_or_else(|| self.next_internal_request_id());
                     let Some(account_key) = self.current_account_key() else {
                         self.emit(CoreEvent::OperationFailed {
                             request_id,
@@ -3319,20 +3364,20 @@ impl AppActor {
                         });
                         continue;
                     };
-                    self.send_timeline_command_or_fail(
-                        request_id,
-                        TimelineCommand::EnsureSubscribed {
-                            request_id,
+                    let _ = self.account_actor.admit_navigation_projection(
+                        crate::timeline::NavigationProjectionIntent {
+                            generation: navigation_projection_generation
+                                .unwrap_or(self.navigation_projection_generation),
                             key: TimelineKey {
                                 account_key,
                                 kind: TimelineKind::Room {
                                     room_id: room_id.clone(),
                                 },
                             },
+                            cause_request_id: request_id,
                             replay_existing: true,
                         },
-                    )
-                    .await;
+                    );
                 }
                 AppEffect::PersistRoomPreferences { preferences, .. } => {
                     self.persist_room_preferences(preferences).await;

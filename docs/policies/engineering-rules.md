@@ -693,6 +693,15 @@ Rules:
    and timeout, plus behavioral proof that `M_UNKNOWN_TOKEN` causes zero refresh
    calls, no authoritative session-change/token mutation, and fail-closed
    `LegacySync` selection.
+19. Foreground room navigation must not wait behind ordinary actor mailboxes or
+   network/filesystem side effects. Reducer commit emits the exactly-once
+   intent terminal; projection admission uses an owner-stable latest-value slot
+   ordered by an internal monotonic generation and a bounded wake. The manager
+   polls that wake before ordinary completions. Actor lifecycle controls use a
+   separate bounded control lane, one absolute cancellation deadline, and
+   generation fences so late old-room work cannot regress the active room.
+   Persistence and read convergence run in owned workers and never delay the
+   navigation terminal or cached projection.
 
 ## GUI Automation
 

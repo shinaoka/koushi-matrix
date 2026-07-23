@@ -594,7 +594,18 @@ stream), and the runtime must relay that model, not fight it.
    runtime does not replay completion for a dead connection. Durable
    cross-process submission settlement would require a separate encrypted,
    body-free outbox journal and is not part of this contract.
-9. **Sync uses behavior-probed SDK services, not ad hoc polling.** Advertising
+9. **Foreground navigation is value-driven, not mailbox-ordered.** A committed
+   room selection emits its sole public `IntentLifecycle` terminal immediately
+   after reducer commit. AppActor then admits an account-stable, generation-
+   ordered latest-desired projection through a bounded wake channel that the
+   timeline manager polls ahead of ordinary completions and background work.
+   Request IDs remain correlation values, not ordering values. Old-room
+   pagination, link-preview, gap-repair, live-tail, persistence, and read-state
+   cleanup are not prerequisites for the terminal or cached target replay.
+   Timeline actor cancel/start/begin operations use a distinct control lane;
+   invalidated generations make late acknowledgements and completions inert,
+   and every acknowledgement wait uses one absolute deadline.
+10. **Sync uses behavior-probed SDK services, not ad hoc polling.** Advertising
    an MSC4186 version is necessary but not sufficient: before starting either
    authoritative sync owner, Core issues one bounded, authenticated MSC4186
    request for a fixed zero-timeline invited-room list. Only a response that
@@ -628,16 +639,16 @@ stream), and the runtime must relay that model, not fight it.
    path is a fully implemented, QA-gated product path, not a stub. Invite
    projection is part of the same contract: both sync backends must produce
    `AppState.invites` from SDK invited rooms, not from React-local state.
-10. **Backpressure is defined, not accidental.** The event channel policy is
+11. **Backpressure is defined, not accidental.** The event channel policy is
     explicit: versioned state snapshots are latest-wins (watch semantics),
     runtime state changes emit at most one `StateDelta` per batch, and
     discrete events use bounded channels with a defined recovery path (drop +
     full snapshot resync). A slow UI must not stall the core or grow memory
     without bound.
-11. **SDK handles are dropped inside a Tokio runtime context.** Store-backed
+12. **SDK handles are dropped inside a Tokio runtime context.** Store-backed
     SDK clients panic (`deadpool-runtime`) when dropped outside one. Shutdown
     paths and QA binaries must respect this.
-12. **Shutdown is ordered**: stop accepting commands → stop timeline
+13. **Shutdown is ordered**: stop accepting commands → stop timeline
     subscriptions → stop search queues → stop sync → persist session state →
     drop SDK handles → (on logout/removal) clear credentials and stores →
     publish the final versioned snapshot / state delta.

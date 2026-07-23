@@ -338,6 +338,35 @@ stateDiagram-v2
     RoomSelected --> NoRoom: LogoutRequested/SessionCleared
 ```
 
+Room selection has a separate private projection lifecycle. Reducer commit is
+the public terminal: the correlated `IntentLifecycle::Committed` is emitted
+exactly once and is never delayed by old-room cleanup, persistence, receipt
+network calls, or timeline background work. Projection readiness must not emit
+a second intent terminal.
+
+```mermaid
+stateDiagram-v2
+    [*] --> ProjectionIdle
+    ProjectionIdle --> ProjectionDesired: committed active room / generation++
+    ProjectionDesired --> ProjectionDesired: newer generation / replace latest
+    ProjectionDesired --> CachedReplay: foreground manager admission
+    CachedReplay --> ProjectionSettled: InitialItems [current generation]
+    CachedReplay --> ProjectionDesired: newer generation
+    CachedReplay --> StaleDiscarded: completion [older generation]
+    StaleDiscarded --> ProjectionDesired: latest desired retained
+```
+
+- `generation` is AppActor-owned and monotonic; request IDs correlate events
+  but never order projections.
+- The latest desired projection is a retained value plus bounded wake. A full
+  ordinary actor mailbox cannot lose it, and an equal-generation replay may
+  only strengthen `replay_existing` without replacing the original cause.
+- Old-room invalidation happens before best-effort cleanup. New-room
+  cancel/start/begin controls use the actor control lane; a missing
+  cancellation acknowledgement is bounded by one absolute deadline.
+- Actor-originated subscription effects are admitted only when their target is
+  still the reducer-owned active room. Late A/B work cannot replace desired C.
+
 ## Room Tags
 
 Room tags are Rust-owned room-list state. `RoomSummary.tags` carries the

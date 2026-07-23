@@ -80,7 +80,8 @@ use crate::startup_trace::{self, StartupPhase};
 use crate::store::{StoreActor, account_key_from_info, session_key_id_from_info};
 use crate::sync::{SyncActorHandle, SyncMessage};
 use crate::timeline::{
-    TimelineManagerHandle, TimelineMessage, build_room_message_content_from_composer_body,
+    NavigationProjectionIngress, NavigationProjectionIntent, TimelineManagerHandle,
+    TimelineMessage, build_room_message_content_from_composer_body,
 };
 
 /// "Credential store healthy, but no stored session for that account"
@@ -463,11 +464,16 @@ pub enum AccountMessage {
 #[derive(Clone)]
 pub struct AccountActorHandle {
     tx: mpsc::Sender<AccountMessage>,
+    navigation_projection: NavigationProjectionIngress,
 }
 
 impl AccountActorHandle {
     pub async fn send(&self, msg: AccountMessage) -> bool {
         self.tx.send(msg).await.is_ok()
+    }
+
+    pub(crate) fn admit_navigation_projection(&self, intent: NavigationProjectionIntent) -> bool {
+        self.navigation_projection.admit(intent)
     }
 }
 
@@ -1004,6 +1010,9 @@ pub struct AccountActor {
     /// TimelineManagerActor handle (Phase 5). Spawned once at actor creation;
     /// session reference is updated when a store-backed session is established.
     timeline_manager: TimelineManagerHandle,
+    /// Stable projection ingress retained across session-scoped manager
+    /// replacement and cloned into the AppActor-facing handle.
+    navigation_projection: NavigationProjectionIngress,
     /// Account-wide gate for `/rooms/{roomId}/messages` requests. Timeline
     /// pagination has priority over background search-history crawling.
     messages_backpressure: crate::messages_backpressure::MessagesBackpressure,
@@ -1111,6 +1120,8 @@ impl AccountActor {
         // session and waits for RoomMessage::SyncStarted.
         let room_actor = crate::room::RoomActor::spawn(action_tx.clone(), event_tx.clone());
         let messages_backpressure = crate::messages_backpressure::MessagesBackpressure::default();
+        let (navigation_projection, navigation_projection_rx) =
+            NavigationProjectionIngress::channel();
         // Spawn TimelineManagerActor. It starts with no session; the session
         // is injected when a store-backed session is established.
         let timeline_manager = crate::timeline::TimelineManagerActor::spawn(
@@ -1118,6 +1129,7 @@ impl AccountActor {
             event_tx.clone(),
             Some(data_dir.clone()),
             messages_backpressure.clone(),
+            Some(navigation_projection_rx),
         );
         let actor = AccountActor {
             session: None,
@@ -1156,6 +1168,7 @@ impl AccountActor {
             sync_generation: Arc::new(AtomicU64::new(0)),
             room_actor,
             timeline_manager,
+            navigation_projection: navigation_projection.clone(),
             messages_backpressure,
             activity_resolution_task: None,
             data_dir,
@@ -1193,7 +1206,10 @@ impl AccountActor {
             avatar_session_generation: 0,
         };
         crate::executor::spawn(actor.run());
-        AccountActorHandle { tx }
+        AccountActorHandle {
+            tx,
+            navigation_projection,
+        }
     }
 
     async fn run(mut self) {
@@ -2692,6 +2708,7 @@ impl AccountActor {
             Some(self.data_dir.clone()),
             self.link_preview_policy.clone(),
             self.messages_backpressure.clone(),
+            Some(self.navigation_projection.subscribe()),
         );
 
         let handle = crate::sync::SyncActor::spawn(
@@ -6979,6 +6996,7 @@ impl AccountActor {
             self.event_tx.clone(),
             Some(self.data_dir.clone()),
             self.messages_backpressure.clone(),
+            Some(self.navigation_projection.subscribe()),
         );
         self.record_lifecycle_probe("stop_threads_manager");
         self.stop_threads_list_actor().await;
@@ -12027,11 +12045,14 @@ mod tests {
         let data_dir_path = store.data_dir().to_path_buf();
         let room_actor = crate::room::RoomActor::spawn(action_tx.clone(), event_tx.clone());
         let messages_backpressure = crate::messages_backpressure::MessagesBackpressure::default();
+        let (navigation_projection, navigation_projection_rx) =
+            NavigationProjectionIngress::channel();
         let timeline_manager = crate::timeline::TimelineManagerActor::spawn(
             action_tx.clone(),
             event_tx.clone(),
             Some(data_dir_path.clone()),
             messages_backpressure.clone(),
+            Some(navigation_projection_rx),
         );
         let mut actor = AccountActor {
             session: None,
@@ -12065,6 +12086,7 @@ mod tests {
             sync_generation: Arc::new(AtomicU64::new(0)),
             room_actor,
             timeline_manager,
+            navigation_projection,
             messages_backpressure,
             activity_resolution_task: None,
             data_dir: data_dir_path,
