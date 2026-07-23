@@ -3,6 +3,7 @@
 // consumers depend on the stable root API rather than reaching into module internals.
 mod action;
 mod composer_shortcuts;
+mod composer_revision;
 mod effect;
 mod locale_profile;
 mod reducer;
@@ -19,6 +20,7 @@ pub use composer_shortcuts::{
     build_formatted_message_draft, parse_slash_command, resolve_composer_key_action,
     resolve_composer_send_intent,
 };
+pub use composer_revision::{ComposerDraftRevision, ComposerDraftRevisionError};
 pub use effect::{AppEffect, UiEvent};
 pub use locale_profile::{
     CatalogLocale, DisplayPlatform, LocaleDirection, LocaleDisplayProfile, ModifierLabelProfile,
