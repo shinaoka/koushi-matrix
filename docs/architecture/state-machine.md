@@ -602,7 +602,10 @@ stateDiagram-v2
   transient `TimelinePaneState`. `ComposerDraftChanged` writes the selected
   room's draft through to that store, `SelectRoom` hydrates the active composer
   from it, and `SendTextSubmitted` clears the selected room's stored draft.
-  Each room and thread-root target has a monotonic `draft_revision`. A draft
+  Each room and thread-root target has a monotonic `draft_revision`. It is a
+  checked Rust `u128` and an opaque canonical decimal string on every wire
+  boundary; JavaScript numeric conversion, wrapping, and saturation are
+  forbidden. A draft
   write with a revision at or below the target's stored revision is stale and
   is ignored. Accepted plain/reply sends, scheduled sends, and prepared-upload
   sends advance the target to `max(stored, submitted) + 1`, clear content, and
@@ -636,6 +639,31 @@ stateDiagram-v2
     Editing --> Empty: LogoutRequested/SessionCleared
     Empty --> Editing: ComposerDraftsLoaded [active composer empty and persisted draft exists]
 ```
+
+Content, ActiveEmpty, and LeasedEmpty are protected. LeasedEmpty becomes a
+QuiescentTombstone only after the final command/store lease settles while the
+target is inactive. QuiescentTombstone is the only state that quota collection
+may remove. A retired renderer generation cannot reacquire or deliver a
+command; a fresh generation rehydrates Rust state before admission.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Absent
+    Absent --> ActiveEmpty: acquire + hydrate
+    ActiveEmpty --> Content: accepted newer draft
+    Content --> LeasedEmpty: accepted current operation clears
+    ActiveEmpty --> LeasedEmpty: operation remains unsettled
+    LeasedEmpty --> QuiescentTombstone: inactive + final lease/store barrier
+    QuiescentTombstone --> ActiveEmpty: fresh acquire + hydrate
+    QuiescentTombstone --> Absent: oldest eligible beyond quota
+```
+
+Main retains 128 and thread retains 256 quiescent tombstones in lifecycle LRU
+order; protected targets are outside those quotas. Rust advances
+`last_accepted_clear_revision` only for an accepted clear of current content,
+and React uses that projection in the active IME key. Diagnostics contain
+counts and coarse outcomes only, never content, identifiers, revisions, lease
+tokens, paths, or raw errors.
 - Scheduled send is Rust-owned state, not a React timer. The full queue lives in
   an `AppState.scheduled_sends` backing store that is excluded from the full
   webview snapshot because it can contain future message bodies for non-visible

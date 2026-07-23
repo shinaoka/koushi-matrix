@@ -710,6 +710,9 @@ is debounced and size-bounded; empty stores remove the encrypted draft file.
 Tauri exposes only typed draft commands (`set_composer_draft`,
 `set_thread_composer_draft`) and the active composer snapshot. Every main-room
 or `(room, thread-root)` target carries a monotonic causal draft revision.
+`ComposerDraftRevision` is a checked `u128` in Rust and an opaque canonical
+decimal string on every snapshot, Tauri, and IPC boundary. JavaScript
+`number` conversion, wrapping, and saturation are forbidden.
 Draft writes apply only above the stored revision. An accepted plain/reply
 send, scheduled send, or prepared-upload send advances and persists an
 empty-draft revision tombstone when the accepted submission is still current.
@@ -734,10 +737,25 @@ leaves the active pane. Scheduled and prepared-upload commands instead wait
 for the keyed Rust backing-store revision to advance and return that accepted
 revision alongside the latest snapshot; an enqueue acknowledgement or
 active-pane snapshot alone is not causal proof. Acceptance also advances a
-target-local IME synchronization epoch. This makes the empty Rust projection
+Rust-owned target-local `last_accepted_clear_revision` only when an accepted
+operation actually clears current content. React includes that token in the
+active IME synchronization key; ordinary persistence and accepted preservation
+of newer input do not change it. This makes the empty Rust projection
 an authoritative reset even when the composition-owned textarea has not yet
 observed an acknowledgement of the sent local value; ordinary stale snapshots
 continue to be ignored. Legacy encrypted draft payloads backfill revision zero.
+
+Revision history is bounded by lifecycle, not lexical target order. Non-empty,
+active, debounce/IPC/submission/schedule/upload-pending, command-pending,
+store-pending, and leased targets are protected. Only empty, inactive,
+zero-lease targets are quiescent tombstones; main targets retain the 128 most
+recent quiescent tombstones and thread targets retain 256. The live bound is
+the protected set plus that fixed quota. Every revision-bearing producer
+acquires the exact account/target/renderer-generation lease before scheduling
+or entering Core; lease admission/release and victim selection are serialized.
+A retired generation cannot deliver a command or recreate collected state.
+Diagnostics expose only counts and coarse lifecycle outcomes, never draft
+bodies, Matrix identifiers, revisions, leases, paths, or raw errors.
 
 Channel capacities are named constants, not scattered literals, and MUST be
 sized for large-account (100+ room) sync bursts — never for the handful of

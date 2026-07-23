@@ -162,6 +162,23 @@ Rules:
    so a render alone cannot distinguish an authoritative clear from a stale
    snapshot. Timer cancellation or a second racing empty save is not a
    correctness fence.
+   `ComposerDraftRevision` is a checked Rust `u128` and an opaque canonical
+   decimal string on every snapshot and IPC boundary. JavaScript `number`
+   conversion, wrapping, and saturation are forbidden. Rust advances
+   `last_accepted_clear_revision` only when an accepted operation actually
+   clears current content; ordinary persistence and accepted preservation of
+   newer input do not change it.
+   Empty revision history is retained in lifecycle order. Only empty, inactive,
+   zero-lease targets are quiescent tombstones; retain 128 main and 256 thread
+   tombstones. The live bound is protected targets plus those quotas.
+   Non-empty, active, debounce/IPC/submission/schedule/upload-pending,
+   command-pending, store-pending, and leased targets are protected and cannot
+   be eviction victims. Every revision-bearing producer acquires the exact
+   account/target/renderer-generation lease before it schedules or enters Core.
+   Lease admission/release and victim selection are serialized, and a retired
+   generation cannot deliver or recreate collected state. Diagnostics expose
+   counts and coarse lifecycle outcomes only, never bodies, Matrix identifiers,
+   revisions, leases, filesystem paths, or raw errors.
    Scheduled-send message bodies are also future unsent message content. The
    Rust state machine owns the queue, capability, cancellation, reschedule, and
    due-time dispatch semantics. Full scheduled-send backing state must not be
