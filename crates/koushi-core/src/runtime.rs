@@ -20,10 +20,10 @@ use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, reco
 use koushi_state::{
     AccountManagementOperation, ActivityMarkReadTarget, ActivityResolutionState, ActivityRow,
     ActivityRowKind, ActivityState, ActivityStream, ActivityTab, AppAction, AppEffect, AppState,
-    ComposerDraftStore, LoginAttemptId, OperationFailureKind, ProfileUpdateRequest,
-    RoomNotificationMode, RoomSummary, ScheduledSendCapability, ScheduledSendHandle,
-    ScheduledSendItem, SearchScope as AppSearchScope, SessionState, SpaceSummary, ThreadPaneState,
-    UiEvent, reduce, room_activity_unread_count,
+    ComposerDraftStore, LoginAttemptId, NavigationState, OperationFailureKind,
+    ProfileUpdateRequest, RoomNotificationMode, RoomSummary, ScheduledSendCapability,
+    ScheduledSendHandle, ScheduledSendItem, ScheduledSendStore, SearchScope as AppSearchScope,
+    SessionState, SpaceSummary, ThreadPaneState, UiEvent, reduce, room_activity_unread_count,
 };
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
@@ -605,6 +605,22 @@ struct PendingComposerDraftPersist {
     key_id: koushi_key::SessionKeyId,
     drafts: ComposerDraftStore,
     deadline: Instant,
+}
+
+enum DeferredScheduledSendPersist {
+    ClearLoadedMarker,
+    Persist {
+        key_id: koushi_key::SessionKeyId,
+        scheduled_sends: ScheduledSendStore,
+    },
+}
+
+#[derive(Default)]
+struct DeferredReducerSideEffects {
+    cancel_activity_resolution: bool,
+    navigation: Option<(koushi_key::SessionKeyId, NavigationState)>,
+    composer_drafts: Option<(koushi_key::SessionKeyId, ComposerDraftStore)>,
+    scheduled_sends: Option<DeferredScheduledSendPersist>,
 }
 
 #[derive(Default)]
@@ -1355,7 +1371,8 @@ impl AppActor {
                             };
                         let active_room_before_reduce =
                             self.state.navigation.active_room_id.clone();
-                        let post_projection_effects = self.reduce_app_action(action).await;
+                        let (post_projection_effects, deferred_reducer_side_effects) =
+                            self.reduce_app_action_state(action);
                         let active_room_changed = active_room_before_reduce
                             != self.state.navigation.active_room_id;
                         let navigation_projection_generation = if active_room_changed {
@@ -1461,13 +1478,6 @@ impl AppActor {
                                 selection_committed = true;
                             }
                         }
-                        if let Some(activity_update) = self
-                            .activity_projection
-                            .update_action_for_open_state(&self.state)
-                        {
-                            let _activity_effects =
-                                self.reduce_app_action(activity_update).await;
-                        }
                         self.handle_post_projection_effects(
                             &post_projection_effects,
                             navigation_projection_generation,
@@ -1501,6 +1511,17 @@ impl AppActor {
                                 .await;
                             }
                         }
+                        self.apply_deferred_reducer_side_effects(
+                            deferred_reducer_side_effects,
+                        )
+                        .await;
+                        if let Some(activity_update) = self
+                            .activity_projection
+                            .update_action_for_open_state(&self.state)
+                        {
+                            let _activity_effects =
+                                self.reduce_app_action(activity_update).await;
+                        }
                         self.handle_ui_event_effects(&post_projection_effects).await;
                         self.load_room_preferences_for_current_session().await;
                         self.load_navigation_for_current_session().await;
@@ -1521,6 +1542,15 @@ impl AppActor {
     }
 
     async fn reduce_app_action(&mut self, action: AppAction) -> Vec<AppEffect> {
+        let (effects, deferred) = self.reduce_app_action_state(action);
+        self.apply_deferred_reducer_side_effects(deferred).await;
+        effects
+    }
+
+    fn reduce_app_action_state(
+        &mut self,
+        action: AppAction,
+    ) -> (Vec<AppEffect>, DeferredReducerSideEffects) {
         let activity_was_open = matches!(self.state.activity, ActivityState::Open { .. });
         let previous_session = composer_draft_session_key(&self.state);
         let previous_drafts = self.state.composer_drafts.clone();
@@ -1529,24 +1559,22 @@ impl AppActor {
         let previous_scheduled_session = scheduled_send_session_key(&self.state);
         let previous_scheduled_sends = self.state.scheduled_sends.clone();
         let effects = reduce_with_unread_diagnostics(&mut self.state, action);
-        if activity_was_open && matches!(self.state.activity, ActivityState::Closed) {
-            let _ = self
-                .account_actor
-                .send(AccountMessage::CancelActivityResolution)
-                .await;
-        }
+        let mut deferred = DeferredReducerSideEffects {
+            cancel_activity_resolution: activity_was_open
+                && matches!(self.state.activity, ActivityState::Closed),
+            ..DeferredReducerSideEffects::default()
+        };
         if previous_navigation != self.state.navigation {
             let target_session =
                 navigation_session_key(&self.state).or(previous_navigation_session);
             if let Some(key_id) = target_session {
-                self.persist_navigation(key_id).await;
+                deferred.navigation = Some((key_id, self.state.navigation.clone()));
             }
         }
         if previous_drafts != self.state.composer_drafts {
             let target_session = composer_draft_session_key(&self.state).or(previous_session);
             if let Some(key_id) = target_session {
-                self.schedule_composer_draft_persist(key_id, self.state.composer_drafts.clone())
-                    .await;
+                deferred.composer_drafts = Some((key_id, self.state.composer_drafts.clone()));
             }
         }
         if previous_scheduled_sends != self.state.scheduled_sends {
@@ -1555,17 +1583,49 @@ impl AppActor {
                 && previous_scheduled_session.is_some()
                 && current_scheduled_session.is_none();
 
-            if cleared_for_session_transition {
+            deferred.scheduled_sends = if cleared_for_session_transition {
+                Some(DeferredScheduledSendPersist::ClearLoadedMarker)
+            } else {
+                current_scheduled_session
+                    .or(previous_scheduled_session)
+                    .map(|key_id| DeferredScheduledSendPersist::Persist {
+                        key_id,
+                        scheduled_sends: self.state.scheduled_sends.clone(),
+                    })
+            };
+        }
+        (effects, deferred)
+    }
+
+    async fn apply_deferred_reducer_side_effects(&mut self, deferred: DeferredReducerSideEffects) {
+        if deferred.cancel_activity_resolution {
+            let _ = self
+                .account_actor
+                .send(AccountMessage::CancelActivityResolution)
+                .await;
+        }
+        if let Some((key_id, navigation)) = deferred.navigation {
+            self.persist_navigation(key_id, navigation).await;
+        }
+        if let Some((key_id, drafts)) = deferred.composer_drafts {
+            self.schedule_composer_draft_persist(key_id, drafts).await;
+        }
+        match deferred.scheduled_sends {
+            Some(DeferredScheduledSendPersist::ClearLoadedMarker) => {
                 // `clear_session_views` intentionally clears the in-memory
                 // projection on lock, logout, and account switch. That is not
                 // a user cancellation, so do not overwrite the account's
                 // persisted scheduled sends with an empty store.
                 self.scheduled_sends_loaded_for = None;
-            } else if let Some(key_id) = current_scheduled_session.or(previous_scheduled_session) {
-                self.persist_scheduled_sends(key_id).await;
             }
+            Some(DeferredScheduledSendPersist::Persist {
+                key_id,
+                scheduled_sends,
+            }) => {
+                self.persist_scheduled_sends(key_id, scheduled_sends).await;
+            }
+            None => {}
         }
-        effects
     }
 
     async fn load_navigation_for_current_session(&mut self) {
@@ -1660,17 +1720,23 @@ impl AppActor {
         self.handle_ui_event_effects(&effects).await;
     }
 
-    async fn persist_scheduled_sends(&mut self, key_id: koushi_key::SessionKeyId) {
+    async fn persist_scheduled_sends(
+        &mut self,
+        key_id: koushi_key::SessionKeyId,
+        scheduled_sends: ScheduledSendStore,
+    ) {
         let store = self.composer_draft_store_actor.clone();
-        let scheduled_sends = self.state.scheduled_sends.clone();
         let _ =
             executor::spawn_blocking(move || store.save_scheduled_sends(&key_id, &scheduled_sends))
                 .await;
     }
 
-    async fn persist_navigation(&mut self, key_id: koushi_key::SessionKeyId) {
+    async fn persist_navigation(
+        &mut self,
+        key_id: koushi_key::SessionKeyId,
+        navigation: NavigationState,
+    ) {
         let store = self.composer_draft_store_actor.clone();
-        let navigation = self.state.navigation.clone();
         let _ = executor::spawn_blocking(move || store.save_navigation(&key_id, &navigation)).await;
     }
 
