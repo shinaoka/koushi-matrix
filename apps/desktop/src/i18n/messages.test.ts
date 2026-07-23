@@ -97,6 +97,13 @@ describe("i18n message catalog", () => {
     );
   });
 
+  test("distinguishes ordinary and threaded reply labels in shipped locales", () => {
+    expect(t("timeline.replyToMessage")).toBe("Reply to message");
+    expect(t("timeline.replyInThread")).toBe("Reply in thread");
+    expect(t("timeline.replyToMessage", {}, "ja")).toBe("メッセージに返信");
+    expect(t("timeline.replyInThread", {}, "ja")).toBe("スレッドで返信");
+  });
+
   test("pseudo locale expands labels while preserving interpolation placeholders", () => {
     const pseudo = pseudoLocalize("Message {roomName}");
 

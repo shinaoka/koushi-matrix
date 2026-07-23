@@ -778,6 +778,7 @@ export type MessageId =
   | "timeline.replyQuoteUnknownSender"
   | "timeline.replyQuoteUnsupported"
   | "timeline.replyToMessage"
+  | "timeline.replyInThread"
   | "timeline.messageActions"
   | "timeline.copyMessage"
   | "timeline.copyCode"
@@ -1798,6 +1799,7 @@ const en: Catalog = {
   "timeline.replyQuoteUnknownSender": "Unknown sender",
   "timeline.replyQuoteUnsupported": "Unsupported message",
   "timeline.replyToMessage": "Reply to message",
+  "timeline.replyInThread": "Reply in thread",
   "timeline.messageActions": "Message actions",
   "timeline.copyMessage": "Copy message",
   "timeline.copyCode": "Copy code",
@@ -2704,6 +2706,7 @@ const ja: Catalog = {
   "timeline.replyQuoteUnknownSender": "不明な送信者",
   "timeline.replyQuoteUnsupported": "未対応のメッセージ",
   "timeline.replyToMessage": "メッセージに返信",
+  "timeline.replyInThread": "スレッドで返信",
   "timeline.messageActions": "メッセージ操作",
   "timeline.copyMessage": "メッセージをコピー",
   "timeline.copyCode": "コードをコピー",

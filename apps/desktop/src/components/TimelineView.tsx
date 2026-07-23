@@ -39,6 +39,7 @@ import {
   Pin,
   PinOff,
   RefreshCw,
+  Reply,
   SmilePlus,
   Trash2,
   XCircle
@@ -68,6 +69,7 @@ import {
 import { getActiveLocale, t } from "../i18n/messages";
 import { useRecoverableImageSource } from "./avatarImage";
 import { findQueryHighlightRange } from "./searchHighlight";
+import { Tooltip } from "./Tooltip";
 import {
   contextMenuItems,
   type ContextMenuItem
@@ -5331,6 +5333,7 @@ export const TimelineView = memo(function TimelineView({
                 activityEventId={activityEventId}
                 contentTimestampMs={row.content_timestamp_ms}
                 roomId={roomId}
+                presentationContext={presentationContext}
                 codeBlockWrap={codeBlockWrap}
                 searchQuery={searchQuery}
                 onReply={onReply}
@@ -5509,6 +5512,7 @@ export function TimelineItemRow({
   activityEventId,
   contentTimestampMs,
   roomId,
+  presentationContext = "room",
   codeBlockWrap = true,
   showThreadSummary = true,
   searchQuery = "",
@@ -5560,6 +5564,7 @@ export function TimelineItemRow({
   /** The content event timestamp, independent of presentation placement. */
   contentTimestampMs?: number | null;
   roomId: string;
+  presentationContext?: "room" | "thread" | "focused";
   codeBlockWrap?: boolean;
   showThreadSummary?: boolean;
   searchQuery?: string;
@@ -6019,6 +6024,7 @@ export function TimelineItemRow({
   }, [onCancelSend, roomId, transactionId]);
   const canShowActionButtons = Boolean(eventId) && !isRedacted;
   const canShowReply = canShowActionButtons && item.body !== null;
+  const canShowReplyInThread = canShowReply && presentationContext === "room";
   const canCopyMessage = Boolean(eventId && item.actions?.can_copy && item.body !== null);
   const canCopyPermalink = Boolean(
     eventId && item.actions?.can_permalink && item.actions.permalink
@@ -6080,6 +6086,8 @@ export function TimelineItemRow({
   const reactionSenderLabelByUserId = reactionSenderLabelsByUserId(mentionProfileUsers);
   const spoilerState = { revealed: revealedSpoilers, reveal: revealSpoiler };
   const displayBody = localizedTimelineItemBody(item);
+  const replyLabel = t("timeline.replyToMessage");
+  const replyInThreadLabel = t("timeline.replyInThread");
   const messageBodyClassName = [
     "message-body",
     item.formatted ? "message-formatted-body" : null,
@@ -6484,16 +6492,6 @@ export function TimelineItemRow({
         ) : null}
       </div>
       <div className="message-actions">
-        {!isEditing && canShowActionButtons && item.can_edit ? (
-          <button
-            className="message-action"
-            type="button"
-            aria-label={t("timeline.editMessage")}
-            onClick={openEditForm}
-          >
-            <Edit3 size={14} />
-          </button>
-        ) : null}
         {!isEditing && canShowActionButtons && item.can_react ? (
           <div className="reaction-control" ref={reactionControlRef}>
             <button
@@ -6525,13 +6523,51 @@ export function TimelineItemRow({
           </div>
         ) : null}
         {!isEditing && canShowReply ? (
+          <Tooltip label={replyLabel}>
+            {(tooltipProps) => (
+              <button
+                {...tooltipProps}
+                className="message-action"
+                type="button"
+                aria-label={replyLabel}
+                onClick={submitReply}
+              >
+                <Reply
+                  size={14}
+                  aria-hidden="true"
+                  data-message-action-icon="reply"
+                />
+              </button>
+            )}
+          </Tooltip>
+        ) : null}
+        {!isEditing && canShowReplyInThread ? (
+          <Tooltip label={replyInThreadLabel}>
+            {(tooltipProps) => (
+              <button
+                {...tooltipProps}
+                className="message-action"
+                type="button"
+                aria-label={replyInThreadLabel}
+                onClick={submitOpenThread}
+              >
+                <MessageCircle
+                  size={14}
+                  aria-hidden="true"
+                  data-message-action-icon="reply-in-thread"
+                />
+              </button>
+            )}
+          </Tooltip>
+        ) : null}
+        {!isEditing && canShowActionButtons && item.can_edit ? (
           <button
             className="message-action"
             type="button"
-            aria-label={t("timeline.replyToMessage")}
-            onClick={submitReply}
+            aria-label={t("timeline.editMessage")}
+            onClick={openEditForm}
           >
-            <MessageCircle size={14} />
+            <Edit3 size={14} />
           </button>
         ) : null}
         {!isEditing && canShowActionButtons ? (
