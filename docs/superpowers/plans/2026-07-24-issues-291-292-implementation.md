@@ -146,19 +146,29 @@ for #291 and one implementation commit for #292, then open one non-squash PR.
 1. Amend the async/runtime canon before code so the foreground lane,
    correlated admission failure, priority rule, and bounded cancellation are
    normative.
-2. Add named bounded foreground capacity and typed subscribe,
-   unsubscribe/preemption, and shutdown/control messages.
-3. Make the manager select foreground work before ordinary commands and
-   background completions without converting reliable delivery to lossy
-   `try_send`.
-4. Commit navigation state before optional target-network work; publish cached
+2. Add a private latest-desired committed-selection slot plus a named bounded
+   wake lane. Store desired data before waking; a full wake is safe because the
+   queued wake drains the newest selection.
+3. Preserve the reducer's existing `Committed` as the selection's only public
+   terminal. Internal projection admission must not emit a second correlated
+   success/failure for the same request. Non-coalescible controls use named
+   bounded reliable admission with typed rejection before acceptance.
+4. Add a small per-`TimelineActor` navigation-control lane for live-tail
+   Cancel/Start and foreground gap-demand Begin. Poll it before the ordinary
+   actor mailbox and background completions.
+5. Make the manager select foreground work before ordinary commands and
+   background completions.
+6. Commit navigation state before optional target-network work; publish cached
    initial projection without waiting for the previous room.
-5. Invalidate live-tail operation generation first, then share one short
+7. Invalidate live-tail/gap operation generation first. Sending old-room
+   `EndGapRepairDemand` is then best-effort because the stale actor can no
+   longer affect the selected projection.
+8. Share one short
    absolute deadline between cancellation delivery and ACK wait. Fence any late
    ACK or refresh completion.
-6. Keep gap-repair publication/render ACK semantics unchanged; room change only
+9. Keep gap-repair publication/render ACK semantics unchanged; room change only
    removes previous-room foreground demand.
-7. Run the navigation and intent-lifecycle binaries until GREEN.
+10. Run the navigation and intent-lifecycle binaries until GREEN.
 
 ## Task 5: Add lossless coalescing and monotonic read-state ownership
 
@@ -221,12 +231,14 @@ for #291 and one implementation commit for #292, then open one non-squash PR.
    scheduled sends.
 3. Make `AccountActor` own load/save/reset because it owns `StoreActor` and the
    active session key; exchange only typed private snapshots/wakes with the
-   timeline manager.
+   timeline manager. Run synchronous filesystem work in owned
+   `executor::spawn_blocking` workers rather than in the AccountActor mailbox.
 4. Load before enabling retries. On restart, compare with authoritative SDK/sync
    state: delete already-satisfied targets and retry only server-behind targets.
-5. Fence delayed saves by account/session generation, remove entries after
-   confirmation, clear on reset, and save once after worker cancellation during
-   orderly shutdown.
+5. Fence delayed blocking saves by account/session/save generation, use atomic
+   temp-file replacement, remove entries after confirmation, clear on reset,
+   and perform one bounded final join/save after network worker cancellation
+   during orderly shutdown.
 6. Ensure persisted data never enters `AppState`, Tauri/TypeScript DTOs,
    diagnostics, `Debug`, or QA stdout.
 7. Run:
