@@ -181,6 +181,7 @@ const SEND_ENQUEUE_WORKER_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
 /// operation generation before entering this wait, so expiry is safe: a late
 /// actor completion is stale and room navigation may continue.
 const LIVE_TAIL_CANCELLATION_DEADLINE: Duration = Duration::from_millis(100);
+const TIMELINE_ACTOR_CONTROL_QUEUE_CAPACITY: usize = 16;
 /// Backstop tick count for the anchor-relay wait. After the SDK signals
 /// `anchor_present == true`, the anchor's diff has been broadcast through the
 /// 3-hop relay (conclude_backwards_pagination_from_disk → event-cache task →
@@ -2918,7 +2919,7 @@ impl TimelineManagerActor {
                     let deadline = executor::Instant::now() + LIVE_TAIL_CANCELLATION_DEADLINE;
                     let outcome = executor::timeout_at(deadline, async {
                         if !handle
-                            .send(TimelineActorMessage::CancelLiveTailNetwork {
+                            .send_control(TimelineActorControl::CancelLiveTailNetwork {
                                 operation_generation,
                                 acknowledged,
                             })
@@ -2948,13 +2949,16 @@ impl TimelineManagerActor {
                 } => {
                     debug_assert_eq!(limit, FOREGROUND_LIVE_TAIL_LIMIT);
                     if let Some(handle) = self.timelines.get(&key) {
-                        let _ = handle
-                            .send(TimelineActorMessage::StartLiveTailRefresh {
+                        let deadline = executor::Instant::now() + LIVE_TAIL_CANCELLATION_DEADLINE;
+                        let _ = executor::timeout_at(
+                            deadline,
+                            handle.send_control(TimelineActorControl::StartLiveTailRefresh {
                                 epoch,
                                 operation_generation,
                                 limit,
-                            })
-                            .await;
+                            }),
+                        )
+                        .await;
                     }
                 }
             }
@@ -3143,7 +3147,9 @@ impl TimelineManagerActor {
             .activate(key.clone(), self.room_subscription_service_epoch);
         if let Some(previous) = previous_foreground {
             if let Some(handle) = self.timelines.get(&previous) {
-                let _ = handle.send(TimelineActorMessage::EndGapRepairDemand).await;
+                // Generation invalidation above makes late old-room work inert;
+                // cleanup is best-effort and must never hold the new room.
+                let _ = handle.try_send_control(TimelineActorControl::EndGapRepairDemand);
             }
         }
         record_live_tail_state(
@@ -3164,9 +3170,12 @@ impl TimelineManagerActor {
         self.handle_subscribe(request_id, key.clone(), replay_existing)
             .await;
         if let Some(handle) = self.timelines.get(&key) {
-            let _ = handle
-                .send(TimelineActorMessage::BeginGapRepairDemand)
-                .await;
+            let deadline = executor::Instant::now() + LIVE_TAIL_CANCELLATION_DEADLINE;
+            let _ = executor::timeout_at(
+                deadline,
+                handle.send_control(TimelineActorControl::BeginGapRepairDemand),
+            )
+            .await;
             self.apply_live_tail_scheduler_actions(starts).await;
             return;
         }
@@ -3196,9 +3205,12 @@ impl TimelineManagerActor {
             return;
         }
         if let Some(handle) = self.timelines.get(key) {
-            let _ = handle
-                .send(TimelineActorMessage::BeginGapRepairDemand)
-                .await;
+            let deadline = executor::Instant::now() + LIVE_TAIL_CANCELLATION_DEADLINE;
+            let _ = executor::timeout_at(
+                deadline,
+                handle.send_control(TimelineActorControl::BeginGapRepairDemand),
+            )
+            .await;
         }
     }
 
@@ -4855,6 +4867,45 @@ enum TimelineActorMessage {
     },
     #[cfg(test)]
     Barrier(oneshot::Sender<()>),
+}
+
+enum TimelineActorControl {
+    StartLiveTailRefresh {
+        epoch: u64,
+        operation_generation: u64,
+        limit: u16,
+    },
+    CancelLiveTailNetwork {
+        operation_generation: u64,
+        acknowledged: oneshot::Sender<()>,
+    },
+    BeginGapRepairDemand,
+    EndGapRepairDemand,
+}
+
+impl From<TimelineActorControl> for TimelineActorMessage {
+    fn from(control: TimelineActorControl) -> Self {
+        match control {
+            TimelineActorControl::StartLiveTailRefresh {
+                epoch,
+                operation_generation,
+                limit,
+            } => Self::StartLiveTailRefresh {
+                epoch,
+                operation_generation,
+                limit,
+            },
+            TimelineActorControl::CancelLiveTailNetwork {
+                operation_generation,
+                acknowledged,
+            } => Self::CancelLiveTailNetwork {
+                operation_generation,
+                acknowledged,
+            },
+            TimelineActorControl::BeginGapRepairDemand => Self::BeginGapRepairDemand,
+            TimelineActorControl::EndGapRepairDemand => Self::EndGapRepairDemand,
+        }
+    }
 }
 
 async fn await_submission_admission(admission: Option<oneshot::Receiver<()>>) -> bool {
@@ -7529,6 +7580,7 @@ fn thread_summary_from_loaded_root_raw(raw: &serde_json::Value) -> Option<Thread
 
 struct TimelineActorHandle {
     tx: mpsc::Sender<TimelineActorMessage>,
+    control_tx: Option<mpsc::Sender<TimelineActorControl>>,
     task: Option<executor::JoinHandle<()>>,
     auxiliary_tasks: Vec<executor::JoinHandle<()>>,
     subscription_generation: Option<u64>,
@@ -7538,6 +7590,20 @@ struct TimelineActorHandle {
 impl TimelineActorHandle {
     async fn send(&self, msg: TimelineActorMessage) -> bool {
         self.tx.send(msg).await.is_ok()
+    }
+
+    async fn send_control(&self, control: TimelineActorControl) -> bool {
+        match &self.control_tx {
+            Some(tx) => tx.send(control).await.is_ok(),
+            None => self.send(control.into()).await,
+        }
+    }
+
+    fn try_send_control(&self, control: TimelineActorControl) -> bool {
+        match &self.control_tx {
+            Some(tx) => tx.try_send(control).is_ok(),
+            None => self.tx.try_send(control.into()).is_ok(),
+        }
     }
 
     async fn stop(mut self) {
@@ -11929,6 +11995,7 @@ struct TimelineActor {
     event_tx: broadcast::Sender<CoreEvent>,
     msg_tx: mpsc::Sender<TimelineActorMessage>,
     msg_rx: mpsc::Receiver<TimelineActorMessage>,
+    control_rx: mpsc::Receiver<TimelineActorControl>,
     relay_control_tx: mpsc::Sender<TimelineRelayControl>,
     relay_control_rx: mpsc::Receiver<TimelineRelayControl>,
     relay_data_rx: Option<mpsc::Receiver<TimelineRelayBatch>>,
@@ -12633,6 +12700,8 @@ impl TimelineActor {
         let initial_receipts = live_event_receipts_from_sdk_items(initial_sdk_items.iter());
 
         let (actor_tx, actor_rx) = mpsc::channel(256);
+        let (actor_control_tx, actor_control_rx) =
+            mpsc::channel(TIMELINE_ACTOR_CONTROL_QUEUE_CAPACITY);
         let (relay_control_tx, relay_control_rx) = mpsc::channel(1);
         let (relay_data_tx, relay_data_rx) = mpsc::channel(256);
         let mut send_statuses = HashMap::new();
@@ -12774,6 +12843,7 @@ impl TimelineActor {
             event_tx,
             msg_tx: actor_tx.clone(),
             msg_rx: actor_rx,
+            control_rx: actor_control_rx,
             relay_control_tx,
             relay_control_rx,
             relay_data_rx: Some(relay_data_rx),
@@ -12852,6 +12922,7 @@ impl TimelineActor {
 
         TimelineActorHandle {
             tx: actor_tx,
+            control_tx: Some(actor_control_tx),
             task: Some(task),
             auxiliary_tasks,
             subscription_generation,
@@ -12869,6 +12940,10 @@ impl TimelineActor {
         loop {
             tokio::select! {
                 biased;
+                control = self.control_rx.recv() => {
+                    let Some(control) = control else { break };
+                    self.handle_msg(control.into()).await;
+                }
                 control = self.relay_control_rx.recv() => {
                     let Some(control) = control else { break };
                     self.handle_relay_control(control).await;
@@ -28055,6 +28130,7 @@ mod tests {
 
         let handle = TimelineActorHandle {
             tx,
+            control_tx: None,
             task: Some(actor_task),
             auxiliary_tasks: vec![auxiliary_task],
             subscription_generation: None,
@@ -28072,6 +28148,39 @@ mod tests {
                 })
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn timeline_actor_control_lane_bypasses_full_ordinary_mailbox() {
+        let (tx, mut ordinary_rx) = mpsc::channel(1);
+        tx.try_send(TimelineActorMessage::OwnReadReceiptChanged)
+            .expect("ordinary mailbox prefill");
+        let (control_tx, mut control_rx) = mpsc::channel(1);
+        let handle = TimelineActorHandle {
+            tx,
+            control_tx: Some(control_tx),
+            task: None,
+            auxiliary_tasks: Vec::new(),
+            subscription_generation: None,
+            enqueue_context: None,
+        };
+
+        assert!(
+            executor::timeout(
+                Duration::from_millis(100),
+                handle.send_control(TimelineActorControl::BeginGapRepairDemand),
+            )
+            .await
+            .expect("foreground control admission must be bounded")
+        );
+        assert!(matches!(
+            control_rx.recv().await,
+            Some(TimelineActorControl::BeginGapRepairDemand)
+        ));
+        assert!(matches!(
+            ordinary_rx.recv().await,
+            Some(TimelineActorMessage::OwnReadReceiptChanged)
+        ));
     }
 
     fn timeline_item(
@@ -28118,6 +28227,7 @@ mod tests {
         let task = executor::spawn(async move { while rx.recv().await.is_some() {} });
         TimelineActorHandle {
             tx,
+            control_tx: None,
             task: Some(task),
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
@@ -28171,6 +28281,7 @@ mod tests {
         });
         TimelineActorHandle {
             tx,
+            control_tx: None,
             task: Some(task),
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
@@ -28210,6 +28321,7 @@ mod tests {
         });
         TimelineActorHandle {
             tx,
+            control_tx: None,
             task: Some(task),
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
@@ -28254,6 +28366,7 @@ mod tests {
         });
         TimelineActorHandle {
             tx,
+            control_tx: None,
             task: Some(task),
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
@@ -28286,6 +28399,7 @@ mod tests {
         });
         TimelineActorHandle {
             tx,
+            control_tx: None,
             task: Some(task),
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
@@ -28357,6 +28471,7 @@ mod tests {
         let (actor_tx, mut actor_rx) = mpsc::channel(2);
         let actor_handle = TimelineActorHandle {
             tx: actor_tx,
+            control_tx: None,
             task: None,
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
@@ -28392,6 +28507,7 @@ mod tests {
         let (actor_tx, mut actor_rx) = mpsc::channel(2);
         let actor_handle = TimelineActorHandle {
             tx: actor_tx,
+            control_tx: None,
             task: None,
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
@@ -29816,6 +29932,7 @@ mod tests {
                 key.clone(),
                 TimelineActorHandle {
                     tx: actor_tx,
+                    control_tx: None,
                     task: Some(child),
                     auxiliary_tasks: Vec::new(),
                     subscription_generation: None,
@@ -31153,6 +31270,7 @@ mod tests {
                 key.clone(),
                 TimelineActorHandle {
                     tx: actor_tx,
+                    control_tx: None,
                     task: Some(actor_task),
                     auxiliary_tasks: Vec::new(),
                     subscription_generation: None,
@@ -31342,6 +31460,7 @@ mod tests {
                 key.clone(),
                 TimelineActorHandle {
                     tx: actor_tx,
+                    control_tx: None,
                     task: Some(actor_task),
                     auxiliary_tasks: Vec::new(),
                     subscription_generation: None,
@@ -35400,6 +35519,7 @@ mod tests {
             key,
             TimelineActorHandle {
                 tx: actor_tx,
+                control_tx: None,
                 task: Some(actor_task),
                 auxiliary_tasks: Vec::new(),
                 subscription_generation: None,
