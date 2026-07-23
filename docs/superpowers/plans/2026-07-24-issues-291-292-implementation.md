@@ -149,26 +149,36 @@ for #291 and one implementation commit for #292, then open one non-squash PR.
 2. Add a private latest-desired committed-selection slot plus a named bounded
    wake lane. Store desired data before waking; a full wake is safe because the
    queued wake drains the newest selection.
-3. Preserve the reducer's existing `Committed` as the selection's only public
+3. Add an AppActor-owned monotonic navigation-projection generation. Admit only
+   current-active-room intents through a stable AccountActor handle that
+   bypasses the ordinary mailbox; keep the greatest generation and never order
+   by request ID. Equal-generation replay may strengthen `replay_existing`
+   without replacing the original cause.
+4. Fence manager/actor publication by that generation so delayed A/B replay
+   cannot replace committed C.
+5. Preserve the reducer's existing `Committed` as the selection's only public
    terminal. Internal projection admission must not emit a second correlated
    success/failure for the same request. Non-coalescible controls use named
    bounded reliable admission with typed rejection before acceptance.
-4. Add a small per-`TimelineActor` navigation-control lane for live-tail
+6. Emit `IntentLifecycle::Committed` before prior pagination/link-preview
+   cleanup and before projection admission. Navigation persistence is not a
+   terminal prerequisite.
+7. Add a small per-`TimelineActor` navigation-control lane for live-tail
    Cancel/Start and foreground gap-demand Begin. Poll it before the ordinary
    actor mailbox and background completions.
-5. Make the manager select foreground work before ordinary commands and
+8. Make the manager select foreground work before ordinary commands and
    background completions.
-6. Commit navigation state before optional target-network work; publish cached
+9. Commit navigation state before optional target-network work; publish cached
    initial projection without waiting for the previous room.
-7. Invalidate live-tail/gap operation generation first. Sending old-room
+10. Invalidate live-tail/gap operation generation first. Sending old-room
    `EndGapRepairDemand` is then best-effort because the stale actor can no
    longer affect the selected projection.
-8. Share one short
+11. Share one short
    absolute deadline between cancellation delivery and ACK wait. Fence any late
    ACK or refresh completion.
-9. Keep gap-repair publication/render ACK semantics unchanged; room change only
+12. Keep gap-repair publication/render ACK semantics unchanged; room change only
    removes previous-room foreground demand.
-10. Run the navigation and intent-lifecycle binaries until GREEN.
+13. Run the navigation and intent-lifecycle binaries until GREEN.
 
 ## Task 5: Add lossless coalescing and monotonic read-state ownership
 
