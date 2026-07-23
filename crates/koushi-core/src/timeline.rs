@@ -4059,19 +4059,26 @@ impl TimelineManagerActor {
         // churn (issue #116).  Callers that need to populate an empty
         // TimelineView can request an InitialItems replay; room-selection
         // effects with an already-retained App store can skip that full replay.
-        // Confine the `&self.timelines` borrow to the closure so the Err arm
-        // can `remove` (a `&mut` borrow) without a conflict.
-        let replay_result = self.timelines.get(&key).map(|handle| {
+        let replay_result = if let Some(handle) = self.timelines.get(&key) {
             if replay_existing {
-                handle
-                    .tx
-                    .try_send(TimelineActorMessage::ReplayInitialItems {
-                        cause_request_id: Some(request_id),
-                    })
+                let deadline = executor::Instant::now() + LIVE_TAIL_CANCELLATION_DEADLINE;
+                Some(
+                    executor::timeout_at(
+                        deadline,
+                        handle.send_control(TimelineActorControl::ReplayInitialItems {
+                            cause_request_id: request_id,
+                        }),
+                    )
+                    .await
+                    .map_err(|_| ())
+                    .and_then(|sent| sent.then_some(()).ok_or(())),
+                )
             } else {
-                Ok(())
+                Some(Ok(()))
             }
-        });
+        } else {
+            None
+        };
         match replay_result {
             Some(Ok(())) => {
                 // Re-emit the subscribed action so the reducer re-confirms
@@ -4870,6 +4877,9 @@ enum TimelineActorMessage {
 }
 
 enum TimelineActorControl {
+    ReplayInitialItems {
+        cause_request_id: RequestId,
+    },
     StartLiveTailRefresh {
         epoch: u64,
         operation_generation: u64,
@@ -4886,6 +4896,11 @@ enum TimelineActorControl {
 impl From<TimelineActorControl> for TimelineActorMessage {
     fn from(control: TimelineActorControl) -> Self {
         match control {
+            TimelineActorControl::ReplayInitialItems { cause_request_id } => {
+                Self::ReplayInitialItems {
+                    cause_request_id: Some(cause_request_id),
+                }
+            }
             TimelineActorControl::StartLiveTailRefresh {
                 epoch,
                 operation_generation,
@@ -28497,6 +28512,42 @@ mod tests {
             Some(TimelineActorMessage::ReplayInitialItems {
                 cause_request_id: Some(cause_request_id),
             }) if cause_request_id == second_subscribe_request_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn cached_room_replay_uses_control_lane_when_ordinary_mailbox_is_full() {
+        let key = room_key();
+        let request_id = fake_rid(28_509);
+        let (actor_tx, mut actor_rx) = mpsc::channel(1);
+        actor_tx
+            .try_send(TimelineActorMessage::OwnReadReceiptChanged)
+            .expect("ordinary actor mailbox prefill");
+        let (control_tx, mut control_rx) = mpsc::channel(1);
+        let actor_handle = TimelineActorHandle {
+            tx: actor_tx,
+            control_tx: Some(control_tx),
+            task: None,
+            auxiliary_tasks: Vec::new(),
+            subscription_generation: None,
+            enqueue_context: None,
+        };
+        let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), actor_handle)]));
+
+        executor::timeout(
+            Duration::from_millis(250),
+            manager.handle_subscribe(request_id, key, true),
+        )
+        .await
+        .expect("cached replay must not wait for the ordinary actor mailbox");
+        assert!(matches!(
+            control_rx.recv().await,
+            Some(TimelineActorControl::ReplayInitialItems { cause_request_id })
+                if cause_request_id == request_id
+        ));
+        assert!(matches!(
+            actor_rx.recv().await,
+            Some(TimelineActorMessage::OwnReadReceiptChanged)
         ));
     }
 

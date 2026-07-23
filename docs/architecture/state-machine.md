@@ -367,6 +367,32 @@ stateDiagram-v2
 - Actor-originated subscription effects are admitted only when their target is
   still the reducer-owned active room. Late A/B work cannot replace desired C.
 
+Read-state convergence is a separate private lifecycle and never gates the
+navigation lifecycle above:
+
+```mermaid
+stateDiagram-v2
+    [*] --> ReadIdle
+    ReadIdle --> ReadDesired: receipt/fully-read intent admitted
+    ReadDesired --> ReadInFlight: connectivity wake / newest candidate
+    ReadInFlight --> ReadConverged: SDK success or authoritative sync proof
+    ReadInFlight --> ReadDesired: timeout/network failure / retain desired
+    ReadDesired --> ReadDesired: newer provable target / coalesce
+    ReadDesired --> ReadDesired: unordered target / retain bounded candidate
+    ReadInFlight --> StaleReadDiscarded: old session/actor/operation completion
+    StaleReadDiscarded --> ReadDesired: latest desired retained
+```
+
+The private keys are room-wide public unthreaded read, per-root threaded read,
+and the atomic fully-read plus private-unthreaded receipt bundle. Focused and
+room timelines share the room-wide public key. Candidate and waiter capacity
+rejects new admission explicitly; existing desired state is never evicted.
+Command waiters settle independently from the retained desired state, so a
+timeout may report failure while later reconnect/sync still converges the
+newest target. Persistence, retries, and completion publication are fenced by
+session and operation generation and expose only private-data-free diagnostic
+stage/count tokens.
+
 ## Room Tags
 
 Room tags are Rust-owned room-list state. `RoomSummary.tags` carries the
