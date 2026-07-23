@@ -835,6 +835,10 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::ScheduledSendCreated { item } => {
             timeline::handle_scheduled_send_created(state, item)
         }
+        AppAction::ScheduledSendCreatedAtRevision {
+            item,
+            draft_revision,
+        } => timeline::handle_scheduled_send_created_at_revision(state, item, draft_revision),
         AppAction::ScheduledSendDispatchStarted { scheduled_id } => {
             timeline::handle_scheduled_send_dispatch_started(state, scheduled_id)
         }
@@ -889,13 +893,43 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             timeline::handle_composer_drafts_loaded(state, drafts)
         }
         AppAction::ComposerDraftChanged { room_id, draft } => {
-            timeline::handle_composer_draft_changed(state, room_id, draft)
+            let revision = state
+                .composer_drafts
+                .room_revision(&room_id)
+                .saturating_add(1);
+            timeline::handle_composer_draft_changed(state, room_id, draft, revision)
         }
+        AppAction::ComposerDraftChangedAtRevision {
+            room_id,
+            draft,
+            revision,
+        } => timeline::handle_composer_draft_changed(state, room_id, draft, revision),
         AppAction::SendTextSubmitted {
             room_id,
             transaction_id,
             body,
-        } => timeline::handle_send_text_submitted(state, room_id, transaction_id, body),
+        } => {
+            let draft_revision = state.composer_drafts.room_revision(&room_id);
+            timeline::handle_send_text_submitted(
+                state,
+                room_id,
+                transaction_id,
+                body,
+                draft_revision,
+            )
+        }
+        AppAction::SendTextSubmittedAtRevision {
+            room_id,
+            transaction_id,
+            body,
+            draft_revision,
+        } => timeline::handle_send_text_submitted(
+            state,
+            room_id,
+            transaction_id,
+            body,
+            draft_revision,
+        ),
         AppAction::SendTextFinished {
             room_id,
             transaction_id,
@@ -910,12 +944,30 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
             transaction_id,
             body,
+        } => {
+            let draft_revision = state.composer_drafts.room_revision(&room_id);
+            timeline::handle_composer_submission_accepted(
+                state,
+                submission_id,
+                room_id,
+                transaction_id,
+                body,
+                draft_revision,
+            )
+        }
+        AppAction::ComposerSubmissionAcceptedAtRevision {
+            submission_id,
+            room_id,
+            transaction_id,
+            body,
+            draft_revision,
         } => timeline::handle_composer_submission_accepted(
             state,
             submission_id,
             room_id,
             transaction_id,
             body,
+            draft_revision,
         ),
         AppAction::ComposerSubmissionFinished {
             submission_id,
@@ -941,26 +993,99 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
             root_event_id,
             draft,
-        } => thread::handle_thread_composer_draft_changed(state, room_id, root_event_id, draft),
+        } => {
+            let revision = state
+                .composer_drafts
+                .thread_revision(&room_id, &root_event_id)
+                .saturating_add(1);
+            thread::handle_thread_composer_draft_changed(
+                state,
+                room_id,
+                root_event_id,
+                draft,
+                revision,
+            )
+        }
+        AppAction::ThreadComposerDraftChangedAtRevision {
+            room_id,
+            root_event_id,
+            draft,
+            revision,
+        } => thread::handle_thread_composer_draft_changed(
+            state,
+            room_id,
+            root_event_id,
+            draft,
+            revision,
+        ),
         AppAction::ThreadReplySubmitted {
             room_id,
             root_event_id,
             transaction_id,
             body: _,
-        } => thread::handle_thread_reply_submitted(state, room_id, root_event_id, transaction_id),
+        } => {
+            let draft_revision = state
+                .composer_drafts
+                .thread_revision(&room_id, &root_event_id);
+            thread::handle_thread_reply_submitted(
+                state,
+                room_id,
+                root_event_id,
+                transaction_id,
+                draft_revision,
+            )
+        }
+        AppAction::ThreadReplySubmittedAtRevision {
+            room_id,
+            root_event_id,
+            transaction_id,
+            body: _,
+            draft_revision,
+        } => thread::handle_thread_reply_submitted(
+            state,
+            room_id,
+            root_event_id,
+            transaction_id,
+            draft_revision,
+        ),
         AppAction::ThreadSubmissionAccepted {
             submission_id,
             room_id,
             root_event_id,
             transaction_id,
             body: _,
+        } => {
+            let draft_revision = state
+                .composer_drafts
+                .thread_revision(&room_id, &root_event_id);
+            thread::handle_thread_submission_accepted(
+                state,
+                submission_id,
+                room_id,
+                root_event_id,
+                transaction_id,
+                draft_revision,
+            )
+        }
+        AppAction::ThreadSubmissionAcceptedAtRevision {
+            submission_id,
+            room_id,
+            root_event_id,
+            transaction_id,
+            body: _,
+            draft_revision,
         } => thread::handle_thread_submission_accepted(
             state,
             submission_id,
             room_id,
             root_event_id,
             transaction_id,
+            draft_revision,
         ),
+        AppAction::ComposerDraftAccepted {
+            target,
+            submitted_revision,
+        } => timeline::handle_composer_draft_accepted(state, target, submitted_revision),
         AppAction::ThreadReplyFinished {
             room_id,
             root_event_id,

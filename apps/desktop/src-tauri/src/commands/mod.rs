@@ -1626,31 +1626,37 @@ pub(crate) fn build_send_text_command(
 
 pub(crate) fn build_submit_text_command(
     request_id: RequestId,
+    expected_account: koushi_key::SessionKeyId,
     submission_id: SubmissionId,
     account_key: AccountKey,
     room_id: String,
     transaction_id: String,
     body: String,
     mentions: MentionIntent,
+    draft_revision: u64,
 ) -> Option<CoreCommand> {
     if body.trim().is_empty() {
         return None;
     }
     Some(CoreCommand::Timeline(TimelineCommand::SubmitText {
         request_id,
+        expected_account,
         submission_id,
         key: build_timeline_key(account_key, room_id),
         transaction_id,
         body,
         mentions,
+        draft_revision,
     }))
 }
 
 pub(crate) fn build_schedule_send_command(
     request_id: koushi_core::RequestId,
+    expected_account: koushi_key::SessionKeyId,
     target: koushi_state::ComposerTarget,
     body: String,
     send_at_ms: u64,
+    draft_revision: u64,
 ) -> Option<CoreCommand> {
     if body.trim().is_empty() {
         return None;
@@ -1664,10 +1670,12 @@ pub(crate) fn build_schedule_send_command(
     };
     Some(CoreCommand::App(AppCommand::ScheduleSend {
         request_id,
+        expected_account,
         room_id,
         thread_root_event_id,
         body,
         send_at_ms,
+        draft_revision,
     }))
 }
 
@@ -1768,6 +1776,7 @@ pub(crate) fn build_cancel_send_command(
 
 pub(crate) fn build_upload_media_command(
     request_id: koushi_core::RequestId,
+    expected_account: koushi_key::SessionKeyId,
     account_key: AccountKey,
     room_id: String,
     transaction_id: String,
@@ -1822,6 +1831,7 @@ pub(crate) fn build_upload_media_command(
 
     Some(CoreCommand::Timeline(TimelineCommand::UploadAndSendMedia {
         request_id,
+        expected_account,
         key: build_timeline_key(account_key, room_id),
         transaction_id,
         request: UploadMediaRequest {
@@ -2630,6 +2640,7 @@ pub(crate) fn build_send_reply_command(
 
 pub(crate) fn build_submit_reply_command(
     request_id: RequestId,
+    expected_account: koushi_key::SessionKeyId,
     submission_id: SubmissionId,
     account_key: AccountKey,
     room_id: String,
@@ -2637,18 +2648,21 @@ pub(crate) fn build_submit_reply_command(
     in_reply_to_event_id: String,
     body: String,
     mentions: MentionIntent,
+    draft_revision: u64,
 ) -> Option<CoreCommand> {
     if body.trim().is_empty() {
         return None;
     }
     Some(CoreCommand::Timeline(TimelineCommand::SubmitReply {
         request_id,
+        expected_account,
         submission_id,
         key: build_timeline_key(account_key, room_id),
         transaction_id,
         in_reply_to_event_id,
         body,
         mentions,
+        draft_revision,
     }))
 }
 
@@ -2670,6 +2684,13 @@ pub(crate) struct SubmissionResponse {
     pub snapshot: FrontendDesktopSnapshot,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ComposerDraftAcceptanceResponse {
+    pub accepted_revision: Option<u64>,
+    pub snapshot: FrontendDesktopSnapshot,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum SubmissionFailure {
@@ -2682,27 +2703,35 @@ pub(crate) enum SubmissionFailure {
 
 pub(crate) fn build_set_thread_composer_draft_command(
     request_id: koushi_core::RequestId,
+    expected_account: koushi_key::SessionKeyId,
     room_id: String,
     root_event_id: String,
     draft: String,
+    revision: u64,
 ) -> CoreCommand {
     CoreCommand::App(AppCommand::SetThreadComposerDraft {
         request_id,
+        expected_account,
         room_id,
         root_event_id,
         draft,
+        revision,
     })
 }
 
 pub(crate) fn build_set_composer_draft_command(
     request_id: koushi_core::RequestId,
+    expected_account: koushi_key::SessionKeyId,
     room_id: String,
     draft: String,
+    revision: u64,
 ) -> CoreCommand {
     CoreCommand::App(AppCommand::SetComposerDraft {
         request_id,
+        expected_account,
         room_id,
         draft,
+        revision,
     })
 }
 
@@ -2736,6 +2765,7 @@ pub(crate) fn build_send_thread_reply_command(
 
 pub(crate) fn build_submit_thread_reply_command(
     request_id: RequestId,
+    expected_account: koushi_key::SessionKeyId,
     submission_id: SubmissionId,
     account_key: AccountKey,
     room_id: String,
@@ -2743,12 +2773,14 @@ pub(crate) fn build_submit_thread_reply_command(
     transaction_id: String,
     body: String,
     mentions: MentionIntent,
+    draft_revision: u64,
 ) -> Option<CoreCommand> {
     if body.trim().is_empty() {
         return None;
     }
     Some(CoreCommand::Timeline(TimelineCommand::SubmitReply {
         request_id,
+        expected_account,
         submission_id,
         key: TimelineKey {
             account_key,
@@ -2761,6 +2793,7 @@ pub(crate) fn build_submit_thread_reply_command(
         in_reply_to_event_id: root_event_id,
         body,
         mentions,
+        draft_revision,
     }))
 }
 
@@ -3578,9 +3611,22 @@ mod tests {
         }
     }
 
+    fn synthetic_session_key() -> koushi_key::SessionKeyId {
+        koushi_key::SessionKeyId {
+            homeserver: "https://example.org".to_owned(),
+            user_id: "@alice:example.org".to_owned(),
+            device_id: "DEVICE".to_owned(),
+        }
+    }
+
     #[test]
     fn tauri_command_routes_build_expected_core_commands() {
         let active_account_key = AccountKey("@alice:example.org".to_owned());
+        let active_session_key = koushi_key::SessionKeyId {
+            homeserver: "https://example.org".to_owned(),
+            user_id: "@alice:example.org".to_owned(),
+            device_id: "DEVICE".to_owned(),
+        };
         let room_id = "!room:example.org".to_owned();
         let transaction_id = "desktop-1".to_owned();
         let body = "body with visible content".to_owned();
@@ -3912,38 +3958,46 @@ mod tests {
 
         match build_schedule_send_command(
             fake_request_id(33),
+            active_session_key.clone(),
             koushi_state::ComposerTarget::Main {
                 room_id: room_id.clone(),
             },
             "send later body".to_owned(),
             1_900_000_000_000,
+            7,
         )
         .expect("schedule_send should build a command")
         {
             CoreCommand::App(AppCommand::ScheduleSend {
                 request_id,
+                expected_account,
                 room_id: route_room_id,
                 thread_root_event_id,
                 body,
                 send_at_ms,
+                draft_revision,
             }) => {
                 assert_eq!(request_id, fake_request_id(33));
+                assert_eq!(expected_account, active_session_key);
                 assert_eq!(route_room_id, room_id);
                 assert_eq!(thread_root_event_id, None);
                 assert_eq!(body, "send later body");
                 assert_eq!(send_at_ms, 1_900_000_000_000);
+                assert_eq!(draft_revision, 7);
             }
             other => panic!("unexpected command: {other:?}"),
         }
 
         match build_schedule_send_command(
             fake_request_id(330),
+            active_session_key.clone(),
             koushi_state::ComposerTarget::Thread {
                 room_id: room_id.clone(),
                 root_event_id: "$thread-root:example.test".to_owned(),
             },
             "thread later body".to_owned(),
             1_900_000_010_000,
+            8,
         )
         .expect("thread schedule_send should build a command")
         {
@@ -4124,6 +4178,7 @@ mod tests {
 
         match build_upload_media_command(
             fake_request_id(25),
+            active_session_key.clone(),
             active_account_key.clone(),
             room_id.clone(),
             "desktop-media-1".to_owned(),
@@ -4141,11 +4196,13 @@ mod tests {
         {
             CoreCommand::Timeline(TimelineCommand::UploadAndSendMedia {
                 request_id,
+                expected_account,
                 key,
                 transaction_id,
                 request,
             }) => {
                 assert_eq!(request_id, fake_request_id(25));
+                assert_eq!(expected_account, active_session_key);
                 assert_eq!(key.account_key, active_account_key);
                 assert_eq!(
                     key.kind,
@@ -4165,6 +4222,7 @@ mod tests {
 
         match build_upload_media_command(
             fake_request_id(26),
+            active_session_key.clone(),
             active_account_key.clone(),
             room_id.clone(),
             "desktop-media-2".to_owned(),
@@ -4200,6 +4258,7 @@ mod tests {
 
         match build_upload_media_command(
             fake_request_id(37),
+            active_session_key.clone(),
             active_account_key.clone(),
             room_id.clone(),
             "desktop-media-3".to_owned(),
@@ -5319,37 +5378,49 @@ mod tests {
 
         match build_set_thread_composer_draft_command(
             fake_request_id(21),
+            active_session_key.clone(),
             room_id.clone(),
             "$root".to_owned(),
             "thread draft".to_owned(),
+            9,
         ) {
             CoreCommand::App(AppCommand::SetThreadComposerDraft {
                 request_id,
+                expected_account,
                 room_id: command_room_id,
                 root_event_id,
                 draft,
+                revision,
             }) => {
                 assert_eq!(request_id, fake_request_id(21));
+                assert_eq!(expected_account, active_session_key);
                 assert_eq!(command_room_id, room_id);
                 assert_eq!(root_event_id, "$root");
                 assert_eq!(draft, "thread draft");
+                assert_eq!(revision, 9);
             }
             other => panic!("unexpected command: {other:?}"),
         }
 
         match build_set_composer_draft_command(
             fake_request_id(22),
+            active_session_key.clone(),
             room_id.clone(),
             "room draft".to_owned(),
+            10,
         ) {
             CoreCommand::App(AppCommand::SetComposerDraft {
                 request_id,
+                expected_account,
                 room_id: command_room_id,
                 draft,
+                revision,
             }) => {
                 assert_eq!(request_id, fake_request_id(22));
+                assert_eq!(expected_account, active_session_key);
                 assert_eq!(command_room_id, room_id);
                 assert_eq!(draft, "room draft");
+                assert_eq!(revision, 10);
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -5548,6 +5619,7 @@ mod tests {
         assert!(
             build_upload_media_command(
                 fake_request_id(17),
+                synthetic_session_key(),
                 AccountKey("@alice:example.org".to_owned()),
                 "!room:example.org".to_owned(),
                 "desktop-media-empty".to_owned(),
@@ -7019,6 +7091,7 @@ mod tests {
         .expect("edit_message should build a command");
         let upload = build_upload_media_command(
             fake_request_id(21),
+            synthetic_session_key(),
             AccountKey("@alice:example.org".to_owned()),
             "!room:example.org".to_owned(),
             "desktop-media-sensitive".to_owned(),

@@ -278,6 +278,164 @@ fn composer_draft_store_is_cleared_on_send_and_room_removal() {
 }
 
 #[test]
+fn composer_draft_revision_fences_late_persist_after_accepted_send() {
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::ComposerDraftChangedAtRevision {
+            room_id: "room-a".to_owned(),
+            draft: "sent text".to_owned(),
+            revision: 1,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::SendTextSubmittedAtRevision {
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn-sent".to_owned(),
+            body: "sent text".to_owned(),
+            draft_revision: 1,
+        },
+    );
+
+    // This models a debounced draft IPC that started before acceptance but
+    // reached the reducer after the accepted clear.
+    reduce(
+        &mut state,
+        AppAction::ComposerDraftChangedAtRevision {
+            room_id: "room-a".to_owned(),
+            draft: "sent text".to_owned(),
+            revision: 1,
+        },
+    );
+
+    assert_eq!(state.timeline.composer.draft, "");
+    assert!(!state.composer_drafts.rooms.contains_key("room-a"));
+}
+
+#[test]
+fn composer_draft_revision_keeps_immediate_next_input_over_old_completion() {
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::ComposerDraftChangedAtRevision {
+            room_id: "room-a".to_owned(),
+            draft: "first message".to_owned(),
+            revision: 1,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::SendTextSubmittedAtRevision {
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn-first".to_owned(),
+            body: "first message".to_owned(),
+            draft_revision: 1,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ComposerDraftChangedAtRevision {
+            room_id: "room-a".to_owned(),
+            draft: "next message".to_owned(),
+            revision: 3,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ComposerDraftChangedAtRevision {
+            room_id: "room-a".to_owned(),
+            draft: "first message".to_owned(),
+            revision: 1,
+        },
+    );
+
+    assert_eq!(state.timeline.composer.draft, "next message");
+    assert_eq!(
+        state
+            .composer_drafts
+            .rooms
+            .get("room-a")
+            .map(String::as_str),
+        Some("next message")
+    );
+}
+
+#[test]
+fn composer_draft_revision_keeps_next_input_when_it_persists_before_acceptance() {
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::ComposerDraftChangedAtRevision {
+            room_id: "room-a".to_owned(),
+            draft: "first message".to_owned(),
+            revision: 1,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ComposerDraftChangedAtRevision {
+            room_id: "room-a".to_owned(),
+            draft: "next message".to_owned(),
+            revision: 2,
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::SendTextSubmittedAtRevision {
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn-first".to_owned(),
+            body: "first message".to_owned(),
+            draft_revision: 1,
+        },
+    );
+
+    assert_eq!(state.timeline.composer.draft, "next message");
+    assert_eq!(state.timeline.composer.draft_revision, 3);
+    assert_eq!(
+        state
+            .composer_drafts
+            .rooms
+            .get("room-a")
+            .map(String::as_str),
+        Some("next message")
+    );
+}
+
+#[test]
+fn composer_draft_revision_persists_captured_target_across_room_switch() {
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::SelectRoom {
+            room_id: "room-b".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ComposerDraftChangedAtRevision {
+            room_id: "room-a".to_owned(),
+            draft: "room a draft".to_owned(),
+            revision: 1,
+        },
+    );
+
+    assert_eq!(state.timeline.room_id.as_deref(), Some("room-b"));
+    assert!(state.timeline.composer.draft.is_empty());
+
+    reduce(
+        &mut state,
+        AppAction::SelectRoom {
+            room_id: "room-a".to_owned(),
+        },
+    );
+
+    assert_eq!(state.timeline.composer.draft, "room a draft");
+    assert_eq!(state.timeline.composer.draft_revision, 1);
+}
+
+#[test]
 fn send_text_sets_pending_transaction_and_emits_send_effect() {
     let mut state = selected_room_state("room-a");
     state.timeline.composer.draft = "hello".to_owned();
@@ -575,6 +733,83 @@ fn global_submission_registry_tracks_offscreen_acceptance_and_settlement() {
             .settled_submission_ids
             .contains(&id)
     );
+}
+
+#[test]
+fn offscreen_main_acceptance_advances_the_captured_room_draft_fence() {
+    let mut state = selected_room_state("room-b");
+    reduce(
+        &mut state,
+        AppAction::ComposerDraftChangedAtRevision {
+            room_id: "room-a".to_owned(),
+            draft: "sent from room a".to_owned(),
+            revision: 1,
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::ComposerSubmissionAcceptedAtRevision {
+            submission_id: SubmissionId::new("room-a-accepted"),
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn-a".to_owned(),
+            body: "sent from room a".to_owned(),
+            draft_revision: 1,
+        },
+    );
+
+    assert_eq!(state.timeline.room_id.as_deref(), Some("room-b"));
+    assert!(state.timeline.composer.draft.is_empty());
+    assert_eq!(state.composer_drafts.room_revision("room-a"), 2);
+    assert!(!state.composer_drafts.rooms.contains_key("room-a"));
+}
+
+#[test]
+fn offscreen_thread_acceptance_advances_fence_and_global_registry() {
+    let mut state = open_thread_state("room-a", "$root-b");
+    reduce(
+        &mut state,
+        AppAction::ThreadComposerDraftChangedAtRevision {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root-a".to_owned(),
+            draft: "sent reply".to_owned(),
+            revision: 1,
+        },
+    );
+    let submission_id = SubmissionId::new("root-a-accepted");
+
+    reduce(
+        &mut state,
+        AppAction::ThreadSubmissionAcceptedAtRevision {
+            submission_id: submission_id.clone(),
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root-a".to_owned(),
+            transaction_id: "txn-root-a".to_owned(),
+            body: "sent reply".to_owned(),
+            draft_revision: 1,
+        },
+    );
+
+    assert_eq!(
+        state.composer_drafts.thread_revision("room-a", "$root-a"),
+        2
+    );
+    assert!(
+        state
+            .composer_drafts
+            .threads
+            .get("room-a")
+            .and_then(|threads| threads.get("$root-a"))
+            .is_none()
+    );
+    assert!(
+        state
+            .timeline
+            .submission_registry
+            .accepted_submission_ids
+            .contains(&submission_id)
+    );
+    assert_eq!(open_thread_composer(&state).draft_revision, 0);
 }
 
 #[test]
@@ -1191,6 +1426,124 @@ fn thread_composer_draft_store_is_cleared_on_reply_and_room_removal() {
 }
 
 #[test]
+fn thread_composer_draft_revision_fences_late_persist_and_isolates_roots() {
+    let mut state = open_thread_state("room-a", "$root-a");
+    reduce(
+        &mut state,
+        AppAction::ThreadComposerDraftChangedAtRevision {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root-a".to_owned(),
+            draft: "sent reply".to_owned(),
+            revision: 1,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ThreadReplySubmittedAtRevision {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root-a".to_owned(),
+            transaction_id: "txn-thread".to_owned(),
+            body: "sent reply".to_owned(),
+            draft_revision: 1,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ThreadComposerDraftChangedAtRevision {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root-a".to_owned(),
+            draft: "next reply".to_owned(),
+            revision: 3,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ThreadComposerDraftChangedAtRevision {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root-a".to_owned(),
+            draft: "sent reply".to_owned(),
+            revision: 1,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ThreadComposerDraftChangedAtRevision {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root-b".to_owned(),
+            draft: "other root".to_owned(),
+            revision: 1,
+        },
+    );
+
+    assert_eq!(open_thread_composer(&state).draft, "next reply");
+    assert_eq!(
+        state
+            .composer_drafts
+            .threads
+            .get("room-a")
+            .and_then(|threads| threads.get("$root-a"))
+            .map(String::as_str),
+        Some("next reply")
+    );
+    assert_eq!(
+        state
+            .composer_drafts
+            .threads
+            .get("room-a")
+            .and_then(|threads| threads.get("$root-b"))
+            .map(String::as_str),
+        Some("other root")
+    );
+    assert_eq!(open_thread_composer(&state).draft, "next reply");
+}
+
+#[test]
+fn thread_composer_draft_revision_keeps_next_input_persisted_before_acceptance() {
+    let mut state = open_thread_state("room-a", "$root-a");
+    reduce(
+        &mut state,
+        AppAction::ThreadComposerDraftChangedAtRevision {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root-a".to_owned(),
+            draft: "sent reply".to_owned(),
+            revision: 1,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ThreadComposerDraftChangedAtRevision {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root-a".to_owned(),
+            draft: "next reply".to_owned(),
+            revision: 2,
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::ThreadReplySubmittedAtRevision {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root-a".to_owned(),
+            transaction_id: "txn-thread".to_owned(),
+            body: "sent reply".to_owned(),
+            draft_revision: 1,
+        },
+    );
+
+    assert_eq!(open_thread_composer(&state).draft, "next reply");
+    assert_eq!(open_thread_composer(&state).draft_revision, 3);
+    assert_eq!(
+        state
+            .composer_drafts
+            .threads
+            .get("room-a")
+            .and_then(|threads| threads.get("$root-a"))
+            .map(String::as_str),
+        Some("next reply")
+    );
+}
+
+#[test]
 fn thread_reply_submit_sets_thread_pending_reply_and_leaves_main_composer_alone() {
     let mut state = open_thread_state("room-a", "$root");
     state.timeline.composer.draft = "main draft".to_owned();
@@ -1639,6 +1992,7 @@ fn timeline_and_thread_actions_are_ignored_without_ready_session() {
                 pending_submission_id: None,
                 pending_transaction_id: Some("txn1".to_owned()),
                 pending_send_kind: None,
+                draft_revision: 0,
                 draft: "draft".to_owned(),
                 mode: Default::default(),
             },

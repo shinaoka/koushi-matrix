@@ -28,6 +28,15 @@ pub fn session_info() -> SessionInfo {
     }
 }
 
+pub fn session_key() -> koushi_key::SessionKeyId {
+    let session = session_info();
+    koushi_key::SessionKeyId {
+        homeserver: session.homeserver,
+        user_id: session.user_id,
+        device_id: session.device_id,
+    }
+}
+
 pub fn fake_request_id() -> RequestId {
     RequestId {
         connection_id: RuntimeConnectionId(999),

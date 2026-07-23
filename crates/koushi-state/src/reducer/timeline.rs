@@ -272,6 +272,21 @@ pub(crate) fn handle_scheduled_send_created(
     state: &mut AppState,
     item: crate::state::ScheduledSendItem,
 ) -> Vec<AppEffect> {
+    let draft_revision = if let Some(root_event_id) = item.thread_root_event_id.as_deref() {
+        state
+            .composer_drafts
+            .thread_revision(&item.room_id, root_event_id)
+    } else {
+        state.composer_drafts.room_revision(&item.room_id)
+    };
+    handle_scheduled_send_created_at_revision(state, item, draft_revision)
+}
+
+pub(crate) fn handle_scheduled_send_created_at_revision(
+    state: &mut AppState,
+    item: crate::state::ScheduledSendItem,
+    draft_revision: u64,
+) -> Vec<AppEffect> {
     if !is_session_ready(state) || !room_exists(state, &item.room_id) {
         return Vec::new();
     }
@@ -282,13 +297,15 @@ pub(crate) fn handle_scheduled_send_created(
     if let Some(root_event_id) = thread_root_event_id.as_deref() {
         state
             .composer_drafts
-            .clear_thread_draft(&room_id, root_event_id);
+            .advance_thread_revision(&room_id, root_event_id, draft_revision);
     } else {
-        state.composer_drafts.clear_room_draft(&room_id);
+        state
+            .composer_drafts
+            .advance_room_revision(&room_id, draft_revision);
     }
     if thread_root_event_id.is_none() && state.timeline.room_id.as_deref() == Some(room_id.as_str())
     {
-        state.timeline.composer = Default::default();
+        state.timeline.composer = state.composer_drafts.composer_for_room(&room_id);
         refresh_timeline_scheduled_sends(state);
         return vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })];
     }
@@ -302,7 +319,9 @@ pub(crate) fn handle_scheduled_send_created(
         && open_room_id == &room_id
         && open_root_event_id == &root_event_id
     {
-        *composer = Default::default();
+        *composer = state
+            .composer_drafts
+            .composer_for_thread(&room_id, &root_event_id);
         return vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)];
     }
     Vec::new()
@@ -565,14 +584,78 @@ pub(crate) fn handle_composer_draft_changed(
     state: &mut AppState,
     room_id: String,
     draft: String,
+    revision: u64,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) || state.timeline.room_id.as_deref() != Some(room_id.as_str()) {
+    if !is_session_ready(state) || !state.rooms.iter().any(|room| room.room_id == room_id) {
         return Vec::new();
     }
 
-    state.timeline.composer.draft = draft.clone();
-    state.composer_drafts.set_room_draft(room_id.clone(), draft);
-    vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
+    if !state
+        .composer_drafts
+        .apply_room_draft(room_id.clone(), draft.clone(), revision)
+    {
+        return Vec::new();
+    }
+    if state.timeline.room_id.as_deref() == Some(room_id.as_str()) {
+        state.timeline.composer.draft = draft;
+        state.timeline.composer.draft_revision = revision;
+        vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
+    } else {
+        Vec::new()
+    }
+}
+
+pub(crate) fn handle_composer_draft_accepted(
+    state: &mut AppState,
+    target: crate::ComposerTarget,
+    submitted_revision: u64,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    match target {
+        crate::ComposerTarget::Main { room_id } => {
+            if !room_exists(state, &room_id) {
+                return Vec::new();
+            }
+            state
+                .composer_drafts
+                .advance_room_revision(&room_id, submitted_revision);
+            if state.timeline.room_id.as_deref() != Some(room_id.as_str()) {
+                return Vec::new();
+            }
+            state.timeline.composer = state.composer_drafts.composer_for_room(&room_id);
+            vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
+        }
+        crate::ComposerTarget::Thread {
+            room_id,
+            root_event_id,
+        } => {
+            if !room_exists(state, &room_id) {
+                return Vec::new();
+            }
+            state.composer_drafts.advance_thread_revision(
+                &room_id,
+                &root_event_id,
+                submitted_revision,
+            );
+            if let crate::state::ThreadPaneState::Open {
+                room_id: open_room_id,
+                root_event_id: open_root_event_id,
+                composer,
+                ..
+            } = &mut state.thread
+                && open_room_id == &room_id
+                && open_root_event_id == &root_event_id
+            {
+                *composer = state
+                    .composer_drafts
+                    .composer_for_thread(&room_id, &root_event_id);
+                return vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)];
+            }
+            Vec::new()
+        }
+    }
 }
 
 pub(crate) fn handle_send_text_submitted(
@@ -580,6 +663,7 @@ pub(crate) fn handle_send_text_submitted(
     room_id: String,
     transaction_id: String,
     body: String,
+    draft_revision: u64,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state)
         || state.timeline.room_id.as_deref() != Some(room_id.as_str())
@@ -597,8 +681,12 @@ pub(crate) fn handle_send_text_submitted(
             in_reply_to_event_id: in_reply_to_event_id.clone(),
         },
     });
-    state.timeline.composer.draft.clear();
-    state.composer_drafts.clear_room_draft(&room_id);
+    let accepted_revision = state
+        .composer_drafts
+        .advance_room_revision(&room_id, draft_revision);
+    let accepted_composer = state.composer_drafts.composer_for_room(&room_id);
+    state.timeline.composer.draft = accepted_composer.draft;
+    state.timeline.composer.draft_revision = accepted_revision;
     vec![
         AppEffect::SendText {
             room_id: room_id.clone(),
@@ -615,8 +703,22 @@ pub(crate) fn handle_composer_submission_accepted(
     room_id: String,
     transaction_id: String,
     body: String,
+    draft_revision: u64,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
+        return Vec::new();
+    }
+    if state
+        .timeline
+        .submission_registry
+        .accepted_submission_ids
+        .contains(&submission_id)
+        || state
+            .timeline
+            .submission_registry
+            .settled_submission_ids
+            .contains(&submission_id)
+    {
         return Vec::new();
     }
     state.timeline.submission_registry.remember_accepted(
@@ -626,6 +728,9 @@ pub(crate) fn handle_composer_submission_accepted(
             room_id: room_id.clone(),
         },
     );
+    let accepted_revision = state
+        .composer_drafts
+        .advance_room_revision(&room_id, draft_revision);
     if state.timeline.room_id.as_deref() != Some(room_id.as_str())
         || state.timeline.composer.pending_submission_id.is_some()
         || state.timeline.composer.pending_transaction_id.is_some()
@@ -642,7 +747,26 @@ pub(crate) fn handle_composer_submission_accepted(
         .composer
         .remember_accepted_submission(submission_id.clone());
     state.timeline.composer.pending_submission_id = Some(submission_id);
-    handle_send_text_submitted(state, room_id, transaction_id, body)
+    state.timeline.composer.pending_transaction_id = Some(transaction_id.clone());
+    state.timeline.composer.pending_send_kind = Some(match &state.timeline.composer.mode {
+        ComposerMode::Plain => PendingComposerSendKind::Plain,
+        ComposerMode::Reply {
+            in_reply_to_event_id,
+        } => PendingComposerSendKind::Reply {
+            in_reply_to_event_id: in_reply_to_event_id.clone(),
+        },
+    });
+    let accepted_composer = state.composer_drafts.composer_for_room(&room_id);
+    state.timeline.composer.draft = accepted_composer.draft;
+    state.timeline.composer.draft_revision = accepted_revision;
+    vec![
+        AppEffect::SendText {
+            room_id: room_id.clone(),
+            transaction_id,
+            body,
+        },
+        AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }),
+    ]
 }
 
 pub(crate) fn handle_composer_submission_finished(

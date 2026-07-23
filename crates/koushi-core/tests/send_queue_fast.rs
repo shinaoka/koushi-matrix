@@ -1970,15 +1970,25 @@ async fn run_fast_send_queue_feedback() {
     proxy.arm_response_containing("$fast-unsubscribe-terminal:localhost");
     let unsubscribe_submission_id = SubmissionId::new("fast-unsubscribe-submission");
     let unsubscribe_request_id = conn.next_request_id();
+    let unsubscribe_account = match &conn.snapshot().session {
+        SessionState::Ready(info) => koushi_key::SessionKeyId {
+            homeserver: info.homeserver.clone(),
+            user_id: info.user_id.clone(),
+            device_id: info.device_id.clone(),
+        },
+        other => panic!("expected ready session before unsubscribe send, got {other:?}"),
+    };
     fast_send_queue_phase(
         "fast_send_queue unsubscribe send command",
         conn.command(CoreCommand::Timeline(TimelineCommand::SubmitText {
             request_id: unsubscribe_request_id,
+            expected_account: unsubscribe_account,
             submission_id: unsubscribe_submission_id.clone(),
             key: key.clone(),
             transaction_id: "fast-unsubscribe-client".to_owned(),
             body: "fast unsubscribe terminal body".to_owned(),
             mentions: MentionIntent::default(),
+            draft_revision: 0,
         })),
     )
     .await

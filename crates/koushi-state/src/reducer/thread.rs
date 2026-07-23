@@ -15,8 +15,22 @@ pub(crate) fn handle_thread_submission_accepted(
     room_id: String,
     root_event_id: String,
     transaction_id: String,
+    draft_revision: u64,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
+        return Vec::new();
+    }
+    if state
+        .timeline
+        .submission_registry
+        .accepted_submission_ids
+        .contains(&submission_id)
+        || state
+            .timeline
+            .submission_registry
+            .settled_submission_ids
+            .contains(&submission_id)
+    {
         return Vec::new();
     }
     state.timeline.submission_registry.remember_accepted(
@@ -27,17 +41,39 @@ pub(crate) fn handle_thread_submission_accepted(
             root_event_id: root_event_id.clone(),
         },
     );
-    let ThreadPaneState::Open { composer, .. } = &mut state.thread else {
+    let accepted_revision =
+        state
+            .composer_drafts
+            .advance_thread_revision(&room_id, &root_event_id, draft_revision);
+    let accepted_composer = state
+        .composer_drafts
+        .composer_for_thread(&room_id, &root_event_id);
+    let ThreadPaneState::Open {
+        room_id: open_room_id,
+        root_event_id: open_root_event_id,
+        composer,
+        ..
+    } = &mut state.thread
+    else {
         return Vec::new();
     };
-    if composer.pending_submission_id.is_some()
+    if open_room_id != &room_id
+        || open_root_event_id != &root_event_id
+        || composer.pending_submission_id.is_some()
+        || composer.pending_transaction_id.is_some()
         || composer.accepted_submission_ids.contains(&submission_id)
     {
         return Vec::new();
     }
     composer.remember_accepted_submission(submission_id.clone());
     composer.pending_submission_id = Some(submission_id);
-    handle_thread_reply_submitted(state, room_id, root_event_id, transaction_id)
+    composer.pending_transaction_id = Some(transaction_id);
+    composer.pending_send_kind = Some(PendingComposerSendKind::Reply {
+        in_reply_to_event_id: root_event_id,
+    });
+    composer.draft = accepted_composer.draft;
+    composer.draft_revision = accepted_revision;
+    vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
 }
 
 pub(crate) fn handle_thread_composer_draft_changed(
@@ -45,8 +81,17 @@ pub(crate) fn handle_thread_composer_draft_changed(
     room_id: String,
     root_event_id: String,
     draft: String,
+    revision: u64,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) {
+    if !is_session_ready(state) || !state.rooms.iter().any(|room| room.room_id == room_id) {
+        return Vec::new();
+    }
+    if !state.composer_drafts.apply_thread_draft(
+        room_id.clone(),
+        root_event_id.clone(),
+        draft.clone(),
+        revision,
+    ) {
         return Vec::new();
     }
 
@@ -57,10 +102,8 @@ pub(crate) fn handle_thread_composer_draft_changed(
             composer,
             ..
         } if open_room_id == &room_id && open_root_event_id == &root_event_id => {
-            composer.draft = draft.clone();
-            state
-                .composer_drafts
-                .set_thread_draft(room_id, root_event_id, draft);
+            composer.draft = draft;
+            composer.draft_revision = revision;
             vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
         }
         _ => Vec::new(),
@@ -72,6 +115,7 @@ pub(crate) fn handle_thread_reply_submitted(
     room_id: String,
     root_event_id: String,
     transaction_id: String,
+    draft_revision: u64,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
         return Vec::new();
@@ -91,10 +135,16 @@ pub(crate) fn handle_thread_reply_submitted(
             composer.pending_send_kind = Some(PendingComposerSendKind::Reply {
                 in_reply_to_event_id: root_event_id.clone(),
             });
-            composer.draft.clear();
-            state
+            let accepted_revision = state.composer_drafts.advance_thread_revision(
+                &room_id,
+                &root_event_id,
+                draft_revision,
+            );
+            let accepted_composer = state
                 .composer_drafts
-                .clear_thread_draft(&room_id, &root_event_id);
+                .composer_for_thread(&room_id, &root_event_id);
+            composer.draft = accepted_composer.draft;
+            composer.draft_revision = accepted_revision;
             vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
         }
         _ => Vec::new(),

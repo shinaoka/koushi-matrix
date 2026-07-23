@@ -3059,6 +3059,12 @@ async fn run_scheduled_send_stage(
 ) -> Result<(), String> {
     const SCHEDULED_CREATE_BODY: &str = "Koushi scheduled create QA body";
     const SCHEDULED_FIRE_BODY: &str = "Koushi scheduled fire QA body";
+    let session = authenticated_session_info(conn, "scheduled send account")?.clone();
+    let expected_account = koushi_key::SessionKeyId {
+        homeserver: session.homeserver,
+        user_id: session.user_id,
+        device_id: session.device_id,
+    };
 
     let select_id = conn.next_request_id();
     conn.command(CoreCommand::Room(RoomCommand::SelectRoom {
@@ -3072,10 +3078,12 @@ async fn run_scheduled_send_stage(
     let create_id = conn.next_request_id();
     conn.command(CoreCommand::App(AppCommand::ScheduleSend {
         request_id: create_id,
+        expected_account: expected_account.clone(),
         room_id: room_id.to_owned(),
         thread_root_event_id: None,
         body: SCHEDULED_CREATE_BODY.to_owned(),
         send_at_ms: scheduled_qa_epoch_ms(Duration::from_secs(300)),
+        draft_revision: 0,
     }))
     .await
     .map_err(|e| format!("scheduled_send: submit create failed: {e}"))?;
@@ -3127,10 +3135,12 @@ async fn run_scheduled_send_stage(
     let fire_id = conn.next_request_id();
     conn.command(CoreCommand::App(AppCommand::ScheduleSend {
         request_id: fire_id,
+        expected_account,
         room_id: room_id.to_owned(),
         thread_root_event_id: None,
         body: SCHEDULED_FIRE_BODY.to_owned(),
         send_at_ms: scheduled_qa_epoch_ms(Duration::from_millis(250)),
+        draft_revision: 0,
     }))
     .await
     .map_err(|e| format!("scheduled_send: submit fire schedule failed: {e}"))?;
@@ -14262,11 +14272,18 @@ async fn run_media_stage(
     const MEDIA_BYTES: &[u8] = b"koushi-desktop synthetic media fixture";
     const MEDIA_CAPTION: &str = "matrix desktop media caption";
 
+    let expected_account = match conn_a.snapshot().session {
+        koushi_state::SessionState::Ready(info) => {
+            koushi_core::store::session_key_id_from_info(&info)
+        }
+        _ => return Err("media stage requires a ready session".to_owned()),
+    };
     let media_txn = "qa-phase15-media-txn".to_owned();
     let send_media_id = conn_a.next_request_id();
     conn_a
         .command(CoreCommand::Timeline(TimelineCommand::UploadAndSendMedia {
             request_id: send_media_id,
+            expected_account,
             key: key_a.clone(),
             transaction_id: media_txn.clone(),
             request: UploadMediaRequest {

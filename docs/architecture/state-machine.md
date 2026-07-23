@@ -602,6 +602,19 @@ stateDiagram-v2
   transient `TimelinePaneState`. `ComposerDraftChanged` writes the selected
   room's draft through to that store, `SelectRoom` hydrates the active composer
   from it, and `SendTextSubmitted` clears the selected room's stored draft.
+  Each room and thread-root target has a monotonic `draft_revision`. A draft
+  write with a revision at or below the target's stored revision is stale and
+  is ignored. Accepted plain/reply sends, scheduled sends, and prepared-upload
+  sends advance the target to `max(stored, submitted) + 1`, clear content, and
+  retain that revision as an encrypted tombstone. A captured draft write may
+  still persist after its room/thread is no longer visible, but it never
+  mutates another active composer. Each write and draft-accepting operation also
+  captures its complete account owner (homeserver, user, and device);
+  account transitions cancel pending webview timers and invalidate completions,
+  while Tauri, AppActor, and AccountActor reject an owner that does not match
+  the current ready session before routing or reducing it. The AccountActor
+  recheck is ordered after any earlier account-switch mailbox message. Legacy payloads
+  deserialize with revision zero.
   `RoomListUpdated`, logout, lock, and account switch prune or clear drafts so
   only joined-room account context remains. The draft store is not serialized to
   the frontend snapshot; React receives only the active composer for the
@@ -614,10 +627,11 @@ stateDiagram-v2
 ```mermaid
 stateDiagram-v2
     [*] --> Empty
-    Empty --> Editing: ComposerDraftChanged [non_empty selected room] / store room draft
-    Editing --> Editing: ComposerDraftChanged [non_empty selected room] / replace room draft
-    Editing --> Empty: ComposerDraftChanged [empty selected room] / clear room draft
-    Editing --> Empty: SendTextSubmitted [selected room]
+    Empty --> Editing: ComposerDraftChanged [revision > stored] / store target draft + revision
+    Editing --> Editing: ComposerDraftChanged [revision > stored] / replace target draft
+    Editing --> Empty: ComposerDraftChanged [empty and revision > stored] / retain revision
+    Editing --> Empty: AcceptedSend [stored revision <= submitted revision] / advance revision tombstone
+    Editing --> Editing: AcceptedSend [stored revision > submitted revision] / preserve newer draft + roll revision forward
     Editing --> Empty: RoomListUpdated [room pruned] / retain joined rooms
     Editing --> Empty: LogoutRequested/SessionCleared
     Empty --> Editing: ComposerDraftsLoaded [active composer empty and persisted draft exists]
@@ -633,8 +647,9 @@ stateDiagram-v2
   captured `(room_id, root_event_id)` draft and open thread composer. Both the
   local fallback and MSC4140 delayed-event paths build `m.thread` relation
   content when that root is present, including after reschedule/restart.
-- `ScheduledSendCreated` inserts a queued item and updates the matching composer
-  through the Rust draft store. `ScheduledSendRescheduled` updates the due timestamp and handle;
+- `ScheduledSendCreated` inserts a queued item and advances the matching
+  composer's causal revision through the Rust draft store.
+  `ScheduledSendRescheduled` updates the due timestamp and handle;
   `ScheduledSendCancelled` and `ScheduledSendDispatched` remove the item. Room
   pruning, logout, lock, and account switch clear or retain the backing store by
   joined-room account context.

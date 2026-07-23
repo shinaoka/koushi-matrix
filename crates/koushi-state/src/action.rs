@@ -790,6 +790,10 @@ pub enum AppAction {
     ScheduledSendCreated {
         item: ScheduledSendItem,
     },
+    ScheduledSendCreatedAtRevision {
+        item: ScheduledSendItem,
+        draft_revision: u64,
+    },
     ScheduledSendDispatchStarted {
         scheduled_id: String,
     },
@@ -846,10 +850,21 @@ pub enum AppAction {
         room_id: String,
         draft: String,
     },
+    ComposerDraftChangedAtRevision {
+        room_id: String,
+        draft: String,
+        revision: u64,
+    },
     SendTextSubmitted {
         room_id: String,
         transaction_id: String,
         body: String,
+    },
+    SendTextSubmittedAtRevision {
+        room_id: String,
+        transaction_id: String,
+        body: String,
+        draft_revision: u64,
     },
     SendTextFinished {
         room_id: String,
@@ -865,6 +880,13 @@ pub enum AppAction {
         room_id: String,
         transaction_id: String,
         body: String,
+    },
+    ComposerSubmissionAcceptedAtRevision {
+        submission_id: SubmissionId,
+        room_id: String,
+        transaction_id: String,
+        body: String,
+        draft_revision: u64,
     },
     ComposerSubmissionFinished {
         submission_id: SubmissionId,
@@ -882,11 +904,24 @@ pub enum AppAction {
         root_event_id: String,
         draft: String,
     },
+    ThreadComposerDraftChangedAtRevision {
+        room_id: String,
+        root_event_id: String,
+        draft: String,
+        revision: u64,
+    },
     ThreadReplySubmitted {
         room_id: String,
         root_event_id: String,
         transaction_id: String,
         body: String,
+    },
+    ThreadReplySubmittedAtRevision {
+        room_id: String,
+        root_event_id: String,
+        transaction_id: String,
+        body: String,
+        draft_revision: u64,
     },
     ThreadSubmissionAccepted {
         submission_id: SubmissionId,
@@ -894,6 +929,18 @@ pub enum AppAction {
         root_event_id: String,
         transaction_id: String,
         body: String,
+    },
+    ThreadSubmissionAcceptedAtRevision {
+        submission_id: SubmissionId,
+        room_id: String,
+        root_event_id: String,
+        transaction_id: String,
+        body: String,
+        draft_revision: u64,
+    },
+    ComposerDraftAccepted {
+        target: crate::ComposerTarget,
+        submitted_revision: u64,
     },
     ThreadReplyFinished {
         room_id: String,

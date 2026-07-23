@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import { createBrowserFakeApi, type DesktopApi } from "./browserFakeApi";
+import {
+  createBrowserFakeApi,
+  type ComposerDraftAccountOwner,
+  type DesktopApi
+} from "./browserFakeApi";
 import type {
   ActivityMarkReadTarget,
   ActivityTab,
@@ -10,6 +14,7 @@ import type {
   ComposerResolverOptions,
   ComposerSurface,
   ComposerTarget,
+  ComposerDraftAcceptanceResponse,
   DirectoryQuery,
   MentionIntent,
   OidcAuthorization,
@@ -284,20 +289,41 @@ class TauriDesktopApi implements DesktopApi {
   }
 
   async sendText(
+    account: ComposerDraftAccountOwner,
     submissionId: string,
     roomId: string,
     body: string,
-    mentions: MentionIntent = { targets: [] }
+    mentions: MentionIntent = { targets: [] },
+    draftRevision = 0
   ): Promise<SubmissionResponse> {
-    return invoke<SubmissionResponse>("send_text", { submissionId, roomId, body, mentions });
+    return invoke<SubmissionResponse>("send_text", {
+      accountHomeserver: account.homeserver,
+      accountUserId: account.userId,
+      accountDeviceId: account.deviceId,
+      submissionId,
+      roomId,
+      body,
+      mentions,
+      draftRevision
+    });
   }
 
   async scheduleSend(
+    account: ComposerDraftAccountOwner,
     target: ComposerTarget,
     body: string,
-    sendAtMs: number
-  ): Promise<DesktopSnapshot> {
-    return invoke<DesktopSnapshot>("schedule_send", { target, body, sendAtMs });
+    sendAtMs: number,
+    draftRevision: number
+  ): Promise<ComposerDraftAcceptanceResponse> {
+    return invoke<ComposerDraftAcceptanceResponse>("schedule_send", {
+      accountHomeserver: account.homeserver,
+      accountUserId: account.userId,
+      accountDeviceId: account.deviceId,
+      target,
+      body,
+      sendAtMs,
+      draftRevision
+    });
   }
 
   async stageUploads(
@@ -348,8 +374,18 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("use_original_staged_upload", { target, stagedId });
   }
 
-  async sendPreparedUploads(target: ComposerTarget): Promise<DesktopSnapshot> {
-    return invoke<DesktopSnapshot>("send_prepared_uploads", { target });
+  async sendPreparedUploads(
+    account: ComposerDraftAccountOwner,
+    target: ComposerTarget,
+    draftRevision: number
+  ): Promise<ComposerDraftAcceptanceResponse> {
+    return invoke<ComposerDraftAcceptanceResponse>("send_prepared_uploads", {
+      accountHomeserver: account.homeserver,
+      accountUserId: account.userId,
+      accountDeviceId: account.deviceId,
+      target,
+      draftRevision
+    });
   }
 
   async updateStagedUploadCaption(
@@ -607,8 +643,20 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("mark_activity_read", { target });
   }
 
-  async setComposerDraft(roomId: string, draft: string): Promise<DesktopSnapshot> {
-    return invoke<DesktopSnapshot>("set_composer_draft", { roomId, draft });
+  async setComposerDraft(
+    account: ComposerDraftAccountOwner,
+    roomId: string,
+    draft: string,
+    revision: number
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("set_composer_draft", {
+      accountHomeserver: account.homeserver,
+      accountUserId: account.userId,
+      accountDeviceId: account.deviceId,
+      roomId,
+      draft,
+      revision
+    });
   }
 
   async openThread(roomId: string, rootEventId: string): Promise<DesktopSnapshot> {
@@ -644,26 +692,42 @@ class TauriDesktopApi implements DesktopApi {
   }
 
   async setThreadComposerDraft(
+    account: ComposerDraftAccountOwner,
     roomId: string,
     rootEventId: string,
-    draft: string
+    draft: string,
+    revision: number
   ): Promise<DesktopSnapshot> {
-    return invoke<DesktopSnapshot>("set_thread_composer_draft", { roomId, rootEventId, draft });
+    return invoke<DesktopSnapshot>("set_thread_composer_draft", {
+      accountHomeserver: account.homeserver,
+      accountUserId: account.userId,
+      accountDeviceId: account.deviceId,
+      roomId,
+      rootEventId,
+      draft,
+      revision
+    });
   }
 
   async sendThreadReply(
+    account: ComposerDraftAccountOwner,
     submissionId: string,
     roomId: string,
     rootEventId: string,
     body: string,
-    mentions?: MentionIntent
+    mentions?: MentionIntent,
+    draftRevision = 0
   ): Promise<SubmissionResponse> {
     return invoke<SubmissionResponse>("send_thread_reply", {
+      accountHomeserver: account.homeserver,
+      accountUserId: account.userId,
+      accountDeviceId: account.deviceId,
       submissionId,
       roomId,
       rootEventId,
       body,
-      mentions
+      mentions,
+      draftRevision
     });
   }
 
@@ -807,18 +871,24 @@ class TauriDesktopApi implements DesktopApi {
   }
 
   async sendReply(
+    account: ComposerDraftAccountOwner,
     submissionId: string,
     roomId: string,
     inReplyToEventId: string,
     body: string,
-    mentions: MentionIntent = { targets: [] }
+    mentions: MentionIntent = { targets: [] },
+    draftRevision = 0
   ): Promise<SubmissionResponse> {
     return invoke<SubmissionResponse>("send_reply", {
+      accountHomeserver: account.homeserver,
+      accountUserId: account.userId,
+      accountDeviceId: account.deviceId,
       submissionId,
       roomId,
       inReplyToEventId,
       body,
-      mentions
+      mentions,
+      draftRevision
     });
   }
 

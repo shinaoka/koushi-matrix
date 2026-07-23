@@ -1026,7 +1026,7 @@ describe("ContextualRightPanel", () => {
       room_id: snapshot.state.domain.rooms[0]?.room_id,
       root_event_id: "$root:example.invalid",
       is_subscribed: true,
-      composer: { accepted_submission_ids: [], pending_transaction_id: null, draft: "", mode: "Plain" }
+      composer: { accepted_submission_ids: [], pending_transaction_id: null, draft_revision: 0, draft: "", mode: "Plain" }
     };
     snapshot.timeline = [
       {
@@ -1116,6 +1116,7 @@ describe("ContextualRightPanel", () => {
       composer: {
         accepted_submission_ids: [],
         pending_transaction_id: null,
+        draft_revision: 0,
         draft: "Rust-owned draft",
         mode: "Plain"
       }
@@ -1171,6 +1172,7 @@ describe("ContextualRightPanel", () => {
       composer: {
         accepted_submission_ids: [],
         pending_transaction_id: "txn-thread-1",
+        draft_revision: 0,
         draft: "Draft blocked by pending send",
         mode: "Plain"
       }
@@ -1269,13 +1271,24 @@ describe("ContextualRightPanel", () => {
 
     expect(source).toContain("const localComposerDraftsRef = useRef<Record<string, string>>({});");
     expect(source).toContain("composerDraftPersistTimer");
-    expect(source).toContain("queueComposerDraftPersist(roomId, value)");
+    expect(source).toContain("queueComposerDraftPersist(account, roomId, value, revision)");
     expect(source).toContain("updateComposerTypingSignal(roomId, value)");
     expect(source).toContain("localComposerDraftsRef.current[roomId] = value;");
     expect(source).not.toContain("if (value) {\n      localComposerDraftsRef.current[roomId] = value;");
     expect(source).toContain("window.setTimeout");
     expect(source).toContain("async function sendText(bodyOverride?: string)");
     expect(source).not.toContain("setSnapshot(await api.setComposerDraft(roomId, value))");
+    expect(source).not.toContain('setComposerDraft(roomId, "")');
+    expect(source).not.toContain('setThreadComposerDraft(roomId, rootEventId, "")');
+    expect(source).toContain(".setComposerDraft(account, roomId, value, revision)");
+    expect(source).toContain(
+      ".setThreadComposerDraft(account, roomId, rootEventId, draft, revision)"
+    );
+    expect(source).toContain(
+      "submissionAccountOwnerRef.current !== composerDraftAccountOwnerKey(account)"
+    );
+    expect(source).toContain("cancelComposerDraftPersists();");
+    expect(source).toContain("cancelThreadComposerDraftPersists();");
     expect(source).not.toContain("setLocalComposerDrafts");
   });
 

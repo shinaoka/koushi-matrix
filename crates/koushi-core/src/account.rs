@@ -108,6 +108,15 @@ fn scheduled_dispatch_targets_active_session(
     active_session_key == Some(origin_session_key)
 }
 
+fn composer_timeline_command_targets_active_session(
+    active_session_key: Option<&SessionKeyId>,
+    command: &TimelineCommand,
+) -> bool {
+    command
+        .composer_account_fence()
+        .is_none_or(|(_, expected_account)| active_session_key == Some(expected_account))
+}
+
 fn build_scheduled_message_content(
     body: &str,
     thread_root_event_id: Option<&str>,
@@ -252,6 +261,7 @@ pub enum AccountMessage {
         thread_root_event_id: Option<String>,
         body: String,
         send_at_ms: u64,
+        draft_revision: u64,
     },
     DispatchLocalScheduledSend {
         request_id: RequestId,
@@ -1307,6 +1317,7 @@ impl AccountActor {
                     thread_root_event_id,
                     body,
                     send_at_ms,
+                    draft_revision,
                 } => {
                     self.handle_schedule_server_delayed_send(
                         request_id,
@@ -1315,6 +1326,7 @@ impl AccountActor {
                         thread_root_event_id,
                         body,
                         send_at_ms,
+                        draft_revision,
                     )
                     .await;
                 }
@@ -1817,9 +1829,16 @@ impl AccountActor {
     }
 
     /// Route a TimelineCommand to the TimelineManagerActor.
-    /// Session guard is enforced by AppActor before routing; AccountActor
-    /// passes through directly to avoid double-gating.
+    /// Composer-affecting sends are revalidated here as a second ordered
+    /// account-owner barrier. AppActor's check alone cannot cover a switch
+    /// already queued ahead of this message in the AccountActor mailbox.
     async fn route_timeline_command(&mut self, command: TimelineCommand) {
+        if !composer_timeline_command_targets_active_session(self.session_key_id.as_ref(), &command)
+            && let Some((request_id, _)) = command.composer_account_fence()
+        {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        }
         if let TimelineCommand::BroadcastLinkPreviewPolicy {
             unencrypted_global_enabled,
             encrypted_global_enabled,
@@ -1974,6 +1993,7 @@ impl AccountActor {
         thread_root_event_id: Option<String>,
         body: String,
         send_at_ms: u64,
+        draft_revision: u64,
     ) {
         let Some(session) = &self.session else {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
@@ -1997,7 +2017,7 @@ impl AccountActor {
                         AppAction::ScheduledSendCapabilityChanged {
                             capability: ScheduledSendCapability::ServerDelayedEvents,
                         },
-                        AppAction::ScheduledSendCreated {
+                        AppAction::ScheduledSendCreatedAtRevision {
                             item: ScheduledSendItem {
                                 scheduled_id,
                                 room_id,
@@ -2007,6 +2027,7 @@ impl AccountActor {
                                 handle: ScheduledSendHandle::Server { delay_id },
                                 is_dispatching: false,
                             },
+                            draft_revision,
                         },
                     ])
                     .await;
@@ -2020,7 +2041,7 @@ impl AccountActor {
             AppAction::ScheduledSendCapabilityChanged {
                 capability: ScheduledSendCapability::LocalFallback,
             },
-            AppAction::ScheduledSendCreated {
+            AppAction::ScheduledSendCreatedAtRevision {
                 item: ScheduledSendItem {
                     scheduled_id,
                     room_id,
@@ -2030,6 +2051,7 @@ impl AccountActor {
                     handle: ScheduledSendHandle::Local,
                     is_dispatching: false,
                 },
+                draft_revision,
             },
         ])
         .await;
@@ -8237,6 +8259,42 @@ mod tests {
 
     use super::*;
     use crate::store::CredentialStoreBackend;
+
+    #[test]
+    fn composer_timeline_command_rechecks_full_session_owner_before_account_routing() {
+        let active = SessionKeyId {
+            homeserver: "https://active.example.test".to_owned(),
+            user_id: "@same-user:example.test".to_owned(),
+            device_id: "ACTIVE".to_owned(),
+        };
+        let stale = SessionKeyId {
+            homeserver: "https://stale.example.test".to_owned(),
+            user_id: active.user_id.clone(),
+            device_id: "STALE".to_owned(),
+        };
+        let command = TimelineCommand::SubmitText {
+            request_id: RequestId {
+                connection_id: RuntimeConnectionId(1),
+                sequence: 1,
+            },
+            expected_account: stale.clone(),
+            submission_id: koushi_state::SubmissionId::new("submission-owner-fence"),
+            key: TimelineKey::room(AccountKey(active.user_id.clone()), "!room:example.test"),
+            transaction_id: "transaction-owner-fence".to_owned(),
+            body: "synthetic body".to_owned(),
+            mentions: koushi_state::MentionIntent::default(),
+            draft_revision: 1,
+        };
+
+        assert!(!composer_timeline_command_targets_active_session(
+            Some(&active),
+            &command
+        ));
+        assert!(composer_timeline_command_targets_active_session(
+            Some(&stale),
+            &command
+        ));
+    }
 
     #[test]
     fn scheduled_thread_message_content_preserves_the_thread_relation() {

@@ -87,6 +87,40 @@ fn scheduled_thread_send_clears_only_the_captured_thread_draft() {
     );
 }
 
+#[test]
+fn scheduled_send_acceptance_fences_delayed_draft_persistence() {
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::ComposerDraftChangedAtRevision {
+            room_id: "room-a".to_owned(),
+            draft: "scheduled body".to_owned(),
+            revision: 4,
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::ScheduledSendCreatedAtRevision {
+            item: scheduled_item("sched-main", "room-a", 1_900_000_000_000),
+            draft_revision: 4,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ComposerDraftChangedAtRevision {
+            room_id: "room-a".to_owned(),
+            draft: "scheduled body".to_owned(),
+            revision: 4,
+        },
+    );
+
+    assert!(state.timeline.composer.draft.is_empty());
+    assert_eq!(state.timeline.composer.draft_revision, 5);
+    assert!(state.composer_drafts.rooms.get("room-a").is_none());
+    assert_eq!(state.composer_drafts.room_revision("room-a"), 5);
+}
+
 fn selected_room_state(room_id: &str) -> AppState {
     let mut state = AppState {
         session: SessionState::Ready(session_info()),
@@ -133,8 +167,10 @@ fn scheduled_send_create_clears_room_draft_and_projects_selected_room() {
         },
     );
 
-    assert_eq!(state.timeline.composer, ComposerState::default());
+    assert_eq!(state.timeline.composer.draft, "");
+    assert_eq!(state.timeline.composer.draft_revision, 2);
     assert!(state.composer_drafts.rooms.is_empty());
+    assert_eq!(state.composer_drafts.room_revision("room-a"), 2);
     assert_eq!(state.timeline.scheduled_sends.len(), 1);
     assert_eq!(state.timeline.scheduled_sends[0].scheduled_id, "sched-1");
     assert_eq!(state.timeline.scheduled_sends[0].body, "scheduled body");

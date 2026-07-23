@@ -1173,6 +1173,7 @@ export interface ComposerState {
   pending_submission_id?: string | null;
   pending_transaction_id: string | null;
   draft: string;
+  draft_revision: number;
   mode: ComposerMode;
 }
 
@@ -1182,6 +1183,11 @@ export interface SubmissionResponse {
   outcome: SubmissionOutcome;
   submissionId: string;
   transactionId: string | null;
+  snapshot: DesktopSnapshot;
+}
+
+export interface ComposerDraftAcceptanceResponse {
+  acceptedRevision: number | null;
   snapshot: DesktopSnapshot;
 }
 

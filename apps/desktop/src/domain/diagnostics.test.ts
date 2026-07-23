@@ -68,6 +68,7 @@ describe("diagnosticReport", () => {
                 accepted_submission_ids: [],
                 draft: "",
                 pending_transaction_id: null,
+                draft_revision: 0,
                 mode: "Plain"
               }
             },

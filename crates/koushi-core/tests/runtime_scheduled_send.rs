@@ -13,6 +13,55 @@ mod support;
 use support::*;
 
 #[tokio::test]
+async fn schedule_send_rejects_a_command_captured_for_another_account() {
+    let (runtime, mut conn, _) = ready_room_conn("!room:example.test").await;
+    runtime
+        .inject_actions(vec![AppAction::ScheduledSendCapabilityChanged {
+            capability: ScheduledSendCapability::LocalFallback,
+        }])
+        .await;
+    wait_for_state(&mut conn, |state| {
+        state.timeline.scheduled_send_capability == ScheduledSendCapability::LocalFallback
+    })
+    .await;
+    let wrong_account = koushi_key::SessionKeyId {
+        homeserver: "https://other.example.test".to_owned(),
+        user_id: "@alice:example.test".to_owned(),
+        device_id: "OTHER-DEVICE".to_owned(),
+    };
+
+    conn.command(CoreCommand::App(AppCommand::ScheduleSend {
+        request_id: conn.next_request_id(),
+        expected_account: wrong_account,
+        room_id: "!room:example.test".to_owned(),
+        thread_root_event_id: None,
+        body: "must not cross accounts".to_owned(),
+        send_at_ms: future_epoch_ms(Duration::from_secs(60)),
+        draft_revision: 0,
+    }))
+    .await
+    .expect("submit stale-account schedule");
+    conn.command(CoreCommand::App(AppCommand::ScheduleSend {
+        request_id: conn.next_request_id(),
+        expected_account: session_key(),
+        room_id: "!room:example.test".to_owned(),
+        thread_root_event_id: None,
+        body: "current account schedule".to_owned(),
+        send_at_ms: future_epoch_ms(Duration::from_secs(60)),
+        draft_revision: 0,
+    }))
+    .await
+    .expect("submit current-account schedule");
+
+    let snapshot =
+        wait_for_state(&mut conn, |state| state.timeline.scheduled_sends.len() == 1).await;
+    assert_eq!(
+        snapshot.timeline.scheduled_sends[0].body,
+        "current account schedule"
+    );
+}
+
+#[tokio::test]
 async fn app_command_schedules_cancel_and_reschedules_local_fallback_send() {
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
@@ -44,10 +93,12 @@ async fn app_command_schedules_cancel_and_reschedules_local_fallback_send() {
 
     conn.command(CoreCommand::App(AppCommand::ScheduleSend {
         request_id: conn.next_request_id(),
+        expected_account: session_key(),
         room_id: "!room:example.test".to_owned(),
         thread_root_event_id: None,
         body: "scheduled body".to_owned(),
         send_at_ms: future_epoch_ms(Duration::from_secs(60)),
+        draft_revision: 1,
     }))
     .await
     .expect("schedule send");
@@ -106,10 +157,12 @@ async fn local_fallback_scheduled_send_ids_do_not_reuse_fresh_runtime_request_id
         .await;
         conn.command(CoreCommand::App(AppCommand::ScheduleSend {
             request_id: conn.next_request_id(),
+            expected_account: session_key(),
             room_id: "!room:example.test".to_owned(),
             thread_root_event_id: None,
             body: "unique scheduled message".to_owned(),
             send_at_ms: future_epoch_ms(Duration::from_secs(60)),
+            draft_revision: 0,
         }))
         .await
         .expect("schedule send");
@@ -154,10 +207,12 @@ async fn local_fallback_scheduled_send_is_retained_when_delivery_cannot_start() 
     let send_at_ms = future_epoch_ms(Duration::from_millis(60));
     conn.command(CoreCommand::App(AppCommand::ScheduleSend {
         request_id: conn.next_request_id(),
+        expected_account: session_key(),
         room_id: "!room:example.test".to_owned(),
         thread_root_event_id: None,
         body: "retry instead of drop".to_owned(),
         send_at_ms,
+        draft_revision: 0,
     }))
     .await
     .expect("schedule send");
@@ -244,10 +299,12 @@ async fn local_fallback_scheduled_sends_persist_and_load_on_restart() {
 
         conn.command(CoreCommand::App(AppCommand::ScheduleSend {
             request_id: conn.next_request_id(),
+            expected_account: session_key(),
             room_id: "!room:example.test".to_owned(),
             thread_root_event_id: None,
             body: "survives restart".to_owned(),
             send_at_ms,
+            draft_revision: 0,
         }))
         .await
         .expect("schedule send");
@@ -294,10 +351,12 @@ async fn local_fallback_scheduled_sends_survive_a_session_lock() {
 
         conn.command(CoreCommand::App(AppCommand::ScheduleSend {
             request_id: conn.next_request_id(),
+            expected_account: session_key(),
             room_id: "!room:example.test".to_owned(),
             thread_root_event_id: None,
             body: "survives lock".to_owned(),
             send_at_ms,
+            draft_revision: 0,
         }))
         .await
         .expect("schedule send");
@@ -352,10 +411,12 @@ async fn due_local_fallback_scheduled_send_is_retained_for_retry_after_restart()
 
         conn.command(CoreCommand::App(AppCommand::ScheduleSend {
             request_id: conn.next_request_id(),
+            expected_account: session_key(),
             room_id: "!room:example.test".to_owned(),
             thread_root_event_id: None,
             body: "retry after restart".to_owned(),
             send_at_ms,
+            draft_revision: 0,
         }))
         .await
         .expect("schedule send");
@@ -412,10 +473,12 @@ async fn cancelled_local_fallback_scheduled_send_does_not_resurrect_on_restart()
 
         conn.command(CoreCommand::App(AppCommand::ScheduleSend {
             request_id: conn.next_request_id(),
+            expected_account: session_key(),
             room_id: "!room:example.test".to_owned(),
             thread_root_event_id: None,
             body: "cancel before restart".to_owned(),
             send_at_ms: future_epoch_ms(Duration::from_secs(120)),
+            draft_revision: 0,
         }))
         .await
         .expect("schedule send");

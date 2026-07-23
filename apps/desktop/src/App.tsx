@@ -32,6 +32,7 @@ import {
   threadSubmissionTarget,
   type ComposerSubmissionControllerRegistry
 } from "./domain/composerSubmission";
+import { createComposerDraftRevisionCoordinator } from "./domain/composerDraftRevision";
 import type { TimelinePaneState } from "./domain/types";
 import { setActiveLocaleProfile, t } from "./i18n/messages";
 
@@ -44,6 +45,25 @@ export function reconcileComposerSubmissionSnapshot(
     timeline.submission_registry.settled_submission_ids
   );
 }
+
+function composerDraftRevisionForTarget(
+  snapshot: DesktopSnapshot,
+  target: ComposerTarget
+): number | null {
+  if (target.kind === "main") {
+    return snapshot.state.ui.timeline.room_id === target.room_id
+      ? snapshot.state.ui.timeline.composer.draft_revision
+      : null;
+  }
+  const thread = snapshot.state.ui.thread;
+  return thread.kind === "open" &&
+    thread.room_id === target.room_id &&
+    thread.root_event_id === target.root_event_id &&
+    thread.composer
+    ? thread.composer.draft_revision
+    : null;
+}
+
 import { ContextMenuSurface } from "./components/ContextMenuSurface";
 import {
   ImeSafeForm,
@@ -889,8 +909,41 @@ export async function settleLoginTransport(
   }
 }
 
+function composerDraftAccountOwnerKey(account: {
+  homeserver: string;
+  userId: string;
+  deviceId: string;
+}): string {
+  return JSON.stringify([account.homeserver, account.userId, account.deviceId]);
+}
+
+function readyComposerDraftAccountOwner(snapshot: DesktopSnapshot | null): {
+  homeserver: string;
+  userId: string;
+  deviceId: string;
+} | null {
+  const session = snapshot?.state.domain.session;
+  return session?.kind === "ready" &&
+    session.homeserver &&
+    session.user_id &&
+    session.device_id
+    ? {
+        homeserver: session.homeserver,
+        userId: session.user_id,
+        deviceId: session.device_id
+      }
+    : null;
+}
+
 export function App() {
   const snapshot = useAppStore(selectSnapshot);
+  const initialAccount = readyComposerDraftAccountOwner(snapshot);
+  const submissionAccountOwnerRef = useRef<string | null>(
+    initialAccount ? composerDraftAccountOwnerKey(initialAccount) : null
+  );
+  const composerDraftLifecycleOwnerRef = useRef<string | null>(
+    submissionAccountOwnerRef.current
+  );
   const [schemaMismatchVersion, setSchemaMismatchVersion] = useState<number | null>(null);
   // #87 Phase 4 IPC contract guard (fail-closed at the data boundary): every snapshot enters
   // render state through this setter, so we reject one whose schema_version does not match the
@@ -908,6 +961,10 @@ export function App() {
       setSchemaMismatchVersion(next.state.schema_version ?? -1);
       return;
     }
+    const account = readyComposerDraftAccountOwner(next);
+    submissionAccountOwnerRef.current = account
+      ? composerDraftAccountOwnerKey(account)
+      : null;
     setSchemaMismatchVersion(null);
     setAppStoreSnapshot(next);
   }, []);
@@ -927,18 +984,73 @@ export function App() {
   const [composerMentions, setComposerMentions] = useState<MentionIntent>(EMPTY_MENTION_INTENT);
   const [threadComposerMentions, setThreadComposerMentions] = useState<Record<string, MentionIntent>>({});
   const [localThreadComposerDrafts, setLocalThreadComposerDrafts] = useState<Record<string, string>>({});
+  const [localComposerDraftClearEpochs, setLocalComposerDraftClearEpochs] = useState<
+    Record<string, number>
+  >({});
+  const [threadComposerDraftClearEpochs, setThreadComposerDraftClearEpochs] = useState<
+    Record<string, number>
+  >({});
+  const localThreadComposerDraftsRef = useRef<Record<string, string>>({});
+  const composerDraftRevisionsRef = useRef(createComposerDraftRevisionCoordinator());
+  const localComposerDraftRevisionsRef = useRef<Record<string, number>>({});
+  const localThreadComposerDraftRevisionsRef = useRef<Record<string, number>>({});
   const submissionRegistryRef = useRef<ComposerSubmissionControllerRegistry | null>(null);
-  const submissionAccountOwnerRef = useRef<string | null>(null);
   if (submissionRegistryRef.current === null) {
     submissionRegistryRef.current = createComposerSubmissionControllerRegistry();
   }
   useEffect(() => {
-    const owner = snapshot?.state.domain.session.user_id ?? null;
-    if (owner === null || (submissionAccountOwnerRef.current !== null && submissionAccountOwnerRef.current !== owner)) {
+    const account = readyComposerDraftAccountOwner(snapshot);
+    const owner = account ? composerDraftAccountOwnerKey(account) : null;
+    if (
+      owner === null ||
+      (composerDraftLifecycleOwnerRef.current !== null &&
+        composerDraftLifecycleOwnerRef.current !== owner)
+    ) {
+      cancelComposerDraftPersists();
+      cancelThreadComposerDraftPersists();
       submissionRegistryRef.current?.reset();
+      composerDraftRevisionsRef.current.reset();
+      localComposerDraftRevisionsRef.current = {};
+      localThreadComposerDraftRevisionsRef.current = {};
+      localThreadComposerDraftsRef.current = {};
+      localComposerDraftsRef.current = {};
+      setLocalThreadComposerDrafts({});
+      setLocalComposerDraftClearEpochs({});
+      setThreadComposerDraftClearEpochs({});
     }
     submissionAccountOwnerRef.current = owner;
-  }, [snapshot?.state.domain.session.user_id, snapshot?.state.domain.session.kind]);
+    composerDraftLifecycleOwnerRef.current = owner;
+  }, [
+    snapshot?.state.domain.session.homeserver,
+    snapshot?.state.domain.session.user_id,
+    snapshot?.state.domain.session.device_id,
+    snapshot?.state.domain.session.kind
+  ]);
+  useEffect(() => {
+    const timeline = snapshot?.state.ui.timeline;
+    if (timeline?.room_id) {
+      composerDraftRevisionsRef.current.observe(
+        { kind: "main", room_id: timeline.room_id },
+        timeline.composer.draft_revision
+      );
+    }
+    const thread = snapshot?.state.ui.thread;
+    if (
+      thread?.kind === "open" &&
+      thread.room_id &&
+      thread.root_event_id &&
+      thread.composer
+    ) {
+      composerDraftRevisionsRef.current.observe(
+        {
+          kind: "thread",
+          room_id: thread.room_id,
+          root_event_id: thread.root_event_id
+        },
+        thread.composer.draft_revision
+      );
+    }
+  }, [snapshot]);
   const [loginHomeserver, setLoginHomeserver] = useState(DEFAULT_HOMESERVER);
   const [loginUsername, setLoginUsername] = useState("");
   const [loginDeviceName, setLoginDeviceName] = useState("Koushi");
@@ -1032,7 +1144,7 @@ export function App() {
   }
   const qaSendBaselineTimelineItems = useRef(0);
   const stateRefreshTimerRef = useRef<number | null>(null);
-  const composerDraftPersistTimer = useRef<number | null>(null);
+  const composerDraftPersistTimers = useRef<Record<string, number>>({});
   const localComposerDraftsRef = useRef<Record<string, string>>({});
   const threadComposerDraftPersistTimers = useRef<Record<string, number>>({});
   const panelDiagnosticRef = useRef<string | null>(null);
@@ -1287,7 +1399,7 @@ export function App() {
 
   useEffect(() => {
     return () => {
-      cancelComposerDraftPersist();
+      cancelComposerDraftPersists();
       cancelThreadComposerDraftPersists();
     };
   }, []);
@@ -1517,9 +1629,11 @@ export function App() {
       return;
     }
     const roomId = snapshot.state.ui.timeline.room_id;
-    if (!roomId) {
+    const account = readyComposerDraftAccountOwner(snapshot);
+    if (!roomId || !account) {
       return;
     }
+    const accountOwner = composerDraftAccountOwnerKey(account);
 
     qaSendStarted.current = true;
     qaSendBaselineErrorCount.current = snapshot.state.ui.errors.length;
@@ -1527,8 +1641,11 @@ export function App() {
     qaSendPending.current = true;
     setQaSendStatus("pending");
     void api
-      .sendText(createSubmissionId(), roomId, message)
+      .sendText(account, createSubmissionId(), roomId, message)
       .then((response) => {
+        if (submissionAccountOwnerRef.current !== accountOwner) {
+          return;
+        }
         setSnapshot(response.snapshot);
         if (!isTauriRuntime()) {
           const completionStatus = qaSendSmokeCompletionStatus(
@@ -1541,6 +1658,9 @@ export function App() {
         }
       })
       .catch(() => {
+        if (submissionAccountOwnerRef.current !== accountOwner) {
+          return;
+        }
         qaSendPending.current = false;
         setQaSendStatus("failed");
       });
@@ -2600,30 +2720,45 @@ export function App() {
   async function sendText(bodyOverride?: string) {
     const roomId = snapshot?.state.ui.timeline.room_id;
     const body = bodyOverride ?? composerDraft;
+    const account = readyComposerDraftAccountOwner(snapshot);
+    const accountOwner = account ? composerDraftAccountOwnerKey(account) : null;
+    const target: ComposerTarget | null = roomId ? { kind: "main", room_id: roomId } : null;
     const uploads = snapshot?.state.ui.timeline.staged_uploads ?? [];
-    if (!roomId || (!body.trim() && uploads.length === 0)) {
+    if (!roomId || !target || !account || !accountOwner || (!body.trim() && uploads.length === 0)) {
       return;
     }
     if (uploads.length > 0) {
       if (uploads.some((item) => item.preparation.kind !== "ready")) {
         return;
       }
+      const draftRevision = composerDraftRevisionsRef.current.current(target);
+      const localRevisionAtSubmission =
+        localComposerDraftRevisionsRef.current[roomId] ?? 0;
+      composerDraftRevisionsRef.current.accept(target, draftRevision);
       for (const item of uploads) {
         latestTextOperationQueueRef.current.invalidate(
           `caption:main:${roomId}:${item.staged_id}`
         );
       }
-      cancelComposerDraftPersist();
-      clearLocalComposerDraft(roomId);
-      setSnapshot(
-        await api.sendPreparedUploads({
-          kind: "main",
-          room_id: roomId
-        })
-      );
-      setSnapshot(await api.setComposerDraft(roomId, ""));
-      setComposerMentions(EMPTY_MENTION_INTENT);
-      updateComposerTypingSignal(roomId, "");
+      const response = await api.sendPreparedUploads(account, target, draftRevision);
+      if (submissionAccountOwnerRef.current !== accountOwner) {
+        return;
+      }
+      const acceptedRevision =
+        response.acceptedRevision ??
+        composerDraftRevisionForTarget(response.snapshot, target) ??
+        0;
+      const accepted = acceptedRevision > draftRevision;
+      const hasNewerDraft =
+        (localComposerDraftRevisionsRef.current[roomId] ?? 0) !==
+        localRevisionAtSubmission;
+      if (accepted && !hasNewerDraft) {
+        cancelComposerDraftPersist(roomId);
+        clearLocalComposerDraft(roomId);
+        setComposerMentions(EMPTY_MENTION_INTENT);
+        updateComposerTypingSignal(roomId, "");
+      }
+      setSnapshot(response.snapshot);
       return;
     }
     // Reply semantics are Rust-owned: dispatch sendReply when the composer is
@@ -2636,17 +2771,31 @@ export function App() {
     }
 
     const mentions = pruneMentionIntentForDraft(composerMentions, body);
-    submissionController.capture(submissionId, {
-      roomId,
-      body,
-      mentions,
-      composerMode
-    });
+    if (submissionController.payload(submissionId) === undefined) {
+      const draftRevision = composerDraftRevisionsRef.current.current(target);
+      const localRevisionAtSubmission =
+        localComposerDraftRevisionsRef.current[roomId] ?? 0;
+      composerDraftRevisionsRef.current.accept(target, draftRevision);
+      submissionController.capture(submissionId, {
+        roomId,
+        body,
+        mentions,
+        composerMode,
+        draftRevision,
+        localRevisionAtSubmission,
+        account,
+        accountOwner
+      });
+    }
     const captured = submissionController.payload<{
       roomId: string;
       body: string;
       mentions: MentionIntent;
       composerMode: typeof composerMode;
+      draftRevision: number;
+      localRevisionAtSubmission: number;
+      account: { homeserver: string; userId: string; deviceId: string };
+      accountOwner: string;
     }>(submissionId)!;
 
     qaSendStarted.current = true;
@@ -2664,24 +2813,42 @@ export function App() {
     try {
       const nextSnapshot =
         captured.composerMode === "Plain"
-          ? await api.sendText(submissionId, captured.roomId, captured.body, captured.mentions)
+          ? await api.sendText(
+              captured.account,
+              submissionId,
+              captured.roomId,
+              captured.body,
+              captured.mentions,
+              captured.draftRevision
+            )
           : await api.sendReply(
+              captured.account,
               submissionId,
               captured.roomId,
               captured.composerMode.Reply.in_reply_to_event_id,
               captured.body,
-              captured.mentions
+              captured.mentions,
+              captured.draftRevision
             );
+      if (submissionAccountOwnerRef.current !== captured.accountOwner) {
+        return;
+      }
       if (nextSnapshot.submissionId !== submissionId || nextSnapshot.outcome !== "accepted") {
         submissionController.reject(submissionId);
         setSnapshot(nextSnapshot.snapshot);
         return;
       }
       submissionController.accept(submissionId);
-      cancelComposerDraftPersist();
-      clearLocalComposerDraft(roomId);
+      const hasNewerDraft =
+        (localComposerDraftRevisionsRef.current[roomId] ?? 0) !==
+        captured.localRevisionAtSubmission;
+      if (!hasNewerDraft) {
+        cancelComposerDraftPersist(roomId);
+        clearLocalComposerDraft(roomId);
+        setComposerMentions(EMPTY_MENTION_INTENT);
+        updateComposerTypingSignal(roomId, "");
+      }
       setSnapshot(nextSnapshot.snapshot);
-      updateComposerTypingSignal(roomId, "");
       if (!isTauriRuntime()) {
         const completionStatus = qaSendSmokeCompletionStatus(
           nextSnapshot.snapshot,
@@ -2692,6 +2859,9 @@ export function App() {
         setQaSendStatus(completionStatus);
       }
     } catch (error) {
+      if (submissionAccountOwnerRef.current !== captured.accountOwner) {
+        return;
+      }
       const disposition = classifySubmissionFailure(error);
       if (disposition.kind === "unknown") {
         submissionController.markUnknown(submissionId, disposition.reason);
@@ -2702,7 +2872,6 @@ export function App() {
       setQaSendStatus("failed");
       return;
     }
-    setComposerMentions(EMPTY_MENTION_INTENT);
   }
 
   useEffect(() => {
@@ -2717,16 +2886,37 @@ export function App() {
   async function scheduleSend(sendAtMs: number, bodyOverride?: string) {
     const roomId = snapshot?.state.ui.timeline.room_id;
     const body = bodyOverride ?? composerDraft;
-    if (!roomId || !body.trim() || stagedUploads.length > 0) {
+    const account = readyComposerDraftAccountOwner(snapshot);
+    const accountOwner = account ? composerDraftAccountOwnerKey(account) : null;
+    if (!roomId || !account || !accountOwner || !body.trim() || stagedUploads.length > 0) {
       return;
     }
 
     try {
-      cancelComposerDraftPersist();
-      clearLocalComposerDraft(roomId);
-      setSnapshot(await api.scheduleSend({ kind: "main", room_id: roomId }, body, sendAtMs));
-      setComposerMentions(EMPTY_MENTION_INTENT);
-      updateComposerTypingSignal(roomId, "");
+      const target: ComposerTarget = { kind: "main", room_id: roomId };
+      const draftRevision = composerDraftRevisionsRef.current.current(target);
+      const localRevisionAtSubmission =
+        localComposerDraftRevisionsRef.current[roomId] ?? 0;
+      composerDraftRevisionsRef.current.accept(target, draftRevision);
+      const response = await api.scheduleSend(account, target, body, sendAtMs, draftRevision);
+      if (submissionAccountOwnerRef.current !== accountOwner) {
+        return;
+      }
+      const acceptedRevision =
+        response.acceptedRevision ??
+        composerDraftRevisionForTarget(response.snapshot, target) ??
+        0;
+      const accepted = acceptedRevision > draftRevision;
+      const hasNewerDraft =
+        (localComposerDraftRevisionsRef.current[roomId] ?? 0) !==
+        localRevisionAtSubmission;
+      if (accepted && !hasNewerDraft) {
+        cancelComposerDraftPersist(roomId);
+        clearLocalComposerDraft(roomId);
+        setComposerMentions(EMPTY_MENTION_INTENT);
+        updateComposerTypingSignal(roomId, "");
+      }
+      setSnapshot(response.snapshot);
     } catch {
       // Command failures are surfaced through the Rust-owned error/event path.
     }
@@ -2750,12 +2940,24 @@ export function App() {
 
   function updateComposerDraft(value: string) {
     const roomId = snapshot?.state.ui.timeline.room_id;
-    if (!roomId) {
+    const session = snapshot?.state.domain.session;
+    if (!roomId || !session?.homeserver || !session.user_id || !session.device_id) {
       return;
     }
+    const account = {
+      homeserver: session.homeserver,
+      userId: session.user_id,
+      deviceId: session.device_id
+    };
+    const target: ComposerTarget = { kind: "main", room_id: roomId };
+    const revision = composerDraftRevisionsRef.current.nextDraft(
+      target,
+      snapshot?.state.ui.timeline.composer.draft_revision ?? 0
+    );
     localComposerDraftsRef.current[roomId] = value;
+    localComposerDraftRevisionsRef.current[roomId] = revision;
     updateComposerTypingSignal(roomId, value);
-    queueComposerDraftPersist(roomId, value);
+    queueComposerDraftPersist(account, roomId, value, revision);
   }
 
   function updateComposerTypingSignal(roomId: string, value: string) {
@@ -2768,22 +2970,46 @@ export function App() {
     void api.setTyping(roomId, isTyping).catch(() => undefined);
   }
 
-  function cancelComposerDraftPersist() {
-    if (composerDraftPersistTimer.current === null) {
+  function cancelComposerDraftPersist(roomId: string) {
+    const timer = composerDraftPersistTimers.current[roomId];
+    if (timer === undefined) {
       return;
     }
-    window.clearTimeout(composerDraftPersistTimer.current);
-    composerDraftPersistTimer.current = null;
+    window.clearTimeout(timer);
+    delete composerDraftPersistTimers.current[roomId];
   }
 
-  function queueComposerDraftPersist(roomId: string, value: string) {
-    cancelComposerDraftPersist();
-    composerDraftPersistTimer.current = window.setTimeout(() => {
-      composerDraftPersistTimer.current = null;
+  function cancelComposerDraftPersists() {
+    for (const timer of Object.values(composerDraftPersistTimers.current)) {
+      window.clearTimeout(timer);
+    }
+    composerDraftPersistTimers.current = {};
+  }
+
+  function queueComposerDraftPersist(
+    account: { homeserver: string; userId: string; deviceId: string },
+    roomId: string,
+    value: string,
+    revision: number
+  ) {
+    cancelComposerDraftPersist(roomId);
+    composerDraftPersistTimers.current[roomId] = window.setTimeout(() => {
+      delete composerDraftPersistTimers.current[roomId];
       void api
-        .setComposerDraft(roomId, value)
+        .setComposerDraft(account, roomId, value, revision)
         .then((nextSnapshot) => {
-          if ((localComposerDraftsRef.current[roomId] ?? "") !== value) {
+          const target: ComposerTarget = { kind: "main", room_id: roomId };
+          if (
+            submissionAccountOwnerRef.current !== composerDraftAccountOwnerKey(account) ||
+            (localComposerDraftsRef.current[roomId] ?? "") !== value ||
+            localComposerDraftRevisionsRef.current[roomId] !== revision ||
+            !composerDraftRevisionsRef.current.canApply(
+              target,
+              nextSnapshot.state.ui.timeline.room_id === roomId
+                ? nextSnapshot.state.ui.timeline.composer.draft_revision
+                : 0
+            )
+          ) {
             return;
           }
           setSnapshot(nextSnapshot);
@@ -2793,7 +3019,21 @@ export function App() {
   }
 
   function clearLocalComposerDraft(roomId: string) {
+    const hadLocalDraft = Object.prototype.hasOwnProperty.call(
+      localComposerDraftsRef.current,
+      roomId
+    );
     delete localComposerDraftsRef.current[roomId];
+    delete localComposerDraftRevisionsRef.current[roomId];
+    if (hadLocalDraft) {
+      // A CoreEvent may publish the accepted snapshot before the command
+      // response resolves. In that ordering, setSnapshot can be a no-op for
+      // the same snapshot reference, so explicitly retire the local overlay.
+      setLocalComposerDraftClearEpochs((current) => ({
+        ...current,
+        [roomId]: (current[roomId] ?? 0) + 1
+      }));
+    }
   }
 
   async function stageUploadFiles(files: File[]): Promise<void> {
@@ -2969,11 +3209,33 @@ export function App() {
     rootEventId: string,
     draft: string
   ) {
+    const session = snapshot?.state.domain.session;
+    if (!session?.homeserver || !session.user_id || !session.device_id) {
+      return;
+    }
+    const account = {
+      homeserver: session.homeserver,
+      userId: session.user_id,
+      deviceId: session.device_id
+    };
     const key = threadComposerDraftKey(roomId, rootEventId);
+    const target: ComposerTarget = { kind: "thread", room_id: roomId, root_event_id: rootEventId };
+    const thread = snapshot?.state.ui.thread;
+    const revision = composerDraftRevisionsRef.current.nextDraft(
+      target,
+      thread?.kind === "open" &&
+        thread.room_id === roomId &&
+        thread.root_event_id === rootEventId &&
+        thread.composer
+        ? thread.composer.draft_revision
+        : 0
+    );
+    localThreadComposerDraftRevisionsRef.current[key] = revision;
+    localThreadComposerDraftsRef.current[key] = draft;
     setLocalThreadComposerDrafts((drafts) =>
       drafts[key] === draft ? drafts : { ...drafts, [key]: draft }
     );
-    queueThreadComposerDraftPersist(roomId, rootEventId, draft);
+    queueThreadComposerDraftPersist(account, roomId, rootEventId, draft, revision);
   }
 
   async function stageThreadUploadFiles(
@@ -3011,25 +3273,48 @@ export function App() {
     mentionIntent: MentionIntent
   ) {
     const thread = snapshot?.state.ui.thread;
+    const account = readyComposerDraftAccountOwner(snapshot);
+    const accountOwner = account ? composerDraftAccountOwnerKey(account) : null;
     const target: ComposerTarget = { kind: "thread", room_id: roomId, root_event_id: rootEventId };
+    const key = threadComposerDraftKey(roomId, rootEventId);
     const uploads =
       thread?.kind === "open" &&
       thread.room_id === roomId &&
       thread.root_event_id === rootEventId
         ? thread.staged_uploads ?? []
         : [];
+    if (!account || !accountOwner) {
+      return;
+    }
     if (uploads.length > 0) {
       if (uploads.some((item) => item.preparation.kind !== "ready")) return;
+      const draftRevision = composerDraftRevisionsRef.current.current(target);
+      const localRevisionAtSubmission =
+        localThreadComposerDraftRevisionsRef.current[key] ?? 0;
+      composerDraftRevisionsRef.current.accept(target, draftRevision);
       for (const item of uploads) {
         latestTextOperationQueueRef.current.invalidate(
           `caption:thread:${roomId}:${rootEventId}:${item.staged_id}`
         );
       }
-      cancelThreadComposerDraftPersist(roomId, rootEventId);
-      clearLocalThreadComposerDraft(roomId, rootEventId);
-      setSnapshot(await api.sendPreparedUploads(target));
-      setSnapshot(await api.setThreadComposerDraft(roomId, rootEventId, ""));
-      clearThreadComposerMentions(roomId, rootEventId);
+      const response = await api.sendPreparedUploads(account, target, draftRevision);
+      if (submissionAccountOwnerRef.current !== accountOwner) {
+        return;
+      }
+      const acceptedRevision =
+        response.acceptedRevision ??
+        composerDraftRevisionForTarget(response.snapshot, target) ??
+        0;
+      const accepted = acceptedRevision > draftRevision;
+      const hasNewerDraft =
+        (localThreadComposerDraftRevisionsRef.current[key] ?? 0) !==
+        localRevisionAtSubmission;
+      if (accepted && !hasNewerDraft) {
+        cancelThreadComposerDraftPersist(roomId, rootEventId);
+        clearLocalThreadComposerDraft(roomId, rootEventId);
+        clearThreadComposerMentions(roomId, rootEventId);
+      }
+      setSnapshot(response.snapshot);
       return;
     }
     const submissionController = submissionRegistryRef.current!.forTarget(
@@ -3040,23 +3325,47 @@ export function App() {
       return;
     }
     const mentions = pruneMentionIntentForDraft(mentionIntent, body);
-    submissionController.capture(submissionId, { roomId, rootEventId, body, mentions });
+    if (submissionController.payload(submissionId) === undefined) {
+      const draftRevision = composerDraftRevisionsRef.current.current(target);
+      const localRevisionAtSubmission =
+        localThreadComposerDraftRevisionsRef.current[key] ?? 0;
+      composerDraftRevisionsRef.current.accept(target, draftRevision);
+      submissionController.capture(submissionId, {
+        roomId,
+        rootEventId,
+        body,
+        mentions,
+        draftRevision,
+        localRevisionAtSubmission,
+        account,
+        accountOwner
+      });
+    }
     const captured = submissionController.payload<{
       roomId: string;
       rootEventId: string;
       body: string;
       mentions: MentionIntent;
+      draftRevision: number;
+      localRevisionAtSubmission: number;
+      account: { homeserver: string; userId: string; deviceId: string };
+      accountOwner: string;
     }>(submissionId)!;
     let response;
     try {
       response = await api.sendThreadReply(
+        captured.account,
         submissionId,
         captured.roomId,
         captured.rootEventId,
         captured.body,
-        captured.mentions
+        captured.mentions,
+        captured.draftRevision
       );
     } catch (error) {
+      if (submissionAccountOwnerRef.current !== captured.accountOwner) {
+        return;
+      }
       const disposition = classifySubmissionFailure(error);
       if (disposition.kind === "unknown") {
         submissionController.markUnknown(submissionId, disposition.reason);
@@ -3065,15 +3374,23 @@ export function App() {
       }
       return;
     }
+    if (submissionAccountOwnerRef.current !== captured.accountOwner) {
+      return;
+    }
     if (response.submissionId !== submissionId || response.outcome !== "accepted") {
       submissionController.reject(submissionId);
       setSnapshot(response.snapshot);
       return;
     }
     submissionController.accept(submissionId);
-    cancelThreadComposerDraftPersist(roomId, rootEventId);
-    clearLocalThreadComposerDraft(roomId, rootEventId);
-    clearThreadComposerMentions(roomId, rootEventId);
+    const hasNewerDraft =
+      (localThreadComposerDraftRevisionsRef.current[key] ?? 0) !==
+      captured.localRevisionAtSubmission;
+    if (!hasNewerDraft) {
+      cancelThreadComposerDraftPersist(roomId, rootEventId);
+      clearLocalThreadComposerDraft(roomId, rootEventId);
+      clearThreadComposerMentions(roomId, rootEventId);
+    }
     setSnapshot(response.snapshot);
   }
 
@@ -3194,7 +3511,11 @@ export function App() {
     body: string
   ) {
     const thread = snapshot?.state.ui.thread;
+    const account = readyComposerDraftAccountOwner(snapshot);
+    const accountOwner = account ? composerDraftAccountOwnerKey(account) : null;
     if (
+      !account ||
+      !accountOwner ||
       !body.trim() ||
       thread?.kind !== "open" ||
       thread.room_id !== roomId ||
@@ -3203,26 +3524,71 @@ export function App() {
     ) {
       return;
     }
-    cancelThreadComposerDraftPersist(roomId, rootEventId);
-    clearLocalThreadComposerDraft(roomId, rootEventId);
-    setSnapshot(
-      await api.scheduleSend(
-        { kind: "thread", room_id: roomId, root_event_id: rootEventId },
-        body,
-        sendAtMs
-      )
-    );
-    clearThreadComposerMentions(roomId, rootEventId);
+    const target: ComposerTarget = {
+      kind: "thread",
+      room_id: roomId,
+      root_event_id: rootEventId
+    };
+    const key = threadComposerDraftKey(roomId, rootEventId);
+    const draftRevision = composerDraftRevisionsRef.current.current(target);
+    const localRevisionAtSubmission =
+      localThreadComposerDraftRevisionsRef.current[key] ?? 0;
+    composerDraftRevisionsRef.current.accept(target, draftRevision);
+    const response = await api.scheduleSend(account, target, body, sendAtMs, draftRevision);
+    if (submissionAccountOwnerRef.current !== accountOwner) {
+      return;
+    }
+    const acceptedRevision =
+      response.acceptedRevision ??
+      composerDraftRevisionForTarget(response.snapshot, target) ??
+      0;
+    const accepted = acceptedRevision > draftRevision;
+    const hasNewerDraft =
+      (localThreadComposerDraftRevisionsRef.current[key] ?? 0) !==
+      localRevisionAtSubmission;
+    if (accepted && !hasNewerDraft) {
+      cancelThreadComposerDraftPersist(roomId, rootEventId);
+      clearLocalThreadComposerDraft(roomId, rootEventId);
+      clearThreadComposerMentions(roomId, rootEventId);
+    }
+    setSnapshot(response.snapshot);
   }
 
-  function queueThreadComposerDraftPersist(roomId: string, rootEventId: string, draft: string) {
+  function queueThreadComposerDraftPersist(
+    account: { homeserver: string; userId: string; deviceId: string },
+    roomId: string,
+    rootEventId: string,
+    draft: string,
+    revision: number
+  ) {
     cancelThreadComposerDraftPersist(roomId, rootEventId);
     const key = threadComposerDraftKey(roomId, rootEventId);
     threadComposerDraftPersistTimers.current[key] = window.setTimeout(() => {
       delete threadComposerDraftPersistTimers.current[key];
       void api
-        .setThreadComposerDraft(roomId, rootEventId, draft)
+        .setThreadComposerDraft(account, roomId, rootEventId, draft, revision)
         .then((nextSnapshot) => {
+          const target: ComposerTarget = {
+            kind: "thread",
+            room_id: roomId,
+            root_event_id: rootEventId
+          };
+          const activeThread = nextSnapshot.state.ui.thread;
+          if (
+            submissionAccountOwnerRef.current !== composerDraftAccountOwnerKey(account) ||
+            localThreadComposerDraftRevisionsRef.current[key] !== revision ||
+            localThreadComposerDraftsRef.current[key] !== draft ||
+            activeThread.kind !== "open" ||
+            activeThread.room_id !== roomId ||
+            activeThread.root_event_id !== rootEventId ||
+            !activeThread.composer ||
+            !composerDraftRevisionsRef.current.canApply(
+              target,
+              activeThread.composer.draft_revision
+            )
+          ) {
+            return;
+          }
           setSnapshot(nextSnapshot);
         })
         .catch(() => undefined);
@@ -3256,6 +3622,12 @@ export function App() {
       delete next[key];
       return next;
     });
+    delete localThreadComposerDraftsRef.current[key];
+    delete localThreadComposerDraftRevisionsRef.current[key];
+    setThreadComposerDraftClearEpochs((current) => ({
+      ...current,
+      [key]: (current[key] ?? 0) + 1
+    }));
   }
 
   function threadComposerDraftKey(roomId: string, rootEventId: string): string {
@@ -3796,6 +4168,9 @@ export function App() {
           <TimelinePane
             activeRoomName={activeRoom?.display_label ?? t("room.noRoomSelected")}
             composerDraft={composerDraft}
+            composerDraftKey={`${timelineRoomId ?? "no-room"}\u0000${
+              timelineRoomId ? (localComposerDraftClearEpochs[timelineRoomId] ?? 0) : 0
+            }`}
             composerMode={composerModeProp(snapshot.state.ui.timeline.composer.mode)}
             mentionIntent={composerMentions}
             resolveComposerKeyAction={resolveComposerKeyAction}
@@ -4012,6 +4387,7 @@ export function App() {
           onThreadComposerDraftChange={(roomId, rootEventId, draft) => {
             updateThreadComposerDraft(roomId, rootEventId, draft);
           }}
+          threadComposerDraftClearEpochs={threadComposerDraftClearEpochs}
           threadComposerDraftOverrides={localThreadComposerDrafts}
           threadComposerMentionIntents={threadComposerMentions}
           onThreadMentionIntentChange={(roomId, rootEventId, mentions) => {

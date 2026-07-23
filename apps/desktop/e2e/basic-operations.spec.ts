@@ -195,6 +195,7 @@ async function gotoSignedOutAuth(page: Page): Promise<void> {
               accepted_submission_ids: [],
               pending_transaction_id: null,
               draft: "",
+              draft_revision: 0,
               mode: "Plain"
             },
             submission_registry: {
@@ -2539,7 +2540,10 @@ test("mention autocomplete inserts a pill and sends typed mention intent", async
   await expect.poll(() => invocationCount(page, "send_text")).toBeGreaterThanOrEqual(1);
   await expect
     .poll(async () => page.evaluate(() => window.__harness.invocationsOf("send_text")[0]?.args))
-    .toEqual({
+    .toMatchObject({
+      accountHomeserver: "https://harness.example.invalid",
+      accountUserId: "@harness-user:example.invalid",
+      accountDeviceId: "HARNESSDEVICE",
       roomId: HARNESS_ROOM_ID,
       body: "@Alice ",
       mentions: {
@@ -2574,7 +2578,10 @@ test("markdown toolbar and slash composer input dispatch Rust-owned send bodies"
 
   await expect
     .poll(async () => page.evaluate(() => window.__harness.invocationsOf("send_text")[0]?.args))
-    .toEqual({
+    .toMatchObject({
+      accountHomeserver: "https://harness.example.invalid",
+      accountUserId: "@harness-user:example.invalid",
+      accountDeviceId: "HARNESSDEVICE",
       roomId: HARNESS_ROOM_ID,
       body: "**world**",
       mentions: { targets: [] }
@@ -2585,7 +2592,10 @@ test("markdown toolbar and slash composer input dispatch Rust-owned send bodies"
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect
     .poll(async () => page.evaluate(() => window.__harness.invocationsOf("send_text")[0]?.args))
-    .toEqual({
+    .toMatchObject({
+      accountHomeserver: "https://harness.example.invalid",
+      accountUserId: "@harness-user:example.invalid",
+      accountDeviceId: "HARNESSDEVICE",
       roomId: HARNESS_ROOM_ID,
       body: "/me waves",
       mentions: { targets: [] }
@@ -2639,6 +2649,7 @@ test("main composer draft is Rust snapshot scoped per room", async ({ page }) =>
     const primaryRoomId = "!harness-room:example.invalid";
     const secondaryRoomId = "!draft-room-b:example.invalid";
     const draftByRoom: Record<string, string> = {};
+    const revisionByRoom: Record<string, number> = {};
     const base = window.__harness.currentSnapshot();
     const rooms = [
       base.state.domain.rooms[0],
@@ -2686,8 +2697,10 @@ test("main composer draft is Rust snapshot scoped per room", async ({ page }) =>
               room_id: roomId,
               is_subscribed: true,
               composer: {
+                accepted_submission_ids: [],
                 pending_transaction_id: null,
                 draft: draftByRoom[roomId] ?? "",
+                draft_revision: revisionByRoom[roomId] ?? 0,
                 mode: "Plain"
               }
             },
@@ -2706,8 +2719,14 @@ test("main composer draft is Rust snapshot scoped per room", async ({ page }) =>
     window.__harness.setSnapshot(projectRoom(primaryRoomId));
     window.__harness.setCommandResponse(
       "set_composer_draft",
-      ({ roomId, draft }: { roomId: string; draft: string }) => {
+      ({ roomId, draft, revision }: { roomId: string; draft: string; revision: number }) => {
         const normalizedRoomId = String(roomId);
+        if (revision <= (revisionByRoom[normalizedRoomId] ?? 0)) {
+          return projectRoom(
+            window.__harness.currentSnapshot().state.ui.timeline.room_id ?? primaryRoomId
+          );
+        }
+        revisionByRoom[normalizedRoomId] = revision;
         if (draft.length === 0) {
           delete draftByRoom[normalizedRoomId];
         } else {
@@ -2730,16 +2749,40 @@ test("main composer draft is Rust snapshot scoped per room", async ({ page }) =>
   const composer = page.getByRole("textbox", { name: "Message composer" });
   await composer.fill("Room A draft");
   await expect(composer).toHaveValue("Room A draft");
-  await expect
-    .poll(async () =>
-      page.evaluate(() => window.__harness.invocationsOf("set_composer_draft").at(-1)?.args)
-    )
-    .toEqual({ roomId: HARNESS_ROOM_ID, draft: "Room A draft" });
-
-  await page.getByRole("button", { name: "Draft Room B" }).click();
+  // Switch before the debounce expires: persistence timers are target-owned,
+  // so editing room B must not cancel room A's pending encrypted-store write.
+  await page
+    .getByRole("button", { name: "Draft Room B" })
+    .evaluate((button: HTMLButtonElement) => button.click());
   await expect(composer).toHaveValue("");
   await composer.fill("Room B draft");
   await expect(composer).toHaveValue("Room B draft");
+  await expect
+    .poll(async () =>
+      page.evaluate(() =>
+        window.__harness
+          .invocationsOf("set_composer_draft")
+          .map(({ args }) => args)
+      )
+    )
+    .toEqual([
+      {
+        accountHomeserver: "https://harness.example.invalid",
+        accountUserId: "@harness-user:example.invalid",
+        accountDeviceId: "HARNESSDEVICE",
+        roomId: HARNESS_ROOM_ID,
+        draft: "Room A draft",
+        revision: 1
+      },
+      {
+        accountHomeserver: "https://harness.example.invalid",
+        accountUserId: "@harness-user:example.invalid",
+        accountDeviceId: "HARNESSDEVICE",
+        roomId: "!draft-room-b:example.invalid",
+        draft: "Room B draft",
+        revision: 1
+      }
+    ]);
 
   await page.getByRole("button", { name: "Harness Room" }).click();
   await expect(composer).toHaveValue("Room A draft");
@@ -3033,7 +3076,7 @@ test("main composer keeps an emptied local draft across stale snapshot refresh",
     window.__harness.setSnapshot(staleDraftSnapshot);
     window.__harness.setCommandResponse(
       "set_composer_draft",
-      ({ draft }: { draft: string }) => {
+      ({ draft, revision }: { draft: string; revision: number }) => {
         const snapshot = window.__harness.currentSnapshot();
         return {
           ...snapshot,
@@ -3045,7 +3088,8 @@ test("main composer keeps an emptied local draft across stale snapshot refresh",
                 ...snapshot.state.ui.timeline,
                 composer: {
                   ...snapshot.state.ui.timeline.composer,
-                  draft
+                  draft,
+                  draft_revision: revision
                 }
               }
             }
@@ -3068,13 +3112,297 @@ test("main composer keeps an emptied local draft across stale snapshot refresh",
     .poll(async () =>
       page.evaluate(() => window.__harness.invocationsOf("set_composer_draft").at(-1)?.args)
     )
-    .toEqual({ roomId: HARNESS_ROOM_ID, draft: "" });
+    .toEqual({
+      accountHomeserver: "https://harness.example.invalid",
+      accountUserId: "@harness-user:example.invalid",
+      accountDeviceId: "HARNESSDEVICE",
+      roomId: HARNESS_ROOM_ID,
+      draft: "",
+      revision: 2
+    });
 
   await page.evaluate(() => {
     window.__harness.pushStateChanged();
   });
   await expect(composer).toHaveValue("");
 });
+
+for (const completionOrder of ["accepted-first", "persist-first"] as const) {
+  test(`main composer revision fence keeps immediate next input (${completionOrder})`, async ({
+    page
+  }) => {
+    await gotoReadyShell(page);
+    await page.evaluate(() => {
+      type RaceControls = Window & {
+        __resolveDraftPersistRace?: () => void;
+        __resolveDraftSendRace?: () => void;
+      };
+      const raceWindow = window as RaceControls;
+      let resolvePersist!: () => void;
+      let resolveSend!: () => void;
+      const persistGate = new Promise<void>((resolve) => {
+        resolvePersist = resolve;
+      });
+      const sendGate = new Promise<void>((resolve) => {
+        resolveSend = resolve;
+      });
+      raceWindow.__resolveDraftPersistRace = resolvePersist;
+      raceWindow.__resolveDraftSendRace = resolveSend;
+
+      window.__harness.setCommandResponse(
+        "set_composer_draft",
+        async ({
+          draft,
+          revision
+        }: {
+          roomId: string;
+          draft: string;
+          revision: number;
+        }) => {
+          if (revision === 1) {
+            await persistGate;
+          }
+          const current = window.__harness.currentSnapshot();
+          if (revision <= current.state.ui.timeline.composer.draft_revision) {
+            return current;
+          }
+          const next = {
+            ...current,
+            state: {
+              ...current.state,
+              ui: {
+                ...current.state.ui,
+                timeline: {
+                  ...current.state.ui.timeline,
+                  composer: {
+                    ...current.state.ui.timeline.composer,
+                    draft,
+                    draft_revision: revision
+                  }
+                }
+              }
+            }
+          };
+          window.__harness.setSnapshot(next);
+          return next;
+        }
+      );
+      window.__harness.setCommandResponse(
+        "send_text",
+        async ({
+          submissionId,
+          draftRevision
+        }: {
+          submissionId: string;
+          draftRevision: number;
+        }) => {
+          await sendGate;
+          const current = window.__harness.currentSnapshot();
+          const currentComposer = current.state.ui.timeline.composer;
+          const next = {
+            outcome: "accepted",
+            submissionId,
+            transactionId: "synthetic-transaction",
+            snapshot: {
+              ...current,
+              state: {
+                ...current.state,
+                ui: {
+                  ...current.state.ui,
+                  timeline: {
+                    ...current.state.ui.timeline,
+                    composer: {
+                      ...currentComposer,
+                      draft:
+                        currentComposer.draft_revision > draftRevision
+                          ? currentComposer.draft
+                          : "",
+                      draft_revision:
+                        Math.max(currentComposer.draft_revision, draftRevision) + 1
+                    }
+                  }
+                }
+              }
+            }
+          };
+          window.__harness.setSnapshot(next.snapshot);
+          return next;
+        }
+      );
+      window.__harness.clearInvocations();
+    });
+
+    const composer = page.getByRole("textbox", { name: "Message composer" });
+    await composer.fill("accepted message");
+    await expect
+      .poll(() => invocationCount(page, "set_composer_draft"))
+      .toBe(1);
+
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect.poll(() => invocationCount(page, "send_text")).toBe(1);
+    await composer.fill("immediate next input");
+
+    if (completionOrder === "accepted-first") {
+      await page.evaluate(() =>
+        (window as Window & { __resolveDraftSendRace?: () => void }).__resolveDraftSendRace?.()
+      );
+      await page.evaluate(() =>
+        (window as Window & { __resolveDraftPersistRace?: () => void })
+          .__resolveDraftPersistRace?.()
+      );
+    } else {
+      await page.evaluate(() =>
+        (window as Window & { __resolveDraftPersistRace?: () => void })
+          .__resolveDraftPersistRace?.()
+      );
+      await expect.poll(() => invocationCount(page, "set_composer_draft")).toBe(2);
+      await page.evaluate(() =>
+        (window as Window & { __resolveDraftSendRace?: () => void }).__resolveDraftSendRace?.()
+      );
+    }
+
+    await expect(composer).toHaveValue("immediate next input");
+    await expect
+      .poll(async () =>
+        page.evaluate(
+          () => window.__harness.invocationsOf("set_composer_draft").at(-1)?.args.revision
+        )
+      )
+      .toBe(3);
+    await expect(composer).toHaveValue("immediate next input");
+  });
+}
+
+test("main composer discards an accepted send response from the previous account", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    type AccountRaceControls = Window & {
+      __resolvePreviousAccountSend?: () => void;
+    };
+    let resolveSend!: () => void;
+    const sendGate = new Promise<void>((resolve) => {
+      resolveSend = resolve;
+    });
+    (window as AccountRaceControls).__resolvePreviousAccountSend = resolveSend;
+    window.__harness.setCommandResponse(
+      "send_text",
+      async ({
+        submissionId,
+        draftRevision
+      }: {
+        submissionId: string;
+        draftRevision: number;
+      }) => {
+        const previousAccountSnapshot = window.__harness.currentSnapshot();
+        await sendGate;
+        return {
+          outcome: "accepted",
+          submissionId,
+          transactionId: "previous-account-transaction",
+          snapshot: {
+            ...previousAccountSnapshot,
+            state: {
+              ...previousAccountSnapshot.state,
+              ui: {
+                ...previousAccountSnapshot.state.ui,
+                timeline: {
+                  ...previousAccountSnapshot.state.ui.timeline,
+                  composer: {
+                    ...previousAccountSnapshot.state.ui.timeline.composer,
+                    draft: "",
+                    draft_revision: draftRevision + 1
+                  }
+                }
+              }
+            }
+          }
+        };
+      }
+    );
+    window.__harness.clearInvocations();
+  });
+
+  const composer = page.getByRole("textbox", { name: "Message composer" });
+  await composer.fill("previous account draft");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect.poll(() => invocationCount(page, "send_text")).toBe(1);
+
+  await page.evaluate(() => {
+    const current = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...current,
+      state: {
+        ...current.state,
+        domain: {
+          ...current.state.domain,
+          session: {
+            ...current.state.domain.session,
+            kind: "ready",
+            homeserver: "https://next-account.example.invalid",
+            user_id: "@next-account:example.invalid",
+            device_id: "NEXTDEVICE"
+          }
+        },
+        ui: {
+          ...current.state.ui,
+          timeline: {
+            ...current.state.ui.timeline,
+            composer: {
+              ...current.state.ui.timeline.composer,
+              draft: "next account draft",
+              draft_revision: 1
+            }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+  await expect(composer).toHaveValue("next account draft");
+
+  await page.evaluate(() =>
+    (window as Window & { __resolvePreviousAccountSend?: () => void })
+      .__resolvePreviousAccountSend?.()
+  );
+  await expect(composer).toHaveValue("next account draft");
+});
+
+for (const failure of ["rejected", "timeout"] as const) {
+  test(`main composer retains its draft when submission is ${failure}`, async ({ page }) => {
+    await gotoReadyShell(page);
+    await page.evaluate((failureKind) => {
+      window.__harness.setCommandResponse(
+        "send_text",
+        ({ submissionId }: { submissionId: string }) => {
+          if (failureKind === "timeout") {
+            throw "timeout";
+          }
+          return {
+            outcome: "rejected",
+            submissionId,
+            transactionId: null,
+            snapshot: window.__harness.currentSnapshot()
+          };
+        }
+      );
+      window.__harness.clearInvocations();
+    }, failure);
+
+    const composer = page.getByRole("textbox", { name: "Message composer" });
+    await composer.fill("draft retained after failure");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+
+    await expect.poll(() => invocationCount(page, "send_text")).toBe(1);
+    await expect(composer).toHaveValue("draft retained after failure");
+    await expect
+      .poll(async () =>
+        page.evaluate(() => window.__harness.invocationsOf("send_text")[0]?.args.draftRevision)
+      )
+      .toBe(1);
+  });
+}
 
 test("timeline sender avatars render after headless account thumbnail events", async ({
   page
@@ -3201,7 +3529,9 @@ test("scheduled send UI dispatches typed commands and waits for Rust snapshot ch
           send_at_ms: number;
           handle: { kind: "local" } | { kind: "server"; delay_id: string };
         }>,
-        draft = window.__harness.currentSnapshot().state.ui.timeline.composer.draft
+        draft = window.__harness.currentSnapshot().state.ui.timeline.composer.draft,
+        draftRevision =
+          window.__harness.currentSnapshot().state.ui.timeline.composer.draft_revision
       ) => {
         const current = window.__harness.currentSnapshot();
         return {
@@ -3216,7 +3546,8 @@ test("scheduled send UI dispatches typed commands and waits for Rust snapshot ch
                 scheduled_sends: items,
                 composer: {
                   ...current.state.ui.timeline.composer,
-                  draft
+                  draft,
+                  draft_revision: draftRevision
                 }
               }
             }
@@ -3237,11 +3568,33 @@ test("scheduled send UI dispatches typed commands and waits for Rust snapshot ch
 
       window.__harness.setSnapshot(projectScheduled([], ""));
       window.__harness.setCommandResponse(
-        "schedule_send",
-        ({ body }: { body: string; sendAtMs: number }) => {
-          const next = projectScheduled([{ ...scheduledItem, body: String(body) }], "");
+        "set_composer_draft",
+        ({ draft, revision }: { draft: string; revision: number }) => {
+          const next = projectScheduled([], draft, revision);
           window.__harness.setSnapshot(next);
           return next;
+        }
+      );
+      window.__harness.setCommandResponse(
+        "schedule_send",
+        ({
+          body,
+          draftRevision
+        }: {
+          body: string;
+          sendAtMs: number;
+          draftRevision: number;
+        }) => {
+          const next = projectScheduled(
+            [{ ...scheduledItem, body: String(body) }],
+            "",
+            draftRevision + 1
+          );
+          window.__harness.setSnapshot(next);
+          return {
+            acceptedRevision: next.state.ui.timeline.composer.draft_revision,
+            snapshot: next
+          };
         }
       );
       window.__harness.setCommandResponse("reschedule_scheduled_send", () =>
@@ -3267,13 +3620,22 @@ test("scheduled send UI dispatches typed commands and waits for Rust snapshot ch
   await expect
     .poll(async () => page.evaluate(() => window.__harness.invocationsOf("schedule_send")[0]?.args))
     .toEqual({
-      roomId: HARNESS_ROOM_ID,
+      accountHomeserver: "https://harness.example.invalid",
+      accountUserId: "@harness-user:example.invalid",
+      accountDeviceId: "HARNESSDEVICE",
+      target: { kind: "main", room_id: HARNESS_ROOM_ID },
       body: "Phase B scheduled body",
-      sendAtMs: initialSendAt
+      sendAtMs: initialSendAt,
+      draftRevision: 1
     });
   await expect(page.getByRole("region", { name: "Scheduled messages" })).toContainText(
     "Phase B scheduled body"
   );
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__harness.currentSnapshot().state.ui.timeline.composer)
+    )
+    .toMatchObject({ draft: "", draft_revision: 2 });
   await expect(page.getByRole("textbox", { name: "Message composer" })).toHaveValue("");
 
   await page.getByRole("button", { name: "Edit scheduled send" }).click();
@@ -4076,29 +4438,23 @@ test("attach control stages media caption and renders Rust-owned media progress"
   await expect.poll(() => invocationCount(page, "upload_media")).toBe(0);
   await page.getByRole("button", { name: "Send", exact: true }).click();
 
-  await expect.poll(() => invocationCount(page, "upload_media")).toBeGreaterThanOrEqual(1);
+  await expect.poll(() => invocationCount(page, "send_prepared_uploads")).toBe(1);
   await expect.poll(() => invocationCount(page, "send_text")).toBe(0);
   await expect
     .poll(async () =>
       page.evaluate(() => {
-        const args = window.__harness.invocationsOf("upload_media")[0]?.args;
+        const args = window.__harness.invocationsOf("send_prepared_uploads")[0]?.args;
         return args
           ? {
-              roomId: args.roomId,
-              filename: args.filename,
-              mimeType: args.mimeType,
-              caption: args.caption,
-              byteCount: Array.isArray(args.bytes) ? args.bytes.length : -1
+              target: args.target,
+              draftRevision: args.draftRevision
             }
           : null;
       })
     )
     .toEqual({
-      roomId: "!harness-room:example.invalid",
-      filename: "media-fixture.txt",
-      mimeType: "text/plain",
-      caption: "single **event** caption",
-      byteCount: fixtureBytes.length
+      target: { kind: "main", room_id: "!harness-room:example.invalid" },
+      draftRevision: 1
     });
 
   const key = roomTimelineKey("@harness-user:example.invalid", "!harness-room:example.invalid");
@@ -4321,7 +4677,13 @@ test("paste/drop upload UX stages ordinary files for the captured main composer 
     .poll(async () =>
       page.evaluate(() => window.__harness.invocationsOf("send_prepared_uploads")[0]?.args)
     )
-    .toEqual({ target: { kind: "main", room_id: "!harness-room:example.invalid" } });
+    .toEqual({
+      accountHomeserver: "https://harness.example.invalid",
+      accountUserId: "@harness-user:example.invalid",
+      accountDeviceId: "HARNESSDEVICE",
+      target: { kind: "main", room_id: "!harness-room:example.invalid" },
+      draftRevision: 0
+    });
   await expect(page.getByRole("dialog", { name: "Upload attachments" })).toHaveCount(0);
 });
 
@@ -5101,9 +5463,13 @@ test("thread composer drafts and sends through thread reply commands only", asyn
       page.evaluate(() => window.__harness.invocationsOf("set_thread_composer_draft")[0]?.args)
     )
     .toEqual({
+      accountHomeserver: "https://harness.example.invalid",
+      accountUserId: "@harness-user:example.invalid",
+      accountDeviceId: "HARNESSDEVICE",
       roomId: "!harness-room:example.invalid",
       rootEventId: "$seed-event:example.invalid",
-      draft: threadReplyBody
+      draft: threadReplyBody,
+      revision: 1
     });
 
   await threadComposer.press("Enter");
@@ -5128,10 +5494,14 @@ test("thread composer drafts and sends through thread reply commands only", asyn
       page.evaluate(() => window.__harness.invocationsOf("send_thread_reply")[0]?.args)
     )
     .toMatchObject({
+      accountHomeserver: "https://harness.example.invalid",
+      accountUserId: "@harness-user:example.invalid",
+      accountDeviceId: "HARNESSDEVICE",
       roomId: "!harness-room:example.invalid",
       rootEventId: "$seed-event:example.invalid",
       body: threadReplyBody,
-      mentions: { targets: [] }
+      mentions: { targets: [] },
+      draftRevision: 1
     });
   expect(await invocationCount(page, "send_text")).toBe(0);
   expect(await invocationCount(page, "send_reply")).toBe(0);
@@ -5171,11 +5541,15 @@ test("thread composer drafts and sends through thread reply commands only", asyn
       page.evaluate(() => window.__harness.invocationsOf("send_prepared_uploads")[0]?.args)
     )
     .toEqual({
+      accountHomeserver: "https://harness.example.invalid",
+      accountUserId: "@harness-user:example.invalid",
+      accountDeviceId: "HARNESSDEVICE",
       target: {
         kind: "thread",
         room_id: "!harness-room:example.invalid",
         root_event_id: "$seed-event:example.invalid"
-      }
+      },
+      draftRevision: 2
     });
 });
 

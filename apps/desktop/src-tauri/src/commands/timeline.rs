@@ -2,6 +2,7 @@ use super::*;
 
 const SUBMISSION_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(10);
 const PREPARED_MEDIA_QUEUE_TIMEOUT: Duration = Duration::from_secs(10);
+const COMPOSER_DRAFT_ACCEPTANCE_TIMEOUT: Duration = Duration::from_secs(10);
 
 trait SubmissionEventSource {
     fn snapshot(&self) -> koushi_state::AppState;
@@ -19,6 +20,79 @@ impl SubmissionEventSource for CoreConnection {
         &mut self,
     ) -> Pin<Box<dyn Future<Output = Result<CoreEvent, EventStreamLag>> + Send + '_>> {
         Box::pin(CoreConnection::recv_event(self))
+    }
+}
+
+fn composer_draft_revision(
+    state: &koushi_state::AppState,
+    target: &koushi_state::ComposerTarget,
+) -> u64 {
+    match target {
+        koushi_state::ComposerTarget::Main { room_id } => {
+            state.composer_drafts.room_revision(room_id)
+        }
+        koushi_state::ComposerTarget::Thread {
+            room_id,
+            root_event_id,
+        } => state
+            .composer_drafts
+            .thread_revision(room_id, root_event_id),
+    }
+}
+
+fn composer_draft_session_key(state: &koushi_state::AppState) -> Option<koushi_key::SessionKeyId> {
+    match &state.session {
+        koushi_state::SessionState::Ready(info) => {
+            Some(koushi_core::store::session_key_id_from_info(info))
+        }
+        _ => None,
+    }
+}
+
+fn next_composer_draft_acceptance_revision(
+    state: &koushi_state::AppState,
+    target: &koushi_state::ComposerTarget,
+    submitted_revision: u64,
+) -> Result<u64, String> {
+    composer_draft_revision(state, target)
+        .max(submitted_revision)
+        .checked_add(1)
+        .ok_or_else(|| "composer draft revision exhausted".to_owned())
+}
+
+async fn wait_for_composer_draft_acceptance<S: SubmissionEventSource>(
+    source: &mut S,
+    request_id: koushi_core::RequestId,
+    target: &koushi_state::ComposerTarget,
+    expected_revision: u64,
+    timeout: Duration,
+) -> Result<u64, String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let revision = composer_draft_revision(&source.snapshot(), target);
+        if revision >= expected_revision {
+            return Ok(revision);
+        }
+        let terminal_failure = match tokio::time::timeout_at(deadline, source.recv_event()).await {
+            Ok(Ok(koushi_core::CoreEvent::OperationFailed {
+                request_id: failed_request_id,
+                ..
+            })) if failed_request_id == request_id => {
+                "composer draft acceptance was rejected".to_owned()
+            }
+            Ok(Ok(_)) => continue,
+            Ok(Err(lag)) if lag.skipped == 0 => "composer draft acceptance disconnected".to_owned(),
+            Ok(Err(_)) => "composer draft acceptance event stream lagged".to_owned(),
+            Err(_) => "composer draft acceptance did not settle".to_owned(),
+        };
+        // Broadcast delivery is only a wake-up hint. The reducer snapshot is
+        // authoritative and may already contain the acceptance even when the
+        // event was lagged, disconnected, or raced the deadline.
+        let revision = composer_draft_revision(&source.snapshot(), target);
+        if revision >= expected_revision {
+            return Ok(revision);
+        }
+        return Err(terminal_failure);
     }
 }
 
@@ -244,10 +318,14 @@ pub async fn paginate_thread_timeline_backwards(
 
 #[tauri::command]
 pub async fn send_text(
+    account_homeserver: String,
+    account_user_id: String,
+    account_device_id: String,
     submission_id: String,
     room_id: String,
     body: String,
     mentions: Option<koushi_state::MentionIntent>,
+    draft_revision: u64,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<SubmissionResponse, SubmissionFailure> {
@@ -259,18 +337,28 @@ pub async fn send_text(
         "desktop-{}",
         NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
     );
+    let expected_account = koushi_key::SessionKeyId {
+        homeserver: account_homeserver,
+        user_id: account_user_id,
+        device_id: account_device_id,
+    };
     let mut event_conn = state.runtime.attach();
+    if composer_draft_session_key(&event_conn.snapshot()).as_ref() != Some(&expected_account) {
+        return Err(SubmissionFailure::SubmitFailed);
+    }
     let request_id = event_conn.next_request_id();
     let account_key = account_key_from_snapshot(state.inner()).await;
     let submission_id = SubmissionId::new(submission_id);
     if let Some(command) = build_submit_text_command(
         request_id,
+        expected_account,
         submission_id.clone(),
         account_key,
         room_id,
         transaction_id,
         body,
         mentions.unwrap_or_default(),
+        draft_revision,
     ) {
         event_conn
             .command(command)
@@ -284,18 +372,59 @@ pub async fn send_text(
 
 #[tauri::command]
 pub async fn schedule_send(
+    account_homeserver: String,
+    account_user_id: String,
+    account_device_id: String,
     target: koushi_state::ComposerTarget,
     body: String,
     send_at_ms: u64,
+    draft_revision: u64,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) = build_schedule_send_command(request_id, target, body, send_at_ms) {
-        submit_core_command(state.inner(), command).await?;
+) -> Result<ComposerDraftAcceptanceResponse, String> {
+    let mut event_conn = state.runtime.attach();
+    let expected_account = koushi_key::SessionKeyId {
+        homeserver: account_homeserver,
+        user_id: account_user_id,
+        device_id: account_device_id,
+    };
+    if composer_draft_session_key(&event_conn.snapshot()).as_ref() != Some(&expected_account) {
+        return Err("composer operation owner changed".to_owned());
     }
+    let expected_revision =
+        next_composer_draft_acceptance_revision(&event_conn.snapshot(), &target, draft_revision)?;
+    let request_id = event_conn.next_request_id();
+    let accepted_revision = if let Some(command) = build_schedule_send_command(
+        request_id,
+        expected_account,
+        target.clone(),
+        body,
+        send_at_ms,
+        draft_revision,
+    ) {
+        event_conn
+            .command(command)
+            .await
+            .map_err(|error| format!("command submit failed: {error}"))?;
+        Some(
+            wait_for_composer_draft_acceptance(
+                &mut event_conn,
+                request_id,
+                &target,
+                expected_revision,
+                COMPOSER_DRAFT_ACCEPTANCE_TIMEOUT,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
+    let snapshot = event_conn.versioned_snapshot();
+    Ok(ComposerDraftAcceptanceResponse {
+        accepted_revision,
+        snapshot: FrontendDesktopSnapshot::from_versioned(snapshot.state, snapshot.generation),
+    })
 }
 
 #[tauri::command]
@@ -743,13 +872,31 @@ pub async fn prepared_upload_preview(
 
 #[tauri::command]
 pub async fn send_prepared_uploads(
+    account_homeserver: String,
+    account_user_id: String,
+    account_device_id: String,
     target: koushi_state::ComposerTarget,
+    draft_revision: u64,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
+) -> Result<ComposerDraftAcceptanceResponse, String> {
     let snapshot = state.runtime.attach().snapshot();
+    let expected_account = koushi_key::SessionKeyId {
+        homeserver: account_homeserver,
+        user_id: account_user_id,
+        device_id: account_device_id,
+    };
+    if composer_draft_session_key(&snapshot).as_ref() != Some(&expected_account) {
+        return Ok(ComposerDraftAcceptanceResponse {
+            accepted_revision: None,
+            snapshot: current_snapshot(state.inner()).await?,
+        });
+    }
     if !composer_target_is_active(&snapshot, &target) {
-        return current_snapshot(state.inner()).await;
+        return Ok(ComposerDraftAcceptanceResponse {
+            accepted_revision: None,
+            snapshot: current_snapshot(state.inner()).await?,
+        });
     }
     let staged_items = staged_uploads_for_target(&snapshot, &target)
         .unwrap_or_default()
@@ -762,7 +909,10 @@ pub async fn send_prepared_uploads(
             )
         })
     {
-        return current_snapshot(state.inner()).await;
+        return Ok(ComposerDraftAcceptanceResponse {
+            accepted_revision: None,
+            snapshot: current_snapshot(state.inner()).await?,
+        });
     }
 
     let account_key = account_key_from_app_state(&snapshot);
@@ -795,6 +945,7 @@ pub async fn send_prepared_uploads(
         event_conn
             .command(CoreCommand::Timeline(TimelineCommand::UploadAndSendMedia {
                 request_id,
+                expected_account: expected_account.clone(),
                 key: key.clone(),
                 transaction_id: transaction_id.clone(),
                 request: UploadMediaRequest {
@@ -819,19 +970,46 @@ pub async fn send_prepared_uploads(
         let mut media = state.runtime.media_preparation().transition().await;
         media.remove_item(&target, &item.staged_id);
         let current = event_conn.snapshot();
-        if account_key_from_app_state(&current) != account_key
-            || !composer_target_is_active(&current, &target)
-        {
-            return current_snapshot(state.inner()).await;
+        if composer_draft_session_key(&current).as_ref() != Some(&expected_account) {
+            return Ok(ComposerDraftAcceptanceResponse {
+                accepted_revision: None,
+                snapshot: current_snapshot(state.inner()).await?,
+            });
         }
         let mut remaining_items = staged_uploads_for_target(&current, &target)
             .unwrap_or_default()
             .to_vec();
         remaining_items.retain(|candidate| candidate.staged_id != item.staged_id);
-        publish_staged_upload_items(&mut event_conn, &target, remaining_items).await?;
+        if composer_target_is_active(&current, &target) {
+            publish_staged_upload_items(&mut event_conn, &target, remaining_items).await?;
+        }
     }
+    let expected_revision =
+        next_composer_draft_acceptance_revision(&event_conn.snapshot(), &target, draft_revision)?;
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(CoreCommand::App(AppCommand::AcceptComposerDraft {
+            request_id,
+            expected_account,
+            target: target.clone(),
+            submitted_revision: draft_revision,
+        }))
+        .await
+        .map_err(|error| format!("command submit failed: {error}"))?;
+    let accepted_revision = wait_for_composer_draft_acceptance(
+        &mut event_conn,
+        request_id,
+        &target,
+        expected_revision,
+        COMPOSER_DRAFT_ACCEPTANCE_TIMEOUT,
+    )
+    .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
+    let snapshot = event_conn.versioned_snapshot();
+    Ok(ComposerDraftAcceptanceResponse {
+        accepted_revision: Some(accepted_revision),
+        snapshot: FrontendDesktopSnapshot::from_versioned(snapshot.state, snapshot.generation),
+    })
 }
 
 fn timeline_key_for_composer_target(
@@ -1149,12 +1327,17 @@ pub async fn upload_media(
         "desktop-media-{}",
         NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
     );
-    let account_key = account_key_from_snapshot(state.inner()).await;
+    let snapshot = state.runtime.attach().snapshot();
+    let Some(expected_account) = composer_draft_session_key(&snapshot) else {
+        return current_snapshot(state.inner()).await;
+    };
+    let account_key = account_key_from_app_state(&snapshot);
     let (image_compression_mode, image_compression_policy) =
         image_upload_compression_contract_from_snapshot(state.inner()).await;
     let request_id = next_request_id(state.inner()).await;
     if let Some(command) = build_upload_media_command(
         request_id,
+        expected_account,
         account_key,
         room_id,
         transaction_id,
@@ -1561,15 +1744,29 @@ pub async fn cancel_composer_reply(
 
 #[tauri::command]
 pub async fn set_composer_draft(
+    account_homeserver: String,
+    account_user_id: String,
+    account_device_id: String,
     room_id: String,
     draft: String,
+    revision: u64,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(
         state.inner(),
-        build_set_composer_draft_command(request_id, room_id, draft),
+        build_set_composer_draft_command(
+            request_id,
+            koushi_key::SessionKeyId {
+                homeserver: account_homeserver,
+                user_id: account_user_id,
+                device_id: account_device_id,
+            },
+            room_id,
+            draft,
+            revision,
+        ),
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -1578,16 +1775,31 @@ pub async fn set_composer_draft(
 
 #[tauri::command]
 pub async fn set_thread_composer_draft(
+    account_homeserver: String,
+    account_user_id: String,
+    account_device_id: String,
     room_id: String,
     root_event_id: String,
     draft: String,
+    revision: u64,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(
         state.inner(),
-        build_set_thread_composer_draft_command(request_id, room_id, root_event_id, draft),
+        build_set_thread_composer_draft_command(
+            request_id,
+            koushi_key::SessionKeyId {
+                homeserver: account_homeserver,
+                user_id: account_user_id,
+                device_id: account_device_id,
+            },
+            room_id,
+            root_event_id,
+            draft,
+            revision,
+        ),
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -1596,11 +1808,15 @@ pub async fn set_thread_composer_draft(
 
 #[tauri::command]
 pub async fn send_reply(
+    account_homeserver: String,
+    account_user_id: String,
+    account_device_id: String,
     submission_id: String,
     room_id: String,
     in_reply_to_event_id: String,
     body: String,
     mentions: Option<koushi_state::MentionIntent>,
+    draft_revision: u64,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<SubmissionResponse, SubmissionFailure> {
@@ -1612,12 +1828,21 @@ pub async fn send_reply(
         "desktop-{}",
         NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
     );
+    let expected_account = koushi_key::SessionKeyId {
+        homeserver: account_homeserver,
+        user_id: account_user_id,
+        device_id: account_device_id,
+    };
     let mut event_conn = state.runtime.attach();
+    if composer_draft_session_key(&event_conn.snapshot()).as_ref() != Some(&expected_account) {
+        return Err(SubmissionFailure::SubmitFailed);
+    }
     let request_id = event_conn.next_request_id();
     let account_key = account_key_from_snapshot(state.inner()).await;
     let submission_id = SubmissionId::new(submission_id);
     if let Some(command) = build_submit_reply_command(
         request_id,
+        expected_account,
         submission_id.clone(),
         account_key,
         room_id,
@@ -1625,6 +1850,7 @@ pub async fn send_reply(
         in_reply_to_event_id,
         body,
         mentions.unwrap_or_default(),
+        draft_revision,
     ) {
         event_conn
             .command(command)
@@ -1638,11 +1864,15 @@ pub async fn send_reply(
 
 #[tauri::command]
 pub async fn send_thread_reply(
+    account_homeserver: String,
+    account_user_id: String,
+    account_device_id: String,
     submission_id: String,
     room_id: String,
     root_event_id: String,
     body: String,
     mentions: Option<koushi_state::MentionIntent>,
+    draft_revision: u64,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<SubmissionResponse, SubmissionFailure> {
@@ -1654,12 +1884,21 @@ pub async fn send_thread_reply(
         "desktop-{}",
         NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
     );
+    let expected_account = koushi_key::SessionKeyId {
+        homeserver: account_homeserver,
+        user_id: account_user_id,
+        device_id: account_device_id,
+    };
     let mut event_conn = state.runtime.attach();
+    if composer_draft_session_key(&event_conn.snapshot()).as_ref() != Some(&expected_account) {
+        return Err(SubmissionFailure::SubmitFailed);
+    }
     let request_id = event_conn.next_request_id();
     let account_key = account_key_from_snapshot(state.inner()).await;
     let submission_id = SubmissionId::new(submission_id);
     if let Some(command) = build_submit_thread_reply_command(
         request_id,
+        expected_account,
         submission_id.clone(),
         account_key,
         room_id,
@@ -1667,6 +1906,7 @@ pub async fn send_thread_reply(
         transaction_id,
         body,
         mentions.unwrap_or_default(),
+        draft_revision,
     ) {
         event_conn
             .command(command)
@@ -1715,16 +1955,66 @@ mod submission_settlement_tests {
         }
     }
 
+    struct DraftAcceptanceSource {
+        state: koushi_state::AppState,
+        target: koushi_state::ComposerTarget,
+        submitted_revision: u64,
+        pending_acceptance: bool,
+        terminal_lag: Option<EventStreamLag>,
+    }
+
+    impl SubmissionEventSource for DraftAcceptanceSource {
+        fn snapshot(&self) -> koushi_state::AppState {
+            self.state.clone()
+        }
+
+        fn recv_event(
+            &mut self,
+        ) -> Pin<Box<dyn Future<Output = Result<CoreEvent, EventStreamLag>> + Send + '_>> {
+            if self.pending_acceptance {
+                self.pending_acceptance = false;
+                match &self.target {
+                    koushi_state::ComposerTarget::Main { room_id } => {
+                        self.state
+                            .composer_drafts
+                            .advance_room_revision(room_id, self.submitted_revision);
+                    }
+                    koushi_state::ComposerTarget::Thread {
+                        room_id,
+                        root_event_id,
+                    } => {
+                        self.state.composer_drafts.advance_thread_revision(
+                            room_id,
+                            root_event_id,
+                            self.submitted_revision,
+                        );
+                    }
+                }
+                if let Some(lag) = self.terminal_lag.take() {
+                    Box::pin(async move { Err(lag) })
+                } else {
+                    Box::pin(async { Ok(accepted(SubmissionId::new("draft-accept"), 99)) })
+                }
+            } else {
+                Box::pin(std::future::pending())
+            }
+        }
+    }
+
     fn accepted(id: SubmissionId, sequence: u64) -> CoreEvent {
         CoreEvent::Timeline(TimelineEvent::SubmissionAccepted {
-            request_id: RequestId {
-                connection_id: koushi_core::RuntimeConnectionId(1),
-                sequence,
-            },
+            request_id: request_id(sequence),
             key: build_timeline_key(AccountKey("@u:test".to_owned()), "!r:test".to_owned()),
             submission_id: id,
             transaction_id: "txn".to_owned(),
         })
+    }
+
+    fn request_id(sequence: u64) -> RequestId {
+        RequestId {
+            connection_id: koushi_core::RuntimeConnectionId(1),
+            sequence,
+        }
     }
 
     fn media_send_queued(request_id: RequestId, transaction_id: &str) -> CoreEvent {
@@ -1733,6 +2023,107 @@ mod submission_settlement_tests {
             key: build_timeline_key(AccountKey("@u:test".to_owned()), "!r:test".to_owned()),
             transaction_id: transaction_id.to_owned(),
         })
+    }
+
+    #[tokio::test]
+    async fn composer_acceptance_wait_is_target_keyed_after_ui_switch() {
+        let targets = [
+            koushi_state::ComposerTarget::Main {
+                room_id: "!room-a:test".to_owned(),
+            },
+            koushi_state::ComposerTarget::Thread {
+                room_id: "!room-a:test".to_owned(),
+                root_event_id: "$root:test".to_owned(),
+            },
+        ];
+
+        for target in targets {
+            let mut state = koushi_state::AppState::default();
+            state.timeline.room_id = Some("!room-b:test".to_owned());
+            let expected_revision =
+                next_composer_draft_acceptance_revision(&state, &target, 4).expect("revision");
+            let mut source = DraftAcceptanceSource {
+                state,
+                target: target.clone(),
+                submitted_revision: 4,
+                pending_acceptance: true,
+                terminal_lag: None,
+            };
+
+            assert_eq!(
+                wait_for_composer_draft_acceptance(
+                    &mut source,
+                    request_id(99),
+                    &target,
+                    expected_revision,
+                    Duration::from_secs(1),
+                )
+                .await,
+                Ok(expected_revision)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn composer_acceptance_wait_reconciles_terminal_snapshot_after_stream_failure() {
+        for skipped in [0, 3] {
+            let target = koushi_state::ComposerTarget::Main {
+                room_id: "!room-a:test".to_owned(),
+            };
+            let state = koushi_state::AppState::default();
+            let expected_revision =
+                next_composer_draft_acceptance_revision(&state, &target, 7).expect("revision");
+            let mut source = DraftAcceptanceSource {
+                state,
+                target: target.clone(),
+                submitted_revision: 7,
+                pending_acceptance: true,
+                terminal_lag: Some(EventStreamLag { skipped }),
+            };
+
+            assert_eq!(
+                wait_for_composer_draft_acceptance(
+                    &mut source,
+                    request_id(99),
+                    &target,
+                    expected_revision,
+                    Duration::from_secs(1),
+                )
+                .await,
+                Ok(expected_revision)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn composer_acceptance_wait_stops_on_correlated_command_rejection() {
+        let target = koushi_state::ComposerTarget::Main {
+            room_id: "!room-a:test".to_owned(),
+        };
+        let rejected_request_id = request_id(99);
+        let mut source = ScriptedSource {
+            state: koushi_state::AppState::default(),
+            events: VecDeque::from([(
+                Ok(CoreEvent::OperationFailed {
+                    request_id: rejected_request_id,
+                    failure: koushi_core::CoreFailure::SessionRequired,
+                }),
+                None,
+            )]),
+            pending_on_empty: true,
+        };
+
+        assert_eq!(
+            wait_for_composer_draft_acceptance(
+                &mut source,
+                rejected_request_id,
+                &target,
+                1,
+                Duration::from_secs(1),
+            )
+            .await,
+            Err("composer draft acceptance was rejected".to_owned())
+        );
     }
 
     #[tokio::test]
