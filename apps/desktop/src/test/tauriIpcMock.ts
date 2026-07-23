@@ -254,6 +254,7 @@ function defaultSnapshotResponse() {
           accepted_submission_ids: [],
           pending_submission_id: null,
           pending_transaction_id: null,
+          draft_revision: 0,
           draft: "",
           mode: "Plain"
         },

@@ -136,6 +136,16 @@ fn reduce_with_unread_diagnostics(state: &mut AppState, action: AppAction) -> Ve
     effects
 }
 
+fn composer_draft_account_matches(
+    state: &AppState,
+    expected_account: &koushi_key::SessionKeyId,
+) -> bool {
+    matches!(
+        &state.session,
+        SessionState::Ready(info) if session_key_id_from_info(info) == *expected_account
+    )
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum CommandSubmitError {
     #[error("core runtime is closed")]
@@ -1917,26 +1927,59 @@ impl AppActor {
                 }
                 AppCommand::SetComposerDraft {
                     request_id,
+                    expected_account,
                     room_id,
                     draft,
+                    revision,
                 } => {
+                    if !composer_draft_account_matches(&self.state, &expected_account) {
+                        return false;
+                    }
                     let effects = self
-                        .reduce_app_action(AppAction::ComposerDraftChanged { room_id, draft })
+                        .reduce_app_action(AppAction::ComposerDraftChangedAtRevision {
+                            room_id,
+                            draft,
+                            revision,
+                        })
                         .await;
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
                 AppCommand::SetThreadComposerDraft {
                     request_id,
+                    expected_account,
                     room_id,
                     root_event_id,
                     draft,
+                    revision,
                 } => {
+                    if !composer_draft_account_matches(&self.state, &expected_account) {
+                        return false;
+                    }
                     let effects = self
-                        .reduce_app_action(AppAction::ThreadComposerDraftChanged {
+                        .reduce_app_action(AppAction::ThreadComposerDraftChangedAtRevision {
                             room_id,
                             root_event_id,
                             draft,
+                            revision,
+                        })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::AcceptComposerDraft {
+                    request_id,
+                    expected_account,
+                    target,
+                    submitted_revision,
+                } => {
+                    if !composer_draft_account_matches(&self.state, &expected_account) {
+                        return false;
+                    }
+                    let effects = self
+                        .reduce_app_action(AppAction::ComposerDraftAccepted {
+                            target,
+                            submitted_revision,
                         })
                         .await;
                     self.handle_app_effects(request_id, effects).await;
@@ -2010,11 +2053,20 @@ impl AppActor {
                 }
                 AppCommand::ScheduleSend {
                     request_id,
+                    expected_account,
                     room_id,
                     thread_root_event_id,
                     body,
                     send_at_ms,
+                    draft_revision,
                 } => {
+                    if !composer_draft_account_matches(&self.state, &expected_account) {
+                        self.emit(CoreEvent::OperationFailed {
+                            request_id,
+                            failure: CoreFailure::SessionRequired,
+                        });
+                        return false;
+                    }
                     if self.state.scheduled_sends.capability
                         != ScheduledSendCapability::LocalFallback
                     {
@@ -2028,6 +2080,7 @@ impl AppActor {
                                 thread_root_event_id,
                                 body,
                                 send_at_ms,
+                                draft_revision,
                             })
                             .await
                         {
@@ -2057,7 +2110,10 @@ impl AppActor {
                         is_dispatching: false,
                     };
                     let effects = self
-                        .reduce_app_action(AppAction::ScheduledSendCreated { item })
+                        .reduce_app_action(AppAction::ScheduledSendCreatedAtRevision {
+                            item,
+                            draft_revision,
+                        })
                         .await;
                     self.handle_app_effects(request_id, effects).await;
                     true
@@ -2841,6 +2897,16 @@ impl AppActor {
                 false
             }
             CoreCommand::Timeline(timeline_command) => {
+                if let Some((request_id, expected_account)) =
+                    timeline_command.composer_account_fence()
+                    && !composer_draft_account_matches(&self.state, expected_account)
+                {
+                    self.emit(CoreEvent::OperationFailed {
+                        request_id,
+                        failure: CoreFailure::SessionRequired,
+                    });
+                    return false;
+                }
                 if self.should_suppress_timeline_command_for_privacy(&timeline_command) {
                     return false;
                 }

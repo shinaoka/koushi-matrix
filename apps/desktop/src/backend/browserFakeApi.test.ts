@@ -3,6 +3,18 @@ import { describe, expect, test } from "vitest";
 import { createBrowserFakeApi } from "./browserFakeApi";
 import type { DesktopSnapshot, LiveReadReceipt } from "../domain/types";
 
+async function readyAccount(api: ReturnType<typeof createBrowserFakeApi>) {
+  const session = (await api.getSnapshot()).state.domain.session;
+  if (!session.homeserver || !session.user_id || !session.device_id) {
+    throw new Error("expected ready browser-fake account");
+  }
+  return {
+    homeserver: session.homeserver,
+    userId: session.user_id,
+    deviceId: session.device_id
+  };
+}
+
 function receipt(
   userId: string,
   displayName: string,
@@ -106,10 +118,11 @@ describe("BrowserFakeApi settings preview", () => {
     const api = createBrowserFakeApi();
     const roomId = "!room-alpha:example.invalid";
     await api.selectRoom(roomId);
+    const account = await readyAccount(api);
     const before = (await api.getSnapshot()).timeline.length;
 
-    const first = await api.sendText("submission-same", roomId, "original");
-    const replay = await api.sendText("submission-same", roomId, "changed");
+    const first = await api.sendText(account, "submission-same", roomId, "original");
+    const replay = await api.sendText(account, "submission-same", roomId, "changed");
 
     expect(first.outcome).toBe("accepted");
     expect(replay.transactionId).toBe(first.transactionId);
@@ -119,14 +132,184 @@ describe("BrowserFakeApi settings preview", () => {
     expect(replay.snapshot.state.ui.timeline.composer.accepted_submission_ids).toContain("submission-same");
   });
 
+  test("fences stale main and thread draft writes after accepted sends", async () => {
+    const api = createBrowserFakeApi();
+    const roomId = "!room-alpha:example.invalid";
+    await api.selectRoom(roomId);
+    const session = (await api.getSnapshot()).state.domain.session;
+    const account = {
+      homeserver: session.homeserver!,
+      userId: session.user_id!,
+      deviceId: session.device_id!
+    };
+    await api.setComposerDraft(account, roomId, "main accepted", 1);
+    const sent = await api.sendText(
+      account,
+      "revision-main",
+      roomId,
+      "main accepted",
+      { targets: [] },
+      1
+    );
+    expect(sent.outcome).toBe("accepted");
+    expect(sent.snapshot.state.ui.timeline.composer).toMatchObject({
+      draft: "",
+      draft_revision: 2
+    });
+    const staleMain = await api.setComposerDraft(account, roomId, "main accepted", 1);
+    expect(staleMain.state.ui.timeline.composer.draft).toBe("");
+    const nextMain = await api.setComposerDraft(account, roomId, "immediate next", 3);
+    expect(nextMain.state.ui.timeline.composer.draft).toBe("immediate next");
+    const lateMainAcceptance = await api.sendText(
+      account,
+      "revision-main-late",
+      roomId,
+      "main accepted",
+      { targets: [] },
+      1
+    );
+    expect(lateMainAcceptance.snapshot.state.ui.timeline.composer).toMatchObject({
+      draft: "immediate next",
+      draft_revision: 4
+    });
+
+    const rootId = nextMain.timeline[0]!.event_id;
+    await api.openThread(roomId, rootId);
+    await api.setThreadComposerDraft(account, roomId, rootId, "thread accepted", 5);
+    const threadSent = await api.sendThreadReply(
+      account,
+      "revision-thread",
+      roomId,
+      rootId,
+      "thread accepted",
+      { targets: [] },
+      5
+    );
+    expect(threadSent.outcome).toBe("accepted");
+    const staleThread = await api.setThreadComposerDraft(
+      account,
+      roomId,
+      rootId,
+      "thread accepted",
+      5
+    );
+    expect(staleThread.state.ui.thread).toMatchObject({
+      kind: "open",
+      composer: { draft: "", draft_revision: 6 }
+    });
+    await api.setThreadComposerDraft(
+      account,
+      roomId,
+      rootId,
+      "immediate thread next",
+      7
+    );
+    const lateThreadAcceptance = await api.sendThreadReply(
+      account,
+      "revision-thread-late",
+      roomId,
+      rootId,
+      "thread accepted",
+      { targets: [] },
+      5
+    );
+    expect(lateThreadAcceptance.snapshot.state.ui.thread).toMatchObject({
+      kind: "open",
+      composer: { draft: "immediate thread next", draft_revision: 8 }
+    });
+  });
+
+  test("rejects draft writes and acceptances captured for another account", async () => {
+    const api = createBrowserFakeApi();
+    const roomId = "!room-alpha:example.invalid";
+    await api.selectRoom(roomId);
+    const before = await api.getSnapshot();
+    const rootId = before.timeline[0]!.event_id;
+    await api.openThread(roomId, rootId);
+
+    const staleAccount = {
+      homeserver: "https://stale.example.invalid",
+      userId: "@stale-account:example.invalid",
+      deviceId: "STALE"
+    };
+    const main = await api.setComposerDraft(
+      staleAccount,
+      roomId,
+      "must not cross accounts",
+      1
+    );
+    const thread = await api.setThreadComposerDraft(
+      staleAccount,
+      roomId,
+      rootId,
+      "must not cross accounts",
+      1
+    );
+
+    expect(main.state.ui.timeline.composer.draft).toBe("");
+    expect(thread.state.ui.thread).toMatchObject({
+      kind: "open",
+      composer: { draft: "", draft_revision: 0 }
+    });
+    const staleMainSend = await api.sendText(
+      staleAccount,
+      "stale-main-send",
+      roomId,
+      "must not send"
+    );
+    const staleThreadSend = await api.sendThreadReply(
+      staleAccount,
+      "stale-thread-send",
+      roomId,
+      rootId,
+      "must not send"
+    );
+    const staleSchedule = await api.scheduleSend(
+      staleAccount,
+      { kind: "thread", room_id: roomId, root_event_id: rootId },
+      "must not schedule",
+      Date.now() + 60_000,
+      0
+    );
+    const threadTarget = {
+      kind: "thread" as const,
+      room_id: roomId,
+      root_event_id: rootId
+    };
+    await api.stageUploadBytes(threadTarget, [
+      {
+        stagedId: "stale-account-upload",
+        position: 0,
+        filename: "synthetic.txt",
+        mimeType: "text/plain",
+        bytes: [1, 2, 3]
+      }
+    ]);
+    const stalePreparedUpload = await api.sendPreparedUploads(
+      staleAccount,
+      threadTarget,
+      0
+    );
+    expect(staleMainSend.outcome).toMatchObject({ rejected: { kind: "invalid" } });
+    expect(staleThreadSend.outcome).toMatchObject({ rejected: { kind: "invalid" } });
+    expect(staleSchedule.acceptedRevision).toBeNull();
+    expect(staleSchedule.snapshot.state.ui.timeline.scheduled_sends).toHaveLength(0);
+    expect(stalePreparedUpload.acceptedRevision).toBeNull();
+    expect(stalePreparedUpload.snapshot.state.ui.thread).toMatchObject({
+      kind: "open",
+      staged_uploads: [{ staged_id: "stale-account-upload" }]
+    });
+  });
+
   test("deduplicates reply submissions without incrementing the root twice", async () => {
     const api = createBrowserFakeApi();
     const roomId = "!room-alpha:example.invalid";
     await api.selectRoom(roomId);
+    const account = await readyAccount(api);
     const root = (await api.getSnapshot()).timeline[0]!;
     const before = root.reply_count;
-    await api.sendReply("reply-same", roomId, root.event_id, "original");
-    const replay = await api.sendReply("reply-same", roomId, root.event_id, "changed");
+    await api.sendReply(account, "reply-same", roomId, root.event_id, "original");
+    const replay = await api.sendReply(account, "reply-same", roomId, root.event_id, "changed");
     expect(replay.snapshot.timeline.find((item) => item.event_id === root.event_id)?.reply_count).toBe(before + 1);
   });
 
@@ -134,10 +317,11 @@ describe("BrowserFakeApi settings preview", () => {
     const api = createBrowserFakeApi();
     const roomId = "!room-alpha:example.invalid";
     await api.selectRoom(roomId);
+    const account = await readyAccount(api);
     const rootId = (await api.getSnapshot()).timeline[0]!.event_id;
     await api.openThread(roomId, rootId);
-    const first = await api.sendThreadReply("thread-unknown", roomId, rootId, "original");
-    const replay = await api.sendThreadReply("thread-unknown", roomId, rootId, "edited");
+    const first = await api.sendThreadReply(account, "thread-unknown", roomId, rootId, "original");
+    const replay = await api.sendThreadReply(account, "thread-unknown", roomId, rootId, "edited");
     expect(replay.transactionId).toBe(first.transactionId);
     const thread = replay.snapshot.state.ui.thread;
     expect(thread.kind).toBe("open");
@@ -151,17 +335,18 @@ describe("BrowserFakeApi settings preview", () => {
     const api = createBrowserFakeApi();
     const roomId = "!room-alpha:example.invalid";
     await api.selectRoom(roomId);
+    const account = await readyAccount(api);
     for (let index = 0; index < 129; index += 1) {
-      await api.sendText(`bounded-${index}`, roomId, `body-${index}`);
+      await api.sendText(account, `bounded-${index}`, roomId, `body-${index}`);
     }
     const bounded = await api.getSnapshot();
     const before = bounded.timeline.length;
     expect(bounded.state.ui.timeline.submission_registry.accepted_submission_ids).toHaveLength(0);
     expect(bounded.state.ui.timeline.submission_registry.settled_submission_ids).toHaveLength(128);
     expect(bounded.state.ui.timeline.submission_registry.settled_submission_ids).not.toContain("bounded-0");
-    await api.sendText("bounded-1", roomId, "deduped");
+    await api.sendText(account, "bounded-1", roomId, "deduped");
     expect((await api.getSnapshot()).timeline).toHaveLength(before);
-    await api.sendText("bounded-0", roomId, "evicted");
+    await api.sendText(account, "bounded-0", roomId, "evicted");
     expect((await api.getSnapshot()).timeline).toHaveLength(before + 1);
   });
 

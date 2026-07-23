@@ -40,6 +40,7 @@ impl CoreCommand {
                 | AppCommand::CancelComposerReply { request_id }
                 | AppCommand::SetComposerDraft { request_id, .. }
                 | AppCommand::SetThreadComposerDraft { request_id, .. }
+                | AppCommand::AcceptComposerDraft { request_id, .. }
                 | AppCommand::SetUploadStaging { request_id, .. }
                 | AppCommand::UpdateStagedUploadCaption { request_id, .. }
                 | AppCommand::UpdateStagedUploadCompression { request_id, .. }
@@ -244,6 +245,7 @@ impl CoreCommand {
                     | AppCommand::CancelScheduledSend { .. }
                     | AppCommand::RescheduleScheduledSend { .. }
                     | AppCommand::SetUploadStaging { .. }
+                    | AppCommand::AcceptComposerDraft { .. }
                     | AppCommand::UpdateStagedUploadCaption { .. }
                     | AppCommand::UpdateStagedUploadCompression { .. }
                     | AppCommand::SelectStagedUploadVariant { .. }
@@ -275,14 +277,24 @@ pub enum AppCommand {
     },
     SetComposerDraft {
         request_id: RequestId,
+        expected_account: koushi_key::SessionKeyId,
         room_id: String,
         draft: String,
+        revision: u64,
     },
     SetThreadComposerDraft {
         request_id: RequestId,
+        expected_account: koushi_key::SessionKeyId,
         room_id: String,
         root_event_id: String,
         draft: String,
+        revision: u64,
+    },
+    AcceptComposerDraft {
+        request_id: RequestId,
+        expected_account: koushi_key::SessionKeyId,
+        target: koushi_state::ComposerTarget,
+        submitted_revision: u64,
     },
     SetUploadStaging {
         request_id: RequestId,
@@ -313,10 +325,12 @@ pub enum AppCommand {
     },
     ScheduleSend {
         request_id: RequestId,
+        expected_account: koushi_key::SessionKeyId,
         room_id: String,
         thread_root_event_id: Option<String>,
         body: String,
         send_at_ms: u64,
+        draft_revision: u64,
     },
     CancelScheduledSend {
         request_id: RequestId,
@@ -535,6 +549,11 @@ impl fmt::Debug for AppCommand {
                 .field("room_id", room_id)
                 .field("root_event_id", &"EventId(..)")
                 .field("draft", &"MessageBody(..)")
+                .finish(),
+            Self::AcceptComposerDraft { request_id, .. } => formatter
+                .debug_struct("AcceptComposerDraft")
+                .field("request_id", request_id)
+                .field("target", &"ComposerTarget(..)")
                 .finish(),
             Self::SetUploadStaging {
                 request_id, items, ..
@@ -2275,11 +2294,13 @@ pub enum TimelineCommand {
     },
     SubmitText {
         request_id: RequestId,
+        expected_account: koushi_key::SessionKeyId,
         submission_id: SubmissionId,
         key: TimelineKey,
         transaction_id: String,
         body: String,
         mentions: MentionIntent,
+        draft_revision: u64,
     },
     SendReply {
         request_id: RequestId,
@@ -2291,12 +2312,14 @@ pub enum TimelineCommand {
     },
     SubmitReply {
         request_id: RequestId,
+        expected_account: koushi_key::SessionKeyId,
         submission_id: SubmissionId,
         key: TimelineKey,
         transaction_id: String,
         in_reply_to_event_id: String,
         body: String,
         mentions: MentionIntent,
+        draft_revision: u64,
     },
     ForwardMessage {
         request_id: RequestId,
@@ -2327,6 +2350,7 @@ pub enum TimelineCommand {
     },
     UploadAndSendMedia {
         request_id: RequestId,
+        expected_account: koushi_key::SessionKeyId,
         key: TimelineKey,
         transaction_id: String,
         request: UploadMediaRequest,
@@ -2397,6 +2421,33 @@ pub enum TimelineCommand {
         encrypted_global_enabled: bool,
         room_overrides: std::collections::BTreeMap<String, bool>,
     },
+}
+
+impl TimelineCommand {
+    /// Complete account owner captured by composer-affecting commands.
+    ///
+    /// AppActor and AccountActor both revalidate this immediately before
+    /// routing so an account switch cannot redirect an already-issued send.
+    pub fn composer_account_fence(&self) -> Option<(RequestId, &koushi_key::SessionKeyId)> {
+        match self {
+            Self::SubmitText {
+                request_id,
+                expected_account,
+                ..
+            }
+            | Self::SubmitReply {
+                request_id,
+                expected_account,
+                ..
+            }
+            | Self::UploadAndSendMedia {
+                request_id,
+                expected_account,
+                ..
+            } => Some((*request_id, expected_account)),
+            _ => None,
+        }
+    }
 }
 
 // Message bodies and reaction keys are visible UI state but must not reach
@@ -2570,6 +2621,7 @@ impl fmt::Debug for TimelineCommand {
                 key,
                 transaction_id,
                 request,
+                ..
             } => formatter
                 .debug_struct("UploadAndSendMedia")
                 .field("request_id", request_id)
@@ -2804,6 +2856,14 @@ mod tests {
         }
     }
 
+    fn test_session_key() -> koushi_key::SessionKeyId {
+        koushi_key::SessionKeyId {
+            homeserver: "https://example.test".to_owned(),
+            user_id: "@a:test".to_owned(),
+            device_id: "DEVICE".to_owned(),
+        }
+    }
+
     #[test]
     fn soft_logout_reauth_is_allowed_past_ready_session_gate() {
         let command = CoreCommand::Account(AccountCommand::SoftLogoutReauth {
@@ -2968,6 +3028,7 @@ mod tests {
         };
         let command = TimelineCommand::UploadAndSendMedia {
             request_id: fake_rid(8),
+            expected_account: test_session_key(),
             key: TimelineKey::room(AccountKey("@a:test".to_owned()), "!room:test"),
             transaction_id: "txn-media".to_owned(),
             request: UploadMediaRequest {

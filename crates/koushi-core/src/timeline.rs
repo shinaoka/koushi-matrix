@@ -3228,6 +3228,8 @@ impl TimelineManagerActor {
                 transaction_id,
                 body,
                 mentions,
+                draft_revision,
+                ..
             } => {
                 if let Err(kind) = validate_composer_body_for_timeline_send(&body) {
                     self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
@@ -3244,6 +3246,7 @@ impl TimelineManagerActor {
                     &key,
                     transaction_id.clone(),
                     body.clone(),
+                    draft_revision,
                     SendComposerProjection::for_send_text(&key),
                     TimelineSendEnqueuePayload::Text { body, mentions },
                 )
@@ -3283,6 +3286,8 @@ impl TimelineManagerActor {
                 in_reply_to_event_id,
                 body,
                 mentions,
+                draft_revision,
+                ..
             } => {
                 if let Err(kind) = validate_composer_body_for_timeline_send(&body) {
                     self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
@@ -3299,6 +3304,7 @@ impl TimelineManagerActor {
                     &key,
                     transaction_id.clone(),
                     body.clone(),
+                    draft_revision,
                     SendComposerProjection::for_send_reply(&key),
                     TimelineSendEnqueuePayload::Reply {
                         in_reply_to_event_id,
@@ -3392,6 +3398,7 @@ impl TimelineManagerActor {
                 key,
                 transaction_id,
                 request,
+                ..
             } => {
                 self.route_media_send_to_worker_or_fail(
                     request_id,
@@ -3707,6 +3714,7 @@ impl TimelineManagerActor {
         key: &TimelineKey,
         transaction_id: String,
         body: String,
+        draft_revision: u64,
         projection: SendComposerProjection,
         payload: TimelineSendEnqueuePayload,
     ) {
@@ -3776,11 +3784,12 @@ impl TimelineManagerActor {
         }
         let action = match (projection, &key.kind) {
             (SendComposerProjection::Room, TimelineKind::Room { room_id }) => {
-                Some(AppAction::ComposerSubmissionAccepted {
+                Some(AppAction::ComposerSubmissionAcceptedAtRevision {
                     submission_id: submission_id.clone(),
                     room_id: room_id.clone(),
                     transaction_id: transaction_id.clone(),
                     body,
+                    draft_revision,
                 })
             }
             (
@@ -3789,12 +3798,13 @@ impl TimelineManagerActor {
                     room_id,
                     root_event_id,
                 },
-            ) => Some(AppAction::ThreadSubmissionAccepted {
+            ) => Some(AppAction::ThreadSubmissionAcceptedAtRevision {
                 submission_id: submission_id.clone(),
                 room_id: room_id.clone(),
                 root_event_id: root_event_id.clone(),
                 transaction_id: transaction_id.clone(),
                 body,
+                draft_revision,
             }),
             _ => send_submitted_action(key, projection, transaction_id.clone(), body),
         };
@@ -22583,6 +22593,14 @@ mod tests {
         }
     }
 
+    fn test_session_key() -> koushi_key::SessionKeyId {
+        koushi_key::SessionKeyId {
+            homeserver: "https://example.test".to_owned(),
+            user_id: "@a:test".to_owned(),
+            device_id: "DEVICE".to_owned(),
+        }
+    }
+
     fn room_key() -> TimelineKey {
         TimelineKey::room(AccountKey("@a:test".to_owned()), "!r:test")
     }
@@ -29091,10 +29109,12 @@ mod tests {
             manager
                 .handle_command(TimelineCommand::SubmitText {
                     request_id,
+                    expected_account: test_session_key(),
                     submission_id: submission_id.clone(),
                     key: key.clone(),
                     transaction_id: "txn-once".to_owned(),
                     body: "body".to_owned(),
+                    draft_revision: 1,
                     mentions: MentionIntent::default(),
                 })
                 .await;
@@ -29110,7 +29130,7 @@ mod tests {
         assert!(enqueue_rx.try_recv().is_err());
         assert!(matches!(
             action_rx.try_recv(),
-            Ok(actions) if matches!(actions.as_slice(), [AppAction::ComposerSubmissionAccepted { submission_id: accepted, .. }] if accepted == &submission_id)
+            Ok(actions) if matches!(actions.as_slice(), [AppAction::ComposerSubmissionAcceptedAtRevision { submission_id: accepted, .. }] if accepted == &submission_id)
         ));
         assert!(action_rx.try_recv().is_err());
         assert!(
@@ -29130,10 +29150,12 @@ mod tests {
         manager
             .handle_command(TimelineCommand::SubmitText {
                 request_id: fake_rid(7302),
+                expected_account: test_session_key(),
                 submission_id: rejected_id.clone(),
                 key: key.clone(),
                 transaction_id: "txn-rejected".to_owned(),
                 body: "body".to_owned(),
+                draft_revision: 2,
                 mentions: MentionIntent::default(),
             })
             .await;
@@ -29158,10 +29180,12 @@ mod tests {
         manager
             .handle_command(TimelineCommand::SubmitText {
                 request_id: fake_rid(7303),
+                expected_account: test_session_key(),
                 submission_id: failed_id.clone(),
                 key: key.clone(),
                 transaction_id: "txn-reducer-closed".to_owned(),
                 body: "body".to_owned(),
+                draft_revision: 3,
                 mentions: MentionIntent::default(),
             })
             .await;
@@ -29173,10 +29197,12 @@ mod tests {
         manager
             .handle_command(TimelineCommand::SubmitText {
                 request_id: fake_rid(7304),
+                expected_account: test_session_key(),
                 submission_id: failed_id.clone(),
                 key,
                 transaction_id: "txn-replayed".to_owned(),
                 body: "changed".to_owned(),
+                draft_revision: 3,
                 mentions: MentionIntent::default(),
             })
             .await;
@@ -29541,10 +29567,12 @@ mod tests {
             manager
                 .handle_command(TimelineCommand::SubmitText {
                     request_id: fake_rid(7310),
+                    expected_account: test_session_key(),
                     submission_id: command_id,
                     key,
                     transaction_id: "txn-paused".to_owned(),
                     body: "body".to_owned(),
+                    draft_revision: 4,
                     mentions: MentionIntent::default(),
                 })
                 .await;
@@ -29558,7 +29586,7 @@ mod tests {
         assert!(event_rx.try_recv().is_err());
         assert!(action_rx.recv().await.expect("pause marker").is_empty());
         assert!(
-            matches!(action_rx.recv().await, Some(actions) if matches!(actions.as_slice(), [AppAction::ComposerSubmissionAccepted { submission_id: accepted, .. }] if accepted == &submission_id))
+            matches!(action_rx.recv().await, Some(actions) if matches!(actions.as_slice(), [AppAction::ComposerSubmissionAcceptedAtRevision { submission_id: accepted, .. }] if accepted == &submission_id))
         );
         let mut manager = route.await.expect("manager route");
         assert!(

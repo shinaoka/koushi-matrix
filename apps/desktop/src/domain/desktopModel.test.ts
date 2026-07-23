@@ -5,6 +5,18 @@ import { computeBrowserRoomListProjection } from "../backend/roomListProjection"
 import { composeSidebar, projectRoomSummaries, roomListSections, visibleRooms } from "./desktopModel";
 import type { DesktopSnapshot, RoomSummary, RoomTags, SpaceSummary } from "./types";
 
+async function readyAccount(api: ReturnType<typeof createBrowserFakeApi>) {
+  const session = (await api.getSnapshot()).state.domain.session;
+  if (!session.homeserver || !session.user_id || !session.device_id) {
+    throw new Error("expected ready browser-fake account");
+  }
+  return {
+    homeserver: session.homeserver,
+    userId: session.user_id,
+    deviceId: session.device_id
+  };
+}
+
 describe("desktop model", () => {
   test("production Shell does not own an activity timestamp comparator", () => {
     const shellSource = readFileSync(new URL("../components/Shell.tsx", import.meta.url), "utf8");
@@ -767,8 +779,10 @@ describe("desktop model", () => {
 
   test("browser fake sends text into the active timeline", async () => {
     const api = createBrowserFakeApi();
+    const account = await readyAccount(api);
 
     const snapshot = await api.sendText(
+      account,
       "submission-test-send",
       "!room-alpha:example.invalid",
       "Synthetic message from composer"
@@ -783,7 +797,9 @@ describe("desktop model", () => {
 
   test("browser fake edits and redacts a sent timeline message", async () => {
     const api = createBrowserFakeApi();
+    const account = await readyAccount(api);
     const submission = await api.sendText(
+      account,
       "submission-test-edit",
       "!room-alpha:example.invalid",
       "Synthetic message before edit"
@@ -991,6 +1007,7 @@ describe("desktop model", () => {
 
   test("sendReply appends a reply message and increments the root reply_count", async () => {
     const api = createBrowserFakeApi();
+    const account = await readyAccount(api);
     const initial = await api.getSnapshot();
 
     // Find an existing message to reply to in the active room
@@ -1003,6 +1020,7 @@ describe("desktop model", () => {
     const roomId = rootMessage.room_id;
 
     const submission = await api.sendReply(
+      account,
       "submission-test-reply",
       roomId,
       rootEventId,

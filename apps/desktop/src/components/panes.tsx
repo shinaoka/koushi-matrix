@@ -598,6 +598,7 @@ export function SummaryTile({ label, value }: { label: string; value: string }) 
 export function TimelinePane({
   activeRoomName,
   composerDraft,
+  composerDraftKey,
   composerMode,
   mentionIntent,
   resolveComposerKeyAction,
@@ -637,6 +638,7 @@ export function TimelinePane({
 }: {
   activeRoomName: string;
   composerDraft: string;
+  composerDraftKey?: string;
   composerMode: ComposerModeProp;
   mentionIntent: MentionIntent;
   resolveComposerKeyAction: ResolveComposerKeyAction;
@@ -962,7 +964,7 @@ export function TimelinePane({
         mentionCandidates={mentionCandidates}
         mentionIntent={mentionIntent}
         resolveComposerKeyAction={resolveComposerKeyActionStable}
-        draftKey={timelineRoomId ?? "no-room"}
+        draftKey={composerDraftKey ?? timelineRoomId ?? "no-room"}
         roomName={activeRoomName}
         value={composerDraft}
         onCancelReply={onCancelReplyStable}

@@ -1340,6 +1340,22 @@ mod tests {
         let plaintext = "secret draft body";
         let mut drafts = ComposerDraftStore::default();
         drafts.set_room_draft("!room:test.example.com".to_owned(), plaintext.to_owned());
+        assert!(drafts.apply_room_draft(
+            "!sent:test.example.com".to_owned(),
+            "accepted body".to_owned(),
+            7,
+        ));
+        assert_eq!(drafts.advance_room_revision("!sent:test.example.com", 7), 8);
+        assert!(drafts.apply_thread_draft(
+            "!room:test.example.com".to_owned(),
+            "$root:test.example.com".to_owned(),
+            "thread accepted body".to_owned(),
+            11,
+        ));
+        assert_eq!(
+            drafts.advance_thread_revision("!room:test.example.com", "$root:test.example.com", 11,),
+            12
+        );
 
         actor
             .save_composer_drafts(&key_id, &drafts)
@@ -1363,6 +1379,19 @@ mod tests {
                 .map(String::as_str),
             Some(plaintext)
         );
+        assert_eq!(loaded.room_revision("!sent:test.example.com"), 8);
+        assert!(!loaded.rooms.contains_key("!sent:test.example.com"));
+        assert_eq!(
+            loaded.thread_revision("!room:test.example.com", "$root:test.example.com"),
+            12
+        );
+        assert!(
+            loaded
+                .threads
+                .get("!room:test.example.com")
+                .and_then(|threads| threads.get("$root:test.example.com"))
+                .is_none()
+        );
 
         let mut corrupted = bytes;
         let last = corrupted.last_mut().expect("non-empty encrypted payload");
@@ -1372,6 +1401,33 @@ mod tests {
             actor.load_composer_drafts(&key_id),
             Err(CoreFailure::StoreUnavailable)
         ));
+    }
+
+    #[test]
+    fn legacy_composer_draft_payload_defaults_causal_revisions() {
+        let legacy = r#"{
+            "rooms":{"!room:test.example.com":"legacy room draft"},
+            "threads":{"!room:test.example.com":{"$root:test.example.com":"legacy thread draft"}}
+        }"#;
+
+        let loaded: ComposerDraftStore =
+            serde_json::from_str(legacy).expect("deserialize legacy draft payload");
+
+        assert_eq!(loaded.room_revision("!room:test.example.com"), 0);
+        assert_eq!(
+            loaded.thread_revision("!room:test.example.com", "$root:test.example.com"),
+            0
+        );
+        assert_eq!(
+            loaded.composer_for_room("!room:test.example.com").draft,
+            "legacy room draft"
+        );
+        assert_eq!(
+            loaded
+                .composer_for_thread("!room:test.example.com", "$root:test.example.com")
+                .draft,
+            "legacy thread draft"
+        );
     }
 
     #[test]
@@ -1829,6 +1885,59 @@ mod tests {
                 .values()
                 .flat_map(|room_threads| room_threads.values())
                 .all(|draft| draft.len() <= koushi_state::MAX_PERSISTED_COMPOSER_DRAFT_BYTES)
+        );
+    }
+
+    #[test]
+    fn composer_draft_persistence_prioritizes_content_over_revision_tombstones() {
+        let data_dir = tempdir().expect("tempdir");
+        let cred_dir = tempdir().expect("tempdir");
+        let key_id = make_key_id();
+        let actor = file_store_actor(&data_dir, &cred_dir);
+        let mut drafts = ComposerDraftStore::default();
+
+        for index in 0..koushi_state::MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT {
+            assert!(drafts.apply_room_draft(
+                format!("!a-tombstone-{index:04}:test.example.com"),
+                String::new(),
+                1,
+            ));
+        }
+        for index in 0..koushi_state::MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT {
+            assert!(drafts.apply_thread_draft(
+                "!thread-room:test.example.com".to_owned(),
+                format!("$a-tombstone-{index:04}"),
+                String::new(),
+                1,
+            ));
+        }
+        drafts.set_room_draft(
+            "!z-active:test.example.com".to_owned(),
+            "active room draft".to_owned(),
+        );
+        drafts.set_thread_draft(
+            "!thread-room:test.example.com".to_owned(),
+            "$z-active".to_owned(),
+            "active thread draft".to_owned(),
+        );
+
+        actor
+            .save_composer_drafts(&key_id, &drafts)
+            .expect("save bounded drafts");
+        let loaded = actor
+            .load_composer_drafts(&key_id)
+            .expect("load bounded drafts");
+
+        assert_eq!(
+            loaded.rooms.get("!z-active:test.example.com"),
+            Some(&"active room draft".to_owned())
+        );
+        assert_eq!(
+            loaded
+                .threads
+                .get("!thread-room:test.example.com")
+                .and_then(|threads| threads.get("$z-active")),
+            Some(&"active thread draft".to_owned())
         );
     }
 }

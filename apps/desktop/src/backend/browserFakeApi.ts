@@ -24,6 +24,7 @@ import type {
   ComposerResolverOptions,
   ComposerSurface,
   ComposerTarget,
+  ComposerDraftAcceptanceResponse,
   DirectoryQuery,
   RoomListFilter,
   RoomListProjection,
@@ -154,12 +155,20 @@ export interface DesktopApi {
   closeFocusedContext(): Promise<DesktopSnapshot>;
   closeSearch(): Promise<DesktopSnapshot>;
   sendText(
+    account: ComposerDraftAccountOwner,
     submissionId: string,
     roomId: string,
     body: string,
-    mentions?: MentionIntent
+    mentions?: MentionIntent,
+    draftRevision?: number
   ): Promise<SubmissionResponse>;
-  scheduleSend(target: ComposerTarget, body: string, sendAtMs: number): Promise<DesktopSnapshot>;
+  scheduleSend(
+    account: ComposerDraftAccountOwner,
+    target: ComposerTarget,
+    body: string,
+    sendAtMs: number,
+    draftRevision: number
+  ): Promise<ComposerDraftAcceptanceResponse>;
   stageUploads(roomId: string, items: UploadStagingRequestItem[]): Promise<DesktopSnapshot>;
   stageUploadBytes(
     target: ComposerTarget,
@@ -177,7 +186,11 @@ export interface DesktopApi {
     stagedId: string,
     variantId: string
   ): Promise<number[]>;
-  sendPreparedUploads(target: ComposerTarget): Promise<DesktopSnapshot>;
+  sendPreparedUploads(
+    account: ComposerDraftAccountOwner,
+    target: ComposerTarget,
+    draftRevision: number
+  ): Promise<ComposerDraftAcceptanceResponse>;
   updateStagedUploadCaption(
     target: ComposerTarget,
     stagedId: string,
@@ -235,7 +248,12 @@ export interface DesktopApi {
   paginateActivity(tab: ActivityTab, cursor?: string | null): Promise<DesktopSnapshot>;
   retryActivityResolution(): Promise<DesktopSnapshot>;
   markActivityRead(target: ActivityMarkReadTarget): Promise<DesktopSnapshot>;
-  setComposerDraft(roomId: string, draft: string): Promise<DesktopSnapshot>;
+  setComposerDraft(
+    account: ComposerDraftAccountOwner,
+    roomId: string,
+    draft: string,
+    revision: number
+  ): Promise<DesktopSnapshot>;
   openThread(roomId: string, rootEventId: string): Promise<DesktopSnapshot>;
   closeThread(): Promise<DesktopSnapshot>;
   openThreadsList(roomId: string): Promise<DesktopSnapshot>;
@@ -243,13 +261,21 @@ export interface DesktopApi {
   paginateThreadsList(roomId: string): Promise<DesktopSnapshot>;
   openFilesView(scope: FilesViewScope, filter: AttachmentFilter, sort: AttachmentSort): Promise<DesktopSnapshot>;
   closeFilesView(): Promise<DesktopSnapshot>;
-  setThreadComposerDraft(roomId: string, rootEventId: string, draft: string): Promise<DesktopSnapshot>;
+  setThreadComposerDraft(
+    account: ComposerDraftAccountOwner,
+    roomId: string,
+    rootEventId: string,
+    draft: string,
+    revision: number
+  ): Promise<DesktopSnapshot>;
   sendThreadReply(
+    account: ComposerDraftAccountOwner,
     submissionId: string,
     roomId: string,
     rootEventId: string,
     body: string,
-    mentions?: MentionIntent
+    mentions?: MentionIntent,
+    draftRevision?: number
   ): Promise<SubmissionResponse>;
   submitSearch(query: string, scope: SearchScopeKind): Promise<DesktopSnapshot>;
   queryDirectory(query: DirectoryQuery): Promise<DesktopSnapshot>;
@@ -289,15 +315,23 @@ export interface DesktopApi {
   setComposerReplyTarget(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   cancelComposerReply(): Promise<DesktopSnapshot>;
   sendReply(
+    account: ComposerDraftAccountOwner,
     submissionId: string,
     roomId: string,
     inReplyToEventId: string,
     body: string,
-    mentions?: MentionIntent
+    mentions?: MentionIntent,
+    draftRevision?: number
   ): Promise<SubmissionResponse>;
   setRoomListProjection(projection: RoomListProjection): void;
   startRoomCrawl(roomId: string): Promise<DesktopSnapshot>;
   stopRoomCrawl(roomId: string): Promise<DesktopSnapshot>;
+}
+
+export interface ComposerDraftAccountOwner {
+  homeserver: string;
+  userId: string;
+  deviceId: string;
 }
 
 export interface BrowserFakeApiOptions {
@@ -313,8 +347,39 @@ class BrowserFakeApi implements DesktopApi {
   private snapshot: DesktopSnapshot;
   private requestSequence = 1_000;
   private composerDrafts = new Map<string, string>();
+  private composerDraftRevisions = new Map<string, number>();
+  private threadComposerDrafts = new Map<string, string>();
+  private threadComposerDraftRevisions = new Map<string, number>();
   private preparedUploadBytes = new Map<string, number[]>();
   private submissionLedger = new Map<string, string>();
+
+  private acceptComposerDraftTarget(target: ComposerTarget, submittedRevision: number): number {
+    const key = browserComposerDraftTargetKey(target);
+    const revisions =
+      target.kind === "main"
+        ? this.composerDraftRevisions
+        : this.threadComposerDraftRevisions;
+    const currentRevision = revisions.get(key) ?? 0;
+    const preserveNewerDraft = currentRevision > submittedRevision;
+    const revision = Math.max(currentRevision, submittedRevision) + 1;
+    revisions.set(key, revision);
+    if (!preserveNewerDraft) {
+      if (target.kind === "main") {
+        this.composerDrafts.delete(target.room_id);
+      } else {
+        this.threadComposerDrafts.delete(key);
+      }
+    }
+    const composer = browserComposerForTarget(this.snapshot, target);
+    if (composer) {
+      composer.draft =
+        target.kind === "main"
+          ? this.composerDrafts.get(target.room_id) ?? ""
+          : this.threadComposerDrafts.get(key) ?? "";
+      composer.draft_revision = revision;
+    }
+    return revision;
+  }
 
   private replaySubmission(submissionId: string): SubmissionResponse | null {
     const admitted = this.submissionLedger.get(submissionId);
@@ -1139,6 +1204,7 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.ui.timeline.composer = {
       accepted_submission_ids: [],
       pending_transaction_id: null,
+      draft_revision: this.composerDraftRevisions.get(roomId) ?? 0,
       draft: this.composerDrafts.get(roomId) ?? "",
       mode: "Plain"
     };
@@ -1215,10 +1281,12 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async sendText(
+    account: ComposerDraftAccountOwner,
     submissionId: string,
     roomId: string,
     body: string,
-    mentions: MentionIntent = emptyMentionIntent()
+    mentions: MentionIntent = emptyMentionIntent(),
+    draftRevision = 0
   ): Promise<SubmissionResponse> {
     void mentions;
     const replay = this.replaySubmission(submissionId);
@@ -1226,6 +1294,7 @@ class BrowserFakeApi implements DesktopApi {
     const session = this.snapshot.state.domain.session;
     if (
       session.kind !== "ready" ||
+      !browserComposerAccountMatches(session, account) ||
       !session.user_id ||
       this.snapshot.state.ui.timeline.room_id !== roomId ||
       body.trim().length === 0
@@ -1254,8 +1323,7 @@ class BrowserFakeApi implements DesktopApi {
       }
     ];
     this.terminalSubmission(composer);
-    this.snapshot.state.ui.timeline.composer.draft = "";
-    this.composerDrafts.delete(roomId);
+    this.acceptComposerDraftTarget({ kind: "main", room_id: roomId }, draftRevision);
     return {
       outcome: "accepted",
       submissionId,
@@ -1265,18 +1333,21 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async scheduleSend(
+    account: ComposerDraftAccountOwner,
     target: ComposerTarget,
     body: string,
-    sendAtMs: number
-  ): Promise<DesktopSnapshot> {
+    sendAtMs: number,
+    draftRevision: number
+  ): Promise<ComposerDraftAcceptanceResponse> {
     const session = this.snapshot.state.domain.session;
     if (
       session.kind !== "ready" ||
+      !browserComposerAccountMatches(session, account) ||
       !browserComposerTargetIsActive(this.snapshot, target) ||
       body.trim().length === 0 ||
       !Number.isFinite(sendAtMs)
     ) {
-      return this.getSnapshot();
+      return { acceptedRevision: null, snapshot: await this.getSnapshot() };
     }
 
     this.snapshot.state.ui.timeline.scheduled_send_capability = "localFallback";
@@ -1291,16 +1362,8 @@ class BrowserFakeApi implements DesktopApi {
         handle: { kind: "local" }
       }
     ];
-    if (target.kind === "main") {
-      this.snapshot.state.ui.timeline.composer.draft = "";
-      this.composerDrafts.delete(target.room_id);
-    } else if (
-      this.snapshot.state.ui.thread.kind === "open" &&
-      this.snapshot.state.ui.thread.composer
-    ) {
-      this.snapshot.state.ui.thread.composer.draft = "";
-    }
-    return this.getSnapshot();
+    const acceptedRevision = this.acceptComposerDraftTarget(target, draftRevision);
+    return { acceptedRevision, snapshot: await this.getSnapshot() };
   }
 
   async stageUploads(
@@ -1427,14 +1490,22 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
-  async sendPreparedUploads(target: ComposerTarget): Promise<DesktopSnapshot> {
+  async sendPreparedUploads(
+    account: ComposerDraftAccountOwner,
+    target: ComposerTarget,
+    draftRevision: number
+  ): Promise<ComposerDraftAcceptanceResponse> {
+    if (!browserComposerAccountMatches(this.snapshot.state.domain.session, account)) {
+      return { acceptedRevision: null, snapshot: await this.getSnapshot() };
+    }
     setBrowserStagedUploadsForTarget(this.snapshot, target, []);
     for (const key of this.preparedUploadBytes.keys()) {
       if (key.startsWith(`${target.kind}:${target.room_id}:`)) {
         this.preparedUploadBytes.delete(key);
       }
     }
-    return this.getSnapshot();
+    const acceptedRevision = this.acceptComposerDraftTarget(target, draftRevision);
+    return { acceptedRevision, snapshot: await this.getSnapshot() };
   }
 
   async updateStagedUploadCaption(
@@ -1813,7 +1884,27 @@ class BrowserFakeApi implements DesktopApi {
       room_id: roomId,
       root_event_id: rootEventId,
       is_subscribed: true,
-      composer: { accepted_submission_ids: [], pending_transaction_id: null, draft: "", mode: "Plain" }
+      composer: {
+        accepted_submission_ids: [],
+        pending_transaction_id: null,
+        draft_revision:
+          this.threadComposerDraftRevisions.get(
+            browserComposerDraftTargetKey({
+              kind: "thread",
+              room_id: roomId,
+              root_event_id: rootEventId
+            })
+          ) ?? 0,
+        draft:
+          this.threadComposerDrafts.get(
+            browserComposerDraftTargetKey({
+              kind: "thread",
+              room_id: roomId,
+              root_event_id: rootEventId
+            })
+          ) ?? "",
+        mode: "Plain"
+      }
     };
     this.snapshot.thread = {
       room_id: roomId,
@@ -1919,32 +2010,58 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async setThreadComposerDraft(
+    account: ComposerDraftAccountOwner,
     roomId: string,
     rootEventId: string,
-    draft: string
+    draft: string,
+    revision: number
   ): Promise<DesktopSnapshot> {
-    if (!this.canUseSyncedViews()) {
+    if (
+      !this.canUseSyncedViews() ||
+      this.snapshot.state.domain.session.homeserver !== account.homeserver ||
+      this.snapshot.state.domain.session.user_id !== account.userId ||
+      this.snapshot.state.domain.session.device_id !== account.deviceId ||
+      !this.snapshot.state.domain.rooms.some((room) => room.room_id === roomId)
+    ) {
       return this.getSnapshot();
     }
 
+    const key = browserComposerDraftTargetKey({
+      kind: "thread",
+      room_id: roomId,
+      root_event_id: rootEventId
+    });
+    if (revision <= (this.threadComposerDraftRevisions.get(key) ?? 0)) {
+      return this.getSnapshot();
+    }
+    this.threadComposerDraftRevisions.set(key, revision);
+    if (draft.length === 0) {
+      this.threadComposerDrafts.delete(key);
+    } else {
+      this.threadComposerDrafts.set(key, draft);
+    }
     const thread = this.snapshot.state.ui.thread;
     if (
       thread.kind === "open" &&
       thread.room_id === roomId &&
       thread.root_event_id === rootEventId &&
-      thread.composer
+      thread.composer &&
+      revision > thread.composer.draft_revision
     ) {
       thread.composer.draft = draft;
+      thread.composer.draft_revision = revision;
     }
     return this.getSnapshot();
   }
 
   async sendThreadReply(
+    account: ComposerDraftAccountOwner,
     submissionId: string,
     roomId: string,
     rootEventId: string,
     body: string,
-    _mentions?: MentionIntent
+    _mentions?: MentionIntent,
+    draftRevision = 0
   ): Promise<SubmissionResponse> {
     const replay = this.replaySubmission(submissionId);
     if (replay) return replay;
@@ -1952,6 +2069,7 @@ class BrowserFakeApi implements DesktopApi {
     const thread = this.snapshot.state.ui.thread;
     if (
       session.kind !== "ready" ||
+      !browserComposerAccountMatches(session, account) ||
       !session.user_id ||
       thread.kind !== "open" ||
       thread.room_id !== roomId ||
@@ -1970,7 +2088,10 @@ class BrowserFakeApi implements DesktopApi {
 
     const transactionId = this.acceptSubmission(submissionId, thread.composer);
     this.terminalSubmission(thread.composer);
-    thread.composer.draft = "";
+    this.acceptComposerDraftTarget(
+      { kind: "thread", room_id: roomId, root_event_id: rootEventId },
+      draftRevision
+    );
     return {
       outcome: "accepted",
       submissionId,
@@ -2864,17 +2985,35 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
-  async setComposerDraft(roomId: string, draft: string): Promise<DesktopSnapshot> {
-    if (!this.canUseSyncedViews() || this.snapshot.state.ui.timeline.room_id !== roomId) {
+  async setComposerDraft(
+    account: ComposerDraftAccountOwner,
+    roomId: string,
+    draft: string,
+    revision: number
+  ): Promise<DesktopSnapshot> {
+    if (
+      !this.canUseSyncedViews() ||
+      this.snapshot.state.domain.session.homeserver !== account.homeserver ||
+      this.snapshot.state.domain.session.user_id !== account.userId ||
+      this.snapshot.state.domain.session.device_id !== account.deviceId ||
+      !this.snapshot.state.domain.rooms.some((room) => room.room_id === roomId)
+    ) {
       return this.getSnapshot();
     }
 
+    if (revision <= (this.composerDraftRevisions.get(roomId) ?? 0)) {
+      return this.getSnapshot();
+    }
+    this.composerDraftRevisions.set(roomId, revision);
     if (draft.length === 0) {
       this.composerDrafts.delete(roomId);
     } else {
       this.composerDrafts.set(roomId, draft);
     }
-    this.snapshot.state.ui.timeline.composer.draft = draft;
+    if (this.snapshot.state.ui.timeline.room_id === roomId) {
+      this.snapshot.state.ui.timeline.composer.draft = draft;
+      this.snapshot.state.ui.timeline.composer.draft_revision = revision;
+    }
     return this.getSnapshot();
   }
 
@@ -2899,11 +3038,13 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async sendReply(
+    account: ComposerDraftAccountOwner,
     submissionId: string,
     roomId: string,
     inReplyToEventId: string,
     body: string,
-    mentions: MentionIntent = emptyMentionIntent()
+    mentions: MentionIntent = emptyMentionIntent(),
+    draftRevision = 0
   ): Promise<SubmissionResponse> {
     void mentions;
     const replay = this.replaySubmission(submissionId);
@@ -2911,6 +3052,7 @@ class BrowserFakeApi implements DesktopApi {
     const session = this.snapshot.state.domain.session;
     if (
       session.kind !== "ready" ||
+      !browserComposerAccountMatches(session, account) ||
       !session.user_id ||
       this.snapshot.state.ui.timeline.room_id !== roomId ||
       body.trim().length === 0
@@ -2944,7 +3086,7 @@ class BrowserFakeApi implements DesktopApi {
         : message
     );
     this.terminalSubmission(composer);
-    this.snapshot.state.ui.timeline.composer.draft = "";
+    this.acceptComposerDraftTarget({ kind: "main", room_id: roomId }, draftRevision);
     this.snapshot.state.ui.timeline.composer.mode = "Plain";
     this.composerDrafts.delete(roomId);
     return {
@@ -3204,6 +3346,7 @@ class BrowserFakeApi implements DesktopApi {
       composer: {
         accepted_submission_ids: [],
         pending_transaction_id: null,
+        draft_revision: 0,
         draft: "",
         mode: "Plain"
       },
@@ -3267,6 +3410,9 @@ class BrowserFakeApi implements DesktopApi {
 
   private clearSessionViews() {
     this.composerDrafts.clear();
+    this.composerDraftRevisions.clear();
+    this.threadComposerDrafts.clear();
+    this.threadComposerDraftRevisions.clear();
     this.snapshot.state.domain.sync = "stopped";
     this.snapshot.state.domain.sync_mode = { kind: "unsupported" };
     this.snapshot.state.ui.navigation = {
@@ -3289,6 +3435,7 @@ class BrowserFakeApi implements DesktopApi {
       composer: {
         accepted_submission_ids: [],
         pending_transaction_id: null,
+        draft_revision: 0,
         draft: "",
         mode: "Plain"
       },
@@ -3343,6 +3490,17 @@ class BrowserFakeApi implements DesktopApi {
     }
 
     this.composerDrafts.delete(roomId);
+    this.composerDraftRevisions.delete(roomId);
+    for (const key of this.threadComposerDrafts.keys()) {
+      if (key.startsWith(`thread\u0000${roomId}\u0000`)) {
+        this.threadComposerDrafts.delete(key);
+      }
+    }
+    for (const key of this.threadComposerDraftRevisions.keys()) {
+      if (key.startsWith(`thread\u0000${roomId}\u0000`)) {
+        this.threadComposerDraftRevisions.delete(key);
+      }
+    }
     this.snapshot.state.domain.rooms = this.snapshot.state.domain.rooms.filter((room) => room.room_id !== roomId);
     this.snapshot.state.domain.spaces = this.snapshot.state.domain.spaces.map((space) => ({
       ...space,
@@ -3369,6 +3527,38 @@ function browserComposerTargetIsActive(snapshot: DesktopSnapshot, target: Compos
     : snapshot.state.ui.thread.kind === "open" &&
         snapshot.state.ui.thread.room_id === target.room_id &&
         snapshot.state.ui.thread.root_event_id === target.root_event_id;
+}
+
+function browserComposerAccountMatches(
+  session: DesktopSnapshot["state"]["domain"]["session"],
+  account: ComposerDraftAccountOwner
+): boolean {
+  return (
+    session.kind === "ready" &&
+    session.homeserver === account.homeserver &&
+    session.user_id === account.userId &&
+    session.device_id === account.deviceId
+  );
+}
+
+function browserComposerForTarget(
+  snapshot: DesktopSnapshot,
+  target: ComposerTarget
+): ComposerState | null {
+  if (!browserComposerTargetIsActive(snapshot, target)) {
+    return null;
+  }
+  return target.kind === "main"
+    ? snapshot.state.ui.timeline.composer
+    : snapshot.state.ui.thread.kind === "open"
+      ? snapshot.state.ui.thread.composer ?? null
+      : null;
+}
+
+function browserComposerDraftTargetKey(target: ComposerTarget): string {
+  return target.kind === "main"
+    ? target.room_id
+    : `thread\u0000${target.room_id}\u0000${target.root_event_id}`;
 }
 
 function browserStagedUploadsForTarget(
@@ -3602,6 +3792,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
           composer: {
             accepted_submission_ids: [],
             pending_transaction_id: null,
+            draft_revision: 0,
             draft: "",
             mode: "Plain"
           },
@@ -3726,6 +3917,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
           composer: {
             accepted_submission_ids: [],
             pending_transaction_id: null,
+            draft_revision: 0,
             draft: "",
             mode: "Plain"
           },

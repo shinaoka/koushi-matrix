@@ -189,7 +189,7 @@ function readySnapshot(
         ui: {
           navigation: { active_space_id: activeSpaceId, active_room_id: ROOM_ID, space_order: spaces.map((space) => space.space_id), last_room_by_space_id: {} },
           room_list: computeBrowserRoomListProjection({ kind: "rooms" }, { kind: "activity" }, activeSpaceId, spaces, rooms, []),
-          timeline: { room_id: ROOM_ID, is_subscribed: true, is_paginating_backwards: false, composer: { accepted_submission_ids: [], pending_transaction_id: null, draft: "", mode: composerMode }, submission_registry: { accepted_submission_ids: [], settled_submission_ids: [] }, scheduled_send_capability: "unknown", scheduled_sends: [], staged_uploads: [], media_gallery: [], media_downloads: {}, continuity: { kind: "unknown" } },
+          timeline: { room_id: ROOM_ID, is_subscribed: true, is_paginating_backwards: false, composer: { accepted_submission_ids: [], pending_transaction_id: null, draft_revision: 0, draft: "", mode: composerMode }, submission_registry: { accepted_submission_ids: [], settled_submission_ids: [] }, scheduled_send_capability: "unknown", scheduled_sends: [], staged_uploads: [], media_gallery: [], media_downloads: {}, continuity: { kind: "unknown" } },
           thread: { kind: "closed" }, threads_list: { kind: "closed" }, focused_context: { kind: "closed" },
           files_view: { kind: "closed" }, errors: [], basic_operation: basicOperation
         }
@@ -743,6 +743,20 @@ function setCurrentSnapshot(next: DesktopSnapshot): DesktopSnapshot {
   return currentSnapshot;
 }
 
+function composerCommandAccountMatches(args: {
+  accountHomeserver: string;
+  accountUserId: string;
+  accountDeviceId: string;
+}): boolean {
+  const session = currentSnapshot.state.domain.session;
+  return (
+    session.kind === "ready" &&
+    session.homeserver === args.accountHomeserver &&
+    session.user_id === args.accountUserId &&
+    session.device_id === args.accountDeviceId
+  );
+}
+
 function normalizeHarnessRoomSummary(
   room: DesktopSnapshot["state"]["domain"]["rooms"][number]
 ): DesktopSnapshot["state"]["domain"]["rooms"][number] {
@@ -901,6 +915,7 @@ mock.setCommandResponse("select_room", ({ roomId }: { roomId: string }) => {
           composer: {
             accepted_submission_ids: [],
             pending_transaction_id: null,
+            draft_revision: 0,
             draft: "",
             mode: "Plain"
           }
@@ -1733,8 +1748,30 @@ mock.setCommandResponse("search_invite_targets", () => currentSnapshot);
 mock.setCommandResponse("select_invite_target", () => currentSnapshot);
 mock.setCommandResponse("remove_invite_target", () => currentSnapshot);
 mock.setCommandResponse("invite_targets", () => currentSnapshot);
-mock.setCommandResponse("set_composer_draft", ({ roomId, draft }: { roomId: string; draft: string }) => {
-  if (currentSnapshot.state.ui.timeline.room_id !== roomId) {
+mock.setCommandResponse("set_composer_draft", ({
+  accountHomeserver,
+  accountUserId,
+  accountDeviceId,
+  roomId,
+  draft,
+  revision
+}: {
+  accountHomeserver: string;
+  accountUserId: string;
+  accountDeviceId: string;
+  roomId: string;
+  draft: string;
+  revision: number;
+}) => {
+  if (
+    currentSnapshot.state.domain.session.homeserver !== accountHomeserver ||
+    currentSnapshot.state.domain.session.user_id !== accountUserId ||
+    currentSnapshot.state.domain.session.device_id !== accountDeviceId ||
+    currentSnapshot.state.ui.timeline.room_id !== roomId
+  ) {
+    return currentSnapshot;
+  }
+  if (revision <= currentSnapshot.state.ui.timeline.composer.draft_revision) {
     return currentSnapshot;
   }
   return setCurrentSnapshot({
@@ -1747,7 +1784,8 @@ mock.setCommandResponse("set_composer_draft", ({ roomId, draft }: { roomId: stri
         ...currentSnapshot.state.ui.timeline,
         composer: {
           ...currentSnapshot.state.ui.timeline.composer,
-          draft
+          draft,
+          draft_revision: revision
         }
       }
       },
@@ -1760,9 +1798,56 @@ mock.setCommandResponse("set_composer_reply_target", () =>
   setCurrentSnapshot(replyModeSnapshot())
 );
 mock.setCommandResponse("cancel_composer_reply", () => setCurrentSnapshot(readySnapshot()));
-// send_reply / send_text return to a Plain composer snapshot.
-mock.setCommandResponse("send_reply", () => setCurrentSnapshot(readySnapshot()));
-mock.setCommandResponse("send_text", () => setCurrentSnapshot(readySnapshot()));
+// send_reply / send_text return a correlated accepted response with the
+// Rust-shaped revision tombstone.
+for (const command of ["send_reply", "send_text"] as const) {
+  mock.setCommandResponse(command, ({
+    accountHomeserver,
+    accountUserId,
+    accountDeviceId,
+    submissionId,
+    draftRevision
+  }: {
+    accountHomeserver: string;
+    accountUserId: string;
+    accountDeviceId: string;
+    submissionId: string;
+    draftRevision: number;
+  }) => {
+    if (!composerCommandAccountMatches({
+      accountHomeserver,
+      accountUserId,
+      accountDeviceId
+    })) {
+      return { submissionId, outcome: "rejected", snapshot: currentSnapshot };
+    }
+    const composer = currentSnapshot.state.ui.timeline.composer;
+    const next = {
+      ...currentSnapshot,
+      state: {
+        ...currentSnapshot.state,
+        ui: {
+          ...currentSnapshot.state.ui,
+          timeline: {
+            ...currentSnapshot.state.ui.timeline,
+            composer: {
+              ...composer,
+              draft: composer.draft_revision > draftRevision ? composer.draft : "",
+              draft_revision: Math.max(composer.draft_revision, draftRevision) + 1,
+              mode: "Plain" as const
+            }
+          }
+        }
+      }
+    };
+    return {
+      submissionId,
+      outcome: "accepted",
+      transactionId: `harness-${submissionId}`,
+      snapshot: setCurrentSnapshot(next)
+    };
+  });
+}
 mock.setCommandResponse(
   "open_thread",
   ({ roomId, rootEventId }: { roomId: string; rootEventId: string }) => {
@@ -1781,6 +1866,7 @@ mock.setCommandResponse(
           composer: {
             accepted_submission_ids: [],
             pending_transaction_id: null,
+              draft_revision: 0,
               draft: "",
               mode: "Plain"
             }
@@ -1805,14 +1891,36 @@ mock.setCommandResponse(
 );
 mock.setCommandResponse(
   "set_thread_composer_draft",
-  ({ roomId, rootEventId, draft }: { roomId: string; rootEventId: string; draft: string }) => {
+  ({
+    accountHomeserver,
+    accountUserId,
+    accountDeviceId,
+    roomId,
+    rootEventId,
+    draft,
+    revision
+  }: {
+    accountHomeserver: string;
+    accountUserId: string;
+    accountDeviceId: string;
+    roomId: string;
+    rootEventId: string;
+    draft: string;
+    revision: number;
+  }) => {
     const thread = currentSnapshot.state.ui.thread;
     if (
       thread.kind !== "open" ||
+      currentSnapshot.state.domain.session.homeserver !== accountHomeserver ||
+      currentSnapshot.state.domain.session.user_id !== accountUserId ||
+      currentSnapshot.state.domain.session.device_id !== accountDeviceId ||
       thread.room_id !== roomId ||
       thread.root_event_id !== rootEventId ||
       !thread.composer
     ) {
+      return currentSnapshot;
+    }
+    if (revision <= thread.composer.draft_revision) {
       return currentSnapshot;
     }
     const next: DesktopSnapshot = {
@@ -1825,7 +1933,8 @@ mock.setCommandResponse(
           ...thread,
           composer: {
             ...thread.composer,
-            draft
+            draft,
+            draft_revision: revision
           }
         }
         },
@@ -1836,12 +1945,23 @@ mock.setCommandResponse(
 );
 mock.setCommandResponse(
   "send_thread_reply",
-  ({ submissionId, roomId, rootEventId, body }: {
+  ({ accountHomeserver, accountUserId, accountDeviceId, submissionId, roomId, rootEventId, body, draftRevision }: {
+    accountHomeserver: string;
+    accountUserId: string;
+    accountDeviceId: string;
     submissionId: string;
     roomId: string;
     rootEventId: string;
     body: string;
+    draftRevision: number;
   }) => {
+    if (!composerCommandAccountMatches({
+      accountHomeserver,
+      accountUserId,
+      accountDeviceId
+    })) {
+      return { submissionId, outcome: "rejected", snapshot: currentSnapshot };
+    }
     const thread = currentSnapshot.state.ui.thread;
     if (
       thread.kind !== "open" ||
@@ -1863,7 +1983,9 @@ mock.setCommandResponse(
           ...thread,
           composer: {
             ...thread.composer,
-            draft: "",
+            draft:
+              thread.composer.draft_revision > draftRevision ? thread.composer.draft : "",
+            draft_revision: Math.max(thread.composer.draft_revision, draftRevision) + 1,
             pending_transaction_id: null
           }
         }
@@ -1873,6 +1995,7 @@ mock.setCommandResponse(
     return {
       submissionId,
       outcome: "accepted",
+      transactionId: `harness-${submissionId}`,
       snapshot: setCurrentSnapshot(next)
     };
   }
@@ -2223,11 +2346,91 @@ mock.setCommandResponse("use_original_staged_upload", ({ target, stagedId }: {
   });
   return setCurrentSnapshot(replaceStagedUploadsForTarget(currentSnapshot, target, nextItems));
 });
-mock.setCommandResponse("send_prepared_uploads", ({ target }: { target: ComposerTarget }) => {
+mock.setCommandResponse("send_prepared_uploads", ({
+  accountHomeserver,
+  accountUserId,
+  accountDeviceId,
+  target,
+  draftRevision
+}: {
+  accountHomeserver: string;
+  accountUserId: string;
+  accountDeviceId: string;
+  target: ComposerTarget;
+  draftRevision: number;
+}) => {
+  if (!composerCommandAccountMatches({
+    accountHomeserver,
+    accountUserId,
+    accountDeviceId
+  })) {
+    return { acceptedRevision: null, snapshot: currentSnapshot };
+  }
   for (const key of preparedUploadBytes.keys()) {
     if (key.startsWith(`${composerTargetKey(target)}:`)) preparedUploadBytes.delete(key);
   }
-  return setCurrentSnapshot(replaceStagedUploadsForTarget(currentSnapshot, target, []));
+  const withoutUploads = replaceStagedUploadsForTarget(currentSnapshot, target, []);
+  const next =
+    target.kind === "main"
+      ? {
+          ...withoutUploads,
+          state: {
+            ...withoutUploads.state,
+            ui: {
+              ...withoutUploads.state.ui,
+              timeline: {
+                ...withoutUploads.state.ui.timeline,
+                composer: {
+                  ...withoutUploads.state.ui.timeline.composer,
+                  draft:
+                    withoutUploads.state.ui.timeline.composer.draft_revision > draftRevision
+                      ? withoutUploads.state.ui.timeline.composer.draft
+                      : "",
+                  draft_revision:
+                    Math.max(
+                      withoutUploads.state.ui.timeline.composer.draft_revision,
+                      draftRevision
+                    ) + 1
+                }
+              }
+            }
+          }
+        }
+      : withoutUploads.state.ui.thread.kind === "open" &&
+          withoutUploads.state.ui.thread.composer
+        ? {
+            ...withoutUploads,
+            state: {
+              ...withoutUploads.state,
+              ui: {
+                ...withoutUploads.state.ui,
+                thread: {
+                  ...withoutUploads.state.ui.thread,
+                  composer: {
+                    ...withoutUploads.state.ui.thread.composer,
+                    draft:
+                      withoutUploads.state.ui.thread.composer.draft_revision > draftRevision
+                        ? withoutUploads.state.ui.thread.composer.draft
+                        : "",
+                    draft_revision:
+                      Math.max(
+                        withoutUploads.state.ui.thread.composer.draft_revision,
+                        draftRevision
+                      ) + 1
+                  }
+                }
+              }
+            }
+          }
+        : withoutUploads;
+  const snapshot = setCurrentSnapshot(next);
+  const acceptedRevision =
+    target.kind === "main"
+      ? snapshot.state.ui.timeline.composer.draft_revision
+      : snapshot.state.ui.thread.kind === "open" && snapshot.state.ui.thread.composer
+        ? snapshot.state.ui.thread.composer.draft_revision
+        : null;
+  return { acceptedRevision, snapshot };
 });
 mock.setCommandResponse("update_staged_upload_caption", ({ target, stagedId, caption }: {
   target: ComposerTarget;

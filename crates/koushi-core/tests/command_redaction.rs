@@ -7,6 +7,7 @@ use koushi_core::command::{
 };
 use koushi_core::event::{AccountEvent, CoreEvent};
 use koushi_core::ids::{AccountKey, TimelineKey};
+use koushi_key::SessionKeyId;
 use koushi_state::{
     AuthSecret, IdentityResetAuthRequest, LoginRequest, MentionIntent, PresenceKind,
     RecoveryRequest, RoomTagKind, TimelineScrollAnchor, TimelineScrollAnchorEdge,
@@ -95,16 +96,28 @@ fn secret_bearing_commands_redact_debug() {
     });
     let thread_draft = CoreCommand::App(AppCommand::SetThreadComposerDraft {
         request_id: fake_request_id(),
+        expected_account: SessionKeyId {
+            homeserver: "https://example.test".to_owned(),
+            user_id: "@alice:example.test".to_owned(),
+            device_id: "DEVICE".to_owned(),
+        },
         room_id: "!room:example.test".to_owned(),
         root_event_id: "$root".to_owned(),
         draft: BODY.to_owned(),
+        revision: 1,
     });
     let scheduled_send = CoreCommand::App(AppCommand::ScheduleSend {
         request_id: fake_request_id(),
+        expected_account: SessionKeyId {
+            homeserver: "https://schedule.example.test".to_owned(),
+            user_id: "@schedule:example.test".to_owned(),
+            device_id: "SCHEDULE-DEVICE".to_owned(),
+        },
         room_id: "!room:example.test".to_owned(),
         thread_root_event_id: None,
         body: BODY.to_owned(),
         send_at_ms: 1_900_000_000_000,
+        draft_revision: 1,
     });
     let timeline_scroll_anchor = CoreCommand::App(AppCommand::TimelineScrollAnchorUpdated {
         request_id: fake_request_id(),
@@ -138,7 +151,16 @@ fn secret_bearing_commands_redact_debug() {
         (&edit, vec![BODY]),
         (&search, vec![QUERY]),
         (&thread_draft, vec![BODY, "$root"]),
-        (&scheduled_send, vec![BODY, "!room:example.test"]),
+        (
+            &scheduled_send,
+            vec![
+                BODY,
+                "!room:example.test",
+                "https://schedule.example.test",
+                "@schedule:example.test",
+                "SCHEDULE-DEVICE",
+            ],
+        ),
         (
             &timeline_scroll_anchor,
             vec!["!room:example.test", "$anchor:example.test"],

@@ -136,7 +136,32 @@ Rules:
    `StoreActor`/`AppActor`, derived from a dedicated local-unlock-secret key
    domain, debounced, size-bounded, and excluded from general settings JSON,
    logs, QA tokens, and full webview snapshots. React may render only the active
-   composer DTO and dispatch typed draft commands.
+   composer DTO and dispatch typed draft commands. Accepted sends must advance
+   a target-keyed causal revision, persisting an empty-draft tombstone only
+   when no newer target draft exists; newer content must be preserved at the
+   advanced revision. Bounded persistence must prioritize targets with
+   non-empty draft content before revision-only tombstones so fences cannot
+   evict the drafts they protect. Debounce timers are target-keyed: editing one
+   room or thread must not cancel another target's pending encrypted-store
+   write. Every debounced draft write and every operation that can accept a
+   composer draft must capture its complete account owner (homeserver, user,
+   and device). Account
+   transitions cancel pending timers and invalidate late webview completions,
+   while Tauri, AppActor, and AccountActor revalidate the captured owner
+   against the ready session before routing, changing, or persisting draft
+   state. The AccountActor check is the ordered final barrier after any
+   account-switch message already queued in its mailbox.
+   Room/thread target identity alone is insufficient because two accounts may
+   share it.
+   Submission commands that do not have a correlated submission outcome
+   event (currently scheduled and prepared-upload sends) must wait for and
+   return the authoritative accepted target revision; a merely enqueued command
+   plus the current active-pane snapshot is not acceptance evidence. An
+   accepted clear must also advance the target's IME synchronization key:
+   composition-owned controls correctly ignore unacknowledged external values,
+   so a render alone cannot distinguish an authoritative clear from a stale
+   snapshot. Timer cancellation or a second racing empty save is not a
+   correctness fence.
    Scheduled-send message bodies are also future unsent message content. The
    Rust state machine owns the queue, capability, cancellation, reschedule, and
    due-time dispatch semantics. Full scheduled-send backing state must not be

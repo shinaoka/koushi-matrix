@@ -708,7 +708,36 @@ content for non-visible rooms should not be exposed as snapshot data.
 derived from the local unlock secret through a dedicated HKDF domain. Persistence
 is debounced and size-bounded; empty stores remove the encrypted draft file.
 Tauri exposes only typed draft commands (`set_composer_draft`,
-`set_thread_composer_draft`) and the active composer snapshot.
+`set_thread_composer_draft`) and the active composer snapshot. Every main-room
+or `(room, thread-root)` target carries a monotonic causal draft revision.
+Draft writes apply only above the stored revision. An accepted plain/reply
+send, scheduled send, or prepared-upload send advances and persists an
+empty-draft revision tombstone when the accepted submission is still current.
+If newer input was already persisted, acceptance preserves that content while
+rolling it forward to the advanced revision. Delayed pre-acceptance commands,
+responses, or projections therefore cannot restore sent content or erase the
+next draft. The webview reserves that acceptance fence before awaiting IPC;
+immediate next input receives a newer revision and survives either completion
+ordering. Main-room and thread debounce timers are target-keyed so switching
+composers cannot cancel another target's pending persistence. Draft writes and
+every operation that can accept a draft capture the active account owner
+(homeserver, user, and device). Account transitions cancel pending timers,
+discard late webview completions, and Tauri, AppActor, and AccountActor
+revalidate that owner against the ready session before routing or reducing the
+operation. The AccountActor check is the ordered final barrier after any
+account-switch message already queued in its mailbox.
+Thus an already-fired write, send, schedule, or upload from one account cannot
+enter another account's state even when both accounts contain the same room
+identifier. Correlated plain/reply
+submission outcomes are acceptance evidence even after the target
+leaves the active pane. Scheduled and prepared-upload commands instead wait
+for the keyed Rust backing-store revision to advance and return that accepted
+revision alongside the latest snapshot; an enqueue acknowledgement or
+active-pane snapshot alone is not causal proof. Acceptance also advances a
+target-local IME synchronization epoch. This makes the empty Rust projection
+an authoritative reset even when the composition-owned textarea has not yet
+observed an acknowledgement of the sent local value; ordinary stale snapshots
+continue to be ignored. Legacy encrypted draft payloads backfill revision zero.
 
 Channel capacities are named constants, not scattered literals, and MUST be
 sized for large-account (100+ room) sync bursts — never for the handful of
