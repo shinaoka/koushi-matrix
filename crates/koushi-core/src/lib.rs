@@ -21,6 +21,7 @@ mod live_catchup;
 mod live_tail_freshness;
 pub mod media_preparation;
 pub(crate) mod messages_backpressure;
+pub(crate) mod read_state;
 pub mod renderable_thumbnail;
 pub mod room;
 pub mod runtime;
