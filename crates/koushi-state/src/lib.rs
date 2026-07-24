@@ -2,6 +2,7 @@
 // (and the `prelude`), not the module tree. Feature modules are crate-internal so
 // consumers depend on the stable root API rather than reaching into module internals.
 mod action;
+mod composer_revision;
 mod composer_shortcuts;
 mod effect;
 mod locale_profile;
@@ -12,6 +13,7 @@ mod submission;
 mod typography_profile;
 
 pub use action::{AppAction, AuthSecret, IdentityResetAuthRequest, LoginRequest, RecoveryRequest};
+pub use composer_revision::{ComposerDraftRevision, ComposerDraftRevisionError};
 pub use composer_shortcuts::{
     ComposerKey, ComposerKeyEvent, ComposerKeyFacts, ComposerKeyModifiers, ComposerResolvedAction,
     ComposerResolverContext, ComposerSelection, ComposerSendIntent, ComposerSurface,
@@ -37,15 +39,17 @@ pub use state::{
     AppearanceSettings, AttachmentFilter, AttachmentKind, AttachmentResult, AttachmentScope,
     AttachmentSort, AuthDiscoveryState, AuthFailureKind, AvatarImage, AvatarThumbnailFailureKind,
     AvatarThumbnailState, BasicOperationRequest, BasicOperationState, CapabilityState,
-    CjkCollationProfile, CjkNormalizationProfile, CjkTextPolicyState, ComposerDraftStore,
-    ComposerMode, ComposerSendShortcut, ComposerState, ComposerSubmissionRecord,
-    ComposerSubmissionRegistry, ConversationActivity, ConversationActivitySource,
-    CrossSigningStatus, CurrentDeviceTrustState, DelegatedAuthLinks, DeviceSessionListState,
-    DeviceSessionSummary, DeviceTrustLevel, DeviceTrustSummary, DirectoryJoinState, DirectoryQuery,
-    DirectoryQueryState, DirectoryRoomSummary, DirectoryState, DisplaySettings,
-    E2eeKeyManagementState, E2eeRecoveryState, E2eeTrustState, EmojiPreference, FilesViewScope,
-    FilesViewState, FocusedContextState, FontPreference, INVITE_ALREADY_IN_SPACE_MESSAGE,
-    IdentityResetAuthType, IdentityResetState, IgnoredUserUpdateState, ImageUploadCompressionMode,
+    CjkCollationProfile, CjkNormalizationProfile, CjkTextPolicyState,
+    ComposerDraftPersistenceEntry, ComposerDraftPersistenceImportError,
+    ComposerDraftPersistenceProjection, ComposerDraftProtection, ComposerDraftStore, ComposerMode,
+    ComposerSendShortcut, ComposerState, ComposerSubmissionRecord, ComposerSubmissionRegistry,
+    ConversationActivity, ConversationActivitySource, CrossSigningStatus, CurrentDeviceTrustState,
+    DelegatedAuthLinks, DeviceSessionListState, DeviceSessionSummary, DeviceTrustLevel,
+    DeviceTrustSummary, DirectoryJoinState, DirectoryQuery, DirectoryQueryState,
+    DirectoryRoomSummary, DirectoryState, DisplaySettings, E2eeKeyManagementState,
+    E2eeRecoveryState, E2eeTrustState, EmojiPreference, FilesViewScope, FilesViewState,
+    FocusedContextState, FontPreference, INVITE_ALREADY_IN_SPACE_MESSAGE, IdentityResetAuthType,
+    IdentityResetState, IgnoredUserUpdateState, ImageUploadCompressionMode,
     ImageUploadCompressionPolicy, InviteDestination, InviteDestinationKind,
     InviteDestinationResult, InviteDestinationResultKind, InviteOperationState, InvitePreview,
     InviteScopeOption, InviteScopePlan, InviteScopeSelection, InviteSelectedTarget,
@@ -102,6 +106,7 @@ pub use submission::{
 // Composer-draft persistence limits consumed by koushi-core's store and the
 // state-crate integration tests; root-re-exported so `state` can stay crate-internal.
 pub use state::{
+    MAX_LIVE_COMPOSER_ROOM_TOMBSTONES, MAX_LIVE_COMPOSER_THREAD_TOMBSTONES,
     MAX_PERSISTED_COMPOSER_DRAFT_BYTES, MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT,
     MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT,
 };

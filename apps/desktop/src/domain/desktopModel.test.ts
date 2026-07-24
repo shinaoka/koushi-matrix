@@ -3,7 +3,13 @@ import { describe, expect, test } from "vitest";
 import { createBrowserFakeApi } from "../backend/browserFakeApi";
 import { computeBrowserRoomListProjection } from "../backend/roomListProjection";
 import { composeSidebar, projectRoomSummaries, roomListSections, visibleRooms } from "./desktopModel";
-import type { DesktopSnapshot, RoomSummary, RoomTags, SpaceSummary } from "./types";
+import type {
+  ComposerTarget,
+  DesktopSnapshot,
+  RoomSummary,
+  RoomTags,
+  SpaceSummary
+} from "./types";
 
 async function readyAccount(api: ReturnType<typeof createBrowserFakeApi>) {
   const session = (await api.getSnapshot()).state.domain.session;
@@ -15,6 +21,26 @@ async function readyAccount(api: ReturnType<typeof createBrowserFakeApi>) {
     userId: session.user_id,
     deviceId: session.device_id
   };
+}
+
+async function composerLease(
+  api: ReturnType<typeof createBrowserFakeApi>,
+  account: Awaited<ReturnType<typeof readyAccount>>,
+  target: ComposerTarget
+) {
+  const rendererGeneration = await api.beginComposerDraftRendererGeneration();
+  const lease = await api.acquireComposerDraftLease(
+    {
+      account: {
+        homeserver: account.homeserver,
+        user_id: account.userId,
+        device_id: account.deviceId
+      },
+      target
+    },
+    rendererGeneration
+  );
+  return { rendererGeneration, lease };
 }
 
 describe("desktop model", () => {
@@ -780,11 +806,19 @@ describe("desktop model", () => {
   test("browser fake sends text into the active timeline", async () => {
     const api = createBrowserFakeApi();
     const account = await readyAccount(api);
+    const roomId = "!room-alpha:example.invalid";
+    const { rendererGeneration, lease } = await composerLease(
+      api,
+      account,
+      { kind: "main", room_id: roomId }
+    );
 
     const snapshot = await api.sendText(
       account,
+      lease.leaseId,
+      rendererGeneration,
       "submission-test-send",
-      "!room-alpha:example.invalid",
+      roomId,
       "Synthetic message from composer"
     );
 
@@ -798,10 +832,18 @@ describe("desktop model", () => {
   test("browser fake edits and redacts a sent timeline message", async () => {
     const api = createBrowserFakeApi();
     const account = await readyAccount(api);
+    const roomId = "!room-alpha:example.invalid";
+    const { rendererGeneration, lease } = await composerLease(
+      api,
+      account,
+      { kind: "main", room_id: roomId }
+    );
     const submission = await api.sendText(
       account,
+      lease.leaseId,
+      rendererGeneration,
       "submission-test-edit",
-      "!room-alpha:example.invalid",
+      roomId,
       "Synthetic message before edit"
     );
     let snapshot = submission.snapshot;
@@ -1018,9 +1060,16 @@ describe("desktop model", () => {
     const rootEventId = rootMessage.event_id;
     const rootReplyCountBefore = rootMessage.reply_count;
     const roomId = rootMessage.room_id;
+    const { rendererGeneration, lease } = await composerLease(
+      api,
+      account,
+      { kind: "main", room_id: roomId }
+    );
 
     const submission = await api.sendReply(
       account,
+      lease.leaseId,
+      rendererGeneration,
       "submission-test-reply",
       roomId,
       rootEventId,

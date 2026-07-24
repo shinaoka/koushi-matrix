@@ -5,8 +5,12 @@ mod dto;
 pub mod keyring_backend;
 
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 use tokio::sync::Mutex as TokioMutex;
@@ -23,6 +27,7 @@ use crate::dto::FrontendDesktopSnapshotDelta;
 // koushi-core: the production runtime host. All session, credential,
 // and Matrix operations go through CoreCommand/CoreEvent — the adapter never
 // touches the credential store or the SDK directly.
+use koushi_core::composer_draft_lifecycle::{ComposerDraftLeaseId, ComposerRendererGeneration};
 use koushi_core::renderable_thumbnail::{
     cleanup_legacy_plaintext_thumbnail_dirs, lookup_renderable_thumbnail,
 };
@@ -164,8 +169,72 @@ pub struct CoreRuntimeState {
     /// Command-dispatch connection. Uses `tokio::sync::Mutex` so the guard can
     /// be held across `.await` points in async Tauri command handlers.
     pub(crate) connection: TokioMutex<CoreConnection>,
+    pub(crate) composer_draft_transport: Mutex<ComposerDraftTransportIdentities>,
     /// Tauri-side timeline item count (updated by event loop; QA title only).
     pub(crate) timeline_items_count: AtomicUsize,
+}
+
+#[derive(Default)]
+pub(crate) struct ComposerDraftTransportIdentities {
+    next_generation: u64,
+    next_lease_id: u64,
+    generations: HashMap<String, ComposerRendererGeneration>,
+    leases: HashMap<(String, String), ComposerDraftLeaseId>,
+}
+
+impl ComposerDraftTransportIdentities {
+    pub(crate) fn install_generation(
+        &mut self,
+        generation: ComposerRendererGeneration,
+    ) -> Result<String, String> {
+        self.next_generation = self
+            .next_generation
+            .checked_add(1)
+            .ok_or_else(|| "composer renderer generation exhausted".to_owned())?;
+        let wire = self.next_generation.to_string();
+        self.generations.clear();
+        self.leases.clear();
+        self.generations.insert(wire.clone(), generation);
+        Ok(wire)
+    }
+
+    pub(crate) fn generation(&self, wire: &str) -> Result<ComposerRendererGeneration, String> {
+        self.generations
+            .get(wire)
+            .copied()
+            .ok_or_else(|| "composer renderer generation retired".to_owned())
+    }
+
+    pub(crate) fn install_lease(
+        &mut self,
+        renderer_generation: &str,
+        lease_id: ComposerDraftLeaseId,
+    ) -> Result<String, String> {
+        self.next_lease_id = self
+            .next_lease_id
+            .checked_add(1)
+            .ok_or_else(|| "composer draft lease exhausted".to_owned())?;
+        let wire = self.next_lease_id.to_string();
+        self.leases
+            .insert((renderer_generation.to_owned(), wire.clone()), lease_id);
+        Ok(wire)
+    }
+
+    pub(crate) fn lease(
+        &self,
+        renderer_generation: &str,
+        lease_id: &str,
+    ) -> Result<ComposerDraftLeaseId, String> {
+        self.leases
+            .get(&(renderer_generation.to_owned(), lease_id.to_owned()))
+            .copied()
+            .ok_or_else(|| "composer draft lease mismatch".to_owned())
+    }
+
+    pub(crate) fn remove_lease(&mut self, renderer_generation: &str, lease_id: &str) {
+        self.leases
+            .remove(&(renderer_generation.to_owned(), lease_id.to_owned()));
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1056,6 +1125,7 @@ pub fn run() {
             let core_state = CoreRuntimeState {
                 runtime,
                 connection: TokioMutex::new(command_conn),
+                composer_draft_transport: Mutex::new(ComposerDraftTransportIdentities::default()),
                 timeline_items_count: AtomicUsize::new(0),
             };
             app.manage(core_state);
@@ -1178,6 +1248,9 @@ pub fn run() {
             commands::e2ee::submit_identity_reset_password,
             commands::e2ee::submit_identity_reset_oauth,
             commands::timeline::resolve_composer_key_action,
+            commands::timeline::begin_composer_draft_renderer_generation,
+            commands::timeline::acquire_composer_draft_lease,
+            commands::timeline::release_composer_draft_lease,
             commands::navigation::select_space,
             commands::navigation::reorder_spaces,
             commands::navigation::select_room,

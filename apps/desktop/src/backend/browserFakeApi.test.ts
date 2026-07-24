@@ -1,7 +1,8 @@
 import { describe, expect, test } from "vitest";
 
 import { createBrowserFakeApi } from "./browserFakeApi";
-import type { DesktopSnapshot, LiveReadReceipt } from "../domain/types";
+import { parseComposerDraftRevision as revision } from "../domain/composerDraftRevision";
+import type { ComposerTarget, DesktopSnapshot, LiveReadReceipt } from "../domain/types";
 
 async function readyAccount(api: ReturnType<typeof createBrowserFakeApi>) {
   const session = (await api.getSnapshot()).state.domain.session;
@@ -13,6 +14,28 @@ async function readyAccount(api: ReturnType<typeof createBrowserFakeApi>) {
     userId: session.user_id,
     deviceId: session.device_id
   };
+}
+
+async function beginComposerLease(
+  api: ReturnType<typeof createBrowserFakeApi>,
+  account: Awaited<ReturnType<typeof readyAccount>>,
+  target: ComposerTarget,
+  rendererGeneration?: string
+) {
+  const generation =
+    rendererGeneration ?? (await api.beginComposerDraftRendererGeneration());
+  const lease = await api.acquireComposerDraftLease(
+    {
+      account: {
+        homeserver: account.homeserver,
+        user_id: account.userId,
+        device_id: account.deviceId
+      },
+      target
+    },
+    generation
+  );
+  return { generation, lease };
 }
 
 function receipt(
@@ -119,10 +142,29 @@ describe("BrowserFakeApi settings preview", () => {
     const roomId = "!room-alpha:example.invalid";
     await api.selectRoom(roomId);
     const account = await readyAccount(api);
+    const { generation, lease } = await beginComposerLease(
+      api,
+      account,
+      { kind: "main", room_id: roomId }
+    );
     const before = (await api.getSnapshot()).timeline.length;
 
-    const first = await api.sendText(account, "submission-same", roomId, "original");
-    const replay = await api.sendText(account, "submission-same", roomId, "changed");
+    const first = await api.sendText(
+      account,
+      lease.leaseId,
+      generation,
+      "submission-same",
+      roomId,
+      "original"
+    );
+    const replay = await api.sendText(
+      account,
+      lease.leaseId,
+      generation,
+      "submission-same",
+      roomId,
+      "changed"
+    );
 
     expect(first.outcome).toBe("accepted");
     expect(replay.transactionId).toBe(first.transactionId);
@@ -130,6 +172,55 @@ describe("BrowserFakeApi settings preview", () => {
     expect(replay.snapshot.timeline.at(-1)?.body).toBe("original");
     expect(replay.snapshot.state.ui.timeline.composer.pending_submission_id).toBeNull();
     expect(replay.snapshot.state.ui.timeline.composer.accepted_submission_ids).toContain("submission-same");
+  });
+
+  test("leases preserve exact large revisions and expose the Rust-owned clear token", async () => {
+    const api = createBrowserFakeApi();
+    const roomId = "!room-alpha:example.invalid";
+    await api.selectRoom(roomId);
+    const account = await readyAccount(api);
+    const target = { kind: "main" as const, room_id: roomId };
+    const scope = {
+      account: {
+        homeserver: account.homeserver,
+        user_id: account.userId,
+        device_id: account.deviceId
+      },
+      target
+    };
+    const rendererGeneration = await api.beginComposerDraftRendererGeneration();
+    const lease = await api.acquireComposerDraftLease(scope, rendererGeneration);
+    const captured = revision("9007199254740993");
+    const accepted = revision("9007199254740994");
+
+    await api.setComposerDraft(
+      account,
+      lease.leaseId,
+      rendererGeneration,
+      roomId,
+      "captured",
+      captured
+    );
+    const response = await api.sendText(
+      account,
+      lease.leaseId,
+      rendererGeneration,
+      "large-revision-send",
+      roomId,
+      "captured",
+      { targets: [] },
+      captured
+    );
+
+    expect(response.outcome).toBe("accepted");
+    expect(response.snapshot.state.ui.timeline.composer).toMatchObject({
+      draft: "",
+      draft_revision: accepted,
+      last_accepted_clear_revision: accepted
+    });
+    expect(lease.revision).toBe("0");
+    expect(typeof response.snapshot.state.ui.timeline.composer.draft_revision).toBe("string");
+    await api.releaseComposerDraftLease(lease.leaseId, rendererGeneration);
   });
 
   test("fences stale main and thread draft writes after accepted sends", async () => {
@@ -142,81 +233,178 @@ describe("BrowserFakeApi settings preview", () => {
       userId: session.user_id!,
       deviceId: session.device_id!
     };
-    await api.setComposerDraft(account, roomId, "main accepted", 1);
+    const target = { kind: "main" as const, room_id: roomId };
+    const { generation, lease: mainLease } = await beginComposerLease(
+      api,
+      account,
+      target
+    );
+    await api.setComposerDraft(
+      account,
+      mainLease.leaseId,
+      generation,
+      roomId,
+      "main accepted",
+      revision("1")
+    );
     const sent = await api.sendText(
       account,
+      mainLease.leaseId,
+      generation,
       "revision-main",
       roomId,
       "main accepted",
       { targets: [] },
-      1
+      revision("1")
     );
     expect(sent.outcome).toBe("accepted");
     expect(sent.snapshot.state.ui.timeline.composer).toMatchObject({
       draft: "",
-      draft_revision: 2
+      draft_revision: "2"
     });
-    const staleMain = await api.setComposerDraft(account, roomId, "main accepted", 1);
+    const staleMain = await api.setComposerDraft(
+      account,
+      mainLease.leaseId,
+      generation,
+      roomId,
+      "main accepted",
+      revision("1")
+    );
     expect(staleMain.state.ui.timeline.composer.draft).toBe("");
-    const nextMain = await api.setComposerDraft(account, roomId, "immediate next", 3);
+    const nextMain = await api.setComposerDraft(
+      account,
+      mainLease.leaseId,
+      generation,
+      roomId,
+      "immediate next",
+      revision("3")
+    );
     expect(nextMain.state.ui.timeline.composer.draft).toBe("immediate next");
     const lateMainAcceptance = await api.sendText(
       account,
+      mainLease.leaseId,
+      generation,
       "revision-main-late",
       roomId,
       "main accepted",
       { targets: [] },
-      1
+      revision("1")
     );
     expect(lateMainAcceptance.snapshot.state.ui.timeline.composer).toMatchObject({
       draft: "immediate next",
-      draft_revision: 4
+      draft_revision: "4"
     });
 
     const rootId = nextMain.timeline[0]!.event_id;
     await api.openThread(roomId, rootId);
-    await api.setThreadComposerDraft(account, roomId, rootId, "thread accepted", 5);
+    const { lease: threadLease } = await beginComposerLease(
+      api,
+      account,
+      { kind: "thread", room_id: roomId, root_event_id: rootId },
+      generation
+    );
+    await api.setThreadComposerDraft(
+      account,
+      threadLease.leaseId,
+      generation,
+      roomId,
+      rootId,
+      "thread accepted",
+      revision("5")
+    );
     const threadSent = await api.sendThreadReply(
       account,
+      threadLease.leaseId,
+      generation,
       "revision-thread",
       roomId,
       rootId,
       "thread accepted",
       { targets: [] },
-      5
+      revision("5")
     );
     expect(threadSent.outcome).toBe("accepted");
     const staleThread = await api.setThreadComposerDraft(
       account,
+      threadLease.leaseId,
+      generation,
       roomId,
       rootId,
       "thread accepted",
-      5
+      revision("5")
     );
     expect(staleThread.state.ui.thread).toMatchObject({
       kind: "open",
-      composer: { draft: "", draft_revision: 6 }
+      composer: { draft: "", draft_revision: "6" }
     });
     await api.setThreadComposerDraft(
       account,
+      threadLease.leaseId,
+      generation,
       roomId,
       rootId,
       "immediate thread next",
-      7
+      revision("7")
     );
     const lateThreadAcceptance = await api.sendThreadReply(
       account,
+      threadLease.leaseId,
+      generation,
       "revision-thread-late",
       roomId,
       rootId,
       "thread accepted",
       { targets: [] },
-      5
+      revision("5")
     );
     expect(lateThreadAcceptance.snapshot.state.ui.thread).toMatchObject({
       kind: "open",
-      composer: { draft: "immediate thread next", draft_revision: 8 }
+      composer: { draft: "immediate thread next", draft_revision: "8" }
     });
+  });
+
+  test("preserves a newer persisted draft when a reply acceptance settles late", async () => {
+    const api = createBrowserFakeApi();
+    const roomId = "!room-alpha:example.invalid";
+    const selected = await api.selectRoom(roomId);
+    const rootId = selected.timeline[0]!.event_id;
+    const account = await readyAccount(api);
+    const { generation, lease } = await beginComposerLease(api, account, {
+      kind: "main",
+      room_id: roomId
+    });
+
+    await api.setComposerDraft(
+      account,
+      lease.leaseId,
+      generation,
+      roomId,
+      "captured reply",
+      revision("1")
+    );
+    await api.setComposerDraft(
+      account,
+      lease.leaseId,
+      generation,
+      roomId,
+      "newer draft",
+      revision("2")
+    );
+    const response = await api.sendReply(
+      account,
+      lease.leaseId,
+      generation,
+      "late-reply-acceptance",
+      roomId,
+      rootId,
+      "captured reply",
+      { targets: [] },
+      revision("1")
+    );
+
+    expect(response.outcome).toBe("accepted");
+    expect(response.snapshot.state.ui.timeline.composer.draft).toBe("newer draft");
+    expect((await api.selectRoom(roomId)).state.ui.timeline.composer.draft).toBe("newer draft");
   });
 
   test("rejects draft writes and acceptances captured for another account", async () => {
@@ -226,56 +414,83 @@ describe("BrowserFakeApi settings preview", () => {
     const before = await api.getSnapshot();
     const rootId = before.timeline[0]!.event_id;
     await api.openThread(roomId, rootId);
+    const account = await readyAccount(api);
+    const mainTarget = { kind: "main" as const, room_id: roomId };
+    const threadTarget = {
+      kind: "thread" as const,
+      room_id: roomId,
+      root_event_id: rootId
+    };
+    const { generation, lease: mainLease } = await beginComposerLease(
+      api,
+      account,
+      mainTarget
+    );
+    const { lease: threadLease } = await beginComposerLease(
+      api,
+      account,
+      threadTarget,
+      generation
+    );
 
     const staleAccount = {
       homeserver: "https://stale.example.invalid",
       userId: "@stale-account:example.invalid",
       deviceId: "STALE"
     };
-    const main = await api.setComposerDraft(
-      staleAccount,
-      roomId,
-      "must not cross accounts",
-      1
-    );
-    const thread = await api.setThreadComposerDraft(
-      staleAccount,
-      roomId,
-      rootId,
-      "must not cross accounts",
-      1
-    );
-
-    expect(main.state.ui.timeline.composer.draft).toBe("");
-    expect(thread.state.ui.thread).toMatchObject({
-      kind: "open",
-      composer: { draft: "", draft_revision: 0 }
-    });
-    const staleMainSend = await api.sendText(
-      staleAccount,
-      "stale-main-send",
-      roomId,
-      "must not send"
-    );
-    const staleThreadSend = await api.sendThreadReply(
-      staleAccount,
-      "stale-thread-send",
-      roomId,
-      rootId,
-      "must not send"
-    );
-    const staleSchedule = await api.scheduleSend(
-      staleAccount,
-      { kind: "thread", room_id: roomId, root_event_id: rootId },
-      "must not schedule",
-      Date.now() + 60_000,
-      0
-    );
-    const threadTarget = {
-      kind: "thread" as const,
-      room_id: roomId,
-      root_event_id: rootId
-    };
+    await expect(
+      api.setComposerDraft(
+        staleAccount,
+        mainLease.leaseId,
+        generation,
+        roomId,
+        "must not cross accounts",
+        revision("1")
+      )
+    ).rejects.toThrow("composer draft lease mismatch");
+    await expect(
+      api.setThreadComposerDraft(
+        staleAccount,
+        threadLease.leaseId,
+        generation,
+        roomId,
+        rootId,
+        "must not cross accounts",
+        revision("1")
+      )
+    ).rejects.toThrow("composer draft lease mismatch");
+    await expect(
+      api.sendText(
+        staleAccount,
+        mainLease.leaseId,
+        generation,
+        "stale-main-send",
+        roomId,
+        "must not send"
+      )
+    ).rejects.toThrow("composer draft lease mismatch");
+    await expect(
+      api.sendThreadReply(
+        staleAccount,
+        threadLease.leaseId,
+        generation,
+        "stale-thread-send",
+        roomId,
+        rootId,
+        "must not send"
+      )
+    ).rejects.toThrow("composer draft lease mismatch");
+    await expect(
+      api.scheduleSend(
+        staleAccount,
+        threadLease.leaseId,
+        generation,
+        threadTarget,
+        "must not schedule",
+        Date.now() + 60_000,
+        revision("0")
+      )
+    ).rejects.toThrow("composer draft lease mismatch");
     await api.stageUploadBytes(threadTarget, [
       {
         stagedId: "stale-account-upload",
@@ -285,18 +500,21 @@ describe("BrowserFakeApi settings preview", () => {
         bytes: [1, 2, 3]
       }
     ]);
-    const stalePreparedUpload = await api.sendPreparedUploads(
-      staleAccount,
-      threadTarget,
-      0
-    );
-    expect(staleMainSend.outcome).toMatchObject({ rejected: { kind: "invalid" } });
-    expect(staleThreadSend.outcome).toMatchObject({ rejected: { kind: "invalid" } });
-    expect(staleSchedule.acceptedRevision).toBeNull();
-    expect(staleSchedule.snapshot.state.ui.timeline.scheduled_sends).toHaveLength(0);
-    expect(stalePreparedUpload.acceptedRevision).toBeNull();
-    expect(stalePreparedUpload.snapshot.state.ui.thread).toMatchObject({
+    await expect(
+      api.sendPreparedUploads(
+        staleAccount,
+        threadLease.leaseId,
+        generation,
+        threadTarget,
+        revision("0")
+      )
+    ).rejects.toThrow("composer draft lease mismatch");
+    const after = await api.getSnapshot();
+    expect(after.state.ui.timeline.scheduled_sends).toHaveLength(0);
+    expect(after.state.ui.timeline.composer.draft).toBe("");
+    expect(after.state.ui.thread).toMatchObject({
       kind: "open",
+      composer: { draft: "", draft_revision: "0" },
       staged_uploads: [{ staged_id: "stale-account-upload" }]
     });
   });
@@ -307,9 +525,30 @@ describe("BrowserFakeApi settings preview", () => {
     await api.selectRoom(roomId);
     const account = await readyAccount(api);
     const root = (await api.getSnapshot()).timeline[0]!;
+    const { generation, lease } = await beginComposerLease(
+      api,
+      account,
+      { kind: "main", room_id: roomId }
+    );
     const before = root.reply_count;
-    await api.sendReply(account, "reply-same", roomId, root.event_id, "original");
-    const replay = await api.sendReply(account, "reply-same", roomId, root.event_id, "changed");
+    await api.sendReply(
+      account,
+      lease.leaseId,
+      generation,
+      "reply-same",
+      roomId,
+      root.event_id,
+      "original"
+    );
+    const replay = await api.sendReply(
+      account,
+      lease.leaseId,
+      generation,
+      "reply-same",
+      roomId,
+      root.event_id,
+      "changed"
+    );
     expect(replay.snapshot.timeline.find((item) => item.event_id === root.event_id)?.reply_count).toBe(before + 1);
   });
 
@@ -320,8 +559,29 @@ describe("BrowserFakeApi settings preview", () => {
     const account = await readyAccount(api);
     const rootId = (await api.getSnapshot()).timeline[0]!.event_id;
     await api.openThread(roomId, rootId);
-    const first = await api.sendThreadReply(account, "thread-unknown", roomId, rootId, "original");
-    const replay = await api.sendThreadReply(account, "thread-unknown", roomId, rootId, "edited");
+    const { generation, lease } = await beginComposerLease(
+      api,
+      account,
+      { kind: "thread", room_id: roomId, root_event_id: rootId }
+    );
+    const first = await api.sendThreadReply(
+      account,
+      lease.leaseId,
+      generation,
+      "thread-unknown",
+      roomId,
+      rootId,
+      "original"
+    );
+    const replay = await api.sendThreadReply(
+      account,
+      lease.leaseId,
+      generation,
+      "thread-unknown",
+      roomId,
+      rootId,
+      "edited"
+    );
     expect(replay.transactionId).toBe(first.transactionId);
     const thread = replay.snapshot.state.ui.thread;
     expect(thread.kind).toBe("open");
@@ -336,17 +596,43 @@ describe("BrowserFakeApi settings preview", () => {
     const roomId = "!room-alpha:example.invalid";
     await api.selectRoom(roomId);
     const account = await readyAccount(api);
+    const { generation, lease } = await beginComposerLease(
+      api,
+      account,
+      { kind: "main", room_id: roomId }
+    );
     for (let index = 0; index < 129; index += 1) {
-      await api.sendText(account, `bounded-${index}`, roomId, `body-${index}`);
+      await api.sendText(
+        account,
+        lease.leaseId,
+        generation,
+        `bounded-${index}`,
+        roomId,
+        `body-${index}`
+      );
     }
     const bounded = await api.getSnapshot();
     const before = bounded.timeline.length;
     expect(bounded.state.ui.timeline.submission_registry.accepted_submission_ids).toHaveLength(0);
     expect(bounded.state.ui.timeline.submission_registry.settled_submission_ids).toHaveLength(128);
     expect(bounded.state.ui.timeline.submission_registry.settled_submission_ids).not.toContain("bounded-0");
-    await api.sendText(account, "bounded-1", roomId, "deduped");
+    await api.sendText(
+      account,
+      lease.leaseId,
+      generation,
+      "bounded-1",
+      roomId,
+      "deduped"
+    );
     expect((await api.getSnapshot()).timeline).toHaveLength(before);
-    await api.sendText(account, "bounded-0", roomId, "evicted");
+    await api.sendText(
+      account,
+      lease.leaseId,
+      generation,
+      "bounded-0",
+      roomId,
+      "evicted"
+    );
     expect((await api.getSnapshot()).timeline).toHaveLength(before + 1);
   });
 

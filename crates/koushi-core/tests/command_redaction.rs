@@ -104,7 +104,7 @@ fn secret_bearing_commands_redact_debug() {
         room_id: "!room:example.test".to_owned(),
         root_event_id: "$root".to_owned(),
         draft: BODY.to_owned(),
-        revision: 1,
+        revision: 1.into(),
     });
     let scheduled_send = CoreCommand::App(AppCommand::ScheduleSend {
         request_id: fake_request_id(),
@@ -117,7 +117,7 @@ fn secret_bearing_commands_redact_debug() {
         thread_root_event_id: None,
         body: BODY.to_owned(),
         send_at_ms: 1_900_000_000_000,
-        draft_revision: 1,
+        draft_revision: 1.into(),
     });
     let timeline_scroll_anchor = CoreCommand::App(AppCommand::TimelineScrollAnchorUpdated {
         request_id: fake_request_id(),

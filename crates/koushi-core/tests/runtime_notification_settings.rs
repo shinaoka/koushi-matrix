@@ -110,7 +110,8 @@ async fn set_room_notification_mode_for_unknown_room_is_ignored_by_reducer() {
 
 #[tokio::test]
 async fn privacy_settings_patch_gates_read_receipt_dispatch() {
-    let (_runtime, mut conn, _snapshot) = ready_room_conn("!room:example.test").await;
+    let (_runtime, mut conn, _snapshot, _data_dir, _credential_dir) =
+        ready_room_conn("!room:example.test").await;
 
     // Confirm the timeline command path is alive by submitting a subscribe.
     // It fails because there is no real SDK session, but it proves commands are
@@ -205,7 +206,8 @@ async fn privacy_settings_patch_gates_read_receipt_dispatch() {
 
 #[tokio::test]
 async fn privacy_settings_patch_gates_typing_dispatch() {
-    let (_runtime, mut conn, _snapshot) = ready_room_conn("!room:example.test").await;
+    let (_runtime, mut conn, _snapshot, _data_dir, _credential_dir) =
+        ready_room_conn("!room:example.test").await;
 
     // Confirm the timeline command path is alive.
     let subscribe_id = conn.next_request_id();

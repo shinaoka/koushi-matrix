@@ -10,6 +10,7 @@ pub mod search_crawler;
 mod activity;
 mod basic_operation;
 mod cjk;
+mod composer_draft;
 mod directory;
 mod e2ee;
 mod errors;
@@ -40,6 +41,9 @@ pub use search_crawler::{
 };
 
 // ── Re-exports: errors ──────────────────────────────────────────────────────
+pub use composer_draft::{
+    ComposerDraftProtection, MAX_LIVE_COMPOSER_ROOM_TOMBSTONES, MAX_LIVE_COMPOSER_THREAD_TOMBSTONES,
+};
 pub use errors::{AppError, OperationFailureKind};
 
 // ── Re-exports: sync ────────────────────────────────────────────────────────
@@ -153,8 +157,9 @@ pub use cjk::{
 
 // ── Re-exports: timeline ────────────────────────────────────────────────────
 pub use timeline::{
-    ComposerDraftStore, ComposerMode, ComposerState, ComposerSubmissionRecord,
-    ComposerSubmissionRegistry, MAX_PERSISTED_COMPOSER_DRAFT_BYTES,
+    ComposerDraftPersistenceEntry, ComposerDraftPersistenceImportError,
+    ComposerDraftPersistenceProjection, ComposerDraftStore, ComposerMode, ComposerState,
+    ComposerSubmissionRecord, ComposerSubmissionRegistry, MAX_PERSISTED_COMPOSER_DRAFT_BYTES,
     MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT, MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT,
     MediaGalleryStore, MediaPreparationFailureKind, PendingComposerSendKind, PreparedUploadFormat,
     PreparedUploadVariant, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem,

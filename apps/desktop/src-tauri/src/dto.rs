@@ -329,8 +329,8 @@ impl From<StateDelta> for FrontendDesktopSnapshotDelta {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct FrontendAppState {
-    /// IPC snapshot contract version. v2 introduced the domain/ui sectioning
-    /// (#87 Phase 4). The renderer asserts this so a stale flat (v1) snapshot or
+    /// IPC snapshot contract version. v3 uses exact decimal-string composer
+    /// revisions. The renderer asserts this so a stale snapshot or
     /// a mismatched Rust/TS build fails loudly instead of reading `undefined`.
     pub schema_version: u32,
     pub domain: FrontendDomainState,
@@ -454,7 +454,7 @@ fn frontend_app_state_for_platform(state: AppState, platform: DisplayPlatform) -
 }
 
 /// IPC snapshot contract version. Bumped to 2 by #87 Phase 4 (domain/ui sectioning).
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 3;
 
 fn frontend_display_platform() -> DisplayPlatform {
     #[cfg(target_os = "macos")]
@@ -1522,6 +1522,62 @@ mod tests {
         );
     }
 
+    #[test]
+    fn composer_revision_tauri_wire_round_trips_max_and_rejects_numeric() {
+        use koushi_state::{
+            ComposerDraftRevision, ComposerState, ThreadPaneState, TimelinePaneState,
+        };
+
+        let mut state = booted_app_state();
+        state.timeline = TimelinePaneState {
+            composer: ComposerState {
+                draft_revision: ComposerDraftRevision::MAX,
+                last_accepted_clear_revision: ComposerDraftRevision::MAX,
+                ..ComposerState::default()
+            },
+            ..TimelinePaneState::default()
+        };
+        state.thread = ThreadPaneState::Open {
+            room_id: "!room:example.invalid".to_owned(),
+            root_event_id: "$root:example.invalid".to_owned(),
+            is_subscribed: true,
+            composer: ComposerState {
+                draft_revision: ComposerDraftRevision::MAX,
+                last_accepted_clear_revision: ComposerDraftRevision::MAX,
+                ..ComposerState::default()
+            },
+            staged_uploads: Vec::new(),
+        };
+
+        let value = serde_json::to_value(FrontendDesktopSnapshot::from(state))
+            .expect("max composer revisions should serialize");
+        let max = json!("340282366920938463463374607431768211455");
+        assert_eq!(
+            value["state"]["ui"]["timeline"]["composer"]["draft_revision"],
+            max
+        );
+        assert_eq!(
+            value["state"]["ui"]["timeline"]["composer"]["last_accepted_clear_revision"],
+            max
+        );
+        assert_eq!(
+            value["state"]["ui"]["thread"]["composer"]["draft_revision"],
+            max
+        );
+        assert_eq!(
+            value["state"]["ui"]["thread"]["composer"]["last_accepted_clear_revision"],
+            max
+        );
+
+        assert!(
+            serde_json::from_value::<ComposerDraftRevision>(json!(
+                "340282366920938463463374607431768211455"
+            ))
+            .is_ok()
+        );
+        assert!(serde_json::from_value::<ComposerDraftRevision>(json!(1)).is_err());
+    }
+
     /// Characterization / golden test for the complete `FrontendAppState` DTO wire shape.
     ///
     /// Purpose: lock in the exact JSON serialization of `FrontendDesktopSnapshot` so any
@@ -1745,6 +1801,8 @@ mod tests {
         composer
             .accepted_submission_ids
             .push_back(koushi_state::SubmissionId::new("accepted-contract"));
+        composer.draft_revision = koushi_state::ComposerDraftRevision::MAX;
+        composer.last_accepted_clear_revision = koushi_state::ComposerDraftRevision::MAX;
         state.timeline = TimelinePaneState {
             room_id: Some("!room:example.invalid".to_owned()),
             is_subscribed: true,
@@ -1782,6 +1840,17 @@ mod tests {
                 batches_processed: 3,
                 failure_kind: koushi_state::TimelineGapRepairFailureKind::Sdk,
             },
+        };
+        state.thread = koushi_state::ThreadPaneState::Open {
+            room_id: "!room:example.invalid".to_owned(),
+            root_event_id: "$thread-root:example.invalid".to_owned(),
+            is_subscribed: true,
+            composer: koushi_state::ComposerState {
+                draft_revision: koushi_state::ComposerDraftRevision::MAX,
+                last_accepted_clear_revision: koushi_state::ComposerDraftRevision::MAX,
+                ..koushi_state::ComposerState::default()
+            },
+            staged_uploads: Vec::new(),
         };
 
         // live_signals — one room entry

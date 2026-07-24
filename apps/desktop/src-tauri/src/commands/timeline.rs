@@ -26,7 +26,7 @@ impl SubmissionEventSource for CoreConnection {
 fn composer_draft_revision(
     state: &koushi_state::AppState,
     target: &koushi_state::ComposerTarget,
-) -> u64 {
+) -> koushi_state::ComposerDraftRevision {
     match target {
         koushi_state::ComposerTarget::Main { room_id } => {
             state.composer_drafts.room_revision(room_id)
@@ -38,6 +38,193 @@ fn composer_draft_revision(
             .composer_drafts
             .thread_revision(room_id, root_event_id),
     }
+}
+
+fn composer_draft_last_accepted_clear_revision(
+    state: &koushi_state::AppState,
+    target: &koushi_state::ComposerTarget,
+) -> koushi_state::ComposerDraftRevision {
+    match target {
+        koushi_state::ComposerTarget::Main { room_id } => state
+            .composer_drafts
+            .room_last_accepted_clear_revisions
+            .get(room_id)
+            .copied()
+            .unwrap_or_default(),
+        koushi_state::ComposerTarget::Thread {
+            room_id,
+            root_event_id,
+        } => state
+            .composer_drafts
+            .thread_last_accepted_clear_revisions
+            .get(room_id)
+            .and_then(|threads| threads.get(root_event_id))
+            .copied()
+            .unwrap_or_default(),
+    }
+}
+
+fn composer_draft_has_content(
+    state: &koushi_state::AppState,
+    target: &koushi_state::ComposerTarget,
+) -> bool {
+    match target {
+        koushi_state::ComposerTarget::Main { room_id } => state
+            .composer_drafts
+            .rooms
+            .get(room_id)
+            .is_some_and(|draft| !draft.is_empty()),
+        koushi_state::ComposerTarget::Thread {
+            room_id,
+            root_event_id,
+        } => state
+            .composer_drafts
+            .threads
+            .get(room_id)
+            .and_then(|threads| threads.get(root_event_id))
+            .is_some_and(|draft| !draft.is_empty()),
+    }
+}
+
+fn composer_transport_tokens(
+    state: &CoreRuntimeState,
+    renderer_generation: &str,
+    lease_id: &str,
+) -> Result<
+    (
+        koushi_core::composer_draft_lifecycle::ComposerRendererGeneration,
+        koushi_core::composer_draft_lifecycle::ComposerDraftLeaseId,
+    ),
+    String,
+> {
+    let identities = state
+        .composer_draft_transport
+        .lock()
+        .map_err(|_| "composer draft transport unavailable".to_owned())?;
+    Ok((
+        identities.generation(renderer_generation)?,
+        identities.lease(renderer_generation, lease_id)?,
+    ))
+}
+
+fn acquire_terminal_composer_permit(
+    connection: &CoreConnection,
+    generation: koushi_core::composer_draft_lifecycle::ComposerRendererGeneration,
+    lease_id: koushi_core::composer_draft_lifecycle::ComposerDraftLeaseId,
+    account: &koushi_key::SessionKeyId,
+    target: &koushi_state::ComposerTarget,
+) -> Result<koushi_core::composer_draft_lifecycle::ComposerDraftCommandPermit, String> {
+    connection
+        .acquire_composer_draft_command_permit(
+            generation,
+            lease_id,
+            &koushi_core::composer_draft_lifecycle::ComposerDraftScope {
+                account: account.clone(),
+                target: target.clone(),
+            },
+        )
+        .map_err(|_| "composer draft lease mismatch".to_owned())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerDraftLeaseResponse {
+    renderer_generation: String,
+    lease_id: String,
+    revision: koushi_state::ComposerDraftRevision,
+    last_accepted_clear_revision: koushi_state::ComposerDraftRevision,
+    has_authoritative_content: bool,
+}
+
+#[tauri::command]
+pub async fn begin_composer_draft_renderer_generation(
+    state: State<'_, CoreRuntimeState>,
+) -> Result<String, String> {
+    let connection = state.connection.lock().await;
+    let generation = connection
+        .begin_composer_draft_renderer_generation()
+        .map_err(|_| "composer renderer generation unavailable".to_owned())?;
+    state
+        .composer_draft_transport
+        .lock()
+        .map_err(|_| "composer draft transport unavailable".to_owned())?
+        .install_generation(generation)
+}
+
+#[tauri::command]
+pub async fn acquire_composer_draft_lease(
+    account_homeserver: String,
+    account_user_id: String,
+    account_device_id: String,
+    target: koushi_state::ComposerTarget,
+    renderer_generation: String,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<ComposerDraftLeaseResponse, String> {
+    if account_homeserver.is_empty() || account_user_id.is_empty() || account_device_id.is_empty() {
+        return Err("composer draft owner is incomplete".to_owned());
+    }
+    let expected_account = koushi_key::SessionKeyId {
+        homeserver: account_homeserver,
+        user_id: account_user_id,
+        device_id: account_device_id,
+    };
+    let connection = state.connection.lock().await;
+    let snapshot = connection.snapshot();
+    if composer_draft_session_key(&snapshot).as_ref() != Some(&expected_account)
+        || !composer_target_is_active(&snapshot, &target)
+    {
+        return Err("composer draft lease scope is inactive".to_owned());
+    }
+    let generation = state
+        .composer_draft_transport
+        .lock()
+        .map_err(|_| "composer draft transport unavailable".to_owned())?
+        .generation(&renderer_generation)?;
+    let lease = connection
+        .acquire_composer_draft_lease(
+            generation,
+            koushi_core::composer_draft_lifecycle::ComposerDraftScope {
+                account: expected_account,
+                target: target.clone(),
+            },
+        )
+        .map_err(|_| "composer draft lease unavailable".to_owned())?;
+    let lease_id = state
+        .composer_draft_transport
+        .lock()
+        .map_err(|_| "composer draft transport unavailable".to_owned())?
+        .install_lease(&renderer_generation, lease)?;
+    Ok(ComposerDraftLeaseResponse {
+        renderer_generation,
+        lease_id,
+        revision: composer_draft_revision(&snapshot, &target),
+        last_accepted_clear_revision: composer_draft_last_accepted_clear_revision(
+            &snapshot, &target,
+        ),
+        has_authoritative_content: composer_draft_has_content(&snapshot, &target),
+    })
+}
+
+#[tauri::command]
+pub async fn release_composer_draft_lease(
+    lease_id: String,
+    renderer_generation: String,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<(), String> {
+    let (generation, lease) =
+        composer_transport_tokens(state.inner(), &renderer_generation, &lease_id)?;
+    state
+        .connection
+        .lock()
+        .await
+        .release_composer_draft_lease(generation, lease)
+        .map_err(|_| "composer draft lease mismatch".to_owned())?;
+    state
+        .composer_draft_transport
+        .lock()
+        .map_err(|_| "composer draft transport unavailable".to_owned())?
+        .remove_lease(&renderer_generation, &lease_id);
+    Ok(())
 }
 
 fn composer_draft_session_key(state: &koushi_state::AppState) -> Option<koushi_key::SessionKeyId> {
@@ -52,21 +239,22 @@ fn composer_draft_session_key(state: &koushi_state::AppState) -> Option<koushi_k
 fn next_composer_draft_acceptance_revision(
     state: &koushi_state::AppState,
     target: &koushi_state::ComposerTarget,
-    submitted_revision: u64,
-) -> Result<u64, String> {
-    composer_draft_revision(state, target)
-        .max(submitted_revision)
-        .checked_add(1)
-        .ok_or_else(|| "composer draft revision exhausted".to_owned())
+    submitted_revision: koushi_state::ComposerDraftRevision,
+) -> Result<koushi_state::ComposerDraftRevision, String> {
+    koushi_state::ComposerDraftRevision::checked_successor(
+        composer_draft_revision(state, target),
+        submitted_revision,
+    )
+    .map_err(|_| "composer draft revision exhausted".to_owned())
 }
 
 async fn wait_for_composer_draft_acceptance<S: SubmissionEventSource>(
     source: &mut S,
     request_id: koushi_core::RequestId,
     target: &koushi_state::ComposerTarget,
-    expected_revision: u64,
+    expected_revision: koushi_state::ComposerDraftRevision,
     timeout: Duration,
-) -> Result<u64, String> {
+) -> Result<koushi_state::ComposerDraftRevision, String> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let revision = composer_draft_revision(&source.snapshot(), target);
@@ -321,11 +509,13 @@ pub async fn send_text(
     account_homeserver: String,
     account_user_id: String,
     account_device_id: String,
+    lease_id: String,
+    renderer_generation: String,
     submission_id: String,
     room_id: String,
     body: String,
     mentions: Option<koushi_state::MentionIntent>,
-    draft_revision: u64,
+    draft_revision: koushi_state::ComposerDraftRevision,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<SubmissionResponse, SubmissionFailure> {
@@ -342,12 +532,26 @@ pub async fn send_text(
         user_id: account_user_id,
         device_id: account_device_id,
     };
+    let (generation, lease) =
+        composer_transport_tokens(state.inner(), &renderer_generation, &lease_id)
+            .map_err(|_| SubmissionFailure::SubmitFailed)?;
     let mut event_conn = state.runtime.attach();
     if composer_draft_session_key(&event_conn.snapshot()).as_ref() != Some(&expected_account) {
         return Err(SubmissionFailure::SubmitFailed);
     }
+    let target = koushi_state::ComposerTarget::Main {
+        room_id: room_id.clone(),
+    };
+    let _terminal_permit = acquire_terminal_composer_permit(
+        &event_conn,
+        generation,
+        lease,
+        &expected_account,
+        &target,
+    )
+    .map_err(|_| SubmissionFailure::SubmitFailed)?;
     let request_id = event_conn.next_request_id();
-    let account_key = account_key_from_snapshot(state.inner()).await;
+    let account_key = account_key_from_app_state(&event_conn.snapshot());
     let submission_id = SubmissionId::new(submission_id);
     if let Some(command) = build_submit_text_command(
         request_id,
@@ -361,7 +565,7 @@ pub async fn send_text(
         draft_revision,
     ) {
         event_conn
-            .command(command)
+            .command_with_composer_lease(generation, lease, command)
             .await
             .map_err(|_| SubmissionFailure::SubmitFailed)?;
     }
@@ -375,13 +579,17 @@ pub async fn schedule_send(
     account_homeserver: String,
     account_user_id: String,
     account_device_id: String,
+    lease_id: String,
+    renderer_generation: String,
     target: koushi_state::ComposerTarget,
     body: String,
     send_at_ms: u64,
-    draft_revision: u64,
+    draft_revision: koushi_state::ComposerDraftRevision,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<ComposerDraftAcceptanceResponse, String> {
+    let (generation, lease) =
+        composer_transport_tokens(state.inner(), &renderer_generation, &lease_id)?;
     let mut event_conn = state.runtime.attach();
     let expected_account = koushi_key::SessionKeyId {
         homeserver: account_homeserver,
@@ -393,6 +601,13 @@ pub async fn schedule_send(
     }
     let expected_revision =
         next_composer_draft_acceptance_revision(&event_conn.snapshot(), &target, draft_revision)?;
+    let _terminal_permit = acquire_terminal_composer_permit(
+        &event_conn,
+        generation,
+        lease,
+        &expected_account,
+        &target,
+    )?;
     let request_id = event_conn.next_request_id();
     let accepted_revision = if let Some(command) = build_schedule_send_command(
         request_id,
@@ -403,7 +618,7 @@ pub async fn schedule_send(
         draft_revision,
     ) {
         event_conn
-            .command(command)
+            .command_with_composer_lease(generation, lease, command)
             .await
             .map_err(|error| format!("command submit failed: {error}"))?;
         Some(
@@ -875,8 +1090,10 @@ pub async fn send_prepared_uploads(
     account_homeserver: String,
     account_user_id: String,
     account_device_id: String,
+    lease_id: String,
+    renderer_generation: String,
     target: koushi_state::ComposerTarget,
-    draft_revision: u64,
+    draft_revision: koushi_state::ComposerDraftRevision,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<ComposerDraftAcceptanceResponse, String> {
@@ -914,10 +1131,24 @@ pub async fn send_prepared_uploads(
             snapshot: current_snapshot(state.inner()).await?,
         });
     }
+    // Validate the eventual acceptance fence before the first upload. Revision
+    // exhaustion must be a side-effect-free rejection: no Matrix upload, send,
+    // or local prepared-item removal may happen before this check.
+    let expected_revision =
+        next_composer_draft_acceptance_revision(&snapshot, &target, draft_revision)?;
+    let (generation, lease) =
+        composer_transport_tokens(state.inner(), &renderer_generation, &lease_id)?;
 
     let account_key = account_key_from_app_state(&snapshot);
     let key = timeline_key_for_composer_target(account_key.clone(), &target);
     let mut event_conn = state.runtime.attach();
+    let _terminal_permit = acquire_terminal_composer_permit(
+        &event_conn,
+        generation,
+        lease,
+        &expected_account,
+        &target,
+    )?;
     for item in &staged_items {
         let prepared = {
             state
@@ -984,16 +1215,18 @@ pub async fn send_prepared_uploads(
             publish_staged_upload_items(&mut event_conn, &target, remaining_items).await?;
         }
     }
-    let expected_revision =
-        next_composer_draft_acceptance_revision(&event_conn.snapshot(), &target, draft_revision)?;
     let request_id = event_conn.next_request_id();
     event_conn
-        .command(CoreCommand::App(AppCommand::AcceptComposerDraft {
-            request_id,
-            expected_account,
-            target: target.clone(),
-            submitted_revision: draft_revision,
-        }))
+        .command_with_composer_lease(
+            generation,
+            lease,
+            CoreCommand::App(AppCommand::AcceptComposerDraft {
+                request_id,
+                expected_account,
+                target: target.clone(),
+                submitted_revision: draft_revision,
+            }),
+        )
         .await
         .map_err(|error| format!("command submit failed: {error}"))?;
     let accepted_revision = wait_for_composer_draft_acceptance(
@@ -1747,28 +1980,47 @@ pub async fn set_composer_draft(
     account_homeserver: String,
     account_user_id: String,
     account_device_id: String,
+    lease_id: String,
+    renderer_generation: String,
     room_id: String,
     draft: String,
-    revision: u64,
+    draft_revision: koushi_state::ComposerDraftRevision,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_set_composer_draft_command(
-            request_id,
-            koushi_key::SessionKeyId {
-                homeserver: account_homeserver,
-                user_id: account_user_id,
-                device_id: account_device_id,
-            },
-            room_id,
-            draft,
-            revision,
-        ),
-    )
-    .await?;
+    let (generation, lease) =
+        composer_transport_tokens(state.inner(), &renderer_generation, &lease_id)?;
+    let event_conn = state.runtime.attach();
+    let expected_account = koushi_key::SessionKeyId {
+        homeserver: account_homeserver,
+        user_id: account_user_id,
+        device_id: account_device_id,
+    };
+    let target = koushi_state::ComposerTarget::Main {
+        room_id: room_id.clone(),
+    };
+    let _terminal_permit = acquire_terminal_composer_permit(
+        &event_conn,
+        generation,
+        lease,
+        &expected_account,
+        &target,
+    )?;
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command_with_composer_lease(
+            generation,
+            lease,
+            build_set_composer_draft_command(
+                request_id,
+                expected_account,
+                room_id,
+                draft,
+                draft_revision,
+            ),
+        )
+        .await
+        .map_err(|error| format!("command submit failed: {error}"))?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
 }
@@ -1778,30 +2030,50 @@ pub async fn set_thread_composer_draft(
     account_homeserver: String,
     account_user_id: String,
     account_device_id: String,
+    lease_id: String,
+    renderer_generation: String,
     room_id: String,
     root_event_id: String,
     draft: String,
-    revision: u64,
+    draft_revision: koushi_state::ComposerDraftRevision,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_set_thread_composer_draft_command(
-            request_id,
-            koushi_key::SessionKeyId {
-                homeserver: account_homeserver,
-                user_id: account_user_id,
-                device_id: account_device_id,
-            },
-            room_id,
-            root_event_id,
-            draft,
-            revision,
-        ),
-    )
-    .await?;
+    let (generation, lease) =
+        composer_transport_tokens(state.inner(), &renderer_generation, &lease_id)?;
+    let event_conn = state.runtime.attach();
+    let expected_account = koushi_key::SessionKeyId {
+        homeserver: account_homeserver,
+        user_id: account_user_id,
+        device_id: account_device_id,
+    };
+    let target = koushi_state::ComposerTarget::Thread {
+        room_id: room_id.clone(),
+        root_event_id: root_event_id.clone(),
+    };
+    let _terminal_permit = acquire_terminal_composer_permit(
+        &event_conn,
+        generation,
+        lease,
+        &expected_account,
+        &target,
+    )?;
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command_with_composer_lease(
+            generation,
+            lease,
+            build_set_thread_composer_draft_command(
+                request_id,
+                expected_account,
+                room_id,
+                root_event_id,
+                draft,
+                draft_revision,
+            ),
+        )
+        .await
+        .map_err(|error| format!("command submit failed: {error}"))?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
 }
@@ -1811,12 +2083,14 @@ pub async fn send_reply(
     account_homeserver: String,
     account_user_id: String,
     account_device_id: String,
+    lease_id: String,
+    renderer_generation: String,
     submission_id: String,
     room_id: String,
     in_reply_to_event_id: String,
     body: String,
     mentions: Option<koushi_state::MentionIntent>,
-    draft_revision: u64,
+    draft_revision: koushi_state::ComposerDraftRevision,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<SubmissionResponse, SubmissionFailure> {
@@ -1833,12 +2107,26 @@ pub async fn send_reply(
         user_id: account_user_id,
         device_id: account_device_id,
     };
+    let (generation, lease) =
+        composer_transport_tokens(state.inner(), &renderer_generation, &lease_id)
+            .map_err(|_| SubmissionFailure::SubmitFailed)?;
     let mut event_conn = state.runtime.attach();
     if composer_draft_session_key(&event_conn.snapshot()).as_ref() != Some(&expected_account) {
         return Err(SubmissionFailure::SubmitFailed);
     }
+    let target = koushi_state::ComposerTarget::Main {
+        room_id: room_id.clone(),
+    };
+    let _terminal_permit = acquire_terminal_composer_permit(
+        &event_conn,
+        generation,
+        lease,
+        &expected_account,
+        &target,
+    )
+    .map_err(|_| SubmissionFailure::SubmitFailed)?;
     let request_id = event_conn.next_request_id();
-    let account_key = account_key_from_snapshot(state.inner()).await;
+    let account_key = account_key_from_app_state(&event_conn.snapshot());
     let submission_id = SubmissionId::new(submission_id);
     if let Some(command) = build_submit_reply_command(
         request_id,
@@ -1853,7 +2141,7 @@ pub async fn send_reply(
         draft_revision,
     ) {
         event_conn
-            .command(command)
+            .command_with_composer_lease(generation, lease, command)
             .await
             .map_err(|_| SubmissionFailure::SubmitFailed)?;
     }
@@ -1867,12 +2155,14 @@ pub async fn send_thread_reply(
     account_homeserver: String,
     account_user_id: String,
     account_device_id: String,
+    lease_id: String,
+    renderer_generation: String,
     submission_id: String,
     room_id: String,
     root_event_id: String,
     body: String,
     mentions: Option<koushi_state::MentionIntent>,
-    draft_revision: u64,
+    draft_revision: koushi_state::ComposerDraftRevision,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<SubmissionResponse, SubmissionFailure> {
@@ -1889,12 +2179,27 @@ pub async fn send_thread_reply(
         user_id: account_user_id,
         device_id: account_device_id,
     };
+    let (generation, lease) =
+        composer_transport_tokens(state.inner(), &renderer_generation, &lease_id)
+            .map_err(|_| SubmissionFailure::SubmitFailed)?;
     let mut event_conn = state.runtime.attach();
     if composer_draft_session_key(&event_conn.snapshot()).as_ref() != Some(&expected_account) {
         return Err(SubmissionFailure::SubmitFailed);
     }
+    let target = koushi_state::ComposerTarget::Thread {
+        room_id: room_id.clone(),
+        root_event_id: root_event_id.clone(),
+    };
+    let _terminal_permit = acquire_terminal_composer_permit(
+        &event_conn,
+        generation,
+        lease,
+        &expected_account,
+        &target,
+    )
+    .map_err(|_| SubmissionFailure::SubmitFailed)?;
     let request_id = event_conn.next_request_id();
-    let account_key = account_key_from_snapshot(state.inner()).await;
+    let account_key = account_key_from_app_state(&event_conn.snapshot());
     let submission_id = SubmissionId::new(submission_id);
     if let Some(command) = build_submit_thread_reply_command(
         request_id,
@@ -1909,7 +2214,7 @@ pub async fn send_thread_reply(
         draft_revision,
     ) {
         event_conn
-            .command(command)
+            .command_with_composer_lease(generation, lease, command)
             .await
             .map_err(|_| SubmissionFailure::SubmitFailed)?;
     }
@@ -1958,7 +2263,7 @@ mod submission_settlement_tests {
     struct DraftAcceptanceSource {
         state: koushi_state::AppState,
         target: koushi_state::ComposerTarget,
-        submitted_revision: u64,
+        submitted_revision: koushi_state::ComposerDraftRevision,
         pending_acceptance: bool,
         terminal_lag: Option<EventStreamLag>,
     }
@@ -1975,7 +2280,8 @@ mod submission_settlement_tests {
                 self.pending_acceptance = false;
                 match &self.target {
                     koushi_state::ComposerTarget::Main { room_id } => {
-                        self.state
+                        let _ = self
+                            .state
                             .composer_drafts
                             .advance_room_revision(room_id, self.submitted_revision);
                     }
@@ -1983,7 +2289,7 @@ mod submission_settlement_tests {
                         room_id,
                         root_event_id,
                     } => {
-                        self.state.composer_drafts.advance_thread_revision(
+                        let _ = self.state.composer_drafts.advance_thread_revision(
                             room_id,
                             root_event_id,
                             self.submitted_revision,
@@ -2041,11 +2347,12 @@ mod submission_settlement_tests {
             let mut state = koushi_state::AppState::default();
             state.timeline.room_id = Some("!room-b:test".to_owned());
             let expected_revision =
-                next_composer_draft_acceptance_revision(&state, &target, 4).expect("revision");
+                next_composer_draft_acceptance_revision(&state, &target, 4.into())
+                    .expect("revision");
             let mut source = DraftAcceptanceSource {
                 state,
                 target: target.clone(),
-                submitted_revision: 4,
+                submitted_revision: 4.into(),
                 pending_acceptance: true,
                 terminal_lag: None,
             };
@@ -2072,11 +2379,12 @@ mod submission_settlement_tests {
             };
             let state = koushi_state::AppState::default();
             let expected_revision =
-                next_composer_draft_acceptance_revision(&state, &target, 7).expect("revision");
+                next_composer_draft_acceptance_revision(&state, &target, 7.into())
+                    .expect("revision");
             let mut source = DraftAcceptanceSource {
                 state,
                 target: target.clone(),
-                submitted_revision: 7,
+                submitted_revision: 7.into(),
                 pending_acceptance: true,
                 terminal_lag: Some(EventStreamLag { skipped }),
             };
@@ -2118,7 +2426,7 @@ mod submission_settlement_tests {
                 &mut source,
                 rejected_request_id,
                 &target,
-                1,
+                1.into(),
                 Duration::from_secs(1),
             )
             .await,

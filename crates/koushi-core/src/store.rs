@@ -12,6 +12,8 @@
 //! capabilities live here behind a port. StoreActor is the only actor allowed
 //! platform-conditional code.
 
+pub(crate) mod composer_drafts;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -34,6 +36,10 @@ use koushi_state::{
 };
 
 use crate::failure::CoreFailure;
+use composer_drafts::{
+    PersistedComposerDraftStoreV2, decode_payload_json as decode_composer_draft_payload_json,
+    encode_payload_json as encode_composer_draft_payload_json,
+};
 
 /// Service name used for OS keyring entries. This is user-visible in macOS
 /// Keychain Access, so keep it aligned with the shipped product name.
@@ -88,6 +94,19 @@ pub struct AccountSearchIndexConfig {
 pub struct StoreActor {
     pub(crate) credential_store: CredentialStoreBackend,
     data_dir: PathBuf,
+    #[cfg(any(test, feature = "test-hooks"))]
+    composer_draft_io_probe: Arc<Mutex<Option<ComposerDraftIoProbe>>>,
+    #[cfg(test)]
+    composer_draft_replace_fault: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+struct ComposerDraftIoProbe {
+    save_started: Option<tokio::sync::oneshot::Sender<()>>,
+    save_release: Option<std::sync::mpsc::Receiver<()>>,
+    save_completed: Option<tokio::sync::oneshot::Sender<()>>,
+    load_started: Option<tokio::sync::oneshot::Sender<()>>,
+    load_completed: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl StoreActor {
@@ -100,6 +119,10 @@ impl StoreActor {
         Self {
             credential_store: CredentialStoreBackend::resolve(),
             data_dir: data_dir.into(),
+            #[cfg(any(test, feature = "test-hooks"))]
+            composer_draft_io_probe: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            composer_draft_replace_fault: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -112,6 +135,10 @@ impl StoreActor {
         Self {
             credential_store: CredentialStoreBackend::resolve_with_os_backend(os_backend),
             data_dir: data_dir.into(),
+            #[cfg(any(test, feature = "test-hooks"))]
+            composer_draft_io_probe: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            composer_draft_replace_fault: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -130,6 +157,9 @@ impl StoreActor {
         Self {
             credential_store,
             data_dir: data_dir.into(),
+            composer_draft_io_probe: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            composer_draft_replace_fault: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -185,24 +215,43 @@ impl StoreActor {
         &self,
         key_id: &SessionKeyId,
     ) -> Result<ComposerDraftStore, CoreFailure> {
-        let path = self.account_composer_drafts_file(key_id);
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(ComposerDraftStore::default());
-            }
-            Err(_) => return Err(CoreFailure::StoreUnavailable),
-        };
-        decrypt_composer_drafts_payload(&self.load_unlock_secret(key_id)?, &bytes)
+        #[cfg(any(test, feature = "test-hooks"))]
+        self.notify_composer_draft_load_started_for_testing();
+        let result = (|| {
+            let path = self.account_composer_drafts_file(key_id);
+            let bytes = match std::fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(ComposerDraftStore::default());
+                }
+                Err(_) => return Err(CoreFailure::StoreUnavailable),
+            };
+            decrypt_composer_drafts_payload(&self.load_unlock_secret(key_id)?, &bytes)
+        })();
+        #[cfg(any(test, feature = "test-hooks"))]
+        self.notify_composer_draft_load_completed_for_testing();
+        result
     }
 
-    pub fn save_composer_drafts(
+    pub(crate) fn save_composer_drafts(
         &self,
         key_id: &SessionKeyId,
-        drafts: &ComposerDraftStore,
+        drafts: &PersistedComposerDraftStoreV2,
+    ) -> Result<(), CoreFailure> {
+        #[cfg(any(test, feature = "test-hooks"))]
+        self.wait_for_composer_draft_save_release_for_testing();
+        let result = self.save_composer_drafts_inner(key_id, drafts);
+        #[cfg(any(test, feature = "test-hooks"))]
+        self.notify_composer_draft_save_completed_for_testing();
+        result
+    }
+
+    fn save_composer_drafts_inner(
+        &self,
+        key_id: &SessionKeyId,
+        drafts: &PersistedComposerDraftStoreV2,
     ) -> Result<(), CoreFailure> {
         let path = self.account_composer_drafts_file(key_id);
-        let drafts = drafts.bounded_for_persistence();
         if drafts.is_empty() {
             match std::fs::remove_file(&path) {
                 Ok(()) => return Ok(()),
@@ -214,8 +263,100 @@ impl StoreActor {
             std::fs::create_dir_all(parent).map_err(|_| CoreFailure::StoreUnavailable)?;
         }
         let payload =
-            encrypt_composer_drafts_payload(&self.load_or_create_unlock_secret(key_id)?, &drafts)?;
-        std::fs::write(path, payload).map_err(|_| CoreFailure::StoreUnavailable)
+            encrypt_composer_drafts_payload(&self.load_or_create_unlock_secret(key_id)?, drafts)?;
+        #[cfg(test)]
+        let fail_before_persist = self
+            .composer_draft_replace_fault
+            .swap(false, std::sync::atomic::Ordering::AcqRel);
+        #[cfg(not(test))]
+        let fail_before_persist = false;
+        atomic_replace_file(&path, &payload, fail_before_persist)
+    }
+
+    #[cfg(test)]
+    fn fail_next_composer_draft_replace_for_testing(&self) {
+        self.composer_draft_replace_fault
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn install_composer_draft_io_probe(
+        &self,
+        save_started: tokio::sync::oneshot::Sender<()>,
+        save_release: std::sync::mpsc::Receiver<()>,
+        save_completed: tokio::sync::oneshot::Sender<()>,
+        load_started: tokio::sync::oneshot::Sender<()>,
+        load_completed: tokio::sync::oneshot::Sender<()>,
+    ) {
+        *self
+            .composer_draft_io_probe
+            .lock()
+            .expect("composer draft I/O probe mutex") = Some(ComposerDraftIoProbe {
+            save_started: Some(save_started),
+            save_release: Some(save_release),
+            save_completed: Some(save_completed),
+            load_started: Some(load_started),
+            load_completed: Some(load_completed),
+        });
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn wait_for_composer_draft_save_release_for_testing(&self) {
+        let (started, release) = {
+            let mut probe = self
+                .composer_draft_io_probe
+                .lock()
+                .expect("composer draft I/O probe mutex");
+            let Some(probe) = probe.as_mut() else {
+                return;
+            };
+            (probe.save_started.take(), probe.save_release.take())
+        };
+        if let Some(started) = started {
+            let _ = started.send(());
+        }
+        if let Some(release) = release {
+            let _ = release.recv();
+        }
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn notify_composer_draft_save_completed_for_testing(&self) {
+        let completed = self
+            .composer_draft_io_probe
+            .lock()
+            .expect("composer draft I/O probe mutex")
+            .as_mut()
+            .and_then(|probe| probe.save_completed.take());
+        if let Some(completed) = completed {
+            let _ = completed.send(());
+        }
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn notify_composer_draft_load_started_for_testing(&self) {
+        let started = self
+            .composer_draft_io_probe
+            .lock()
+            .expect("composer draft I/O probe mutex")
+            .as_mut()
+            .and_then(|probe| probe.load_started.take());
+        if let Some(started) = started {
+            let _ = started.send(());
+        }
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn notify_composer_draft_load_completed_for_testing(&self) {
+        let completed = self
+            .composer_draft_io_probe
+            .lock()
+            .expect("composer draft I/O probe mutex")
+            .as_mut()
+            .and_then(|probe| probe.load_completed.take());
+        if let Some(completed) = completed {
+            let _ = completed.send(());
+        }
     }
 
     pub fn load_scheduled_sends(
@@ -381,7 +522,7 @@ impl StoreActor {
         if payload.len() > READ_STATE_OUTBOX_MAX_BYTES {
             return Err(CoreFailure::StoreUnavailable);
         }
-        atomic_replace_read_state_outbox(&path, &payload)
+        atomic_replace_file(&path, &payload, false)
     }
 
     pub(crate) fn save_read_state_outbox_if_current(
@@ -605,9 +746,17 @@ fn save_read_state_outbox_generation_fenced(
 
 fn encrypt_composer_drafts_payload(
     secret: &LocalUnlockSecret,
-    drafts: &ComposerDraftStore,
+    drafts: &PersistedComposerDraftStoreV2,
 ) -> Result<Vec<u8>, CoreFailure> {
-    let plaintext = serde_json::to_vec(drafts).map_err(|_| CoreFailure::StoreUnavailable)?;
+    let plaintext =
+        encode_composer_draft_payload_json(drafts).map_err(|_| CoreFailure::StoreUnavailable)?;
+    encrypt_composer_drafts_plaintext(secret, &plaintext)
+}
+
+fn encrypt_composer_drafts_plaintext(
+    secret: &LocalUnlockSecret,
+    plaintext: &[u8],
+) -> Result<Vec<u8>, CoreFailure> {
     let key = secret.derive_composer_drafts_key();
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key.as_bytes()));
     let mut nonce_bytes = [0_u8; COMPOSER_DRAFTS_NONCE_LEN];
@@ -622,6 +771,14 @@ fn encrypt_composer_drafts_payload(
     payload.extend_from_slice(&nonce_bytes);
     payload.extend_from_slice(&ciphertext);
     Ok(payload)
+}
+
+#[cfg(test)]
+fn encrypt_composer_drafts_fixture_payload(
+    secret: &LocalUnlockSecret,
+    plaintext: &[u8],
+) -> Result<Vec<u8>, CoreFailure> {
+    encrypt_composer_drafts_plaintext(secret, plaintext)
 }
 
 fn decrypt_composer_drafts_payload(
@@ -640,7 +797,7 @@ fn decrypt_composer_drafts_payload(
     let plaintext = cipher
         .decrypt(nonce, &payload[nonce_end..])
         .map_err(|_| CoreFailure::StoreUnavailable)?;
-    serde_json::from_slice(&plaintext).map_err(|_| CoreFailure::StoreUnavailable)
+    decode_composer_draft_payload_json(&plaintext).map_err(|_| CoreFailure::StoreUnavailable)
 }
 
 fn encrypt_scheduled_sends_payload(
@@ -823,9 +980,10 @@ fn decrypt_read_state_outbox_payload(
     Ok(snapshot)
 }
 
-fn atomic_replace_read_state_outbox(
+fn atomic_replace_file(
     path: &std::path::Path,
     payload: &[u8],
+    fail_before_persist: bool,
 ) -> Result<(), CoreFailure> {
     use std::io::Write as _;
 
@@ -839,6 +997,9 @@ fn atomic_replace_read_state_outbox(
         .as_file()
         .sync_all()
         .map_err(|_| CoreFailure::StoreUnavailable)?;
+    if fail_before_persist {
+        return Err(CoreFailure::StoreUnavailable);
+    }
     temporary
         .persist(path)
         .map(|_| ())
@@ -1415,7 +1576,16 @@ mod tests {
                 cred_dir.path(),
             )),
             data_dir: data_dir.path().to_path_buf(),
+            composer_draft_io_probe: Arc::new(Mutex::new(None)),
+            composer_draft_replace_fault: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    fn persisted_composer_drafts(drafts: &ComposerDraftStore) -> PersistedComposerDraftStoreV2 {
+        composer_drafts::persisted_projection(
+            drafts,
+            &koushi_state::ComposerDraftProtection::default(),
+        )
     }
 
     #[test]
@@ -1567,25 +1737,44 @@ mod tests {
         let plaintext = "secret draft body";
         let mut drafts = ComposerDraftStore::default();
         drafts.set_room_draft("!room:test.example.com".to_owned(), plaintext.to_owned());
-        assert!(drafts.apply_room_draft(
-            "!sent:test.example.com".to_owned(),
-            "accepted body".to_owned(),
-            7,
-        ));
-        assert_eq!(drafts.advance_room_revision("!sent:test.example.com", 7), 8);
-        assert!(drafts.apply_thread_draft(
-            "!room:test.example.com".to_owned(),
-            "$root:test.example.com".to_owned(),
-            "thread accepted body".to_owned(),
-            11,
-        ));
+        assert!(
+            drafts
+                .apply_room_draft(
+                    "!sent:test.example.com".to_owned(),
+                    "accepted body".to_owned(),
+                    7.into(),
+                )
+                .expect("room draft revision should apply")
+        );
         assert_eq!(
-            drafts.advance_thread_revision("!room:test.example.com", "$root:test.example.com", 11,),
-            12
+            drafts
+                .advance_room_revision("!sent:test.example.com", 7.into())
+                .expect("room acceptance should advance"),
+            8.into()
+        );
+        assert!(
+            drafts
+                .apply_thread_draft(
+                    "!room:test.example.com".to_owned(),
+                    "$root:test.example.com".to_owned(),
+                    "thread accepted body".to_owned(),
+                    11.into(),
+                )
+                .expect("thread draft revision should apply")
+        );
+        assert_eq!(
+            drafts
+                .advance_thread_revision(
+                    "!room:test.example.com",
+                    "$root:test.example.com",
+                    11.into(),
+                )
+                .expect("thread acceptance should advance"),
+            12.into()
         );
 
         actor
-            .save_composer_drafts(&key_id, &drafts)
+            .save_composer_drafts(&key_id, &persisted_composer_drafts(&drafts))
             .expect("save encrypted drafts");
 
         let path = actor.account_composer_drafts_file(&key_id);
@@ -1606,11 +1795,11 @@ mod tests {
                 .map(String::as_str),
             Some(plaintext)
         );
-        assert_eq!(loaded.room_revision("!sent:test.example.com"), 8);
+        assert_eq!(loaded.room_revision("!sent:test.example.com"), 8.into());
         assert!(!loaded.rooms.contains_key("!sent:test.example.com"));
         assert_eq!(
             loaded.thread_revision("!room:test.example.com", "$root:test.example.com"),
-            12
+            12.into()
         );
         assert!(
             loaded
@@ -1631,6 +1820,143 @@ mod tests {
     }
 
     #[test]
+    fn failed_composer_draft_atomic_replace_preserves_previous_payload_exactly() {
+        let data_dir = tempdir().expect("tempdir");
+        let cred_dir = tempdir().expect("tempdir");
+        let key_id = make_key_id();
+        let actor = file_store_actor(&data_dir, &cred_dir);
+
+        let mut old = ComposerDraftStore::default();
+        old.apply_room_draft(
+            "!room:test.example.com".to_owned(),
+            "old synthetic draft".to_owned(),
+            1.into(),
+        )
+        .expect("seed old draft");
+        actor
+            .save_composer_drafts(&key_id, &persisted_composer_drafts(&old))
+            .expect("save old encrypted payload");
+        let path = actor.account_composer_drafts_file(&key_id);
+        let old_payload = std::fs::read(&path).expect("read old encrypted payload");
+
+        let mut new = old.clone();
+        new.apply_room_draft(
+            "!room:test.example.com".to_owned(),
+            "new synthetic draft".to_owned(),
+            2.into(),
+        )
+        .expect("seed new draft");
+        actor.fail_next_composer_draft_replace_for_testing();
+        assert!(matches!(
+            actor.save_composer_drafts(&key_id, &persisted_composer_drafts(&new)),
+            Err(CoreFailure::StoreUnavailable)
+        ));
+        assert!(
+            std::fs::read(&path).is_ok_and(|payload| payload == old_payload),
+            "a failed replacement must leave the previous encrypted payload byte-exact"
+        );
+        assert_eq!(
+            actor
+                .load_composer_drafts(&key_id)
+                .expect("old encrypted payload remains readable"),
+            old
+        );
+    }
+
+    #[test]
+    fn two_accounts_with_same_targets_migrate_and_collect_independently() {
+        fn legacy_payload(label: &str, revision_base: u64) -> Vec<u8> {
+            let room_revisions = (0..koushi_state::MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT)
+                .map(|index| (format!("shared-{index:03}"), revision_base + index as u64))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            serde_json::to_vec(&serde_json::json!({
+                "rooms": {"shared-content": format!("{label}-body")},
+                "threads": {"shared-content": {"root-shared": format!("{label}-thread")}},
+                "room_revisions": room_revisions,
+                "thread_revisions": {
+                    "shared-content": {"root-shared": revision_base}
+                }
+            }))
+            .expect("serialize legacy fixture")
+        }
+
+        let data_dir = tempdir().expect("tempdir");
+        let cred_dir = tempdir().expect("tempdir");
+        let key_a = make_key_id();
+        let mut key_b = make_key_id();
+        key_b.user_id = "@bob:test.example.com".to_owned();
+        key_b.device_id = "DEVICE2".to_owned();
+        let actor = file_store_actor(&data_dir, &cred_dir);
+        let path_a = actor.account_composer_drafts_file(&key_a);
+        let path_b = actor.account_composer_drafts_file(&key_b);
+        assert_ne!(path_a, path_b);
+
+        for (key_id, path, payload) in [
+            (&key_a, &path_a, legacy_payload("account-a", 10)),
+            (&key_b, &path_b, legacy_payload("account-b", 1_000)),
+        ] {
+            let secret = actor
+                .load_or_create_unlock_secret(key_id)
+                .expect("seed account-local unlock secret");
+            let encrypted = encrypt_composer_drafts_fixture_payload(&secret, &payload)
+                .expect("encrypt legacy fixture");
+            std::fs::create_dir_all(path.parent().expect("composer draft parent"))
+                .expect("create composer draft parent");
+            std::fs::write(path, encrypted).expect("write legacy encrypted payload");
+        }
+
+        let mut account_a = actor
+            .load_composer_drafts(&key_a)
+            .expect("migrate account A");
+        let account_b = actor
+            .load_composer_drafts(&key_b)
+            .expect("migrate account B");
+        assert_eq!(
+            account_a
+                .composer_for_thread("shared-content", "root-shared")
+                .draft,
+            "account-a-thread"
+        );
+        assert_eq!(
+            account_b
+                .composer_for_thread("shared-content", "root-shared")
+                .draft,
+            "account-b-thread"
+        );
+
+        actor
+            .save_composer_drafts(&key_a, &persisted_composer_drafts(&account_a))
+            .expect("write account A v2");
+        actor
+            .save_composer_drafts(&key_b, &persisted_composer_drafts(&account_b))
+            .expect("write account B v2");
+
+        assert!(
+            account_a
+                .apply_room_draft("zz-new".to_owned(), String::new(), 1.into())
+                .expect("collect account A independently")
+        );
+        actor
+            .save_composer_drafts(&key_a, &persisted_composer_drafts(&account_a))
+            .expect("write collected account A v2");
+
+        let account_a = actor
+            .load_composer_drafts(&key_a)
+            .expect("reload collected account A");
+        let account_b = actor
+            .load_composer_drafts(&key_b)
+            .expect("reload untouched account B");
+        assert!(account_a.room_revision("shared-000").is_zero());
+        assert_eq!(account_a.room_revision("zz-new"), 1.into());
+        assert_eq!(account_b.room_revision("shared-000"), 1_000.into());
+        assert!(account_b.room_revision("zz-new").is_zero());
+        assert_eq!(
+            account_b.composer_for_room("shared-content").draft,
+            "account-b-body"
+        );
+    }
+
+    #[test]
     fn legacy_composer_draft_payload_defaults_causal_revisions() {
         let legacy = r#"{
             "rooms":{"!room:test.example.com":"legacy room draft"},
@@ -1640,10 +1966,10 @@ mod tests {
         let loaded: ComposerDraftStore =
             serde_json::from_str(legacy).expect("deserialize legacy draft payload");
 
-        assert_eq!(loaded.room_revision("!room:test.example.com"), 0);
+        assert_eq!(loaded.room_revision("!room:test.example.com"), 0.into());
         assert_eq!(
             loaded.thread_revision("!room:test.example.com", "$root:test.example.com"),
-            0
+            0.into()
         );
         assert_eq!(
             loaded.composer_for_room("!room:test.example.com").draft,
@@ -1685,13 +2011,16 @@ mod tests {
         drafts.set_room_draft("!room:test.example.com".to_owned(), "draft".to_owned());
 
         actor
-            .save_composer_drafts(&key_id, &drafts)
+            .save_composer_drafts(&key_id, &persisted_composer_drafts(&drafts))
             .expect("save non-empty drafts");
         let path = actor.account_composer_drafts_file(&key_id);
         assert!(path.exists());
 
         actor
-            .save_composer_drafts(&key_id, &ComposerDraftStore::default())
+            .save_composer_drafts(
+                &key_id,
+                &persisted_composer_drafts(&ComposerDraftStore::default()),
+            )
             .expect("save empty drafts");
         assert!(!path.exists());
         assert!(
@@ -2067,7 +2396,7 @@ mod tests {
     }
 
     #[test]
-    fn composer_draft_persistence_applies_entry_and_size_bounds() {
+    fn composer_draft_persistence_keeps_content_and_applies_size_bounds() {
         let data_dir = tempdir().expect("tempdir");
         let cred_dir = tempdir().expect("tempdir");
         let key_id = make_key_id();
@@ -2087,13 +2416,16 @@ mod tests {
         }
 
         actor
-            .save_composer_drafts(&key_id, &drafts)
+            .save_composer_drafts(&key_id, &persisted_composer_drafts(&drafts))
             .expect("save bounded drafts");
         let loaded = actor
             .load_composer_drafts(&key_id)
             .expect("load bounded drafts");
 
-        assert!(loaded.rooms.len() <= koushi_state::MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT);
+        assert_eq!(
+            loaded.rooms.len(),
+            koushi_state::MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT + 8
+        );
         assert!(
             loaded
                 .rooms
@@ -2105,7 +2437,10 @@ mod tests {
             .values()
             .map(std::collections::BTreeMap::len)
             .sum::<usize>();
-        assert!(thread_count <= koushi_state::MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT);
+        assert_eq!(
+            thread_count,
+            koushi_state::MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT + 8
+        );
         assert!(
             loaded
                 .threads
@@ -2124,19 +2459,27 @@ mod tests {
         let mut drafts = ComposerDraftStore::default();
 
         for index in 0..koushi_state::MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT {
-            assert!(drafts.apply_room_draft(
-                format!("!a-tombstone-{index:04}:test.example.com"),
-                String::new(),
-                1,
-            ));
+            assert!(
+                drafts
+                    .apply_room_draft(
+                        format!("!a-tombstone-{index:04}:test.example.com"),
+                        String::new(),
+                        1.into(),
+                    )
+                    .expect("room tombstone should apply")
+            );
         }
         for index in 0..koushi_state::MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT {
-            assert!(drafts.apply_thread_draft(
-                "!thread-room:test.example.com".to_owned(),
-                format!("$a-tombstone-{index:04}"),
-                String::new(),
-                1,
-            ));
+            assert!(
+                drafts
+                    .apply_thread_draft(
+                        "!thread-room:test.example.com".to_owned(),
+                        format!("$a-tombstone-{index:04}"),
+                        String::new(),
+                        1.into(),
+                    )
+                    .expect("thread tombstone should apply")
+            );
         }
         drafts.set_room_draft(
             "!z-active:test.example.com".to_owned(),
@@ -2149,7 +2492,7 @@ mod tests {
         );
 
         actor
-            .save_composer_drafts(&key_id, &drafts)
+            .save_composer_drafts(&key_id, &persisted_composer_drafts(&drafts))
             .expect("save bounded drafts");
         let loaded = actor
             .load_composer_drafts(&key_id)
@@ -2173,8 +2516,8 @@ mod tests {
         let directory = tempdir().expect("tempdir");
         let path = directory.path().join("outbox.enc");
 
-        atomic_replace_read_state_outbox(&path, b"first").expect("first atomic write");
-        atomic_replace_read_state_outbox(&path, b"second").expect("replacement atomic write");
+        atomic_replace_file(&path, b"first", false).expect("first atomic write");
+        atomic_replace_file(&path, b"second", false).expect("replacement atomic write");
 
         assert_eq!(std::fs::read(path).expect("read replacement"), b"second");
     }

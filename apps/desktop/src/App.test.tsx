@@ -8,6 +8,7 @@ import {
   createComposerSubmissionControllerRegistry,
   mainSubmissionTarget
 } from "./domain/composerSubmission";
+import { COMPOSER_DRAFT_REVISION_ZERO } from "./domain/composerDraftRevision";
 import { MessageSourceDialog, TimelineItemRow } from "./components/TimelineView";
 import type { TimelineItem } from "./domain/coreEvents";
 import type { DesktopSnapshot } from "./domain/types";
@@ -1026,7 +1027,7 @@ describe("ContextualRightPanel", () => {
       room_id: snapshot.state.domain.rooms[0]?.room_id,
       root_event_id: "$root:example.invalid",
       is_subscribed: true,
-      composer: { accepted_submission_ids: [], pending_transaction_id: null, draft_revision: 0, draft: "", mode: "Plain" }
+      composer: { accepted_submission_ids: [], pending_transaction_id: null, draft_revision: COMPOSER_DRAFT_REVISION_ZERO, last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO, draft: "", mode: "Plain" }
     };
     snapshot.timeline = [
       {
@@ -1116,7 +1117,8 @@ describe("ContextualRightPanel", () => {
       composer: {
         accepted_submission_ids: [],
         pending_transaction_id: null,
-        draft_revision: 0,
+        draft_revision: COMPOSER_DRAFT_REVISION_ZERO,
+        last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO,
         draft: "Rust-owned draft",
         mode: "Plain"
       }
@@ -1172,7 +1174,8 @@ describe("ContextualRightPanel", () => {
       composer: {
         accepted_submission_ids: [],
         pending_transaction_id: "txn-thread-1",
-        draft_revision: 0,
+        draft_revision: COMPOSER_DRAFT_REVISION_ZERO,
+        last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO,
         draft: "Draft blocked by pending send",
         mode: "Plain"
       }
@@ -1266,30 +1269,35 @@ describe("ContextualRightPanel", () => {
     expect(transportBranch).toContain("ensure_timeline_subscribed");
   });
 
-  test("room composer draft input stays local and persists to Rust with debounce", () => {
+  test("composer lifecycle uses one lease registry and Rust-owned IME clear revisions", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain("const localComposerDraftsRef = useRef<Record<string, string>>({});");
-    expect(source).toContain("composerDraftPersistTimer");
-    expect(source).toContain("queueComposerDraftPersist(account, roomId, value, revision)");
+    expect(source).toContain("createComposerDraftLifecycleRegistry");
+    expect(source).toContain("composerDraftLifecycleRegistryRef");
+    expect(source).not.toContain("composerDraftRevisionsRef");
+    expect(source).not.toContain("localComposerDraftRevisionsRef");
+    expect(source).not.toContain("localThreadComposerDraftRevisionsRef");
+    expect(source).not.toContain("composerDraftPersistTimers");
+    expect(source).not.toContain("threadComposerDraftPersistTimers");
+    expect(source).not.toContain("localComposerDraftClearEpochs");
+    expect(source).not.toContain("threadComposerDraftClearEpochs");
+    expect(source).toContain("last_accepted_clear_revision");
+    expect(source).toContain('[accountOwnerKey, "main", timelineRoomId ?? "no-room"');
+    expect(source).not.toContain("draft_revision].join");
+    expect(source).toContain("queueComposerDraftPersist(scope, value, revision)");
     expect(source).toContain("updateComposerTypingSignal(roomId, value)");
-    expect(source).toContain("localComposerDraftsRef.current[roomId] = value;");
-    expect(source).not.toContain("if (value) {\n      localComposerDraftsRef.current[roomId] = value;");
+    expect(source).toContain("setActiveOverlay(scope, value, revision)");
+    expect(source).toContain("activate(scope)");
+    expect(source).toContain("deactivate(scope)");
+    expect(source).toContain("revokeRendererGeneration()");
     expect(source).toContain("window.setTimeout");
     expect(source).toContain("async function sendText(bodyOverride?: string)");
-    expect(source).not.toContain("setSnapshot(await api.setComposerDraft(roomId, value))");
-    expect(source).not.toContain('setComposerDraft(roomId, "")');
-    expect(source).not.toContain('setThreadComposerDraft(roomId, rootEventId, "")');
-    expect(source).toContain(".setComposerDraft(account, roomId, value, revision)");
-    expect(source).toContain(
-      ".setThreadComposerDraft(account, roomId, rootEventId, draft, revision)"
-    );
-    expect(source).toContain(
-      "submissionAccountOwnerRef.current !== composerDraftAccountOwnerKey(account)"
-    );
-    expect(source).toContain("cancelComposerDraftPersists();");
-    expect(source).toContain("cancelThreadComposerDraftPersists();");
-    expect(source).not.toContain("setLocalComposerDrafts");
+    expect(source).toContain("rendererGeneration");
+    expect(source).toContain("leaseId");
+    expect(source).toContain("beginOperation(scope)");
+    expect(source).toContain("reserveComposerAcceptedRevision(");
+    expect(source).toContain("settleOperation(capture)");
+    expect(source).not.toContain("composerDraftRevisionForTarget");
   });
 
   test("desktop api exposes a search index rebuild command", () => {
@@ -1408,7 +1416,7 @@ describe("desktop integration source guards", () => {
     const acceptSource = source.slice(acceptStart, acceptEnd);
 
     expect(acceptSource).toContain("api.acceptInvite(roomId)");
-    expect(acceptSource).toContain("api.selectRoom(roomId)");
+    expect(acceptSource).toContain("await selectRoom(roomId)");
     expect(acceptSource).toContain('setPrimaryView("timeline")');
   });
 
@@ -1511,7 +1519,7 @@ describe("desktop integration source guards", () => {
       "function openActivityRow(roomId: string, eventId: string, threadRootEventId: string | null)"
     );
     expect(openActivityRowSource).toContain("if (threadRootEventId)");
-    expect(openActivityRowSource).toContain("await api.selectRoom(roomId)");
+    expect(openActivityRowSource).toContain("await selectRoom(roomId)");
     expect(openActivityRowSource).toContain("await openThread(roomId, threadRootEventId)");
     expect(openActivityRowSource).toContain(".openActivityEvent(roomId, eventId)");
     expect(openActivityRowSource).not.toContain(".selectSearchResult(roomId, eventId)");
@@ -1642,7 +1650,7 @@ describe("desktop integration source guards", () => {
     expect(openRowSource).toContain('row.kind === "roomUnread"');
     expect(openRowSource).toContain("openActivityRoom(row.room_id)");
     expect(openActivityRoomSource).toContain("api.closeFocusedContext()");
-    expect(openActivityRoomSource).toContain("api.selectRoom(roomId)");
+    expect(openActivityRoomSource).toContain("await selectRoom(roomId)");
     expect(openActivityRoomSource).not.toContain("setTimelineLiveEdgeReset");
     expect(openActivityRoomSource).not.toContain("timelineLiveEdgeReset");
 

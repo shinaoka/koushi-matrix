@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { COMPOSER_DRAFT_REVISION_ZERO } from "./composerDraftRevision";
 
 import {
   effectiveRightPanelModeForSnapshot,
@@ -151,7 +152,7 @@ function snapshotForPanelMode(
 ): Pick<DesktopSnapshot, "state" | "thread"> {
   return {
     state: {
-      schema_version: 2,
+      schema_version: 3,
       domain: {
         session: { kind: sessionKind },
         auth: { kind: "unknown" },
@@ -307,7 +308,7 @@ function snapshotForPanelMode(
           room_id: null,
           is_subscribed: false,
           is_paginating_backwards: false,
-          composer: { accepted_submission_ids: [], pending_transaction_id: null, draft_revision: 0, draft: "", mode: "Plain" },
+          composer: { accepted_submission_ids: [], pending_transaction_id: null, draft_revision: COMPOSER_DRAFT_REVISION_ZERO, last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO, draft: "", mode: "Plain" },
           submission_registry: { accepted_submission_ids: [], settled_submission_ids: [] },
           scheduled_send_capability: "unknown",
           scheduled_sends: [],

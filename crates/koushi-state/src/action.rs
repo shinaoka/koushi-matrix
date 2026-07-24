@@ -1,6 +1,9 @@
 use std::fmt;
 
-use crate::{ComposerSubmissionTarget, ComposerSubmissionTerminalOutcome, SubmissionId};
+use crate::{
+    ComposerDraftRevision, ComposerSubmissionTarget, ComposerSubmissionTerminalOutcome,
+    SubmissionId,
+};
 
 use crate::state::{
     AccountManagementOperation, ActivityMarkReadTarget, ActivityRow, ActivityStream, ActivityTab,
@@ -792,7 +795,7 @@ pub enum AppAction {
     },
     ScheduledSendCreatedAtRevision {
         item: ScheduledSendItem,
-        draft_revision: u64,
+        draft_revision: ComposerDraftRevision,
     },
     ScheduledSendDispatchStarted {
         scheduled_id: String,
@@ -853,7 +856,7 @@ pub enum AppAction {
     ComposerDraftChangedAtRevision {
         room_id: String,
         draft: String,
-        revision: u64,
+        revision: ComposerDraftRevision,
     },
     SendTextSubmitted {
         room_id: String,
@@ -864,7 +867,7 @@ pub enum AppAction {
         room_id: String,
         transaction_id: String,
         body: String,
-        draft_revision: u64,
+        draft_revision: ComposerDraftRevision,
     },
     SendTextFinished {
         room_id: String,
@@ -886,7 +889,7 @@ pub enum AppAction {
         room_id: String,
         transaction_id: String,
         body: String,
-        draft_revision: u64,
+        draft_revision: ComposerDraftRevision,
     },
     ComposerSubmissionFinished {
         submission_id: SubmissionId,
@@ -908,7 +911,7 @@ pub enum AppAction {
         room_id: String,
         root_event_id: String,
         draft: String,
-        revision: u64,
+        revision: ComposerDraftRevision,
     },
     ThreadReplySubmitted {
         room_id: String,
@@ -921,7 +924,7 @@ pub enum AppAction {
         root_event_id: String,
         transaction_id: String,
         body: String,
-        draft_revision: u64,
+        draft_revision: ComposerDraftRevision,
     },
     ThreadSubmissionAccepted {
         submission_id: SubmissionId,
@@ -936,11 +939,11 @@ pub enum AppAction {
         root_event_id: String,
         transaction_id: String,
         body: String,
-        draft_revision: u64,
+        draft_revision: ComposerDraftRevision,
     },
     ComposerDraftAccepted {
         target: crate::ComposerTarget,
-        submitted_revision: u64,
+        submitted_revision: ComposerDraftRevision,
     },
     ThreadReplyFinished {
         room_id: String,

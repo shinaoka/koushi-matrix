@@ -5,16 +5,17 @@ use std::{fmt, path::PathBuf};
 
 use koushi_state::{
     ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentScope, AttachmentSort,
-    DirectoryQuery, FilesViewScope, FormattedMessageDraft, IdentityResetAuthRequest,
-    ImageUploadCompressionMode, InviteScopeSelection, JapaneseCatalogProfile,
-    LocalEncryptionHealth, LoginRequest, MentionIntent, NativeAttentionDispatchId,
-    NativeAttentionSoundOutcome, NativeAttentionState, PresenceKind, RecoveryRequest,
-    RoomListFilter, RoomModerationAction, RoomSettingChange, RoomTagKind, SettingsPatch,
-    StagedUploadCompressionChoice, StagedUploadItem, SubmissionId, TimelineScrollAnchor,
-    VerificationCancelReason, VerificationTarget,
+    ComposerDraftRevision, DirectoryQuery, FilesViewScope, FormattedMessageDraft,
+    IdentityResetAuthRequest, ImageUploadCompressionMode, InviteScopeSelection,
+    JapaneseCatalogProfile, LocalEncryptionHealth, LoginRequest, MentionIntent,
+    NativeAttentionDispatchId, NativeAttentionSoundOutcome, NativeAttentionState, PresenceKind,
+    RecoveryRequest, RoomListFilter, RoomModerationAction, RoomSettingChange, RoomTagKind,
+    SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem, SubmissionId,
+    TimelineScrollAnchor, VerificationCancelReason, VerificationTarget,
 };
 use serde::{Deserialize, Serialize};
 
+use crate::composer_draft_lifecycle::ComposerDraftScope;
 use crate::event::TimelineViewportObservation;
 use crate::ids::{
     AccountKey, RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration, TimelineKey,
@@ -225,6 +226,96 @@ impl CoreCommand {
         }
     }
 
+    /// Exact account/target owner for every command that carries a composer
+    /// revision. Callers must acquire a matching Core lease permit before the
+    /// command may enter the runtime inbox.
+    pub fn composer_draft_scope(&self) -> Option<ComposerDraftScope> {
+        match self {
+            Self::App(AppCommand::SetComposerDraft {
+                expected_account,
+                room_id,
+                ..
+            }) => Some(ComposerDraftScope {
+                account: expected_account.clone(),
+                target: koushi_state::ComposerTarget::Main {
+                    room_id: room_id.clone(),
+                },
+            }),
+            Self::App(AppCommand::SetThreadComposerDraft {
+                expected_account,
+                room_id,
+                root_event_id,
+                ..
+            }) => Some(ComposerDraftScope {
+                account: expected_account.clone(),
+                target: koushi_state::ComposerTarget::Thread {
+                    room_id: room_id.clone(),
+                    root_event_id: root_event_id.clone(),
+                },
+            }),
+            Self::App(AppCommand::AcceptComposerDraft {
+                expected_account,
+                target,
+                ..
+            }) => Some(ComposerDraftScope {
+                account: expected_account.clone(),
+                target: target.clone(),
+            }),
+            Self::App(AppCommand::ScheduleSend {
+                expected_account,
+                room_id,
+                thread_root_event_id,
+                ..
+            }) => Some(ComposerDraftScope {
+                account: expected_account.clone(),
+                target: thread_root_event_id
+                    .as_ref()
+                    .map(|root_event_id| koushi_state::ComposerTarget::Thread {
+                        room_id: room_id.clone(),
+                        root_event_id: root_event_id.clone(),
+                    })
+                    .unwrap_or_else(|| koushi_state::ComposerTarget::Main {
+                        room_id: room_id.clone(),
+                    }),
+            }),
+            Self::Timeline(
+                TimelineCommand::SubmitText {
+                    expected_account,
+                    key,
+                    ..
+                }
+                | TimelineCommand::SubmitReply {
+                    expected_account,
+                    key,
+                    ..
+                },
+            ) => Some(ComposerDraftScope {
+                account: expected_account.clone(),
+                target: match &key.kind {
+                    crate::ids::TimelineKind::Room { room_id }
+                    | crate::ids::TimelineKind::Focused { room_id, .. } => {
+                        koushi_state::ComposerTarget::Main {
+                            room_id: room_id.clone(),
+                        }
+                    }
+                    crate::ids::TimelineKind::Thread {
+                        room_id,
+                        root_event_id,
+                    } => koushi_state::ComposerTarget::Thread {
+                        room_id: room_id.clone(),
+                        root_event_id: root_event_id.clone(),
+                    },
+                },
+            }),
+            Self::App(_)
+            | Self::Account(_)
+            | Self::Sync(_)
+            | Self::Room(_)
+            | Self::Timeline(_)
+            | Self::Search(_) => None,
+        }
+    }
+
     /// Commands that require an exact `Ready` session before they are routed.
     /// External `SyncCommand`s are included; the restricted E2EE crypto lane
     /// used while gated is owned internally by `AccountActor`.
@@ -280,7 +371,7 @@ pub enum AppCommand {
         expected_account: koushi_key::SessionKeyId,
         room_id: String,
         draft: String,
-        revision: u64,
+        revision: ComposerDraftRevision,
     },
     SetThreadComposerDraft {
         request_id: RequestId,
@@ -288,13 +379,13 @@ pub enum AppCommand {
         room_id: String,
         root_event_id: String,
         draft: String,
-        revision: u64,
+        revision: ComposerDraftRevision,
     },
     AcceptComposerDraft {
         request_id: RequestId,
         expected_account: koushi_key::SessionKeyId,
         target: koushi_state::ComposerTarget,
-        submitted_revision: u64,
+        submitted_revision: ComposerDraftRevision,
     },
     SetUploadStaging {
         request_id: RequestId,
@@ -330,7 +421,7 @@ pub enum AppCommand {
         thread_root_event_id: Option<String>,
         body: String,
         send_at_ms: u64,
-        draft_revision: u64,
+        draft_revision: ComposerDraftRevision,
     },
     CancelScheduledSend {
         request_id: RequestId,
@@ -2300,7 +2391,7 @@ pub enum TimelineCommand {
         transaction_id: String,
         body: String,
         mentions: MentionIntent,
-        draft_revision: u64,
+        draft_revision: ComposerDraftRevision,
     },
     SendReply {
         request_id: RequestId,
@@ -2319,7 +2410,7 @@ pub enum TimelineCommand {
         in_reply_to_event_id: String,
         body: String,
         mentions: MentionIntent,
-        draft_revision: u64,
+        draft_revision: ComposerDraftRevision,
     },
     ForwardMessage {
         request_id: RequestId,

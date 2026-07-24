@@ -48,6 +48,13 @@ import type {
 import { TauriIpcMock, type IpcInvocation } from "./tauriIpcMock";
 import { computeBrowserRoomListProjection } from "../backend/roomListProjection";
 import { composeSidebar } from "../domain/desktopModel";
+import {
+  COMPOSER_DRAFT_REVISION_ZERO,
+  compareComposerDraftRevisions,
+  nextComposerDraftRevision
+} from "../domain/composerDraftRevision";
+import type { ComposerDraftRevision } from "../domain/types";
+import type { ComposerDraftLeaseSnapshot } from "../domain/composerDraftLifecycle";
 import "../styles.css";
 
 const CORE_EVENT_NAME = "koushi-desktop://event";
@@ -152,7 +159,7 @@ function readySnapshot(
   };
       return {
       state: {
-        schema_version: 2,
+        schema_version: 3,
         domain: {
           session: { kind: "ready", homeserver: HOMESERVER, user_id: USER_ID, device_id: DEVICE_ID },
           auth: { kind: "unknown" },
@@ -189,7 +196,7 @@ function readySnapshot(
         ui: {
           navigation: { active_space_id: activeSpaceId, active_room_id: ROOM_ID, space_order: spaces.map((space) => space.space_id), last_room_by_space_id: {} },
           room_list: computeBrowserRoomListProjection({ kind: "rooms" }, { kind: "activity" }, activeSpaceId, spaces, rooms, []),
-          timeline: { room_id: ROOM_ID, is_subscribed: true, is_paginating_backwards: false, composer: { accepted_submission_ids: [], pending_transaction_id: null, draft_revision: 0, draft: "", mode: composerMode }, submission_registry: { accepted_submission_ids: [], settled_submission_ids: [] }, scheduled_send_capability: "unknown", scheduled_sends: [], staged_uploads: [], media_gallery: [], media_downloads: {}, continuity: { kind: "unknown" } },
+          timeline: { room_id: ROOM_ID, is_subscribed: true, is_paginating_backwards: false, composer: { accepted_submission_ids: [], pending_transaction_id: null, draft_revision: COMPOSER_DRAFT_REVISION_ZERO, last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO, draft: "", mode: composerMode }, submission_registry: { accepted_submission_ids: [], settled_submission_ids: [] }, scheduled_send_capability: "unknown", scheduled_sends: [], staged_uploads: [], media_gallery: [], media_downloads: {}, continuity: { kind: "unknown" } },
           thread: { kind: "closed" }, threads_list: { kind: "closed" }, focused_context: { kind: "closed" },
           files_view: { kind: "closed" }, errors: [], basic_operation: basicOperation
         }
@@ -570,11 +577,37 @@ const mock = new TauriIpcMock();
 let currentSnapshot = readySnapshot();
 let nextGateFlowId = 80;
 const preparedUploadBytes = new Map<string, number[]>();
+let composerRendererGeneration = 0;
+let nextComposerLeaseId = 0;
+const composerLeases = new Map<
+  string,
+  {
+    rendererGeneration: string;
+    accountHomeserver: string;
+    accountUserId: string;
+    accountDeviceId: string;
+    target: ComposerTarget;
+  }
+>();
 
 function composerTargetKey(target: ComposerTarget): string {
   return target.kind === "main"
     ? `main:${target.room_id}`
     : `thread:${target.room_id}:${target.root_event_id}`;
+}
+
+function composerForTarget(target: ComposerTarget) {
+  if (target.kind === "main") {
+    return currentSnapshot.state.ui.timeline.room_id === target.room_id
+      ? currentSnapshot.state.ui.timeline.composer
+      : null;
+  }
+  const thread = currentSnapshot.state.ui.thread;
+  return thread.kind === "open" &&
+    thread.room_id === target.room_id &&
+    thread.root_event_id === target.root_event_id
+    ? thread.composer
+    : null;
 }
 
 function preparedUploadKey(
@@ -830,6 +863,10 @@ function isDesktopSnapshotLike(value: unknown): value is DesktopSnapshot {
 // Snapshot-returning commands the App calls. Default snapshot stays ready so
 // any unanticipated snapshot read still renders the shell.
 mock.setCommandResponse("get_snapshot", () => currentSnapshot);
+mock.setCommandResponse("get_diagnostic_snapshot", () => ({
+  entries: [],
+  droppedEntries: 0
+}));
 mock.setCommandResponse("list_saved_sessions", () => []);
 mock.setCommandResponse("logout", () => {
   const next = structuredClone(currentSnapshot);
@@ -915,7 +952,8 @@ mock.setCommandResponse("select_room", ({ roomId }: { roomId: string }) => {
           composer: {
             accepted_submission_ids: [],
             pending_transaction_id: null,
-            draft_revision: 0,
+            draft_revision: COMPOSER_DRAFT_REVISION_ZERO,
+            last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO,
             draft: "",
             mode: "Plain"
           }
@@ -1748,20 +1786,80 @@ mock.setCommandResponse("search_invite_targets", () => currentSnapshot);
 mock.setCommandResponse("select_invite_target", () => currentSnapshot);
 mock.setCommandResponse("remove_invite_target", () => currentSnapshot);
 mock.setCommandResponse("invite_targets", () => currentSnapshot);
+mock.setCommandResponse("begin_composer_draft_renderer_generation", () => {
+  composerRendererGeneration += 1;
+  composerLeases.clear();
+  return composerRendererGeneration.toString();
+});
+mock.setCommandResponse(
+  "acquire_composer_draft_lease",
+  ({
+    accountHomeserver,
+    accountUserId,
+    accountDeviceId,
+    target,
+    rendererGeneration
+  }: {
+    accountHomeserver: string;
+    accountUserId: string;
+    accountDeviceId: string;
+    target: ComposerTarget;
+    rendererGeneration: string;
+  }): ComposerDraftLeaseSnapshot => {
+    if (
+      rendererGeneration !== composerRendererGeneration.toString() ||
+      currentSnapshot.state.domain.session.homeserver !== accountHomeserver ||
+      currentSnapshot.state.domain.session.user_id !== accountUserId ||
+      currentSnapshot.state.domain.session.device_id !== accountDeviceId
+    ) {
+      throw new Error("composer draft renderer generation is not current");
+    }
+    const composer = composerForTarget(target);
+    if (!composer) {
+      throw new Error("composer draft target is not active");
+    }
+    nextComposerLeaseId += 1;
+    const leaseId = `harness-composer-lease-${nextComposerLeaseId}`;
+    composerLeases.set(leaseId, {
+      rendererGeneration,
+      accountHomeserver,
+      accountUserId,
+      accountDeviceId,
+      target
+    });
+    return {
+      rendererGeneration,
+      leaseId,
+      revision: composer.draft_revision,
+      lastAcceptedClearRevision: composer.last_accepted_clear_revision,
+      hasAuthoritativeContent: composer.draft.length > 0
+    };
+  }
+);
+mock.setCommandResponse(
+  "release_composer_draft_lease",
+  ({ leaseId, rendererGeneration }: { leaseId: string; rendererGeneration: string }) => {
+    const lease = composerLeases.get(leaseId);
+    if (lease?.rendererGeneration !== rendererGeneration) {
+      throw new Error("composer draft lease is not current");
+    }
+    composerLeases.delete(leaseId);
+  }
+);
 mock.setCommandResponse("set_composer_draft", ({
   accountHomeserver,
   accountUserId,
   accountDeviceId,
   roomId,
   draft,
-  revision
+  draftRevision
 }: {
   accountHomeserver: string;
   accountUserId: string;
   accountDeviceId: string;
   roomId: string;
   draft: string;
-  revision: number;
+  draftRevision: ComposerDraftRevision;
 }) => {
   if (
     currentSnapshot.state.domain.session.homeserver !== accountHomeserver ||
@@ -1771,7 +1869,12 @@ mock.setCommandResponse("set_composer_draft", ({
   ) {
     return currentSnapshot;
   }
-  if (revision <= currentSnapshot.state.ui.timeline.composer.draft_revision) {
+  if (
+      compareComposerDraftRevisions(
+      draftRevision,
+      currentSnapshot.state.ui.timeline.composer.draft_revision
+    ) <= 0
+  ) {
     return currentSnapshot;
   }
   return setCurrentSnapshot({
@@ -1785,7 +1888,7 @@ mock.setCommandResponse("set_composer_draft", ({
         composer: {
           ...currentSnapshot.state.ui.timeline.composer,
           draft,
-          draft_revision: revision
+          draft_revision: draftRevision
         }
       }
       },
@@ -1812,7 +1915,7 @@ for (const command of ["send_reply", "send_text"] as const) {
     accountUserId: string;
     accountDeviceId: string;
     submissionId: string;
-    draftRevision: number;
+    draftRevision: ComposerDraftRevision;
   }) => {
     if (!composerCommandAccountMatches({
       accountHomeserver,
@@ -1830,10 +1933,32 @@ for (const command of ["send_reply", "send_text"] as const) {
           ...currentSnapshot.state.ui,
           timeline: {
             ...currentSnapshot.state.ui.timeline,
+            submission_registry: {
+              accepted_submission_ids:
+                currentSnapshot.state.ui.timeline.submission_registry.accepted_submission_ids.filter(
+                  (id) => id !== submissionId
+                ),
+              settled_submission_ids: [
+                ...currentSnapshot.state.ui.timeline.submission_registry.settled_submission_ids.filter(
+                  (id) => id !== submissionId
+                ),
+                submissionId
+              ]
+            },
             composer: {
               ...composer,
-              draft: composer.draft_revision > draftRevision ? composer.draft : "",
-              draft_revision: Math.max(composer.draft_revision, draftRevision) + 1,
+              draft:
+                compareComposerDraftRevisions(composer.draft_revision, draftRevision) > 0
+                  ? composer.draft
+                  : "",
+              draft_revision: nextComposerDraftRevision(
+                composer.draft_revision,
+                draftRevision
+              ),
+              last_accepted_clear_revision:
+                compareComposerDraftRevisions(composer.draft_revision, draftRevision) <= 0
+                  ? nextComposerDraftRevision(composer.draft_revision, draftRevision)
+                  : composer.last_accepted_clear_revision,
               mode: "Plain" as const
             }
           }
@@ -1866,7 +1991,8 @@ mock.setCommandResponse(
           composer: {
             accepted_submission_ids: [],
             pending_transaction_id: null,
-              draft_revision: 0,
+              draft_revision: COMPOSER_DRAFT_REVISION_ZERO,
+              last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO,
               draft: "",
               mode: "Plain"
             }
@@ -1898,7 +2024,7 @@ mock.setCommandResponse(
     roomId,
     rootEventId,
     draft,
-    revision
+    draftRevision
   }: {
     accountHomeserver: string;
     accountUserId: string;
@@ -1906,7 +2032,7 @@ mock.setCommandResponse(
     roomId: string;
     rootEventId: string;
     draft: string;
-    revision: number;
+    draftRevision: ComposerDraftRevision;
   }) => {
     const thread = currentSnapshot.state.ui.thread;
     if (
@@ -1920,7 +2046,7 @@ mock.setCommandResponse(
     ) {
       return currentSnapshot;
     }
-    if (revision <= thread.composer.draft_revision) {
+    if (compareComposerDraftRevisions(draftRevision, thread.composer.draft_revision) <= 0) {
       return currentSnapshot;
     }
     const next: DesktopSnapshot = {
@@ -1934,7 +2060,7 @@ mock.setCommandResponse(
           composer: {
             ...thread.composer,
             draft,
-            draft_revision: revision
+            draft_revision: draftRevision
           }
         }
         },
@@ -1953,7 +2079,7 @@ mock.setCommandResponse(
     roomId: string;
     rootEventId: string;
     body: string;
-    draftRevision: number;
+    draftRevision: ComposerDraftRevision;
   }) => {
     if (!composerCommandAccountMatches({
       accountHomeserver,
@@ -1984,8 +2110,17 @@ mock.setCommandResponse(
           composer: {
             ...thread.composer,
             draft:
-              thread.composer.draft_revision > draftRevision ? thread.composer.draft : "",
-            draft_revision: Math.max(thread.composer.draft_revision, draftRevision) + 1,
+              compareComposerDraftRevisions(thread.composer.draft_revision, draftRevision) > 0
+                ? thread.composer.draft
+                : "",
+            draft_revision: nextComposerDraftRevision(
+              thread.composer.draft_revision,
+              draftRevision
+            ),
+            last_accepted_clear_revision:
+              compareComposerDraftRevisions(thread.composer.draft_revision, draftRevision) <= 0
+                ? nextComposerDraftRevision(thread.composer.draft_revision, draftRevision)
+                : thread.composer.last_accepted_clear_revision,
             pending_transaction_id: null
           }
         }
@@ -2357,7 +2492,7 @@ mock.setCommandResponse("send_prepared_uploads", ({
   accountUserId: string;
   accountDeviceId: string;
   target: ComposerTarget;
-  draftRevision: number;
+  draftRevision: ComposerDraftRevision;
 }) => {
   if (!composerCommandAccountMatches({
     accountHomeserver,
@@ -2383,14 +2518,26 @@ mock.setCommandResponse("send_prepared_uploads", ({
                 composer: {
                   ...withoutUploads.state.ui.timeline.composer,
                   draft:
-                    withoutUploads.state.ui.timeline.composer.draft_revision > draftRevision
-                      ? withoutUploads.state.ui.timeline.composer.draft
-                      : "",
-                  draft_revision:
-                    Math.max(
+                    compareComposerDraftRevisions(
                       withoutUploads.state.ui.timeline.composer.draft_revision,
                       draftRevision
-                    ) + 1
+                    ) > 0
+                      ? withoutUploads.state.ui.timeline.composer.draft
+                      : "",
+                  draft_revision: nextComposerDraftRevision(
+                    withoutUploads.state.ui.timeline.composer.draft_revision,
+                    draftRevision
+                  ),
+                  last_accepted_clear_revision:
+                    compareComposerDraftRevisions(
+                      withoutUploads.state.ui.timeline.composer.draft_revision,
+                      draftRevision
+                    ) <= 0
+                      ? nextComposerDraftRevision(
+                          withoutUploads.state.ui.timeline.composer.draft_revision,
+                          draftRevision
+                        )
+                      : withoutUploads.state.ui.timeline.composer.last_accepted_clear_revision
                 }
               }
             }
@@ -2409,14 +2556,27 @@ mock.setCommandResponse("send_prepared_uploads", ({
                   composer: {
                     ...withoutUploads.state.ui.thread.composer,
                     draft:
-                      withoutUploads.state.ui.thread.composer.draft_revision > draftRevision
-                        ? withoutUploads.state.ui.thread.composer.draft
-                        : "",
-                    draft_revision:
-                      Math.max(
+                      compareComposerDraftRevisions(
                         withoutUploads.state.ui.thread.composer.draft_revision,
                         draftRevision
-                      ) + 1
+                      ) > 0
+                        ? withoutUploads.state.ui.thread.composer.draft
+                        : "",
+                    draft_revision: nextComposerDraftRevision(
+                      withoutUploads.state.ui.thread.composer.draft_revision,
+                      draftRevision
+                    ),
+                    last_accepted_clear_revision:
+                      compareComposerDraftRevisions(
+                        withoutUploads.state.ui.thread.composer.draft_revision,
+                        draftRevision
+                      ) <= 0
+                        ? nextComposerDraftRevision(
+                            withoutUploads.state.ui.thread.composer.draft_revision,
+                            draftRevision
+                          )
+                        : withoutUploads.state.ui.thread.composer
+                            .last_accepted_clear_revision
                   }
                 }
               }

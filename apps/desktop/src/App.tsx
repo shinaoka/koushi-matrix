@@ -27,13 +27,21 @@ import type { TimelineGapId } from "./domain/coreEvents";
 import {
   classifySubmissionFailure,
   createComposerSubmissionControllerRegistry,
-  createSubmissionId,
   mainSubmissionTarget,
   threadSubmissionTarget,
   type ComposerSubmissionControllerRegistry
 } from "./domain/composerSubmission";
-import { createComposerDraftRevisionCoordinator } from "./domain/composerDraftRevision";
-import type { TimelinePaneState } from "./domain/types";
+import {
+  COMPOSER_DRAFT_REVISION_ZERO,
+  compareComposerDraftRevisions
+} from "./domain/composerDraftRevision";
+import {
+  createComposerDraftLifecycleRegistry,
+  type ComposerDraftLifecycleRegistry,
+  type ComposerDraftOperationCapture,
+  type ComposerDraftScope
+} from "./domain/composerDraftLifecycle";
+import type { ComposerDraftRevision, TimelinePaneState } from "./domain/types";
 import { setActiveLocaleProfile, t } from "./i18n/messages";
 
 export function reconcileComposerSubmissionSnapshot(
@@ -44,24 +52,6 @@ export function reconcileComposerSubmissionSnapshot(
     timeline.submission_registry.accepted_submission_ids,
     timeline.submission_registry.settled_submission_ids
   );
-}
-
-function composerDraftRevisionForTarget(
-  snapshot: DesktopSnapshot,
-  target: ComposerTarget
-): number | null {
-  if (target.kind === "main") {
-    return snapshot.state.ui.timeline.room_id === target.room_id
-      ? snapshot.state.ui.timeline.composer.draft_revision
-      : null;
-  }
-  const thread = snapshot.state.ui.thread;
-  return thread.kind === "open" &&
-    thread.room_id === target.room_id &&
-    thread.root_event_id === target.root_event_id &&
-    thread.composer
-    ? thread.composer.draft_revision
-    : null;
 }
 
 import { ContextMenuSurface } from "./components/ContextMenuSurface";
@@ -935,6 +925,50 @@ function readyComposerDraftAccountOwner(snapshot: DesktopSnapshot | null): {
     : null;
 }
 
+function composerDraftScope(
+  account: { homeserver: string; userId: string; deviceId: string },
+  target: ComposerTarget
+): ComposerDraftScope {
+  return {
+    account: {
+      homeserver: account.homeserver,
+      user_id: account.userId,
+      device_id: account.deviceId
+    },
+    target
+  };
+}
+
+function composerDraftScopesEqual(
+  left: ComposerDraftScope,
+  right: ComposerDraftScope
+): boolean {
+  const targetsEqual =
+    left.target.kind === right.target.kind &&
+    left.target.room_id === right.target.room_id &&
+    (left.target.kind === "main" ||
+      (right.target.kind === "thread" &&
+        left.target.root_event_id === right.target.root_event_id));
+  return (
+    left.account.homeserver === right.account.homeserver &&
+    left.account.user_id === right.account.user_id &&
+    left.account.device_id === right.account.device_id &&
+    targetsEqual
+  );
+}
+
+function composerDraftApiAccount(scope: ComposerDraftScope): {
+  homeserver: string;
+  userId: string;
+  deviceId: string;
+} {
+  return {
+    homeserver: scope.account.homeserver,
+    userId: scope.account.user_id,
+    deviceId: scope.account.device_id
+  };
+}
+
 export function App() {
   const snapshot = useAppStore(selectSnapshot);
   const initialAccount = readyComposerDraftAccountOwner(snapshot);
@@ -983,40 +1017,56 @@ export function App() {
   const [searchScope, setSearchScope] = useState<SearchScopeKind>("allRooms");
   const [composerMentions, setComposerMentions] = useState<MentionIntent>(EMPTY_MENTION_INTENT);
   const [threadComposerMentions, setThreadComposerMentions] = useState<Record<string, MentionIntent>>({});
-  const [localThreadComposerDrafts, setLocalThreadComposerDrafts] = useState<Record<string, string>>({});
-  const [localComposerDraftClearEpochs, setLocalComposerDraftClearEpochs] = useState<
-    Record<string, number>
-  >({});
-  const [threadComposerDraftClearEpochs, setThreadComposerDraftClearEpochs] = useState<
-    Record<string, number>
-  >({});
-  const localThreadComposerDraftsRef = useRef<Record<string, string>>({});
-  const composerDraftRevisionsRef = useRef(createComposerDraftRevisionCoordinator());
-  const localComposerDraftRevisionsRef = useRef<Record<string, number>>({});
-  const localThreadComposerDraftRevisionsRef = useRef<Record<string, number>>({});
+  const mainComposerOverlayRef = useRef<{
+    scope: ComposerDraftScope;
+    value: string;
+    revision: ComposerDraftRevision | null;
+    debounceHandle: number | null;
+  } | null>(null);
+  const threadComposerOverlayRef = useRef<{
+    scope: ComposerDraftScope;
+    value: string;
+    revision: ComposerDraftRevision | null;
+    debounceHandle: number | null;
+  } | null>(null);
+  const composerDraftLifecycleRegistryRef = useRef<ComposerDraftLifecycleRegistry | null>(null);
+  if (composerDraftLifecycleRegistryRef.current === null) {
+    composerDraftLifecycleRegistryRef.current = createComposerDraftLifecycleRegistry({
+      begin: () => api.beginComposerDraftRendererGeneration(),
+      acquire: (scope, rendererGeneration) =>
+        api.acquireComposerDraftLease(scope, rendererGeneration),
+      release: (lease) =>
+        api.releaseComposerDraftLease(lease.leaseId, lease.rendererGeneration)
+    });
+  }
   const submissionRegistryRef = useRef<ComposerSubmissionControllerRegistry | null>(null);
   if (submissionRegistryRef.current === null) {
     submissionRegistryRef.current = createComposerSubmissionControllerRegistry();
   }
+
+  function retireComposerRendererGeneration(): void {
+    const mainOverlay = mainComposerOverlayRef.current;
+    if (mainOverlay?.debounceHandle !== null && mainOverlay) {
+      window.clearTimeout(mainOverlay.debounceHandle);
+      composerDraftLifecycleRegistryRef.current!.clearDebounce(mainOverlay.scope);
+    }
+    const threadOverlay = threadComposerOverlayRef.current;
+    if (threadOverlay?.debounceHandle !== null && threadOverlay) {
+      window.clearTimeout(threadOverlay.debounceHandle);
+      composerDraftLifecycleRegistryRef.current!.clearDebounce(threadOverlay.scope);
+    }
+    composerDraftLifecycleRegistryRef.current!.revokeRendererGeneration();
+    submissionRegistryRef.current?.reset();
+    mainComposerOverlayRef.current = null;
+    threadComposerOverlayRef.current = null;
+  }
+
   useEffect(() => {
     const account = readyComposerDraftAccountOwner(snapshot);
     const owner = account ? composerDraftAccountOwnerKey(account) : null;
-    if (
-      owner === null ||
-      (composerDraftLifecycleOwnerRef.current !== null &&
-        composerDraftLifecycleOwnerRef.current !== owner)
-    ) {
-      cancelComposerDraftPersists();
-      cancelThreadComposerDraftPersists();
-      submissionRegistryRef.current?.reset();
-      composerDraftRevisionsRef.current.reset();
-      localComposerDraftRevisionsRef.current = {};
-      localThreadComposerDraftRevisionsRef.current = {};
-      localThreadComposerDraftsRef.current = {};
-      localComposerDraftsRef.current = {};
-      setLocalThreadComposerDrafts({});
-      setLocalComposerDraftClearEpochs({});
-      setThreadComposerDraftClearEpochs({});
+    const ownerChanged = composerDraftLifecycleOwnerRef.current !== owner;
+    if (ownerChanged) {
+      retireComposerRendererGeneration();
     }
     submissionAccountOwnerRef.current = owner;
     composerDraftLifecycleOwnerRef.current = owner;
@@ -1027,28 +1077,69 @@ export function App() {
     snapshot?.state.domain.session.kind
   ]);
   useEffect(() => {
+    const account = readyComposerDraftAccountOwner(snapshot);
     const timeline = snapshot?.state.ui.timeline;
-    if (timeline?.room_id) {
-      composerDraftRevisionsRef.current.observe(
-        { kind: "main", room_id: timeline.room_id },
-        timeline.composer.draft_revision
+    if (account && timeline?.room_id) {
+      const scope = composerDraftScope(account, {
+        kind: "main",
+        room_id: timeline.room_id
+      });
+      composerDraftLifecycleRegistryRef.current!.observe(
+        scope,
+        timeline.composer.draft_revision,
+        timeline.composer.last_accepted_clear_revision,
+        timeline.composer.draft.length > 0
       );
+      void composerDraftLifecycleRegistryRef.current!
+        .activate(scope)
+        .then(() => {
+          const overlay = mainComposerOverlayRef.current;
+          if (overlay && overlay.revision === null && composerDraftScopesEqual(overlay.scope, scope)) {
+            overlay.revision = composerDraftLifecycleRegistryRef.current!.nextDraft(scope);
+            composerDraftLifecycleRegistryRef.current!.setActiveOverlay(
+              scope,
+              overlay.value,
+              overlay.revision
+            );
+            queueComposerDraftPersist(scope, overlay.value, overlay.revision);
+          }
+        })
+        .catch(() => undefined);
     }
     const thread = snapshot?.state.ui.thread;
     if (
+      account &&
       thread?.kind === "open" &&
       thread.room_id &&
       thread.root_event_id &&
       thread.composer
     ) {
-      composerDraftRevisionsRef.current.observe(
-        {
+      const scope = composerDraftScope(account, {
           kind: "thread",
           room_id: thread.room_id,
           root_event_id: thread.root_event_id
-        },
-        thread.composer.draft_revision
+      });
+      composerDraftLifecycleRegistryRef.current!.observe(
+        scope,
+        thread.composer.draft_revision,
+        thread.composer.last_accepted_clear_revision,
+        thread.composer.draft.length > 0
       );
+      void composerDraftLifecycleRegistryRef.current!
+        .activate(scope)
+        .then(() => {
+          const overlay = threadComposerOverlayRef.current;
+          if (overlay && overlay.revision === null && composerDraftScopesEqual(overlay.scope, scope)) {
+            overlay.revision = composerDraftLifecycleRegistryRef.current!.nextDraft(scope);
+            composerDraftLifecycleRegistryRef.current!.setActiveOverlay(
+              scope,
+              overlay.value,
+              overlay.revision
+            );
+            queueThreadComposerDraftPersist(scope, overlay.value, overlay.revision);
+          }
+        })
+        .catch(() => undefined);
     }
   }, [snapshot]);
   const [loginHomeserver, setLoginHomeserver] = useState(DEFAULT_HOMESERVER);
@@ -1144,9 +1235,6 @@ export function App() {
   }
   const qaSendBaselineTimelineItems = useRef(0);
   const stateRefreshTimerRef = useRef<number | null>(null);
-  const composerDraftPersistTimers = useRef<Record<string, number>>({});
-  const localComposerDraftsRef = useRef<Record<string, string>>({});
-  const threadComposerDraftPersistTimers = useRef<Record<string, number>>({});
   const panelDiagnosticRef = useRef<string | null>(null);
   const diagnosticSnapshotRequestGenerationRef = useRef(0);
   const typingSignalRef = useRef<{ roomId: string | null; isTyping: boolean }>({
@@ -1235,10 +1323,56 @@ export function App() {
     };
   const timelineRoomId = snapshot?.state.ui.timeline.room_id ?? null;
   const snapshotComposerDraft = snapshot?.state.ui.timeline.composer.draft ?? "";
+  const currentComposerAccount = readyComposerDraftAccountOwner(snapshot);
+  const accountOwnerKey = currentComposerAccount
+    ? composerDraftAccountOwnerKey(currentComposerAccount)
+    : "no-account";
+  const mainComposerOverlay = mainComposerOverlayRef.current;
   const composerDraft =
-    timelineRoomId && Object.prototype.hasOwnProperty.call(localComposerDraftsRef.current, timelineRoomId)
-      ? localComposerDraftsRef.current[timelineRoomId] ?? ""
+    timelineRoomId &&
+    mainComposerOverlay?.scope.target.kind === "main" &&
+    mainComposerOverlay.scope.target.room_id === timelineRoomId &&
+    mainComposerOverlay.scope.account.homeserver === currentComposerAccount?.homeserver &&
+    mainComposerOverlay.scope.account.user_id === currentComposerAccount?.userId &&
+    mainComposerOverlay.scope.account.device_id === currentComposerAccount?.deviceId
+      ? mainComposerOverlay.value
       : snapshotComposerDraft;
+  const mainComposerDraftImeKey = [accountOwnerKey, "main", timelineRoomId ?? "no-room",
+    snapshot?.state.ui.timeline.composer.last_accepted_clear_revision ??
+      COMPOSER_DRAFT_REVISION_ZERO
+  ].join("\u0000");
+  const activeThreadState = snapshot?.state.ui.thread;
+  const activeThreadTarget: ComposerTarget | null =
+    activeThreadState?.kind === "open" &&
+    activeThreadState.room_id &&
+    activeThreadState.root_event_id
+      ? {
+          kind: "thread",
+          room_id: activeThreadState.room_id,
+          root_event_id: activeThreadState.root_event_id
+        }
+      : null;
+  const activeThreadScope =
+    currentComposerAccount && activeThreadTarget
+      ? composerDraftScope(currentComposerAccount, activeThreadTarget)
+      : null;
+  const threadComposerOverlay = threadComposerOverlayRef.current;
+  const threadComposerDraftOverride =
+    activeThreadScope &&
+    threadComposerOverlay &&
+    composerDraftScopesEqual(activeThreadScope, threadComposerOverlay.scope)
+      ? threadComposerOverlay.value
+      : undefined;
+  const threadComposerDraftImeKey =
+    activeThreadState?.kind === "open" && activeThreadState.composer
+      ? [
+          accountOwnerKey,
+          "thread",
+          activeThreadState.room_id,
+          activeThreadState.root_event_id,
+          activeThreadState.composer.last_accepted_clear_revision
+        ].join("\u0000")
+      : undefined;
   const stagedUploads = snapshot?.state.ui.timeline.staged_uploads ?? [];
   const retainedTimelineKeyIds = useMemo(
     () => retainedTimelineStoreKeyIds(snapshot),
@@ -1399,8 +1533,15 @@ export function App() {
 
   useEffect(() => {
     return () => {
-      cancelComposerDraftPersists();
-      cancelThreadComposerDraftPersists();
+      const mainOverlay = mainComposerOverlayRef.current;
+      if (mainOverlay && mainOverlay.debounceHandle !== null) {
+        window.clearTimeout(mainOverlay.debounceHandle);
+      }
+      const threadOverlay = threadComposerOverlayRef.current;
+      if (threadOverlay && threadOverlay.debounceHandle !== null) {
+        window.clearTimeout(threadOverlay.debounceHandle);
+      }
+      composerDraftLifecycleRegistryRef.current?.revokeRendererGeneration();
     };
   }, []);
 
@@ -1620,7 +1761,7 @@ export function App() {
           qaSendTargetSelectionRequested.current !== targetRoom.room_id
         ) {
           qaSendTargetSelectionRequested.current = targetRoom.room_id;
-          void api.selectRoom(targetRoom.room_id).then(setSnapshot).catch(() => {
+          void selectRoom(targetRoom.room_id).catch(() => {
             qaSendPending.current = false;
             setQaSendStatus("failed");
           });
@@ -1633,37 +1774,13 @@ export function App() {
     if (!roomId || !account) {
       return;
     }
-    const accountOwner = composerDraftAccountOwnerKey(account);
 
     qaSendStarted.current = true;
     qaSendBaselineErrorCount.current = snapshot.state.ui.errors.length;
     qaSendBaselineTimelineItems.current = snapshot.timeline.length;
     qaSendPending.current = true;
     setQaSendStatus("pending");
-    void api
-      .sendText(account, createSubmissionId(), roomId, message)
-      .then((response) => {
-        if (submissionAccountOwnerRef.current !== accountOwner) {
-          return;
-        }
-        setSnapshot(response.snapshot);
-        if (!isTauriRuntime()) {
-          const completionStatus = qaSendSmokeCompletionStatus(
-            response.snapshot,
-            qaSendBaselineErrorCount.current,
-            qaSendBaselineTimelineItems.current
-          );
-          qaSendPending.current = completionStatus === "pending";
-          setQaSendStatus(completionStatus);
-        }
-      })
-      .catch(() => {
-        if (submissionAccountOwnerRef.current !== accountOwner) {
-          return;
-        }
-        qaSendPending.current = false;
-        setQaSendStatus("failed");
-      });
+    void sendText(message);
   }, [snapshot]);
 
   useEffect(() => {
@@ -2333,15 +2450,119 @@ export function App() {
     writeHomeSelection(selection);
   }
 
+  async function deactivateComposerScopeForNavigation(
+    scope: ComposerDraftScope,
+    kind: ComposerTarget["kind"]
+  ): Promise<boolean> {
+    const registry = composerDraftLifecycleRegistryRef.current!;
+    const overlayForScope = () => {
+      const overlay =
+        kind === "main"
+          ? mainComposerOverlayRef.current
+          : threadComposerOverlayRef.current;
+      return overlay && composerDraftScopesEqual(overlay.scope, scope) ? overlay : null;
+    };
+    const initialOverlay = overlayForScope();
+    if (initialOverlay) {
+      if (kind === "main") cancelComposerDraftPersist(scope);
+      else cancelThreadComposerDraftPersist(scope);
+      try {
+        await registry.activate(scope);
+      } catch {
+        return false;
+      }
+      while (true) {
+        const activeOverlay = overlayForScope();
+        if (!activeOverlay || activeOverlay.value.length === 0) break;
+        const revision = activeOverlay.revision ?? registry.nextDraft(scope);
+        activeOverlay.revision = revision;
+        registry.setActiveOverlay(scope, activeOverlay.value, revision);
+        const admitted = beginComposerOperation(scope);
+        if (!admitted) return false;
+        const account = composerDraftApiAccount(scope);
+        try {
+          if (scope.target.kind === "main") {
+            await api.setComposerDraft(
+              account,
+              admitted.lease.leaseId,
+              admitted.lease.rendererGeneration,
+              scope.target.room_id,
+              activeOverlay.value,
+              revision
+            );
+          } else {
+            await api.setThreadComposerDraft(
+              account,
+              admitted.lease.leaseId,
+              admitted.lease.rendererGeneration,
+              scope.target.room_id,
+              scope.target.root_event_id,
+              activeOverlay.value,
+              revision
+            );
+          }
+        } catch {
+          settleComposerOperation(admitted);
+          return false;
+        }
+        settleComposerOperation(admitted);
+        if (overlayForScope() !== activeOverlay) continue;
+        registry.setActiveOverlay(scope, null, null);
+        if (kind === "main") mainComposerOverlayRef.current = null;
+        else threadComposerOverlayRef.current = null;
+        break;
+      }
+    }
+    await registry.deactivate(scope);
+    return true;
+  }
+
+  async function drainActiveComposerScopesForNavigation(
+    includeMain: boolean,
+    includeThread: boolean
+  ): Promise<boolean> {
+    const account = readyComposerDraftAccountOwner(snapshot);
+    if (!account) return true;
+    const drains: Promise<boolean>[] = [];
+    const roomId = snapshot?.state.ui.timeline.room_id;
+    if (includeMain && roomId) {
+      drains.push(
+        deactivateComposerScopeForNavigation(
+          composerDraftScope(account, { kind: "main", room_id: roomId }),
+          "main"
+        )
+      );
+    }
+    const thread = snapshot?.state.ui.thread;
+    if (
+      includeThread &&
+      thread?.kind === "open" &&
+      thread.room_id &&
+      thread.root_event_id
+    ) {
+      drains.push(
+        deactivateComposerScopeForNavigation(
+          composerDraftScope(account, {
+            kind: "thread",
+            room_id: thread.room_id,
+            root_event_id: thread.root_event_id
+          }),
+          "thread"
+        )
+      );
+    }
+    return (await Promise.all(drains)).every(Boolean);
+  }
+
   const openHomeSelection = useCallback(async (selection = homeSelection) => {
+    if (!(await drainActiveComposerScopesForNavigation(true, true))) return;
     const homeSnapshot = await api.selectSpace(null);
     if (selection.kind === "dm") {
       const room = homeSnapshot.state.domain.rooms.find(
         (candidate) => candidate.room_id === selection.roomId && candidate.is_dm
       );
       if (room) {
-        setPrimaryView("timeline");
-        setSnapshot(await api.selectRoom(selection.roomId));
+        await selectRoom(selection.roomId);
         return;
       }
     }
@@ -2365,6 +2586,7 @@ export function App() {
       await openHomeActivityView();
       return;
     }
+    if (!(await drainActiveComposerScopesForNavigation(true, true))) return;
     setPrimaryView("timeline");
     setSnapshot(await api.selectSpace(spaceId));
   }
@@ -2383,6 +2605,9 @@ export function App() {
     });
     if (snapshot?.sidebar.account_home.is_active && selectedRoom?.is_dm) {
       setHomeSelection({ kind: "dm", roomId });
+    }
+    if (previousActiveRoomId !== roomId) {
+      if (!(await drainActiveComposerScopesForNavigation(true, true))) return;
     }
     setPrimaryView("timeline");
     const nextSnapshot = await api.selectRoom(roomId);
@@ -2581,11 +2806,11 @@ export function App() {
     }
     setIsBusy(true);
     try {
-      let nextSnapshot = await api.acceptInvite(roomId);
-      if (nextSnapshot.state.domain.rooms.some((room) => room.room_id === roomId)) {
-        nextSnapshot = await api.selectRoom(roomId);
-      }
+      const nextSnapshot = await api.acceptInvite(roomId);
       setSnapshot(nextSnapshot);
+      if (nextSnapshot.state.domain.rooms.some((room) => room.room_id === roomId)) {
+        await selectRoom(roomId);
+      }
       setPrimaryView("timeline");
     } finally {
       setIsBusy(false);
@@ -2611,12 +2836,12 @@ export function App() {
     }
     setIsBusy(true);
     try {
-      let nextSnapshot = await api.joinRoom(trimmedRoomId);
+      const nextSnapshot = await api.joinRoom(trimmedRoomId);
+      setSnapshot(nextSnapshot);
       if (nextSnapshot.state.domain.rooms.some((room) => room.room_id === trimmedRoomId)) {
-        nextSnapshot = await api.selectRoom(trimmedRoomId);
+        await selectRoom(trimmedRoomId);
       }
       setPrimaryView("timeline");
-      setSnapshot(nextSnapshot);
     } finally {
       setIsBusy(false);
     }
@@ -2717,6 +2942,62 @@ export function App() {
     setSnapshot(await api.cancelComposerReply());
   }
 
+  function beginComposerOperation(scope: ComposerDraftScope): {
+    capture: ComposerDraftOperationCapture;
+    lease: NonNullable<ReturnType<ComposerDraftLifecycleRegistry["snapshot"]>>;
+  } | null {
+    const lease = composerDraftLifecycleRegistryRef.current!.snapshot(scope);
+    if (!lease?.leaseId) return null;
+    return {
+      capture: composerDraftLifecycleRegistryRef.current!.beginOperation(scope),
+      lease
+    };
+  }
+
+  function composerOperationCanApply(
+    admitted: {
+      capture: ComposerDraftOperationCapture;
+      lease: NonNullable<ReturnType<ComposerDraftLifecycleRegistry["snapshot"]>>;
+    },
+    capturedRevision: ComposerDraftRevision
+  ): boolean {
+    return composerDraftLifecycleRegistryRef.current!.settleOperationCompletion(
+      admitted.capture,
+      admitted.lease.leaseId,
+      capturedRevision
+    );
+  }
+
+  function settleComposerOperation(admitted: {
+    capture: ComposerDraftOperationCapture;
+  }): void {
+    const { capture } = admitted;
+    composerDraftLifecycleRegistryRef.current!.settleOperation(capture);
+  }
+
+  function reserveComposerAcceptedRevision(
+    admitted: { capture: ComposerDraftOperationCapture },
+    draftRevision: ComposerDraftRevision
+  ): boolean {
+    try {
+      composerDraftLifecycleRegistryRef.current!.reserveAcceptedRevision(
+        admitted.capture,
+        draftRevision
+      );
+      return true;
+    } catch {
+      settleComposerOperation(admitted);
+      return false;
+    }
+  }
+
+  function currentComposerDraftRevision(
+    scope: ComposerDraftScope,
+    lease: NonNullable<ReturnType<ComposerDraftLifecycleRegistry["snapshot"]>>
+  ): ComposerDraftRevision {
+    return composerDraftLifecycleRegistryRef.current!.snapshot(scope)?.revision ?? lease.revision;
+  }
+
   async function sendText(bodyOverride?: string) {
     const roomId = snapshot?.state.ui.timeline.room_id;
     const body = bodyOverride ?? composerDraft;
@@ -2731,30 +3012,40 @@ export function App() {
       if (uploads.some((item) => item.preparation.kind !== "ready")) {
         return;
       }
-      const draftRevision = composerDraftRevisionsRef.current.current(target);
-      const localRevisionAtSubmission =
-        localComposerDraftRevisionsRef.current[roomId] ?? 0;
-      composerDraftRevisionsRef.current.accept(target, draftRevision);
+      const scope = composerDraftScope(account, target);
+      const admitted = beginComposerOperation(scope);
+      if (!admitted) return;
+      const draftRevision = currentComposerDraftRevision(scope, admitted.lease);
+      if (!reserveComposerAcceptedRevision(admitted, draftRevision)) return;
+      const localRevisionAtSubmission = mainComposerOverlayRef.current?.revision;
       for (const item of uploads) {
         latestTextOperationQueueRef.current.invalidate(
           `caption:main:${roomId}:${item.staged_id}`
         );
       }
-      const response = await api.sendPreparedUploads(account, target, draftRevision);
-      if (submissionAccountOwnerRef.current !== accountOwner) {
+      let response;
+      try {
+        response = await api.sendPreparedUploads(
+          account,
+          admitted.lease.leaseId,
+          admitted.lease.rendererGeneration,
+          target,
+          draftRevision
+        );
+      } catch {
+        settleComposerOperation(admitted);
         return;
       }
-      const acceptedRevision =
-        response.acceptedRevision ??
-        composerDraftRevisionForTarget(response.snapshot, target) ??
-        0;
-      const accepted = acceptedRevision > draftRevision;
+      const canApply = composerOperationCanApply(admitted, draftRevision);
+      if (!canApply || submissionAccountOwnerRef.current !== accountOwner) return;
+      const accepted =
+        response.acceptedRevision !== null &&
+        compareComposerDraftRevisions(response.acceptedRevision, draftRevision) > 0;
       const hasNewerDraft =
-        (localComposerDraftRevisionsRef.current[roomId] ?? 0) !==
-        localRevisionAtSubmission;
+        mainComposerOverlayRef.current?.revision !== localRevisionAtSubmission;
       if (accepted && !hasNewerDraft) {
-        cancelComposerDraftPersist(roomId);
-        clearLocalComposerDraft(roomId);
+        cancelComposerDraftPersist(scope);
+        clearLocalComposerDraft(scope);
         setComposerMentions(EMPTY_MENTION_INTENT);
         updateComposerTypingSignal(roomId, "");
       }
@@ -2772,10 +3063,11 @@ export function App() {
 
     const mentions = pruneMentionIntentForDraft(composerMentions, body);
     if (submissionController.payload(submissionId) === undefined) {
-      const draftRevision = composerDraftRevisionsRef.current.current(target);
-      const localRevisionAtSubmission =
-        localComposerDraftRevisionsRef.current[roomId] ?? 0;
-      composerDraftRevisionsRef.current.accept(target, draftRevision);
+      const scope = composerDraftScope(account, target);
+      const draftRevision =
+        composerDraftLifecycleRegistryRef.current!.snapshot(scope)?.revision ??
+        COMPOSER_DRAFT_REVISION_ZERO;
+      const localRevisionAtSubmission = mainComposerOverlayRef.current?.revision ?? null;
       submissionController.capture(submissionId, {
         roomId,
         body,
@@ -2784,7 +3076,8 @@ export function App() {
         draftRevision,
         localRevisionAtSubmission,
         account,
-        accountOwner
+        accountOwner,
+        scope
       });
     }
     const captured = submissionController.payload<{
@@ -2792,10 +3085,11 @@ export function App() {
       body: string;
       mentions: MentionIntent;
       composerMode: typeof composerMode;
-      draftRevision: number;
-      localRevisionAtSubmission: number;
+      draftRevision: ComposerDraftRevision;
+      localRevisionAtSubmission: ComposerDraftRevision | null;
       account: { homeserver: string; userId: string; deviceId: string };
       accountOwner: string;
+      scope: ComposerDraftScope;
     }>(submissionId)!;
 
     qaSendStarted.current = true;
@@ -2810,11 +3104,22 @@ export function App() {
         message: e2eeSendDiagnosticMessage(snapshot, roomId)
       });
     }
+    const admitted = beginComposerOperation(captured.scope);
+    if (!admitted) {
+      submissionController.reject(submissionId);
+      return;
+    }
+    if (!reserveComposerAcceptedRevision(admitted, captured.draftRevision)) {
+      submissionController.reject(submissionId);
+      return;
+    }
     try {
       const nextSnapshot =
         captured.composerMode === "Plain"
           ? await api.sendText(
               captured.account,
+              admitted.lease.leaseId,
+              admitted.lease.rendererGeneration,
               submissionId,
               captured.roomId,
               captured.body,
@@ -2823,6 +3128,8 @@ export function App() {
             )
           : await api.sendReply(
               captured.account,
+              admitted.lease.leaseId,
+              admitted.lease.rendererGeneration,
               submissionId,
               captured.roomId,
               captured.composerMode.Reply.in_reply_to_event_id,
@@ -2830,9 +3137,8 @@ export function App() {
               captured.mentions,
               captured.draftRevision
             );
-      if (submissionAccountOwnerRef.current !== captured.accountOwner) {
-        return;
-      }
+      const canApply = composerOperationCanApply(admitted, captured.draftRevision);
+      if (!canApply || submissionAccountOwnerRef.current !== captured.accountOwner) return;
       if (nextSnapshot.submissionId !== submissionId || nextSnapshot.outcome !== "accepted") {
         submissionController.reject(submissionId);
         setSnapshot(nextSnapshot.snapshot);
@@ -2840,11 +3146,10 @@ export function App() {
       }
       submissionController.accept(submissionId);
       const hasNewerDraft =
-        (localComposerDraftRevisionsRef.current[roomId] ?? 0) !==
-        captured.localRevisionAtSubmission;
+        mainComposerOverlayRef.current?.revision !== captured.localRevisionAtSubmission;
       if (!hasNewerDraft) {
-        cancelComposerDraftPersist(roomId);
-        clearLocalComposerDraft(roomId);
+        cancelComposerDraftPersist(captured.scope);
+        clearLocalComposerDraft(captured.scope);
         setComposerMentions(EMPTY_MENTION_INTENT);
         updateComposerTypingSignal(roomId, "");
       }
@@ -2859,6 +3164,7 @@ export function App() {
         setQaSendStatus(completionStatus);
       }
     } catch (error) {
+      settleComposerOperation(admitted);
       if (submissionAccountOwnerRef.current !== captured.accountOwner) {
         return;
       }
@@ -2892,32 +3198,38 @@ export function App() {
       return;
     }
 
+    const target: ComposerTarget = { kind: "main", room_id: roomId };
+    const scope = composerDraftScope(account, target);
+    const admitted = beginComposerOperation(scope);
+    if (!admitted) return;
+    const draftRevision = currentComposerDraftRevision(scope, admitted.lease);
+    if (!reserveComposerAcceptedRevision(admitted, draftRevision)) return;
+    const localRevisionAtSubmission = mainComposerOverlayRef.current?.revision ?? null;
     try {
-      const target: ComposerTarget = { kind: "main", room_id: roomId };
-      const draftRevision = composerDraftRevisionsRef.current.current(target);
-      const localRevisionAtSubmission =
-        localComposerDraftRevisionsRef.current[roomId] ?? 0;
-      composerDraftRevisionsRef.current.accept(target, draftRevision);
-      const response = await api.scheduleSend(account, target, body, sendAtMs, draftRevision);
-      if (submissionAccountOwnerRef.current !== accountOwner) {
-        return;
-      }
-      const acceptedRevision =
-        response.acceptedRevision ??
-        composerDraftRevisionForTarget(response.snapshot, target) ??
-        0;
-      const accepted = acceptedRevision > draftRevision;
-      const hasNewerDraft =
-        (localComposerDraftRevisionsRef.current[roomId] ?? 0) !==
-        localRevisionAtSubmission;
+      const response = await api.scheduleSend(
+        account,
+        admitted.lease.leaseId,
+        admitted.lease.rendererGeneration,
+        target,
+        body,
+        sendAtMs,
+        draftRevision
+      );
+      const canApply = composerOperationCanApply(admitted, draftRevision);
+      if (!canApply || submissionAccountOwnerRef.current !== accountOwner) return;
+      const accepted =
+        response.acceptedRevision !== null &&
+        compareComposerDraftRevisions(response.acceptedRevision, draftRevision) > 0;
+      const hasNewerDraft = mainComposerOverlayRef.current?.revision !== localRevisionAtSubmission;
       if (accepted && !hasNewerDraft) {
-        cancelComposerDraftPersist(roomId);
-        clearLocalComposerDraft(roomId);
+        cancelComposerDraftPersist(scope);
+        clearLocalComposerDraft(scope);
         setComposerMentions(EMPTY_MENTION_INTENT);
         updateComposerTypingSignal(roomId, "");
       }
       setSnapshot(response.snapshot);
     } catch {
+      settleComposerOperation(admitted);
       // Command failures are surfaced through the Rust-owned error/event path.
     }
   }
@@ -2940,24 +3252,23 @@ export function App() {
 
   function updateComposerDraft(value: string) {
     const roomId = snapshot?.state.ui.timeline.room_id;
-    const session = snapshot?.state.domain.session;
-    if (!roomId || !session?.homeserver || !session.user_id || !session.device_id) {
-      return;
-    }
-    const account = {
-      homeserver: session.homeserver,
-      userId: session.user_id,
-      deviceId: session.device_id
-    };
+    const account = readyComposerDraftAccountOwner(snapshot);
+    if (!roomId || !account) return;
     const target: ComposerTarget = { kind: "main", room_id: roomId };
-    const revision = composerDraftRevisionsRef.current.nextDraft(
-      target,
-      snapshot?.state.ui.timeline.composer.draft_revision ?? 0
-    );
-    localComposerDraftsRef.current[roomId] = value;
-    localComposerDraftRevisionsRef.current[roomId] = revision;
+    const scope = composerDraftScope(account, target);
+    const lease = composerDraftLifecycleRegistryRef.current!.snapshot(scope);
+    const revision = lease?.leaseId
+      ? composerDraftLifecycleRegistryRef.current!.nextDraft(scope)
+      : null;
+    mainComposerOverlayRef.current = {
+      scope,
+      value,
+      revision,
+      debounceHandle: null
+    };
+    composerDraftLifecycleRegistryRef.current!.setActiveOverlay(scope, value, revision);
     updateComposerTypingSignal(roomId, value);
-    queueComposerDraftPersist(account, roomId, value, revision);
+    if (revision) queueComposerDraftPersist(scope, value, revision);
   }
 
   function updateComposerTypingSignal(roomId: string, value: string) {
@@ -2970,70 +3281,68 @@ export function App() {
     void api.setTyping(roomId, isTyping).catch(() => undefined);
   }
 
-  function cancelComposerDraftPersist(roomId: string) {
-    const timer = composerDraftPersistTimers.current[roomId];
-    if (timer === undefined) {
-      return;
+  function cancelComposerDraftPersist(scope: ComposerDraftScope) {
+    const overlay = mainComposerOverlayRef.current;
+    if (!overlay || !composerDraftScopesEqual(overlay.scope, scope)) return;
+    if (overlay.debounceHandle !== null) {
+      window.clearTimeout(overlay.debounceHandle);
+      overlay.debounceHandle = null;
     }
-    window.clearTimeout(timer);
-    delete composerDraftPersistTimers.current[roomId];
-  }
-
-  function cancelComposerDraftPersists() {
-    for (const timer of Object.values(composerDraftPersistTimers.current)) {
-      window.clearTimeout(timer);
-    }
-    composerDraftPersistTimers.current = {};
+    composerDraftLifecycleRegistryRef.current!.clearDebounce(scope);
   }
 
   function queueComposerDraftPersist(
-    account: { homeserver: string; userId: string; deviceId: string },
-    roomId: string,
+    scope: ComposerDraftScope,
     value: string,
-    revision: number
+    revision: ComposerDraftRevision
   ) {
-    cancelComposerDraftPersist(roomId);
-    composerDraftPersistTimers.current[roomId] = window.setTimeout(() => {
-      delete composerDraftPersistTimers.current[roomId];
+    if (scope.target.kind !== "main") return;
+    cancelComposerDraftPersist(scope);
+    const handle = window.setTimeout(() => {
+      const overlay = mainComposerOverlayRef.current;
+      if (overlay && composerDraftScopesEqual(overlay.scope, scope)) {
+        overlay.debounceHandle = null;
+      }
+      composerDraftLifecycleRegistryRef.current!.clearDebounce(scope);
+      const admitted = beginComposerOperation(scope);
+      if (!admitted) return;
+      const account = composerDraftApiAccount(scope);
       void api
-        .setComposerDraft(account, roomId, value, revision)
+        .setComposerDraft(
+          account,
+          admitted.lease.leaseId,
+          admitted.lease.rendererGeneration,
+          scope.target.room_id,
+          value,
+          revision
+        )
         .then((nextSnapshot) => {
-          const target: ComposerTarget = { kind: "main", room_id: roomId };
+          const canApply = composerOperationCanApply(admitted, revision);
+          const currentOverlay = mainComposerOverlayRef.current;
           if (
+            !canApply ||
             submissionAccountOwnerRef.current !== composerDraftAccountOwnerKey(account) ||
-            (localComposerDraftsRef.current[roomId] ?? "") !== value ||
-            localComposerDraftRevisionsRef.current[roomId] !== revision ||
-            !composerDraftRevisionsRef.current.canApply(
-              target,
-              nextSnapshot.state.ui.timeline.room_id === roomId
-                ? nextSnapshot.state.ui.timeline.composer.draft_revision
-                : 0
-            )
-          ) {
-            return;
-          }
+            !currentOverlay ||
+            !composerDraftScopesEqual(currentOverlay.scope, scope) ||
+            currentOverlay.value !== value ||
+            currentOverlay.revision !== revision
+          ) return;
           setSnapshot(nextSnapshot);
         })
-        .catch(() => undefined);
+        .catch(() => settleComposerOperation(admitted));
     }, 350);
+    const overlay = mainComposerOverlayRef.current;
+    if (overlay && composerDraftScopesEqual(overlay.scope, scope)) {
+      overlay.debounceHandle = handle;
+    }
+    composerDraftLifecycleRegistryRef.current!.setDebounce(scope, handle);
   }
 
-  function clearLocalComposerDraft(roomId: string) {
-    const hadLocalDraft = Object.prototype.hasOwnProperty.call(
-      localComposerDraftsRef.current,
-      roomId
-    );
-    delete localComposerDraftsRef.current[roomId];
-    delete localComposerDraftRevisionsRef.current[roomId];
-    if (hadLocalDraft) {
-      // A CoreEvent may publish the accepted snapshot before the command
-      // response resolves. In that ordering, setSnapshot can be a no-op for
-      // the same snapshot reference, so explicitly retire the local overlay.
-      setLocalComposerDraftClearEpochs((current) => ({
-        ...current,
-        [roomId]: (current[roomId] ?? 0) + 1
-      }));
-    }
+  function clearLocalComposerDraft(scope: ComposerDraftScope) {
+    const overlay = mainComposerOverlayRef.current;
+    if (!overlay || !composerDraftScopesEqual(overlay.scope, scope)) return;
+    mainComposerOverlayRef.current = null;
+    composerDraftLifecycleRegistryRef.current!.setActiveOverlay(scope, null, null);
   }
 
   async function stageUploadFiles(files: File[]): Promise<void> {
@@ -3158,12 +3467,20 @@ export function App() {
   }
 
   async function openThread(roomId: string, rootEventId: string) {
+    const thread = snapshot?.state.ui.thread;
+    if (
+      thread?.kind === "open" &&
+      (thread.room_id !== roomId || thread.root_event_id !== rootEventId)
+    ) {
+      if (!(await drainActiveComposerScopesForNavigation(false, true))) return;
+    }
     await closeFocusedContextIfHiddenBy("thread");
     setSnapshot(await api.openThread(roomId, rootEventId));
     setRightPanelMode("thread");
   }
 
   async function closeThread() {
+    if (!(await drainActiveComposerScopesForNavigation(false, true))) return;
     setSnapshot(await api.closeThread());
     setRightPanelMode("closed");
   }
@@ -3209,33 +3526,22 @@ export function App() {
     rootEventId: string,
     draft: string
   ) {
-    const session = snapshot?.state.domain.session;
-    if (!session?.homeserver || !session.user_id || !session.device_id) {
-      return;
-    }
-    const account = {
-      homeserver: session.homeserver,
-      userId: session.user_id,
-      deviceId: session.device_id
-    };
-    const key = threadComposerDraftKey(roomId, rootEventId);
+    const account = readyComposerDraftAccountOwner(snapshot);
+    if (!account) return;
     const target: ComposerTarget = { kind: "thread", room_id: roomId, root_event_id: rootEventId };
-    const thread = snapshot?.state.ui.thread;
-    const revision = composerDraftRevisionsRef.current.nextDraft(
-      target,
-      thread?.kind === "open" &&
-        thread.room_id === roomId &&
-        thread.root_event_id === rootEventId &&
-        thread.composer
-        ? thread.composer.draft_revision
-        : 0
-    );
-    localThreadComposerDraftRevisionsRef.current[key] = revision;
-    localThreadComposerDraftsRef.current[key] = draft;
-    setLocalThreadComposerDrafts((drafts) =>
-      drafts[key] === draft ? drafts : { ...drafts, [key]: draft }
-    );
-    queueThreadComposerDraftPersist(account, roomId, rootEventId, draft, revision);
+    const scope = composerDraftScope(account, target);
+    const lease = composerDraftLifecycleRegistryRef.current!.snapshot(scope);
+    const revision = lease?.leaseId
+      ? composerDraftLifecycleRegistryRef.current!.nextDraft(scope)
+      : null;
+    threadComposerOverlayRef.current = {
+      scope,
+      value: draft,
+      revision,
+      debounceHandle: null
+    };
+    composerDraftLifecycleRegistryRef.current!.setActiveOverlay(scope, draft, revision);
+    if (revision) queueThreadComposerDraftPersist(scope, draft, revision);
   }
 
   async function stageThreadUploadFiles(
@@ -3276,7 +3582,6 @@ export function App() {
     const account = readyComposerDraftAccountOwner(snapshot);
     const accountOwner = account ? composerDraftAccountOwnerKey(account) : null;
     const target: ComposerTarget = { kind: "thread", room_id: roomId, root_event_id: rootEventId };
-    const key = threadComposerDraftKey(roomId, rootEventId);
     const uploads =
       thread?.kind === "open" &&
       thread.room_id === roomId &&
@@ -3288,30 +3593,40 @@ export function App() {
     }
     if (uploads.length > 0) {
       if (uploads.some((item) => item.preparation.kind !== "ready")) return;
-      const draftRevision = composerDraftRevisionsRef.current.current(target);
-      const localRevisionAtSubmission =
-        localThreadComposerDraftRevisionsRef.current[key] ?? 0;
-      composerDraftRevisionsRef.current.accept(target, draftRevision);
+      const scope = composerDraftScope(account, target);
+      const admitted = beginComposerOperation(scope);
+      if (!admitted) return;
+      const draftRevision = currentComposerDraftRevision(scope, admitted.lease);
+      if (!reserveComposerAcceptedRevision(admitted, draftRevision)) return;
+      const localRevisionAtSubmission = threadComposerOverlayRef.current?.revision ?? null;
       for (const item of uploads) {
         latestTextOperationQueueRef.current.invalidate(
           `caption:thread:${roomId}:${rootEventId}:${item.staged_id}`
         );
       }
-      const response = await api.sendPreparedUploads(account, target, draftRevision);
-      if (submissionAccountOwnerRef.current !== accountOwner) {
+      let response;
+      try {
+        response = await api.sendPreparedUploads(
+          account,
+          admitted.lease.leaseId,
+          admitted.lease.rendererGeneration,
+          target,
+          draftRevision
+        );
+      } catch {
+        settleComposerOperation(admitted);
         return;
       }
-      const acceptedRevision =
-        response.acceptedRevision ??
-        composerDraftRevisionForTarget(response.snapshot, target) ??
-        0;
-      const accepted = acceptedRevision > draftRevision;
+      const canApply = composerOperationCanApply(admitted, draftRevision);
+      if (!canApply || submissionAccountOwnerRef.current !== accountOwner) return;
+      const accepted =
+        response.acceptedRevision !== null &&
+        compareComposerDraftRevisions(response.acceptedRevision, draftRevision) > 0;
       const hasNewerDraft =
-        (localThreadComposerDraftRevisionsRef.current[key] ?? 0) !==
-        localRevisionAtSubmission;
+        threadComposerOverlayRef.current?.revision !== localRevisionAtSubmission;
       if (accepted && !hasNewerDraft) {
-        cancelThreadComposerDraftPersist(roomId, rootEventId);
-        clearLocalThreadComposerDraft(roomId, rootEventId);
+        cancelThreadComposerDraftPersist(scope);
+        clearLocalThreadComposerDraft(scope);
         clearThreadComposerMentions(roomId, rootEventId);
       }
       setSnapshot(response.snapshot);
@@ -3326,10 +3641,11 @@ export function App() {
     }
     const mentions = pruneMentionIntentForDraft(mentionIntent, body);
     if (submissionController.payload(submissionId) === undefined) {
-      const draftRevision = composerDraftRevisionsRef.current.current(target);
-      const localRevisionAtSubmission =
-        localThreadComposerDraftRevisionsRef.current[key] ?? 0;
-      composerDraftRevisionsRef.current.accept(target, draftRevision);
+      const scope = composerDraftScope(account, target);
+      const draftRevision =
+        composerDraftLifecycleRegistryRef.current!.snapshot(scope)?.revision ??
+        COMPOSER_DRAFT_REVISION_ZERO;
+      const localRevisionAtSubmission = threadComposerOverlayRef.current?.revision ?? null;
       submissionController.capture(submissionId, {
         roomId,
         rootEventId,
@@ -3338,7 +3654,8 @@ export function App() {
         draftRevision,
         localRevisionAtSubmission,
         account,
-        accountOwner
+        accountOwner,
+        scope
       });
     }
     const captured = submissionController.payload<{
@@ -3346,15 +3663,27 @@ export function App() {
       rootEventId: string;
       body: string;
       mentions: MentionIntent;
-      draftRevision: number;
-      localRevisionAtSubmission: number;
+      draftRevision: ComposerDraftRevision;
+      localRevisionAtSubmission: ComposerDraftRevision | null;
       account: { homeserver: string; userId: string; deviceId: string };
       accountOwner: string;
+      scope: ComposerDraftScope;
     }>(submissionId)!;
+    const admitted = beginComposerOperation(captured.scope);
+    if (!admitted) {
+      submissionController.reject(submissionId);
+      return;
+    }
+    if (!reserveComposerAcceptedRevision(admitted, captured.draftRevision)) {
+      submissionController.reject(submissionId);
+      return;
+    }
     let response;
     try {
       response = await api.sendThreadReply(
         captured.account,
+        admitted.lease.leaseId,
+        admitted.lease.rendererGeneration,
         submissionId,
         captured.roomId,
         captured.rootEventId,
@@ -3363,6 +3692,7 @@ export function App() {
         captured.draftRevision
       );
     } catch (error) {
+      settleComposerOperation(admitted);
       if (submissionAccountOwnerRef.current !== captured.accountOwner) {
         return;
       }
@@ -3374,9 +3704,8 @@ export function App() {
       }
       return;
     }
-    if (submissionAccountOwnerRef.current !== captured.accountOwner) {
-      return;
-    }
+    const canApply = composerOperationCanApply(admitted, captured.draftRevision);
+    if (!canApply || submissionAccountOwnerRef.current !== captured.accountOwner) return;
     if (response.submissionId !== submissionId || response.outcome !== "accepted") {
       submissionController.reject(submissionId);
       setSnapshot(response.snapshot);
@@ -3384,11 +3713,10 @@ export function App() {
     }
     submissionController.accept(submissionId);
     const hasNewerDraft =
-      (localThreadComposerDraftRevisionsRef.current[key] ?? 0) !==
-      captured.localRevisionAtSubmission;
+      threadComposerOverlayRef.current?.revision !== captured.localRevisionAtSubmission;
     if (!hasNewerDraft) {
-      cancelThreadComposerDraftPersist(roomId, rootEventId);
-      clearLocalThreadComposerDraft(roomId, rootEventId);
+      cancelThreadComposerDraftPersist(captured.scope);
+      clearLocalThreadComposerDraft(captured.scope);
       clearThreadComposerMentions(roomId, rootEventId);
     }
     setSnapshot(response.snapshot);
@@ -3529,105 +3857,106 @@ export function App() {
       room_id: roomId,
       root_event_id: rootEventId
     };
-    const key = threadComposerDraftKey(roomId, rootEventId);
-    const draftRevision = composerDraftRevisionsRef.current.current(target);
-    const localRevisionAtSubmission =
-      localThreadComposerDraftRevisionsRef.current[key] ?? 0;
-    composerDraftRevisionsRef.current.accept(target, draftRevision);
-    const response = await api.scheduleSend(account, target, body, sendAtMs, draftRevision);
-    if (submissionAccountOwnerRef.current !== accountOwner) {
+    const scope = composerDraftScope(account, target);
+    const admitted = beginComposerOperation(scope);
+    if (!admitted) return;
+    const draftRevision = currentComposerDraftRevision(scope, admitted.lease);
+    if (!reserveComposerAcceptedRevision(admitted, draftRevision)) return;
+    const localRevisionAtSubmission = threadComposerOverlayRef.current?.revision ?? null;
+    let response;
+    try {
+      response = await api.scheduleSend(
+        account,
+        admitted.lease.leaseId,
+        admitted.lease.rendererGeneration,
+        target,
+        body,
+        sendAtMs,
+        draftRevision
+      );
+    } catch {
+      settleComposerOperation(admitted);
       return;
     }
-    const acceptedRevision =
-      response.acceptedRevision ??
-      composerDraftRevisionForTarget(response.snapshot, target) ??
-      0;
-    const accepted = acceptedRevision > draftRevision;
+    const canApply = composerOperationCanApply(admitted, draftRevision);
+    if (!canApply || submissionAccountOwnerRef.current !== accountOwner) return;
+    const accepted =
+      response.acceptedRevision !== null &&
+      compareComposerDraftRevisions(response.acceptedRevision, draftRevision) > 0;
     const hasNewerDraft =
-      (localThreadComposerDraftRevisionsRef.current[key] ?? 0) !==
-      localRevisionAtSubmission;
+      threadComposerOverlayRef.current?.revision !== localRevisionAtSubmission;
     if (accepted && !hasNewerDraft) {
-      cancelThreadComposerDraftPersist(roomId, rootEventId);
-      clearLocalThreadComposerDraft(roomId, rootEventId);
+      cancelThreadComposerDraftPersist(scope);
+      clearLocalThreadComposerDraft(scope);
       clearThreadComposerMentions(roomId, rootEventId);
     }
     setSnapshot(response.snapshot);
   }
 
   function queueThreadComposerDraftPersist(
-    account: { homeserver: string; userId: string; deviceId: string },
-    roomId: string,
-    rootEventId: string,
+    scope: ComposerDraftScope,
     draft: string,
-    revision: number
+    revision: ComposerDraftRevision
   ) {
-    cancelThreadComposerDraftPersist(roomId, rootEventId);
-    const key = threadComposerDraftKey(roomId, rootEventId);
-    threadComposerDraftPersistTimers.current[key] = window.setTimeout(() => {
-      delete threadComposerDraftPersistTimers.current[key];
+    if (scope.target.kind !== "thread") return;
+    const target = scope.target;
+    cancelThreadComposerDraftPersist(scope);
+    const handle = window.setTimeout(() => {
+      const overlay = threadComposerOverlayRef.current;
+      if (overlay && composerDraftScopesEqual(overlay.scope, scope)) {
+        overlay.debounceHandle = null;
+      }
+      composerDraftLifecycleRegistryRef.current!.clearDebounce(scope);
+      const admitted = beginComposerOperation(scope);
+      if (!admitted) return;
+      const account = composerDraftApiAccount(scope);
       void api
-        .setThreadComposerDraft(account, roomId, rootEventId, draft, revision)
+        .setThreadComposerDraft(
+          account,
+          admitted.lease.leaseId,
+          admitted.lease.rendererGeneration,
+          target.room_id,
+          target.root_event_id,
+          draft,
+          revision
+        )
         .then((nextSnapshot) => {
-          const target: ComposerTarget = {
-            kind: "thread",
-            room_id: roomId,
-            root_event_id: rootEventId
-          };
-          const activeThread = nextSnapshot.state.ui.thread;
+          const canApply = composerOperationCanApply(admitted, revision);
+          const currentOverlay = threadComposerOverlayRef.current;
           if (
+            !canApply ||
             submissionAccountOwnerRef.current !== composerDraftAccountOwnerKey(account) ||
-            localThreadComposerDraftRevisionsRef.current[key] !== revision ||
-            localThreadComposerDraftsRef.current[key] !== draft ||
-            activeThread.kind !== "open" ||
-            activeThread.room_id !== roomId ||
-            activeThread.root_event_id !== rootEventId ||
-            !activeThread.composer ||
-            !composerDraftRevisionsRef.current.canApply(
-              target,
-              activeThread.composer.draft_revision
-            )
-          ) {
-            return;
-          }
+            !currentOverlay ||
+            !composerDraftScopesEqual(currentOverlay.scope, scope) ||
+            currentOverlay.revision !== revision ||
+            currentOverlay.value !== draft
+          ) return;
           setSnapshot(nextSnapshot);
         })
-        .catch(() => undefined);
+        .catch(() => settleComposerOperation(admitted));
     }, 350);
-  }
-
-  function cancelThreadComposerDraftPersist(roomId: string, rootEventId: string) {
-    const key = threadComposerDraftKey(roomId, rootEventId);
-    const timer = threadComposerDraftPersistTimers.current[key];
-    if (timer === undefined) {
-      return;
+    const overlay = threadComposerOverlayRef.current;
+    if (overlay && composerDraftScopesEqual(overlay.scope, scope)) {
+      overlay.debounceHandle = handle;
     }
-    window.clearTimeout(timer);
-    delete threadComposerDraftPersistTimers.current[key];
+    composerDraftLifecycleRegistryRef.current!.setDebounce(scope, handle);
   }
 
-  function cancelThreadComposerDraftPersists() {
-    Object.values(threadComposerDraftPersistTimers.current).forEach((timer) => {
-      window.clearTimeout(timer);
-    });
-    threadComposerDraftPersistTimers.current = {};
+  function cancelThreadComposerDraftPersist(scope: ComposerDraftScope) {
+    const overlay = threadComposerOverlayRef.current;
+    if (!overlay || !composerDraftScopesEqual(overlay.scope, scope)) return;
+    if (overlay.debounceHandle !== null) {
+      window.clearTimeout(overlay.debounceHandle);
+      overlay.debounceHandle = null;
+    }
+    composerDraftLifecycleRegistryRef.current!.clearDebounce(scope);
   }
 
-  function clearLocalThreadComposerDraft(roomId: string, rootEventId: string) {
-    const key = threadComposerDraftKey(roomId, rootEventId);
-    setLocalThreadComposerDrafts((drafts) => {
-      if (!Object.prototype.hasOwnProperty.call(drafts, key)) {
-        return drafts;
-      }
-      const next = { ...drafts };
-      delete next[key];
-      return next;
-    });
-    delete localThreadComposerDraftsRef.current[key];
-    delete localThreadComposerDraftRevisionsRef.current[key];
-    setThreadComposerDraftClearEpochs((current) => ({
-      ...current,
-      [key]: (current[key] ?? 0) + 1
-    }));
+  function clearLocalThreadComposerDraft(scope: ComposerDraftScope) {
+    const overlay = threadComposerOverlayRef.current;
+    if (!overlay || !composerDraftScopesEqual(overlay.scope, scope)) return;
+    threadComposerOverlayRef.current = null;
+    composerDraftLifecycleRegistryRef.current!.setActiveOverlay(scope, null, null);
   }
 
   function threadComposerDraftKey(roomId: string, rootEventId: string): string {
@@ -3698,7 +4027,8 @@ export function App() {
     if (threadRootEventId) {
       void (async () => {
         setPrimaryView("timeline");
-        setSnapshot(await api.selectRoom(roomId));
+        if (!(await drainActiveComposerScopesForNavigation(true, true))) return;
+        await selectRoom(roomId);
         await openThread(roomId, threadRootEventId);
       })();
       return;
@@ -3723,7 +4053,7 @@ export function App() {
       return;
     }
 
-    setSnapshot(await api.selectRoom(roomId));
+    await selectRoom(roomId);
   }
 
   function selectSearchResult(roomId: string, eventId: string) {
@@ -4168,9 +4498,7 @@ export function App() {
           <TimelinePane
             activeRoomName={activeRoom?.display_label ?? t("room.noRoomSelected")}
             composerDraft={composerDraft}
-            composerDraftKey={`${timelineRoomId ?? "no-room"}\u0000${
-              timelineRoomId ? (localComposerDraftClearEpochs[timelineRoomId] ?? 0) : 0
-            }`}
+            composerDraftKey={mainComposerDraftImeKey}
             composerMode={composerModeProp(snapshot.state.ui.timeline.composer.mode)}
             mentionIntent={composerMentions}
             resolveComposerKeyAction={resolveComposerKeyAction}
@@ -4387,8 +4715,8 @@ export function App() {
           onThreadComposerDraftChange={(roomId, rootEventId, draft) => {
             updateThreadComposerDraft(roomId, rootEventId, draft);
           }}
-          threadComposerDraftClearEpochs={threadComposerDraftClearEpochs}
-          threadComposerDraftOverrides={localThreadComposerDrafts}
+          threadComposerDraftImeKey={threadComposerDraftImeKey}
+          threadComposerDraftOverride={threadComposerDraftOverride}
           threadComposerMentionIntents={threadComposerMentions}
           onThreadMentionIntentChange={(roomId, rootEventId, mentions) => {
             updateThreadComposerMentions(roomId, rootEventId, mentions);

@@ -51,6 +51,7 @@ use koushi_core::command::{
     SearchCommand, SearchScope, SyncCommand, TimelineCommand, UploadMediaKind, UploadMediaRequest,
     UploadMediaThumbnail,
 };
+use koushi_core::composer_draft_lifecycle::ComposerDraftScope;
 use koushi_core::event::{
     AccountEvent, ActivityEvent, CoreEvent, E2eeTrustEvent, LinkPreviewState, LiveSignalsEvent,
     LocalEncryptionEvent, PaginationDirection, PaginationState, RoomEvent, SearchEvent,
@@ -65,21 +66,21 @@ use koushi_state::{
     ActivityMarkReadTarget, ActivityRowKind, ActivityState, AppAction, AppState, AuthSecret,
     ComposerKey, ComposerKeyEvent, ComposerKeyModifiers, ComposerResolvedAction,
     ComposerResolverContext, ComposerSelection, ComposerSendShortcut, ComposerSurface,
-    DirectoryQuery, DirectoryRoomSummary, DisplaySettings, IdentityResetAuthRequest,
-    IdentityResetAuthType, IdentityResetState, ImageUploadCompressionMode, KeyBackupStatus,
-    LocalEncryptionHealth, LocalEncryptionState, MentionIntent, MentionTarget,
-    NativeAttentionCapabilities, NativeAttentionCapability, NativeAttentionDispatchState,
-    NativeAttentionObservationKind, NativeAttentionProjectionInput, NativeAttentionState,
-    NativeAttentionSuppressionReason, OperationFailureKind, PresenceKind, RecoveryRequest,
-    ReplyQuoteState, RoomAttentionKind, RoomListFilter, RoomManagementOperationKind,
-    RoomManagementOperationState, RoomModerationAction, RoomNotificationMode, RoomSettingChange,
-    RoomSettingsSnapshot, RoomSummary, RoomTags, SasEmoji, ScheduledSendCapability,
-    SearchCrawlerFailureKind, SearchCrawlerRoomState, SearchCrawlerSettings, SearchCrawlerSpeed,
-    SessionInfo, SessionState, SettingsPatch, SettingsPersistenceState,
-    StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind, TimelineMediaGalleryItem,
-    TimelineMediaGalleryMedia, TimelineMediaGallerySource, TimelineMediaKind,
-    VerificationFlowState, VerificationTarget, build_formatted_message_draft, compose_sidebar,
-    native_attention_state_from_rooms, reduce, resolve_composer_key_action,
+    ComposerTarget, DirectoryQuery, DirectoryRoomSummary, DisplaySettings,
+    IdentityResetAuthRequest, IdentityResetAuthType, IdentityResetState,
+    ImageUploadCompressionMode, KeyBackupStatus, LocalEncryptionHealth, LocalEncryptionState,
+    MentionIntent, MentionTarget, NativeAttentionCapabilities, NativeAttentionCapability,
+    NativeAttentionDispatchState, NativeAttentionObservationKind, NativeAttentionProjectionInput,
+    NativeAttentionState, NativeAttentionSuppressionReason, OperationFailureKind, PresenceKind,
+    RecoveryRequest, ReplyQuoteState, RoomAttentionKind, RoomListFilter,
+    RoomManagementOperationKind, RoomManagementOperationState, RoomModerationAction,
+    RoomNotificationMode, RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTags, SasEmoji,
+    ScheduledSendCapability, SearchCrawlerFailureKind, SearchCrawlerRoomState,
+    SearchCrawlerSettings, SearchCrawlerSpeed, SessionInfo, SessionState, SettingsPatch,
+    SettingsPersistenceState, StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind,
+    TimelineMediaGalleryItem, TimelineMediaGalleryMedia, TimelineMediaGallerySource,
+    TimelineMediaKind, VerificationFlowState, VerificationTarget, build_formatted_message_draft,
+    compose_sidebar, native_attention_state_from_rooms, reduce, resolve_composer_key_action,
 };
 
 const ENV_HOMESERVER: &str = "KOUSHI_LOCAL_QA_HOMESERVER";
@@ -3075,18 +3076,37 @@ async fn run_scheduled_send_stage(
     .map_err(|e| format!("scheduled_send: submit room select failed: {e}"))?;
     wait_for_selected_room(conn, room_id, "scheduled_send selected room").await?;
 
+    let composer_generation = conn
+        .begin_composer_draft_renderer_generation()
+        .map_err(|error| format!("scheduled_send: begin composer renderer failed: {error:?}"))?;
+    let composer_scope = ComposerDraftScope {
+        account: expected_account.clone(),
+        target: ComposerTarget::Main {
+            room_id: room_id.to_owned(),
+        },
+    };
+    let create_lease = conn
+        .acquire_composer_draft_lease(composer_generation, composer_scope.clone())
+        .map_err(|error| format!("scheduled_send: acquire create lease failed: {error:?}"))?;
     let create_id = conn.next_request_id();
-    conn.command(CoreCommand::App(AppCommand::ScheduleSend {
-        request_id: create_id,
-        expected_account: expected_account.clone(),
-        room_id: room_id.to_owned(),
-        thread_root_event_id: None,
-        body: SCHEDULED_CREATE_BODY.to_owned(),
-        send_at_ms: scheduled_qa_epoch_ms(Duration::from_secs(300)),
-        draft_revision: 0,
-    }))
-    .await
-    .map_err(|e| format!("scheduled_send: submit create failed: {e}"))?;
+    let create_result = conn
+        .command_with_composer_lease(
+            composer_generation,
+            create_lease,
+            CoreCommand::App(AppCommand::ScheduleSend {
+                request_id: create_id,
+                expected_account: expected_account.clone(),
+                room_id: room_id.to_owned(),
+                thread_root_event_id: None,
+                body: SCHEDULED_CREATE_BODY.to_owned(),
+                send_at_ms: scheduled_qa_epoch_ms(Duration::from_secs(300)),
+                draft_revision: 0.into(),
+            }),
+        )
+        .await;
+    conn.release_composer_draft_lease(composer_generation, create_lease)
+        .map_err(|error| format!("scheduled_send: release create lease failed: {error:?}"))?;
+    create_result.map_err(|error| format!("scheduled_send: submit create failed: {error}"))?;
 
     let created = wait_for_scheduled_send_count(conn, 1, "scheduled_send create").await?;
     if created.timeline.scheduled_send_capability != ScheduledSendCapability::LocalFallback {
@@ -3132,18 +3152,28 @@ async fn run_scheduled_send_stage(
     wait_for_scheduled_send_count(conn, 0, "scheduled_send cancel").await?;
     println!("scheduled_cancel=ok");
 
+    let fire_lease = conn
+        .acquire_composer_draft_lease(composer_generation, composer_scope)
+        .map_err(|error| format!("scheduled_send: acquire fire lease failed: {error:?}"))?;
     let fire_id = conn.next_request_id();
-    conn.command(CoreCommand::App(AppCommand::ScheduleSend {
-        request_id: fire_id,
-        expected_account,
-        room_id: room_id.to_owned(),
-        thread_root_event_id: None,
-        body: SCHEDULED_FIRE_BODY.to_owned(),
-        send_at_ms: scheduled_qa_epoch_ms(Duration::from_millis(250)),
-        draft_revision: 0,
-    }))
-    .await
-    .map_err(|e| format!("scheduled_send: submit fire schedule failed: {e}"))?;
+    let fire_result = conn
+        .command_with_composer_lease(
+            composer_generation,
+            fire_lease,
+            CoreCommand::App(AppCommand::ScheduleSend {
+                request_id: fire_id,
+                expected_account,
+                room_id: room_id.to_owned(),
+                thread_root_event_id: None,
+                body: SCHEDULED_FIRE_BODY.to_owned(),
+                send_at_ms: scheduled_qa_epoch_ms(Duration::from_millis(250)),
+                draft_revision: 0.into(),
+            }),
+        )
+        .await;
+    conn.release_composer_draft_lease(composer_generation, fire_lease)
+        .map_err(|error| format!("scheduled_send: release fire lease failed: {error:?}"))?;
+    fire_result.map_err(|error| format!("scheduled_send: submit fire schedule failed: {error}"))?;
     let fire_created = wait_for_scheduled_send_count(conn, 1, "scheduled_send fire create").await?;
     let fire_scheduled_id = fire_created
         .timeline

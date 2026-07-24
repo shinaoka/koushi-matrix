@@ -1,4 +1,4 @@
-use crate::SubmissionId;
+use crate::{ComposerDraftRevision, SubmissionId};
 use crate::{
     effect::{AppEffect, UiEvent},
     state::{
@@ -285,7 +285,7 @@ pub(crate) fn handle_scheduled_send_created(
 pub(crate) fn handle_scheduled_send_created_at_revision(
     state: &mut AppState,
     item: crate::state::ScheduledSendItem,
-    draft_revision: u64,
+    draft_revision: ComposerDraftRevision,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) || !room_exists(state, &item.room_id) {
         return Vec::new();
@@ -295,13 +295,21 @@ pub(crate) fn handle_scheduled_send_created_at_revision(
     let thread_root_event_id = item.thread_root_event_id.clone();
     state.scheduled_sends.insert(item);
     if let Some(root_event_id) = thread_root_event_id.as_deref() {
-        state
+        if state
             .composer_drafts
-            .advance_thread_revision(&room_id, root_event_id, draft_revision);
+            .advance_thread_revision(&room_id, root_event_id, draft_revision)
+            .is_err()
+        {
+            return Vec::new();
+        }
     } else {
-        state
+        if state
             .composer_drafts
-            .advance_room_revision(&room_id, draft_revision);
+            .advance_room_revision(&room_id, draft_revision)
+            .is_err()
+        {
+            return Vec::new();
+        }
     }
     if thread_root_event_id.is_none() && state.timeline.room_id.as_deref() == Some(room_id.as_str())
     {
@@ -584,16 +592,18 @@ pub(crate) fn handle_composer_draft_changed(
     state: &mut AppState,
     room_id: String,
     draft: String,
-    revision: u64,
+    revision: ComposerDraftRevision,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) || !state.rooms.iter().any(|room| room.room_id == room_id) {
         return Vec::new();
     }
 
-    if !state
-        .composer_drafts
-        .apply_room_draft(room_id.clone(), draft.clone(), revision)
-    {
+    if !matches!(
+        state
+            .composer_drafts
+            .apply_room_draft(room_id.clone(), draft.clone(), revision),
+        Ok(true)
+    ) {
         return Vec::new();
     }
     if state.timeline.room_id.as_deref() == Some(room_id.as_str()) {
@@ -608,7 +618,7 @@ pub(crate) fn handle_composer_draft_changed(
 pub(crate) fn handle_composer_draft_accepted(
     state: &mut AppState,
     target: crate::ComposerTarget,
-    submitted_revision: u64,
+    submitted_revision: ComposerDraftRevision,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
         return Vec::new();
@@ -618,9 +628,13 @@ pub(crate) fn handle_composer_draft_accepted(
             if !room_exists(state, &room_id) {
                 return Vec::new();
             }
-            state
+            if state
                 .composer_drafts
-                .advance_room_revision(&room_id, submitted_revision);
+                .advance_room_revision(&room_id, submitted_revision)
+                .is_err()
+            {
+                return Vec::new();
+            }
             if state.timeline.room_id.as_deref() != Some(room_id.as_str()) {
                 return Vec::new();
             }
@@ -634,11 +648,13 @@ pub(crate) fn handle_composer_draft_accepted(
             if !room_exists(state, &room_id) {
                 return Vec::new();
             }
-            state.composer_drafts.advance_thread_revision(
-                &room_id,
-                &root_event_id,
-                submitted_revision,
-            );
+            if state
+                .composer_drafts
+                .advance_thread_revision(&room_id, &root_event_id, submitted_revision)
+                .is_err()
+            {
+                return Vec::new();
+            }
             if let crate::state::ThreadPaneState::Open {
                 room_id: open_room_id,
                 root_event_id: open_root_event_id,
@@ -663,7 +679,7 @@ pub(crate) fn handle_send_text_submitted(
     room_id: String,
     transaction_id: String,
     body: String,
-    draft_revision: u64,
+    draft_revision: ComposerDraftRevision,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state)
         || state.timeline.room_id.as_deref() != Some(room_id.as_str())
@@ -681,9 +697,12 @@ pub(crate) fn handle_send_text_submitted(
             in_reply_to_event_id: in_reply_to_event_id.clone(),
         },
     });
-    let accepted_revision = state
+    let Ok(accepted_revision) = state
         .composer_drafts
-        .advance_room_revision(&room_id, draft_revision);
+        .advance_room_revision(&room_id, draft_revision)
+    else {
+        return Vec::new();
+    };
     let accepted_composer = state.composer_drafts.composer_for_room(&room_id);
     state.timeline.composer.draft = accepted_composer.draft;
     state.timeline.composer.draft_revision = accepted_revision;
@@ -703,7 +722,7 @@ pub(crate) fn handle_composer_submission_accepted(
     room_id: String,
     transaction_id: String,
     body: String,
-    draft_revision: u64,
+    draft_revision: ComposerDraftRevision,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
         return Vec::new();
@@ -728,9 +747,12 @@ pub(crate) fn handle_composer_submission_accepted(
             room_id: room_id.clone(),
         },
     );
-    let accepted_revision = state
+    let Ok(accepted_revision) = state
         .composer_drafts
-        .advance_room_revision(&room_id, draft_revision);
+        .advance_room_revision(&room_id, draft_revision)
+    else {
+        return Vec::new();
+    };
     if state.timeline.room_id.as_deref() != Some(room_id.as_str())
         || state.timeline.composer.pending_submission_id.is_some()
         || state.timeline.composer.pending_transaction_id.is_some()

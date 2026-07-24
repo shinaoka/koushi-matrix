@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fmt,
 };
 
@@ -7,7 +7,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::composer_shortcuts::FormattedMessageDraft;
 use crate::submission::{ComposerSubmissionTarget, ComposerTarget, SubmissionId};
+use crate::{ComposerDraftRevision, ComposerDraftRevisionError};
 
+use super::composer_draft::{
+    ComposerDraftProtection, MAX_LIVE_COMPOSER_ROOM_TOMBSTONES, MAX_LIVE_COMPOSER_THREAD_TOMBSTONES,
+};
 use super::media_download::TimelineMediaDownloadState;
 use super::settings::ImageUploadCompressionMode;
 
@@ -742,6 +746,28 @@ impl fmt::Debug for ScheduledSendStore {
     }
 }
 
+#[derive(Clone, Eq, PartialEq)]
+pub struct ComposerDraftPersistenceEntry {
+    pub content: Option<String>,
+    pub revision: ComposerDraftRevision,
+    pub last_accepted_clear_revision: ComposerDraftRevision,
+}
+
+#[derive(Clone, Default, Eq, PartialEq)]
+pub struct ComposerDraftPersistenceProjection {
+    pub rooms: BTreeMap<String, ComposerDraftPersistenceEntry>,
+    pub threads: BTreeMap<String, BTreeMap<String, ComposerDraftPersistenceEntry>>,
+    pub quiescent_room_order: Vec<String>,
+    pub quiescent_thread_order: Vec<(String, String)>,
+    pub protected_empty_rooms: Vec<String>,
+    pub protected_empty_threads: Vec<(String, String)>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ComposerDraftPersistenceImportError {
+    InvalidProjection,
+}
+
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ComposerDraftStore {
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -751,10 +777,24 @@ pub struct ComposerDraftStore {
     /// Monotonic causal fences. Empty-draft entries are retained so an accepted
     /// send remains newer than a delayed pre-acceptance write.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub room_revisions: std::collections::BTreeMap<String, u64>,
+    pub room_revisions: std::collections::BTreeMap<String, ComposerDraftRevision>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub thread_revisions:
-        std::collections::BTreeMap<String, std::collections::BTreeMap<String, u64>>,
+    pub thread_revisions: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, ComposerDraftRevision>,
+    >,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub room_last_accepted_clear_revisions:
+        std::collections::BTreeMap<String, ComposerDraftRevision>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub thread_last_accepted_clear_revisions: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, ComposerDraftRevision>,
+    >,
+    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
+    quiescent_room_lru: VecDeque<String>,
+    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
+    quiescent_thread_lru: VecDeque<(String, String)>,
 }
 
 pub const MAX_PERSISTED_COMPOSER_DRAFT_BYTES: usize = 16 * 1024;
@@ -767,6 +807,10 @@ impl ComposerDraftStore {
             && self.threads.is_empty()
             && self.room_revisions.is_empty()
             && self.thread_revisions.is_empty()
+            && self.room_last_accepted_clear_revisions.is_empty()
+            && self.thread_last_accepted_clear_revisions.is_empty()
+            && self.quiescent_room_lru.is_empty()
+            && self.quiescent_thread_lru.is_empty()
     }
 
     pub fn composer_for_room(&self, room_id: &str) -> ComposerState {
@@ -775,47 +819,78 @@ impl ComposerDraftStore {
             composer.draft = draft.clone();
         }
         composer.draft_revision = self.room_revision(room_id);
+        composer.last_accepted_clear_revision = self
+            .room_last_accepted_clear_revisions
+            .get(room_id)
+            .copied()
+            .unwrap_or_default();
         composer
     }
 
     pub fn set_room_draft(&mut self, room_id: String, draft: String) {
-        let revision = self.room_revision(&room_id).saturating_add(1);
+        let Ok(revision) = ComposerDraftRevision::checked_successor(
+            self.room_revision(&room_id),
+            ComposerDraftRevision::ZERO,
+        ) else {
+            return;
+        };
         let _ = self.apply_room_draft(room_id, draft, revision);
     }
 
-    pub fn room_revision(&self, room_id: &str) -> u64 {
+    pub fn room_revision(&self, room_id: &str) -> ComposerDraftRevision {
         self.room_revisions
             .get(room_id)
             .copied()
             .unwrap_or_default()
     }
 
-    pub fn apply_room_draft(&mut self, room_id: String, draft: String, revision: u64) -> bool {
+    pub fn apply_room_draft(
+        &mut self,
+        room_id: String,
+        draft: String,
+        revision: ComposerDraftRevision,
+    ) -> Result<bool, ComposerDraftRevisionError> {
         if revision <= self.room_revision(&room_id) {
-            return false;
+            return Ok(false);
         }
         self.room_revisions.insert(room_id.clone(), revision);
         if draft.is_empty() {
             self.rooms.remove(&room_id);
+            self.touch_quiescent_room(&room_id);
         } else {
-            self.rooms.insert(room_id, draft);
+            self.rooms.insert(room_id.clone(), draft);
+            self.remove_room_from_lru(&room_id);
         }
-        true
+        Ok(true)
     }
 
-    pub fn advance_room_revision(&mut self, room_id: &str, submitted_revision: u64) -> u64 {
+    pub fn advance_room_revision(
+        &mut self,
+        room_id: &str,
+        submitted_revision: ComposerDraftRevision,
+    ) -> Result<ComposerDraftRevision, ComposerDraftRevisionError> {
         let current_revision = self.room_revision(room_id);
-        let revision = current_revision.max(submitted_revision).saturating_add(1);
-        self.room_revisions.insert(room_id.to_owned(), revision);
+        let revision =
+            ComposerDraftRevision::checked_successor(current_revision, submitted_revision)?;
         if current_revision <= submitted_revision {
             self.rooms.remove(room_id);
+            self.room_last_accepted_clear_revisions
+                .insert(room_id.to_owned(), revision);
         }
-        revision
+        self.room_revisions.insert(room_id.to_owned(), revision);
+        if self.rooms.contains_key(room_id) {
+            self.remove_room_from_lru(room_id);
+        } else {
+            self.touch_quiescent_room(room_id);
+        }
+        Ok(revision)
     }
 
     pub fn clear_room_draft(&mut self, room_id: &str) {
         self.rooms.remove(room_id);
         self.room_revisions.remove(room_id);
+        self.room_last_accepted_clear_revisions.remove(room_id);
+        self.remove_room_from_lru(room_id);
     }
 
     pub fn composer_for_thread(&self, room_id: &str, root_event_id: &str) -> ComposerState {
@@ -828,17 +903,26 @@ impl ComposerDraftStore {
             composer.draft = draft.clone();
         }
         composer.draft_revision = self.thread_revision(room_id, root_event_id);
+        composer.last_accepted_clear_revision = self
+            .thread_last_accepted_clear_revisions
+            .get(room_id)
+            .and_then(|room_threads| room_threads.get(root_event_id))
+            .copied()
+            .unwrap_or_default();
         composer
     }
 
     pub fn set_thread_draft(&mut self, room_id: String, root_event_id: String, draft: String) {
-        let revision = self
-            .thread_revision(&room_id, &root_event_id)
-            .saturating_add(1);
+        let Ok(revision) = ComposerDraftRevision::checked_successor(
+            self.thread_revision(&room_id, &root_event_id),
+            ComposerDraftRevision::ZERO,
+        ) else {
+            return;
+        };
         let _ = self.apply_thread_draft(room_id, root_event_id, draft, revision);
     }
 
-    pub fn thread_revision(&self, room_id: &str, root_event_id: &str) -> u64 {
+    pub fn thread_revision(&self, room_id: &str, root_event_id: &str) -> ComposerDraftRevision {
         self.thread_revisions
             .get(room_id)
             .and_then(|room_threads| room_threads.get(root_event_id))
@@ -851,10 +935,10 @@ impl ComposerDraftStore {
         room_id: String,
         root_event_id: String,
         draft: String,
-        revision: u64,
-    ) -> bool {
+        revision: ComposerDraftRevision,
+    ) -> Result<bool, ComposerDraftRevisionError> {
         if revision <= self.thread_revision(&room_id, &root_event_id) {
-            return false;
+            return Ok(false);
         }
         self.thread_revisions
             .entry(room_id.clone())
@@ -862,31 +946,47 @@ impl ComposerDraftStore {
             .insert(root_event_id.clone(), revision);
         if draft.is_empty() {
             self.remove_thread_content(&room_id, &root_event_id);
+            self.touch_quiescent_thread(&room_id, &root_event_id);
         } else {
             self.threads
-                .entry(room_id)
+                .entry(room_id.clone())
                 .or_default()
-                .insert(root_event_id, draft);
+                .insert(root_event_id.clone(), draft);
+            self.remove_thread_from_lru(&room_id, &root_event_id);
         }
-        true
+        Ok(true)
     }
 
     pub fn advance_thread_revision(
         &mut self,
         room_id: &str,
         root_event_id: &str,
-        submitted_revision: u64,
-    ) -> u64 {
+        submitted_revision: ComposerDraftRevision,
+    ) -> Result<ComposerDraftRevision, ComposerDraftRevisionError> {
         let current_revision = self.thread_revision(room_id, root_event_id);
-        let revision = current_revision.max(submitted_revision).saturating_add(1);
+        let revision =
+            ComposerDraftRevision::checked_successor(current_revision, submitted_revision)?;
+        if current_revision <= submitted_revision {
+            self.remove_thread_content(room_id, root_event_id);
+            self.thread_last_accepted_clear_revisions
+                .entry(room_id.to_owned())
+                .or_default()
+                .insert(root_event_id.to_owned(), revision);
+        }
         self.thread_revisions
             .entry(room_id.to_owned())
             .or_default()
             .insert(root_event_id.to_owned(), revision);
-        if current_revision <= submitted_revision {
-            self.remove_thread_content(room_id, root_event_id);
+        if self
+            .threads
+            .get(room_id)
+            .is_some_and(|threads| threads.contains_key(root_event_id))
+        {
+            self.remove_thread_from_lru(room_id, root_event_id);
+        } else {
+            self.touch_quiescent_thread(room_id, root_event_id);
         }
-        revision
+        Ok(revision)
     }
 
     pub fn clear_thread_draft(&mut self, room_id: &str, root_event_id: &str) {
@@ -901,6 +1001,18 @@ impl ComposerDraftStore {
         if should_remove_room {
             self.thread_revisions.remove(room_id);
         }
+        let should_remove_clear_room = if let Some(room_threads) =
+            self.thread_last_accepted_clear_revisions.get_mut(room_id)
+        {
+            room_threads.remove(root_event_id);
+            room_threads.is_empty()
+        } else {
+            false
+        };
+        if should_remove_clear_room {
+            self.thread_last_accepted_clear_revisions.remove(room_id);
+        }
+        self.remove_thread_from_lru(room_id, root_event_id);
     }
 
     fn remove_thread_content(&mut self, room_id: &str, root_event_id: &str) {
@@ -915,6 +1027,204 @@ impl ComposerDraftStore {
         }
     }
 
+    pub fn reconcile_lifecycle(&mut self, protection: &ComposerDraftProtection) {
+        self.quiescent_room_lru.retain(|room_id| {
+            self.room_revisions.contains_key(room_id)
+                && !self.rooms.contains_key(room_id)
+                && !target_is_touch_protected(
+                    protection,
+                    &ComposerTarget::Main {
+                        room_id: room_id.clone(),
+                    },
+                )
+        });
+        self.quiescent_thread_lru
+            .retain(|(room_id, root_event_id)| {
+                self.thread_revisions
+                    .get(room_id)
+                    .is_some_and(|revisions| revisions.contains_key(root_event_id))
+                    && !self
+                        .threads
+                        .get(room_id)
+                        .is_some_and(|threads| threads.contains_key(root_event_id))
+                    && !target_is_touch_protected(
+                        protection,
+                        &ComposerTarget::Thread {
+                            room_id: room_id.clone(),
+                            root_event_id: root_event_id.clone(),
+                        },
+                    )
+            });
+
+        let missing_rooms = self
+            .room_revisions
+            .keys()
+            .filter(|room_id| {
+                !self.rooms.contains_key(*room_id)
+                    && !self.quiescent_room_lru.contains(*room_id)
+                    && !target_is_touch_protected(
+                        protection,
+                        &ComposerTarget::Main {
+                            room_id: (*room_id).clone(),
+                        },
+                    )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        self.quiescent_room_lru.extend(missing_rooms);
+
+        let missing_threads = self
+            .thread_revisions
+            .iter()
+            .flat_map(|(room_id, revisions)| {
+                revisions
+                    .keys()
+                    .map(|root_event_id| (room_id.clone(), root_event_id.clone()))
+            })
+            .filter(|(room_id, root_event_id)| {
+                !self
+                    .threads
+                    .get(room_id)
+                    .is_some_and(|threads| threads.contains_key(root_event_id))
+                    && !self
+                        .quiescent_thread_lru
+                        .contains(&(room_id.clone(), root_event_id.clone()))
+                    && !target_is_touch_protected(
+                        protection,
+                        &ComposerTarget::Thread {
+                            room_id: room_id.clone(),
+                            root_event_id: root_event_id.clone(),
+                        },
+                    )
+            })
+            .collect::<Vec<_>>();
+        self.quiescent_thread_lru.extend(missing_threads);
+
+        while self
+            .quiescent_room_lru
+            .iter()
+            .filter(|room_id| {
+                !target_is_protected(
+                    protection,
+                    &ComposerTarget::Main {
+                        room_id: (*room_id).clone(),
+                    },
+                )
+            })
+            .count()
+            > MAX_LIVE_COMPOSER_ROOM_TOMBSTONES
+        {
+            let Some(index) = self.quiescent_room_lru.iter().position(|room_id| {
+                !target_is_protected(
+                    protection,
+                    &ComposerTarget::Main {
+                        room_id: room_id.clone(),
+                    },
+                )
+            }) else {
+                break;
+            };
+            let Some(room_id) = self.quiescent_room_lru.remove(index) else {
+                break;
+            };
+            if !self.rooms.contains_key(&room_id) {
+                self.room_revisions.remove(&room_id);
+                self.room_last_accepted_clear_revisions.remove(&room_id);
+            }
+        }
+        while self
+            .quiescent_thread_lru
+            .iter()
+            .filter(|(room_id, root_event_id)| {
+                !target_is_protected(
+                    protection,
+                    &ComposerTarget::Thread {
+                        room_id: room_id.clone(),
+                        root_event_id: root_event_id.clone(),
+                    },
+                )
+            })
+            .count()
+            > MAX_LIVE_COMPOSER_THREAD_TOMBSTONES
+        {
+            let Some(index) =
+                self.quiescent_thread_lru
+                    .iter()
+                    .position(|(room_id, root_event_id)| {
+                        !target_is_protected(
+                            protection,
+                            &ComposerTarget::Thread {
+                                room_id: room_id.clone(),
+                                root_event_id: root_event_id.clone(),
+                            },
+                        )
+                    })
+            else {
+                break;
+            };
+            let Some((room_id, root_event_id)) = self.quiescent_thread_lru.remove(index) else {
+                break;
+            };
+            if !self
+                .threads
+                .get(&room_id)
+                .is_some_and(|threads| threads.contains_key(&root_event_id))
+            {
+                remove_nested_entry(&mut self.thread_revisions, &room_id, &root_event_id);
+                remove_nested_entry(
+                    &mut self.thread_last_accepted_clear_revisions,
+                    &room_id,
+                    &root_event_id,
+                );
+            }
+        }
+    }
+
+    pub fn quiescent_room_tombstone_count(&self) -> usize {
+        self.room_revisions
+            .keys()
+            .filter(|room_id| !self.rooms.contains_key(*room_id))
+            .count()
+    }
+
+    pub fn quiescent_thread_tombstone_count(&self) -> usize {
+        self.thread_revisions
+            .iter()
+            .map(|(room_id, revisions)| {
+                revisions
+                    .keys()
+                    .filter(|root_event_id| {
+                        !self
+                            .threads
+                            .get(room_id)
+                            .is_some_and(|threads| threads.contains_key(*root_event_id))
+                    })
+                    .count()
+            })
+            .sum()
+    }
+
+    fn touch_quiescent_room(&mut self, room_id: &str) {
+        self.remove_room_from_lru(room_id);
+        self.quiescent_room_lru.push_back(room_id.to_owned());
+    }
+
+    fn remove_room_from_lru(&mut self, room_id: &str) {
+        self.quiescent_room_lru
+            .retain(|candidate| candidate != room_id);
+    }
+
+    fn touch_quiescent_thread(&mut self, room_id: &str, root_event_id: &str) {
+        self.remove_thread_from_lru(room_id, root_event_id);
+        self.quiescent_thread_lru
+            .push_back((room_id.to_owned(), root_event_id.to_owned()));
+    }
+
+    fn remove_thread_from_lru(&mut self, room_id: &str, root_event_id: &str) {
+        self.quiescent_thread_lru
+            .retain(|candidate| candidate != &(room_id.to_owned(), root_event_id.to_owned()));
+    }
+
     pub fn retain_rooms(&mut self, room_ids: &BTreeSet<String>) {
         self.rooms.retain(|room_id, _| room_ids.contains(room_id));
         self.threads
@@ -923,103 +1233,450 @@ impl ComposerDraftStore {
             .retain(|room_id, _| room_ids.contains(room_id));
         self.thread_revisions
             .retain(|room_id, revisions| room_ids.contains(room_id) && !revisions.is_empty());
+        self.room_last_accepted_clear_revisions
+            .retain(|room_id, _| room_ids.contains(room_id));
+        self.thread_last_accepted_clear_revisions
+            .retain(|room_id, revisions| room_ids.contains(room_id) && !revisions.is_empty());
+        self.quiescent_room_lru
+            .retain(|room_id| room_ids.contains(room_id));
+        self.quiescent_thread_lru
+            .retain(|(room_id, _)| room_ids.contains(room_id));
     }
 
-    pub fn bounded_for_persistence(&self) -> Self {
-        let mut room_ids = self
+    pub fn persisted_projection(
+        &self,
+        protection: &ComposerDraftProtection,
+    ) -> ComposerDraftPersistenceProjection {
+        let touch_protected_targets = protection
+            .active
+            .iter()
+            .chain(&protection.leased)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let protected_rooms = touch_protected_targets
+            .iter()
+            .filter_map(|target| match target {
+                ComposerTarget::Main { room_id } => Some(room_id.clone()),
+                ComposerTarget::Thread { .. } => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let protected_threads = touch_protected_targets
+            .iter()
+            .filter_map(|target| match target {
+                ComposerTarget::Main { .. } => None,
+                ComposerTarget::Thread {
+                    room_id,
+                    root_event_id,
+                } => Some((room_id.clone(), root_event_id.clone())),
+            })
+            .collect::<BTreeSet<_>>();
+        let store_pending_rooms = protection
+            .store_pending
+            .iter()
+            .filter_map(|target| match target {
+                ComposerTarget::Main { room_id } => Some(room_id.clone()),
+                ComposerTarget::Thread { .. } => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let store_pending_threads = protection
+            .store_pending
+            .iter()
+            .filter_map(|target| match target {
+                ComposerTarget::Main { .. } => None,
+                ComposerTarget::Thread {
+                    room_id,
+                    root_event_id,
+                } => Some((room_id.clone(), root_event_id.clone())),
+            })
+            .collect::<BTreeSet<_>>();
+
+        let all_room_ids = self
             .rooms
             .keys()
+            .chain(self.room_revisions.keys())
+            .chain(self.room_last_accepted_clear_revisions.keys())
             .cloned()
-            .take(MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT)
-            .collect::<Vec<_>>();
-        if room_ids.len() < MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT {
-            let content_room_ids = room_ids.iter().cloned().collect::<BTreeSet<_>>();
-            room_ids.extend(
-                self.room_revisions
-                    .keys()
-                    .filter(|room_id| !content_room_ids.contains(*room_id))
-                    .take(MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT - room_ids.len())
-                    .cloned(),
-            );
+            .chain(protected_rooms.iter().cloned())
+            .chain(store_pending_rooms.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        let room_entry = |room_id: &str| ComposerDraftPersistenceEntry {
+            content: self
+                .rooms
+                .get(room_id)
+                .filter(|content| !content.is_empty())
+                .map(|content| truncate_utf8_bytes(content, MAX_PERSISTED_COMPOSER_DRAFT_BYTES)),
+            revision: self.room_revision(room_id),
+            last_accepted_clear_revision: self
+                .room_last_accepted_clear_revisions
+                .get(room_id)
+                .copied()
+                .unwrap_or_default(),
+        };
+        let room_has_content = |room_id: &str| {
+            self.rooms
+                .get(room_id)
+                .is_some_and(|content| !content.is_empty())
+        };
+        let mut quiescent_room_order = Vec::new();
+        let mut seen_rooms = BTreeSet::new();
+        for room_id in &self.quiescent_room_lru {
+            if all_room_ids.contains(room_id)
+                && !room_has_content(room_id)
+                && !protected_rooms.contains(room_id)
+                && seen_rooms.insert(room_id.clone())
+            {
+                quiescent_room_order.push(room_id.clone());
+            }
         }
-        let rooms = room_ids
+        for room_id in &all_room_ids {
+            if !room_has_content(room_id)
+                && !protected_rooms.contains(room_id)
+                && seen_rooms.insert(room_id.clone())
+            {
+                quiescent_room_order.push(room_id.clone());
+            }
+        }
+        retain_newest_eligible(
+            &mut quiescent_room_order,
+            MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT,
+            |room_id| store_pending_rooms.contains(room_id),
+        );
+        let protected_empty_rooms = protected_rooms
             .iter()
-            .filter_map(|room_id| {
-                self.rooms.get(room_id).map(|draft| {
-                    (
-                        room_id.clone(),
-                        truncate_utf8_bytes(draft, MAX_PERSISTED_COMPOSER_DRAFT_BYTES),
-                    )
-                })
-            })
-            .collect();
-        let room_revisions = room_ids
+            .filter(|room_id| !room_has_content(room_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let retained_rooms = self
+            .rooms
             .iter()
-            .filter_map(|room_id| {
-                self.room_revisions
-                    .get(room_id)
-                    .map(|revision| (room_id.clone(), *revision))
+            .filter_map(|(room_id, content)| (!content.is_empty()).then(|| room_id.clone()))
+            .chain(quiescent_room_order.iter().cloned())
+            .chain(protected_empty_rooms.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        let rooms = retained_rooms
+            .into_iter()
+            .map(|room_id| {
+                let entry = room_entry(&room_id);
+                (room_id, entry)
             })
             .collect();
 
-        let mut thread_targets = self
+        let all_thread_targets = self
             .threads
             .iter()
-            .flat_map(|(room_id, room_threads)| {
-                room_threads
+            .flat_map(|(room_id, threads)| {
+                threads
                     .keys()
                     .map(|root_event_id| (room_id.clone(), root_event_id.clone()))
             })
-            .take(MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT)
-            .collect::<Vec<_>>();
-        if thread_targets.len() < MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT {
-            let content_thread_targets = thread_targets.iter().cloned().collect::<BTreeSet<_>>();
-            thread_targets.extend(
+            .chain(
                 self.thread_revisions
                     .iter()
-                    .flat_map(|(room_id, room_threads)| {
-                        room_threads
+                    .flat_map(|(room_id, revisions)| {
+                        revisions
                             .keys()
                             .map(|root_event_id| (room_id.clone(), root_event_id.clone()))
-                    })
-                    .filter(|target| !content_thread_targets.contains(target))
-                    .take(MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT - thread_targets.len()),
+                    }),
+            )
+            .chain(self.thread_last_accepted_clear_revisions.iter().flat_map(
+                |(room_id, revisions)| {
+                    revisions
+                        .keys()
+                        .map(|root_event_id| (room_id.clone(), root_event_id.clone()))
+                },
+            ))
+            .chain(protected_threads.iter().cloned())
+            .chain(store_pending_threads.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        let thread_has_content = |room_id: &str, root_event_id: &str| {
+            self.threads
+                .get(room_id)
+                .and_then(|threads| threads.get(root_event_id))
+                .is_some_and(|content| !content.is_empty())
+        };
+        let thread_entry = |room_id: &str, root_event_id: &str| ComposerDraftPersistenceEntry {
+            content: self
+                .threads
+                .get(room_id)
+                .and_then(|threads| threads.get(root_event_id))
+                .filter(|content| !content.is_empty())
+                .map(|content| truncate_utf8_bytes(content, MAX_PERSISTED_COMPOSER_DRAFT_BYTES)),
+            revision: self.thread_revision(room_id, root_event_id),
+            last_accepted_clear_revision: self
+                .thread_last_accepted_clear_revisions
+                .get(room_id)
+                .and_then(|threads| threads.get(root_event_id))
+                .copied()
+                .unwrap_or_default(),
+        };
+        let mut quiescent_thread_order = Vec::new();
+        let mut seen_threads = BTreeSet::new();
+        for target @ (room_id, root_event_id) in &self.quiescent_thread_lru {
+            if all_thread_targets.contains(target)
+                && !thread_has_content(room_id, root_event_id)
+                && !protected_threads.contains(target)
+                && seen_threads.insert(target.clone())
+            {
+                quiescent_thread_order.push(target.clone());
+            }
+        }
+        for target @ (room_id, root_event_id) in &all_thread_targets {
+            if !thread_has_content(room_id, root_event_id)
+                && !protected_threads.contains(target)
+                && seen_threads.insert(target.clone())
+            {
+                quiescent_thread_order.push(target.clone());
+            }
+        }
+        retain_newest_eligible(
+            &mut quiescent_thread_order,
+            MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT,
+            |target| store_pending_threads.contains(target),
+        );
+        let protected_empty_threads = protected_threads
+            .iter()
+            .filter(|(room_id, root_event_id)| !thread_has_content(room_id, root_event_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let retained_threads = self
+            .threads
+            .iter()
+            .flat_map(|(room_id, threads)| {
+                threads
+                    .iter()
+                    .filter(|(_, content)| !content.is_empty())
+                    .map(|(root_event_id, _)| (room_id.clone(), root_event_id.clone()))
+            })
+            .chain(quiescent_thread_order.iter().cloned())
+            .chain(protected_empty_threads.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        let mut threads = BTreeMap::<String, BTreeMap<String, _>>::new();
+        for (room_id, root_event_id) in retained_threads {
+            threads.entry(room_id.clone()).or_default().insert(
+                root_event_id.clone(),
+                thread_entry(&room_id, &root_event_id),
             );
         }
-        let mut threads = std::collections::BTreeMap::new();
-        let mut thread_revisions = std::collections::BTreeMap::new();
-        for (room_id, root_event_id) in thread_targets {
-            if let Some(draft) = self
-                .threads
-                .get(&room_id)
-                .and_then(|room_threads| room_threads.get(&root_event_id))
-            {
-                threads
-                    .entry(room_id.clone())
-                    .or_insert_with(std::collections::BTreeMap::new)
-                    .insert(
-                        root_event_id.clone(),
-                        truncate_utf8_bytes(draft, MAX_PERSISTED_COMPOSER_DRAFT_BYTES),
-                    );
-            }
-            if let Some(revision) = self
-                .thread_revisions
-                .get(&room_id)
-                .and_then(|room_threads| room_threads.get(&root_event_id))
-            {
-                thread_revisions
-                    .entry(room_id)
-                    .or_insert_with(std::collections::BTreeMap::new)
-                    .insert(root_event_id, *revision);
-            }
-        }
 
-        Self {
+        ComposerDraftPersistenceProjection {
             rooms,
             threads,
-            room_revisions,
-            thread_revisions,
+            quiescent_room_order,
+            quiescent_thread_order,
+            protected_empty_rooms,
+            protected_empty_threads,
         }
+    }
+
+    pub fn from_persisted_projection(
+        mut projection: ComposerDraftPersistenceProjection,
+    ) -> Result<Self, ComposerDraftPersistenceImportError> {
+        validate_persisted_projection(&projection)?;
+
+        projection.protected_empty_rooms.sort();
+        projection.protected_empty_threads.sort();
+        projection
+            .quiescent_room_order
+            .extend(projection.protected_empty_rooms);
+        projection
+            .quiescent_thread_order
+            .extend(projection.protected_empty_threads);
+        retain_newest(
+            &mut projection.quiescent_room_order,
+            MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT,
+        );
+        retain_newest(
+            &mut projection.quiescent_thread_order,
+            MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT,
+        );
+        let retained_empty_rooms = projection
+            .quiescent_room_order
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let retained_empty_threads = projection
+            .quiescent_thread_order
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+
+        let mut drafts = Self::default();
+        for (room_id, entry) in projection.rooms {
+            if let Some(content) = entry.content {
+                drafts.rooms.insert(
+                    room_id.clone(),
+                    truncate_utf8_bytes(&content, MAX_PERSISTED_COMPOSER_DRAFT_BYTES),
+                );
+            } else if !retained_empty_rooms.contains(&room_id) {
+                continue;
+            }
+            drafts
+                .room_revisions
+                .insert(room_id.clone(), entry.revision);
+            if !entry.last_accepted_clear_revision.is_zero() {
+                drafts
+                    .room_last_accepted_clear_revisions
+                    .insert(room_id, entry.last_accepted_clear_revision);
+            }
+        }
+        for (room_id, room_threads) in projection.threads {
+            for (root_event_id, entry) in room_threads {
+                let target = (room_id.clone(), root_event_id.clone());
+                if let Some(content) = entry.content {
+                    drafts.threads.entry(room_id.clone()).or_default().insert(
+                        root_event_id.clone(),
+                        truncate_utf8_bytes(&content, MAX_PERSISTED_COMPOSER_DRAFT_BYTES),
+                    );
+                } else if !retained_empty_threads.contains(&target) {
+                    continue;
+                }
+                drafts
+                    .thread_revisions
+                    .entry(room_id.clone())
+                    .or_default()
+                    .insert(root_event_id.clone(), entry.revision);
+                if !entry.last_accepted_clear_revision.is_zero() {
+                    drafts
+                        .thread_last_accepted_clear_revisions
+                        .entry(room_id.clone())
+                        .or_default()
+                        .insert(root_event_id, entry.last_accepted_clear_revision);
+                }
+            }
+        }
+        drafts.quiescent_room_lru = projection.quiescent_room_order.into();
+        drafts.quiescent_thread_lru = projection.quiescent_thread_order.into();
+        Ok(drafts)
+    }
+}
+
+fn retain_newest<T>(items: &mut Vec<T>, maximum: usize) {
+    if items.len() > maximum {
+        items.drain(..items.len() - maximum);
+    }
+}
+
+fn retain_newest_eligible<T>(
+    items: &mut Vec<T>,
+    maximum: usize,
+    is_protected: impl Fn(&T) -> bool,
+) {
+    while items.iter().filter(|item| !is_protected(item)).count() > maximum {
+        let Some(index) = items.iter().position(|item| !is_protected(item)) else {
+            break;
+        };
+        items.remove(index);
+    }
+}
+
+fn validate_persisted_projection(
+    projection: &ComposerDraftPersistenceProjection,
+) -> Result<(), ComposerDraftPersistenceImportError> {
+    let invalid = || ComposerDraftPersistenceImportError::InvalidProjection;
+    let empty_rooms = projection
+        .rooms
+        .iter()
+        .filter_map(|(room_id, entry)| {
+            if entry.last_accepted_clear_revision > entry.revision
+                || entry.content.as_ref().is_some_and(String::is_empty)
+            {
+                return None;
+            }
+            entry.content.is_none().then(|| room_id.clone())
+        })
+        .collect::<BTreeSet<_>>();
+    if projection.rooms.values().any(|entry| {
+        entry.last_accepted_clear_revision > entry.revision
+            || entry.content.as_ref().is_some_and(String::is_empty)
+    }) {
+        return Err(invalid());
+    }
+    let quiescent_rooms = projection
+        .quiescent_room_order
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let protected_rooms = projection
+        .protected_empty_rooms
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if quiescent_rooms.len() != projection.quiescent_room_order.len()
+        || protected_rooms.len() != projection.protected_empty_rooms.len()
+        || !quiescent_rooms.is_disjoint(&protected_rooms)
+        || quiescent_rooms
+            .union(&protected_rooms)
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            != empty_rooms
+    {
+        return Err(invalid());
+    }
+
+    let mut empty_threads = BTreeSet::new();
+    for (room_id, room_threads) in &projection.threads {
+        if room_threads.is_empty() {
+            return Err(invalid());
+        }
+        for (root_event_id, entry) in room_threads {
+            if entry.last_accepted_clear_revision > entry.revision
+                || entry.content.as_ref().is_some_and(String::is_empty)
+            {
+                return Err(invalid());
+            }
+            if entry.content.is_none() {
+                empty_threads.insert((room_id.clone(), root_event_id.clone()));
+            }
+        }
+    }
+    let quiescent_threads = projection
+        .quiescent_thread_order
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let protected_threads = projection
+        .protected_empty_threads
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if quiescent_threads.len() != projection.quiescent_thread_order.len()
+        || protected_threads.len() != projection.protected_empty_threads.len()
+        || !quiescent_threads.is_disjoint(&protected_threads)
+        || quiescent_threads
+            .union(&protected_threads)
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            != empty_threads
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+fn target_is_protected(protection: &ComposerDraftProtection, target: &ComposerTarget) -> bool {
+    target_is_touch_protected(protection, target) || protection.store_pending.contains(target)
+}
+
+fn target_is_touch_protected(
+    protection: &ComposerDraftProtection,
+    target: &ComposerTarget,
+) -> bool {
+    protection.active.contains(target) || protection.leased.contains(target)
+}
+
+fn remove_nested_entry<T>(
+    values: &mut std::collections::BTreeMap<String, std::collections::BTreeMap<String, T>>,
+    room_id: &str,
+    root_event_id: &str,
+) {
+    let remove_room = if let Some(room_values) = values.get_mut(room_id) {
+        room_values.remove(root_event_id);
+        room_values.is_empty()
+    } else {
+        false
+    };
+    if remove_room {
+        values.remove(room_id);
     }
 }
 
@@ -1059,7 +1716,9 @@ pub struct ComposerState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_send_kind: Option<PendingComposerSendKind>,
     #[serde(default)]
-    pub draft_revision: u64,
+    pub draft_revision: ComposerDraftRevision,
+    #[serde(default)]
+    pub last_accepted_clear_revision: ComposerDraftRevision,
     pub draft: String,
     pub mode: ComposerMode,
 }

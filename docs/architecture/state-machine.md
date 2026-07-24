@@ -657,7 +657,10 @@ stateDiagram-v2
   transient `TimelinePaneState`. `ComposerDraftChanged` writes the selected
   room's draft through to that store, `SelectRoom` hydrates the active composer
   from it, and `SendTextSubmitted` clears the selected room's stored draft.
-  Each room and thread-root target has a monotonic `draft_revision`. A draft
+  Each room and thread-root target has a monotonic `draft_revision`. It is a
+  checked Rust `u128` and an opaque canonical decimal string on every wire
+  boundary; JavaScript numeric conversion, wrapping, and saturation are
+  forbidden. A draft
   write with a revision at or below the target's stored revision is stale and
   is ignored. Accepted plain/reply sends, scheduled sends, and prepared-upload
   sends advance the target to `max(stored, submitted) + 1`, clear content, and
@@ -677,7 +680,12 @@ stateDiagram-v2
   and debounces persistence to an account-scoped encrypted local file. It loads
   the persisted store once a ready/recovery session is known and dispatches
   `ComposerDraftsLoaded`; corrupt or unavailable stores do not expose raw
-  errors or plaintext to the webview.
+  errors or plaintext to the webview. `AppActor` owns one session-keyed load
+  state: `Unloaded`, `Loaded`, or `Failed`. A failed key is attempted once,
+  records one coarse failure, rejects every revision-bearing composer command
+  with `StoreUnavailable` before reducer, actor, SDK, or store effects, and
+  cannot schedule draft persistence. Lock or account transition resets the
+  state to `Unloaded`, so the next ready boundary retries the repaired store.
 
 ```mermaid
 stateDiagram-v2
@@ -691,6 +699,43 @@ stateDiagram-v2
     Editing --> Empty: LogoutRequested/SessionCleared
     Empty --> Editing: ComposerDraftsLoaded [active composer empty and persisted draft exists]
 ```
+
+Content, ActiveEmpty, and LeasedEmpty are protected. LeasedEmpty becomes a
+QuiescentTombstone only after the final touching activation/command lease
+settles while the target is inactive. QuiescentTombstone is the only state that
+quota collection may remove. A retired renderer generation cannot reacquire or
+deliver a command; a fresh generation rehydrates Rust state before admission.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Absent
+    Absent --> ActiveEmpty: acquire + hydrate
+    ActiveEmpty --> Content: accepted newer draft
+    Content --> LeasedEmpty: accepted current operation clears
+    ActiveEmpty --> LeasedEmpty: operation remains unsettled
+    LeasedEmpty --> QuiescentTombstone: inactive + final touching lease
+    QuiescentTombstone --> ActiveEmpty: fresh acquire + hydrate
+    QuiescentTombstone --> Absent: oldest eligible beyond quota
+```
+
+Main retains 128 and thread retains 256 quiescent tombstones in lifecycle LRU
+order; protected excess is outside those eligible-quiescent quotas.
+Activation and command leases are touch protections: they temporarily remove
+an empty target from the LRU, and retirement enqueues it newest. Store-pending
+persistence holds are non-touching collector guards: they preserve an existing
+LRU position and persisted quiescent order, block that target as a victim, and
+may coexist with a remembered QuiescentTombstone without refreshing its age;
+they do not alone classify it as a persisted protected-empty target. A transition
+from touch protection to store-pending enqueues the empty target newest exactly
+once. Collector scans skip store-pending entries in place and evict the oldest
+eligible target; releasing the hold does not refresh age. Same-key persistence
+replacement subtracts only the superseded pending save's holds for projection,
+acquires replacement holds before swap, and retains the old pending save on
+admission failure. Rust advances
+`last_accepted_clear_revision` only for an accepted clear of current content,
+and React uses that projection in the active IME key. Diagnostics contain
+counts and coarse outcomes only, never content, identifiers, revisions, lease
+tokens, paths, or raw errors.
 - Scheduled send is Rust-owned state, not a React timer. The full queue lives in
   an `AppState.scheduled_sends` backing store that is excluded from the full
   webview snapshot because it can contain future message bodies for non-visible

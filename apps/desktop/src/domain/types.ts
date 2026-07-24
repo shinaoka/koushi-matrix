@@ -32,11 +32,13 @@ export interface SavedSessionInfo {
   device_id: string;
 }
 
+export type ComposerDraftAccountOwner = SavedSessionInfo;
+
 /**
  * IPC snapshot contract version. Must match `dto.rs`'s `SNAPSHOT_SCHEMA_VERSION`.
  * Bumped to 2 by #87 Phase 4 (domain/ui sectioning).
  */
-export const SNAPSHOT_SCHEMA_VERSION = 2;
+export const SNAPSHOT_SCHEMA_VERSION = 3;
 
 /**
  * Snapshot state. #87 Phase 4 sectioned this into domain (Matrix/product, Rust-owned,
@@ -1173,9 +1175,14 @@ export interface ComposerState {
   pending_submission_id?: string | null;
   pending_transaction_id: string | null;
   draft: string;
-  draft_revision: number;
+  draft_revision: ComposerDraftRevision;
+  last_accepted_clear_revision: ComposerDraftRevision;
   mode: ComposerMode;
 }
+
+export type ComposerDraftRevision = string & {
+  readonly __composerDraftRevision: "ComposerDraftRevision";
+};
 
 export type SubmissionOutcome = "accepted" | { rejected: { kind: string } };
 
@@ -1187,7 +1194,7 @@ export interface SubmissionResponse {
 }
 
 export interface ComposerDraftAcceptanceResponse {
-  acceptedRevision: number | null;
+  acceptedRevision: ComposerDraftRevision | null;
   snapshot: DesktopSnapshot;
 }
 

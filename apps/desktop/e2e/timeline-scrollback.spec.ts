@@ -19,11 +19,16 @@
 
 import { expect, test, type Page } from "@playwright/test";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const ROOM_ID = "!harness-room:example.invalid";
 const ACCOUNT_KEY = "@harness-user:example.invalid";
 const ITEM_HEIGHT_PX = 48; // pinned by harness.html CSS
 const ANCHOR_PIXEL_TOLERANCE = 2;
+const DESKTOP_STYLES_PATH = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../src/styles.css"
+);
 
 function timelineKey() {
   return { account_key: ACCOUNT_KEY, kind: { Room: { room_id: ROOM_ID } } };
@@ -958,7 +963,7 @@ test("known-dimension media keeps row height stable across download completion",
   await page.goto("/harness.html");
   await page.waitForSelector("[data-testid=timeline-view]");
   await page.addStyleTag({
-    path: path.join(process.cwd(), "apps/desktop/src/styles.css")
+    path: DESKTOP_STYLES_PATH
   });
   await waitAnimationFrames(page, 1);
 
@@ -1041,7 +1046,7 @@ test("missing-dimension media keeps row height stable across download completion
   await page.goto("/harness.html");
   await page.waitForSelector("[data-testid=timeline-view]");
   await page.addStyleTag({
-    path: path.join(process.cwd(), "apps/desktop/src/styles.css")
+    path: DESKTOP_STYLES_PATH
   });
   await waitAnimationFrames(page, 1);
 
@@ -1112,7 +1117,7 @@ test("pending link previews reserve the ready card height", async ({ page }) => 
   await page.goto("/harness.html");
   await page.waitForSelector("[data-testid=timeline-view]");
   await page.addStyleTag({
-    path: path.join(process.cwd(), "apps/desktop/src/styles.css")
+    path: DESKTOP_STYLES_PATH
   });
   await waitAnimationFrames(page, 1);
 
@@ -1306,7 +1311,7 @@ test("active upward input defers prepend until idle", async ({ page }) => {
   await page.goto("/harness.html");
   await page.waitForSelector("[data-testid=timeline-view]");
   await page.addStyleTag({
-    path: path.join(process.cwd(), "apps/desktop/src/styles.css")
+    path: DESKTOP_STYLES_PATH
   });
   await waitAnimationFrames(page, 1);
   await pushInitialTimelineItems(page, 100);

@@ -1,60 +1,41 @@
 import { describe, expect, it } from "vitest";
+import {
+  COMPOSER_DRAFT_REVISION_ZERO,
+  ComposerDraftRevisionExhaustedError,
+  compareComposerDraftRevisions,
+  nextComposerDraftRevision,
+  parseComposerDraftRevision
+} from "./composerDraftRevision";
 
-import { createComposerDraftRevisionCoordinator } from "./composerDraftRevision";
-
-const main = { kind: "main" as const, room_id: "room-a" };
-const threadA = {
-  kind: "thread" as const,
-  room_id: "room-a",
-  root_event_id: "root-a"
-};
-const threadB = {
-  kind: "thread" as const,
-  room_id: "room-a",
-  root_event_id: "root-b"
-};
-
-describe("composer draft causal revisions", () => {
-  it("rejects a deferred pre-send completion after accepted clear", () => {
-    const revisions = createComposerDraftRevisionCoordinator();
-    const sentRevision = revisions.nextDraft(main, 0);
-    const acceptedRevision = revisions.accept(main, sentRevision);
-
-    expect(acceptedRevision).toBe(2);
-    expect(revisions.canApply(main, sentRevision)).toBe(false);
-    expect(revisions.canApply(main, acceptedRevision)).toBe(true);
+describe("composer draft revision wire", () => {
+  it("advances exactly above Number.MAX_SAFE_INTEGER", () => {
+    const current = parseComposerDraftRevision("9007199254740993");
+    expect(nextComposerDraftRevision(current, current)).toBe("9007199254740994");
   });
 
-  it("keeps immediate next input newer than both send and persist completions", () => {
-    const revisions = createComposerDraftRevisionCoordinator();
-    const sentRevision = revisions.nextDraft(main, 0);
-    const acceptedRevision = revisions.accept(main, sentRevision);
-    const nextRevision = revisions.nextDraft(main, acceptedRevision);
-
-    expect(nextRevision).toBe(3);
-    expect(revisions.canApply(main, sentRevision)).toBe(false);
-    expect(revisions.canApply(main, acceptedRevision)).toBe(false);
-    expect(revisions.canApply(main, nextRevision)).toBe(true);
+  it("rejects non-canonical and numeric-shaped input", () => {
+    for (const value of ["", "00", "01", "-1", "+1", " 1", "1 ", "1.0", "1e3"]) {
+      expect(() => parseComposerDraftRevision(value)).toThrow();
+    }
+    expect(() => parseComposerDraftRevision(1)).toThrow();
+    expect(COMPOSER_DRAFT_REVISION_ZERO).toBe("0");
   });
 
-  it("isolates main and each thread root", () => {
-    const revisions = createComposerDraftRevisionCoordinator();
-
-    expect(revisions.nextDraft(main, 4)).toBe(5);
-    expect(revisions.nextDraft(threadA, 10)).toBe(11);
-    expect(revisions.nextDraft(threadB, 2)).toBe(3);
-    expect(revisions.current(main)).toBe(5);
-    expect(revisions.current(threadA)).toBe(11);
-    expect(revisions.current(threadB)).toBe(3);
+  it("compares by bigint rather than lexicographic order", () => {
+    expect(
+      compareComposerDraftRevisions(
+        parseComposerDraftRevision("10"),
+        parseComposerDraftRevision("9")
+      )
+    ).toBeGreaterThan(0);
   });
 
-  it("observes restart revisions and never moves a target backwards", () => {
-    const revisions = createComposerDraftRevisionCoordinator();
-
-    revisions.observe(main, 8);
-    revisions.observe(main, 3);
-
-    expect(revisions.current(main)).toBe(8);
-    expect(revisions.nextDraft(main, 0)).toBe(9);
+  it("fails closed at u128 max", () => {
+    const maximum = parseComposerDraftRevision(
+      "340282366920938463463374607431768211455"
+    );
+    expect(() => nextComposerDraftRevision(maximum, maximum)).toThrow(
+      ComposerDraftRevisionExhaustedError
+    );
   });
 });

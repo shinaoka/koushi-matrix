@@ -169,6 +169,12 @@ All agents implementing timeline navigation aids for issue #41 follow
 for Phase A Rust/headless work before any Phase B GUI pills, date picker, or
 scroll wiring.
 
+## Design Simplicity
+
+Follow the normative design-simplicity rules in
+`docs/policies/engineering-rules.md`: do not add defensive machinery without a
+reproduced failure or named invariant.
+
 ## Verification Discipline (verify-first, no human eyes)
 
 Correctness is guaranteed by reproducible headless verification, never by manual
@@ -209,6 +215,12 @@ reverse.
   gate. Re-run it only when its own evidence identifies a necessary change or
   after the final reviewed fix; do not spend the full timeout to discover one
   incomplete phase at a time.
+- When a broad Playwright or browser-headless run reveals multiple failures
+  with the same shape, stop one-test-at-a-time spot fixes. First read the
+  shared harness, component lifecycle contract, and related fixtures as a
+  group; classify whether the problem is fixture drift, a missing DTO mirror,
+  unstable Playwright actionability, or product behavior. Repair the shared
+  helper/contract boundary before rerunning the broad gate.
 - Cooperate with the external auditor (codex) for independent root-cause
   verification and diff review (see the recipe below). A subagent's "gates
   passed" claim is not evidence — re-run the gate yourself.
@@ -1222,6 +1234,15 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 
 ## Headless UI (Playwright) Flakes
 
+- If `locator.click()` broadly times out while waiting for elements to be
+  stable, first prove whether Chromium headless is producing animation frames:
+  run a blank-page `requestAnimationFrame` probe. In this local environment,
+  headless Chromium can leave `requestAnimationFrame` suspended even when
+  `setTimeout` works, which makes Playwright actionability fail although DOM
+  boxes are stable. Do not patch product code or one fixture at a time for that
+  symptom. For local diagnostic proof, use Xvfb with headed Chromium, e.g.
+  `xvfb-run -a npm --prefix apps/desktop exec -- playwright test --headed --config apps/desktop/playwright.config.ts --workers=1`,
+  and report that mode explicitly.
 - `e2e/basic-operations.spec.ts:81` ("submitting the composer in reply mode
   invokes send_reply, not send_text") is flaky in the FULL `test:ui-headless`
   run but passes reliably when that spec file is run in isolation

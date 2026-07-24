@@ -7,7 +7,16 @@ build gates. AGENTS.md remains the operational how-to (permissions, install
 caveats, recovery steps); durable rules discovered there are promoted to
 REPOSITORY_RULES.md or this document.
 
-Last amended: 2026-07-22.
+Last amended: 2026-07-24.
+
+## Design Simplicity
+
+1. Add a guard, retry, fallback, duplicate state, or test hook only for a
+   reproduced failure or named invariant.
+2. Give each lifecycle state machine one owner and one explicit state model; do
+   not synchronize parallel booleans.
+3. When an artificial failure mechanism creates a boundary problem, remove it
+   instead of adding boundary handling around it.
 
 ## Secrets and Private Data
 
@@ -162,6 +171,33 @@ Rules:
    so a render alone cannot distinguish an authoritative clear from a stale
    snapshot. Timer cancellation or a second racing empty save is not a
    correctness fence.
+   `ComposerDraftRevision` is a checked Rust `u128` and an opaque canonical
+   decimal string on every snapshot and IPC boundary. JavaScript `number`
+   conversion, wrapping, and saturation are forbidden. Rust advances
+   `last_accepted_clear_revision` only when an accepted operation actually
+   clears current content; ordinary persistence and accepted preservation of
+   newer input do not change it.
+   Empty revision history is retained in lifecycle order. Only empty, inactive,
+   zero-touch-lease targets are quiescent tombstones; retain 128 main and 256 thread
+   tombstones. The live bound is protected targets plus those quotas.
+   Non-empty, active, debounce/IPC/submission/schedule/upload-pending,
+   command-pending, and touch-leased targets are protected and cannot be
+   eviction victims. Quiescence waits only for the final touching
+   activation/command lease. Store-pending persistence holds are non-touching
+   collector guards: they may coexist with a remembered quiescent LRU position,
+   block that target as a victim, and preserve its age and persisted order. A
+   hold must not by itself enter the protected-empty persistence bucket or
+   consume the eligible-quiescent quota. Collector scans skip held entries in
+   place. A touch-to-store-pending transition enqueues newest once; hold release
+   does not refresh age. Same-key replacement
+   subtracts only the superseded pending hold contribution while projecting,
+   acquires new holds before swap, and keeps the old pending save if admission
+   fails. Every revision-bearing producer acquires the exact
+   account/target/renderer-generation lease before it schedules or enters Core.
+   Lease admission/release and victim selection are serialized, and a retired
+   generation cannot deliver or recreate collected state. Diagnostics expose
+   counts and coarse lifecycle outcomes only, never bodies, Matrix identifiers,
+   revisions, leases, filesystem paths, or raw errors.
    Scheduled-send message bodies are also future unsent message content. The
    Rust state machine owns the queue, capability, cancellation, reschedule, and
    due-time dispatch semantics. Full scheduled-send backing state must not be

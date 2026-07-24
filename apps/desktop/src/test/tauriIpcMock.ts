@@ -254,7 +254,8 @@ function defaultSnapshotResponse() {
           accepted_submission_ids: [],
           pending_submission_id: null,
           pending_transaction_id: null,
-          draft_revision: 0,
+          draft_revision: "0",
+          last_accepted_clear_revision: "0",
           draft: "",
           mode: "Plain"
         },
@@ -338,7 +339,7 @@ function defaultSnapshotResponse() {
     else ui[key] = value;
   }
   return {
-    state: { schema_version: 2, domain, ui },
+    state: { schema_version: 3, domain, ui },
     sidebar: {
       active_space_id: null,
       account_home: { display_name: "Home", unread_count: 0, highlight_count: 0, is_active: true },
