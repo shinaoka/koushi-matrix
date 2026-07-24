@@ -35956,12 +35956,19 @@ mod tests {
     fn timeline_ensure_subscribed_can_skip_existing_actor_replay() {
         let source = include_str!("timeline.rs");
         let handle_command = source
-            .split("async fn handle_command")
+            .split("async fn handle_command(&mut self, command: TimelineCommand)")
             .nth(1)
             .expect("handle_command should exist")
-            .split("async fn handle_subscribe")
+            .split("async fn handle_command_with_permit")
             .next()
-            .expect("handle_subscribe should follow handle_command");
+            .expect("command-with-permit helper should follow handle_command");
+        let handle_command_with_permit = source
+            .split("async fn handle_command_with_permit")
+            .nth(1)
+            .expect("handle_command_with_permit should exist")
+            .split("async fn route_send_to_worker_or_fail")
+            .next()
+            .expect("send routing should follow command handling");
         let handle_subscribe_source = source
             .split("async fn handle_subscribe")
             .nth(1)
@@ -35971,11 +35978,15 @@ mod tests {
             .expect("existing-key branch should precede the SDK subscribe path");
 
         assert!(
-            handle_command.contains("TimelineCommand::EnsureSubscribed"),
+            handle_command.contains("self.handle_command_with_permit(command, None).await"),
+            "plain timeline commands should delegate through the permit-aware command helper"
+        );
+        assert!(
+            handle_command_with_permit.contains("TimelineCommand::EnsureSubscribed"),
             "timeline manager should expose an explicit ensure-subscription path for callers that do not need item replay"
         );
         assert!(
-            handle_command.contains("replay_existing"),
+            handle_command_with_permit.contains("replay_existing"),
             "ensure-subscription routing must pass through whether an existing actor should replay InitialItems"
         );
         assert!(
@@ -35987,13 +35998,13 @@ mod tests {
     #[test]
     fn replay_subscribed_recovery_replays_initial_items_causeless_for_all_timelines() {
         let source = include_str!("timeline.rs");
-        let handle_command = source
-            .split("async fn handle_command")
+        let handle_command_with_permit = source
+            .split("async fn handle_command_with_permit")
             .nth(1)
-            .expect("handle_command should exist")
-            .split("async fn handle_subscribe")
+            .expect("handle_command_with_permit should exist")
+            .split("async fn route_send_to_worker_or_fail")
             .next()
-            .expect("handle_subscribe should follow handle_command");
+            .expect("send routing should follow command handling");
         let replay_handler = source
             .split("async fn handle_replay_subscribed")
             .nth(1)
@@ -36003,8 +36014,9 @@ mod tests {
             .expect("handle_subscribe should follow replay handler");
 
         assert!(
-            handle_command.contains("TimelineCommand::ReplaySubscribed { request_id }")
-                && handle_command.contains("self.handle_replay_subscribed(request_id).await"),
+            handle_command_with_permit.contains("TimelineCommand::ReplaySubscribed { request_id }")
+                && handle_command_with_permit
+                    .contains("self.handle_replay_subscribed(request_id).await"),
             "TimelineManagerActor must route replay-subscribed commands to the replay helper"
         );
         assert!(

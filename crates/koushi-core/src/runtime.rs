@@ -5595,7 +5595,9 @@ mod tests {
         );
         assert!(
             handle_impl.contains("self.command_tx")
-                && handle_impl.contains(".send(command)")
+                && handle_impl.contains(".send(CoreCommandEnvelope")
+                && handle_impl.contains("command,")
+                && handle_impl.contains("composer_permit")
                 && handle_impl.contains(".await"),
             "the command handle must own the bounded send await"
         );
