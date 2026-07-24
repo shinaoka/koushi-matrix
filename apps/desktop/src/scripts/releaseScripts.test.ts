@@ -4341,7 +4341,8 @@ fn test_only() {
     expect(output).toContain("VITE_KOUSHI_QA_SEND_SMOKE_USER_ID=@hiroshi.shinaoka:matrix.org");
     expect(source).toContain("qaSendSmokeTargetUserId");
     expect(source).toContain("api.startDirectMessage(targetUserId)");
-    expect(source).toContain("api.selectRoom(targetRoom.room_id)");
+    expect(source).toContain("void selectRoom(targetRoom.room_id)");
+    expect(source).toContain("await drainActiveComposerScopesForNavigation(true, true)");
   });
 
   test("mac GUI smoke send smoke uses a bounded send timeout separate from login", () => {

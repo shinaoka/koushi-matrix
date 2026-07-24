@@ -164,6 +164,10 @@ export const Composer = memo(function Composer({
   }, [activeMentionSuggestions.length]);
 
   function updateLocalValue(nextValue: string) {
+    imeTextControl.recordLocalValue(nextValue);
+    if (textareaRef.current && textareaRef.current.value !== nextValue) {
+      textareaRef.current.value = nextValue;
+    }
     setLocalValue(nextValue);
     onValueChange(nextValue);
   }

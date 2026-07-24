@@ -122,6 +122,7 @@ async function switchActiveRoom(
               room_id: nextRoomId,
               is_subscribed: true,
               composer: {
+                ...snapshot.state.ui.timeline.composer,
                 pending_transaction_id: null,
                 draft: "",
                 mode: "Plain"

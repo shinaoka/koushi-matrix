@@ -3589,7 +3589,10 @@ test("scheduled send UI dispatches typed commands and waits for Rust snapshot ch
         }>,
         draft = window.__harness.currentSnapshot().state.ui.timeline.composer.draft,
         draftRevision =
-          window.__harness.currentSnapshot().state.ui.timeline.composer.draft_revision
+          window.__harness.currentSnapshot().state.ui.timeline.composer.draft_revision,
+        lastAcceptedClearRevision =
+          window.__harness.currentSnapshot().state.ui.timeline.composer
+            .last_accepted_clear_revision
       ) => {
         const current = window.__harness.currentSnapshot();
         return {
@@ -3605,7 +3608,8 @@ test("scheduled send UI dispatches typed commands and waits for Rust snapshot ch
                 composer: {
                   ...current.state.ui.timeline.composer,
                   draft,
-                  draft_revision: draftRevision
+                  draft_revision: draftRevision,
+                  last_accepted_clear_revision: lastAcceptedClearRevision
                 }
               }
             }
@@ -3643,10 +3647,12 @@ test("scheduled send UI dispatches typed commands and waits for Rust snapshot ch
           sendAtMs: number;
           draftRevision: string;
         }) => {
+          const acceptedRevision = (BigInt(draftRevision) + 1n).toString();
           const next = projectScheduled(
             [{ ...scheduledItem, body: String(body) }],
             "",
-            (BigInt(draftRevision) + 1n).toString()
+            acceptedRevision,
+            acceptedRevision
           );
           window.__harness.setSnapshot(next);
           return {

@@ -134,6 +134,29 @@ describe("Composer", () => {
     expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([3, 5]);
   });
 
+  it("writes toolbar markdown replacements to the IME-owned textarea DOM", () => {
+    const onValueChange = vi.fn();
+    const { container } = render(
+      <Composer
+        composerMode={{ kind: "plain" }}
+        isSending={false}
+        roomName="Direct room"
+        value=""
+        onCancelReply={() => undefined}
+        onSend={() => undefined}
+        onValueChange={onValueChange}
+      />
+    );
+    const textarea = container.querySelector("textarea")!;
+
+    fireEvent.change(textarea, { target: { value: "world" } });
+    textarea.setSelectionRange(0, 5);
+    fireEvent.click(screen.getByRole("button", { name: /bold/i }));
+
+    expect(textarea.value).toBe("**world**");
+    expect(onValueChange).toHaveBeenLastCalledWith("**world**");
+  });
+
   it("gives the thread textarea the same live conversion ownership", () => {
     const props = {
       canEdit: true,

@@ -863,6 +863,10 @@ function isDesktopSnapshotLike(value: unknown): value is DesktopSnapshot {
 // Snapshot-returning commands the App calls. Default snapshot stays ready so
 // any unanticipated snapshot read still renders the shell.
 mock.setCommandResponse("get_snapshot", () => currentSnapshot);
+mock.setCommandResponse("get_diagnostic_snapshot", () => ({
+  entries: [],
+  droppedEntries: 0
+}));
 mock.setCommandResponse("list_saved_sessions", () => []);
 mock.setCommandResponse("logout", () => {
   const next = structuredClone(currentSnapshot);
@@ -1929,6 +1933,18 @@ for (const command of ["send_reply", "send_text"] as const) {
           ...currentSnapshot.state.ui,
           timeline: {
             ...currentSnapshot.state.ui.timeline,
+            submission_registry: {
+              accepted_submission_ids:
+                currentSnapshot.state.ui.timeline.submission_registry.accepted_submission_ids.filter(
+                  (id) => id !== submissionId
+                ),
+              settled_submission_ids: [
+                ...currentSnapshot.state.ui.timeline.submission_registry.settled_submission_ids.filter(
+                  (id) => id !== submissionId
+                ),
+                submissionId
+              ]
+            },
             composer: {
               ...composer,
               draft:
