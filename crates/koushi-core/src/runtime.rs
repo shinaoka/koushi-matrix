@@ -34,6 +34,11 @@ use crate::command::{
     AccountCommand, AppCommand, CoreCommand, SearchCommand, SearchScope, SyncCommand,
     TimelineCommand,
 };
+use crate::composer_draft_lifecycle::{
+    ComposerDraftCommandPermit, ComposerDraftLeaseFailure, ComposerDraftLeaseId,
+    ComposerDraftLeaseRegistry, ComposerDraftPersistencePermit, ComposerDraftScope,
+    ComposerRendererGeneration,
+};
 use crate::event::{
     ActivityEvent, AppStateSnapshot, CoreEvent, IntentNoOpReason, IntentOutcome,
     NativeAttentionEvent, TimelineEvent, VersionedAppStateSnapshot,
@@ -245,6 +250,91 @@ pub enum CommandSubmitError {
     RuntimeClosed,
     #[error("request id does not belong to this connection")]
     InvalidRequestId,
+    #[error("composer draft command requires lease admission")]
+    ComposerLeaseRequired,
+    #[error("command does not carry a composer draft revision")]
+    ComposerLeaseNotRequired,
+    #[error("composer draft lease admission failed")]
+    ComposerLease(ComposerDraftLeaseFailure),
+}
+
+struct CoreCommandEnvelope {
+    command: CoreCommand,
+    composer_permit: Option<ComposerDraftCommandPermit>,
+}
+
+#[derive(Clone, Eq, Hash, PartialEq)]
+enum ComposerAcceptanceIdentity {
+    Submission(SubmissionId),
+    ScheduledSend(String),
+}
+
+struct PendingComposerAcceptance {
+    identity: ComposerAcceptanceIdentity,
+    _permit: ComposerDraftCommandPermit,
+}
+
+#[doc(hidden)]
+pub struct ForwardedComposerDraftPermit {
+    request_id: RequestId,
+    permit: Option<ComposerDraftCommandPermit>,
+    rejected_tx: mpsc::UnboundedSender<RequestId>,
+    acceptance_enqueued: bool,
+    #[cfg(test)]
+    acceptance_probe: Option<oneshot::Sender<()>>,
+}
+
+impl ForwardedComposerDraftPermit {
+    pub(crate) fn new(
+        request_id: RequestId,
+        permit: ComposerDraftCommandPermit,
+        rejected_tx: mpsc::UnboundedSender<RequestId>,
+    ) -> Self {
+        Self {
+            request_id,
+            permit: Some(permit),
+            rejected_tx,
+            acceptance_enqueued: false,
+            #[cfg(test)]
+            acceptance_probe: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_acceptance_probe(
+        request_id: RequestId,
+        permit: ComposerDraftCommandPermit,
+        rejected_tx: mpsc::UnboundedSender<RequestId>,
+        acceptance_probe: oneshot::Sender<()>,
+    ) -> Self {
+        Self {
+            request_id,
+            permit: Some(permit),
+            rejected_tx,
+            acceptance_enqueued: false,
+            acceptance_probe: Some(acceptance_probe),
+        }
+    }
+
+    pub(crate) fn acceptance_projection_reached(&mut self) {
+        #[cfg(test)]
+        if let Some(probe) = self.acceptance_probe.take() {
+            let _ = probe.send(());
+        }
+    }
+
+    pub(crate) fn acceptance_enqueued(mut self) {
+        self.acceptance_enqueued = true;
+    }
+}
+
+impl Drop for ForwardedComposerDraftPermit {
+    fn drop(&mut self) {
+        self.permit.take();
+        if !self.acceptance_enqueued {
+            let _ = self.rejected_tx.send(self.request_id);
+        }
+    }
 }
 
 /// Surfaced when a consumer fell behind the bounded event queue. The
@@ -258,10 +348,11 @@ pub struct EventStreamLag {
 
 /// Owns the actor tree and creates [`CoreConnection`] handles.
 pub struct CoreRuntime {
-    command_tx: mpsc::Sender<CoreCommand>,
+    command_tx: mpsc::Sender<CoreCommandEnvelope>,
     event_tx: broadcast::Sender<CoreEvent>,
     snapshot_rx: watch::Receiver<VersionedAppStateSnapshot>,
     next_connection_id: AtomicU64,
+    composer_draft_leases: Arc<ComposerDraftLeaseRegistry>,
     // Internal action channel: actors project side-effect outcomes through
     // the reducer with this in later phases; tests inject through it today.
     #[cfg_attr(not(any(test, feature = "test-hooks")), allow(dead_code))]
@@ -362,6 +453,9 @@ impl CoreRuntime {
         let (event_tx, _) = broadcast::channel(event_capacity);
         let (action_tx, action_rx) = mpsc::channel(ACTION_QUEUE_CAPACITY);
         let settings_store = SettingsStore::new(&data_dir);
+        let composer_draft_leases = Arc::new(ComposerDraftLeaseRegistry::new());
+        let composer_draft_lease_changes = composer_draft_leases.subscribe();
+        let (composer_draft_rejected_tx, composer_draft_rejected_rx) = mpsc::unbounded_channel();
 
         let mut initial_state = AppState::default();
         let settings_action = match settings_store.load() {
@@ -382,6 +476,7 @@ impl CoreRuntime {
             action_tx.clone(),
             event_tx.clone(),
             crate::link_preview::LinkPreviewContext::from_settings(&initial_state.settings.values),
+            Arc::clone(&composer_draft_leases),
         );
 
         #[cfg(any(test, feature = "test-hooks"))]
@@ -400,6 +495,11 @@ impl CoreRuntime {
             room_preferences_loaded_for: None,
             state_generation: 0,
             pending_composer_draft_persist: None,
+            composer_draft_leases: Arc::clone(&composer_draft_leases),
+            composer_draft_lease_changes,
+            composer_draft_rejected_tx,
+            composer_draft_rejected_rx,
+            pending_composer_acceptances: HashMap::new(),
             account_actor,
             activity_projection: ActivityProjection::default(),
             activity_resolution_generation: 0,
@@ -431,6 +531,7 @@ impl CoreRuntime {
             event_tx,
             snapshot_rx,
             next_connection_id: AtomicU64::new(1),
+            composer_draft_leases,
             action_tx,
             media_preparation,
             media_lifecycle,
@@ -448,6 +549,7 @@ impl CoreRuntime {
                 self.next_connection_id.fetch_add(1, Ordering::Relaxed),
             ),
             command_tx: self.command_tx.clone(),
+            composer_draft_leases: Arc::clone(&self.composer_draft_leases),
             event_rx: self.event_tx.subscribe(),
             snapshot_rx: self.snapshot_rx.clone(),
             next_sequence: AtomicU64::new(1),
@@ -463,6 +565,13 @@ impl CoreRuntime {
     #[cfg(any(test, feature = "test-hooks"))]
     pub async fn inject_actions(&self, actions: Vec<AppAction>) {
         let _ = self.action_tx.send(actions).await;
+    }
+
+    /// Test hook: retain the lease registry across runtime shutdown so tests
+    /// can prove the account-owned teardown barrier retired the live renderer.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn composer_draft_lease_registry_for_testing(&self) -> Arc<ComposerDraftLeaseRegistry> {
+        Arc::clone(&self.composer_draft_leases)
     }
 
     /// Test hook: override current-device trust observation through the typed
@@ -489,6 +598,7 @@ impl CoreRuntime {
             event_tx: _,
             snapshot_rx: _,
             next_connection_id: _,
+            composer_draft_leases: _,
             action_tx: _,
             media_preparation: _,
             media_lifecycle,
@@ -506,7 +616,8 @@ impl CoreRuntime {
 /// observes the shared event stream plus the latest snapshot.
 pub struct CoreConnection {
     connection_id: RuntimeConnectionId,
-    command_tx: mpsc::Sender<CoreCommand>,
+    command_tx: mpsc::Sender<CoreCommandEnvelope>,
+    composer_draft_leases: Arc<ComposerDraftLeaseRegistry>,
     event_rx: broadcast::Receiver<CoreEvent>,
     snapshot_rx: watch::Receiver<VersionedAppStateSnapshot>,
     next_sequence: AtomicU64,
@@ -517,21 +628,107 @@ pub struct CoreConnection {
 #[derive(Clone)]
 pub struct CoreCommandHandle {
     connection_id: RuntimeConnectionId,
-    command_tx: mpsc::Sender<CoreCommand>,
+    command_tx: mpsc::Sender<CoreCommandEnvelope>,
+    composer_draft_leases: Arc<ComposerDraftLeaseRegistry>,
 }
 
 impl CoreCommandHandle {
-    /// Submit a command. Fails locally — before routing and before any
-    /// `CoreEvent` is published — if the command's request id does not
-    /// belong to this connection.
+    /// Submit a command without a composer lease. Fails locally — before
+    /// routing and before any `CoreEvent` is published — if the request id
+    /// belongs to another connection or the command carries a composer
+    /// revision and therefore requires [`Self::command_with_composer_lease`].
     pub async fn command(&self, command: CoreCommand) -> Result<(), CommandSubmitError> {
+        self.validate_request_id(&command)?;
+        if command.composer_draft_scope().is_some() {
+            return Err(CommandSubmitError::ComposerLeaseRequired);
+        }
+        self.command_tx
+            .send(CoreCommandEnvelope {
+                command,
+                composer_permit: None,
+            })
+            .await
+            .map_err(|_| CommandSubmitError::RuntimeClosed)
+    }
+
+    pub fn begin_composer_draft_renderer_generation(
+        &self,
+    ) -> Result<ComposerRendererGeneration, ComposerDraftLeaseFailure> {
+        self.composer_draft_leases.begin_renderer_generation()
+    }
+
+    pub fn acquire_composer_draft_lease(
+        &self,
+        generation: ComposerRendererGeneration,
+        scope: ComposerDraftScope,
+    ) -> Result<ComposerDraftLeaseId, ComposerDraftLeaseFailure> {
+        self.composer_draft_leases.acquire(generation, scope)
+    }
+
+    pub fn release_composer_draft_lease(
+        &self,
+        generation: ComposerRendererGeneration,
+        lease_id: ComposerDraftLeaseId,
+    ) -> Result<(), ComposerDraftLeaseFailure> {
+        self.composer_draft_leases.release(generation, lease_id)
+    }
+
+    pub async fn command_with_composer_lease(
+        &self,
+        generation: ComposerRendererGeneration,
+        lease_id: ComposerDraftLeaseId,
+        command: CoreCommand,
+    ) -> Result<(), CommandSubmitError> {
+        let envelope = self.admit_composer_command(generation, lease_id, command)?;
+        self.command_tx
+            .send(envelope)
+            .await
+            .map_err(|_| CommandSubmitError::RuntimeClosed)
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub async fn command_with_composer_lease_after_admission(
+        &self,
+        generation: ComposerRendererGeneration,
+        lease_id: ComposerDraftLeaseId,
+        command: CoreCommand,
+        admitted: oneshot::Sender<()>,
+        release: oneshot::Receiver<()>,
+    ) -> Result<(), CommandSubmitError> {
+        let envelope = self.admit_composer_command(generation, lease_id, command)?;
+        let _ = admitted.send(());
+        let _ = release.await;
+        self.command_tx
+            .send(envelope)
+            .await
+            .map_err(|_| CommandSubmitError::RuntimeClosed)
+    }
+
+    fn validate_request_id(&self, command: &CoreCommand) -> Result<(), CommandSubmitError> {
         if command.request_id().connection_id != self.connection_id {
             return Err(CommandSubmitError::InvalidRequestId);
         }
-        self.command_tx
-            .send(command)
-            .await
-            .map_err(|_| CommandSubmitError::RuntimeClosed)
+        Ok(())
+    }
+
+    fn admit_composer_command(
+        &self,
+        generation: ComposerRendererGeneration,
+        lease_id: ComposerDraftLeaseId,
+        command: CoreCommand,
+    ) -> Result<CoreCommandEnvelope, CommandSubmitError> {
+        self.validate_request_id(&command)?;
+        let scope = command
+            .composer_draft_scope()
+            .ok_or(CommandSubmitError::ComposerLeaseNotRequired)?;
+        let composer_permit = self
+            .composer_draft_leases
+            .try_command_permit(generation, lease_id, &scope)
+            .map_err(CommandSubmitError::ComposerLease)?;
+        Ok(CoreCommandEnvelope {
+            command,
+            composer_permit: Some(composer_permit),
+        })
     }
 }
 
@@ -546,6 +743,7 @@ impl CoreConnection {
         CoreCommandHandle {
             connection_id: self.connection_id,
             command_tx: self.command_tx.clone(),
+            composer_draft_leases: Arc::clone(&self.composer_draft_leases),
         }
     }
 
@@ -558,11 +756,46 @@ impl CoreConnection {
         }
     }
 
-    /// Submit a command. Fails locally — before routing and before any
-    /// `CoreEvent` is published — if the command's request id does not
-    /// belong to this connection.
+    /// Submit a command without a composer lease. Revision-bearing composer
+    /// commands fail closed and must use [`Self::command_with_composer_lease`].
     pub async fn command(&self, command: CoreCommand) -> Result<(), CommandSubmitError> {
         self.command_handle().command(command).await
+    }
+
+    pub fn begin_composer_draft_renderer_generation(
+        &self,
+    ) -> Result<ComposerRendererGeneration, ComposerDraftLeaseFailure> {
+        self.command_handle()
+            .begin_composer_draft_renderer_generation()
+    }
+
+    pub fn acquire_composer_draft_lease(
+        &self,
+        generation: ComposerRendererGeneration,
+        scope: ComposerDraftScope,
+    ) -> Result<ComposerDraftLeaseId, ComposerDraftLeaseFailure> {
+        self.command_handle()
+            .acquire_composer_draft_lease(generation, scope)
+    }
+
+    pub fn release_composer_draft_lease(
+        &self,
+        generation: ComposerRendererGeneration,
+        lease_id: ComposerDraftLeaseId,
+    ) -> Result<(), ComposerDraftLeaseFailure> {
+        self.command_handle()
+            .release_composer_draft_lease(generation, lease_id)
+    }
+
+    pub async fn command_with_composer_lease(
+        &self,
+        generation: ComposerRendererGeneration,
+        lease_id: ComposerDraftLeaseId,
+        command: CoreCommand,
+    ) -> Result<(), CommandSubmitError> {
+        self.command_handle()
+            .command_with_composer_lease(generation, lease_id, command)
+            .await
     }
 
     /// Receive the next event. On lag, intermediate events were dropped for
@@ -623,7 +856,7 @@ impl CoreConnection {
 }
 
 struct AppActor {
-    command_rx: mpsc::Receiver<CoreCommand>,
+    command_rx: mpsc::Receiver<CoreCommandEnvelope>,
     action_rx: mpsc::Receiver<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     snapshot_tx: watch::Sender<VersionedAppStateSnapshot>,
@@ -636,6 +869,11 @@ struct AppActor {
     room_preferences_loaded_for: Option<koushi_key::SessionKeyId>,
     state_generation: u64,
     pending_composer_draft_persist: Option<PendingComposerDraftPersist>,
+    composer_draft_leases: Arc<ComposerDraftLeaseRegistry>,
+    composer_draft_lease_changes: watch::Receiver<u64>,
+    composer_draft_rejected_tx: mpsc::UnboundedSender<RequestId>,
+    composer_draft_rejected_rx: mpsc::UnboundedReceiver<RequestId>,
+    pending_composer_acceptances: HashMap<RequestId, PendingComposerAcceptance>,
     account_actor: AccountActorHandle,
     activity_projection: ActivityProjection,
     activity_resolution_generation: u64,
@@ -697,6 +935,7 @@ fn anchored_action_after_projection_ack(
 struct PendingComposerDraftPersist {
     key_id: koushi_key::SessionKeyId,
     drafts: ComposerDraftStore,
+    permits: Vec<ComposerDraftPersistencePermit>,
     deadline: Instant,
 }
 
@@ -1347,6 +1586,31 @@ impl AppActor {
                         self.publish_state_delta(&before_state);
                     }
                 }
+                lease_change = self.composer_draft_lease_changes.changed() => {
+                    if lease_change.is_err() {
+                        break;
+                    }
+                    self.composer_draft_lease_changes.borrow_and_update();
+                    let before_state = self.state.clone();
+                    let previous_drafts = self.state.composer_drafts.clone();
+                    self.reconcile_composer_draft_lifecycle();
+                    if previous_drafts != self.state.composer_drafts {
+                        if let Some(key_id) = composer_draft_session_key(&self.state) {
+                            self.schedule_composer_draft_persist(
+                                key_id,
+                                self.state.composer_drafts.clone(),
+                            )
+                            .await;
+                        }
+                        self.publish_state_delta(&before_state);
+                    }
+                }
+                rejected_request_id = self.composer_draft_rejected_rx.recv() => {
+                    let Some(rejected_request_id) = rejected_request_id else {
+                        break;
+                    };
+                    self.pending_composer_acceptances.remove(&rejected_request_id);
+                }
                 command = self.command_rx.recv() => {
                     let Some(command) = command else { break };
                     let loop_started = std::time::Instant::now();
@@ -1378,6 +1642,8 @@ impl AppActor {
                             continue;
                         };
                         let action = guard_activity_resolution_completion(&self.state, action);
+                        let composer_acceptance =
+                            composer_acceptance_identity_for_action(&action);
                         let trust_projection_transition = match &action {
                             AppAction::AuthoritativeDeviceTrustChanged { generation, transition_id, .. } => {
                                 Some((*generation, *transition_id))
@@ -1585,6 +1851,10 @@ impl AppActor {
                             deferred_reducer_side_effects,
                         )
                         .await;
+                        if let Some(identity) = composer_acceptance {
+                            self.pending_composer_acceptances
+                                .retain(|_, pending| pending.identity != identity);
+                        }
                         if let Some(activity_update) = self
                             .activity_projection
                             .update_action_for_open_state(&self.state)
@@ -1634,12 +1904,7 @@ impl AppActor {
         if previous_drafts != self.state.composer_drafts
             || previous_composer_targets != current_composer_targets
         {
-            self.state
-                .composer_drafts
-                .reconcile_lifecycle(&ComposerDraftProtection {
-                    active: current_composer_targets,
-                    leased: BTreeSet::new(),
-                });
+            self.reconcile_composer_draft_lifecycle_with_active(current_composer_targets);
         }
         let mut deferred = DeferredReducerSideEffects {
             cancel_activity_resolution: activity_was_open
@@ -1677,6 +1942,39 @@ impl AppActor {
             };
         }
         (effects, deferred)
+    }
+
+    fn reconcile_composer_draft_lifecycle(&mut self) {
+        self.reconcile_composer_draft_lifecycle_with_active(active_composer_targets(&self.state));
+    }
+
+    fn reconcile_composer_draft_lifecycle_with_active(&mut self, active: BTreeSet<ComposerTarget>) {
+        let leased = composer_draft_session_key(&self.state)
+            .map(|account| self.composer_draft_leases.protected_targets(&account))
+            .unwrap_or_default();
+        self.state
+            .composer_drafts
+            .reconcile_lifecycle(&ComposerDraftProtection { active, leased });
+    }
+
+    fn forward_composer_draft_permit(
+        &mut self,
+        request_id: RequestId,
+        identity: ComposerAcceptanceIdentity,
+        permit: ComposerDraftCommandPermit,
+    ) -> ForwardedComposerDraftPermit {
+        self.pending_composer_acceptances.insert(
+            request_id,
+            PendingComposerAcceptance {
+                identity,
+                _permit: permit.clone(),
+            },
+        );
+        ForwardedComposerDraftPermit::new(
+            request_id,
+            permit,
+            self.composer_draft_rejected_tx.clone(),
+        )
     }
 
     async fn apply_deferred_reducer_side_effects(&mut self, deferred: DeferredReducerSideEffects) {
@@ -1845,9 +2143,21 @@ impl AppActor {
         {
             self.flush_pending_composer_drafts().await;
         }
+        let Ok(permits) = self
+            .composer_draft_leases
+            .persistence_permits(&key_id, composer_draft_targets(&drafts))
+        else {
+            record(DiagnosticEvent::new(
+                DiagnosticLevel::Error,
+                "core.composer_draft",
+                "persistence_permit_exhausted",
+            ));
+            return;
+        };
         self.pending_composer_draft_persist = Some(PendingComposerDraftPersist {
             key_id,
             drafts,
+            permits,
             deadline: Instant::now() + COMPOSER_DRAFT_PERSIST_DEBOUNCE,
         });
     }
@@ -1863,8 +2173,15 @@ impl AppActor {
             return;
         };
         let store = self.composer_draft_store_actor.clone();
+        let PendingComposerDraftPersist {
+            key_id,
+            drafts,
+            permits,
+            deadline: _,
+        } = pending;
         let _ = executor::spawn_blocking(move || {
-            store.save_composer_drafts(&pending.key_id, &pending.drafts)
+            let _permits = permits;
+            store.save_composer_drafts(&key_id, &drafts)
         })
         .await;
     }
@@ -1996,7 +2313,17 @@ impl AppActor {
     }
 
     /// Returns whether `AppState` changed.
-    async fn handle_command(&mut self, command: CoreCommand) -> bool {
+    async fn handle_command(&mut self, envelope: CoreCommandEnvelope) -> bool {
+        let CoreCommandEnvelope {
+            command,
+            composer_permit,
+        } = envelope;
+        debug_assert_eq!(
+            command.composer_draft_scope().is_some(),
+            composer_permit.is_some(),
+            "composer revision commands must enter AppActor with an exact permit"
+        );
+        let mut composer_permit = composer_permit;
         let command_request_id = command.request_id();
         if command.requires_ready_session()
             && !is_ready_session_for_commands(&self.state.session)
@@ -2284,6 +2611,13 @@ impl AppActor {
                         != ScheduledSendCapability::LocalFallback
                     {
                         let scheduled_id = scheduled_send_id();
+                        let forwarded_permit = self.forward_composer_draft_permit(
+                            request_id,
+                            ComposerAcceptanceIdentity::ScheduledSend(scheduled_id.clone()),
+                            composer_permit
+                                .take()
+                                .expect("server schedule command must carry its admitted permit"),
+                        );
                         if !self
                             .account_actor
                             .send(AccountMessage::ScheduleServerDelayedSend {
@@ -2294,6 +2628,7 @@ impl AppActor {
                                 body,
                                 send_at_ms,
                                 draft_revision,
+                                composer_permit: forwarded_permit,
                             })
                             .await
                         {
@@ -3135,12 +3470,23 @@ impl AppActor {
                     return false;
                 }
                 // Route to AccountActor (which forwards to TimelineManagerActor).
-                let _ = self
-                    .account_actor
-                    .send(crate::account::AccountMessage::TimelineCommand(
-                        timeline_command,
-                    ))
-                    .await;
+                let message = if let Some(permit) = composer_permit.take() {
+                    let request_id = timeline_command
+                        .composer_account_fence()
+                        .map(|(request_id, _)| request_id)
+                        .expect("leased timeline command must have an account fence");
+                    let identity =
+                        composer_acceptance_identity_for_timeline_command(&timeline_command)
+                            .expect("leased timeline command must have an acceptance identity");
+                    crate::account::AccountMessage::LeasedTimelineCommand {
+                        command: timeline_command,
+                        composer_permit: self
+                            .forward_composer_draft_permit(request_id, identity, permit),
+                    }
+                } else {
+                    crate::account::AccountMessage::TimelineCommand(timeline_command)
+                };
+                let _ = self.account_actor.send(message).await;
                 false
             }
             CoreCommand::Search(search_command) => {
@@ -3973,6 +4319,72 @@ fn composer_draft_session_key(state: &AppState) -> Option<koushi_key::SessionKey
         | SessionState::Rejecting { .. }
         | SessionState::LoggingOut
         | SessionState::Locked(_) => None,
+    }
+}
+
+fn composer_draft_targets(drafts: &ComposerDraftStore) -> BTreeSet<ComposerTarget> {
+    let mut targets = BTreeSet::new();
+    for room_id in drafts
+        .rooms
+        .keys()
+        .chain(drafts.room_revisions.keys())
+        .chain(drafts.room_last_accepted_clear_revisions.keys())
+    {
+        targets.insert(ComposerTarget::Main {
+            room_id: room_id.clone(),
+        });
+    }
+    for (room_id, threads) in &drafts.threads {
+        for root_event_id in threads.keys() {
+            targets.insert(ComposerTarget::Thread {
+                room_id: room_id.clone(),
+                root_event_id: root_event_id.clone(),
+            });
+        }
+    }
+    for (room_id, threads) in &drafts.thread_revisions {
+        for root_event_id in threads.keys() {
+            targets.insert(ComposerTarget::Thread {
+                room_id: room_id.clone(),
+                root_event_id: root_event_id.clone(),
+            });
+        }
+    }
+    for (room_id, threads) in &drafts.thread_last_accepted_clear_revisions {
+        for root_event_id in threads.keys() {
+            targets.insert(ComposerTarget::Thread {
+                room_id: room_id.clone(),
+                root_event_id: root_event_id.clone(),
+            });
+        }
+    }
+    targets
+}
+
+fn composer_acceptance_identity_for_timeline_command(
+    command: &TimelineCommand,
+) -> Option<ComposerAcceptanceIdentity> {
+    match command {
+        TimelineCommand::SubmitText { submission_id, .. }
+        | TimelineCommand::SubmitReply { submission_id, .. } => Some(
+            ComposerAcceptanceIdentity::Submission(submission_id.clone()),
+        ),
+        _ => None,
+    }
+}
+
+fn composer_acceptance_identity_for_action(
+    action: &AppAction,
+) -> Option<ComposerAcceptanceIdentity> {
+    match action {
+        AppAction::ComposerSubmissionAcceptedAtRevision { submission_id, .. }
+        | AppAction::ThreadSubmissionAcceptedAtRevision { submission_id, .. } => Some(
+            ComposerAcceptanceIdentity::Submission(submission_id.clone()),
+        ),
+        AppAction::ScheduledSendCreatedAtRevision { item, .. } => Some(
+            ComposerAcceptanceIdentity::ScheduledSend(item.scheduled_id.clone()),
+        ),
+        _ => None,
     }
 }
 
@@ -5253,6 +5665,7 @@ mod tests {
         let mut connection = CoreConnection {
             connection_id: RuntimeConnectionId(7),
             command_tx,
+            composer_draft_leases: Arc::new(ComposerDraftLeaseRegistry::new()),
             event_rx,
             snapshot_rx,
             next_sequence: AtomicU64::new(1),
@@ -6061,6 +6474,9 @@ mod tests {
             next_room.to_owned(),
             std::collections::VecDeque::from([request_id]),
         );
+        let composer_draft_leases = Arc::new(ComposerDraftLeaseRegistry::new());
+        let composer_draft_lease_changes = composer_draft_leases.subscribe();
+        let (composer_draft_rejected_tx, composer_draft_rejected_rx) = mpsc::unbounded_channel();
         let actor = AppActor {
             command_rx,
             action_rx,
@@ -6075,6 +6491,11 @@ mod tests {
             room_preferences_loaded_for: Some(session_key),
             state_generation: 0,
             pending_composer_draft_persist: None,
+            composer_draft_leases,
+            composer_draft_lease_changes,
+            composer_draft_rejected_tx,
+            composer_draft_rejected_rx,
+            pending_composer_acceptances: HashMap::new(),
             account_actor,
             activity_projection: ActivityProjection::default(),
             activity_resolution_generation: 0,

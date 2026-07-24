@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap},
     fmt,
     sync::{Arc, Mutex, Weak},
 };
@@ -257,6 +257,20 @@ impl ComposerDraftLeaseRegistry {
         let _ = Self::notify_locked(&mut state, &self.changes);
     }
 
+    pub(crate) fn revoke_live_generation(&self) {
+        let mut state = self.state.lock().expect("composer lease registry mutex");
+        let Some(generation) = state.live_generation.take() else {
+            return;
+        };
+        // Activation records gate new admission only. Already-admitted command
+        // and persistence guards live in their independent permit maps and
+        // remain protected until the last corresponding RAII guard drops.
+        state
+            .leases
+            .retain(|_, lease| lease.generation != generation);
+        let _ = Self::notify_locked(&mut state, &self.changes);
+    }
+
     pub fn persistence_permits(
         self: &Arc<Self>,
         account: &SessionKeyId,
@@ -292,7 +306,7 @@ impl ComposerDraftLeaseRegistry {
             .collect())
     }
 
-    pub fn protected_targets(&self, account: &SessionKeyId) -> HashSet<ComposerTarget> {
+    pub fn protected_targets(&self, account: &SessionKeyId) -> BTreeSet<ComposerTarget> {
         let state = self.state.lock().expect("composer lease registry mutex");
         state
             .leases

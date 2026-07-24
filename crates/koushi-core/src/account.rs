@@ -61,6 +61,7 @@ use crate::command::{
     SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SyncCommand, ThreadsListCommand,
     TimelineCommand,
 };
+use crate::composer_draft_lifecycle::ComposerDraftLeaseRegistry;
 use crate::event::{
     AccountEvent, CoreEvent, E2eeTrustEvent, EventCacheFailureReasonClass,
     EventCacheSubscribeStatus, LiveSignalsEvent, LocalEncryptionEvent,
@@ -78,6 +79,7 @@ use crate::renderable_thumbnail::{
     RenderableThumbnailKind, clear_renderable_thumbnail_cache, store_renderable_thumbnail,
 };
 use crate::room::{RoomActorHandle, RoomMessage};
+use crate::runtime::ForwardedComposerDraftPermit;
 use crate::search::SearchActorHandle;
 use crate::startup_trace::{self, StartupPhase};
 use crate::store::{StoreActor, account_key_from_info, session_key_id_from_info};
@@ -351,6 +353,10 @@ pub enum AccountMessage {
     SyncCommand(SyncCommand),
     RoomCommand(RoomCommand),
     TimelineCommand(TimelineCommand),
+    LeasedTimelineCommand {
+        command: TimelineCommand,
+        composer_permit: ForwardedComposerDraftPermit,
+    },
     ResolveActivity {
         generation: u64,
         requests: Vec<crate::activity_resolution::ActivityResolutionRequest>,
@@ -377,6 +383,7 @@ pub enum AccountMessage {
         body: String,
         send_at_ms: u64,
         draft_revision: ComposerDraftRevision,
+        composer_permit: ForwardedComposerDraftPermit,
     },
     DispatchLocalScheduledSend {
         request_id: RequestId,
@@ -1089,6 +1096,7 @@ pub struct AccountActor {
     session: Option<Arc<MatrixClientSession>>,
     /// Session key for credential store operations.
     session_key_id: Option<SessionKeyId>,
+    composer_draft_leases: Arc<ComposerDraftLeaseRegistry>,
     provisional_persistable: Option<PersistableMatrixSession>,
     session_promoted: bool,
     trust_generation: u64,
@@ -1242,6 +1250,7 @@ impl AccountActor {
         action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
         initial_link_preview_policy: LinkPreviewContext,
+        composer_draft_leases: Arc<ComposerDraftLeaseRegistry>,
     ) -> AccountActorHandle {
         // AppActor forwards every Room/Timeline/Sync command here via send().await;
         // sized so heavy sync does not block the AppActor's forwarding.
@@ -1265,6 +1274,7 @@ impl AccountActor {
         let actor = AccountActor {
             session: None,
             session_key_id: None,
+            composer_draft_leases,
             provisional_persistable: None,
             session_promoted: false,
             trust_generation: 0,
@@ -1368,6 +1378,13 @@ impl AccountActor {
                 AccountMessage::TimelineCommand(timeline_command) => {
                     self.route_timeline_command(timeline_command).await;
                 }
+                AccountMessage::LeasedTimelineCommand {
+                    command,
+                    composer_permit,
+                } => {
+                    self.route_leased_timeline_command(command, composer_permit)
+                        .await;
+                }
                 AccountMessage::ResolveActivity {
                     generation,
                     requests,
@@ -1467,6 +1484,7 @@ impl AccountActor {
                     body,
                     send_at_ms,
                     draft_revision,
+                    composer_permit,
                 } => {
                     self.handle_schedule_server_delayed_send(
                         request_id,
@@ -1476,6 +1494,7 @@ impl AccountActor {
                         body,
                         send_at_ms,
                         draft_revision,
+                        composer_permit,
                     )
                     .await;
                 }
@@ -1982,6 +2001,23 @@ impl AccountActor {
     /// account-owner barrier. AppActor's check alone cannot cover a switch
     /// already queued ahead of this message in the AccountActor mailbox.
     async fn route_timeline_command(&mut self, command: TimelineCommand) {
+        self.route_timeline_command_with_permit(command, None).await;
+    }
+
+    async fn route_leased_timeline_command(
+        &mut self,
+        command: TimelineCommand,
+        composer_permit: ForwardedComposerDraftPermit,
+    ) {
+        self.route_timeline_command_with_permit(command, Some(composer_permit))
+            .await;
+    }
+
+    async fn route_timeline_command_with_permit(
+        &mut self,
+        command: TimelineCommand,
+        composer_permit: Option<ForwardedComposerDraftPermit>,
+    ) {
         if !composer_timeline_command_targets_active_session(self.session_key_id.as_ref(), &command)
             && let Some((request_id, _)) = command.composer_account_fence()
         {
@@ -1998,10 +2034,14 @@ impl AccountActor {
             self.link_preview_policy.encrypted_global_enabled = *encrypted_global_enabled;
             self.link_preview_policy.room_overrides = room_overrides.clone();
         }
-        let _ = self
-            .timeline_manager
-            .send(TimelineMessage::Command(command))
-            .await;
+        let message = match composer_permit {
+            Some(composer_permit) => TimelineMessage::LeasedCommand {
+                command,
+                composer_permit,
+            },
+            None => TimelineMessage::Command(command),
+        };
+        let _ = self.timeline_manager.send(message).await;
     }
 
     fn flush_pending_crawler_notification(&mut self) {
@@ -2143,6 +2183,7 @@ impl AccountActor {
         body: String,
         send_at_ms: u64,
         draft_revision: ComposerDraftRevision,
+        composer_permit: ForwardedComposerDraftPermit,
     ) {
         let Some(session) = &self.session else {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
@@ -2162,23 +2203,27 @@ impl AccountActor {
                 .await
             {
                 Ok(delay_id) => {
-                    self.send_actions(vec![
-                        AppAction::ScheduledSendCapabilityChanged {
-                            capability: ScheduledSendCapability::ServerDelayedEvents,
-                        },
-                        AppAction::ScheduledSendCreatedAtRevision {
-                            item: ScheduledSendItem {
-                                scheduled_id,
-                                room_id,
-                                thread_root_event_id,
-                                body,
-                                send_at_ms,
-                                handle: ScheduledSendHandle::Server { delay_id },
-                                is_dispatching: false,
+                    send_scheduled_acceptance_actions(
+                        &self.action_tx,
+                        vec![
+                            AppAction::ScheduledSendCapabilityChanged {
+                                capability: ScheduledSendCapability::ServerDelayedEvents,
                             },
-                            draft_revision,
-                        },
-                    ])
+                            AppAction::ScheduledSendCreatedAtRevision {
+                                item: ScheduledSendItem {
+                                    scheduled_id,
+                                    room_id,
+                                    thread_root_event_id,
+                                    body,
+                                    send_at_ms,
+                                    handle: ScheduledSendHandle::Server { delay_id },
+                                    is_dispatching: false,
+                                },
+                                draft_revision,
+                            },
+                        ],
+                        composer_permit,
+                    )
                     .await;
                     return;
                 }
@@ -2186,23 +2231,27 @@ impl AccountActor {
             }
         }
 
-        self.send_actions(vec![
-            AppAction::ScheduledSendCapabilityChanged {
-                capability: ScheduledSendCapability::LocalFallback,
-            },
-            AppAction::ScheduledSendCreatedAtRevision {
-                item: ScheduledSendItem {
-                    scheduled_id,
-                    room_id,
-                    thread_root_event_id,
-                    body,
-                    send_at_ms,
-                    handle: ScheduledSendHandle::Local,
-                    is_dispatching: false,
+        send_scheduled_acceptance_actions(
+            &self.action_tx,
+            vec![
+                AppAction::ScheduledSendCapabilityChanged {
+                    capability: ScheduledSendCapability::LocalFallback,
                 },
-                draft_revision,
-            },
-        ])
+                AppAction::ScheduledSendCreatedAtRevision {
+                    item: ScheduledSendItem {
+                        scheduled_id,
+                        room_id,
+                        thread_root_event_id,
+                        body,
+                        send_at_ms,
+                        handle: ScheduledSendHandle::Local,
+                        is_dispatching: false,
+                    },
+                    draft_revision,
+                },
+            ],
+            composer_permit,
+        )
         .await;
     }
 
@@ -2617,6 +2666,11 @@ impl AccountActor {
     }
 
     async fn stop_current_session_runtime(&mut self) {
+        // Retire the renderer before any account-owned child can be replaced.
+        // Already-admitted command permits remain live until their exact
+        // reducer settlement, but no producer from the retired generation can
+        // enter a new command.
+        self.composer_draft_leases.revoke_live_generation();
         self.stop_recovery_task().await;
         self.stop_provisional_runtime().await;
         self.stop_recovery_observer().await;
@@ -7674,8 +7728,19 @@ impl AccountActor {
         .await;
     }
 
-    async fn send_actions(&self, actions: Vec<AppAction>) {
-        let _ = self.action_tx.send(actions).await;
+    async fn send_actions(&self, actions: Vec<AppAction>) -> bool {
+        self.action_tx.send(actions).await.is_ok()
+    }
+}
+
+async fn send_scheduled_acceptance_actions(
+    action_tx: &mpsc::Sender<Vec<AppAction>>,
+    actions: Vec<AppAction>,
+    mut composer_permit: ForwardedComposerDraftPermit,
+) {
+    composer_permit.acceptance_projection_reached();
+    if action_tx.send(actions).await.is_ok() {
+        composer_permit.acceptance_enqueued();
     }
 }
 
@@ -8569,6 +8634,117 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn scheduled_acceptance_retains_exact_permit_until_reducer_delivery() {
+        let account = SessionKeyId {
+            homeserver: "https://schedule.example.test".to_owned(),
+            user_id: "@schedule:example.test".to_owned(),
+            device_id: "SCHEDULE".to_owned(),
+        };
+        let target = koushi_state::ComposerTarget::Main {
+            room_id: "!scheduled:example.test".to_owned(),
+        };
+        let scope = crate::composer_draft_lifecycle::ComposerDraftScope {
+            account: account.clone(),
+            target: target.clone(),
+        };
+        let registry = Arc::new(crate::composer_draft_lifecycle::ComposerDraftLeaseRegistry::new());
+        let renderer_generation = registry
+            .begin_renderer_generation()
+            .expect("begin renderer generation");
+        let lease_id = registry
+            .acquire(renderer_generation, scope.clone())
+            .expect("acquire scheduled-send lease");
+        let command_permit = registry
+            .try_command_permit(renderer_generation, lease_id, &scope)
+            .expect("admit scheduled-send command");
+        let app_pending_permit = command_permit.clone();
+        registry
+            .release(renderer_generation, lease_id)
+            .expect("release activation after command admission");
+
+        let request_id = RequestId {
+            connection_id: RuntimeConnectionId(44),
+            sequence: 9,
+        };
+        let (rejected_tx, mut rejected_rx) = mpsc::unbounded_channel();
+        let (acceptance_probe_tx, acceptance_probe_rx) = oneshot::channel();
+        let forwarded_permit = ForwardedComposerDraftPermit::new_with_acceptance_probe(
+            request_id,
+            command_permit,
+            rejected_tx,
+            acceptance_probe_tx,
+        );
+        let (action_tx, mut action_rx) = mpsc::channel(1);
+        action_tx
+            .try_send(Vec::new())
+            .expect("fill reducer action lane");
+        let send = tokio::spawn(async move {
+            send_scheduled_acceptance_actions(
+                &action_tx,
+                vec![AppAction::ScheduledSendCreatedAtRevision {
+                    item: ScheduledSendItem {
+                        scheduled_id: "scheduled-permit".to_owned(),
+                        room_id: "!scheduled:example.test".to_owned(),
+                        thread_root_event_id: None,
+                        body: "synthetic body".to_owned(),
+                        send_at_ms: 1,
+                        handle: ScheduledSendHandle::Local,
+                        is_dispatching: false,
+                    },
+                    draft_revision: 4.into(),
+                }],
+                forwarded_permit,
+            )
+            .await;
+        });
+
+        acceptance_probe_rx
+            .await
+            .expect("account schedule reached acceptance projection");
+        assert_eq!(
+            registry.protected_targets(&account),
+            BTreeSet::from([target.clone()]),
+            "the AccountActor schedule permit must protect the exact blocked target"
+        );
+        assert!(
+            action_rx
+                .recv()
+                .await
+                .expect("reducer lane marker")
+                .is_empty(),
+            "the first action only opens the deterministic reducer barrier"
+        );
+        let acceptance = action_rx.recv().await.expect("scheduled acceptance action");
+        assert!(matches!(
+            acceptance.as_slice(),
+            [AppAction::ScheduledSendCreatedAtRevision { item, .. }]
+                if item.scheduled_id == "scheduled-permit"
+        ));
+        send.await.expect("scheduled acceptance sender");
+        assert_eq!(
+            registry.protected_targets(&account),
+            BTreeSet::from([target.clone()]),
+            "the AppActor pending clone must outlive schedule acceptance enqueue"
+        );
+
+        let mut changes = registry.subscribe();
+        changes.borrow_and_update();
+        drop(app_pending_permit);
+        changes
+            .changed()
+            .await
+            .expect("matching reducer release notification");
+        assert!(
+            registry.protected_targets(&account).is_empty(),
+            "the scheduled target becomes eligible only after reducer delivery"
+        );
+        assert!(
+            rejected_rx.try_recv().is_err(),
+            "successful scheduled acceptance must disarm rejection cleanup"
+        );
+    }
+
     #[test]
     fn scheduled_thread_message_content_preserves_the_thread_relation() {
         let content = build_scheduled_message_content(
@@ -9122,7 +9298,13 @@ mod tests {
         );
         let (action_tx, mut action_rx) = mpsc::channel(16);
         let (event_tx, _) = broadcast::channel(16);
-        let handle = AccountActor::spawn(store, action_tx, event_tx, LinkPreviewContext::default());
+        let handle = AccountActor::spawn(
+            store,
+            action_tx,
+            event_tx,
+            LinkPreviewContext::default(),
+            Arc::new(ComposerDraftLeaseRegistry::new()),
+        );
 
         let cases = [
             SyntheticVerificationTerminal::Success,
@@ -9852,7 +10034,13 @@ mod tests {
 
         let (action_tx, mut action_rx) = mpsc::channel(16);
         let (event_tx, mut event_rx) = broadcast::channel(16);
-        let handle = AccountActor::spawn(store, action_tx, event_tx, LinkPreviewContext::default());
+        let handle = AccountActor::spawn(
+            store,
+            action_tx,
+            event_tx,
+            LinkPreviewContext::default(),
+            Arc::new(ComposerDraftLeaseRegistry::new()),
+        );
 
         let request_id = RequestId {
             connection_id: crate::ids::RuntimeConnectionId(1),
@@ -12042,7 +12230,13 @@ mod tests {
         );
         let (action_tx, action_rx) = mpsc::channel(16);
         let (event_tx, event_rx) = broadcast::channel(16);
-        let handle = AccountActor::spawn(store, action_tx, event_tx, LinkPreviewContext::default());
+        let handle = AccountActor::spawn(
+            store,
+            action_tx,
+            event_tx,
+            LinkPreviewContext::default(),
+            Arc::new(ComposerDraftLeaseRegistry::new()),
+        );
         (handle, action_rx, event_rx)
     }
 
@@ -12500,6 +12694,7 @@ mod tests {
             session_change_observer: None,
             account_hydration_task: None,
             account_hydration_generation: 0,
+            composer_draft_leases: Arc::new(ComposerDraftLeaseRegistry::new()),
             next_incoming_verification_sequence: INCOMING_VERIFICATION_FLOW_ID_BASE,
             pending_crawler_notification: None,
             avatar_cache: HashMap::new(),

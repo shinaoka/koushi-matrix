@@ -7,9 +7,10 @@
 
 use std::time::Duration;
 
+use koushi_core::CoreCommand;
 use koushi_core::executor;
 use koushi_core::ids::{RequestId, RuntimeConnectionId};
-use koushi_core::runtime::{CoreConnection, CoreRuntime};
+use koushi_core::runtime::{CommandSubmitError, CoreConnection, CoreRuntime};
 use koushi_state::{
     ActivityRow, AppAction, AppearanceSettings, CurrentDeviceTrustState, RoomSummary, RoomTags,
     SessionInfo, SettingsPatch, ThemePreference,
@@ -139,6 +140,56 @@ where
         executor::sleep(Duration::from_millis(5)).await;
     }
     panic!("state predicate was not satisfied");
+}
+
+/// Event-driven state fence for tests that must not rely on polling sleeps.
+///
+/// The timeout is only a deadlock guard. Progress is driven by the runtime's
+/// event stream, so the predicate is rechecked only after an observable actor
+/// transition.
+pub async fn wait_for_state_event<F>(
+    connection: &mut CoreConnection,
+    predicate: F,
+) -> koushi_state::AppState
+where
+    F: Fn(&koushi_state::AppState) -> bool,
+{
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let snapshot = connection.snapshot();
+            if predicate(&snapshot) {
+                return snapshot;
+            }
+            let _ = connection
+                .recv_event()
+                .await
+                .expect("runtime event stream must remain open");
+        }
+    })
+    .await
+    .expect("state predicate was not satisfied before the event deadline")
+}
+
+pub async fn submit_composer_command(
+    connection: &CoreConnection,
+    command: CoreCommand,
+) -> Result<(), CommandSubmitError> {
+    let scope = command
+        .composer_draft_scope()
+        .expect("composer command must declare an exact lease scope");
+    let generation = connection
+        .begin_composer_draft_renderer_generation()
+        .expect("begin composer renderer generation");
+    let lease_id = connection
+        .acquire_composer_draft_lease(generation, scope)
+        .expect("acquire composer draft lease");
+    let result = connection
+        .command_with_composer_lease(generation, lease_id, command)
+        .await;
+    connection
+        .release_composer_draft_lease(generation, lease_id)
+        .expect("release composer draft lease");
+    result
 }
 
 /// Convenience: start a runtime and inject a ready session plus a single

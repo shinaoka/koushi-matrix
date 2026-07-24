@@ -10,13 +10,14 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use koushi_core::command::{AccountCommand, CoreCommand, SyncCommand, TimelineCommand};
+use koushi_core::composer_draft_lifecycle::ComposerDraftScope;
 use koushi_core::event::{
     AccountEvent, CoreEvent, SyncEvent, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId,
     TimelineMessageActions, TimelineSendState,
 };
 use koushi_core::ids::{AccountKey, RequestId, TimelineKey};
 use koushi_core::runtime::{CoreConnection, CoreRuntime};
-use koushi_state::{AuthSecret, MentionIntent, SessionState, SubmissionId};
+use koushi_state::{AuthSecret, ComposerTarget, MentionIntent, SessionState, SubmissionId};
 use matrix_sdk::{
     ruma::{event_id, room_id},
     test_utils::mocks::MatrixMockServer,
@@ -1978,22 +1979,40 @@ async fn run_fast_send_queue_feedback() {
         },
         other => panic!("expected ready session before unsubscribe send, got {other:?}"),
     };
+    let composer_generation = conn
+        .begin_composer_draft_renderer_generation()
+        .expect("begin fast-send composer renderer generation");
+    let composer_scope = ComposerDraftScope {
+        account: unsubscribe_account.clone(),
+        target: ComposerTarget::Main {
+            room_id: room_id.to_string(),
+        },
+    };
+    let composer_lease = conn
+        .acquire_composer_draft_lease(composer_generation, composer_scope)
+        .expect("acquire fast-send composer lease");
     fast_send_queue_phase(
         "fast_send_queue unsubscribe send command",
-        conn.command(CoreCommand::Timeline(TimelineCommand::SubmitText {
-            request_id: unsubscribe_request_id,
-            expected_account: unsubscribe_account,
-            submission_id: unsubscribe_submission_id.clone(),
-            key: key.clone(),
-            transaction_id: "fast-unsubscribe-client".to_owned(),
-            body: "fast unsubscribe terminal body".to_owned(),
-            mentions: MentionIntent::default(),
-            draft_revision: 0.into(),
-        })),
+        conn.command_with_composer_lease(
+            composer_generation,
+            composer_lease,
+            CoreCommand::Timeline(TimelineCommand::SubmitText {
+                request_id: unsubscribe_request_id,
+                expected_account: unsubscribe_account,
+                submission_id: unsubscribe_submission_id.clone(),
+                key: key.clone(),
+                transaction_id: "fast-unsubscribe-client".to_owned(),
+                body: "fast unsubscribe terminal body".to_owned(),
+                mentions: MentionIntent::default(),
+                draft_revision: 0.into(),
+            }),
+        ),
     )
     .await
     .expect("fast_send_queue unsubscribe send command phase")
     .expect("fast_send_queue submit unsubscribe send");
+    conn.release_composer_draft_lease(composer_generation, composer_lease)
+        .expect("release fast-send composer lease");
 
     let pending_deadline = tokio::time::Instant::now() + FAST_SEND_QUEUE_PHASE_TIMEOUT;
     let mut unsubscribe_sdk_transaction_id = None;

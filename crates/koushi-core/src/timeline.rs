@@ -155,6 +155,7 @@ use crate::read_state::{
     ReadPersistenceSnapshot, ReadStateEngine, ReadStateKey, ReadTarget, ReadWaiterId,
     ReadWaiterTerminal, ReadWakeResult,
 };
+use crate::runtime::ForwardedComposerDraftPermit;
 use crate::search::SearchIndexMessage;
 use crate::startup_trace::{self, StartupPhase};
 use crate::threads_list::{
@@ -284,6 +285,10 @@ impl TimelineSendTerminalIngress {
 /// Messages routed to the `TimelineManagerActor`.
 pub(crate) enum TimelineMessage {
     Command(TimelineCommand),
+    LeasedCommand {
+        command: TimelineCommand,
+        composer_permit: ForwardedComposerDraftPermit,
+    },
     AcknowledgeProjection {
         projection_request_id: RequestId,
         key: TimelineKey,
@@ -3026,6 +3031,13 @@ impl TimelineManagerActor {
                 TimelineMessage::Command(command) => {
                     self.handle_command(command).await;
                 }
+                TimelineMessage::LeasedCommand {
+                    command,
+                    composer_permit,
+                } => {
+                    self.handle_command_with_permit(command, Some(composer_permit))
+                        .await;
+                }
                 TimelineMessage::AcknowledgeProjection {
                     projection_request_id,
                     key,
@@ -3937,6 +3949,14 @@ impl TimelineManagerActor {
     }
 
     async fn handle_command(&mut self, command: TimelineCommand) {
+        self.handle_command_with_permit(command, None).await;
+    }
+
+    async fn handle_command_with_permit(
+        &mut self,
+        command: TimelineCommand,
+        mut composer_permit: Option<ForwardedComposerDraftPermit>,
+    ) {
         match command {
             TimelineCommand::Subscribe { request_id, key } => {
                 trace_timeline_route("manager_received", "subscribe", request_id, &key);
@@ -4109,6 +4129,7 @@ impl TimelineManagerActor {
                     draft_revision,
                     SendComposerProjection::for_send_text(&key),
                     TimelineSendEnqueuePayload::Text { body, mentions },
+                    composer_permit.take(),
                 )
                 .await;
             }
@@ -4171,6 +4192,7 @@ impl TimelineManagerActor {
                         body,
                         mentions,
                     },
+                    composer_permit.take(),
                 )
                 .await;
             }
@@ -4561,6 +4583,7 @@ impl TimelineManagerActor {
         draft_revision: koushi_state::ComposerDraftRevision,
         projection: SendComposerProjection,
         payload: TimelineSendEnqueuePayload,
+        mut composer_permit: Option<ForwardedComposerDraftPermit>,
     ) {
         if let Some(rejected_key) = self.accepted_submissions.rejected(&submission_id) {
             self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
@@ -4653,6 +4676,9 @@ impl TimelineManagerActor {
             _ => send_submitted_action(key, projection, transaction_id.clone(), body),
         };
         if let Some(action) = action {
+            if let Some(composer_permit) = composer_permit.as_mut() {
+                composer_permit.acceptance_projection_reached();
+            }
             if self.action_tx.send(vec![action]).await.is_err() {
                 self.send_completion
                     .lock()
@@ -4667,6 +4693,9 @@ impl TimelineManagerActor {
                     kind: TimelineFailureKind::QueueOverflow,
                 }));
                 return;
+            }
+            if let Some(composer_permit) = composer_permit.take() {
+                composer_permit.acceptance_enqueued();
             }
         }
         self.accepted_submissions.accept(
@@ -33004,22 +33033,61 @@ mod tests {
         };
         let submission_id = SubmissionId::new("paused-admission");
         let command_id = submission_id.clone();
+        let registry = Arc::new(crate::composer_draft_lifecycle::ComposerDraftLeaseRegistry::new());
+        let scope = crate::composer_draft_lifecycle::ComposerDraftScope {
+            account: test_session_key(),
+            target: koushi_state::ComposerTarget::Main {
+                room_id: key.room_id().to_owned(),
+            },
+        };
+        let renderer_generation = registry
+            .begin_renderer_generation()
+            .expect("begin renderer generation");
+        let lease_id = registry
+            .acquire(renderer_generation, scope.clone())
+            .expect("acquire exact composer lease");
+        let command_permit = registry
+            .try_command_permit(renderer_generation, lease_id, &scope)
+            .expect("admit exact composer command");
+        let app_pending_permit = command_permit.clone();
+        registry
+            .release(renderer_generation, lease_id)
+            .expect("release activation after command admission");
+        let (rejected_tx, mut rejected_rx) = mpsc::unbounded_channel();
+        let (acceptance_probe_tx, acceptance_probe_rx) = oneshot::channel();
+        let forwarded_permit =
+            crate::runtime::ForwardedComposerDraftPermit::new_with_acceptance_probe(
+                fake_rid(7310),
+                command_permit,
+                rejected_tx,
+                acceptance_probe_tx,
+            );
         let route = tokio::spawn(async move {
             manager
-                .handle_command(TimelineCommand::SubmitText {
-                    request_id: fake_rid(7310),
-                    expected_account: test_session_key(),
-                    submission_id: command_id,
-                    key,
-                    transaction_id: "txn-paused".to_owned(),
-                    body: "body".to_owned(),
-                    draft_revision: 4.into(),
-                    mentions: MentionIntent::default(),
-                })
+                .handle_command_with_permit(
+                    TimelineCommand::SubmitText {
+                        request_id: fake_rid(7310),
+                        expected_account: test_session_key(),
+                        submission_id: command_id,
+                        key,
+                        transaction_id: "txn-paused".to_owned(),
+                        body: "body".to_owned(),
+                        draft_revision: 4.into(),
+                        mentions: MentionIntent::default(),
+                    },
+                    Some(forwarded_permit),
+                )
                 .await;
             manager
         });
-        tokio::task::yield_now().await;
+        acceptance_probe_rx
+            .await
+            .expect("timeline reached acceptance projection");
+        assert_eq!(
+            registry.protected_targets(&scope.account),
+            BTreeSet::from([scope.target.clone()]),
+            "the forwarded permit must protect the exact target while reducer delivery is blocked"
+        );
         assert!(
             enqueue_rx.try_recv().is_err(),
             "the manager worker must stay permit-blocked before reducer acceptance"
@@ -33032,6 +33100,26 @@ mod tests {
         let mut manager = route.await.expect("manager route");
         assert!(
             matches!(event_rx.try_recv(), Ok(CoreEvent::Timeline(TimelineEvent::SubmissionAccepted { submission_id: accepted, .. })) if accepted == submission_id)
+        );
+        assert_eq!(
+            registry.protected_targets(&scope.account),
+            BTreeSet::from([scope.target.clone()]),
+            "the AppActor pending clone must outlive timeline acceptance enqueue"
+        );
+        let mut registry_changes = registry.subscribe();
+        registry_changes.borrow_and_update();
+        drop(app_pending_permit);
+        registry_changes
+            .changed()
+            .await
+            .expect("pending acceptance permit release notification");
+        assert!(
+            registry.protected_targets(&scope.account).is_empty(),
+            "the exact target becomes eligible only after the matching reducer acceptance"
+        );
+        assert!(
+            rejected_rx.try_recv().is_err(),
+            "successful acceptance enqueue must disarm rejection cleanup"
         );
         let request = tokio::time::timeout(Duration::from_secs(1), enqueue_rx.recv())
             .await

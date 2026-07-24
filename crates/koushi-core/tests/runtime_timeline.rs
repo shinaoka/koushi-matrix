@@ -8,8 +8,9 @@ use koushi_core::ids::{AccountKey, TimelineKey, TimelineKind};
 use koushi_core::runtime::{COMPOSER_DRAFT_PERSIST_DEBOUNCE, CoreRuntime};
 use koushi_key::SessionKeyId;
 use koushi_state::{
-    AppAction, ComposerDraftRevision, ComposerMode, MentionIntent, SessionState, SubmissionId,
-    ThreadPaneState,
+    AppAction, ComposerDraftRevision, ComposerMode, ComposerTarget, MentionIntent,
+    PreparedUploadFormat, PreparedUploadVariant, SessionState, StagedUploadCompressionChoice,
+    StagedUploadItem, StagedUploadKind, StagedUploadPreparation, SubmissionId, ThreadPaneState,
 };
 
 mod support;
@@ -24,8 +25,38 @@ fn draft_account() -> SessionKeyId {
     }
 }
 
+fn ready_staged_file(id: &str, room_id: &str, position: u64) -> StagedUploadItem {
+    let variant_id = format!("{id}-prepared");
+    StagedUploadItem {
+        staged_id: id.to_owned(),
+        room_id: room_id.to_owned(),
+        position,
+        filename: format!("{id}.txt"),
+        mime_type: "text/plain".to_owned(),
+        byte_count: 32,
+        kind: StagedUploadKind::File,
+        caption: None,
+        compression_choice: StagedUploadCompressionChoice::NotApplicable,
+        preparation: StagedUploadPreparation::Ready {
+            variants: vec![PreparedUploadVariant {
+                variant_id: variant_id.clone(),
+                filename: format!("{id}.txt"),
+                mime_type: "text/plain".to_owned(),
+                byte_count: 32,
+                width: None,
+                height: None,
+                format: PreparedUploadFormat::Original,
+                savings_percent: 0,
+                metadata_stripped: false,
+                thumbnail_refreshed: false,
+            }],
+            selected_variant_id: variant_id,
+        },
+    }
+}
+
 #[tokio::test]
-async fn composer_revision_exhaustion_blocks_plain_reply_and_thread_before_matrix_side_effect() {
+async fn composer_revision_exhaustion_blocks_prepared_plain_reply_and_thread_acceptance() {
     let (runtime, mut conn, _snapshot) = ready_room_conn("!room:example.test").await;
     let room_id = "!room:example.test".to_owned();
     let root_event_id = "$root:example.test".to_owned();
@@ -46,23 +77,29 @@ async fn composer_revision_exhaustion_blocks_plain_reply_and_thread_before_matri
     })
     .await;
 
-    conn.command(CoreCommand::App(AppCommand::SetComposerDraft {
-        request_id: conn.next_request_id(),
-        expected_account: draft_account(),
-        room_id: room_id.clone(),
-        draft: "keep room draft".to_owned(),
-        revision: ComposerDraftRevision::MAX,
-    }))
+    submit_composer_command(
+        &conn,
+        CoreCommand::App(AppCommand::SetComposerDraft {
+            request_id: conn.next_request_id(),
+            expected_account: draft_account(),
+            room_id: room_id.clone(),
+            draft: "keep room draft".to_owned(),
+            revision: ComposerDraftRevision::MAX,
+        }),
+    )
     .await
     .expect("seed maximum room revision");
-    conn.command(CoreCommand::App(AppCommand::SetThreadComposerDraft {
-        request_id: conn.next_request_id(),
-        expected_account: draft_account(),
-        room_id: room_id.clone(),
-        root_event_id: root_event_id.clone(),
-        draft: "keep thread draft".to_owned(),
-        revision: ComposerDraftRevision::MAX,
-    }))
+    submit_composer_command(
+        &conn,
+        CoreCommand::App(AppCommand::SetThreadComposerDraft {
+            request_id: conn.next_request_id(),
+            expected_account: draft_account(),
+            room_id: room_id.clone(),
+            root_event_id: root_event_id.clone(),
+            draft: "keep thread draft".to_owned(),
+            revision: ComposerDraftRevision::MAX,
+        }),
+    )
     .await
     .expect("seed maximum thread revision");
     wait_for_state(&mut conn, |state| {
@@ -73,6 +110,91 @@ async fn composer_revision_exhaustion_blocks_plain_reply_and_thread_before_matri
                 == ComposerDraftRevision::MAX
     })
     .await;
+
+    let main_target = ComposerTarget::Main {
+        room_id: room_id.clone(),
+    };
+    let thread_target = ComposerTarget::Thread {
+        room_id: room_id.clone(),
+        root_event_id: root_event_id.clone(),
+    };
+    let main_staged = vec![
+        ready_staged_file("main-stage-1", &room_id, 1),
+        ready_staged_file("main-stage-2", &room_id, 2),
+    ];
+    let thread_staged = vec![
+        ready_staged_file("thread-stage-1", &room_id, 1),
+        ready_staged_file("thread-stage-2", &room_id, 2),
+    ];
+    conn.command(CoreCommand::App(AppCommand::SetUploadStaging {
+        request_id: conn.next_request_id(),
+        target: main_target.clone(),
+        items: main_staged.clone(),
+    }))
+    .await
+    .expect("stage main prepared uploads");
+    conn.command(CoreCommand::App(AppCommand::SetUploadStaging {
+        request_id: conn.next_request_id(),
+        target: thread_target.clone(),
+        items: thread_staged.clone(),
+    }))
+    .await
+    .expect("stage thread prepared uploads");
+    wait_for_state(&mut conn, |state| {
+        state.upload_staging.items_for_target(&main_target) == main_staged
+            && state.upload_staging.items_for_target(&thread_target) == thread_staged
+    })
+    .await;
+
+    for target in [main_target.clone(), thread_target.clone()] {
+        let request_id = conn.next_request_id();
+        submit_composer_command(
+            &conn,
+            CoreCommand::App(AppCommand::AcceptComposerDraft {
+                request_id,
+                expected_account: draft_account(),
+                target,
+                submitted_revision: ComposerDraftRevision::MAX,
+            }),
+        )
+        .await
+        .expect("submit maximum prepared-upload acceptance");
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                match conn.recv_event().await.expect("runtime event stream") {
+                    event @ CoreEvent::OperationFailed {
+                        request_id: failed_request_id,
+                        ..
+                    } if failed_request_id == request_id => break event,
+                    _ => continue,
+                }
+            }
+        })
+        .await
+        .expect("maximum prepared-upload acceptance should be correlated");
+        assert!(matches!(
+            event,
+            CoreEvent::OperationFailed {
+                failure: CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::ComposerRevisionExhausted
+                },
+                ..
+            }
+        ));
+    }
+    let after_prepared_acceptance = conn.snapshot();
+    assert_eq!(
+        after_prepared_acceptance
+            .upload_staging
+            .items_for_target(&main_target),
+        main_staged
+    );
+    assert_eq!(
+        after_prepared_acceptance
+            .upload_staging
+            .items_for_target(&thread_target),
+        thread_staged
+    );
 
     let account_key = AccountKey("@alice:example.test".to_owned());
     let room_key = TimelineKey::room(account_key.clone(), room_id.clone());
@@ -131,7 +253,7 @@ async fn composer_revision_exhaustion_blocks_plain_reply_and_thread_before_matri
     ];
 
     for (request_id, command) in submissions {
-        conn.command(CoreCommand::Timeline(command))
+        submit_composer_command(&conn, CoreCommand::Timeline(command))
             .await
             .expect("submit maximum revision command");
         let event = tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -183,6 +305,8 @@ async fn composer_revision_exhaustion_blocks_plain_reply_and_thread_before_matri
             .accepted_submission_ids
             .is_empty()
     );
+    assert!(snapshot.timeline.composer.pending_submission_id.is_none());
+    assert!(snapshot.timeline.composer.pending_transaction_id.is_none());
     assert!(
         snapshot
             .timeline
@@ -190,6 +314,20 @@ async fn composer_revision_exhaustion_blocks_plain_reply_and_thread_before_matri
             .last_accepted_clear_revision
             .is_zero()
     );
+    let ThreadPaneState::Open {
+        composer,
+        staged_uploads,
+        ..
+    } = &snapshot.thread
+    else {
+        panic!("thread must remain open");
+    };
+    assert!(composer.accepted_submission_ids.is_empty());
+    assert!(composer.pending_submission_id.is_none());
+    assert!(composer.pending_transaction_id.is_none());
+    assert!(composer.last_accepted_clear_revision.is_zero());
+    assert_eq!(staged_uploads, &thread_staged);
+    assert_eq!(snapshot.timeline.staged_uploads, main_staged);
     drop(runtime);
 }
 
@@ -197,23 +335,26 @@ async fn composer_revision_exhaustion_blocks_plain_reply_and_thread_before_matri
 async fn submitted_text_rejects_a_stale_full_session_owner_before_timeline_routing() {
     let (_runtime, mut conn, _snapshot) = ready_room_conn("!room:example.test").await;
     let request_id = conn.next_request_id();
-    conn.command(CoreCommand::Timeline(TimelineCommand::SubmitText {
-        request_id,
-        expected_account: SessionKeyId {
-            homeserver: "https://stale.example.test".to_owned(),
-            user_id: draft_account().user_id,
-            device_id: "STALE".to_owned(),
-        },
-        submission_id: SubmissionId::new("stale-owner-submission"),
-        key: TimelineKey::room(
-            AccountKey("@alice:example.test".to_owned()),
-            "!room:example.test",
-        ),
-        transaction_id: "stale-owner-transaction".to_owned(),
-        body: "must not reach another account".to_owned(),
-        mentions: MentionIntent::default(),
-        draft_revision: 1.into(),
-    }))
+    submit_composer_command(
+        &conn,
+        CoreCommand::Timeline(TimelineCommand::SubmitText {
+            request_id,
+            expected_account: SessionKeyId {
+                homeserver: "https://stale.example.test".to_owned(),
+                user_id: draft_account().user_id,
+                device_id: "STALE".to_owned(),
+            },
+            submission_id: SubmissionId::new("stale-owner-submission"),
+            key: TimelineKey::room(
+                AccountKey("@alice:example.test".to_owned()),
+                "!room:example.test",
+            ),
+            transaction_id: "stale-owner-transaction".to_owned(),
+            body: "must not reach another account".to_owned(),
+            mentions: MentionIntent::default(),
+            draft_revision: 1.into(),
+        }),
+    )
     .await
     .expect("submit stale-owner text command");
 
@@ -339,14 +480,17 @@ async fn app_command_sets_open_thread_composer_draft() {
     .await;
 
     let request_id = conn.next_request_id();
-    conn.command(CoreCommand::App(AppCommand::SetThreadComposerDraft {
-        request_id,
-        expected_account: draft_account(),
-        room_id: "!room:example.test".to_owned(),
-        root_event_id: "$root:example.test".to_owned(),
-        draft: "thread draft".to_owned(),
-        revision: 1.into(),
-    }))
+    submit_composer_command(
+        &conn,
+        CoreCommand::App(AppCommand::SetThreadComposerDraft {
+            request_id,
+            expected_account: draft_account(),
+            room_id: "!room:example.test".to_owned(),
+            root_event_id: "$root:example.test".to_owned(),
+            draft: "thread draft".to_owned(),
+            revision: 1.into(),
+        }),
+    )
     .await
     .expect("set thread composer draft command");
 
@@ -392,13 +536,16 @@ async fn app_command_sets_selected_room_composer_draft() {
     .await;
 
     let request_id = conn.next_request_id();
-    conn.command(CoreCommand::App(AppCommand::SetComposerDraft {
-        request_id,
-        expected_account: draft_account(),
-        room_id: "!room:example.test".to_owned(),
-        draft: "room draft".to_owned(),
-        revision: 1.into(),
-    }))
+    submit_composer_command(
+        &conn,
+        CoreCommand::App(AppCommand::SetComposerDraft {
+            request_id,
+            expected_account: draft_account(),
+            room_id: "!room:example.test".to_owned(),
+            draft: "room draft".to_owned(),
+            revision: 1.into(),
+        }),
+    )
     .await
     .expect("set room composer draft command");
 
@@ -441,98 +588,122 @@ async fn composer_draft_command_rejects_a_stale_account_owner() {
     })
     .await;
 
-    conn.command(CoreCommand::App(AppCommand::SetComposerDraft {
-        request_id: conn.next_request_id(),
-        expected_account: SessionKeyId {
-            homeserver: "https://stale.example.test".to_owned(),
-            user_id: "@stale-account:example.test".to_owned(),
-            device_id: "STALE".to_owned(),
-        },
-        room_id: "!room:example.test".to_owned(),
-        draft: "must not cross accounts".to_owned(),
-        revision: 10.into(),
-    }))
+    submit_composer_command(
+        &conn,
+        CoreCommand::App(AppCommand::SetComposerDraft {
+            request_id: conn.next_request_id(),
+            expected_account: SessionKeyId {
+                homeserver: "https://stale.example.test".to_owned(),
+                user_id: "@stale-account:example.test".to_owned(),
+                device_id: "STALE".to_owned(),
+            },
+            room_id: "!room:example.test".to_owned(),
+            draft: "must not cross accounts".to_owned(),
+            revision: 10.into(),
+        }),
+    )
     .await
     .expect("submit stale-owner draft command");
-    conn.command(CoreCommand::App(AppCommand::SetComposerDraft {
-        request_id: conn.next_request_id(),
-        expected_account: draft_account(),
-        room_id: "!room:example.test".to_owned(),
-        draft: "current account draft".to_owned(),
-        revision: 1.into(),
-    }))
+    submit_composer_command(
+        &conn,
+        CoreCommand::App(AppCommand::SetComposerDraft {
+            request_id: conn.next_request_id(),
+            expected_account: draft_account(),
+            room_id: "!room:example.test".to_owned(),
+            draft: "current account draft".to_owned(),
+            revision: 1.into(),
+        }),
+    )
     .await
     .expect("submit current-owner draft command");
-    conn.command(CoreCommand::App(AppCommand::AcceptComposerDraft {
-        request_id: conn.next_request_id(),
-        expected_account: SessionKeyId {
-            homeserver: "https://stale.example.test".to_owned(),
-            user_id: "@stale-account:example.test".to_owned(),
-            device_id: "STALE".to_owned(),
-        },
-        target: koushi_state::ComposerTarget::Main {
-            room_id: "!room:example.test".to_owned(),
-        },
-        submitted_revision: 10.into(),
-    }))
+    submit_composer_command(
+        &conn,
+        CoreCommand::App(AppCommand::AcceptComposerDraft {
+            request_id: conn.next_request_id(),
+            expected_account: SessionKeyId {
+                homeserver: "https://stale.example.test".to_owned(),
+                user_id: "@stale-account:example.test".to_owned(),
+                device_id: "STALE".to_owned(),
+            },
+            target: koushi_state::ComposerTarget::Main {
+                room_id: "!room:example.test".to_owned(),
+            },
+            submitted_revision: 10.into(),
+        }),
+    )
     .await
     .expect("submit stale-owner main acceptance");
-    conn.command(CoreCommand::App(AppCommand::SetComposerDraft {
-        request_id: conn.next_request_id(),
-        expected_account: draft_account(),
-        room_id: "!room:example.test".to_owned(),
-        draft: "current account draft after stale acceptance".to_owned(),
-        revision: 2.into(),
-    }))
+    submit_composer_command(
+        &conn,
+        CoreCommand::App(AppCommand::SetComposerDraft {
+            request_id: conn.next_request_id(),
+            expected_account: draft_account(),
+            room_id: "!room:example.test".to_owned(),
+            draft: "current account draft after stale acceptance".to_owned(),
+            revision: 2.into(),
+        }),
+    )
     .await
     .expect("submit current-owner draft after stale acceptance");
-    conn.command(CoreCommand::App(AppCommand::SetThreadComposerDraft {
-        request_id: conn.next_request_id(),
-        expected_account: SessionKeyId {
-            homeserver: "https://stale.example.test".to_owned(),
-            user_id: "@stale-account:example.test".to_owned(),
-            device_id: "STALE".to_owned(),
-        },
-        room_id: "!room:example.test".to_owned(),
-        root_event_id: "$root:example.test".to_owned(),
-        draft: "must not cross thread accounts".to_owned(),
-        revision: 10.into(),
-    }))
-    .await
-    .expect("submit stale-owner thread draft command");
-    conn.command(CoreCommand::App(AppCommand::SetThreadComposerDraft {
-        request_id: conn.next_request_id(),
-        expected_account: draft_account(),
-        room_id: "!room:example.test".to_owned(),
-        root_event_id: "$root:example.test".to_owned(),
-        draft: "current account thread draft".to_owned(),
-        revision: 1.into(),
-    }))
-    .await
-    .expect("submit current-owner thread draft command");
-    conn.command(CoreCommand::App(AppCommand::AcceptComposerDraft {
-        request_id: conn.next_request_id(),
-        expected_account: SessionKeyId {
-            homeserver: "https://stale.example.test".to_owned(),
-            user_id: "@stale-account:example.test".to_owned(),
-            device_id: "STALE".to_owned(),
-        },
-        target: koushi_state::ComposerTarget::Thread {
+    submit_composer_command(
+        &conn,
+        CoreCommand::App(AppCommand::SetThreadComposerDraft {
+            request_id: conn.next_request_id(),
+            expected_account: SessionKeyId {
+                homeserver: "https://stale.example.test".to_owned(),
+                user_id: "@stale-account:example.test".to_owned(),
+                device_id: "STALE".to_owned(),
+            },
             room_id: "!room:example.test".to_owned(),
             root_event_id: "$root:example.test".to_owned(),
-        },
-        submitted_revision: 10.into(),
-    }))
+            draft: "must not cross thread accounts".to_owned(),
+            revision: 10.into(),
+        }),
+    )
+    .await
+    .expect("submit stale-owner thread draft command");
+    submit_composer_command(
+        &conn,
+        CoreCommand::App(AppCommand::SetThreadComposerDraft {
+            request_id: conn.next_request_id(),
+            expected_account: draft_account(),
+            room_id: "!room:example.test".to_owned(),
+            root_event_id: "$root:example.test".to_owned(),
+            draft: "current account thread draft".to_owned(),
+            revision: 1.into(),
+        }),
+    )
+    .await
+    .expect("submit current-owner thread draft command");
+    submit_composer_command(
+        &conn,
+        CoreCommand::App(AppCommand::AcceptComposerDraft {
+            request_id: conn.next_request_id(),
+            expected_account: SessionKeyId {
+                homeserver: "https://stale.example.test".to_owned(),
+                user_id: "@stale-account:example.test".to_owned(),
+                device_id: "STALE".to_owned(),
+            },
+            target: koushi_state::ComposerTarget::Thread {
+                room_id: "!room:example.test".to_owned(),
+                root_event_id: "$root:example.test".to_owned(),
+            },
+            submitted_revision: 10.into(),
+        }),
+    )
     .await
     .expect("submit stale-owner thread acceptance");
-    conn.command(CoreCommand::App(AppCommand::SetThreadComposerDraft {
-        request_id: conn.next_request_id(),
-        expected_account: draft_account(),
-        room_id: "!room:example.test".to_owned(),
-        root_event_id: "$root:example.test".to_owned(),
-        draft: "current account thread draft after stale acceptance".to_owned(),
-        revision: 2.into(),
-    }))
+    submit_composer_command(
+        &conn,
+        CoreCommand::App(AppCommand::SetThreadComposerDraft {
+            request_id: conn.next_request_id(),
+            expected_account: draft_account(),
+            room_id: "!room:example.test".to_owned(),
+            root_event_id: "$root:example.test".to_owned(),
+            draft: "current account thread draft after stale acceptance".to_owned(),
+            revision: 2.into(),
+        }),
+    )
     .await
     .expect("submit current-owner thread draft after stale acceptance");
 
@@ -588,13 +759,16 @@ async fn composer_drafts_persist_after_debounce_and_load_on_restart() {
         })
         .await;
 
-        conn.command(CoreCommand::App(AppCommand::SetComposerDraft {
-            request_id: conn.next_request_id(),
-            expected_account: draft_account(),
-            room_id: "!room:example.test".to_owned(),
-            draft: "survives restart".to_owned(),
-            revision: 1.into(),
-        }))
+        submit_composer_command(
+            &conn,
+            CoreCommand::App(AppCommand::SetComposerDraft {
+                request_id: conn.next_request_id(),
+                expected_account: draft_account(),
+                room_id: "!room:example.test".to_owned(),
+                draft: "survives restart".to_owned(),
+                revision: 1.into(),
+            }),
+        )
         .await
         .expect("set room composer draft");
 
@@ -663,13 +837,16 @@ async fn cleared_composer_drafts_do_not_resurrect_on_restart() {
         })
         .await;
 
-        conn.command(CoreCommand::App(AppCommand::SetComposerDraft {
-            request_id: conn.next_request_id(),
-            expected_account: draft_account(),
-            room_id: "!room:example.test".to_owned(),
-            draft: "deleted before restart".to_owned(),
-            revision: 1.into(),
-        }))
+        submit_composer_command(
+            &conn,
+            CoreCommand::App(AppCommand::SetComposerDraft {
+                request_id: conn.next_request_id(),
+                expected_account: draft_account(),
+                room_id: "!room:example.test".to_owned(),
+                draft: "deleted before restart".to_owned(),
+                revision: 1.into(),
+            }),
+        )
         .await
         .expect("set room composer draft");
         wait_for_state(&mut conn, |state| {
@@ -678,13 +855,16 @@ async fn cleared_composer_drafts_do_not_resurrect_on_restart() {
         .await;
         executor::sleep(COMPOSER_DRAFT_PERSIST_DEBOUNCE * 2).await;
 
-        conn.command(CoreCommand::App(AppCommand::SetComposerDraft {
-            request_id: conn.next_request_id(),
-            expected_account: draft_account(),
-            room_id: "!room:example.test".to_owned(),
-            draft: String::new(),
-            revision: 2.into(),
-        }))
+        submit_composer_command(
+            &conn,
+            CoreCommand::App(AppCommand::SetComposerDraft {
+                request_id: conn.next_request_id(),
+                expected_account: draft_account(),
+                room_id: "!room:example.test".to_owned(),
+                draft: String::new(),
+                revision: 2.into(),
+            }),
+        )
         .await
         .expect("clear room composer draft");
         wait_for_state(&mut conn, |state| state.timeline.composer.draft.is_empty()).await;
