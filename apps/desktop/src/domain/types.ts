@@ -32,6 +32,8 @@ export interface SavedSessionInfo {
   device_id: string;
 }
 
+export type ComposerDraftAccountOwner = SavedSessionInfo;
+
 /**
  * IPC snapshot contract version. Must match `dto.rs`'s `SNAPSHOT_SCHEMA_VERSION`.
  * Bumped to 2 by #87 Phase 4 (domain/ui sectioning).
