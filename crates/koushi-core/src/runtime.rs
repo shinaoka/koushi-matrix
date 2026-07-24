@@ -2622,6 +2622,7 @@ impl AppActor {
                             .account_actor
                             .send(AccountMessage::ScheduleServerDelayedSend {
                                 request_id,
+                                expected_account,
                                 scheduled_id,
                                 room_id,
                                 thread_root_event_id,
