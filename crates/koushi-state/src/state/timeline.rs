@@ -1031,7 +1031,7 @@ impl ComposerDraftStore {
         self.quiescent_room_lru.retain(|room_id| {
             self.room_revisions.contains_key(room_id)
                 && !self.rooms.contains_key(room_id)
-                && !target_is_protected(
+                && !target_is_touch_protected(
                     protection,
                     &ComposerTarget::Main {
                         room_id: room_id.clone(),
@@ -1047,7 +1047,7 @@ impl ComposerDraftStore {
                         .threads
                         .get(room_id)
                         .is_some_and(|threads| threads.contains_key(root_event_id))
-                    && !target_is_protected(
+                    && !target_is_touch_protected(
                         protection,
                         &ComposerTarget::Thread {
                             room_id: room_id.clone(),
@@ -1062,7 +1062,7 @@ impl ComposerDraftStore {
             .filter(|room_id| {
                 !self.rooms.contains_key(*room_id)
                     && !self.quiescent_room_lru.contains(*room_id)
-                    && !target_is_protected(
+                    && !target_is_touch_protected(
                         protection,
                         &ComposerTarget::Main {
                             room_id: (*room_id).clone(),
@@ -1089,7 +1089,7 @@ impl ComposerDraftStore {
                     && !self
                         .quiescent_thread_lru
                         .contains(&(room_id.clone(), root_event_id.clone()))
-                    && !target_is_protected(
+                    && !target_is_touch_protected(
                         protection,
                         &ComposerTarget::Thread {
                             room_id: room_id.clone(),
@@ -1100,31 +1100,75 @@ impl ComposerDraftStore {
             .collect::<Vec<_>>();
         self.quiescent_thread_lru.extend(missing_threads);
 
-        while self.quiescent_room_lru.len() > MAX_LIVE_COMPOSER_ROOM_TOMBSTONES {
-            let Some(room_id) = self.quiescent_room_lru.pop_front() else {
+        while self
+            .quiescent_room_lru
+            .iter()
+            .filter(|room_id| {
+                !target_is_protected(
+                    protection,
+                    &ComposerTarget::Main {
+                        room_id: (*room_id).clone(),
+                    },
+                )
+            })
+            .count()
+            > MAX_LIVE_COMPOSER_ROOM_TOMBSTONES
+        {
+            let Some(index) = self.quiescent_room_lru.iter().position(|room_id| {
+                !target_is_protected(
+                    protection,
+                    &ComposerTarget::Main {
+                        room_id: room_id.clone(),
+                    },
+                )
+            }) else {
                 break;
             };
-            let target = ComposerTarget::Main {
-                room_id: room_id.clone(),
+            let Some(room_id) = self.quiescent_room_lru.remove(index) else {
+                break;
             };
-            if !self.rooms.contains_key(&room_id) && !target_is_protected(protection, &target) {
+            if !self.rooms.contains_key(&room_id) {
                 self.room_revisions.remove(&room_id);
                 self.room_last_accepted_clear_revisions.remove(&room_id);
             }
         }
-        while self.quiescent_thread_lru.len() > MAX_LIVE_COMPOSER_THREAD_TOMBSTONES {
-            let Some((room_id, root_event_id)) = self.quiescent_thread_lru.pop_front() else {
+        while self
+            .quiescent_thread_lru
+            .iter()
+            .filter(|(room_id, root_event_id)| {
+                !target_is_protected(
+                    protection,
+                    &ComposerTarget::Thread {
+                        room_id: room_id.clone(),
+                        root_event_id: root_event_id.clone(),
+                    },
+                )
+            })
+            .count()
+            > MAX_LIVE_COMPOSER_THREAD_TOMBSTONES
+        {
+            let Some(index) =
+                self.quiescent_thread_lru
+                    .iter()
+                    .position(|(room_id, root_event_id)| {
+                        !target_is_protected(
+                            protection,
+                            &ComposerTarget::Thread {
+                                room_id: room_id.clone(),
+                                root_event_id: root_event_id.clone(),
+                            },
+                        )
+                    })
+            else {
                 break;
             };
-            let target = ComposerTarget::Thread {
-                room_id: room_id.clone(),
-                root_event_id: root_event_id.clone(),
+            let Some((room_id, root_event_id)) = self.quiescent_thread_lru.remove(index) else {
+                break;
             };
             if !self
                 .threads
                 .get(&room_id)
                 .is_some_and(|threads| threads.contains_key(&root_event_id))
-                && !target_is_protected(protection, &target)
             {
                 remove_nested_entry(&mut self.thread_revisions, &room_id, &root_event_id);
                 remove_nested_entry(
@@ -1203,20 +1247,39 @@ impl ComposerDraftStore {
         &self,
         protection: &ComposerDraftProtection,
     ) -> ComposerDraftPersistenceProjection {
-        let protected_targets = protection
+        let touch_protected_targets = protection
             .active
             .iter()
             .chain(&protection.leased)
             .cloned()
             .collect::<BTreeSet<_>>();
-        let protected_rooms = protected_targets
+        let protected_rooms = touch_protected_targets
             .iter()
             .filter_map(|target| match target {
                 ComposerTarget::Main { room_id } => Some(room_id.clone()),
                 ComposerTarget::Thread { .. } => None,
             })
             .collect::<BTreeSet<_>>();
-        let protected_threads = protected_targets
+        let protected_threads = touch_protected_targets
+            .iter()
+            .filter_map(|target| match target {
+                ComposerTarget::Main { .. } => None,
+                ComposerTarget::Thread {
+                    room_id,
+                    root_event_id,
+                } => Some((room_id.clone(), root_event_id.clone())),
+            })
+            .collect::<BTreeSet<_>>();
+        let store_pending_rooms = protection
+            .store_pending
+            .iter()
+            .filter_map(|target| match target {
+                ComposerTarget::Main { room_id } => Some(room_id.clone()),
+                ComposerTarget::Thread { .. } => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let store_pending_threads = protection
+            .store_pending
             .iter()
             .filter_map(|target| match target {
                 ComposerTarget::Main { .. } => None,
@@ -1234,6 +1297,7 @@ impl ComposerDraftStore {
             .chain(self.room_last_accepted_clear_revisions.keys())
             .cloned()
             .chain(protected_rooms.iter().cloned())
+            .chain(store_pending_rooms.iter().cloned())
             .collect::<BTreeSet<_>>();
         let room_entry = |room_id: &str| ComposerDraftPersistenceEntry {
             content: self
@@ -1272,9 +1336,10 @@ impl ComposerDraftStore {
                 quiescent_room_order.push(room_id.clone());
             }
         }
-        retain_newest(
+        retain_newest_eligible(
             &mut quiescent_room_order,
             MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT,
+            |room_id| store_pending_rooms.contains(room_id),
         );
         let protected_empty_rooms = protected_rooms
             .iter()
@@ -1321,6 +1386,7 @@ impl ComposerDraftStore {
                 },
             ))
             .chain(protected_threads.iter().cloned())
+            .chain(store_pending_threads.iter().cloned())
             .collect::<BTreeSet<_>>();
         let thread_has_content = |room_id: &str, root_event_id: &str| {
             self.threads
@@ -1362,9 +1428,10 @@ impl ComposerDraftStore {
                 quiescent_thread_order.push(target.clone());
             }
         }
-        retain_newest(
+        retain_newest_eligible(
             &mut quiescent_thread_order,
             MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT,
+            |target| store_pending_threads.contains(target),
         );
         let protected_empty_threads = protected_threads
             .iter()
@@ -1489,6 +1556,19 @@ fn retain_newest<T>(items: &mut Vec<T>, maximum: usize) {
     }
 }
 
+fn retain_newest_eligible<T>(
+    items: &mut Vec<T>,
+    maximum: usize,
+    is_protected: impl Fn(&T) -> bool,
+) {
+    while items.iter().filter(|item| !is_protected(item)).count() > maximum {
+        let Some(index) = items.iter().position(|item| !is_protected(item)) else {
+            break;
+        };
+        items.remove(index);
+    }
+}
+
 fn validate_persisted_projection(
     projection: &ComposerDraftPersistenceProjection,
 ) -> Result<(), ComposerDraftPersistenceImportError> {
@@ -1574,6 +1654,13 @@ fn validate_persisted_projection(
 }
 
 fn target_is_protected(protection: &ComposerDraftProtection, target: &ComposerTarget) -> bool {
+    target_is_touch_protected(protection, target) || protection.store_pending.contains(target)
+}
+
+fn target_is_touch_protected(
+    protection: &ComposerDraftProtection,
+    target: &ComposerTarget,
+) -> bool {
     protection.active.contains(target) || protection.leased.contains(target)
 }
 

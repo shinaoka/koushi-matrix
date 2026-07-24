@@ -197,10 +197,21 @@ pub async fn submit_composer_command(
 /// satisfied the ready/subscribed predicate.
 pub async fn ready_room_conn(
     room_id: &str,
-) -> (CoreRuntime, CoreConnection, koushi_state::AppState) {
+) -> (
+    CoreRuntime,
+    CoreConnection,
+    koushi_state::AppState,
+    tempfile::TempDir,
+    tempfile::TempDir,
+) {
     use koushi_state::{AppAction, SessionState};
 
-    let runtime = CoreRuntime::start();
+    let data_dir = tempfile::tempdir().expect("ready-room data dir");
+    let credential_dir = tempfile::tempdir().expect("ready-room credential dir");
+    let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_owned(),
+        credential_dir.path().to_owned(),
+    );
     let mut conn = runtime.attach();
     runtime
         .inject_actions(restore_ready_actions![
@@ -221,5 +232,5 @@ pub async fn ready_room_conn(
             && state.timeline.room_id.as_deref() == Some(room_id)
     })
     .await;
-    (runtime, conn, snapshot)
+    (runtime, conn, snapshot, data_dir, credential_dir)
 }

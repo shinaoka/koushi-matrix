@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     fmt,
     sync::{Arc, Mutex, Weak},
 };
@@ -122,12 +122,13 @@ struct ComposerDraftLeaseRegistryState {
     leases: HashMap<ComposerDraftLeaseId, LeaseRecord>,
     command_permits: HashMap<ComposerDraftScope, usize>,
     persistence_permits: HashMap<ComposerDraftScope, usize>,
-    change_generation: u64,
+    #[cfg(any(test, feature = "test-hooks"))]
+    fail_next_persistence_permit: bool,
 }
 
 pub struct ComposerDraftLeaseRegistry {
     state: Mutex<ComposerDraftLeaseRegistryState>,
-    changes: watch::Sender<u64>,
+    changes: watch::Sender<()>,
 }
 
 impl Default for ComposerDraftLeaseRegistry {
@@ -151,14 +152,14 @@ impl fmt::Debug for ComposerDraftLeaseRegistry {
 
 impl ComposerDraftLeaseRegistry {
     pub fn new() -> Self {
-        let (changes, _) = watch::channel(0);
+        let (changes, _) = watch::channel(());
         Self {
             state: Mutex::new(ComposerDraftLeaseRegistryState::default()),
             changes,
         }
     }
 
-    pub fn subscribe(&self) -> watch::Receiver<u64> {
+    pub fn subscribe(&self) -> watch::Receiver<()> {
         self.changes.subscribe()
     }
 
@@ -176,7 +177,7 @@ impl ComposerDraftLeaseRegistry {
         state
             .leases
             .retain(|_, lease| lease.generation == generation);
-        Self::notify_locked(&mut state, &self.changes)?;
+        Self::notify_locked(&self.changes);
         Ok(generation)
     }
 
@@ -198,7 +199,7 @@ impl ComposerDraftLeaseRegistry {
         state
             .leases
             .insert(lease_id, LeaseRecord { generation, scope });
-        Self::notify_locked(&mut state, &self.changes)?;
+        Self::notify_locked(&self.changes);
         Ok(lease_id)
     }
 
@@ -219,7 +220,7 @@ impl ComposerDraftLeaseRegistry {
             return Err(ComposerDraftLeaseFailure::LeaseMismatch);
         }
         increment_permit(&mut state.command_permits, scope)?;
-        Self::notify_locked(&mut state, &self.changes)?;
+        Self::notify_locked(&self.changes);
         Ok(ComposerDraftCommandPermit {
             guard: Arc::new(ComposerDraftPermitGuard {
                 registry: Arc::downgrade(self),
@@ -243,7 +244,8 @@ impl ComposerDraftLeaseRegistry {
             return Err(ComposerDraftLeaseFailure::LeaseMismatch);
         }
         state.leases.remove(&lease_id);
-        Self::notify_locked(&mut state, &self.changes)
+        Self::notify_locked(&self.changes);
+        Ok(())
     }
 
     pub fn revoke_generation(&self, generation: ComposerRendererGeneration) {
@@ -254,7 +256,7 @@ impl ComposerDraftLeaseRegistry {
         state
             .leases
             .retain(|_, lease| lease.generation != generation);
-        let _ = Self::notify_locked(&mut state, &self.changes);
+        Self::notify_locked(&self.changes);
     }
 
     pub(crate) fn revoke_live_generation(&self) {
@@ -268,7 +270,7 @@ impl ComposerDraftLeaseRegistry {
         state
             .leases
             .retain(|_, lease| lease.generation != generation);
-        let _ = Self::notify_locked(&mut state, &self.changes);
+        Self::notify_locked(&self.changes);
     }
 
     pub fn persistence_permits(
@@ -277,6 +279,10 @@ impl ComposerDraftLeaseRegistry {
         targets: impl IntoIterator<Item = ComposerTarget>,
     ) -> Result<Vec<ComposerDraftPersistencePermit>, ComposerDraftLeaseFailure> {
         let mut state = self.state.lock().expect("composer lease registry mutex");
+        #[cfg(any(test, feature = "test-hooks"))]
+        if std::mem::take(&mut state.fail_next_persistence_permit) {
+            return Err(ComposerDraftLeaseFailure::CounterExhausted);
+        }
         let scopes = targets
             .into_iter()
             .map(|target| ComposerDraftScope {
@@ -292,7 +298,7 @@ impl ComposerDraftLeaseRegistry {
                 return Err(error);
             }
         }
-        Self::notify_locked(&mut state, &self.changes)?;
+        Self::notify_locked(&self.changes);
         Ok(scopes
             .into_iter()
             .map(|scope| ComposerDraftPersistencePermit {
@@ -304,6 +310,14 @@ impl ComposerDraftLeaseRegistry {
                 }),
             })
             .collect())
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn fail_next_persistence_permit_for_testing(&self) {
+        self.state
+            .lock()
+            .expect("composer lease registry mutex")
+            .fail_next_persistence_permit = true;
     }
 
     pub fn protected_targets(&self, account: &SessionKeyId) -> BTreeSet<ComposerTarget> {
@@ -319,6 +333,54 @@ impl ComposerDraftLeaseRegistry {
             .collect()
     }
 
+    pub(crate) fn touch_protected_targets(
+        &self,
+        account: &SessionKeyId,
+    ) -> BTreeSet<ComposerTarget> {
+        let state = self.state.lock().expect("composer lease registry mutex");
+        state
+            .leases
+            .values()
+            .map(|lease| &lease.scope)
+            .chain(state.command_permits.keys())
+            .filter(|scope| scope.account == *account)
+            .map(|scope| scope.target.clone())
+            .collect()
+    }
+
+    pub(crate) fn persistence_held_targets_excluding(
+        self: &Arc<Self>,
+        account: &SessionKeyId,
+        excluded_permits: &[ComposerDraftPersistencePermit],
+    ) -> BTreeSet<ComposerTarget> {
+        let registry = Arc::downgrade(self);
+        let mut excluded_guards = HashSet::new();
+        let mut excluded_counts = HashMap::<ComposerDraftScope, usize>::new();
+        for permit in excluded_permits {
+            if permit.guard.kind != ComposerDraftPermitKind::Persistence
+                || !Weak::ptr_eq(&permit.guard.registry, &registry)
+                || !excluded_guards.insert(Arc::as_ptr(&permit.guard))
+            {
+                continue;
+            }
+            let count = excluded_counts
+                .entry(permit.guard.scope.clone())
+                .or_default();
+            *count = count.saturating_add(1);
+        }
+
+        let state = self.state.lock().expect("composer lease registry mutex");
+        state
+            .persistence_permits
+            .iter()
+            .filter_map(|(scope, count)| {
+                (*count > excluded_counts.get(scope).copied().unwrap_or_default()).then_some(scope)
+            })
+            .filter(|scope| scope.account == *account)
+            .map(|scope| scope.target.clone())
+            .collect()
+    }
+
     fn release_permit(&self, scope: &ComposerDraftScope, kind: ComposerDraftPermitKind) {
         let mut state = self.state.lock().expect("composer lease registry mutex");
         let permits = match kind {
@@ -327,20 +389,12 @@ impl ComposerDraftLeaseRegistry {
         };
         if permits.contains_key(scope) {
             decrement_permit(permits, scope);
-            let _ = Self::notify_locked(&mut state, &self.changes);
+            Self::notify_locked(&self.changes);
         }
     }
 
-    fn notify_locked(
-        state: &mut ComposerDraftLeaseRegistryState,
-        changes: &watch::Sender<u64>,
-    ) -> Result<(), ComposerDraftLeaseFailure> {
-        state.change_generation = state
-            .change_generation
-            .checked_add(1)
-            .ok_or(ComposerDraftLeaseFailure::CounterExhausted)?;
-        changes.send_replace(state.change_generation);
-        Ok(())
+    fn notify_locked(changes: &watch::Sender<()>) {
+        changes.send_replace(());
     }
 }
 
@@ -368,5 +422,78 @@ fn target_kind(target: &ComposerTarget) -> &'static str {
     match target {
         ComposerTarget::Main { .. } => "main",
         ComposerTarget::Thread { .. } => "thread",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn account() -> SessionKeyId {
+        SessionKeyId {
+            homeserver: "https://permit.invalid".to_owned(),
+            user_id: "@permit:invalid".to_owned(),
+            device_id: "permit-device".to_owned(),
+        }
+    }
+
+    fn main_target(room_id: &str) -> ComposerTarget {
+        ComposerTarget::Main {
+            room_id: room_id.to_owned(),
+        }
+    }
+
+    fn assert_notified(changes: &mut watch::Receiver<()>, transition: &str) {
+        assert!(
+            changes.has_changed().expect("watch remains open"),
+            "{transition} must notify lifecycle reconciliation"
+        );
+        changes.borrow_and_update();
+    }
+
+    #[test]
+    fn unit_notifications_are_delivered_for_same_value_acquire_drop_release_and_revoke() {
+        let registry = Arc::new(ComposerDraftLeaseRegistry::new());
+        let account = account();
+        let mut changes = registry.subscribe();
+        let generation = registry.begin_renderer_generation().expect("generation");
+        assert_notified(&mut changes, "renderer generation");
+
+        let scope = ComposerDraftScope {
+            account: account.clone(),
+            target: main_target("observed"),
+        };
+        let lease = registry
+            .acquire(generation, scope.clone())
+            .expect("activation lease");
+        assert_notified(&mut changes, "activation acquire");
+
+        let command = registry
+            .try_command_permit(generation, lease, &scope)
+            .expect("command permit");
+        assert_notified(&mut changes, "command permit acquire");
+        drop(command);
+        assert_notified(&mut changes, "command permit drop");
+
+        registry
+            .release(generation, lease)
+            .expect("activation release");
+        assert_notified(&mut changes, "activation release");
+
+        let revoked_lease = registry
+            .acquire(generation, scope.clone())
+            .expect("lease to revoke");
+        assert_notified(&mut changes, "activation acquire before revoke");
+        registry.revoke_generation(generation);
+        assert_notified(&mut changes, "renderer revoke");
+        assert!(
+            !registry.protected_targets(&account).contains(&scope.target),
+            "revoke must retire the remaining activation lease"
+        );
+
+        assert_eq!(
+            registry.release(generation, revoked_lease),
+            Err(ComposerDraftLeaseFailure::LeaseMismatch)
+        );
     }
 }

@@ -758,12 +758,25 @@ continue to be ignored. Legacy encrypted draft payloads backfill revision zero.
 
 Revision history is bounded by lifecycle, not lexical target order. Non-empty,
 active, debounce/IPC/submission/schedule/upload-pending, command-pending,
-store-pending, and leased targets are protected. Only empty, inactive,
-zero-lease targets are quiescent tombstones; main targets retain the 128 most
-recent quiescent tombstones and thread targets retain 256. The live bound is
-the protected set plus that fixed quota. Every revision-bearing producer
+and touch-leased targets are protected. Only empty, inactive, zero-touch-lease
+targets are quiescent tombstones; main targets retain the 128 most recent
+eligible quiescent tombstones and thread targets retain 256.
+Activation and command leases are touch protections: an empty target leaves
+the quiescent LRU and re-enters newest when the touch protection retires. An
+ordered-store persistence hold is instead a non-touching collector guard. It
+may coexist with a remembered quiescent LRU position, blocks victim eligibility
+without refreshing or removing that position, does not by itself enter the
+persisted protected-empty bucket, and does not consume the eligible-quiescent
+quota. A touch-protected empty target
+that becomes store-pending is enqueued newest exactly once. The live bound is
+non-empty and protected excess plus that fixed eligible-quiescent quota. Every
+revision-bearing producer
 acquires the exact account/target/renderer-generation lease before scheduling
 or entering Core; lease admission/release and victim selection are serialized.
+A same-key debounced replacement classifies victims with only the superseded
+pending write's persistence-hold contribution removed, acquires the new holds
+before swapping pending state, and leaves the prior save intact if admission
+fails.
 A retired generation cannot deliver a command or recreate collected state.
 Diagnostics expose only counts and coarse lifecycle outcomes, never draft
 bodies, Matrix identifiers, revisions, leases, paths, or raw errors.

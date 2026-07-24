@@ -384,6 +384,7 @@ pub struct ComposerDraftIoBarrierForTesting {
     save_release: Option<std::sync::mpsc::Sender<()>>,
     save_completed: oneshot::Receiver<()>,
     load_started: oneshot::Receiver<()>,
+    load_completed: oneshot::Receiver<()>,
 }
 
 #[cfg(any(test, feature = "test-hooks"))]
@@ -422,6 +423,12 @@ impl ComposerDraftIoBarrierForTesting {
         (&mut self.load_started)
             .await
             .expect("composer draft load-start probe must remain available");
+    }
+
+    pub async fn wait_for_load_completed(&mut self) {
+        (&mut self.load_completed)
+            .await
+            .expect("composer draft load-completion probe must remain available");
     }
 }
 
@@ -512,8 +519,6 @@ impl CoreRuntime {
         let (action_tx, action_rx) = mpsc::channel(ACTION_QUEUE_CAPACITY);
         #[cfg(any(test, feature = "test-hooks"))]
         let (composer_draft_test_tx, composer_draft_test_rx) = mpsc::channel(1);
-        #[cfg(not(any(test, feature = "test-hooks")))]
-        let (_composer_draft_test_tx, composer_draft_test_rx) = mpsc::channel(1);
         let settings_store = SettingsStore::new(&data_dir);
         let composer_draft_leases = Arc::new(ComposerDraftLeaseRegistry::new());
         let composer_draft_lease_changes = composer_draft_leases.subscribe();
@@ -548,13 +553,14 @@ impl CoreRuntime {
         let actor = AppActor {
             command_rx,
             action_rx,
+            #[cfg(any(test, feature = "test-hooks"))]
             composer_draft_test_rx,
             event_tx: event_tx.clone(),
             snapshot_tx,
             state: initial_state,
             settings_store,
             composer_draft_store_actor,
-            composer_draft_loaded_for: None,
+            composer_draft_load_status: ComposerDraftLoadStatus::Unloaded,
             navigation_loaded_for: None,
             scheduled_sends_loaded_for: None,
             room_preferences_loaded_for: None,
@@ -637,7 +643,7 @@ impl CoreRuntime {
     }
 
     /// Test hook: inject one typed persisted-draft mutation and wait until the
-    /// AppActor has reduced, lifecycle-reconciled, and scheduled persistence.
+    /// AppActor has reduced, lifecycle-reconciled, and persisted it.
     #[cfg(any(test, feature = "test-hooks"))]
     pub async fn inject_composer_drafts_and_wait_for_testing(
         &self,
@@ -651,6 +657,10 @@ impl CoreRuntime {
             })
             .await
             .expect("AppActor composer draft test hook must remain available");
+        self.action_tx
+            .send(Vec::new())
+            .await
+            .expect("AppActor action inbox must remain available");
         completion_rx
             .await
             .expect("AppActor composer draft test hook must acknowledge completion")
@@ -664,6 +674,12 @@ impl CoreRuntime {
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
+    pub fn fail_next_composer_draft_persistence_permit_for_testing(&self) {
+        self.composer_draft_leases
+            .fail_next_persistence_permit_for_testing();
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn install_composer_draft_io_barrier_for_testing(
         &self,
     ) -> ComposerDraftIoBarrierForTesting {
@@ -671,18 +687,21 @@ impl CoreRuntime {
         let (save_release, save_release_rx) = std::sync::mpsc::channel();
         let (save_completed_tx, save_completed) = oneshot::channel();
         let (load_started_tx, load_started) = oneshot::channel();
+        let (load_completed_tx, load_completed) = oneshot::channel();
         self.composer_draft_store_actor_for_testing
             .install_composer_draft_io_probe(
                 save_started_tx,
                 save_release_rx,
                 save_completed_tx,
                 load_started_tx,
+                load_completed_tx,
             );
         ComposerDraftIoBarrierForTesting {
             save_started,
             save_release: Some(save_release),
             save_completed,
             load_started,
+            load_completed,
         }
     }
 
@@ -971,23 +990,30 @@ impl CoreConnection {
     }
 }
 
+enum ComposerDraftLoadStatus {
+    Unloaded,
+    Loaded(koushi_key::SessionKeyId),
+    Failed(koushi_key::SessionKeyId),
+}
+
 struct AppActor {
     command_rx: mpsc::Receiver<CoreCommandEnvelope>,
     action_rx: mpsc::Receiver<Vec<AppAction>>,
+    #[cfg(any(test, feature = "test-hooks"))]
     composer_draft_test_rx: mpsc::Receiver<ComposerDraftTestMutation>,
     event_tx: broadcast::Sender<CoreEvent>,
     snapshot_tx: watch::Sender<VersionedAppStateSnapshot>,
     state: AppState,
     settings_store: SettingsStore,
     composer_draft_store_actor: StoreActor,
-    composer_draft_loaded_for: Option<koushi_key::SessionKeyId>,
+    composer_draft_load_status: ComposerDraftLoadStatus,
     navigation_loaded_for: Option<koushi_key::SessionKeyId>,
     scheduled_sends_loaded_for: Option<koushi_key::SessionKeyId>,
     room_preferences_loaded_for: Option<koushi_key::SessionKeyId>,
     state_generation: u64,
     pending_composer_draft_persist: Option<PendingComposerDraftPersist>,
     composer_draft_leases: Arc<ComposerDraftLeaseRegistry>,
-    composer_draft_lease_changes: watch::Receiver<u64>,
+    composer_draft_lease_changes: watch::Receiver<()>,
     composer_draft_rejected_tx: mpsc::UnboundedSender<RequestId>,
     composer_draft_rejected_rx: mpsc::UnboundedReceiver<RequestId>,
     pending_composer_acceptances: HashMap<RequestId, PendingComposerAcceptance>,
@@ -1056,6 +1082,7 @@ struct PendingComposerDraftPersist {
     deadline: Instant,
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 struct ComposerDraftTestMutation {
     drafts: ComposerDraftStore,
     completion: oneshot::Sender<AppState>,
@@ -1744,33 +1771,10 @@ impl AppActor {
                     }
                     app_loop_trace("command", handled, clone_ms, loop_started.elapsed());
                 }
-                mutation = self.composer_draft_test_rx.recv(),
-                    if cfg!(any(test, feature = "test-hooks")) => {
-                    let Some(mutation) = mutation else {
-                        break;
-                    };
-                    self.flush_pending_composer_drafts().await;
-                    let before_state = self.state.clone();
-                    let effects = self
-                        .reduce_app_action(AppAction::ComposerDraftsLoaded {
-                            drafts: mutation.drafts,
-                        })
-                        .await;
-                    self.handle_ui_event_effects(&effects).await;
-                    self.publish_state_delta(&before_state);
-                    self.flush_pending_composer_drafts().await;
-                    let before_reconcile = self.state.clone();
-                    if self
-                        .reconcile_composer_draft_lifecycle_after_permit_change()
-                        .await
-                    {
-                        self.publish_state_delta(&before_reconcile);
-                    }
-                    self.flush_pending_composer_drafts().await;
-                    let _ = mutation.completion.send(self.state.clone());
-                }
                 actions = self.action_rx.recv() => {
                     let Some(actions) = actions else { break };
+                    #[cfg(any(test, feature = "test-hooks"))]
+                    self.apply_pending_composer_draft_test_mutations().await;
                     let loop_started = std::time::Instant::now();
                     let action_batch = actions.len() as u32;
                     let before_state = self.state.clone();
@@ -2027,6 +2031,31 @@ impl AppActor {
         effects
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
+    async fn apply_pending_composer_draft_test_mutations(&mut self) {
+        while let Ok(mutation) = self.composer_draft_test_rx.try_recv() {
+            self.flush_pending_composer_drafts().await;
+            let before_state = self.state.clone();
+            let effects = self
+                .reduce_app_action(AppAction::ComposerDraftsLoaded {
+                    drafts: mutation.drafts,
+                })
+                .await;
+            self.handle_ui_event_effects(&effects).await;
+            self.publish_state_delta(&before_state);
+            self.flush_pending_composer_drafts().await;
+            let before_reconcile = self.state.clone();
+            if self
+                .reconcile_composer_draft_lifecycle_after_permit_change()
+                .await
+            {
+                self.publish_state_delta(&before_reconcile);
+            }
+            self.flush_pending_composer_drafts().await;
+            let _ = mutation.completion.send(self.state.clone());
+        }
+    }
+
     fn reduce_app_action_state(
         &mut self,
         action: AppAction,
@@ -2136,12 +2165,41 @@ impl AppActor {
     }
 
     fn reconcile_composer_draft_lifecycle_with_active(&mut self, active: BTreeSet<ComposerTarget>) {
-        let leased = composer_draft_session_key(&self.state)
-            .map(|account| self.composer_draft_leases.protected_targets(&account))
+        let protection = if let Some(account) = composer_draft_session_key(&self.state) {
+            ComposerDraftProtection {
+                active,
+                leased: self.composer_draft_leases.touch_protected_targets(&account),
+                store_pending: self
+                    .composer_draft_leases
+                    .persistence_held_targets_excluding(&account, &[]),
+            }
+        } else {
+            ComposerDraftProtection {
+                active,
+                ..ComposerDraftProtection::default()
+            }
+        };
+        self.state.composer_drafts.reconcile_lifecycle(&protection);
+    }
+
+    fn composer_draft_persistence_protection(
+        &self,
+        key_id: &koushi_key::SessionKeyId,
+        active: BTreeSet<ComposerTarget>,
+    ) -> ComposerDraftProtection {
+        let excluded_permits = self
+            .pending_composer_draft_persist
+            .as_ref()
+            .filter(|pending| pending.key_id == *key_id)
+            .map(|pending| pending.permits.as_slice())
             .unwrap_or_default();
-        self.state
-            .composer_drafts
-            .reconcile_lifecycle(&ComposerDraftProtection { active, leased });
+        ComposerDraftProtection {
+            active,
+            leased: self.composer_draft_leases.touch_protected_targets(key_id),
+            store_pending: self
+                .composer_draft_leases
+                .persistence_held_targets_excluding(key_id, excluded_permits),
+        }
     }
 
     fn forward_composer_draft_permit(
@@ -2218,23 +2276,39 @@ impl AppActor {
 
     async fn load_composer_drafts_for_current_session(&mut self) {
         let Some(key_id) = composer_draft_session_key(&self.state) else {
-            self.composer_draft_loaded_for = None;
+            self.composer_draft_load_status = ComposerDraftLoadStatus::Unloaded;
             return;
         };
-        if self.composer_draft_loaded_for.as_ref() == Some(&key_id) {
+        if matches!(
+            &self.composer_draft_load_status,
+            ComposerDraftLoadStatus::Loaded(settled_key)
+                | ComposerDraftLoadStatus::Failed(settled_key)
+                if settled_key == &key_id
+        ) {
             return;
         }
         self.flush_pending_composer_drafts().await;
 
         let store = self.composer_draft_store_actor.clone();
         let load_key_id = key_id.clone();
-        let drafts = executor::spawn_blocking(move || {
-            store.load_composer_drafts(&load_key_id).unwrap_or_default()
+        let drafts = match executor::spawn_blocking(move || {
+            store.load_composer_drafts(&load_key_id)
         })
         .await
-        .unwrap_or_default();
+        {
+            Ok(Ok(drafts)) => drafts,
+            Ok(Err(_)) | Err(_) => {
+                self.composer_draft_load_status = ComposerDraftLoadStatus::Failed(key_id);
+                record(DiagnosticEvent::new(
+                    DiagnosticLevel::Error,
+                    "core.composer_draft",
+                    "load_failed",
+                ));
+                return;
+            }
+        };
         let effects = reduce(&mut self.state, AppAction::ComposerDraftsLoaded { drafts });
-        self.composer_draft_loaded_for = Some(key_id);
+        self.composer_draft_load_status = ComposerDraftLoadStatus::Loaded(key_id);
         self.handle_ui_event_effects(&effects).await;
     }
 
@@ -2324,6 +2398,12 @@ impl AppActor {
         key_id: koushi_key::SessionKeyId,
         drafts: ComposerDraftStore,
     ) {
+        if !matches!(
+            &self.composer_draft_load_status,
+            ComposerDraftLoadStatus::Loaded(loaded_key) if loaded_key == &key_id
+        ) {
+            return;
+        }
         if self
             .pending_composer_draft_persist
             .as_ref()
@@ -2331,14 +2411,14 @@ impl AppActor {
         {
             self.flush_pending_composer_drafts().await;
         }
-        let protection = ComposerDraftProtection {
-            active: if composer_draft_session_key(&self.state).as_ref() == Some(&key_id) {
+        let protection = self.composer_draft_persistence_protection(
+            &key_id,
+            if composer_draft_session_key(&self.state).as_ref() == Some(&key_id) {
                 active_composer_targets(&self.state)
             } else {
                 BTreeSet::new()
             },
-            leased: self.composer_draft_leases.protected_targets(&key_id),
-        };
+        );
         let drafts = persisted_composer_draft_projection(&drafts, &protection);
         let Ok(permits) = self
             .composer_draft_leases
@@ -2522,6 +2602,20 @@ impl AppActor {
         );
         let mut composer_permit = composer_permit;
         let command_request_id = command.request_id();
+        if command.composer_draft_scope().is_some()
+            && !composer_draft_session_key(&self.state).is_some_and(|key_id| {
+                matches!(
+                    &self.composer_draft_load_status,
+                    ComposerDraftLoadStatus::Loaded(loaded_key) if loaded_key == &key_id
+                )
+            })
+        {
+            self.emit(CoreEvent::OperationFailed {
+                request_id: command_request_id,
+                failure: CoreFailure::StoreUnavailable,
+            });
+            return false;
+        }
         if command.requires_ready_session()
             && !is_ready_session_for_commands(&self.state.session)
             && !is_verification_gate_command(&command, &self.state.session)
@@ -6700,7 +6794,7 @@ mod tests {
             state,
             settings_store: SettingsStore::new(data_dir.path()),
             composer_draft_store_actor: StoreActor::new(data_dir.path().to_owned()),
-            composer_draft_loaded_for: Some(session_key.clone()),
+            composer_draft_load_status: ComposerDraftLoadStatus::Loaded(session_key.clone()),
             navigation_loaded_for: Some(session_key.clone()),
             scheduled_sends_loaded_for: Some(session_key.clone()),
             room_preferences_loaded_for: Some(session_key),

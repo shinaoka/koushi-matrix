@@ -15,9 +15,20 @@ use koushi_state::{
 mod support;
 use support::*;
 
+fn runtime_with_file_credentials() -> (CoreRuntime, tempfile::TempDir, tempfile::TempDir) {
+    let data_dir = tempfile::tempdir().expect("runtime data dir");
+    let credential_dir = tempfile::tempdir().expect("runtime credential dir");
+    let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_owned(),
+        credential_dir.path().to_owned(),
+    );
+    (runtime, data_dir, credential_dir)
+}
+
 #[tokio::test]
 async fn composer_revision_exhaustion_blocks_scheduled_send_before_store_or_matrix_side_effect() {
-    let (runtime, mut conn, _) = ready_room_conn("!room:example.test").await;
+    let (runtime, mut conn, _, _data_dir, _credential_dir) =
+        ready_room_conn("!room:example.test").await;
     runtime
         .inject_actions(vec![AppAction::ScheduledSendCapabilityChanged {
             capability: ScheduledSendCapability::LocalFallback,
@@ -98,7 +109,8 @@ async fn composer_revision_exhaustion_blocks_scheduled_send_before_store_or_matr
 
 #[tokio::test]
 async fn schedule_send_rejects_a_command_captured_for_another_account() {
-    let (runtime, mut conn, _) = ready_room_conn("!room:example.test").await;
+    let (runtime, mut conn, _, _data_dir, _credential_dir) =
+        ready_room_conn("!room:example.test").await;
     runtime
         .inject_actions(vec![AppAction::ScheduledSendCapabilityChanged {
             capability: ScheduledSendCapability::LocalFallback,
@@ -153,7 +165,7 @@ async fn schedule_send_rejects_a_command_captured_for_another_account() {
 
 #[tokio::test]
 async fn app_command_schedules_cancel_and_reschedules_local_fallback_send() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _data_dir, _credential_dir) = runtime_with_file_credentials();
     let mut conn = runtime.attach();
     runtime
         .inject_actions(restore_ready_actions![
@@ -240,7 +252,7 @@ async fn app_command_schedules_cancel_and_reschedules_local_fallback_send() {
 #[tokio::test]
 async fn local_fallback_scheduled_send_ids_do_not_reuse_fresh_runtime_request_ids() {
     async fn schedule_from_fresh_runtime() -> String {
-        let runtime = CoreRuntime::start();
+        let (runtime, _data_dir, _credential_dir) = runtime_with_file_credentials();
         let mut conn = runtime.attach();
         inject_ready_local_fallback_room(&runtime, "!room:example.test").await;
         wait_for_state(&mut conn, |state| {
@@ -275,7 +287,7 @@ async fn local_fallback_scheduled_send_ids_do_not_reuse_fresh_runtime_request_id
 
 #[tokio::test]
 async fn local_fallback_scheduled_send_is_retained_when_delivery_cannot_start() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _data_dir, _credential_dir) = runtime_with_file_credentials();
     let mut conn = runtime.attach();
     runtime
         .inject_actions(restore_ready_actions![
@@ -330,7 +342,7 @@ async fn local_fallback_scheduled_send_is_retained_when_delivery_cannot_start() 
 
 #[tokio::test]
 async fn server_scheduled_send_items_are_not_dispatched_by_local_fallback_timer() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _data_dir, _credential_dir) = runtime_with_file_credentials();
     let mut conn = runtime.attach();
     runtime
         .inject_actions(restore_ready_actions![

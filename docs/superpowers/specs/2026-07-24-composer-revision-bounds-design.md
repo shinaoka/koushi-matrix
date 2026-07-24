@@ -362,26 +362,33 @@ entry invariant. A normal draft write never changes the clear token.
 
 Maintain two unique oldest-to-newest queues:
 
-- at most 128 quiescent main-room tombstones;
-- at most 256 quiescent thread-root tombstones.
+- at most 128 collector-eligible quiescent main-room tombstones;
+- at most 256 collector-eligible quiescent thread-root tombstones.
 
-Only `QuiescentTombstone` targets appear in these queues. Refreshing a
-quiescent target moves it to the newest end. The queue may use a small
+Only `QuiescentTombstone` targets and quiescent targets covered by a
+non-touching store-pending hold appear in these queues. Refreshing an eligible
+quiescent target moves it to the newest end. Activation and command leases are
+touch protections: they remove an empty target from the queue, and retirement
+enqueues it newest. A persistence hold is a non-touching collector guard: it
+preserves an existing position, does not refresh age, and does not consume the
+eligible quota. A touch-protected empty target that transitions directly to
+store-pending is enqueued newest exactly once. The queue may use a small
 `VecDeque` with duplicate removal; it must not use an ever-growing touch-log or
 an unchecked serial counter.
 
-When a queue exceeds its quota, pop its oldest target and remove the matching
-revision entry only if the target is still empty, inactive, and unleased.
-Otherwise remove the stale queue node without removing the entry. Collection
-continues until the queue is within quota or no eligible node remains.
+When eligible entries exceed quota, remove the oldest eligible target in place
+and remove its matching revision entry only if it is still empty and
+unprotected. Store-pending nodes are skipped without being popped, reordered,
+or losing their age. Collection continues until the eligible count is within
+quota or no eligible node remains.
 
 The bound is deliberately stated as:
 
 ```text
 live revision targets
     <= non-empty targets
-     + active or leased empty targets
-     + quiescent tombstone quota
+     + active, leased, or store-pending empty targets
+     + eligible quiescent tombstone quota
 ```
 
 This is the only bound compatible with the requirement not to discard
@@ -467,10 +474,20 @@ Its logical version 2 representation contains:
 Process-local leases, renderer generations, timers, and pending counts are not
 serialized.
 
-Persistence receives the lifecycle-compacted store and its protected set. It
-must retain non-empty entries and protected empty entries. It retains at most
-128/256 additional quiescent tombstones in recorded lifecycle order. Ordered
+Persistence receives the lifecycle-compacted store and its protection classes.
+It must retain non-empty entries and protected empty entries. Activation and
+command leases are touch protection, so their empty targets use the
+`protected_empty_*` simultaneous-retirement bucket. Store-pending holds are
+non-touching: they stay in recorded quiescent order, are ineligible while the
+hold exists, and do not alone enter `protected_empty_*`. Persistence retains at
+most 128/256 eligible quiescent tombstones plus store-pending excess. Ordered
 map keys are a serialization detail, never the victim policy.
+
+For same-key debounce replacement, projection subtracts only the superseded
+pending save's persistence-hold contribution. Other persistence holds and all
+touch protections remain. The runtime acquires the new permit set before
+swapping pending state so every retained target stays continuously protected;
+admission failure leaves the previous pending payload and guards intact.
 
 The existing per-draft 16 KiB truncation remains. The existing 128/256 target
 constants become quiescent-tombstone history quotas rather than hard total
@@ -666,8 +683,8 @@ compiler and contract tests to find any additional numeric revision fixture.
 
 ## Acceptance Criteria
 
-- Live Rust and frontend quiescent tombstones never exceed 128 main and 256
-  thread targets.
+- Live Rust and frontend collector-eligible quiescent tombstones never exceed
+  128 main and 256 thread targets; store-pending protected excess is allowed.
 - Non-empty, active, timer-pending, command-pending, submission-pending,
   schedule-pending, upload-pending, and store-pending targets are never
   collected.

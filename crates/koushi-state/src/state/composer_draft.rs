@@ -10,6 +10,7 @@ pub const MAX_LIVE_COMPOSER_THREAD_TOMBSTONES: usize = 256;
 pub struct ComposerDraftProtection {
     pub active: BTreeSet<ComposerTarget>,
     pub leased: BTreeSet<ComposerTarget>,
+    pub store_pending: BTreeSet<ComposerTarget>,
 }
 
 impl fmt::Debug for ComposerDraftProtection {
@@ -18,6 +19,7 @@ impl fmt::Debug for ComposerDraftProtection {
             .debug_struct("ComposerDraftProtection")
             .field("active_count", &self.active.len())
             .field("leased_count", &self.leased.len())
+            .field("store_pending_count", &self.store_pending.len())
             .finish()
     }
 }

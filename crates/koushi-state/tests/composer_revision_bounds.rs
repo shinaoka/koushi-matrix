@@ -181,6 +181,7 @@ fn room_tombstones_evict_oldest_quiescent_not_lexical_first() {
     drafts.reconcile_lifecycle(&ComposerDraftProtection {
         active: [touched.clone()].into_iter().collect(),
         leased: Default::default(),
+        ..ComposerDraftProtection::default()
     });
     drafts.reconcile_lifecycle(&ComposerDraftProtection::default());
     assert!(
@@ -197,6 +198,87 @@ fn room_tombstones_evict_oldest_quiescent_not_lexical_first() {
     assert!(drafts.room_revision("z-oldest").is_zero());
     assert!(!drafts.room_revision("a-touched-middle").is_zero());
     assert!(!drafts.room_revision("b-newest").is_zero());
+}
+
+#[test]
+fn store_pending_room_keeps_lru_age_and_does_not_consume_quiescent_quota() {
+    let mut drafts = ComposerDraftStore::default();
+    for room_id in std::iter::once("z-store-pending".to_owned())
+        .chain(std::iter::once("a-oldest-eligible".to_owned()))
+        .chain(
+            (0..(MAX_LIVE_COMPOSER_ROOM_TOMBSTONES - 1)).map(|index| format!("middle-{index:03}")),
+        )
+    {
+        drafts
+            .apply_room_draft(room_id, String::new(), 1.into())
+            .expect("seed ordered room tombstone");
+    }
+    let store_pending = ComposerTarget::Main {
+        room_id: "z-store-pending".to_owned(),
+    };
+    let protection = ComposerDraftProtection {
+        store_pending: [store_pending].into_iter().collect(),
+        ..ComposerDraftProtection::default()
+    };
+
+    drafts.reconcile_lifecycle(&protection);
+    assert_eq!(
+        drafts.quiescent_room_tombstone_count(),
+        MAX_LIVE_COMPOSER_ROOM_TOMBSTONES + 1,
+        "one store-pending excess tombstone must not consume quiescent quota"
+    );
+    drafts
+        .apply_room_draft("newest-eligible".to_owned(), String::new(), 1.into())
+        .expect("add one eligible tombstone over quota");
+    drafts.reconcile_lifecycle(&protection);
+
+    assert!(!drafts.room_revision("z-store-pending").is_zero());
+    assert!(
+        drafts.room_revision("a-oldest-eligible").is_zero(),
+        "collector must evict the oldest eligible target without moving store-pending age"
+    );
+    let projection = drafts.persisted_projection(&protection);
+    assert_eq!(
+        projection.quiescent_room_order.first().map(String::as_str),
+        Some("z-store-pending"),
+        "store-pending alone must preserve its original quiescent LRU position"
+    );
+    assert!(
+        projection.protected_empty_rooms.is_empty(),
+        "store-pending alone must not enter the touch-protected persisted bucket"
+    );
+}
+
+#[test]
+fn touch_protection_transition_to_store_pending_enqueues_newest_once() {
+    let mut drafts = ComposerDraftStore::default();
+    for room_id in ["z-transition", "a-existing-newer"] {
+        drafts
+            .apply_room_draft(room_id.to_owned(), String::new(), 1.into())
+            .expect("seed transition tombstone");
+    }
+    let target = ComposerTarget::Main {
+        room_id: "z-transition".to_owned(),
+    };
+    drafts.reconcile_lifecycle(&ComposerDraftProtection {
+        leased: [target.clone()].into_iter().collect(),
+        ..ComposerDraftProtection::default()
+    });
+    let store_pending = ComposerDraftProtection {
+        store_pending: [target].into_iter().collect(),
+        ..ComposerDraftProtection::default()
+    };
+
+    drafts.reconcile_lifecycle(&store_pending);
+    drafts.reconcile_lifecycle(&store_pending);
+    let projection = drafts.persisted_projection(&store_pending);
+
+    assert_eq!(
+        projection.quiescent_room_order,
+        vec!["a-existing-newer".to_owned(), "z-transition".to_owned()],
+        "touch-to-store-pending must enqueue newest exactly once without later refresh"
+    );
+    assert!(projection.protected_empty_rooms.is_empty());
 }
 
 #[test]
@@ -284,6 +366,7 @@ fn content_active_and_leased_targets_survive_tombstone_churn() {
         }]
         .into_iter()
         .collect(),
+        ..ComposerDraftProtection::default()
     };
     drafts.reconcile_lifecycle(&protection);
 
@@ -323,6 +406,7 @@ fn released_empty_targets_become_collectible() {
         }]
         .into_iter()
         .collect(),
+        ..ComposerDraftProtection::default()
     };
     drafts.reconcile_lifecycle(&protection);
     drafts.reconcile_lifecycle(&ComposerDraftProtection::default());
@@ -365,6 +449,7 @@ fn persisted_projection_keeps_all_content_and_protected_targets_with_newest_lru_
     let projection = drafts.persisted_projection(&ComposerDraftProtection {
         active: [protected].into_iter().collect(),
         leased: Default::default(),
+        ..ComposerDraftProtection::default()
     });
 
     assert_eq!(
@@ -431,6 +516,7 @@ fn persisted_import_appends_formerly_protected_group_after_saved_lru_order() {
         .into_iter()
         .collect(),
         leased: Default::default(),
+        ..ComposerDraftProtection::default()
     });
 
     let restarted =

@@ -4,14 +4,14 @@ use koushi_core::command::{AppCommand, CoreCommand, TimelineCommand};
 use koushi_core::event::CoreEvent;
 use koushi_core::executor;
 use koushi_core::failure::{CoreFailure, TimelineFailureKind};
-use koushi_core::ids::{AccountKey, TimelineKey, TimelineKind};
+use koushi_core::ids::{AccountKey, RequestId, TimelineKey, TimelineKind};
 use koushi_core::runtime::{COMPOSER_DRAFT_PERSIST_DEBOUNCE, CoreRuntime};
 use koushi_key::SessionKeyId;
 use koushi_state::{
-    AppAction, ComposerDraftRevision, ComposerMode, ComposerTarget, CurrentDeviceTrustState,
-    MentionIntent, PreparedUploadFormat, PreparedUploadVariant, SessionInfo, SessionState,
-    StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind, StagedUploadPreparation,
-    SubmissionId, ThreadPaneState,
+    AppAction, ComposerDraftRevision, ComposerDraftStore, ComposerMode, ComposerTarget,
+    CurrentDeviceTrustState, MentionIntent, PreparedUploadFormat, PreparedUploadVariant,
+    SessionInfo, SessionState, StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind,
+    StagedUploadPreparation, SubmissionId, ThreadPaneState,
 };
 
 mod support;
@@ -24,6 +24,131 @@ fn draft_account() -> SessionKeyId {
         user_id: info.user_id,
         device_id: info.device_id,
     }
+}
+
+fn runtime_with_file_credentials() -> (CoreRuntime, tempfile::TempDir, tempfile::TempDir) {
+    let data_dir = tempfile::tempdir().expect("runtime data dir");
+    let credential_dir = tempfile::tempdir().expect("runtime credential dir");
+    let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_owned(),
+        credential_dir.path().to_owned(),
+    );
+    (runtime, data_dir, credential_dir)
+}
+
+fn single_composer_draft_file(root: &std::path::Path) -> std::path::PathBuf {
+    let mut pending = vec![root.to_path_buf()];
+    let mut matches = Vec::new();
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(directory).expect("read synthetic data directory") {
+            let entry = entry.expect("read synthetic data entry");
+            let file_type = entry.file_type().expect("read synthetic data entry type");
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            } else if entry.file_name() == "drafts.v1.enc" {
+                matches.push(entry.path());
+            }
+        }
+    }
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected exactly one synthetic composer payload"
+    );
+    matches.pop().expect("single composer payload")
+}
+
+async fn wait_for_operation_failure(
+    connection: &mut koushi_core::runtime::CoreConnection,
+    request_id: RequestId,
+) -> CoreFailure {
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            match connection.recv_event().await.expect("runtime event stream") {
+                CoreEvent::OperationFailed {
+                    request_id: failed_request_id,
+                    failure,
+                } if failed_request_id == request_id => break failure,
+                _ => continue,
+            }
+        }
+    })
+    .await
+    .expect("operation failure should be correlated")
+}
+
+fn restore_ready_room_actions(
+    active_room_id: &str,
+    room_ids: impl IntoIterator<Item = String>,
+) -> Vec<AppAction> {
+    restore_ready_actions![
+        AppAction::RoomListUpdated {
+            spaces: vec![],
+            rooms: room_ids
+                .into_iter()
+                .map(|room_id| room_summary(&room_id))
+                .collect(),
+        },
+        AppAction::SelectRoom {
+            room_id: active_room_id.to_owned(),
+        },
+        AppAction::TimelineSubscribed {
+            room_id: active_room_id.to_owned(),
+        },
+    ]
+}
+
+async fn wait_for_ready_room(connection: &mut koushi_core::runtime::CoreConnection, room_id: &str) {
+    wait_for_state_event(connection, |state| {
+        matches!(state.session, SessionState::Ready(_))
+            && state.timeline.room_id.as_deref() == Some(room_id)
+    })
+    .await;
+}
+
+async fn seed_composer_payload(
+    data_dir: &std::path::Path,
+    credential_dir: &std::path::Path,
+    room_id: &str,
+    body: &str,
+) {
+    let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.to_path_buf(),
+        credential_dir.to_path_buf(),
+    );
+    let mut connection = runtime.attach();
+    runtime
+        .inject_actions(restore_ready_room_actions(room_id, [room_id.to_owned()]))
+        .await;
+    wait_for_ready_room(&mut connection, room_id).await;
+    let mut drafts = ComposerDraftStore::default();
+    drafts
+        .apply_room_draft(room_id.to_owned(), body.to_owned(), 1.into())
+        .expect("seed persisted composer draft");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        runtime.inject_composer_drafts_and_wait_for_testing(drafts),
+    )
+    .await
+    .expect("seed composer payload must settle");
+}
+
+async fn wait_for_composer_load_io(
+    barrier: &mut koushi_core::runtime::ComposerDraftIoBarrierForTesting,
+    stage: &str,
+) {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        barrier.wait_for_load_started(),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("{stage} composer load must start"));
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        barrier.wait_for_load_completed(),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("{stage} composer load must complete"));
 }
 
 fn ready_staged_file(id: &str, room_id: &str, position: u64) -> StagedUploadItem {
@@ -58,7 +183,8 @@ fn ready_staged_file(id: &str, room_id: &str, position: u64) -> StagedUploadItem
 
 #[tokio::test]
 async fn composer_revision_exhaustion_blocks_prepared_plain_reply_and_thread_acceptance() {
-    let (runtime, mut conn, _snapshot) = ready_room_conn("!room:example.test").await;
+    let (runtime, mut conn, _snapshot, _data_dir, _credential_dir) =
+        ready_room_conn("!room:example.test").await;
     let room_id = "!room:example.test".to_owned();
     let root_event_id = "$root:example.test".to_owned();
     runtime
@@ -334,7 +460,8 @@ async fn composer_revision_exhaustion_blocks_prepared_plain_reply_and_thread_acc
 
 #[tokio::test]
 async fn submitted_text_rejects_a_stale_full_session_owner_before_timeline_routing() {
-    let (_runtime, mut conn, _snapshot) = ready_room_conn("!room:example.test").await;
+    let (_runtime, mut conn, _snapshot, _data_dir, _credential_dir) =
+        ready_room_conn("!room:example.test").await;
     let request_id = conn.next_request_id();
     submit_composer_command(
         &conn,
@@ -444,7 +571,7 @@ async fn app_command_sets_and_clears_reply_target() {
 
 #[tokio::test]
 async fn app_command_sets_open_thread_composer_draft() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _data_dir, _credential_dir) = runtime_with_file_credentials();
     let mut conn = runtime.attach();
     runtime
         .inject_actions(restore_ready_actions![
@@ -514,7 +641,7 @@ async fn app_command_sets_open_thread_composer_draft() {
 
 #[tokio::test]
 async fn app_command_sets_selected_room_composer_draft() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _data_dir, _credential_dir) = runtime_with_file_credentials();
     let mut conn = runtime.attach();
     runtime
         .inject_actions(restore_ready_actions![
@@ -559,7 +686,7 @@ async fn app_command_sets_selected_room_composer_draft() {
 
 #[tokio::test]
 async fn composer_draft_command_rejects_a_stale_account_owner() {
-    let runtime = CoreRuntime::start();
+    let (runtime, _data_dir, _credential_dir) = runtime_with_file_credentials();
     let mut conn = runtime.attach();
     runtime
         .inject_actions(restore_ready_actions![
@@ -807,6 +934,214 @@ async fn composer_drafts_persist_after_debounce_and_load_on_restart() {
     assert_eq!(snapshot.timeline.composer.draft, "survives restart");
 }
 
+static CORRUPT_COMPOSER_LOAD_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn composer_load_diagnostic_count(stage: &str) -> usize {
+    koushi_diagnostics::snapshot()
+        .records
+        .into_iter()
+        .filter(|record| {
+            record.event.source == "core.composer_draft" && record.event.stage == stage
+        })
+        .count()
+}
+
+struct CorruptComposerLoadFixture {
+    _data_dir: tempfile::TempDir,
+    _credential_dir: tempfile::TempDir,
+    runtime: CoreRuntime,
+    connection: koushi_core::runtime::CoreConnection,
+    room_id: &'static str,
+    payload_path: std::path::PathBuf,
+    corrupt_payload: Vec<u8>,
+    valid_payload: Vec<u8>,
+    failed_before: usize,
+}
+
+impl CorruptComposerLoadFixture {
+    async fn start() -> Self {
+        let data_dir = tempfile::tempdir().expect("data dir");
+        let credential_dir = tempfile::tempdir().expect("credential dir");
+        let room_id = "!room:example.test";
+        seed_composer_payload(
+            data_dir.path(),
+            credential_dir.path(),
+            room_id,
+            "persisted before corruption",
+        )
+        .await;
+        let payload_path = single_composer_draft_file(data_dir.path());
+        let valid_payload =
+            std::fs::read(&payload_path).expect("read valid encrypted composer payload");
+
+        let mut corrupt_payload = valid_payload.clone();
+        *corrupt_payload
+            .last_mut()
+            .expect("encrypted composer payload is nonempty") ^= 0x01;
+        std::fs::write(&payload_path, &corrupt_payload)
+            .expect("corrupt encrypted composer payload");
+        let failed_before = composer_load_diagnostic_count("load_failed");
+
+        let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+            data_dir.path().to_path_buf(),
+            credential_dir.path().to_path_buf(),
+        );
+        let mut connection = runtime.attach();
+        let mut failed_load = runtime.install_composer_draft_io_barrier_for_testing();
+        runtime
+            .inject_actions(restore_ready_room_actions(room_id, [room_id.to_owned()]))
+            .await;
+        wait_for_composer_load_io(&mut failed_load, "first corrupt").await;
+        wait_for_ready_room(&mut connection, room_id).await;
+        let failed_state = connection.snapshot();
+        assert_eq!(
+            failed_state
+                .composer_drafts
+                .rooms
+                .get(room_id)
+                .map(String::as_str),
+            None
+        );
+        assert_eq!(
+            composer_load_diagnostic_count("load_failed"),
+            failed_before + 1
+        );
+        assert!(koushi_diagnostics::snapshot().records.iter().all(|record| {
+            record.event.source != "core.composer_draft"
+                || record.event.stage != "load_failed"
+                || record.event.fields.is_empty()
+        }));
+
+        Self {
+            _data_dir: data_dir,
+            _credential_dir: credential_dir,
+            runtime,
+            connection,
+            room_id,
+            payload_path,
+            corrupt_payload,
+            valid_payload,
+            failed_before,
+        }
+    }
+}
+
+#[tokio::test]
+async fn corrupt_load_attempts_once_per_session() {
+    let _serial = CORRUPT_COMPOSER_LOAD_TEST_LOCK.lock().await;
+    let mut fixture = CorruptComposerLoadFixture::start().await;
+    let benign_room = "!benign:example.test";
+    let mut unexpected_reload = fixture
+        .runtime
+        .install_composer_draft_io_barrier_for_testing();
+    fixture
+        .runtime
+        .inject_actions(vec![AppAction::RoomListUpdated {
+            spaces: vec![],
+            rooms: vec![room_summary(fixture.room_id), room_summary(benign_room)],
+        }])
+        .await;
+    wait_for_state_event(&mut fixture.connection, |state| {
+        state.rooms.iter().any(|room| room.room_id == benign_room)
+    })
+    .await;
+    assert!(
+        !unexpected_reload.load_started_before_release(),
+        "same-session benign state changes must not retry a failed composer load"
+    );
+    assert_eq!(
+        composer_load_diagnostic_count("load_failed"),
+        fixture.failed_before + 1
+    );
+}
+
+#[tokio::test]
+async fn revision_commands_fail_while_composer_load_failed() {
+    let _serial = CORRUPT_COMPOSER_LOAD_TEST_LOCK.lock().await;
+    let mut fixture = CorruptComposerLoadFixture::start().await;
+    let before = fixture.connection.snapshot();
+    let set_request_id = fixture.connection.next_request_id();
+    submit_composer_command(
+        &fixture.connection,
+        CoreCommand::App(AppCommand::SetComposerDraft {
+            request_id: set_request_id,
+            expected_account: draft_account(),
+            room_id: fixture.room_id.to_owned(),
+            draft: "must remain frontend-owned".to_owned(),
+            revision: 2.into(),
+        }),
+    )
+    .await
+    .expect("submit draft command to fail-closed actor gate");
+    assert_eq!(
+        wait_for_operation_failure(&mut fixture.connection, set_request_id).await,
+        CoreFailure::StoreUnavailable
+    );
+
+    let accept_request_id = fixture.connection.next_request_id();
+    submit_composer_command(
+        &fixture.connection,
+        CoreCommand::App(AppCommand::AcceptComposerDraft {
+            request_id: accept_request_id,
+            expected_account: draft_account(),
+            target: ComposerTarget::Main {
+                room_id: fixture.room_id.to_owned(),
+            },
+            submitted_revision: 1.into(),
+        }),
+    )
+    .await
+    .expect("submit acceptance command to fail-closed actor gate");
+    assert_eq!(
+        wait_for_operation_failure(&mut fixture.connection, accept_request_id).await,
+        CoreFailure::StoreUnavailable
+    );
+    let after = fixture.connection.snapshot();
+    assert_eq!(after.composer_drafts, before.composer_drafts);
+    assert_eq!(after.timeline.composer, before.timeline.composer);
+    assert_eq!(
+        std::fs::read(&fixture.payload_path).expect("read corrupt payload"),
+        fixture.corrupt_payload
+    );
+}
+
+#[tokio::test]
+async fn lock_unlock_retries_repaired_composer_payload() {
+    let _serial = CORRUPT_COMPOSER_LOAD_TEST_LOCK.lock().await;
+    let mut fixture = CorruptComposerLoadFixture::start().await;
+    std::fs::write(&fixture.payload_path, &fixture.valid_payload)
+        .expect("install repaired valid encrypted payload");
+    fixture
+        .runtime
+        .inject_actions(vec![AppAction::SessionLocked])
+        .await;
+    wait_for_state_event(&mut fixture.connection, |state| {
+        matches!(state.session, SessionState::Locked(_))
+    })
+    .await;
+    let mut repaired_load = fixture
+        .runtime
+        .install_composer_draft_io_barrier_for_testing();
+    fixture
+        .runtime
+        .inject_actions(vec![AppAction::AuthoritativeDeviceTrustChanged {
+            generation: 1,
+            transition_id: 1,
+            trust: CurrentDeviceTrustState::Verified,
+        }])
+        .await;
+    wait_for_composer_load_io(&mut repaired_load, "repaired lifecycle retry").await;
+    wait_for_state_event(&mut fixture.connection, |state| {
+        matches!(state.session, SessionState::Ready(_))
+            && state
+                .composer_drafts
+                .rooms
+                .get(fixture.room_id)
+                .is_some_and(|body| body == "persisted before corruption")
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn persisted_lru_evicts_same_oldest_target_after_restart() {
     let data_dir = tempfile::tempdir().expect("data dir");
@@ -926,6 +1261,234 @@ async fn persisted_lru_evicts_same_oldest_target_after_restart() {
     assert_eq!(
         snapshot.composer_drafts.thread_revision(room_id, "a-newer"),
         1.into()
+    );
+}
+
+#[tokio::test]
+async fn same_key_debounce_preserves_nonlexical_lru_victim_across_restart() {
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let credential_dir = tempfile::tempdir().expect("credential dir");
+    let active_room_id = "!active:example.test";
+    let tombstone_room_ids = ["z-oldest".to_owned(), "a-newer".to_owned()]
+        .into_iter()
+        .chain(
+            (0..(koushi_state::MAX_LIVE_COMPOSER_ROOM_TOMBSTONES - 2))
+                .map(|index| format!("middle-{index:03}")),
+        )
+        .collect::<Vec<_>>();
+
+    let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_path_buf(),
+        credential_dir.path().to_path_buf(),
+    );
+    let mut conn = runtime.attach();
+    runtime
+        .inject_actions(restore_ready_room_actions(
+            active_room_id,
+            std::iter::once(active_room_id.to_owned()).chain(tombstone_room_ids.iter().cloned()),
+        ))
+        .await;
+    wait_for_ready_room(&mut conn, active_room_id).await;
+
+    let mut ordered = ComposerDraftStore::default();
+    for room_id in tombstone_room_ids.iter().cloned() {
+        ordered
+            .apply_room_draft(room_id, String::new(), 1.into())
+            .expect("seed ordered tombstone");
+    }
+    let seeded = runtime
+        .inject_composer_drafts_and_wait_for_testing(ordered)
+        .await;
+    assert_eq!(
+        seeded.composer_drafts.quiescent_room_tombstone_count(),
+        koushi_state::MAX_LIVE_COMPOSER_ROOM_TOMBSTONES
+    );
+
+    runtime
+        .inject_actions(vec![AppAction::ComposerDraftChangedAtRevision {
+            room_id: active_room_id.to_owned(),
+            draft: "first debounced content".to_owned(),
+            revision: 1.into(),
+        }])
+        .await;
+    wait_for_state_event(&mut conn, |state| {
+        state.timeline.composer.draft == "first debounced content"
+    })
+    .await;
+    runtime
+        .inject_actions(vec![AppAction::ComposerDraftChangedAtRevision {
+            room_id: active_room_id.to_owned(),
+            draft: "second debounced content".to_owned(),
+            revision: 2.into(),
+        }])
+        .await;
+    wait_for_state_event(&mut conn, |state| {
+        state.timeline.composer.draft == "second debounced content"
+    })
+    .await;
+    drop(conn);
+    runtime.shutdown().await;
+
+    let restarted = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_path_buf(),
+        credential_dir.path().to_path_buf(),
+    );
+    let mut restart_conn = restarted.attach();
+    restarted
+        .inject_actions(restore_ready_room_actions(
+            active_room_id,
+            std::iter::once(active_room_id.to_owned()).chain(tombstone_room_ids.iter().cloned()),
+        ))
+        .await;
+    let loaded = wait_for_state_event(&mut restart_conn, |state| {
+        state
+            .composer_drafts
+            .rooms
+            .get(active_room_id)
+            .is_some_and(|body| body == "second debounced content")
+    })
+    .await
+    .composer_drafts;
+    assert_eq!(
+        loaded.quiescent_room_tombstone_count(),
+        koushi_state::MAX_LIVE_COMPOSER_ROOM_TOMBSTONES
+    );
+
+    let mut churned = loaded;
+    churned
+        .apply_room_draft("newest-after-restart".to_owned(), String::new(), 1.into())
+        .expect("apply one post-restart churn");
+    let after_churn = restarted
+        .inject_composer_drafts_and_wait_for_testing(churned)
+        .await;
+    assert_eq!(
+        after_churn.composer_drafts.room_revision("z-oldest"),
+        ComposerDraftRevision::ZERO,
+        "the exact original oldest tombstone must be evicted after restart"
+    );
+    assert_eq!(
+        after_churn.composer_drafts.room_revision("a-newer"),
+        1.into(),
+        "nonlexical order must not be canonicalized by same-key coalescing"
+    );
+}
+
+#[tokio::test]
+async fn failed_same_key_permit_replacement_keeps_previous_pending_save() {
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let credential_dir = tempfile::tempdir().expect("credential dir");
+    let room_id = "!room:example.test";
+    let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_path_buf(),
+        credential_dir.path().to_path_buf(),
+    );
+    let mut conn = runtime.attach();
+    runtime
+        .inject_actions(restore_ready_room_actions(room_id, [room_id.to_owned()]))
+        .await;
+    wait_for_ready_room(&mut conn, room_id).await;
+
+    runtime
+        .inject_actions(vec![AppAction::ComposerDraftChangedAtRevision {
+            room_id: room_id.to_owned(),
+            draft: "first pending save".to_owned(),
+            revision: 1.into(),
+        }])
+        .await;
+    wait_for_state_event(&mut conn, |state| {
+        state.timeline.composer.draft == "first pending save"
+    })
+    .await;
+    runtime.fail_next_composer_draft_persistence_permit_for_testing();
+    runtime
+        .inject_actions(vec![AppAction::ComposerDraftChangedAtRevision {
+            room_id: room_id.to_owned(),
+            draft: "replacement without permits".to_owned(),
+            revision: 2.into(),
+        }])
+        .await;
+    wait_for_state_event(&mut conn, |state| {
+        state.timeline.composer.draft == "replacement without permits"
+    })
+    .await;
+    drop(conn);
+    runtime.shutdown().await;
+
+    let restarted = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_path_buf(),
+        credential_dir.path().to_path_buf(),
+    );
+    let mut restarted_conn = restarted.attach();
+    restarted
+        .inject_actions(restore_ready_room_actions(room_id, [room_id.to_owned()]))
+        .await;
+    wait_for_state_event(&mut restarted_conn, |state| {
+        state
+            .composer_drafts
+            .rooms
+            .get(room_id)
+            .is_some_and(|body| body == "first pending save")
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn permit_drop_notification_reconciles_collector_without_followup_action() {
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let credential_dir = tempfile::tempdir().expect("credential dir");
+    let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_path_buf(),
+        credential_dir.path().to_path_buf(),
+    );
+    let mut conn = runtime.attach();
+    let held_room = "!held-oldest:example.test";
+    let active_room = "!active:example.test";
+    let room_ids = [held_room.to_owned(), active_room.to_owned()]
+        .into_iter()
+        .chain((0..128).map(|index| format!("!churn-{index:03}:example.test")));
+    runtime
+        .inject_actions(restore_ready_room_actions(active_room, room_ids))
+        .await;
+    wait_for_ready_room(&mut conn, active_room).await;
+
+    let registry = runtime.composer_draft_lease_registry_for_testing();
+    let held_target = ComposerTarget::Main {
+        room_id: held_room.to_owned(),
+    };
+    let held_permits = registry
+        .persistence_permits(&draft_account(), [held_target])
+        .expect("hold the oldest tombstone through the collector pass");
+
+    let mut drafts = ComposerDraftStore::default();
+    drafts
+        .apply_room_draft(held_room.to_owned(), String::new(), 1.into())
+        .expect("seed oldest tombstone");
+    for index in 0..128 {
+        drafts
+            .apply_room_draft(
+                format!("!churn-{index:03}:example.test"),
+                String::new(),
+                1.into(),
+            )
+            .expect("seed churn tombstone");
+    }
+    let held_snapshot = runtime
+        .inject_composer_drafts_and_wait_for_testing(drafts)
+        .await;
+    assert_eq!(
+        held_snapshot.composer_drafts.room_revision(held_room),
+        ComposerDraftRevision::from_u64(1),
+        "the non-touching store hold must protect the oldest tombstone"
+    );
+
+    drop(held_permits);
+    let collected = wait_for_state(&mut conn, |state| {
+        state.composer_drafts.room_revision(held_room).is_zero()
+    })
+    .await;
+    assert!(
+        collected.composer_drafts.rooms.get(held_room).is_none(),
+        "permit-drop notification alone must reconcile and collect the oldest eligible tombstone"
     );
 }
 

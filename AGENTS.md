@@ -169,6 +169,12 @@ All agents implementing timeline navigation aids for issue #41 follow
 for Phase A Rust/headless work before any Phase B GUI pills, date picker, or
 scroll wiring.
 
+## Design Simplicity
+
+Follow the normative design-simplicity rules in
+`docs/policies/engineering-rules.md`: do not add defensive machinery without a
+reproduced failure or named invariant.
+
 ## Verification Discipline (verify-first, no human eyes)
 
 Correctness is guaranteed by reproducible headless verification, never by manual

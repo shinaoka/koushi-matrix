@@ -1113,7 +1113,7 @@ pub struct ComposerDraftLeaseId(u64);
 
 pub struct ComposerDraftLeaseRegistry {
     state: Mutex<ComposerDraftLeaseRegistryState>,
-    changes: watch::Sender<u64>,
+    changes: watch::Sender<()>,
 }
 
 struct ComposerDraftPermitGuard {
@@ -1360,6 +1360,14 @@ The projection retains all non-empty and protected entries plus at most
 protected empty targets after the saved quiescent order, canonical-sort only
 that simultaneous-retirement group, then enforce the quota.
 
+Distinguish touch protection from store-pending protection.
+Activation/command leases remove empty targets from the quiescent LRU and
+retirement enqueues them newest. Persistence holds are non-touching collector
+guards: preserve their existing LRU position and persisted quiescent order,
+skip them in victim scans, allow their excess beyond the eligible quota, and do
+not classify them in `protected_empty_*` solely because a save is pending. A
+touch-to-store-pending transition enqueues newest exactly once.
+
 - [ ] **Step 5: Prove ordered StoreActor barriers**
 
 Keep `PendingComposerDraftPersist` newest-wins but add the persistence permit
@@ -1377,6 +1385,12 @@ struct PendingComposerDraftPersist {
 Dropping the activation lease cannot make the target collectible while this
 pending/in-progress write exists. Account switch flushes the old key before
 installing the new key.
+
+When a same-key debounce replaces pending state, exclude only the old pending
+permit set from the new projection's store-pending class. Keep activation,
+command, and unrelated persistence protection; acquire the new permit set
+before swapping so the old guards drop only after replacement admission.
+Permit failure leaves the prior pending payload and permit set untouched.
 
 - [ ] **Step 6: Run persistence and restart GREEN gates**
 

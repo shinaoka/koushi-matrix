@@ -223,6 +223,7 @@ async fn retired_renderer_generation_cannot_submit_or_recreate_target() {
     drafts.reconcile_lifecycle(&ComposerDraftProtection {
         active: BTreeSet::new(),
         leased: registry.protected_targets(&scope.account),
+        ..ComposerDraftProtection::default()
     });
     for index in 0..=128 {
         let room_id = format!("retired-churn-{index:03}");
@@ -352,7 +353,8 @@ async fn persistence_guard_outlives_activation_release() {
 
 #[tokio::test]
 async fn queued_stale_write_keeps_exact_target_protected() {
-    let (runtime, mut connection, _) = ready_room_conn("room-stale").await;
+    let (runtime, mut connection, _, _data_dir, _credential_dir) =
+        ready_room_conn("room-stale").await;
     let account = session_key();
     let scope = main_scope(account.clone(), "room-stale");
     let generation = connection
@@ -511,7 +513,8 @@ async fn queued_stale_write_keeps_exact_target_protected() {
 
 #[tokio::test]
 async fn revision_bearing_commands_cannot_bypass_lease_admission() {
-    let (_runtime, connection, _) = ready_room_conn("room-admission").await;
+    let (_runtime, connection, _, _data_dir, _credential_dir) =
+        ready_room_conn("room-admission").await;
     let error = connection
         .command(CoreCommand::App(AppCommand::SetComposerDraft {
             request_id: connection.next_request_id(),
