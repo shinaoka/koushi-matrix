@@ -736,6 +736,37 @@ fn global_submission_registry_tracks_offscreen_acceptance_and_settlement() {
 }
 
 #[test]
+fn active_main_acceptance_projects_the_accepted_clear_revision() {
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::ComposerDraftChangedAtRevision {
+            room_id: "room-a".to_owned(),
+            draft: "sent from room a".to_owned(),
+            revision: 1.into(),
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::ComposerSubmissionAcceptedAtRevision {
+            submission_id: SubmissionId::new("room-a-visible-accepted"),
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn-a-visible".to_owned(),
+            body: "sent from room a".to_owned(),
+            draft_revision: 1.into(),
+        },
+    );
+
+    assert_eq!(state.timeline.composer.draft, "");
+    assert_eq!(state.timeline.composer.draft_revision, 2.into());
+    assert_eq!(
+        state.timeline.composer.last_accepted_clear_revision,
+        2.into()
+    );
+}
+
+#[test]
 fn offscreen_main_acceptance_advances_the_captured_room_draft_fence() {
     let mut state = selected_room_state("room-b");
     reduce(
@@ -762,6 +793,37 @@ fn offscreen_main_acceptance_advances_the_captured_room_draft_fence() {
     assert!(state.timeline.composer.draft.is_empty());
     assert_eq!(state.composer_drafts.room_revision("room-a"), 2.into());
     assert!(!state.composer_drafts.rooms.contains_key("room-a"));
+}
+
+#[test]
+fn active_thread_acceptance_projects_the_accepted_clear_revision() {
+    let mut state = open_thread_state("room-a", "$root-a");
+    reduce(
+        &mut state,
+        AppAction::ThreadComposerDraftChangedAtRevision {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root-a".to_owned(),
+            draft: "sent reply".to_owned(),
+            revision: 1.into(),
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::ThreadSubmissionAcceptedAtRevision {
+            submission_id: SubmissionId::new("root-a-visible-accepted"),
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root-a".to_owned(),
+            transaction_id: "txn-root-a-visible".to_owned(),
+            body: "sent reply".to_owned(),
+            draft_revision: 1.into(),
+        },
+    );
+
+    let composer = open_thread_composer(&state);
+    assert_eq!(composer.draft, "");
+    assert_eq!(composer.draft_revision, 2.into());
+    assert_eq!(composer.last_accepted_clear_revision, 2.into());
 }
 
 #[test]

@@ -39,30 +39,18 @@ async function invocationCount(
 
 /** Make the active space the harness space so space-info controls are visible. */
 async function activateSpace(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const snap = (window as unknown as { __harness: { currentSnapshot(): unknown; setSnapshot(s: unknown): void } }).__harness.currentSnapshot() as Record<string, unknown>;
-    const state = snap.state as Record<string, unknown>;
-    const ui = (state.ui ?? {}) as Record<string, unknown>;
-    const nav = (ui.navigation ?? {}) as Record<string, unknown>;
-    const sidebar = snap.sidebar as Record<string, unknown>;
-    (window as unknown as { __harness: { setSnapshot(s: unknown): void } }).__harness.setSnapshot({
-      ...snap,
-      state: {
-        ...state,
-        ui: {
-          ...ui,
-          navigation: {
-            ...nav,
-            active_space_id: "!harness-space:example.invalid"
-          }
-        }
-      },
-      sidebar: {
-        ...sidebar,
-        active_space_id: "!harness-space:example.invalid"
-      }
-    });
-  });
+  await page
+    .getByRole("navigation", { name: t("workspace.workspaces") })
+    .getByRole("button", { name: "Harness Space", exact: true })
+    .click();
+  await expect
+    .poll(() => invocationCount(page, "select_space"))
+    .toBeGreaterThanOrEqual(1);
+  await expect(
+    page
+      .getByRole("complementary", { name: t("workspace.rooms") })
+      .getByText("Harness Space", { exact: true })
+  ).toBeVisible();
 }
 
 function contextPanel(page: Page) {

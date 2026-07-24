@@ -808,7 +808,81 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
       window.__harness.setSnapshot(next);
       return next;
     });
-    window.__harness.setCommandResponse("invite_user", () => window.__harness.currentSnapshot());
+    const inviteTargetFor = (status = "selectable") => ({
+      user_id: "@invitee:example.invalid",
+      display_label: "Invitee",
+      original_display_label: "Invitee",
+      avatar: null,
+      source: "matrixId",
+      status,
+      status_message: null
+    });
+    const inviteWorkflowFor = ({ query = "", selected = false } = {}) => ({
+      query: {
+        room_id: "!joined-from-invite:example.invalid",
+        query,
+        candidates: [],
+        explicit_user_id: query ? inviteTargetFor(selected ? "alreadySelected" : "selectable") : null
+      },
+      selected_targets: selected
+        ? [
+            {
+              user_id: "@invitee:example.invalid",
+              display_label: "Invitee",
+              avatar: null
+            }
+          ]
+        : [],
+      scope_plan: null,
+      operation: { kind: "idle" }
+    });
+    window.__harness.setCommandResponse("open_invite_workflow", ({ roomId }) => {
+      const snapshot = window.__harness.currentSnapshot();
+      const next = {
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          domain: {
+            ...snapshot.state.domain,
+            invite_workflow: inviteWorkflowFor()
+          }
+        }
+      };
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+    window.__harness.setCommandResponse("search_invite_targets", ({ query }) => {
+      const snapshot = window.__harness.currentSnapshot();
+      const next = {
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          domain: {
+            ...snapshot.state.domain,
+            invite_workflow: inviteWorkflowFor({ query: String(query), selected: false })
+          }
+        }
+      };
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+    window.__harness.setCommandResponse("select_invite_target", () => {
+      const snapshot = window.__harness.currentSnapshot();
+      const query = snapshot.state.domain.invite_workflow?.query.query ?? "";
+      const next = {
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          domain: {
+            ...snapshot.state.domain,
+            invite_workflow: inviteWorkflowFor({ query, selected: true })
+          }
+        }
+      };
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+    window.__harness.setCommandResponse("invite_targets", () => window.__harness.currentSnapshot());
     window.__harness.pushStateChanged();
     window.__harness.clearInvocations();
   });
@@ -831,18 +905,20 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
   await page.getByRole("button", { name: "Seeded Invite" }).click();
   await page.getByRole("button", { name: "Room info" }).click();
   await page.getByRole("button", { name: "Invite people" }).click();
-  const inviteUserInput = page.getByRole("textbox", { name: "Matrix user ID" });
+  const inviteUserInput = page.getByRole("textbox", { name: "Name, alias, or Matrix ID" });
   await inviteUserInput.fill("@invitee:example.invalid");
+  await page.getByRole("button", { name: /Invitee.*@invitee:example\.invalid/ }).click();
   await page.getByRole("button", { name: "Send invite" }).click();
 
-  await expect.poll(() => invocationCount(page, "invite_user")).toBeGreaterThanOrEqual(1);
+  await expect.poll(() => invocationCount(page, "invite_targets")).toBeGreaterThanOrEqual(1);
   await expect
     .poll(async () =>
-      page.evaluate(() => window.__harness.invocationsOf("invite_user")[0]?.args)
+      page.evaluate(() => window.__harness.invocationsOf("invite_targets")[0]?.args)
     )
     .toEqual({
       roomId: "!joined-from-invite:example.invalid",
-      userId: "@invitee:example.invalid"
+      userIds: ["@invitee:example.invalid"],
+      scope: { kind: "roomOnly" }
     });
 
   await page.getByRole("button", { name: "Invites" }).click();
@@ -858,6 +934,7 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
       page.evaluate(() => window.__harness.invocationsOf("start_direct_message")[0]?.args)
     )
     .toEqual({ userId: "@target:example.invalid" });
+  await page.getByRole("button", { name: /^DMs,/ }).click();
   await expect(
     page
       .locator('[data-room-section="people"]')
@@ -1747,7 +1824,7 @@ test("local aliases dispatch typed account command and render Rust-projected lab
   await profilePanel.getByRole("button", { name: t("people.setAlias") }).click();
   const aliasInput = profilePanel.getByRole("textbox", { name: "Alias" });
   await aliasInput.fill("Desk Alias");
-  await profilePanel.getByRole("button", { name: "Save alias" }).click();
+  await profilePanel.getByRole("button", { name: "Done" }).click();
 
   await expect.poll(() => invocationCount(page, "set_local_user_alias")).toBe(1);
   await expect
@@ -1760,6 +1837,7 @@ test("local aliases dispatch typed account command and render Rust-projected lab
     });
   await expect(profilePanel.getByRole("heading", { name: "Desk Alias" })).toBeVisible();
   await expect(profilePanel.getByText("Original: Target Member")).toBeVisible();
+  await page.getByRole("button", { name: /^DMs,/ }).click();
   await expect(page.locator('[data-room-section="people"]').getByText("Desk Alias")).toBeVisible();
 
   await seedTimelineItems(
@@ -1791,7 +1869,7 @@ test("local aliases dispatch typed account command and render Rust-projected lab
   await timelineAliasRow.getByRole("menuitem", { name: "Edit alias for Desk Alias" }).click();
   const timelineAliasInput = page.getByRole("textbox", { name: "Alias" });
   await timelineAliasInput.fill("Timeline Alias");
-  await page.getByRole("button", { name: "Save alias" }).click();
+  await page.getByRole("button", { name: "Done" }).click();
   await expect.poll(() => invocationCount(page, "set_local_user_alias")).toBe(2);
   await expect
     .poll(async () =>
@@ -1826,7 +1904,7 @@ test("local aliases dispatch typed account command and render Rust-projected lab
   await profilePanel.getByRole("button", { name: t("people.setAlias") }).click();
   const clearAliasInput = profilePanel.getByRole("textbox", { name: "Alias" });
   await clearAliasInput.fill("");
-  await profilePanel.getByRole("button", { name: "Save alias" }).click();
+  await profilePanel.getByRole("button", { name: "Done" }).click();
   await expect.poll(() => invocationCount(page, "set_local_user_alias")).toBe(3);
   await expect
     .poll(async () =>
@@ -2084,7 +2162,8 @@ test("room sections follow Element-aligned order and render Rust-owned counts", 
           },
           room_list: {
             ...snapshot.state.ui.room_list,
-            active_filter: { kind: "unread" }
+            active_filter: { kind: "unread" },
+            items: rooms.map((room) => ({ kind: "room" as const, room_id: room.room_id }))
           },
           timeline: {
             ...snapshot.state.ui.timeline,
@@ -2118,9 +2197,21 @@ test("room sections follow Element-aligned order and render Rust-owned counts", 
     window.__harness.pushStateChanged();
   });
 
-  await expect(page.locator('[data-room-section="favourites"]')).toBeVisible();
+  await expect(page.getByRole("button", { name: "DMs, 2 unread, 1 total" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Rooms, 1 unread, 3 total, 1 mentions" })
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "DMs, 2 unread, 1 total" }).click();
   await expect(page.locator('[data-room-section="people"]')).toBeVisible();
+  await expect(
+    page.locator('[data-room-section="people"]').getByRole("button", { name: "Direct Person" })
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Rooms, 1 unread, 3 total, 1 mentions" }).click();
+  await expect(page.locator('[data-room-section="people"]')).toHaveCount(0);
   await expect(page.locator('[data-room-section="rooms"]')).toBeVisible();
+  await expect(page.locator('[data-room-section="favourites"]')).toBeVisible();
   await expect(page.locator('[data-room-section="low-priority"]')).toBeVisible();
 
   await expect
@@ -2129,15 +2220,13 @@ test("room sections follow Element-aligned order and render Rust-owned counts", 
         sections.map((section) => section.getAttribute("data-room-section"))
       )
     )
-    .toEqual(["favourites", "people", "rooms", "low-priority"]);
+    .toEqual(["rooms", "favourites", "low-priority"]);
 
   await expect(page.locator('[data-room-section="favourites"] .section-count')).toHaveText("1");
-  await expect(page.locator('[data-room-section="people"] .section-title')).toContainText(
-    t("workspace.people")
-  );
-  await expect(page.locator('[data-room-section="people"] .section-count')).toHaveText("1");
-  await expect(page.locator('[data-room-section="rooms"] .section-count')).toHaveText("1");
   await expect(page.locator('[data-room-section="low-priority"] .section-count')).toHaveText("1");
+  await expect(
+    page.locator('[data-room-section="rooms"]').getByRole("button", { name: "Plain Room" })
+  ).toBeVisible();
 
   const favouriteRoom = page
     .locator('[data-room-section="favourites"]')
@@ -2874,6 +2963,10 @@ test("room selection keeps a newer StateDelta when the command returns a stale s
       unread_count: room.unread_count,
       highlight_count: room.highlight_count
     }));
+    const roomProjectionItems = rooms.map((room) => ({
+      kind: "room" as const,
+      room_id: room.room_id
+    }));
     const staleSnapshot = {
       ...current,
       state_generation: 1,
@@ -2887,7 +2980,13 @@ test("room selection keeps a newer StateDelta when the command returns a stale s
           ...current.state.ui,
           navigation: {
             ...current.state.ui.navigation,
+            active_space_id: null,
             active_room_id: primaryRoomId
+          },
+          room_list: {
+            ...current.state.ui.room_list,
+            active_filter: { kind: "rooms" },
+            items: roomProjectionItems
           },
           timeline: {
             ...current.state.ui.timeline,
@@ -2900,6 +2999,15 @@ test("room selection keeps a newer StateDelta when the command returns a stale s
       },
       sidebar: {
         ...current.sidebar,
+        active_space_id: null,
+        account_home: {
+          ...current.sidebar.account_home,
+          is_active: true
+        },
+        space_rail: current.sidebar.space_rail.map((space) => ({
+          ...space,
+          is_active: false
+        })),
         space_rooms: roomListItems
       },
       thread: null
@@ -2917,6 +3025,7 @@ test("room selection keeps a newer StateDelta when the command returns a stale s
                 ...staleSnapshot.state.ui.navigation,
                 active_room_id: targetRoomId
               },
+              room_list: staleSnapshot.state.ui.room_list,
               timeline: {
                 ...staleSnapshot.state.ui.timeline,
                 room_id: targetRoomId,
@@ -2939,6 +3048,7 @@ test("room selection keeps a newer StateDelta when the command returns a stale s
     window.__harness.clearInvocations();
   });
 
+  await page.getByRole("button", { name: /^Rooms,/ }).click();
   const targetRoom = page.getByRole("button", { name: "Delta Selected Room" });
   await expect(targetRoom).toBeVisible();
   await targetRoom.click();
@@ -4111,8 +4221,8 @@ test("add reaction picker invokes send_reaction with the selected emoji", async 
   await page.evaluate(() => window.__harness.clearInvocations());
 
   await page.getByRole("button", { name: "Add reaction" }).first().click();
-  await expect(page.getByRole("button", { name: "React with 👀" })).toBeVisible();
-  await page.getByRole("button", { name: "React with 👀" }).click();
+  await expect(page.getByRole("button", { name: "slightly smiling face" })).toBeVisible();
+  await page.getByRole("button", { name: "slightly smiling face" }).click();
 
   await expect.poll(() => invocationCount(page, "send_reaction")).toBeGreaterThanOrEqual(1);
   await expect
@@ -4122,7 +4232,7 @@ test("add reaction picker invokes send_reaction with the selected emoji", async 
     .toEqual({
       roomId: "!harness-room:example.invalid",
       eventId: "$seed-event:example.invalid",
-      reactionKey: "👀"
+      reactionKey: "🙂"
     });
   expect(await invocationCount(page, "redact_reaction")).toBe(0);
 });
@@ -5187,7 +5297,7 @@ test("editing a message invokes edit_message and renders the edited marker", asy
     });
 });
 
-test("selecting a search result opens focused context from Rust-owned state", async ({
+test("selecting a search result opens the anchored main timeline from Rust-owned state", async ({
   page
 }) => {
   await gotoReadyShell(page);
@@ -5255,22 +5365,20 @@ test("selecting a search result opens focused context from Rust-owned state", as
     focusedEventId
   });
 
-  await expect(page.getByText(t("panel.focusedContext"), { exact: true })).toBeVisible();
   await expect(
-    page.locator('aside[aria-label="Context panel"] [data-event-id="$focused-event:example.invalid"]')
+    page
+      .getByRole("main", { name: t("timeline.conversation") })
+      .locator('[data-event-id="$focused-event:example.invalid"]')
   ).toBeVisible();
 
   await page.evaluate(() => window.__harness.clearInvocations());
+  await page
+    .getByRole("navigation", { name: t("timeline.navigation") })
+    .getByRole("button", { name: t("timeline.latest"), exact: true })
+    .click();
+  await expect.poll(() => invocationCount(page, "close_focused_context")).toBeGreaterThanOrEqual(1);
   await page.getByRole("button", { name: t("room.roomInfo") }).click();
-  await expect.poll(() => invocationCount(page, "close_focused_context")).toBeGreaterThanOrEqual(1);
   await expect(page.getByText(t("panel.roomInfo"), { exact: true })).toBeVisible();
-
-  await page.evaluate(() => window.__harness.clearInvocations());
-  await resultButton.click();
-  await expect(page.getByText(t("panel.focusedContext"), { exact: true })).toBeVisible();
-
-  await page.getByRole("button", { name: t("action.close", { title: t("panel.search") }) }).click();
-  await expect.poll(() => invocationCount(page, "close_focused_context")).toBeGreaterThanOrEqual(1);
 });
 
 test("thread summary chip opens a thread timeline from keyed CoreEvents", async ({
@@ -5437,20 +5545,6 @@ test("thread panel scrollback invokes thread pagination command only", async ({
         requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
       })
   );
-  await page.evaluate(({ key }) => {
-    window.__harness.pushCoreEvent({
-      kind: "Timeline",
-      event: {
-        PaginationStateChanged: {
-          request_id: null,
-          key,
-          direction: "Backward",
-          state: "Idle"
-        }
-      }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any);
-  }, { key: threadKey });
   await page.evaluate(() => window.__harness.clearInvocations());
   await threadTimeline.hover();
   await page.mouse.wheel(0, -5000);
@@ -5502,7 +5596,10 @@ test("thread panel scrollback invokes thread pagination command only", async ({
   }, { key: threadKey });
   await expect(
     page.locator('aside[aria-label="Context panel"] [data-testid="timeline-start"]')
-  ).toBeVisible();
+  ).toHaveCount(0);
+  await expect(
+    page.locator('aside[aria-label="Context panel"] [data-testid="timeline-spinner"]')
+  ).toHaveCount(0);
 });
 
 test("thread composer delayed write is root isolated across churn", async ({
@@ -5680,11 +5777,15 @@ test("Japanese locale renders shell labels and CJK text without clipping", async
     const snapshot = window.__harness.currentSnapshot();
     const cjkRooms = roomNames.map((displayName, index) => ({
       ...snapshot.state.domain.rooms[0],
-      room_id: index === roomNames.length - 1 ? snapshot.state.domain.rooms[0].room_id : `!cjk-order-${index}:example.invalid`,
-      display_name: displayName,
-      display_label: displayName,
-      original_display_label: displayName
-    }));
+	      room_id: index === roomNames.length - 1 ? snapshot.state.domain.rooms[0].room_id : `!cjk-order-${index}:example.invalid`,
+	      display_name: displayName,
+	      display_label: displayName,
+	      original_display_label: displayName,
+	      conversation_activity: {
+	        timestamp_ms: 1_800_000_010_000 - index,
+	        source: "message"
+	      }
+	    }));
     window.__harness.setSnapshot({
       ...snapshot,
       state: {
@@ -5708,6 +5809,14 @@ test("Japanese locale renders shell labels and CJK text without clipping", async
             }
           },
           rooms: cjkRooms
+        },
+        ui: {
+          ...snapshot.state.ui,
+          room_list: {
+            ...snapshot.state.ui.room_list,
+            active_filter: { kind: "rooms" },
+            items: cjkRooms.map((room) => ({ kind: "room" as const, room_id: room.room_id }))
+          }
         }
       },
       sidebar: {
@@ -5819,6 +5928,8 @@ test("Japanese locale renders shell labels and CJK text without clipping", async
   await expect(
     page.locator(".channel-actions").getByRole("button", { name: "Threads", exact: true })
   ).toHaveCount(0);
+  await page.getByRole("button", { name: /^ルーム、/ }).click();
+  await page.getByRole("button", { name: "アクティブ", exact: true }).click();
   await expect
     .poll(async () =>
       page

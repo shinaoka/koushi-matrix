@@ -711,7 +711,7 @@ function timelineStoreSessionKey(snapshot: DesktopSnapshot | null): string {
   ].join("\u0000");
 }
 
-function retainedTimelineStoreKeyIds(snapshot: DesktopSnapshot | null): Set<string> {
+export function retainedTimelineStoreKeyIds(snapshot: DesktopSnapshot | null): Set<string> {
   const userId =
     snapshot?.state.domain.session.kind === "ready"
       ? snapshot.state.domain.session.user_id ?? null
@@ -724,6 +724,15 @@ function retainedTimelineStoreKeyIds(snapshot: DesktopSnapshot | null): Set<stri
   const roomId = snapshot.state.ui.timeline.room_id;
   if (roomId) {
     retained.add(timelineStoreKeyId(roomTimelineKey(userId, roomId)));
+    const mainTimelineAnchorEventId =
+      snapshot.state.ui.navigation.main_timeline_anchor?.event_id ?? null;
+    if (mainTimelineAnchorEventId) {
+      retained.add(
+        timelineStoreKeyId(
+          focusedTimelineKey(userId, roomId, mainTimelineAnchorEventId)
+        )
+      );
+    }
   }
 
   const focusedContext = snapshot.state.ui.focused_context;
@@ -2588,7 +2597,8 @@ export function App() {
     }
     if (!(await drainActiveComposerScopesForNavigation(true, true))) return;
     setPrimaryView("timeline");
-    setSnapshot(await api.selectSpace(spaceId));
+    const nextSnapshot = await api.selectSpace(spaceId);
+    setSnapshot(nextSnapshot);
   }
 
   async function reorderSpaces(spaceIds: string[]) {

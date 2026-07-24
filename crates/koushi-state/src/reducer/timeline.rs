@@ -706,6 +706,8 @@ pub(crate) fn handle_send_text_submitted(
     let accepted_composer = state.composer_drafts.composer_for_room(&room_id);
     state.timeline.composer.draft = accepted_composer.draft;
     state.timeline.composer.draft_revision = accepted_revision;
+    state.timeline.composer.last_accepted_clear_revision =
+        accepted_composer.last_accepted_clear_revision;
     vec![
         AppEffect::SendText {
             room_id: room_id.clone(),
@@ -781,6 +783,8 @@ pub(crate) fn handle_composer_submission_accepted(
     let accepted_composer = state.composer_drafts.composer_for_room(&room_id);
     state.timeline.composer.draft = accepted_composer.draft;
     state.timeline.composer.draft_revision = accepted_revision;
+    state.timeline.composer.last_accepted_clear_revision =
+        accepted_composer.last_accepted_clear_revision;
     vec![
         AppEffect::SendText {
             room_id: room_id.clone(),

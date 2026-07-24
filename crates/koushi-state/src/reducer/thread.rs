@@ -76,6 +76,7 @@ pub(crate) fn handle_thread_submission_accepted(
     });
     composer.draft = accepted_composer.draft;
     composer.draft_revision = accepted_revision;
+    composer.last_accepted_clear_revision = accepted_composer.last_accepted_clear_revision;
     vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
 }
 
@@ -153,6 +154,7 @@ pub(crate) fn handle_thread_reply_submitted(
                 .composer_for_thread(&room_id, &root_event_id);
             composer.draft = accepted_composer.draft;
             composer.draft_revision = accepted_revision;
+            composer.last_accepted_clear_revision = accepted_composer.last_accepted_clear_revision;
             vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
         }
         _ => Vec::new(),

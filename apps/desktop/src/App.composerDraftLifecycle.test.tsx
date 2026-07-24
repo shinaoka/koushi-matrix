@@ -35,6 +35,35 @@ afterEach(async () => {
 });
 
 describe("App composer draft lifecycle", () => {
+  test("clears a dirty composition-owned main composer after accepted clear", async () => {
+    const api = createBrowserFakeApi();
+    const roomId = "!room-alpha:example.invalid";
+    await api.selectRoom(roomId);
+    const mutable = api as unknown as {
+      composerDraftRevisions: Map<string, ReturnType<typeof parseComposerDraftRevision>>;
+      snapshot: Awaited<ReturnType<typeof api.getSnapshot>>;
+    };
+    const baseline = parseComposerDraftRevision("9007199254740992");
+    mutable.composerDraftRevisions.set(roomId, baseline);
+    mutable.snapshot.state.ui.timeline.composer.draft_revision = baseline;
+
+    await renderAppWithApi(api);
+    const composer = await screen.findByRole("textbox", { name: "Message composer" });
+    await act(async () => {
+      fireEvent.compositionStart(composer);
+      fireEvent.change(composer, { target: { value: "sent text" } });
+    });
+    expect((composer as HTMLTextAreaElement).value).toBe("sent text");
+
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+    });
+
+    await waitFor(() =>
+      expect((screen.getByRole("textbox", { name: "Message composer" }) as HTMLTextAreaElement).value).toBe("")
+    );
+  });
+
   test.each(["response-first", "accepted-clear-first"] as const)(
     "preserves a newer exact draft after an accepted send when %s",
     async (order) => {

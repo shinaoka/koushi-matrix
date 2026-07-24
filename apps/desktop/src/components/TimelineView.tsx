@@ -7469,9 +7469,19 @@ function TimelineMediaAttachment({
                   {metadata.join(" · ")}
                 </span>
               ) : null}
+              {downloadState?.kind === "pending" ? (
+                <span className="message-media-placeholder-meta">
+                  {t("timeline.mediaDownloadPending")}
+                </span>
+              ) : null}
               {downloadState?.kind === "failed" ? (
                 <span className="message-media-error">
                   {t("timeline.mediaDownloadFailed")}
+                </span>
+              ) : null}
+              {progressPercent !== null ? (
+                <span className="message-media-placeholder-meta">
+                  {t("timeline.mediaUploadProgress", { percent: progressPercent })}
                 </span>
               ) : null}
             </div>

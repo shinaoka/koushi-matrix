@@ -2266,7 +2266,11 @@ mock.setCommandResponse("close_focused_context", () => {
       ...currentSnapshot.state,
       ui: {
         ...currentSnapshot.state.ui,
-      focused_context: { kind: "closed" }
+        navigation: {
+          ...currentSnapshot.state.ui.navigation,
+          main_timeline_anchor: null
+        },
+        focused_context: { kind: "closed" }
       },
     }
   };

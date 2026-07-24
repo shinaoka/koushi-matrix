@@ -6,14 +6,54 @@ pub async fn select_space(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
+    let started = std::time::Instant::now();
+    let requested_space_id = space_id.clone();
     let request_id = next_request_id(state.inner()).await;
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "desktop.space.transition", "submit")
+            .field(DiagnosticField::request_id(
+                "request_id",
+                request_id.connection_id.0,
+                request_id.sequence,
+            ))
+            .field(DiagnosticField::boolean(
+                "target_present",
+                requested_space_id.is_some(),
+            )),
+    );
     submit_core_command(
         state.inner(),
         build_select_space_command(request_id, space_id),
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
+    let snapshot = current_snapshot(state.inner()).await?;
+    record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Debug,
+            "desktop.space.transition",
+            "snapshot",
+        )
+        .field(DiagnosticField::request_id(
+            "request_id",
+            request_id.connection_id.0,
+            request_id.sequence,
+        ))
+        .field(DiagnosticField::milliseconds(
+            "elapsed_ms",
+            started.elapsed().as_millis(),
+        ))
+        .field(DiagnosticField::boolean(
+            "active_space_selected",
+            snapshot.state.ui.navigation.active_space_id.as_deref()
+                == requested_space_id.as_deref(),
+        ))
+        .field(DiagnosticField::boolean(
+            "active_room_present",
+            snapshot.state.ui.navigation.active_room_id.is_some(),
+        )),
+    );
+    Ok(snapshot)
 }
 
 #[tauri::command]
