@@ -517,6 +517,10 @@ enum TimelineSendEnqueueContext {
     Synthetic {
         requests: mpsc::UnboundedSender<SyntheticSendEnqueueRequest>,
     },
+    #[cfg(test)]
+    CleanupProbe {
+        cleanup: TimelineActorCleanupIngress,
+    },
 }
 
 enum TimelineSendEnqueuePayload {
@@ -717,7 +721,9 @@ struct ReadWorkerSupervisor {
     retry_base_delay: Duration,
     retry_max_delay: Duration,
     retry_attempts: HashMap<ReadStateKey, u32>,
-    retry_generations: HashMap<ReadStateKey, u64>,
+    /// Manager-wide token for distinguishing a current retry from cancelled
+    /// sleepers without retaining one generation entry per historical key.
+    retry_serial: u64,
     scheduled_retries: HashMap<ReadStateKey, (u64, oneshot::Sender<()>)>,
     reconciliation_pending: HashSet<ReadStateKey>,
     persistence: Option<ReadPersistenceIngress>,
@@ -742,7 +748,7 @@ impl ReadWorkerSupervisor {
             retry_base_delay: READ_RETRY_BASE_DELAY,
             retry_max_delay: READ_RETRY_MAX_DELAY,
             retry_attempts: HashMap::new(),
-            retry_generations: HashMap::new(),
+            retry_serial: 0,
             scheduled_retries: HashMap::new(),
             reconciliation_pending: HashSet::new(),
             persistence: None,
@@ -779,7 +785,7 @@ impl ReadWorkerSupervisor {
             retry_base_delay: READ_RETRY_BASE_DELAY,
             retry_max_delay: READ_RETRY_MAX_DELAY,
             retry_attempts: HashMap::new(),
-            retry_generations: HashMap::new(),
+            retry_serial: 0,
             scheduled_retries: HashMap::new(),
             reconciliation_pending,
             persistence: Some(persistence),
@@ -837,7 +843,7 @@ impl ReadWorkerSupervisor {
             retry_base_delay: Duration::from_secs(1),
             retry_max_delay: Duration::from_secs(4),
             retry_attempts: HashMap::new(),
-            retry_generations: HashMap::new(),
+            retry_serial: 0,
             scheduled_retries: HashMap::new(),
             reconciliation_pending,
             persistence: Some(persistence),
@@ -929,12 +935,8 @@ impl ReadWorkerSupervisor {
         let delay =
             read_retry_delay_for_attempt(self.retry_base_delay, self.retry_max_delay, *attempt);
         *attempt = attempt.saturating_add(1);
-        let generation = self
-            .retry_generations
-            .entry(key.clone())
-            .and_modify(|generation| *generation = generation.wrapping_add(1).max(1))
-            .or_insert(1);
-        let generation = *generation;
+        self.retry_serial = self.retry_serial.wrapping_add(1).max(1);
+        let generation = self.retry_serial;
         let (cancel, mut cancelled) = oneshot::channel();
         self.scheduled_retries
             .insert(key.clone(), (generation, cancel));
@@ -972,10 +974,6 @@ impl ReadWorkerSupervisor {
         if let Some((_, cancel)) = self.scheduled_retries.remove(key) {
             let _ = cancel.send(());
         }
-        self.retry_generations
-            .entry(key.clone())
-            .and_modify(|generation| *generation = generation.wrapping_add(1).max(1))
-            .or_insert(1);
     }
 
     fn reset_retry(&mut self, key: &ReadStateKey) {
@@ -1021,8 +1019,16 @@ impl ReadWorkerSupervisor {
         }
         self.tasks = FuturesUnordered::new();
         self.retry_tasks = FuturesUnordered::new();
-        self.retry_generations.clear();
         self.retry_attempts.clear();
+    }
+
+    #[cfg(test)]
+    fn retry_bookkeeping_key_count(&self) -> usize {
+        self.retry_attempts
+            .keys()
+            .chain(self.scheduled_retries.keys())
+            .collect::<HashSet<_>>()
+            .len()
     }
 }
 
@@ -1266,6 +1272,8 @@ async fn enqueue_timeline_send(
                 .await
                 .unwrap_or(Err(TimelineFailureKind::QueueOverflow))
         }
+        #[cfg(test)]
+        TimelineSendEnqueueContext::CleanupProbe { .. } => Err(TimelineFailureKind::QueueOverflow),
     }
 }
 
@@ -3087,12 +3095,29 @@ impl TimelineManagerActor {
         if intent.generation > self.last_navigation_projection_generation {
             self.last_navigation_projection_generation = intent.generation;
         }
+        let actual_foreground = self
+            .live_tail_refreshes
+            .active_key()
+            .filter(|key| *key != &intent.key)
+            .cloned();
+        if let Some(key) = actual_foreground.as_ref()
+            && let Some(handle) = self.timelines.get(key)
+        {
+            // The projection ingress is latest-wins. When A→B→C coalesces
+            // before this manager polls, C carries cleanup(B), but A remains
+            // the manager's actual foreground. Clean that owned foreground
+            // independently so replacing B cannot strand A's network work.
+            handle.cancel_pagination_after_commit();
+            handle.cancel_link_previews_after_commit();
+        }
         if let Some(key) = intent.cleanup.cancel_pagination.as_ref()
+            && Some(key) != actual_foreground.as_ref()
             && let Some(handle) = self.timelines.get(key)
         {
             handle.cancel_pagination_after_commit();
         }
         if let Some(key) = intent.cleanup.cancel_link_previews.as_ref()
+            && Some(key) != actual_foreground.as_ref()
             && let Some(handle) = self.timelines.get(key)
         {
             handle.cancel_link_previews_after_commit();
@@ -9112,6 +9137,8 @@ impl TimelineActorHandle {
             Some(TimelineSendEnqueueContext::Matrix(context)) => Some(&context.cleanup),
             #[cfg(test)]
             Some(TimelineSendEnqueueContext::Synthetic { .. }) => None,
+            #[cfg(test)]
+            Some(TimelineSendEnqueueContext::CleanupProbe { cleanup }) => Some(cleanup),
             None => None,
         }
     }
@@ -29652,6 +29679,16 @@ mod tests {
         handle
     }
 
+    fn cleanup_probe_timeline_actor_handle() -> (
+        TimelineActorHandle,
+        watch::Receiver<TimelineActorCleanupState>,
+    ) {
+        let mut handle = test_timeline_actor_handle();
+        let (cleanup, receiver) = TimelineActorCleanupIngress::channel();
+        handle.enqueue_context = Some(TimelineSendEnqueueContext::CleanupProbe { cleanup });
+        (handle, receiver)
+    }
+
     fn live_tail_test_actor_handle(
         label: &'static str,
         log: Arc<Mutex<Vec<String>>>,
@@ -30056,6 +30093,54 @@ mod tests {
         assert!(
             supervisor.retry_tasks.is_empty(),
             "an invalidated retry must not leave a sixty-second task behind"
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_retry_keys_do_not_accumulate_generation_bookkeeping() {
+        let (network_tx, _network_rx) = mpsc::unbounded_channel();
+        let mut supervisor = ReadWorkerSupervisor::synthetic_with_retry(
+            network_tx,
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+        );
+
+        for index in 0..256 {
+            let key = ReadStateKey::PublicUnthreaded {
+                room_id: format!("!completed-retry-{index}:example.invalid"),
+            };
+            supervisor.schedule_retry(&key);
+            let generation = supervisor
+                .scheduled_retries
+                .get(&key)
+                .map(|(generation, _)| *generation)
+                .expect("retry generation");
+
+            supervisor.reset_retry(&key);
+            let cancelled =
+                executor::timeout(Duration::from_millis(25), supervisor.retry_tasks.next())
+                    .await
+                    .expect("retry cancellation must be bounded")
+                    .expect("cancelled retry completion");
+            assert!(matches!(
+                cancelled,
+                ReadWorkerCompletion::RetryWake {
+                    key: observed,
+                    generation: observed_generation,
+                    cancelled: true,
+                } if observed == key && observed_generation == generation
+            ));
+            assert!(
+                !supervisor.accept_retry_wake(&key, generation),
+                "a cancelled sleeper must remain stale after its key retires"
+            );
+        }
+
+        assert_eq!(
+            supervisor.retry_bookkeeping_key_count(),
+            0,
+            "completed historical keys must not remain in retry bookkeeping"
         );
     }
 
@@ -31191,6 +31276,80 @@ mod tests {
             "equal-generation replay strengthens the retained intent without replacing its cause"
         );
         assert!(retained.replay_existing);
+    }
+
+    #[tokio::test]
+    async fn coalesced_navigation_projection_cleans_the_actual_manager_foreground() {
+        let account = AccountKey("@coalesced-cleanup:test".to_owned());
+        let room_a = TimelineKey::room(account.clone(), "!cleanup-a:test");
+        let room_b = TimelineKey::room(account.clone(), "!cleanup-b:test");
+        let room_c = TimelineKey::room(account, "!cleanup-c:test");
+        let (actor_a, mut cleanup_a) = cleanup_probe_timeline_actor_handle();
+        let (actor_b, mut cleanup_b) = cleanup_probe_timeline_actor_handle();
+        let (actor_c, _cleanup_c) = cleanup_probe_timeline_actor_handle();
+        let (navigation_projection, navigation_projection_rx) =
+            NavigationProjectionIngress::channel();
+        let mut manager = live_tail_test_manager(HashMap::from([
+            (room_a.clone(), actor_a),
+            (room_b.clone(), actor_b),
+            (room_c.clone(), actor_c),
+        ]));
+        manager.navigation_projection_rx = Some(navigation_projection_rx);
+
+        manager
+            .handle_committed_room_selection(fake_rid(28_515), room_a.clone(), false, false)
+            .await;
+        assert_eq!(manager.live_tail_refreshes.active_key(), Some(&room_a));
+
+        assert!(navigation_projection.admit(NavigationProjectionIntent {
+            generation: 1,
+            key: room_b.clone(),
+            cause_request_id: fake_rid(28_516),
+            replay_existing: false,
+            cleanup: NavigationProjectionCleanup {
+                cancel_pagination: Some(room_a.clone()),
+                cancel_link_previews: Some(room_a.clone()),
+            },
+        }));
+        assert!(navigation_projection.admit(NavigationProjectionIntent {
+            generation: 2,
+            key: room_c.clone(),
+            cause_request_id: fake_rid(28_517),
+            replay_existing: false,
+            cleanup: NavigationProjectionCleanup {
+                cancel_pagination: Some(room_b.clone()),
+                cancel_link_previews: Some(room_b),
+            },
+        }));
+
+        let projection = receive_navigation_projection(&mut manager.navigation_projection_rx)
+            .await
+            .expect("latest navigation projection");
+        assert_eq!(projection.key, room_c);
+        manager.handle_navigation_projection(projection).await;
+
+        assert_eq!(
+            manager.live_tail_refreshes.active_key(),
+            Some(&room_c),
+            "the latest retained room must become foreground"
+        );
+        cleanup_a
+            .changed()
+            .await
+            .expect("actual previous foreground cleanup");
+        let cleanup_a = *cleanup_a.borrow_and_update();
+        assert!(
+            cleanup_a.cancel_pagination_serial > 0,
+            "A pagination cleanup must survive B being replaced by C"
+        );
+        assert!(
+            cleanup_a.cancel_link_previews_serial > 0,
+            "A link-preview cleanup must survive B being replaced by C"
+        );
+        cleanup_b.changed().await.expect("latest intent cleanup");
+        let cleanup_b = *cleanup_b.borrow_and_update();
+        assert!(cleanup_b.cancel_pagination_serial > 0);
+        assert!(cleanup_b.cancel_link_previews_serial > 0);
     }
 
     #[tokio::test]
