@@ -8,9 +8,10 @@ use koushi_core::ids::{AccountKey, TimelineKey, TimelineKind};
 use koushi_core::runtime::{COMPOSER_DRAFT_PERSIST_DEBOUNCE, CoreRuntime};
 use koushi_key::SessionKeyId;
 use koushi_state::{
-    AppAction, ComposerDraftRevision, ComposerMode, ComposerTarget, MentionIntent,
-    PreparedUploadFormat, PreparedUploadVariant, SessionState, StagedUploadCompressionChoice,
-    StagedUploadItem, StagedUploadKind, StagedUploadPreparation, SubmissionId, ThreadPaneState,
+    AppAction, ComposerDraftRevision, ComposerMode, ComposerTarget, CurrentDeviceTrustState,
+    MentionIntent, PreparedUploadFormat, PreparedUploadVariant, SessionInfo, SessionState,
+    StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind, StagedUploadPreparation,
+    SubmissionId, ThreadPaneState,
 };
 
 mod support;
@@ -804,6 +805,397 @@ async fn composer_drafts_persist_after_debounce_and_load_on_restart() {
     })
     .await;
     assert_eq!(snapshot.timeline.composer.draft, "survives restart");
+}
+
+#[tokio::test]
+async fn persisted_lru_evicts_same_oldest_target_after_restart() {
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let credential_dir = tempfile::tempdir().expect("credential dir");
+    let room_id = "!room:example.test";
+    let mut ordered_root_event_ids = vec!["z-oldest".to_owned(), "a-newer".to_owned()];
+    ordered_root_event_ids.extend(
+        (0..(koushi_state::MAX_LIVE_COMPOSER_THREAD_TOMBSTONES - 2))
+            .map(|index| format!("middle-{index:03}")),
+    );
+    let newest_after_restart = "b-newest-after-restart".to_owned();
+
+    {
+        let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+            data_dir.path().to_path_buf(),
+            credential_dir.path().to_path_buf(),
+        );
+        let mut conn = runtime.attach();
+        runtime
+            .inject_actions(restore_ready_actions![AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![room_summary(room_id)],
+            }])
+            .await;
+        wait_for_state(&mut conn, |state| {
+            matches!(state.session, SessionState::Ready(_))
+        })
+        .await;
+
+        let mut drafts = koushi_state::ComposerDraftStore::default();
+        for root_event_id in &ordered_root_event_ids {
+            assert!(
+                drafts
+                    .apply_thread_draft(
+                        room_id.to_owned(),
+                        root_event_id.clone(),
+                        String::new(),
+                        1.into(),
+                    )
+                    .expect("ordered tombstone")
+            );
+        }
+        let snapshot = runtime
+            .inject_composer_drafts_and_wait_for_testing(drafts)
+            .await;
+        assert_eq!(
+            snapshot.composer_drafts.quiescent_thread_tombstone_count(),
+            koushi_state::MAX_LIVE_COMPOSER_THREAD_TOMBSTONES
+        );
+        assert_eq!(
+            snapshot
+                .composer_drafts
+                .thread_revision(room_id, "z-oldest"),
+            1.into()
+        );
+        assert_eq!(
+            snapshot.composer_drafts.thread_revision(room_id, "a-newer"),
+            1.into()
+        );
+    }
+
+    let restarted = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_path_buf(),
+        credential_dir.path().to_path_buf(),
+    );
+    let mut conn = restarted.attach();
+    restarted
+        .inject_actions(restore_ready_actions![AppAction::RoomListUpdated {
+            spaces: vec![],
+            rooms: vec![room_summary(room_id)],
+        }])
+        .await;
+    let loaded = wait_for_state_event(&mut conn, |state| {
+        matches!(state.session, SessionState::Ready(_))
+            && state.composer_drafts.quiescent_thread_tombstone_count() > 0
+    })
+    .await;
+    assert_eq!(
+        loaded.composer_drafts.quiescent_thread_tombstone_count(),
+        koushi_state::MAX_LIVE_COMPOSER_THREAD_TOMBSTONES
+    );
+    assert_eq!(
+        loaded.composer_drafts.thread_revision(room_id, "z-oldest"),
+        1.into()
+    );
+    assert_eq!(
+        loaded.composer_drafts.thread_revision(room_id, "a-newer"),
+        1.into()
+    );
+
+    let mut churned = loaded.composer_drafts.clone();
+    assert!(
+        churned
+            .apply_thread_draft(
+                room_id.to_owned(),
+                newest_after_restart.clone(),
+                String::new(),
+                1.into(),
+            )
+            .expect("post-restart tombstone")
+    );
+    let snapshot = restarted
+        .inject_composer_drafts_and_wait_for_testing(churned)
+        .await;
+    assert!(
+        snapshot
+            .composer_drafts
+            .thread_revision(room_id, &newest_after_restart)
+            > koushi_state::ComposerDraftRevision::ZERO
+    );
+    assert_eq!(
+        snapshot
+            .composer_drafts
+            .thread_revision(room_id, "z-oldest"),
+        koushi_state::ComposerDraftRevision::ZERO
+    );
+    assert_eq!(
+        snapshot.composer_drafts.thread_revision(room_id, "a-newer"),
+        1.into()
+    );
+}
+
+#[tokio::test]
+async fn account_switch_flushes_old_composer_save_before_new_load() {
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let credential_dir = tempfile::tempdir().expect("credential dir");
+    let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_path_buf(),
+        credential_dir.path().to_path_buf(),
+    );
+    let mut conn = runtime.attach();
+    runtime.inject_actions(restore_ready_actions![]).await;
+    wait_for_state_event(&mut conn, |state| {
+        matches!(state.session, SessionState::Ready(_))
+    })
+    .await;
+
+    let mut drafts = koushi_state::ComposerDraftStore::default();
+    assert!(
+        drafts
+            .apply_room_draft("old-room".to_owned(), "old body".to_owned(), 1.into())
+            .expect("seed old-account draft")
+    );
+    runtime
+        .inject_composer_drafts_and_wait_for_testing(drafts)
+        .await;
+
+    let mut barrier = runtime.install_composer_draft_io_barrier_for_testing();
+    let new_session = SessionInfo {
+        homeserver: "https://new.example.test".to_owned(),
+        user_id: "@new:new.example.test".to_owned(),
+        device_id: "NEWDEVICE".to_owned(),
+    };
+    runtime
+        .inject_actions(vec![
+            AppAction::ComposerDraftChangedAtRevision {
+                room_id: "old-room".to_owned(),
+                draft: "latest old body".to_owned(),
+                revision: 2.into(),
+            },
+            AppAction::SwitchAccountRequested {
+                info: new_session.clone(),
+            },
+            AppAction::RestoreSessionNotFound,
+            AppAction::RestoreSessionRequested,
+            AppAction::RestoreSessionSucceeded(new_session.clone()),
+            AppAction::CurrentDeviceTrustChanged(CurrentDeviceTrustState::Verified),
+        ])
+        .await;
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        barrier.wait_for_save_started(),
+    )
+    .await
+    .expect("old-account save must reach the blocking store port");
+    assert!(
+        !barrier.load_started_before_release(),
+        "new-account load must not overtake the blocked old-account save"
+    );
+    barrier.release_save();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        barrier.wait_for_save_completed(),
+    )
+    .await
+    .expect("old-account save must complete after release");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        barrier.wait_for_load_started(),
+    )
+    .await
+    .expect("new-account load must follow old-account save completion");
+    wait_for_state_event(
+        &mut conn,
+        |state| matches!(&state.session, SessionState::Ready(info) if info == &new_session),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn same_account_unlock_flushes_preserved_composer_save_before_reload() {
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let credential_dir = tempfile::tempdir().expect("credential dir");
+    let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_path_buf(),
+        credential_dir.path().to_path_buf(),
+    );
+    let mut conn = runtime.attach();
+    runtime
+        .inject_actions(restore_ready_actions![
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![room_summary("same-account-room")],
+            },
+            AppAction::SelectRoom {
+                room_id: "same-account-room".to_owned(),
+            },
+            AppAction::TimelineSubscribed {
+                room_id: "same-account-room".to_owned(),
+            },
+        ])
+        .await;
+    wait_for_state_event(&mut conn, |state| {
+        matches!(state.session, SessionState::Ready(_))
+            && state.timeline.room_id.as_deref() == Some("same-account-room")
+    })
+    .await;
+
+    let mut drafts = koushi_state::ComposerDraftStore::default();
+    assert!(
+        drafts
+            .apply_room_draft(
+                "same-account-room".to_owned(),
+                "saved body".to_owned(),
+                1.into(),
+            )
+            .expect("seed same-account draft")
+    );
+    runtime
+        .inject_composer_drafts_and_wait_for_testing(drafts)
+        .await;
+
+    let mut barrier = runtime.install_composer_draft_io_barrier_for_testing();
+    runtime
+        .inject_actions(vec![
+            AppAction::ComposerDraftChangedAtRevision {
+                room_id: "same-account-room".to_owned(),
+                draft: "latest body".to_owned(),
+                revision: 2.into(),
+            },
+            AppAction::SessionLocked,
+            AppAction::AuthoritativeDeviceTrustChanged {
+                generation: 1,
+                transition_id: 1,
+                trust: CurrentDeviceTrustState::Verified,
+            },
+        ])
+        .await;
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        barrier.wait_for_save_started(),
+    )
+    .await
+    .expect("same-account preservation save must reach the blocking store port");
+    assert!(
+        !barrier.load_started_before_release(),
+        "same-account reload must not overtake the blocked preservation save"
+    );
+    barrier.release_save();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        barrier.wait_for_save_completed(),
+    )
+    .await
+    .expect("same-account preservation save must complete after release");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        barrier.wait_for_load_started(),
+    )
+    .await
+    .expect("same-account reload must follow preservation save completion");
+    wait_for_state_event(&mut conn, |state| {
+        matches!(state.session, SessionState::Ready(_))
+            && state
+                .composer_drafts
+                .rooms
+                .get("same-account-room")
+                .is_some_and(|body| body == "latest body")
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn ignored_stale_reset_completion_does_not_cancel_pending_composer_save() {
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let credential_dir = tempfile::tempdir().expect("credential dir");
+    let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_path_buf(),
+        credential_dir.path().to_path_buf(),
+    );
+    let mut conn = runtime.attach();
+    runtime
+        .inject_actions(restore_ready_actions![
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![room_summary("reset-stale-room")],
+            },
+            AppAction::SelectRoom {
+                room_id: "reset-stale-room".to_owned(),
+            },
+            AppAction::TimelineSubscribed {
+                room_id: "reset-stale-room".to_owned(),
+            },
+        ])
+        .await;
+    wait_for_state_event(&mut conn, |state| {
+        matches!(state.session, SessionState::Ready(_))
+            && state.timeline.room_id.as_deref() == Some("reset-stale-room")
+    })
+    .await;
+
+    let mut drafts = koushi_state::ComposerDraftStore::default();
+    assert!(
+        drafts
+            .apply_room_draft(
+                "reset-stale-room".to_owned(),
+                "saved body".to_owned(),
+                1.into(),
+            )
+            .expect("seed stale-reset draft")
+    );
+    runtime
+        .inject_composer_drafts_and_wait_for_testing(drafts)
+        .await;
+
+    let mut barrier = runtime.install_composer_draft_io_barrier_for_testing();
+    runtime
+        .inject_actions(vec![
+            AppAction::ComposerDraftChangedAtRevision {
+                room_id: "reset-stale-room".to_owned(),
+                draft: "latest body".to_owned(),
+                revision: 2.into(),
+            },
+            AppAction::ResetLocalDataCompleted { request_id: 999 },
+        ])
+        .await;
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        barrier.wait_for_save_started(),
+    )
+    .await
+    .expect("ignored stale reset completion must preserve the pending save");
+    barrier.release_save();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        barrier.wait_for_save_completed(),
+    )
+    .await
+    .expect("preserved pending save must complete after release");
+    drop(conn);
+    runtime.shutdown().await;
+
+    let restarted = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_path_buf(),
+        credential_dir.path().to_path_buf(),
+    );
+    let mut restarted_conn = restarted.attach();
+    restarted
+        .inject_actions(restore_ready_actions![
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![room_summary("reset-stale-room")],
+            },
+            AppAction::SelectRoom {
+                room_id: "reset-stale-room".to_owned(),
+            },
+            AppAction::TimelineSubscribed {
+                room_id: "reset-stale-room".to_owned(),
+            },
+        ])
+        .await;
+    wait_for_state_event(&mut restarted_conn, |state| {
+        state.timeline.composer.draft == "latest body"
+            && state.timeline.composer.draft_revision == 2.into()
+    })
+    .await;
 }
 
 #[tokio::test]

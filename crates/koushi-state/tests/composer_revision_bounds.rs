@@ -1,7 +1,7 @@
 use koushi_state::{
-    ComposerDraftProtection, ComposerDraftRevision, ComposerDraftRevisionError, ComposerDraftStore,
-    ComposerState, ComposerTarget, MAX_LIVE_COMPOSER_ROOM_TOMBSTONES,
-    MAX_LIVE_COMPOSER_THREAD_TOMBSTONES,
+    ComposerDraftPersistenceProjection, ComposerDraftProtection, ComposerDraftRevision,
+    ComposerDraftRevisionError, ComposerDraftStore, ComposerState, ComposerTarget,
+    MAX_LIVE_COMPOSER_ROOM_TOMBSTONES, MAX_LIVE_COMPOSER_THREAD_TOMBSTONES,
 };
 
 const ABOVE_JAVASCRIPT_SAFE_INTEGER: &str = "9007199254740993";
@@ -331,6 +331,161 @@ fn released_empty_targets_become_collectible() {
         drafts.quiescent_room_tombstone_count(),
         MAX_LIVE_COMPOSER_ROOM_TOMBSTONES
     );
+}
+
+#[test]
+fn persisted_projection_keeps_all_content_and_protected_targets_with_newest_lru_order() {
+    let mut drafts = ComposerDraftStore::default();
+    for index in 0..(MAX_LIVE_COMPOSER_ROOM_TOMBSTONES + 2) {
+        assert!(
+            drafts
+                .apply_room_draft(format!("quiescent-{index:03}"), String::new(), 1.into())
+                .expect("quiescent tombstone")
+        );
+    }
+    for index in 0..(MAX_LIVE_COMPOSER_ROOM_TOMBSTONES + 2) {
+        assert!(
+            drafts
+                .apply_room_draft(
+                    format!("content-{index:03}"),
+                    format!("draft-{index:03}"),
+                    1.into(),
+                )
+                .expect("content draft")
+        );
+    }
+    assert!(
+        drafts
+            .apply_room_draft("protected-empty".to_owned(), String::new(), 1.into())
+            .expect("protected tombstone")
+    );
+    let protected = ComposerTarget::Main {
+        room_id: "protected-empty".to_owned(),
+    };
+    let projection = drafts.persisted_projection(&ComposerDraftProtection {
+        active: [protected].into_iter().collect(),
+        leased: Default::default(),
+    });
+
+    assert_eq!(
+        projection
+            .rooms
+            .values()
+            .filter(|entry| entry.content.is_some())
+            .count(),
+        MAX_LIVE_COMPOSER_ROOM_TOMBSTONES + 2
+    );
+    assert_eq!(
+        projection.quiescent_room_order.len(),
+        MAX_LIVE_COMPOSER_ROOM_TOMBSTONES
+    );
+    assert_eq!(
+        projection.quiescent_room_order.first().map(String::as_str),
+        Some("quiescent-002")
+    );
+    assert_eq!(
+        projection.quiescent_room_order.last().map(String::as_str),
+        Some("quiescent-129")
+    );
+    assert_eq!(
+        projection.protected_empty_rooms,
+        vec!["protected-empty".to_owned()]
+    );
+    assert!(
+        projection
+            .rooms
+            .get("protected-empty")
+            .is_some_and(|entry| entry.content.is_none())
+    );
+}
+
+#[test]
+fn persisted_import_appends_formerly_protected_group_after_saved_lru_order() {
+    let mut drafts = ComposerDraftStore::default();
+    assert!(
+        drafts
+            .apply_room_draft("z-oldest".to_owned(), String::new(), 1.into())
+            .expect("oldest tombstone")
+    );
+    assert!(
+        drafts
+            .apply_room_draft("a-newer".to_owned(), String::new(), 1.into())
+            .expect("nonlexical newer tombstone")
+    );
+    for index in 0..(MAX_LIVE_COMPOSER_ROOM_TOMBSTONES - 2) {
+        assert!(
+            drafts
+                .apply_room_draft(format!("middle-{index:03}"), String::new(), 1.into())
+                .expect("middle tombstone")
+        );
+    }
+    assert!(
+        drafts
+            .apply_room_draft("protected-empty".to_owned(), String::new(), 1.into())
+            .expect("protected tombstone")
+    );
+    let projection = drafts.persisted_projection(&ComposerDraftProtection {
+        active: [ComposerTarget::Main {
+            room_id: "protected-empty".to_owned(),
+        }]
+        .into_iter()
+        .collect(),
+        leased: Default::default(),
+    });
+
+    let restarted =
+        ComposerDraftStore::from_persisted_projection(ComposerDraftPersistenceProjection {
+            ..projection
+        })
+        .expect("valid persisted projection");
+
+    assert!(
+        !restarted.room_revisions.contains_key("z-oldest"),
+        "the saved oldest target must be evicted"
+    );
+    assert!(restarted.room_revisions.contains_key("a-newer"));
+    assert!(restarted.room_revisions.contains_key("protected-empty"));
+    let restarted_projection = restarted.persisted_projection(&ComposerDraftProtection::default());
+    assert_eq!(
+        restarted_projection
+            .quiescent_room_order
+            .first()
+            .map(String::as_str),
+        Some("a-newer")
+    );
+    assert_eq!(
+        restarted_projection
+            .quiescent_room_order
+            .last()
+            .map(String::as_str),
+        Some("protected-empty")
+    );
+}
+
+#[test]
+fn persisted_projection_classifies_empty_room_strings_as_quiescent() {
+    let mut drafts = ComposerDraftStore::default();
+    for index in 0..(MAX_LIVE_COMPOSER_ROOM_TOMBSTONES + 2) {
+        let room_id = format!("empty-room-{index:03}");
+        drafts.rooms.insert(room_id.clone(), String::new());
+        drafts.room_revisions.insert(room_id, 1.into());
+    }
+
+    let projection = drafts.persisted_projection(&ComposerDraftProtection::default());
+    assert_eq!(
+        projection.quiescent_room_order.len(),
+        MAX_LIVE_COMPOSER_ROOM_TOMBSTONES
+    );
+    assert!(
+        projection
+            .rooms
+            .get("empty-room-002")
+            .is_some_and(|entry| entry.content.is_none())
+    );
+    assert!(!projection.rooms.contains_key("empty-room-000"));
+    assert!(!projection.rooms.contains_key("empty-room-001"));
+    ComposerDraftStore::from_persisted_projection(projection)
+        .expect("bounded empty room strings must produce a valid tombstone projection");
 }
 
 #[test]

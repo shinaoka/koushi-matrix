@@ -157,8 +157,9 @@ pub use cjk::{
 
 // ── Re-exports: timeline ────────────────────────────────────────────────────
 pub use timeline::{
-    ComposerDraftStore, ComposerMode, ComposerState, ComposerSubmissionRecord,
-    ComposerSubmissionRegistry, MAX_PERSISTED_COMPOSER_DRAFT_BYTES,
+    ComposerDraftPersistenceEntry, ComposerDraftPersistenceImportError,
+    ComposerDraftPersistenceProjection, ComposerDraftStore, ComposerMode, ComposerState,
+    ComposerSubmissionRecord, ComposerSubmissionRegistry, MAX_PERSISTED_COMPOSER_DRAFT_BYTES,
     MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT, MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT,
     MediaGalleryStore, MediaPreparationFailureKind, PendingComposerSendKind, PreparedUploadFormat,
     PreparedUploadVariant, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem,

@@ -317,6 +317,16 @@ async fn persistence_guard_outlives_activation_release() {
     let mut persistence = registry
         .persistence_permits(&scope.account, [scope.target.clone()])
         .expect("persistence permit");
+    let (save_started, save_is_in_progress) = oneshot::channel();
+    let (finish_save, save_finished) = oneshot::channel();
+    let save_task = tokio::spawn(async move {
+        let _persistence = std::mem::take(&mut persistence);
+        save_started.send(()).expect("report save in progress");
+        save_finished.await.expect("finish persistence operation");
+    });
+    save_is_in_progress
+        .await
+        .expect("persistence operation started");
 
     registry.release(generation, lease).expect("release");
     assert!(
@@ -325,7 +335,10 @@ async fn persistence_guard_outlives_activation_release() {
             .contains(&scope.target)
     );
     changes.borrow_and_update();
-    persistence.clear();
+    finish_save
+        .send(())
+        .expect("complete persistence operation");
+    save_task.await.expect("persistence operation task");
     changes
         .changed()
         .await
