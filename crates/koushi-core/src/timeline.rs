@@ -30158,11 +30158,10 @@ mod tests {
             .map(|(generation, _)| generation.clone())
             .expect("current retry token");
 
-        let stale =
-            executor::timeout(Duration::from_millis(25), supervisor.retry_tasks.next())
-                .await
-                .expect("cancelled stale wake must be ready")
-                .expect("cancelled stale retry completion");
+        let stale = executor::timeout(Duration::from_millis(25), supervisor.retry_tasks.next())
+            .await
+            .expect("cancelled stale wake must be ready")
+            .expect("cancelled stale retry completion");
         assert!(matches!(
             stale,
             ReadWorkerCompletion::RetryWake {
