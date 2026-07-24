@@ -626,7 +626,11 @@ struct IncomingVerificationObservation {
     observer: koushi_sdk::MatrixIncomingVerificationRequestObserver,
 }
 
-async fn send_incoming_verification_message_until_stopped<T>(
+/// Session-owned observers must race every blocking outbound delivery against
+/// their stop signal. Normal operation still awaits reliable mailbox delivery;
+/// shutdown drops only the not-yet-delivered observer output so its owner can
+/// join the task without mailbox-backpressure deadlock.
+async fn send_observer_output_until_stopped<T>(
     sender: &mpsc::Sender<T>,
     message: T,
     stop_rx: &mut oneshot::Receiver<()>,
@@ -2951,6 +2955,8 @@ impl AccountActor {
             self.action_tx.clone(),
             self.event_tx.clone(),
             stop_rx,
+            #[cfg(test)]
+            None,
         ));
         self.recovery_observer = Some(RecoveryStateObservation { stop_tx, task });
     }
@@ -2973,7 +2979,7 @@ impl AccountActor {
                     request = receiver.recv() => {
                         let Some(request) = request else { break };
                         let (target, handle) = request.into_parts();
-                        if !send_incoming_verification_message_until_stopped(
+                        if !send_observer_output_until_stopped(
                             &tx,
                             AccountMessage::IncomingVerificationRequest {
                                 generation,
@@ -2998,35 +3004,16 @@ impl AccountActor {
     }
 
     fn start_session_change_observer(&mut self, session: Arc<MatrixClientSession>) {
-        let (stop_tx, mut stop_rx) = oneshot::channel();
-        let mut changes = session.client().subscribe_to_session_changes();
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let changes = session.client().subscribe_to_session_changes();
         let tx = self.self_tx.clone();
-        let task = crate::executor::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = &mut stop_rx => break,
-                    change = changes.recv() => {
-                        match change {
-                            Ok(matrix_sdk::SessionChange::UnknownToken(data)) => {
-                                if tx
-                                    .send(AccountMessage::SessionInvalidated {
-                                        soft_logout: data.soft_logout,
-                                    })
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                                break;
-                            }
-                            Ok(matrix_sdk::SessionChange::TokensRefreshed) => {}
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                        }
-                    }
-                }
-            }
-        });
+        let task = crate::executor::spawn(run_session_change_observation(
+            changes,
+            tx,
+            stop_rx,
+            #[cfg(test)]
+            None,
+        ));
         self.session_change_observer = Some(SessionChangeObservation { stop_tx, task });
     }
 
@@ -7886,12 +7873,50 @@ fn session_info_from_key_id(key_id: &SessionKeyId) -> SessionInfo {
     }
 }
 
+async fn run_session_change_observation(
+    mut changes: tokio::sync::broadcast::Receiver<matrix_sdk::SessionChange>,
+    tx: mpsc::Sender<AccountMessage>,
+    mut stop_rx: oneshot::Receiver<()>,
+    #[cfg(test)] delivery_barrier: Option<Arc<tokio::sync::Barrier>>,
+) {
+    loop {
+        tokio::select! {
+            _ = &mut stop_rx => break,
+            change = changes.recv() => {
+                match change {
+                    Ok(matrix_sdk::SessionChange::UnknownToken(data)) => {
+                        #[cfg(test)]
+                        if let Some(barrier) = delivery_barrier.as_ref() {
+                            barrier.wait().await;
+                        }
+                        if !send_observer_output_until_stopped(
+                            &tx,
+                            AccountMessage::SessionInvalidated {
+                                soft_logout: data.soft_logout,
+                            },
+                            &mut stop_rx,
+                        )
+                        .await {
+                            break;
+                        }
+                        break;
+                    }
+                    Ok(matrix_sdk::SessionChange::TokensRefreshed) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }
+    }
+}
+
 async fn run_recovery_state_observation<S>(
     state_stream: S,
     account_key: AccountKey,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     mut stop_rx: oneshot::Receiver<()>,
+    #[cfg(test)] delivery_barrier: Option<Arc<tokio::sync::Barrier>>,
 ) where
     S: futures_util::Stream<Item = E2eeRecoveryState> + Send + 'static,
 {
@@ -7916,23 +7941,41 @@ async fn run_recovery_state_observation<S>(
                 match state {
                     E2eeRecoveryState::Unknown => {}
                     E2eeRecoveryState::Incomplete => {
-                        let _ = action_tx
-                            .send(vec![AppAction::E2eeRecoveryStateChanged {
+                        #[cfg(test)]
+                        if let Some(barrier) = delivery_barrier.as_ref() {
+                            barrier.wait().await;
+                        }
+                        if !send_observer_output_until_stopped(
+                            &action_tx,
+                            vec![AppAction::E2eeRecoveryStateChanged {
                                 state: E2eeRecoveryState::Incomplete,
                                 methods: recovery_methods.clone(),
-                            }])
-                            .await;
+                            }],
+                            &mut stop_rx,
+                        )
+                        .await {
+                            break;
+                        }
                         let _ = event_tx.send(CoreEvent::Account(AccountEvent::RecoveryRequired {
                             account_key: account_key.clone(),
                         }));
                     }
                     E2eeRecoveryState::Enabled | E2eeRecoveryState::Disabled => {
-                        let _ = action_tx
-                            .send(vec![AppAction::E2eeRecoveryStateChanged {
+                        #[cfg(test)]
+                        if let Some(barrier) = delivery_barrier.as_ref() {
+                            barrier.wait().await;
+                        }
+                        if !send_observer_output_until_stopped(
+                            &action_tx,
+                            vec![AppAction::E2eeRecoveryStateChanged {
                                 state,
                                 methods: recovery_methods.clone(),
-                            }])
-                            .await;
+                            }],
+                            &mut stop_rx,
+                        )
+                        .await {
+                            break;
+                        }
                     }
                 }
             }
@@ -8991,13 +9034,12 @@ mod tests {
         let (sender, mut receiver) = mpsc::channel(1);
         let (_first_stop_tx, mut first_stop_rx) = oneshot::channel();
         assert!(
-            send_incoming_verification_message_until_stopped(&sender, 1_u8, &mut first_stop_rx,)
-                .await,
+            send_observer_output_until_stopped(&sender, 1_u8, &mut first_stop_rx,).await,
             "the first ready delivery must fill the product mailbox"
         );
         let (stop_tx, mut stop_rx) = oneshot::channel();
         let blocked_send = executor::spawn(async move {
-            send_incoming_verification_message_until_stopped(&sender, 2, &mut stop_rx).await
+            send_observer_output_until_stopped(&sender, 2, &mut stop_rx).await
         });
         tokio::task::yield_now().await;
 
@@ -11579,7 +11621,7 @@ mod tests {
     #[test]
     fn session_change_observer_routes_unknown_token_to_session_lock() {
         let source = include_str!("account.rs");
-        let observer_body = source
+        let observer_start_body = source
             .split("fn start_session_change_observer")
             .nth(1)
             .and_then(|rest| {
@@ -11587,6 +11629,11 @@ mod tests {
                     .next()
             })
             .expect("start_session_change_observer body");
+        let observer_run_body = source
+            .split("async fn run_session_change_observation")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn run_recovery_state_observation").next())
+            .expect("run_session_change_observation body");
         let handler_body = source
             .split("async fn handle_session_invalidated")
             .nth(1)
@@ -11594,15 +11641,15 @@ mod tests {
             .expect("handle_session_invalidated body");
 
         assert!(
-            observer_body.contains("subscribe_to_session_changes()"),
+            observer_start_body.contains("subscribe_to_session_changes()"),
             "AccountActor must subscribe to the SDK session-change channel; sync errors are not a reliable auth-invalidated source"
         );
         assert!(
-            observer_body.contains("matrix_sdk::SessionChange::UnknownToken(data)"),
+            observer_run_body.contains("matrix_sdk::SessionChange::UnknownToken(data)"),
             "UnknownToken must be handled explicitly instead of inferred from SyncService Offline/Error"
         );
         assert!(
-            observer_body.contains("soft_logout: data.soft_logout"),
+            observer_run_body.contains("soft_logout: data.soft_logout"),
             "only the private-data-free soft_logout bool may cross into AccountActor"
         );
         assert!(
@@ -11612,6 +11659,48 @@ mod tests {
         assert!(
             handler_body.contains("self.stop_sync_actor().await"),
             "auth invalidation must stop the old sync loop instead of leaving it reconnecting forever"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_change_observer_stop_interrupts_blocked_mailbox_delivery() {
+        let (tx, mut receiver) = mpsc::channel(1);
+        tx.send(AccountMessage::Shutdown)
+            .await
+            .expect("fill the account mailbox");
+        let (change_tx, change_rx) = broadcast::channel(1);
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let delivery_barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let mut task = executor::spawn(run_session_change_observation(
+            change_rx,
+            tx,
+            stop_rx,
+            Some(delivery_barrier.clone()),
+        ));
+        let mut unknown_token = matrix_sdk::ruma::api::error::UnknownTokenErrorData::new();
+        unknown_token.soft_logout = true;
+        change_tx
+            .send(matrix_sdk::SessionChange::UnknownToken(unknown_token))
+            .expect("publish synthetic session invalidation");
+
+        delivery_barrier.wait().await;
+        stop_tx.send(()).expect("request observer stop");
+        match executor::timeout(Duration::from_millis(250), &mut task).await {
+            Ok(joined) => joined.expect("session-change observer task"),
+            Err(_) => {
+                task.abort();
+                let _ = task.await;
+                panic!("stop must interrupt a blocked session-change mailbox delivery");
+            }
+        }
+
+        assert!(matches!(
+            receiver.recv().await,
+            Some(AccountMessage::Shutdown)
+        ));
+        assert!(
+            receiver.try_recv().is_err(),
+            "stop must discard only the blocked observer delivery"
         );
     }
 
@@ -12497,8 +12586,15 @@ mod tests {
         let (event_tx, mut event_rx) = broadcast::channel(8);
         let (_stop_tx, stop_rx) = tokio::sync::oneshot::channel();
 
-        run_recovery_state_observation(states, account_key.clone(), action_tx, event_tx, stop_rx)
-            .await;
+        run_recovery_state_observation(
+            states,
+            account_key.clone(),
+            action_tx,
+            event_tx,
+            stop_rx,
+            None,
+        )
+        .await;
 
         let first_actions = action_rx.recv().await.expect("first action batch");
         assert_eq!(
@@ -12540,6 +12636,51 @@ mod tests {
                 Err(tokio::sync::broadcast::error::RecvError::Closed)
             ),
             "repeated recovery states must not emit duplicate RecoveryRequired events"
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_state_observer_stop_interrupts_blocked_action_delivery() {
+        let states = stream::iter([koushi_state::E2eeRecoveryState::Incomplete]);
+        let (action_tx, mut action_rx) = mpsc::channel(1);
+        action_tx
+            .send(vec![AppAction::SessionLocked])
+            .await
+            .expect("fill the reducer action mailbox");
+        let (event_tx, mut event_rx) = broadcast::channel(1);
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let delivery_barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let mut task = executor::spawn(run_recovery_state_observation(
+            states,
+            AccountKey("@observer-stop:example.invalid".to_owned()),
+            action_tx,
+            event_tx,
+            stop_rx,
+            Some(delivery_barrier.clone()),
+        ));
+
+        delivery_barrier.wait().await;
+        stop_tx.send(()).expect("request observer stop");
+        match executor::timeout(Duration::from_millis(250), &mut task).await {
+            Ok(joined) => joined.expect("recovery-state observer task"),
+            Err(_) => {
+                task.abort();
+                let _ = task.await;
+                panic!("stop must interrupt a blocked recovery action delivery");
+            }
+        }
+
+        assert!(matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::SessionLocked])
+        ));
+        assert!(
+            action_rx.try_recv().is_err(),
+            "stop must discard only the blocked observer action"
+        );
+        assert!(
+            event_rx.try_recv().is_err(),
+            "a stopped Incomplete delivery must not emit RecoveryRequired"
         );
     }
 
