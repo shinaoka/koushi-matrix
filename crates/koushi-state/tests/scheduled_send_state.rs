@@ -95,7 +95,7 @@ fn scheduled_send_acceptance_fences_delayed_draft_persistence() {
         AppAction::ComposerDraftChangedAtRevision {
             room_id: "room-a".to_owned(),
             draft: "scheduled body".to_owned(),
-            revision: 4,
+            revision: 4.into(),
         },
     );
 
@@ -103,7 +103,7 @@ fn scheduled_send_acceptance_fences_delayed_draft_persistence() {
         &mut state,
         AppAction::ScheduledSendCreatedAtRevision {
             item: scheduled_item("sched-main", "room-a", 1_900_000_000_000),
-            draft_revision: 4,
+            draft_revision: 4.into(),
         },
     );
     reduce(
@@ -111,14 +111,14 @@ fn scheduled_send_acceptance_fences_delayed_draft_persistence() {
         AppAction::ComposerDraftChangedAtRevision {
             room_id: "room-a".to_owned(),
             draft: "scheduled body".to_owned(),
-            revision: 4,
+            revision: 4.into(),
         },
     );
 
     assert!(state.timeline.composer.draft.is_empty());
-    assert_eq!(state.timeline.composer.draft_revision, 5);
+    assert_eq!(state.timeline.composer.draft_revision, 5.into());
     assert!(state.composer_drafts.rooms.get("room-a").is_none());
-    assert_eq!(state.composer_drafts.room_revision("room-a"), 5);
+    assert_eq!(state.composer_drafts.room_revision("room-a"), 5.into());
 }
 
 fn selected_room_state(room_id: &str) -> AppState {
@@ -168,9 +168,9 @@ fn scheduled_send_create_clears_room_draft_and_projects_selected_room() {
     );
 
     assert_eq!(state.timeline.composer.draft, "");
-    assert_eq!(state.timeline.composer.draft_revision, 2);
+    assert_eq!(state.timeline.composer.draft_revision, 2.into());
     assert!(state.composer_drafts.rooms.is_empty());
-    assert_eq!(state.composer_drafts.room_revision("room-a"), 2);
+    assert_eq!(state.composer_drafts.room_revision("room-a"), 2.into());
     assert_eq!(state.timeline.scheduled_sends.len(), 1);
     assert_eq!(state.timeline.scheduled_sends[0].scheduled_id, "sched-1");
     assert_eq!(state.timeline.scheduled_sends[0].body, "scheduled body");

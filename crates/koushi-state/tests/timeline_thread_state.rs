@@ -285,7 +285,7 @@ fn composer_draft_revision_fences_late_persist_after_accepted_send() {
         AppAction::ComposerDraftChangedAtRevision {
             room_id: "room-a".to_owned(),
             draft: "sent text".to_owned(),
-            revision: 1,
+            revision: 1.into(),
         },
     );
     reduce(
@@ -294,7 +294,7 @@ fn composer_draft_revision_fences_late_persist_after_accepted_send() {
             room_id: "room-a".to_owned(),
             transaction_id: "txn-sent".to_owned(),
             body: "sent text".to_owned(),
-            draft_revision: 1,
+            draft_revision: 1.into(),
         },
     );
 
@@ -305,7 +305,7 @@ fn composer_draft_revision_fences_late_persist_after_accepted_send() {
         AppAction::ComposerDraftChangedAtRevision {
             room_id: "room-a".to_owned(),
             draft: "sent text".to_owned(),
-            revision: 1,
+            revision: 1.into(),
         },
     );
 
@@ -321,7 +321,7 @@ fn composer_draft_revision_keeps_immediate_next_input_over_old_completion() {
         AppAction::ComposerDraftChangedAtRevision {
             room_id: "room-a".to_owned(),
             draft: "first message".to_owned(),
-            revision: 1,
+            revision: 1.into(),
         },
     );
     reduce(
@@ -330,7 +330,7 @@ fn composer_draft_revision_keeps_immediate_next_input_over_old_completion() {
             room_id: "room-a".to_owned(),
             transaction_id: "txn-first".to_owned(),
             body: "first message".to_owned(),
-            draft_revision: 1,
+            draft_revision: 1.into(),
         },
     );
     reduce(
@@ -338,7 +338,7 @@ fn composer_draft_revision_keeps_immediate_next_input_over_old_completion() {
         AppAction::ComposerDraftChangedAtRevision {
             room_id: "room-a".to_owned(),
             draft: "next message".to_owned(),
-            revision: 3,
+            revision: 3.into(),
         },
     );
     reduce(
@@ -346,7 +346,7 @@ fn composer_draft_revision_keeps_immediate_next_input_over_old_completion() {
         AppAction::ComposerDraftChangedAtRevision {
             room_id: "room-a".to_owned(),
             draft: "first message".to_owned(),
-            revision: 1,
+            revision: 1.into(),
         },
     );
 
@@ -369,7 +369,7 @@ fn composer_draft_revision_keeps_next_input_when_it_persists_before_acceptance()
         AppAction::ComposerDraftChangedAtRevision {
             room_id: "room-a".to_owned(),
             draft: "first message".to_owned(),
-            revision: 1,
+            revision: 1.into(),
         },
     );
     reduce(
@@ -377,7 +377,7 @@ fn composer_draft_revision_keeps_next_input_when_it_persists_before_acceptance()
         AppAction::ComposerDraftChangedAtRevision {
             room_id: "room-a".to_owned(),
             draft: "next message".to_owned(),
-            revision: 2,
+            revision: 2.into(),
         },
     );
 
@@ -387,12 +387,12 @@ fn composer_draft_revision_keeps_next_input_when_it_persists_before_acceptance()
             room_id: "room-a".to_owned(),
             transaction_id: "txn-first".to_owned(),
             body: "first message".to_owned(),
-            draft_revision: 1,
+            draft_revision: 1.into(),
         },
     );
 
     assert_eq!(state.timeline.composer.draft, "next message");
-    assert_eq!(state.timeline.composer.draft_revision, 3);
+    assert_eq!(state.timeline.composer.draft_revision, 3.into());
     assert_eq!(
         state
             .composer_drafts
@@ -417,7 +417,7 @@ fn composer_draft_revision_persists_captured_target_across_room_switch() {
         AppAction::ComposerDraftChangedAtRevision {
             room_id: "room-a".to_owned(),
             draft: "room a draft".to_owned(),
-            revision: 1,
+            revision: 1.into(),
         },
     );
 
@@ -432,7 +432,7 @@ fn composer_draft_revision_persists_captured_target_across_room_switch() {
     );
 
     assert_eq!(state.timeline.composer.draft, "room a draft");
-    assert_eq!(state.timeline.composer.draft_revision, 1);
+    assert_eq!(state.timeline.composer.draft_revision, 1.into());
 }
 
 #[test]
@@ -743,7 +743,7 @@ fn offscreen_main_acceptance_advances_the_captured_room_draft_fence() {
         AppAction::ComposerDraftChangedAtRevision {
             room_id: "room-a".to_owned(),
             draft: "sent from room a".to_owned(),
-            revision: 1,
+            revision: 1.into(),
         },
     );
 
@@ -754,13 +754,13 @@ fn offscreen_main_acceptance_advances_the_captured_room_draft_fence() {
             room_id: "room-a".to_owned(),
             transaction_id: "txn-a".to_owned(),
             body: "sent from room a".to_owned(),
-            draft_revision: 1,
+            draft_revision: 1.into(),
         },
     );
 
     assert_eq!(state.timeline.room_id.as_deref(), Some("room-b"));
     assert!(state.timeline.composer.draft.is_empty());
-    assert_eq!(state.composer_drafts.room_revision("room-a"), 2);
+    assert_eq!(state.composer_drafts.room_revision("room-a"), 2.into());
     assert!(!state.composer_drafts.rooms.contains_key("room-a"));
 }
 
@@ -773,7 +773,7 @@ fn offscreen_thread_acceptance_advances_fence_and_global_registry() {
             room_id: "room-a".to_owned(),
             root_event_id: "$root-a".to_owned(),
             draft: "sent reply".to_owned(),
-            revision: 1,
+            revision: 1.into(),
         },
     );
     let submission_id = SubmissionId::new("root-a-accepted");
@@ -786,13 +786,13 @@ fn offscreen_thread_acceptance_advances_fence_and_global_registry() {
             root_event_id: "$root-a".to_owned(),
             transaction_id: "txn-root-a".to_owned(),
             body: "sent reply".to_owned(),
-            draft_revision: 1,
+            draft_revision: 1.into(),
         },
     );
 
     assert_eq!(
         state.composer_drafts.thread_revision("room-a", "$root-a"),
-        2
+        2.into()
     );
     assert!(
         state
@@ -809,7 +809,7 @@ fn offscreen_thread_acceptance_advances_fence_and_global_registry() {
             .accepted_submission_ids
             .contains(&submission_id)
     );
-    assert_eq!(open_thread_composer(&state).draft_revision, 0);
+    assert_eq!(open_thread_composer(&state).draft_revision, 0.into());
 }
 
 #[test]
@@ -1434,7 +1434,7 @@ fn thread_composer_draft_revision_fences_late_persist_and_isolates_roots() {
             room_id: "room-a".to_owned(),
             root_event_id: "$root-a".to_owned(),
             draft: "sent reply".to_owned(),
-            revision: 1,
+            revision: 1.into(),
         },
     );
     reduce(
@@ -1444,7 +1444,7 @@ fn thread_composer_draft_revision_fences_late_persist_and_isolates_roots() {
             root_event_id: "$root-a".to_owned(),
             transaction_id: "txn-thread".to_owned(),
             body: "sent reply".to_owned(),
-            draft_revision: 1,
+            draft_revision: 1.into(),
         },
     );
     reduce(
@@ -1453,7 +1453,7 @@ fn thread_composer_draft_revision_fences_late_persist_and_isolates_roots() {
             room_id: "room-a".to_owned(),
             root_event_id: "$root-a".to_owned(),
             draft: "next reply".to_owned(),
-            revision: 3,
+            revision: 3.into(),
         },
     );
     reduce(
@@ -1462,7 +1462,7 @@ fn thread_composer_draft_revision_fences_late_persist_and_isolates_roots() {
             room_id: "room-a".to_owned(),
             root_event_id: "$root-a".to_owned(),
             draft: "sent reply".to_owned(),
-            revision: 1,
+            revision: 1.into(),
         },
     );
     reduce(
@@ -1471,7 +1471,7 @@ fn thread_composer_draft_revision_fences_late_persist_and_isolates_roots() {
             room_id: "room-a".to_owned(),
             root_event_id: "$root-b".to_owned(),
             draft: "other root".to_owned(),
-            revision: 1,
+            revision: 1.into(),
         },
     );
 
@@ -1506,7 +1506,7 @@ fn thread_composer_draft_revision_keeps_next_input_persisted_before_acceptance()
             room_id: "room-a".to_owned(),
             root_event_id: "$root-a".to_owned(),
             draft: "sent reply".to_owned(),
-            revision: 1,
+            revision: 1.into(),
         },
     );
     reduce(
@@ -1515,7 +1515,7 @@ fn thread_composer_draft_revision_keeps_next_input_persisted_before_acceptance()
             room_id: "room-a".to_owned(),
             root_event_id: "$root-a".to_owned(),
             draft: "next reply".to_owned(),
-            revision: 2,
+            revision: 2.into(),
         },
     );
 
@@ -1526,12 +1526,12 @@ fn thread_composer_draft_revision_keeps_next_input_persisted_before_acceptance()
             root_event_id: "$root-a".to_owned(),
             transaction_id: "txn-thread".to_owned(),
             body: "sent reply".to_owned(),
-            draft_revision: 1,
+            draft_revision: 1.into(),
         },
     );
 
     assert_eq!(open_thread_composer(&state).draft, "next reply");
-    assert_eq!(open_thread_composer(&state).draft_revision, 3);
+    assert_eq!(open_thread_composer(&state).draft_revision, 3.into());
     assert_eq!(
         state
             .composer_drafts
@@ -1992,7 +1992,8 @@ fn timeline_and_thread_actions_are_ignored_without_ready_session() {
                 pending_submission_id: None,
                 pending_transaction_id: Some("txn1".to_owned()),
                 pending_send_kind: None,
-                draft_revision: 0,
+                draft_revision: 0.into(),
+                last_accepted_clear_revision: 0.into(),
                 draft: "draft".to_owned(),
                 mode: Default::default(),
             },

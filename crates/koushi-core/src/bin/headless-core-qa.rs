@@ -3083,7 +3083,7 @@ async fn run_scheduled_send_stage(
         thread_root_event_id: None,
         body: SCHEDULED_CREATE_BODY.to_owned(),
         send_at_ms: scheduled_qa_epoch_ms(Duration::from_secs(300)),
-        draft_revision: 0,
+        draft_revision: 0.into(),
     }))
     .await
     .map_err(|e| format!("scheduled_send: submit create failed: {e}"))?;
@@ -3140,7 +3140,7 @@ async fn run_scheduled_send_stage(
         thread_root_event_id: None,
         body: SCHEDULED_FIRE_BODY.to_owned(),
         send_at_ms: scheduled_qa_epoch_ms(Duration::from_millis(250)),
-        draft_revision: 0,
+        draft_revision: 0.into(),
     }))
     .await
     .map_err(|e| format!("scheduled_send: submit fire schedule failed: {e}"))?;

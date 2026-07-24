@@ -1340,21 +1340,40 @@ mod tests {
         let plaintext = "secret draft body";
         let mut drafts = ComposerDraftStore::default();
         drafts.set_room_draft("!room:test.example.com".to_owned(), plaintext.to_owned());
-        assert!(drafts.apply_room_draft(
-            "!sent:test.example.com".to_owned(),
-            "accepted body".to_owned(),
-            7,
-        ));
-        assert_eq!(drafts.advance_room_revision("!sent:test.example.com", 7), 8);
-        assert!(drafts.apply_thread_draft(
-            "!room:test.example.com".to_owned(),
-            "$root:test.example.com".to_owned(),
-            "thread accepted body".to_owned(),
-            11,
-        ));
+        assert!(
+            drafts
+                .apply_room_draft(
+                    "!sent:test.example.com".to_owned(),
+                    "accepted body".to_owned(),
+                    7.into(),
+                )
+                .expect("room draft revision should apply")
+        );
         assert_eq!(
-            drafts.advance_thread_revision("!room:test.example.com", "$root:test.example.com", 11,),
-            12
+            drafts
+                .advance_room_revision("!sent:test.example.com", 7.into())
+                .expect("room acceptance should advance"),
+            8.into()
+        );
+        assert!(
+            drafts
+                .apply_thread_draft(
+                    "!room:test.example.com".to_owned(),
+                    "$root:test.example.com".to_owned(),
+                    "thread accepted body".to_owned(),
+                    11.into(),
+                )
+                .expect("thread draft revision should apply")
+        );
+        assert_eq!(
+            drafts
+                .advance_thread_revision(
+                    "!room:test.example.com",
+                    "$root:test.example.com",
+                    11.into(),
+                )
+                .expect("thread acceptance should advance"),
+            12.into()
         );
 
         actor
@@ -1379,11 +1398,11 @@ mod tests {
                 .map(String::as_str),
             Some(plaintext)
         );
-        assert_eq!(loaded.room_revision("!sent:test.example.com"), 8);
+        assert_eq!(loaded.room_revision("!sent:test.example.com"), 8.into());
         assert!(!loaded.rooms.contains_key("!sent:test.example.com"));
         assert_eq!(
             loaded.thread_revision("!room:test.example.com", "$root:test.example.com"),
-            12
+            12.into()
         );
         assert!(
             loaded
@@ -1413,10 +1432,10 @@ mod tests {
         let loaded: ComposerDraftStore =
             serde_json::from_str(legacy).expect("deserialize legacy draft payload");
 
-        assert_eq!(loaded.room_revision("!room:test.example.com"), 0);
+        assert_eq!(loaded.room_revision("!room:test.example.com"), 0.into());
         assert_eq!(
             loaded.thread_revision("!room:test.example.com", "$root:test.example.com"),
-            0
+            0.into()
         );
         assert_eq!(
             loaded.composer_for_room("!room:test.example.com").draft,
@@ -1897,19 +1916,27 @@ mod tests {
         let mut drafts = ComposerDraftStore::default();
 
         for index in 0..koushi_state::MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT {
-            assert!(drafts.apply_room_draft(
-                format!("!a-tombstone-{index:04}:test.example.com"),
-                String::new(),
-                1,
-            ));
+            assert!(
+                drafts
+                    .apply_room_draft(
+                        format!("!a-tombstone-{index:04}:test.example.com"),
+                        String::new(),
+                        1.into(),
+                    )
+                    .expect("room tombstone should apply")
+            );
         }
         for index in 0..koushi_state::MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT {
-            assert!(drafts.apply_thread_draft(
-                "!thread-room:test.example.com".to_owned(),
-                format!("$a-tombstone-{index:04}"),
-                String::new(),
-                1,
-            ));
+            assert!(
+                drafts
+                    .apply_thread_draft(
+                        "!thread-room:test.example.com".to_owned(),
+                        format!("$a-tombstone-{index:04}"),
+                        String::new(),
+                        1.into(),
+                    )
+                    .expect("thread tombstone should apply")
+            );
         }
         drafts.set_room_draft(
             "!z-active:test.example.com".to_owned(),

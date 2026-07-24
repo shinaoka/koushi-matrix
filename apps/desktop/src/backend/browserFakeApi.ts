@@ -4,6 +4,11 @@ import {
   roomIsInScope,
   textRangeUtf16
 } from "../domain/desktopModel";
+import {
+  COMPOSER_DRAFT_REVISION_ZERO,
+  compareComposerDraftRevisions,
+  nextComposerDraftRevision
+} from "../domain/composerDraftRevision";
 import { computeBrowserRoomListProjection } from "./roomListProjection";
 import type {
   AvatarThumbnailState,
@@ -24,6 +29,7 @@ import type {
   ComposerResolverOptions,
   ComposerSurface,
   ComposerTarget,
+  ComposerDraftRevision,
   ComposerDraftAcceptanceResponse,
   DirectoryQuery,
   RoomListFilter,
@@ -160,14 +166,14 @@ export interface DesktopApi {
     roomId: string,
     body: string,
     mentions?: MentionIntent,
-    draftRevision?: number
+    draftRevision?: ComposerDraftRevision
   ): Promise<SubmissionResponse>;
   scheduleSend(
     account: ComposerDraftAccountOwner,
     target: ComposerTarget,
     body: string,
     sendAtMs: number,
-    draftRevision: number
+    draftRevision: ComposerDraftRevision
   ): Promise<ComposerDraftAcceptanceResponse>;
   stageUploads(roomId: string, items: UploadStagingRequestItem[]): Promise<DesktopSnapshot>;
   stageUploadBytes(
@@ -189,7 +195,7 @@ export interface DesktopApi {
   sendPreparedUploads(
     account: ComposerDraftAccountOwner,
     target: ComposerTarget,
-    draftRevision: number
+    draftRevision: ComposerDraftRevision
   ): Promise<ComposerDraftAcceptanceResponse>;
   updateStagedUploadCaption(
     target: ComposerTarget,
@@ -252,7 +258,7 @@ export interface DesktopApi {
     account: ComposerDraftAccountOwner,
     roomId: string,
     draft: string,
-    revision: number
+    revision: ComposerDraftRevision
   ): Promise<DesktopSnapshot>;
   openThread(roomId: string, rootEventId: string): Promise<DesktopSnapshot>;
   closeThread(): Promise<DesktopSnapshot>;
@@ -266,7 +272,7 @@ export interface DesktopApi {
     roomId: string,
     rootEventId: string,
     draft: string,
-    revision: number
+    revision: ComposerDraftRevision
   ): Promise<DesktopSnapshot>;
   sendThreadReply(
     account: ComposerDraftAccountOwner,
@@ -275,7 +281,7 @@ export interface DesktopApi {
     rootEventId: string,
     body: string,
     mentions?: MentionIntent,
-    draftRevision?: number
+    draftRevision?: ComposerDraftRevision
   ): Promise<SubmissionResponse>;
   submitSearch(query: string, scope: SearchScopeKind): Promise<DesktopSnapshot>;
   queryDirectory(query: DirectoryQuery): Promise<DesktopSnapshot>;
@@ -321,7 +327,7 @@ export interface DesktopApi {
     inReplyToEventId: string,
     body: string,
     mentions?: MentionIntent,
-    draftRevision?: number
+    draftRevision?: ComposerDraftRevision
   ): Promise<SubmissionResponse>;
   setRoomListProjection(projection: RoomListProjection): void;
   startRoomCrawl(roomId: string): Promise<DesktopSnapshot>;
@@ -347,21 +353,25 @@ class BrowserFakeApi implements DesktopApi {
   private snapshot: DesktopSnapshot;
   private requestSequence = 1_000;
   private composerDrafts = new Map<string, string>();
-  private composerDraftRevisions = new Map<string, number>();
+  private composerDraftRevisions = new Map<string, ComposerDraftRevision>();
   private threadComposerDrafts = new Map<string, string>();
-  private threadComposerDraftRevisions = new Map<string, number>();
+  private threadComposerDraftRevisions = new Map<string, ComposerDraftRevision>();
   private preparedUploadBytes = new Map<string, number[]>();
   private submissionLedger = new Map<string, string>();
 
-  private acceptComposerDraftTarget(target: ComposerTarget, submittedRevision: number): number {
+  private acceptComposerDraftTarget(
+    target: ComposerTarget,
+    submittedRevision: ComposerDraftRevision
+  ): ComposerDraftRevision {
     const key = browserComposerDraftTargetKey(target);
     const revisions =
       target.kind === "main"
         ? this.composerDraftRevisions
         : this.threadComposerDraftRevisions;
-    const currentRevision = revisions.get(key) ?? 0;
-    const preserveNewerDraft = currentRevision > submittedRevision;
-    const revision = Math.max(currentRevision, submittedRevision) + 1;
+    const currentRevision = revisions.get(key) ?? COMPOSER_DRAFT_REVISION_ZERO;
+    const preserveNewerDraft =
+      compareComposerDraftRevisions(currentRevision, submittedRevision) > 0;
+    const revision = nextComposerDraftRevision(currentRevision, submittedRevision);
     revisions.set(key, revision);
     if (!preserveNewerDraft) {
       if (target.kind === "main") {
@@ -377,6 +387,9 @@ class BrowserFakeApi implements DesktopApi {
           ? this.composerDrafts.get(target.room_id) ?? ""
           : this.threadComposerDrafts.get(key) ?? "";
       composer.draft_revision = revision;
+      if (!preserveNewerDraft) {
+        composer.last_accepted_clear_revision = revision;
+      }
     }
     return revision;
   }
@@ -1204,7 +1217,9 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.ui.timeline.composer = {
       accepted_submission_ids: [],
       pending_transaction_id: null,
-      draft_revision: this.composerDraftRevisions.get(roomId) ?? 0,
+      draft_revision:
+        this.composerDraftRevisions.get(roomId) ?? COMPOSER_DRAFT_REVISION_ZERO,
+      last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO,
       draft: this.composerDrafts.get(roomId) ?? "",
       mode: "Plain"
     };
@@ -1286,7 +1301,7 @@ class BrowserFakeApi implements DesktopApi {
     roomId: string,
     body: string,
     mentions: MentionIntent = emptyMentionIntent(),
-    draftRevision = 0
+    draftRevision: ComposerDraftRevision = COMPOSER_DRAFT_REVISION_ZERO
   ): Promise<SubmissionResponse> {
     void mentions;
     const replay = this.replaySubmission(submissionId);
@@ -1337,7 +1352,7 @@ class BrowserFakeApi implements DesktopApi {
     target: ComposerTarget,
     body: string,
     sendAtMs: number,
-    draftRevision: number
+    draftRevision: ComposerDraftRevision
   ): Promise<ComposerDraftAcceptanceResponse> {
     const session = this.snapshot.state.domain.session;
     if (
@@ -1493,7 +1508,7 @@ class BrowserFakeApi implements DesktopApi {
   async sendPreparedUploads(
     account: ComposerDraftAccountOwner,
     target: ComposerTarget,
-    draftRevision: number
+    draftRevision: ComposerDraftRevision
   ): Promise<ComposerDraftAcceptanceResponse> {
     if (!browserComposerAccountMatches(this.snapshot.state.domain.session, account)) {
       return { acceptedRevision: null, snapshot: await this.getSnapshot() };
@@ -1894,7 +1909,8 @@ class BrowserFakeApi implements DesktopApi {
               room_id: roomId,
               root_event_id: rootEventId
             })
-          ) ?? 0,
+          ) ?? COMPOSER_DRAFT_REVISION_ZERO,
+        last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO,
         draft:
           this.threadComposerDrafts.get(
             browserComposerDraftTargetKey({
@@ -2014,7 +2030,7 @@ class BrowserFakeApi implements DesktopApi {
     roomId: string,
     rootEventId: string,
     draft: string,
-    revision: number
+    revision: ComposerDraftRevision
   ): Promise<DesktopSnapshot> {
     if (
       !this.canUseSyncedViews() ||
@@ -2031,7 +2047,12 @@ class BrowserFakeApi implements DesktopApi {
       room_id: roomId,
       root_event_id: rootEventId
     });
-    if (revision <= (this.threadComposerDraftRevisions.get(key) ?? 0)) {
+    if (
+      compareComposerDraftRevisions(
+        revision,
+        this.threadComposerDraftRevisions.get(key) ?? COMPOSER_DRAFT_REVISION_ZERO
+      ) <= 0
+    ) {
       return this.getSnapshot();
     }
     this.threadComposerDraftRevisions.set(key, revision);
@@ -2046,7 +2067,7 @@ class BrowserFakeApi implements DesktopApi {
       thread.room_id === roomId &&
       thread.root_event_id === rootEventId &&
       thread.composer &&
-      revision > thread.composer.draft_revision
+      compareComposerDraftRevisions(revision, thread.composer.draft_revision) > 0
     ) {
       thread.composer.draft = draft;
       thread.composer.draft_revision = revision;
@@ -2061,7 +2082,7 @@ class BrowserFakeApi implements DesktopApi {
     rootEventId: string,
     body: string,
     _mentions?: MentionIntent,
-    draftRevision = 0
+    draftRevision: ComposerDraftRevision = COMPOSER_DRAFT_REVISION_ZERO
   ): Promise<SubmissionResponse> {
     const replay = this.replaySubmission(submissionId);
     if (replay) return replay;
@@ -2989,7 +3010,7 @@ class BrowserFakeApi implements DesktopApi {
     account: ComposerDraftAccountOwner,
     roomId: string,
     draft: string,
-    revision: number
+    revision: ComposerDraftRevision
   ): Promise<DesktopSnapshot> {
     if (
       !this.canUseSyncedViews() ||
@@ -3001,7 +3022,12 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
-    if (revision <= (this.composerDraftRevisions.get(roomId) ?? 0)) {
+    if (
+      compareComposerDraftRevisions(
+        revision,
+        this.composerDraftRevisions.get(roomId) ?? COMPOSER_DRAFT_REVISION_ZERO
+      ) <= 0
+    ) {
       return this.getSnapshot();
     }
     this.composerDraftRevisions.set(roomId, revision);
@@ -3044,7 +3070,7 @@ class BrowserFakeApi implements DesktopApi {
     inReplyToEventId: string,
     body: string,
     mentions: MentionIntent = emptyMentionIntent(),
-    draftRevision = 0
+    draftRevision: ComposerDraftRevision = COMPOSER_DRAFT_REVISION_ZERO
   ): Promise<SubmissionResponse> {
     void mentions;
     const replay = this.replaySubmission(submissionId);
@@ -3346,7 +3372,8 @@ class BrowserFakeApi implements DesktopApi {
       composer: {
         accepted_submission_ids: [],
         pending_transaction_id: null,
-        draft_revision: 0,
+        draft_revision: COMPOSER_DRAFT_REVISION_ZERO,
+        last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO,
         draft: "",
         mode: "Plain"
       },
@@ -3435,7 +3462,8 @@ class BrowserFakeApi implements DesktopApi {
       composer: {
         accepted_submission_ids: [],
         pending_transaction_id: null,
-        draft_revision: 0,
+        draft_revision: COMPOSER_DRAFT_REVISION_ZERO,
+        last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO,
         draft: "",
         mode: "Plain"
       },
@@ -3792,7 +3820,8 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
           composer: {
             accepted_submission_ids: [],
             pending_transaction_id: null,
-            draft_revision: 0,
+            draft_revision: COMPOSER_DRAFT_REVISION_ZERO,
+            last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO,
             draft: "",
             mode: "Plain"
           },
@@ -3917,7 +3946,8 @@ function createSignedOutSnapshot(): DesktopSnapshot {
           composer: {
             accepted_submission_ids: [],
             pending_transaction_id: null,
-            draft_revision: 0,
+            draft_revision: COMPOSER_DRAFT_REVISION_ZERO,
+            last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO,
             draft: "",
             mode: "Plain"
           },

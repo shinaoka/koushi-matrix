@@ -15,6 +15,7 @@ import {
   useAppStore
 } from "./appStore";
 import type { DesktopSnapshot } from "./types";
+import { COMPOSER_DRAFT_REVISION_ZERO } from "./composerDraftRevision";
 
 describe("appStore projection cache", () => {
   beforeEach(() => {
@@ -794,7 +795,7 @@ function makeSnapshot(): DesktopSnapshot {
           room_id: "!room-alpha:example.invalid",
           is_subscribed: true,
           is_paginating_backwards: false,
-          composer: { accepted_submission_ids: [], pending_transaction_id: null, draft_revision: 0, draft: "hello", mode: "Plain" },
+          composer: { accepted_submission_ids: [], pending_transaction_id: null, draft_revision: COMPOSER_DRAFT_REVISION_ZERO, last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO, draft: "hello", mode: "Plain" },
           submission_registry: { accepted_submission_ids: [], settled_submission_ids: [] },
           scheduled_send_capability: "unknown",
           scheduled_sends: [],
@@ -808,7 +809,7 @@ function makeSnapshot(): DesktopSnapshot {
           room_id: "!room-alpha:example.invalid",
           root_event_id: "$thread-root:example.invalid",
           is_subscribed: true,
-          composer: { accepted_submission_ids: [], pending_transaction_id: null, draft_revision: 0, draft: "", mode: "Plain" }
+          composer: { accepted_submission_ids: [], pending_transaction_id: null, draft_revision: COMPOSER_DRAFT_REVISION_ZERO, last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO, draft: "", mode: "Plain" }
         },
         focused_context: { kind: "closed" },
         files_view: { kind: "closed" },

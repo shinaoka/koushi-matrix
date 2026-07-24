@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { COMPOSER_DRAFT_REVISION_ZERO } from "./composerDraftRevision";
 
 import { createBrowserFakeApi } from "../backend/browserFakeApi";
 import {
@@ -68,7 +69,8 @@ describe("diagnosticReport", () => {
                 accepted_submission_ids: [],
                 draft: "",
                 pending_transaction_id: null,
-                draft_revision: 0,
+                draft_revision: COMPOSER_DRAFT_REVISION_ZERO,
+                last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO,
                 mode: "Plain"
               }
             },

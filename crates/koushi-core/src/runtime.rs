@@ -20,10 +20,11 @@ use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, reco
 use koushi_state::{
     AccountManagementOperation, ActivityMarkReadTarget, ActivityResolutionState, ActivityRow,
     ActivityRowKind, ActivityState, ActivityStream, ActivityTab, AppAction, AppEffect, AppState,
-    ComposerDraftStore, LoginAttemptId, OperationFailureKind, ProfileUpdateRequest,
-    RoomNotificationMode, RoomSummary, ScheduledSendCapability, ScheduledSendHandle,
-    ScheduledSendItem, SearchScope as AppSearchScope, SessionState, SpaceSummary, ThreadPaneState,
-    UiEvent, reduce, room_activity_unread_count,
+    ComposerDraftProtection, ComposerDraftRevision, ComposerDraftStore, ComposerTarget,
+    LoginAttemptId, OperationFailureKind, ProfileUpdateRequest, RoomNotificationMode, RoomSummary,
+    ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchScope as AppSearchScope,
+    SessionState, SpaceSummary, SubmissionId, ThreadPaneState, UiEvent, reduce,
+    room_activity_unread_count,
 };
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
@@ -144,6 +145,98 @@ fn composer_draft_account_matches(
         &state.session,
         SessionState::Ready(info) if session_key_id_from_info(info) == *expected_account
     )
+}
+
+fn composer_draft_revision_for_target(
+    state: &AppState,
+    target: &ComposerTarget,
+) -> ComposerDraftRevision {
+    match target {
+        ComposerTarget::Main { room_id } => state.composer_drafts.room_revision(room_id),
+        ComposerTarget::Thread {
+            room_id,
+            root_event_id,
+        } => state
+            .composer_drafts
+            .thread_revision(room_id, root_event_id),
+    }
+}
+
+fn active_composer_targets(state: &AppState) -> BTreeSet<ComposerTarget> {
+    let mut active = BTreeSet::new();
+    if let Some(room_id) = &state.timeline.room_id {
+        active.insert(ComposerTarget::Main {
+            room_id: room_id.clone(),
+        });
+    }
+    match &state.thread {
+        ThreadPaneState::Opening {
+            room_id,
+            root_event_id,
+        }
+        | ThreadPaneState::Open {
+            room_id,
+            root_event_id,
+            ..
+        } => {
+            active.insert(ComposerTarget::Thread {
+                room_id: room_id.clone(),
+                root_event_id: root_event_id.clone(),
+            });
+        }
+        ThreadPaneState::Closed => {}
+    }
+    active
+}
+
+fn composer_draft_acceptance_would_exhaust(
+    state: &AppState,
+    target: &ComposerTarget,
+    submitted_revision: ComposerDraftRevision,
+) -> bool {
+    ComposerDraftRevision::checked_successor(
+        composer_draft_revision_for_target(state, target),
+        submitted_revision,
+    )
+    .is_err()
+}
+
+fn timeline_submission_revision_exhaustion(
+    state: &AppState,
+    command: &TimelineCommand,
+) -> Option<(RequestId, TimelineKey, SubmissionId)> {
+    let (request_id, submission_id, key, submitted_revision) = match command {
+        TimelineCommand::SubmitText {
+            request_id,
+            submission_id,
+            key,
+            draft_revision,
+            ..
+        }
+        | TimelineCommand::SubmitReply {
+            request_id,
+            submission_id,
+            key,
+            draft_revision,
+            ..
+        } => (*request_id, submission_id, key, *draft_revision),
+        _ => return None,
+    };
+    let target = match &key.kind {
+        TimelineKind::Room { room_id } => ComposerTarget::Main {
+            room_id: room_id.clone(),
+        },
+        TimelineKind::Thread {
+            room_id,
+            root_event_id,
+        } => ComposerTarget::Thread {
+            room_id: room_id.clone(),
+            root_event_id: root_event_id.clone(),
+        },
+        TimelineKind::Focused { .. } => return None,
+    };
+    composer_draft_acceptance_would_exhaust(state, &target, submitted_revision)
+        .then(|| (request_id, key.clone(), submission_id.clone()))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -1491,11 +1584,23 @@ impl AppActor {
         let activity_was_open = matches!(self.state.activity, ActivityState::Open { .. });
         let previous_session = composer_draft_session_key(&self.state);
         let previous_drafts = self.state.composer_drafts.clone();
+        let previous_composer_targets = active_composer_targets(&self.state);
         let previous_navigation_session = navigation_session_key(&self.state);
         let previous_navigation = self.state.navigation.clone();
         let previous_scheduled_session = scheduled_send_session_key(&self.state);
         let previous_scheduled_sends = self.state.scheduled_sends.clone();
         let effects = reduce_with_unread_diagnostics(&mut self.state, action);
+        let current_composer_targets = active_composer_targets(&self.state);
+        if previous_drafts != self.state.composer_drafts
+            || previous_composer_targets != current_composer_targets
+        {
+            self.state
+                .composer_drafts
+                .reconcile_lifecycle(&ComposerDraftProtection {
+                    active: current_composer_targets,
+                    leased: BTreeSet::new(),
+                });
+        }
         if activity_was_open && matches!(self.state.activity, ActivityState::Closed) {
             let _ = self
                 .account_actor
@@ -1976,6 +2081,19 @@ impl AppActor {
                     if !composer_draft_account_matches(&self.state, &expected_account) {
                         return false;
                     }
+                    if composer_draft_acceptance_would_exhaust(
+                        &self.state,
+                        &target,
+                        submitted_revision,
+                    ) {
+                        self.emit(CoreEvent::OperationFailed {
+                            request_id,
+                            failure: CoreFailure::TimelineOperationFailed {
+                                kind: TimelineFailureKind::ComposerRevisionExhausted,
+                            },
+                        });
+                        return false;
+                    }
                     let effects = self
                         .reduce_app_action(AppAction::ComposerDraftAccepted {
                             target,
@@ -2064,6 +2182,25 @@ impl AppActor {
                         self.emit(CoreEvent::OperationFailed {
                             request_id,
                             failure: CoreFailure::SessionRequired,
+                        });
+                        return false;
+                    }
+                    let target = match &thread_root_event_id {
+                        Some(root_event_id) => ComposerTarget::Thread {
+                            room_id: room_id.clone(),
+                            root_event_id: root_event_id.clone(),
+                        },
+                        None => ComposerTarget::Main {
+                            room_id: room_id.clone(),
+                        },
+                    };
+                    if composer_draft_acceptance_would_exhaust(&self.state, &target, draft_revision)
+                    {
+                        self.emit(CoreEvent::OperationFailed {
+                            request_id,
+                            failure: CoreFailure::TimelineOperationFailed {
+                                kind: TimelineFailureKind::ComposerRevisionExhausted,
+                            },
                         });
                         return false;
                     }
@@ -2905,6 +3042,17 @@ impl AppActor {
                         request_id,
                         failure: CoreFailure::SessionRequired,
                     });
+                    return false;
+                }
+                if let Some((request_id, key, submission_id)) =
+                    timeline_submission_revision_exhaustion(&self.state, &timeline_command)
+                {
+                    self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
+                        request_id,
+                        key,
+                        submission_id,
+                        kind: TimelineFailureKind::ComposerRevisionExhausted,
+                    }));
                     return false;
                 }
                 if self.should_suppress_timeline_command_for_privacy(&timeline_command) {
@@ -4055,6 +4203,101 @@ mod tests {
             room_id: "!room:example.invalid".to_owned(),
             event_id: "$target".to_owned(),
         }
+    }
+
+    #[test]
+    fn composer_revision_exhaustion_is_detected_for_room_and_thread_submissions() {
+        let request_id = RequestId {
+            connection_id: RuntimeConnectionId(3),
+            sequence: 7,
+        };
+        let account_key = AccountKey("@qa:example.invalid".to_owned());
+        let room_id = "!room:example.invalid".to_owned();
+        let root_event_id = "$root:example.invalid".to_owned();
+        let mut state = AppState::default();
+        state
+            .composer_drafts
+            .room_revisions
+            .insert(room_id.clone(), ComposerDraftRevision::MAX);
+        state
+            .composer_drafts
+            .thread_revisions
+            .entry(room_id.clone())
+            .or_default()
+            .insert(root_event_id.clone(), ComposerDraftRevision::MAX);
+        let expected_account = koushi_key::SessionKeyId {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: "@qa:example.invalid".to_owned(),
+            device_id: "DEVICE".to_owned(),
+        };
+
+        let room = TimelineCommand::SubmitText {
+            request_id,
+            expected_account: expected_account.clone(),
+            submission_id: SubmissionId::new("room-submission"),
+            key: TimelineKey::room(account_key.clone(), room_id.clone()),
+            transaction_id: "room-transaction".to_owned(),
+            body: "body".to_owned(),
+            mentions: Default::default(),
+            draft_revision: ComposerDraftRevision::MAX,
+        };
+        let thread = TimelineCommand::SubmitReply {
+            request_id,
+            expected_account,
+            submission_id: SubmissionId::new("thread-submission"),
+            key: TimelineKey {
+                account_key,
+                kind: TimelineKind::Thread {
+                    room_id,
+                    root_event_id: root_event_id.clone(),
+                },
+            },
+            transaction_id: "thread-transaction".to_owned(),
+            in_reply_to_event_id: root_event_id,
+            body: "reply".to_owned(),
+            mentions: Default::default(),
+            draft_revision: ComposerDraftRevision::MAX,
+        };
+
+        assert!(timeline_submission_revision_exhaustion(&state, &room).is_some());
+        assert!(timeline_submission_revision_exhaustion(&state, &thread).is_some());
+    }
+
+    #[test]
+    fn composer_revision_exhaustion_preflight_preserves_authoritative_draft() {
+        let target = ComposerTarget::Main {
+            room_id: "!room:example.invalid".to_owned(),
+        };
+        let mut state = AppState::default();
+        state
+            .composer_drafts
+            .rooms
+            .insert("!room:example.invalid".to_owned(), "keep me".to_owned());
+        state.composer_drafts.room_revisions.insert(
+            "!room:example.invalid".to_owned(),
+            ComposerDraftRevision::MAX,
+        );
+
+        assert!(composer_draft_acceptance_would_exhaust(
+            &state,
+            &target,
+            ComposerDraftRevision::MAX
+        ));
+        assert_eq!(
+            state
+                .composer_drafts
+                .rooms
+                .get("!room:example.invalid")
+                .map(String::as_str),
+            Some("keep me")
+        );
+        assert_eq!(
+            state
+                .composer_drafts
+                .room_last_accepted_clear_revisions
+                .get("!room:example.invalid"),
+            None
+        );
     }
 
     #[test]

@@ -41,12 +41,12 @@ use koushi_key::{SessionKeyId, StoredMatrixSession};
 use koushi_sdk::{MatrixClientSession, PendingOidcLogin, PersistableMatrixSession};
 use koushi_state::{
     AccountManagementOperation, AppAction, AuthFailureKind, AvatarImage,
-    AvatarThumbnailFailureKind, AvatarThumbnailState, CrossSigningStatus, DeviceSessionSummary,
-    E2eeRecoveryState, IdentityResetAuthType, IdentityResetState, LoginAttemptId, LoginRequest,
-    OperationFailureKind, OwnProfile, PresenceKind, RecoveryKeyDeliveryState, RecoveryMethod,
-    RecoveryRequest, SasEmoji, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem,
-    SessionInfo, TrustOperationFailureKind, VerificationCancelReason, VerificationFlowState,
-    VerificationTarget,
+    AvatarThumbnailFailureKind, AvatarThumbnailState, ComposerDraftRevision, CrossSigningStatus,
+    DeviceSessionSummary, E2eeRecoveryState, IdentityResetAuthType, IdentityResetState,
+    LoginAttemptId, LoginRequest, OperationFailureKind, OwnProfile, PresenceKind,
+    RecoveryKeyDeliveryState, RecoveryMethod, RecoveryRequest, SasEmoji, ScheduledSendCapability,
+    ScheduledSendHandle, ScheduledSendItem, SessionInfo, TrustOperationFailureKind,
+    VerificationCancelReason, VerificationFlowState, VerificationTarget,
 };
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters};
 use matrix_sdk::ruma::events::room::MediaSource as SdkMediaSource;
@@ -261,7 +261,7 @@ pub enum AccountMessage {
         thread_root_event_id: Option<String>,
         body: String,
         send_at_ms: u64,
-        draft_revision: u64,
+        draft_revision: ComposerDraftRevision,
     },
     DispatchLocalScheduledSend {
         request_id: RequestId,
@@ -1993,7 +1993,7 @@ impl AccountActor {
         thread_root_event_id: Option<String>,
         body: String,
         send_at_ms: u64,
-        draft_revision: u64,
+        draft_revision: ComposerDraftRevision,
     ) {
         let Some(session) = &self.session else {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
@@ -8283,7 +8283,7 @@ mod tests {
             transaction_id: "transaction-owner-fence".to_owned(),
             body: "synthetic body".to_owned(),
             mentions: koushi_state::MentionIntent::default(),
-            draft_revision: 1,
+            draft_revision: 1.into(),
         };
 
         assert!(!composer_timeline_command_targets_active_session(

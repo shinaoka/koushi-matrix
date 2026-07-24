@@ -26,7 +26,7 @@ impl SubmissionEventSource for CoreConnection {
 fn composer_draft_revision(
     state: &koushi_state::AppState,
     target: &koushi_state::ComposerTarget,
-) -> u64 {
+) -> koushi_state::ComposerDraftRevision {
     match target {
         koushi_state::ComposerTarget::Main { room_id } => {
             state.composer_drafts.room_revision(room_id)
@@ -52,21 +52,22 @@ fn composer_draft_session_key(state: &koushi_state::AppState) -> Option<koushi_k
 fn next_composer_draft_acceptance_revision(
     state: &koushi_state::AppState,
     target: &koushi_state::ComposerTarget,
-    submitted_revision: u64,
-) -> Result<u64, String> {
-    composer_draft_revision(state, target)
-        .max(submitted_revision)
-        .checked_add(1)
-        .ok_or_else(|| "composer draft revision exhausted".to_owned())
+    submitted_revision: koushi_state::ComposerDraftRevision,
+) -> Result<koushi_state::ComposerDraftRevision, String> {
+    koushi_state::ComposerDraftRevision::checked_successor(
+        composer_draft_revision(state, target),
+        submitted_revision,
+    )
+    .map_err(|_| "composer draft revision exhausted".to_owned())
 }
 
 async fn wait_for_composer_draft_acceptance<S: SubmissionEventSource>(
     source: &mut S,
     request_id: koushi_core::RequestId,
     target: &koushi_state::ComposerTarget,
-    expected_revision: u64,
+    expected_revision: koushi_state::ComposerDraftRevision,
     timeout: Duration,
-) -> Result<u64, String> {
+) -> Result<koushi_state::ComposerDraftRevision, String> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let revision = composer_draft_revision(&source.snapshot(), target);
@@ -325,7 +326,7 @@ pub async fn send_text(
     room_id: String,
     body: String,
     mentions: Option<koushi_state::MentionIntent>,
-    draft_revision: u64,
+    draft_revision: koushi_state::ComposerDraftRevision,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<SubmissionResponse, SubmissionFailure> {
@@ -378,7 +379,7 @@ pub async fn schedule_send(
     target: koushi_state::ComposerTarget,
     body: String,
     send_at_ms: u64,
-    draft_revision: u64,
+    draft_revision: koushi_state::ComposerDraftRevision,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<ComposerDraftAcceptanceResponse, String> {
@@ -876,7 +877,7 @@ pub async fn send_prepared_uploads(
     account_user_id: String,
     account_device_id: String,
     target: koushi_state::ComposerTarget,
-    draft_revision: u64,
+    draft_revision: koushi_state::ComposerDraftRevision,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<ComposerDraftAcceptanceResponse, String> {
@@ -914,6 +915,11 @@ pub async fn send_prepared_uploads(
             snapshot: current_snapshot(state.inner()).await?,
         });
     }
+    // Validate the eventual acceptance fence before the first upload. Revision
+    // exhaustion must be a side-effect-free rejection: no Matrix upload, send,
+    // or local prepared-item removal may happen before this check.
+    let expected_revision =
+        next_composer_draft_acceptance_revision(&snapshot, &target, draft_revision)?;
 
     let account_key = account_key_from_app_state(&snapshot);
     let key = timeline_key_for_composer_target(account_key.clone(), &target);
@@ -984,8 +990,6 @@ pub async fn send_prepared_uploads(
             publish_staged_upload_items(&mut event_conn, &target, remaining_items).await?;
         }
     }
-    let expected_revision =
-        next_composer_draft_acceptance_revision(&event_conn.snapshot(), &target, draft_revision)?;
     let request_id = event_conn.next_request_id();
     event_conn
         .command(CoreCommand::App(AppCommand::AcceptComposerDraft {
@@ -1749,7 +1753,7 @@ pub async fn set_composer_draft(
     account_device_id: String,
     room_id: String,
     draft: String,
-    revision: u64,
+    revision: koushi_state::ComposerDraftRevision,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
@@ -1781,7 +1785,7 @@ pub async fn set_thread_composer_draft(
     room_id: String,
     root_event_id: String,
     draft: String,
-    revision: u64,
+    revision: koushi_state::ComposerDraftRevision,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
@@ -1816,7 +1820,7 @@ pub async fn send_reply(
     in_reply_to_event_id: String,
     body: String,
     mentions: Option<koushi_state::MentionIntent>,
-    draft_revision: u64,
+    draft_revision: koushi_state::ComposerDraftRevision,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<SubmissionResponse, SubmissionFailure> {
@@ -1872,7 +1876,7 @@ pub async fn send_thread_reply(
     root_event_id: String,
     body: String,
     mentions: Option<koushi_state::MentionIntent>,
-    draft_revision: u64,
+    draft_revision: koushi_state::ComposerDraftRevision,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<SubmissionResponse, SubmissionFailure> {
@@ -1958,7 +1962,7 @@ mod submission_settlement_tests {
     struct DraftAcceptanceSource {
         state: koushi_state::AppState,
         target: koushi_state::ComposerTarget,
-        submitted_revision: u64,
+        submitted_revision: koushi_state::ComposerDraftRevision,
         pending_acceptance: bool,
         terminal_lag: Option<EventStreamLag>,
     }
@@ -1975,7 +1979,8 @@ mod submission_settlement_tests {
                 self.pending_acceptance = false;
                 match &self.target {
                     koushi_state::ComposerTarget::Main { room_id } => {
-                        self.state
+                        let _ = self
+                            .state
                             .composer_drafts
                             .advance_room_revision(room_id, self.submitted_revision);
                     }
@@ -1983,7 +1988,7 @@ mod submission_settlement_tests {
                         room_id,
                         root_event_id,
                     } => {
-                        self.state.composer_drafts.advance_thread_revision(
+                        let _ = self.state.composer_drafts.advance_thread_revision(
                             room_id,
                             root_event_id,
                             self.submitted_revision,
@@ -2041,11 +2046,12 @@ mod submission_settlement_tests {
             let mut state = koushi_state::AppState::default();
             state.timeline.room_id = Some("!room-b:test".to_owned());
             let expected_revision =
-                next_composer_draft_acceptance_revision(&state, &target, 4).expect("revision");
+                next_composer_draft_acceptance_revision(&state, &target, 4.into())
+                    .expect("revision");
             let mut source = DraftAcceptanceSource {
                 state,
                 target: target.clone(),
-                submitted_revision: 4,
+                submitted_revision: 4.into(),
                 pending_acceptance: true,
                 terminal_lag: None,
             };
@@ -2072,11 +2078,12 @@ mod submission_settlement_tests {
             };
             let state = koushi_state::AppState::default();
             let expected_revision =
-                next_composer_draft_acceptance_revision(&state, &target, 7).expect("revision");
+                next_composer_draft_acceptance_revision(&state, &target, 7.into())
+                    .expect("revision");
             let mut source = DraftAcceptanceSource {
                 state,
                 target: target.clone(),
-                submitted_revision: 7,
+                submitted_revision: 7.into(),
                 pending_acceptance: true,
                 terminal_lag: Some(EventStreamLag { skipped }),
             };
@@ -2118,7 +2125,7 @@ mod submission_settlement_tests {
                 &mut source,
                 rejected_request_id,
                 &target,
-                1,
+                1.into(),
                 Duration::from_secs(1),
             )
             .await,

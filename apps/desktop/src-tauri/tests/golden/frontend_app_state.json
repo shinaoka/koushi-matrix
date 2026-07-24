@@ -553,7 +553,7 @@
         "platform": "linux"
       }
     },
-    "schema_version": 2,
+    "schema_version": 3,
     "ui": {
       "basic_operation": {
         "kind": "creatingRoom",
@@ -621,7 +621,19 @@
         }
       },
       "thread": {
-        "kind": "closed"
+        "composer": {
+          "accepted_submission_ids": [],
+          "draft": "",
+          "draft_revision": "340282366920938463463374607431768211455",
+          "last_accepted_clear_revision": "340282366920938463463374607431768211455",
+          "mode": "Plain",
+          "pending_transaction_id": null
+        },
+        "is_subscribed": true,
+        "kind": "open",
+        "room_id": "!room:example.invalid",
+        "root_event_id": "$thread-root:example.invalid",
+        "staged_uploads": []
       },
       "threads_list": {
         "end_reached": false,
@@ -651,7 +663,8 @@
             "accepted-contract"
           ],
           "draft": "",
-          "draft_revision": 0,
+          "draft_revision": "340282366920938463463374607431768211455",
+          "last_accepted_clear_revision": "340282366920938463463374607431768211455",
           "mode": "Plain",
           "pending_transaction_id": null
         },

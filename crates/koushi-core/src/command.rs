@@ -5,13 +5,13 @@ use std::{fmt, path::PathBuf};
 
 use koushi_state::{
     ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentScope, AttachmentSort,
-    DirectoryQuery, FilesViewScope, FormattedMessageDraft, IdentityResetAuthRequest,
-    ImageUploadCompressionMode, InviteScopeSelection, JapaneseCatalogProfile,
-    LocalEncryptionHealth, LoginRequest, MentionIntent, NativeAttentionDispatchId,
-    NativeAttentionSoundOutcome, NativeAttentionState, PresenceKind, RecoveryRequest,
-    RoomListFilter, RoomModerationAction, RoomSettingChange, RoomTagKind, SettingsPatch,
-    StagedUploadCompressionChoice, StagedUploadItem, SubmissionId, TimelineScrollAnchor,
-    VerificationCancelReason, VerificationTarget,
+    ComposerDraftRevision, DirectoryQuery, FilesViewScope, FormattedMessageDraft,
+    IdentityResetAuthRequest, ImageUploadCompressionMode, InviteScopeSelection,
+    JapaneseCatalogProfile, LocalEncryptionHealth, LoginRequest, MentionIntent,
+    NativeAttentionDispatchId, NativeAttentionSoundOutcome, NativeAttentionState, PresenceKind,
+    RecoveryRequest, RoomListFilter, RoomModerationAction, RoomSettingChange, RoomTagKind,
+    SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem, SubmissionId,
+    TimelineScrollAnchor, VerificationCancelReason, VerificationTarget,
 };
 use serde::{Deserialize, Serialize};
 
@@ -280,7 +280,7 @@ pub enum AppCommand {
         expected_account: koushi_key::SessionKeyId,
         room_id: String,
         draft: String,
-        revision: u64,
+        revision: ComposerDraftRevision,
     },
     SetThreadComposerDraft {
         request_id: RequestId,
@@ -288,13 +288,13 @@ pub enum AppCommand {
         room_id: String,
         root_event_id: String,
         draft: String,
-        revision: u64,
+        revision: ComposerDraftRevision,
     },
     AcceptComposerDraft {
         request_id: RequestId,
         expected_account: koushi_key::SessionKeyId,
         target: koushi_state::ComposerTarget,
-        submitted_revision: u64,
+        submitted_revision: ComposerDraftRevision,
     },
     SetUploadStaging {
         request_id: RequestId,
@@ -330,7 +330,7 @@ pub enum AppCommand {
         thread_root_event_id: Option<String>,
         body: String,
         send_at_ms: u64,
-        draft_revision: u64,
+        draft_revision: ComposerDraftRevision,
     },
     CancelScheduledSend {
         request_id: RequestId,
@@ -2300,7 +2300,7 @@ pub enum TimelineCommand {
         transaction_id: String,
         body: String,
         mentions: MentionIntent,
-        draft_revision: u64,
+        draft_revision: ComposerDraftRevision,
     },
     SendReply {
         request_id: RequestId,
@@ -2319,7 +2319,7 @@ pub enum TimelineCommand {
         in_reply_to_event_id: String,
         body: String,
         mentions: MentionIntent,
-        draft_revision: u64,
+        draft_revision: ComposerDraftRevision,
     },
     ForwardMessage {
         request_id: RequestId,

@@ -32,8 +32,12 @@ import {
   threadSubmissionTarget,
   type ComposerSubmissionControllerRegistry
 } from "./domain/composerSubmission";
-import { createComposerDraftRevisionCoordinator } from "./domain/composerDraftRevision";
-import type { TimelinePaneState } from "./domain/types";
+import {
+  COMPOSER_DRAFT_REVISION_ZERO,
+  compareComposerDraftRevisions,
+  createComposerDraftRevisionCoordinator
+} from "./domain/composerDraftRevision";
+import type { ComposerDraftRevision, TimelinePaneState } from "./domain/types";
 import { setActiveLocaleProfile, t } from "./i18n/messages";
 
 export function reconcileComposerSubmissionSnapshot(
@@ -49,7 +53,7 @@ export function reconcileComposerSubmissionSnapshot(
 function composerDraftRevisionForTarget(
   snapshot: DesktopSnapshot,
   target: ComposerTarget
-): number | null {
+): ComposerDraftRevision | null {
   if (target.kind === "main") {
     return snapshot.state.ui.timeline.room_id === target.room_id
       ? snapshot.state.ui.timeline.composer.draft_revision
@@ -992,8 +996,9 @@ export function App() {
   >({});
   const localThreadComposerDraftsRef = useRef<Record<string, string>>({});
   const composerDraftRevisionsRef = useRef(createComposerDraftRevisionCoordinator());
-  const localComposerDraftRevisionsRef = useRef<Record<string, number>>({});
-  const localThreadComposerDraftRevisionsRef = useRef<Record<string, number>>({});
+  const localComposerDraftRevisionsRef = useRef<Record<string, ComposerDraftRevision>>({});
+  const localThreadComposerDraftRevisionsRef =
+    useRef<Record<string, ComposerDraftRevision>>({});
   const submissionRegistryRef = useRef<ComposerSubmissionControllerRegistry | null>(null);
   if (submissionRegistryRef.current === null) {
     submissionRegistryRef.current = createComposerSubmissionControllerRegistry();
@@ -2733,7 +2738,7 @@ export function App() {
       }
       const draftRevision = composerDraftRevisionsRef.current.current(target);
       const localRevisionAtSubmission =
-        localComposerDraftRevisionsRef.current[roomId] ?? 0;
+        localComposerDraftRevisionsRef.current[roomId] ?? COMPOSER_DRAFT_REVISION_ZERO;
       composerDraftRevisionsRef.current.accept(target, draftRevision);
       for (const item of uploads) {
         latestTextOperationQueueRef.current.invalidate(
@@ -2747,10 +2752,10 @@ export function App() {
       const acceptedRevision =
         response.acceptedRevision ??
         composerDraftRevisionForTarget(response.snapshot, target) ??
-        0;
-      const accepted = acceptedRevision > draftRevision;
+        COMPOSER_DRAFT_REVISION_ZERO;
+      const accepted = compareComposerDraftRevisions(acceptedRevision, draftRevision) > 0;
       const hasNewerDraft =
-        (localComposerDraftRevisionsRef.current[roomId] ?? 0) !==
+        (localComposerDraftRevisionsRef.current[roomId] ?? COMPOSER_DRAFT_REVISION_ZERO) !==
         localRevisionAtSubmission;
       if (accepted && !hasNewerDraft) {
         cancelComposerDraftPersist(roomId);
@@ -2774,7 +2779,7 @@ export function App() {
     if (submissionController.payload(submissionId) === undefined) {
       const draftRevision = composerDraftRevisionsRef.current.current(target);
       const localRevisionAtSubmission =
-        localComposerDraftRevisionsRef.current[roomId] ?? 0;
+        localComposerDraftRevisionsRef.current[roomId] ?? COMPOSER_DRAFT_REVISION_ZERO;
       composerDraftRevisionsRef.current.accept(target, draftRevision);
       submissionController.capture(submissionId, {
         roomId,
@@ -2792,8 +2797,8 @@ export function App() {
       body: string;
       mentions: MentionIntent;
       composerMode: typeof composerMode;
-      draftRevision: number;
-      localRevisionAtSubmission: number;
+      draftRevision: ComposerDraftRevision;
+      localRevisionAtSubmission: ComposerDraftRevision;
       account: { homeserver: string; userId: string; deviceId: string };
       accountOwner: string;
     }>(submissionId)!;
@@ -2840,7 +2845,7 @@ export function App() {
       }
       submissionController.accept(submissionId);
       const hasNewerDraft =
-        (localComposerDraftRevisionsRef.current[roomId] ?? 0) !==
+        (localComposerDraftRevisionsRef.current[roomId] ?? COMPOSER_DRAFT_REVISION_ZERO) !==
         captured.localRevisionAtSubmission;
       if (!hasNewerDraft) {
         cancelComposerDraftPersist(roomId);
@@ -2896,7 +2901,7 @@ export function App() {
       const target: ComposerTarget = { kind: "main", room_id: roomId };
       const draftRevision = composerDraftRevisionsRef.current.current(target);
       const localRevisionAtSubmission =
-        localComposerDraftRevisionsRef.current[roomId] ?? 0;
+        localComposerDraftRevisionsRef.current[roomId] ?? COMPOSER_DRAFT_REVISION_ZERO;
       composerDraftRevisionsRef.current.accept(target, draftRevision);
       const response = await api.scheduleSend(account, target, body, sendAtMs, draftRevision);
       if (submissionAccountOwnerRef.current !== accountOwner) {
@@ -2905,10 +2910,10 @@ export function App() {
       const acceptedRevision =
         response.acceptedRevision ??
         composerDraftRevisionForTarget(response.snapshot, target) ??
-        0;
-      const accepted = acceptedRevision > draftRevision;
+        COMPOSER_DRAFT_REVISION_ZERO;
+      const accepted = compareComposerDraftRevisions(acceptedRevision, draftRevision) > 0;
       const hasNewerDraft =
-        (localComposerDraftRevisionsRef.current[roomId] ?? 0) !==
+        (localComposerDraftRevisionsRef.current[roomId] ?? COMPOSER_DRAFT_REVISION_ZERO) !==
         localRevisionAtSubmission;
       if (accepted && !hasNewerDraft) {
         cancelComposerDraftPersist(roomId);
@@ -2952,7 +2957,7 @@ export function App() {
     const target: ComposerTarget = { kind: "main", room_id: roomId };
     const revision = composerDraftRevisionsRef.current.nextDraft(
       target,
-      snapshot?.state.ui.timeline.composer.draft_revision ?? 0
+      snapshot?.state.ui.timeline.composer.draft_revision ?? COMPOSER_DRAFT_REVISION_ZERO
     );
     localComposerDraftsRef.current[roomId] = value;
     localComposerDraftRevisionsRef.current[roomId] = revision;
@@ -2990,7 +2995,7 @@ export function App() {
     account: { homeserver: string; userId: string; deviceId: string },
     roomId: string,
     value: string,
-    revision: number
+    revision: ComposerDraftRevision
   ) {
     cancelComposerDraftPersist(roomId);
     composerDraftPersistTimers.current[roomId] = window.setTimeout(() => {
@@ -3007,7 +3012,7 @@ export function App() {
               target,
               nextSnapshot.state.ui.timeline.room_id === roomId
                 ? nextSnapshot.state.ui.timeline.composer.draft_revision
-                : 0
+                : COMPOSER_DRAFT_REVISION_ZERO
             )
           ) {
             return;
@@ -3228,7 +3233,7 @@ export function App() {
         thread.root_event_id === rootEventId &&
         thread.composer
         ? thread.composer.draft_revision
-        : 0
+        : COMPOSER_DRAFT_REVISION_ZERO
     );
     localThreadComposerDraftRevisionsRef.current[key] = revision;
     localThreadComposerDraftsRef.current[key] = draft;
@@ -3290,7 +3295,7 @@ export function App() {
       if (uploads.some((item) => item.preparation.kind !== "ready")) return;
       const draftRevision = composerDraftRevisionsRef.current.current(target);
       const localRevisionAtSubmission =
-        localThreadComposerDraftRevisionsRef.current[key] ?? 0;
+        localThreadComposerDraftRevisionsRef.current[key] ?? COMPOSER_DRAFT_REVISION_ZERO;
       composerDraftRevisionsRef.current.accept(target, draftRevision);
       for (const item of uploads) {
         latestTextOperationQueueRef.current.invalidate(
@@ -3304,10 +3309,10 @@ export function App() {
       const acceptedRevision =
         response.acceptedRevision ??
         composerDraftRevisionForTarget(response.snapshot, target) ??
-        0;
-      const accepted = acceptedRevision > draftRevision;
+        COMPOSER_DRAFT_REVISION_ZERO;
+      const accepted = compareComposerDraftRevisions(acceptedRevision, draftRevision) > 0;
       const hasNewerDraft =
-        (localThreadComposerDraftRevisionsRef.current[key] ?? 0) !==
+        (localThreadComposerDraftRevisionsRef.current[key] ?? COMPOSER_DRAFT_REVISION_ZERO) !==
         localRevisionAtSubmission;
       if (accepted && !hasNewerDraft) {
         cancelThreadComposerDraftPersist(roomId, rootEventId);
@@ -3346,8 +3351,8 @@ export function App() {
       rootEventId: string;
       body: string;
       mentions: MentionIntent;
-      draftRevision: number;
-      localRevisionAtSubmission: number;
+      draftRevision: ComposerDraftRevision;
+      localRevisionAtSubmission: ComposerDraftRevision;
       account: { homeserver: string; userId: string; deviceId: string };
       accountOwner: string;
     }>(submissionId)!;
@@ -3384,7 +3389,7 @@ export function App() {
     }
     submissionController.accept(submissionId);
     const hasNewerDraft =
-      (localThreadComposerDraftRevisionsRef.current[key] ?? 0) !==
+      (localThreadComposerDraftRevisionsRef.current[key] ?? COMPOSER_DRAFT_REVISION_ZERO) !==
       captured.localRevisionAtSubmission;
     if (!hasNewerDraft) {
       cancelThreadComposerDraftPersist(roomId, rootEventId);
@@ -3532,7 +3537,7 @@ export function App() {
     const key = threadComposerDraftKey(roomId, rootEventId);
     const draftRevision = composerDraftRevisionsRef.current.current(target);
     const localRevisionAtSubmission =
-      localThreadComposerDraftRevisionsRef.current[key] ?? 0;
+      localThreadComposerDraftRevisionsRef.current[key] ?? COMPOSER_DRAFT_REVISION_ZERO;
     composerDraftRevisionsRef.current.accept(target, draftRevision);
     const response = await api.scheduleSend(account, target, body, sendAtMs, draftRevision);
     if (submissionAccountOwnerRef.current !== accountOwner) {
@@ -3541,10 +3546,10 @@ export function App() {
     const acceptedRevision =
       response.acceptedRevision ??
       composerDraftRevisionForTarget(response.snapshot, target) ??
-      0;
-    const accepted = acceptedRevision > draftRevision;
+      COMPOSER_DRAFT_REVISION_ZERO;
+    const accepted = compareComposerDraftRevisions(acceptedRevision, draftRevision) > 0;
     const hasNewerDraft =
-      (localThreadComposerDraftRevisionsRef.current[key] ?? 0) !==
+      (localThreadComposerDraftRevisionsRef.current[key] ?? COMPOSER_DRAFT_REVISION_ZERO) !==
       localRevisionAtSubmission;
     if (accepted && !hasNewerDraft) {
       cancelThreadComposerDraftPersist(roomId, rootEventId);
@@ -3559,7 +3564,7 @@ export function App() {
     roomId: string,
     rootEventId: string,
     draft: string,
-    revision: number
+    revision: ComposerDraftRevision
   ) {
     cancelThreadComposerDraftPersist(roomId, rootEventId);
     const key = threadComposerDraftKey(roomId, rootEventId);

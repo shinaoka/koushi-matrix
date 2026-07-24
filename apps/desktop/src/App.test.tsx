@@ -8,6 +8,7 @@ import {
   createComposerSubmissionControllerRegistry,
   mainSubmissionTarget
 } from "./domain/composerSubmission";
+import { COMPOSER_DRAFT_REVISION_ZERO } from "./domain/composerDraftRevision";
 import { MessageSourceDialog, TimelineItemRow } from "./components/TimelineView";
 import type { TimelineItem } from "./domain/coreEvents";
 import type { DesktopSnapshot } from "./domain/types";
@@ -1026,7 +1027,7 @@ describe("ContextualRightPanel", () => {
       room_id: snapshot.state.domain.rooms[0]?.room_id,
       root_event_id: "$root:example.invalid",
       is_subscribed: true,
-      composer: { accepted_submission_ids: [], pending_transaction_id: null, draft_revision: 0, draft: "", mode: "Plain" }
+      composer: { accepted_submission_ids: [], pending_transaction_id: null, draft_revision: COMPOSER_DRAFT_REVISION_ZERO, last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO, draft: "", mode: "Plain" }
     };
     snapshot.timeline = [
       {
@@ -1116,7 +1117,8 @@ describe("ContextualRightPanel", () => {
       composer: {
         accepted_submission_ids: [],
         pending_transaction_id: null,
-        draft_revision: 0,
+        draft_revision: COMPOSER_DRAFT_REVISION_ZERO,
+        last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO,
         draft: "Rust-owned draft",
         mode: "Plain"
       }
@@ -1172,7 +1174,8 @@ describe("ContextualRightPanel", () => {
       composer: {
         accepted_submission_ids: [],
         pending_transaction_id: "txn-thread-1",
-        draft_revision: 0,
+        draft_revision: COMPOSER_DRAFT_REVISION_ZERO,
+        last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO,
         draft: "Draft blocked by pending send",
         mode: "Plain"
       }

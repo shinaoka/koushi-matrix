@@ -2,8 +2,8 @@
 // (and the `prelude`), not the module tree. Feature modules are crate-internal so
 // consumers depend on the stable root API rather than reaching into module internals.
 mod action;
-mod composer_shortcuts;
 mod composer_revision;
+mod composer_shortcuts;
 mod effect;
 mod locale_profile;
 mod reducer;
@@ -13,6 +13,7 @@ mod submission;
 mod typography_profile;
 
 pub use action::{AppAction, AuthSecret, IdentityResetAuthRequest, LoginRequest, RecoveryRequest};
+pub use composer_revision::{ComposerDraftRevision, ComposerDraftRevisionError};
 pub use composer_shortcuts::{
     ComposerKey, ComposerKeyEvent, ComposerKeyFacts, ComposerKeyModifiers, ComposerResolvedAction,
     ComposerResolverContext, ComposerSelection, ComposerSendIntent, ComposerSurface,
@@ -20,7 +21,6 @@ pub use composer_shortcuts::{
     build_formatted_message_draft, parse_slash_command, resolve_composer_key_action,
     resolve_composer_send_intent,
 };
-pub use composer_revision::{ComposerDraftRevision, ComposerDraftRevisionError};
 pub use effect::{AppEffect, UiEvent};
 pub use locale_profile::{
     CatalogLocale, DisplayPlatform, LocaleDirection, LocaleDisplayProfile, ModifierLabelProfile,
@@ -39,38 +39,38 @@ pub use state::{
     AppearanceSettings, AttachmentFilter, AttachmentKind, AttachmentResult, AttachmentScope,
     AttachmentSort, AuthDiscoveryState, AuthFailureKind, AvatarImage, AvatarThumbnailFailureKind,
     AvatarThumbnailState, BasicOperationRequest, BasicOperationState, CapabilityState,
-    CjkCollationProfile, CjkNormalizationProfile, CjkTextPolicyState, ComposerDraftStore,
-    ComposerMode, ComposerSendShortcut, ComposerState, ComposerSubmissionRecord,
-    ComposerSubmissionRegistry, ConversationActivity, ConversationActivitySource,
-    CrossSigningStatus, CurrentDeviceTrustState, DelegatedAuthLinks, DeviceSessionListState,
-    DeviceSessionSummary, DeviceTrustLevel, DeviceTrustSummary, DirectoryJoinState, DirectoryQuery,
-    DirectoryQueryState, DirectoryRoomSummary, DirectoryState, DisplaySettings,
-    E2eeKeyManagementState, E2eeRecoveryState, E2eeTrustState, EmojiPreference, FilesViewScope,
-    FilesViewState, FocusedContextState, FontPreference, INVITE_ALREADY_IN_SPACE_MESSAGE,
-    IdentityResetAuthType, IdentityResetState, IgnoredUserUpdateState, ImageUploadCompressionMode,
-    ImageUploadCompressionPolicy, InviteDestination, InviteDestinationKind,
-    InviteDestinationResult, InviteDestinationResultKind, InviteOperationState, InvitePreview,
-    InviteScopeOption, InviteScopePlan, InviteScopeSelection, InviteSelectedTarget,
-    InviteTargetCandidate, InviteTargetCandidateSource, InviteTargetCandidateStatus,
-    InviteTargetQueryState, InviteWorkflowState, JapaneseCatalogProfile, KeyBackupStatus,
-    KeyboardSettings, LinkPreviewSettingsState, LiveEventReceiptSummary, LiveEventReceipts,
-    LiveReadReceipt, LiveRoomSignalUpdate, LiveSignalsState, LocalEncryptionHealth,
-    LocalEncryptionState, LocalUserAliasUpdateState, LocaleSettings, LoginAttemptId, LoginFlow,
-    LoginFlowKind, MainTimelineAnchor, MediaGalleryStore, MediaPreparationFailureKind,
-    MediaSettings, MediaTransferProgress, NativeAttentionCandidate, NativeAttentionCapabilities,
-    NativeAttentionCapability, NativeAttentionDispatchId, NativeAttentionDispatchState,
-    NativeAttentionObservationKind, NativeAttentionProjectionInput, NativeAttentionSoundOutcome,
-    NativeAttentionState, NativeAttentionSummary, NativeAttentionSuppressionReason,
-    NavigationState, NotificationSettings, OperationFailureKind, OwnProfile,
-    PendingComposerSendKind, PinOp, PinOperationState, PinnedEvent, PreparedUploadFormat,
-    PreparedUploadVariant, PresenceKind, ProfileState, ProfileUpdateRequest, ProfileUpdateState,
-    ProvisionalPhase, QrLoginState, RecoveryKeyDeliveryState, RecoveryMethod, ReplyQuote,
-    ReplyQuoteState, RoomAttentionKind, RoomAttentionSummary, RoomHistoryVisibility,
-    RoomInteractionState, RoomJoinRule, RoomKeyExportState, RoomKeyImportState,
-    RoomLatestEventSummary, RoomListEntryKind, RoomListFilter, RoomListProjection,
-    RoomListProjectionItem, RoomListSort, RoomLiveSignals, RoomManagementOperationKind,
-    RoomManagementOperationState, RoomManagementState, RoomMemberRole, RoomMemberSummary,
-    RoomModerationAction, RoomNotificationMode, RoomNotificationModeOperation,
+    CjkCollationProfile, CjkNormalizationProfile, CjkTextPolicyState, ComposerDraftProtection,
+    ComposerDraftStore, ComposerMode, ComposerSendShortcut, ComposerState,
+    ComposerSubmissionRecord, ComposerSubmissionRegistry, ConversationActivity,
+    ConversationActivitySource, CrossSigningStatus, CurrentDeviceTrustState, DelegatedAuthLinks,
+    DeviceSessionListState, DeviceSessionSummary, DeviceTrustLevel, DeviceTrustSummary,
+    DirectoryJoinState, DirectoryQuery, DirectoryQueryState, DirectoryRoomSummary, DirectoryState,
+    DisplaySettings, E2eeKeyManagementState, E2eeRecoveryState, E2eeTrustState, EmojiPreference,
+    FilesViewScope, FilesViewState, FocusedContextState, FontPreference,
+    INVITE_ALREADY_IN_SPACE_MESSAGE, IdentityResetAuthType, IdentityResetState,
+    IgnoredUserUpdateState, ImageUploadCompressionMode, ImageUploadCompressionPolicy,
+    InviteDestination, InviteDestinationKind, InviteDestinationResult, InviteDestinationResultKind,
+    InviteOperationState, InvitePreview, InviteScopeOption, InviteScopePlan, InviteScopeSelection,
+    InviteSelectedTarget, InviteTargetCandidate, InviteTargetCandidateSource,
+    InviteTargetCandidateStatus, InviteTargetQueryState, InviteWorkflowState,
+    JapaneseCatalogProfile, KeyBackupStatus, KeyboardSettings, LinkPreviewSettingsState,
+    LiveEventReceiptSummary, LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate,
+    LiveSignalsState, LocalEncryptionHealth, LocalEncryptionState, LocalUserAliasUpdateState,
+    LocaleSettings, LoginAttemptId, LoginFlow, LoginFlowKind, MainTimelineAnchor,
+    MediaGalleryStore, MediaPreparationFailureKind, MediaSettings, MediaTransferProgress,
+    NativeAttentionCandidate, NativeAttentionCapabilities, NativeAttentionCapability,
+    NativeAttentionDispatchId, NativeAttentionDispatchState, NativeAttentionObservationKind,
+    NativeAttentionProjectionInput, NativeAttentionSoundOutcome, NativeAttentionState,
+    NativeAttentionSummary, NativeAttentionSuppressionReason, NavigationState,
+    NotificationSettings, OperationFailureKind, OwnProfile, PendingComposerSendKind, PinOp,
+    PinOperationState, PinnedEvent, PreparedUploadFormat, PreparedUploadVariant, PresenceKind,
+    ProfileState, ProfileUpdateRequest, ProfileUpdateState, ProvisionalPhase, QrLoginState,
+    RecoveryKeyDeliveryState, RecoveryMethod, ReplyQuote, ReplyQuoteState, RoomAttentionKind,
+    RoomAttentionSummary, RoomHistoryVisibility, RoomInteractionState, RoomJoinRule,
+    RoomKeyExportState, RoomKeyImportState, RoomLatestEventSummary, RoomListEntryKind,
+    RoomListFilter, RoomListProjection, RoomListProjectionItem, RoomListSort, RoomLiveSignals,
+    RoomManagementOperationKind, RoomManagementOperationState, RoomManagementState, RoomMemberRole,
+    RoomMemberSummary, RoomModerationAction, RoomNotificationMode, RoomNotificationModeOperation,
     RoomNotificationSettings, RoomPermissionFacts, RoomPreference, RoomPreferencesState,
     RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
     RoomUrlPreviews, SasEmoji, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem,
@@ -104,6 +104,7 @@ pub use submission::{
 // Composer-draft persistence limits consumed by koushi-core's store and the
 // state-crate integration tests; root-re-exported so `state` can stay crate-internal.
 pub use state::{
+    MAX_LIVE_COMPOSER_ROOM_TOMBSTONES, MAX_LIVE_COMPOSER_THREAD_TOMBSTONES,
     MAX_PERSISTED_COMPOSER_DRAFT_BYTES, MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT,
     MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT,
 };

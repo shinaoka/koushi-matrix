@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import { createBrowserFakeApi } from "./browserFakeApi";
+import { parseComposerDraftRevision as revision } from "../domain/composerDraftRevision";
 import type { DesktopSnapshot, LiveReadReceipt } from "../domain/types";
 
 async function readyAccount(api: ReturnType<typeof createBrowserFakeApi>) {
@@ -142,23 +143,33 @@ describe("BrowserFakeApi settings preview", () => {
       userId: session.user_id!,
       deviceId: session.device_id!
     };
-    await api.setComposerDraft(account, roomId, "main accepted", 1);
+    await api.setComposerDraft(account, roomId, "main accepted", revision("1"));
     const sent = await api.sendText(
       account,
       "revision-main",
       roomId,
       "main accepted",
       { targets: [] },
-      1
+      revision("1")
     );
     expect(sent.outcome).toBe("accepted");
     expect(sent.snapshot.state.ui.timeline.composer).toMatchObject({
       draft: "",
-      draft_revision: 2
+      draft_revision: "2"
     });
-    const staleMain = await api.setComposerDraft(account, roomId, "main accepted", 1);
+    const staleMain = await api.setComposerDraft(
+      account,
+      roomId,
+      "main accepted",
+      revision("1")
+    );
     expect(staleMain.state.ui.timeline.composer.draft).toBe("");
-    const nextMain = await api.setComposerDraft(account, roomId, "immediate next", 3);
+    const nextMain = await api.setComposerDraft(
+      account,
+      roomId,
+      "immediate next",
+      revision("3")
+    );
     expect(nextMain.state.ui.timeline.composer.draft).toBe("immediate next");
     const lateMainAcceptance = await api.sendText(
       account,
@@ -166,16 +177,22 @@ describe("BrowserFakeApi settings preview", () => {
       roomId,
       "main accepted",
       { targets: [] },
-      1
+      revision("1")
     );
     expect(lateMainAcceptance.snapshot.state.ui.timeline.composer).toMatchObject({
       draft: "immediate next",
-      draft_revision: 4
+      draft_revision: "4"
     });
 
     const rootId = nextMain.timeline[0]!.event_id;
     await api.openThread(roomId, rootId);
-    await api.setThreadComposerDraft(account, roomId, rootId, "thread accepted", 5);
+    await api.setThreadComposerDraft(
+      account,
+      roomId,
+      rootId,
+      "thread accepted",
+      revision("5")
+    );
     const threadSent = await api.sendThreadReply(
       account,
       "revision-thread",
@@ -183,7 +200,7 @@ describe("BrowserFakeApi settings preview", () => {
       rootId,
       "thread accepted",
       { targets: [] },
-      5
+      revision("5")
     );
     expect(threadSent.outcome).toBe("accepted");
     const staleThread = await api.setThreadComposerDraft(
@@ -191,18 +208,18 @@ describe("BrowserFakeApi settings preview", () => {
       roomId,
       rootId,
       "thread accepted",
-      5
+      revision("5")
     );
     expect(staleThread.state.ui.thread).toMatchObject({
       kind: "open",
-      composer: { draft: "", draft_revision: 6 }
+      composer: { draft: "", draft_revision: "6" }
     });
     await api.setThreadComposerDraft(
       account,
       roomId,
       rootId,
       "immediate thread next",
-      7
+      revision("7")
     );
     const lateThreadAcceptance = await api.sendThreadReply(
       account,
@@ -211,11 +228,11 @@ describe("BrowserFakeApi settings preview", () => {
       rootId,
       "thread accepted",
       { targets: [] },
-      5
+      revision("5")
     );
     expect(lateThreadAcceptance.snapshot.state.ui.thread).toMatchObject({
       kind: "open",
-      composer: { draft: "immediate thread next", draft_revision: 8 }
+      composer: { draft: "immediate thread next", draft_revision: "8" }
     });
   });
 
@@ -236,20 +253,20 @@ describe("BrowserFakeApi settings preview", () => {
       staleAccount,
       roomId,
       "must not cross accounts",
-      1
+      revision("1")
     );
     const thread = await api.setThreadComposerDraft(
       staleAccount,
       roomId,
       rootId,
       "must not cross accounts",
-      1
+      revision("1")
     );
 
     expect(main.state.ui.timeline.composer.draft).toBe("");
     expect(thread.state.ui.thread).toMatchObject({
       kind: "open",
-      composer: { draft: "", draft_revision: 0 }
+      composer: { draft: "", draft_revision: "0" }
     });
     const staleMainSend = await api.sendText(
       staleAccount,
@@ -269,7 +286,7 @@ describe("BrowserFakeApi settings preview", () => {
       { kind: "thread", room_id: roomId, root_event_id: rootId },
       "must not schedule",
       Date.now() + 60_000,
-      0
+      revision("0")
     );
     const threadTarget = {
       kind: "thread" as const,
@@ -288,7 +305,7 @@ describe("BrowserFakeApi settings preview", () => {
     const stalePreparedUpload = await api.sendPreparedUploads(
       staleAccount,
       threadTarget,
-      0
+      revision("0")
     );
     expect(staleMainSend.outcome).toMatchObject({ rejected: { kind: "invalid" } });
     expect(staleThreadSend.outcome).toMatchObject({ rejected: { kind: "invalid" } });

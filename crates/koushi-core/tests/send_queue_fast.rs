@@ -1988,7 +1988,7 @@ async fn run_fast_send_queue_feedback() {
             transaction_id: "fast-unsubscribe-client".to_owned(),
             body: "fast unsubscribe terminal body".to_owned(),
             mentions: MentionIntent::default(),
-            draft_revision: 0,
+            draft_revision: 0.into(),
         })),
     )
     .await

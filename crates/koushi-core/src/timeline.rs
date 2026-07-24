@@ -3714,7 +3714,7 @@ impl TimelineManagerActor {
         key: &TimelineKey,
         transaction_id: String,
         body: String,
-        draft_revision: u64,
+        draft_revision: koushi_state::ComposerDraftRevision,
         projection: SendComposerProjection,
         payload: TimelineSendEnqueuePayload,
     ) {
@@ -29114,7 +29114,7 @@ mod tests {
                     key: key.clone(),
                     transaction_id: "txn-once".to_owned(),
                     body: "body".to_owned(),
-                    draft_revision: 1,
+                    draft_revision: 1.into(),
                     mentions: MentionIntent::default(),
                 })
                 .await;
@@ -29155,7 +29155,7 @@ mod tests {
                 key: key.clone(),
                 transaction_id: "txn-rejected".to_owned(),
                 body: "body".to_owned(),
-                draft_revision: 2,
+                draft_revision: 2.into(),
                 mentions: MentionIntent::default(),
             })
             .await;
@@ -29185,7 +29185,7 @@ mod tests {
                 key: key.clone(),
                 transaction_id: "txn-reducer-closed".to_owned(),
                 body: "body".to_owned(),
-                draft_revision: 3,
+                draft_revision: 3.into(),
                 mentions: MentionIntent::default(),
             })
             .await;
@@ -29202,7 +29202,7 @@ mod tests {
                 key,
                 transaction_id: "txn-replayed".to_owned(),
                 body: "changed".to_owned(),
-                draft_revision: 3,
+                draft_revision: 3.into(),
                 mentions: MentionIntent::default(),
             })
             .await;
@@ -29572,7 +29572,7 @@ mod tests {
                     key,
                     transaction_id: "txn-paused".to_owned(),
                     body: "body".to_owned(),
-                    draft_revision: 4,
+                    draft_revision: 4.into(),
                     mentions: MentionIntent::default(),
                 })
                 .await;

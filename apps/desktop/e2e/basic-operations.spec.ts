@@ -195,7 +195,8 @@ async function gotoSignedOutAuth(page: Page): Promise<void> {
               accepted_submission_ids: [],
               pending_transaction_id: null,
               draft: "",
-              draft_revision: 0,
+              draft_revision: "0",
+              last_accepted_clear_revision: "0",
               mode: "Plain"
             },
             submission_registry: {
@@ -2649,7 +2650,7 @@ test("main composer draft is Rust snapshot scoped per room", async ({ page }) =>
     const primaryRoomId = "!harness-room:example.invalid";
     const secondaryRoomId = "!draft-room-b:example.invalid";
     const draftByRoom: Record<string, string> = {};
-    const revisionByRoom: Record<string, number> = {};
+    const revisionByRoom: Record<string, string> = {};
     const base = window.__harness.currentSnapshot();
     const rooms = [
       base.state.domain.rooms[0],
@@ -2700,7 +2701,8 @@ test("main composer draft is Rust snapshot scoped per room", async ({ page }) =>
                 accepted_submission_ids: [],
                 pending_transaction_id: null,
                 draft: draftByRoom[roomId] ?? "",
-                draft_revision: revisionByRoom[roomId] ?? 0,
+                draft_revision: revisionByRoom[roomId] ?? "0",
+                last_accepted_clear_revision: "0",
                 mode: "Plain"
               }
             },
@@ -2719,9 +2721,9 @@ test("main composer draft is Rust snapshot scoped per room", async ({ page }) =>
     window.__harness.setSnapshot(projectRoom(primaryRoomId));
     window.__harness.setCommandResponse(
       "set_composer_draft",
-      ({ roomId, draft, revision }: { roomId: string; draft: string; revision: number }) => {
+      ({ roomId, draft, revision }: { roomId: string; draft: string; revision: string }) => {
         const normalizedRoomId = String(roomId);
-        if (revision <= (revisionByRoom[normalizedRoomId] ?? 0)) {
+        if (BigInt(revision) <= BigInt(revisionByRoom[normalizedRoomId] ?? "0")) {
           return projectRoom(
             window.__harness.currentSnapshot().state.ui.timeline.room_id ?? primaryRoomId
           );
@@ -2772,7 +2774,7 @@ test("main composer draft is Rust snapshot scoped per room", async ({ page }) =>
         accountDeviceId: "HARNESSDEVICE",
         roomId: HARNESS_ROOM_ID,
         draft: "Room A draft",
-        revision: 1
+        revision: "1"
       },
       {
         accountHomeserver: "https://harness.example.invalid",
@@ -2780,7 +2782,7 @@ test("main composer draft is Rust snapshot scoped per room", async ({ page }) =>
         accountDeviceId: "HARNESSDEVICE",
         roomId: "!draft-room-b:example.invalid",
         draft: "Room B draft",
-        revision: 1
+        revision: "1"
       }
     ]);
 
@@ -3076,7 +3078,7 @@ test("main composer keeps an emptied local draft across stale snapshot refresh",
     window.__harness.setSnapshot(staleDraftSnapshot);
     window.__harness.setCommandResponse(
       "set_composer_draft",
-      ({ draft, revision }: { draft: string; revision: number }) => {
+      ({ draft, revision }: { draft: string; revision: string }) => {
         const snapshot = window.__harness.currentSnapshot();
         return {
           ...snapshot,
@@ -3118,7 +3120,7 @@ test("main composer keeps an emptied local draft across stale snapshot refresh",
       accountDeviceId: "HARNESSDEVICE",
       roomId: HARNESS_ROOM_ID,
       draft: "",
-      revision: 2
+      revision: "2"
     });
 
   await page.evaluate(() => {
@@ -3157,13 +3159,13 @@ for (const completionOrder of ["accepted-first", "persist-first"] as const) {
         }: {
           roomId: string;
           draft: string;
-          revision: number;
+          revision: string;
         }) => {
-          if (revision === 1) {
+          if (revision === "1") {
             await persistGate;
           }
           const current = window.__harness.currentSnapshot();
-          if (revision <= current.state.ui.timeline.composer.draft_revision) {
+          if (BigInt(revision) <= BigInt(current.state.ui.timeline.composer.draft_revision)) {
             return current;
           }
           const next = {
@@ -3194,7 +3196,7 @@ for (const completionOrder of ["accepted-first", "persist-first"] as const) {
           draftRevision
         }: {
           submissionId: string;
-          draftRevision: number;
+          draftRevision: string;
         }) => {
           await sendGate;
           const current = window.__harness.currentSnapshot();
@@ -3214,11 +3216,15 @@ for (const completionOrder of ["accepted-first", "persist-first"] as const) {
                     composer: {
                       ...currentComposer,
                       draft:
-                        currentComposer.draft_revision > draftRevision
+                        BigInt(currentComposer.draft_revision) > BigInt(draftRevision)
                           ? currentComposer.draft
                           : "",
                       draft_revision:
-                        Math.max(currentComposer.draft_revision, draftRevision) + 1
+                        (
+                          (BigInt(currentComposer.draft_revision) > BigInt(draftRevision)
+                            ? BigInt(currentComposer.draft_revision)
+                            : BigInt(draftRevision)) + 1n
+                        ).toString()
                     }
                   }
                 }
@@ -3268,7 +3274,7 @@ for (const completionOrder of ["accepted-first", "persist-first"] as const) {
           () => window.__harness.invocationsOf("set_composer_draft").at(-1)?.args.revision
         )
       )
-      .toBe(3);
+      .toBe("3");
     await expect(composer).toHaveValue("immediate next input");
   });
 }
@@ -3293,7 +3299,7 @@ test("main composer discards an accepted send response from the previous account
         draftRevision
       }: {
         submissionId: string;
-        draftRevision: number;
+        draftRevision: string;
       }) => {
         const previousAccountSnapshot = window.__harness.currentSnapshot();
         await sendGate;
@@ -3312,7 +3318,7 @@ test("main composer discards an accepted send response from the previous account
                   composer: {
                     ...previousAccountSnapshot.state.ui.timeline.composer,
                     draft: "",
-                    draft_revision: draftRevision + 1
+                    draft_revision: (BigInt(draftRevision) + 1n).toString()
                   }
                 }
               }
@@ -3352,7 +3358,7 @@ test("main composer discards an accepted send response from the previous account
             composer: {
               ...current.state.ui.timeline.composer,
               draft: "next account draft",
-              draft_revision: 1
+              draft_revision: "1"
             }
           }
         }
@@ -3569,7 +3575,7 @@ test("scheduled send UI dispatches typed commands and waits for Rust snapshot ch
       window.__harness.setSnapshot(projectScheduled([], ""));
       window.__harness.setCommandResponse(
         "set_composer_draft",
-        ({ draft, revision }: { draft: string; revision: number }) => {
+        ({ draft, revision }: { draft: string; revision: string }) => {
           const next = projectScheduled([], draft, revision);
           window.__harness.setSnapshot(next);
           return next;
@@ -3583,12 +3589,12 @@ test("scheduled send UI dispatches typed commands and waits for Rust snapshot ch
         }: {
           body: string;
           sendAtMs: number;
-          draftRevision: number;
+          draftRevision: string;
         }) => {
           const next = projectScheduled(
             [{ ...scheduledItem, body: String(body) }],
             "",
-            draftRevision + 1
+            (BigInt(draftRevision) + 1n).toString()
           );
           window.__harness.setSnapshot(next);
           return {
@@ -3626,7 +3632,7 @@ test("scheduled send UI dispatches typed commands and waits for Rust snapshot ch
       target: { kind: "main", room_id: HARNESS_ROOM_ID },
       body: "Phase B scheduled body",
       sendAtMs: initialSendAt,
-      draftRevision: 1
+      draftRevision: "1"
     });
   await expect(page.getByRole("region", { name: "Scheduled messages" })).toContainText(
     "Phase B scheduled body"
@@ -3635,7 +3641,7 @@ test("scheduled send UI dispatches typed commands and waits for Rust snapshot ch
     .poll(() =>
       page.evaluate(() => window.__harness.currentSnapshot().state.ui.timeline.composer)
     )
-    .toMatchObject({ draft: "", draft_revision: 2 });
+    .toMatchObject({ draft: "", draft_revision: "2" });
   await expect(page.getByRole("textbox", { name: "Message composer" })).toHaveValue("");
 
   await page.getByRole("button", { name: "Edit scheduled send" }).click();
@@ -4454,7 +4460,7 @@ test("attach control stages media caption and renders Rust-owned media progress"
     )
     .toEqual({
       target: { kind: "main", room_id: "!harness-room:example.invalid" },
-      draftRevision: 1
+      draftRevision: "1"
     });
 
   const key = roomTimelineKey("@harness-user:example.invalid", "!harness-room:example.invalid");
@@ -4682,7 +4688,7 @@ test("paste/drop upload UX stages ordinary files for the captured main composer 
       accountUserId: "@harness-user:example.invalid",
       accountDeviceId: "HARNESSDEVICE",
       target: { kind: "main", room_id: "!harness-room:example.invalid" },
-      draftRevision: 0
+      draftRevision: "0"
     });
   await expect(page.getByRole("dialog", { name: "Upload attachments" })).toHaveCount(0);
 });
@@ -5469,7 +5475,7 @@ test("thread composer drafts and sends through thread reply commands only", asyn
       roomId: "!harness-room:example.invalid",
       rootEventId: "$seed-event:example.invalid",
       draft: threadReplyBody,
-      revision: 1
+      revision: "1"
     });
 
   await threadComposer.press("Enter");
@@ -5501,7 +5507,7 @@ test("thread composer drafts and sends through thread reply commands only", asyn
       rootEventId: "$seed-event:example.invalid",
       body: threadReplyBody,
       mentions: { targets: [] },
-      draftRevision: 1
+      draftRevision: "1"
     });
   expect(await invocationCount(page, "send_text")).toBe(0);
   expect(await invocationCount(page, "send_reply")).toBe(0);
@@ -5549,7 +5555,7 @@ test("thread composer drafts and sends through thread reply commands only", asyn
         room_id: "!harness-room:example.invalid",
         root_event_id: "$seed-event:example.invalid"
       },
-      draftRevision: 2
+      draftRevision: "2"
     });
 });
 

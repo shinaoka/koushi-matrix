@@ -5,6 +5,7 @@ import {
   type ComposerDraftAccountOwner,
   type DesktopApi
 } from "./browserFakeApi";
+import { COMPOSER_DRAFT_REVISION_ZERO } from "../domain/composerDraftRevision";
 import type {
   ActivityMarkReadTarget,
   ActivityTab,
@@ -14,6 +15,7 @@ import type {
   ComposerResolverOptions,
   ComposerSurface,
   ComposerTarget,
+  ComposerDraftRevision,
   ComposerDraftAcceptanceResponse,
   DirectoryQuery,
   MentionIntent,
@@ -34,8 +36,8 @@ import type {
   AttachmentFilter,
   AttachmentSort,
   CreateRoomRequest,
-  FilesViewScope
-  ,SubmissionResponse
+  FilesViewScope,
+  SubmissionResponse
 } from "../domain/types";
 import type { DiagnosticLogSnapshot } from "../domain/diagnostics";
 import type { RequestId, TimelineKey } from "../domain/coreEvents";
@@ -294,7 +296,7 @@ class TauriDesktopApi implements DesktopApi {
     roomId: string,
     body: string,
     mentions: MentionIntent = { targets: [] },
-    draftRevision = 0
+    draftRevision: ComposerDraftRevision = COMPOSER_DRAFT_REVISION_ZERO
   ): Promise<SubmissionResponse> {
     return invoke<SubmissionResponse>("send_text", {
       accountHomeserver: account.homeserver,
@@ -313,7 +315,7 @@ class TauriDesktopApi implements DesktopApi {
     target: ComposerTarget,
     body: string,
     sendAtMs: number,
-    draftRevision: number
+    draftRevision: ComposerDraftRevision
   ): Promise<ComposerDraftAcceptanceResponse> {
     return invoke<ComposerDraftAcceptanceResponse>("schedule_send", {
       accountHomeserver: account.homeserver,
@@ -377,7 +379,7 @@ class TauriDesktopApi implements DesktopApi {
   async sendPreparedUploads(
     account: ComposerDraftAccountOwner,
     target: ComposerTarget,
-    draftRevision: number
+    draftRevision: ComposerDraftRevision
   ): Promise<ComposerDraftAcceptanceResponse> {
     return invoke<ComposerDraftAcceptanceResponse>("send_prepared_uploads", {
       accountHomeserver: account.homeserver,
@@ -647,7 +649,7 @@ class TauriDesktopApi implements DesktopApi {
     account: ComposerDraftAccountOwner,
     roomId: string,
     draft: string,
-    revision: number
+    revision: ComposerDraftRevision
   ): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("set_composer_draft", {
       accountHomeserver: account.homeserver,
@@ -696,7 +698,7 @@ class TauriDesktopApi implements DesktopApi {
     roomId: string,
     rootEventId: string,
     draft: string,
-    revision: number
+    revision: ComposerDraftRevision
   ): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("set_thread_composer_draft", {
       accountHomeserver: account.homeserver,
@@ -716,7 +718,7 @@ class TauriDesktopApi implements DesktopApi {
     rootEventId: string,
     body: string,
     mentions?: MentionIntent,
-    draftRevision = 0
+    draftRevision: ComposerDraftRevision = COMPOSER_DRAFT_REVISION_ZERO
   ): Promise<SubmissionResponse> {
     return invoke<SubmissionResponse>("send_thread_reply", {
       accountHomeserver: account.homeserver,
@@ -877,7 +879,7 @@ class TauriDesktopApi implements DesktopApi {
     inReplyToEventId: string,
     body: string,
     mentions: MentionIntent = { targets: [] },
-    draftRevision = 0
+    draftRevision: ComposerDraftRevision = COMPOSER_DRAFT_REVISION_ZERO
   ): Promise<SubmissionResponse> {
     return invoke<SubmissionResponse>("send_reply", {
       accountHomeserver: account.homeserver,

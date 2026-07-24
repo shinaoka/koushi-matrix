@@ -31,8 +31,8 @@ use koushi_core::{
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_state::{
     ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentSort, AuthSecret,
-    ComposerKeyEvent, ComposerResolvedAction, ComposerResolverContext, ComposerSurface,
-    DirectoryQuery, FilesViewScope, FocusedContextState, IdentityResetAuthRequest,
+    ComposerDraftRevision, ComposerKeyEvent, ComposerResolvedAction, ComposerResolverContext,
+    ComposerSurface, DirectoryQuery, FilesViewScope, FocusedContextState, IdentityResetAuthRequest,
     ImageUploadCompressionMode, InviteScopeSelection, LoginRequest, MentionIntent, PresenceKind,
     RecoveryRequest, RoomListFilter, RoomModerationAction, RoomNotificationMode, RoomSettingChange,
     RoomTagKind, SessionInfo, SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem,
@@ -1633,7 +1633,7 @@ pub(crate) fn build_submit_text_command(
     transaction_id: String,
     body: String,
     mentions: MentionIntent,
-    draft_revision: u64,
+    draft_revision: ComposerDraftRevision,
 ) -> Option<CoreCommand> {
     if body.trim().is_empty() {
         return None;
@@ -1656,7 +1656,7 @@ pub(crate) fn build_schedule_send_command(
     target: koushi_state::ComposerTarget,
     body: String,
     send_at_ms: u64,
-    draft_revision: u64,
+    draft_revision: ComposerDraftRevision,
 ) -> Option<CoreCommand> {
     if body.trim().is_empty() {
         return None;
@@ -2648,7 +2648,7 @@ pub(crate) fn build_submit_reply_command(
     in_reply_to_event_id: String,
     body: String,
     mentions: MentionIntent,
-    draft_revision: u64,
+    draft_revision: ComposerDraftRevision,
 ) -> Option<CoreCommand> {
     if body.trim().is_empty() {
         return None;
@@ -2687,7 +2687,7 @@ pub(crate) struct SubmissionResponse {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ComposerDraftAcceptanceResponse {
-    pub accepted_revision: Option<u64>,
+    pub accepted_revision: Option<ComposerDraftRevision>,
     pub snapshot: FrontendDesktopSnapshot,
 }
 
@@ -2707,7 +2707,7 @@ pub(crate) fn build_set_thread_composer_draft_command(
     room_id: String,
     root_event_id: String,
     draft: String,
-    revision: u64,
+    revision: ComposerDraftRevision,
 ) -> CoreCommand {
     CoreCommand::App(AppCommand::SetThreadComposerDraft {
         request_id,
@@ -2724,7 +2724,7 @@ pub(crate) fn build_set_composer_draft_command(
     expected_account: koushi_key::SessionKeyId,
     room_id: String,
     draft: String,
-    revision: u64,
+    revision: ComposerDraftRevision,
 ) -> CoreCommand {
     CoreCommand::App(AppCommand::SetComposerDraft {
         request_id,
@@ -2773,7 +2773,7 @@ pub(crate) fn build_submit_thread_reply_command(
     transaction_id: String,
     body: String,
     mentions: MentionIntent,
-    draft_revision: u64,
+    draft_revision: ComposerDraftRevision,
 ) -> Option<CoreCommand> {
     if body.trim().is_empty() {
         return None;
@@ -3964,7 +3964,7 @@ mod tests {
             },
             "send later body".to_owned(),
             1_900_000_000_000,
-            7,
+            7.into(),
         )
         .expect("schedule_send should build a command")
         {
@@ -3983,7 +3983,7 @@ mod tests {
                 assert_eq!(thread_root_event_id, None);
                 assert_eq!(body, "send later body");
                 assert_eq!(send_at_ms, 1_900_000_000_000);
-                assert_eq!(draft_revision, 7);
+                assert_eq!(draft_revision, 7.into());
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -3997,7 +3997,7 @@ mod tests {
             },
             "thread later body".to_owned(),
             1_900_000_010_000,
-            8,
+            8.into(),
         )
         .expect("thread schedule_send should build a command")
         {
@@ -5382,7 +5382,7 @@ mod tests {
             room_id.clone(),
             "$root".to_owned(),
             "thread draft".to_owned(),
-            9,
+            9.into(),
         ) {
             CoreCommand::App(AppCommand::SetThreadComposerDraft {
                 request_id,
@@ -5397,7 +5397,7 @@ mod tests {
                 assert_eq!(command_room_id, room_id);
                 assert_eq!(root_event_id, "$root");
                 assert_eq!(draft, "thread draft");
-                assert_eq!(revision, 9);
+                assert_eq!(revision, 9.into());
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -5407,7 +5407,7 @@ mod tests {
             active_session_key.clone(),
             room_id.clone(),
             "room draft".to_owned(),
-            10,
+            10.into(),
         ) {
             CoreCommand::App(AppCommand::SetComposerDraft {
                 request_id,
@@ -5420,7 +5420,7 @@ mod tests {
                 assert_eq!(expected_account, active_session_key);
                 assert_eq!(command_room_id, room_id);
                 assert_eq!(draft, "room draft");
-                assert_eq!(revision, 10);
+                assert_eq!(revision, 10.into());
             }
             other => panic!("unexpected command: {other:?}"),
         }

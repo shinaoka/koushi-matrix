@@ -3,14 +3,92 @@
 use std::time::Duration;
 
 use koushi_core::command::{AppCommand, CoreCommand};
+use koushi_core::event::CoreEvent;
 use koushi_core::executor;
+use koushi_core::failure::{CoreFailure, TimelineFailureKind};
 use koushi_core::runtime::CoreRuntime;
 use koushi_state::{
-    AppAction, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SessionState,
+    AppAction, ComposerDraftRevision, ScheduledSendCapability, ScheduledSendHandle,
+    ScheduledSendItem, SessionState,
 };
 
 mod support;
 use support::*;
+
+#[tokio::test]
+async fn composer_revision_exhaustion_blocks_scheduled_send_before_store_or_matrix_side_effect() {
+    let (runtime, mut conn, _) = ready_room_conn("!room:example.test").await;
+    runtime
+        .inject_actions(vec![AppAction::ScheduledSendCapabilityChanged {
+            capability: ScheduledSendCapability::LocalFallback,
+        }])
+        .await;
+    conn.command(CoreCommand::App(AppCommand::SetComposerDraft {
+        request_id: conn.next_request_id(),
+        expected_account: session_key(),
+        room_id: "!room:example.test".to_owned(),
+        draft: "keep scheduled draft".to_owned(),
+        revision: ComposerDraftRevision::MAX,
+    }))
+    .await
+    .expect("seed maximum scheduled draft revision");
+    wait_for_state(&mut conn, |state| {
+        state.composer_drafts.room_revision("!room:example.test") == ComposerDraftRevision::MAX
+            && state.timeline.scheduled_send_capability == ScheduledSendCapability::LocalFallback
+    })
+    .await;
+
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::ScheduleSend {
+        request_id,
+        expected_account: session_key(),
+        room_id: "!room:example.test".to_owned(),
+        thread_root_event_id: None,
+        body: "must not schedule".to_owned(),
+        send_at_ms: future_epoch_ms(Duration::from_secs(60)),
+        draft_revision: ComposerDraftRevision::MAX,
+    }))
+    .await
+    .expect("submit exhausted scheduled send");
+
+    let event = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            match conn.recv_event().await.expect("runtime event stream") {
+                event @ CoreEvent::OperationFailed {
+                    request_id: failed_request_id,
+                    ..
+                } if failed_request_id == request_id => break event,
+                _ => continue,
+            }
+        }
+    })
+    .await
+    .expect("exhausted schedule rejection should be correlated");
+    assert!(matches!(
+        event,
+        CoreEvent::OperationFailed {
+            failure: CoreFailure::TimelineOperationFailed {
+                kind: TimelineFailureKind::ComposerRevisionExhausted,
+            },
+            ..
+        }
+    ));
+    let snapshot = conn.snapshot();
+    assert!(snapshot.timeline.scheduled_sends.is_empty());
+    assert_eq!(snapshot.timeline.composer.draft, "keep scheduled draft");
+    assert_eq!(
+        snapshot.timeline.composer.draft_revision,
+        ComposerDraftRevision::MAX
+    );
+    assert!(
+        snapshot
+            .timeline
+            .composer
+            .last_accepted_clear_revision
+            .is_zero()
+    );
+    drop(runtime);
+}
 
 #[tokio::test]
 async fn schedule_send_rejects_a_command_captured_for_another_account() {
@@ -37,7 +115,7 @@ async fn schedule_send_rejects_a_command_captured_for_another_account() {
         thread_root_event_id: None,
         body: "must not cross accounts".to_owned(),
         send_at_ms: future_epoch_ms(Duration::from_secs(60)),
-        draft_revision: 0,
+        draft_revision: 0.into(),
     }))
     .await
     .expect("submit stale-account schedule");
@@ -48,7 +126,7 @@ async fn schedule_send_rejects_a_command_captured_for_another_account() {
         thread_root_event_id: None,
         body: "current account schedule".to_owned(),
         send_at_ms: future_epoch_ms(Duration::from_secs(60)),
-        draft_revision: 0,
+        draft_revision: 0.into(),
     }))
     .await
     .expect("submit current-account schedule");
@@ -98,7 +176,7 @@ async fn app_command_schedules_cancel_and_reschedules_local_fallback_send() {
         thread_root_event_id: None,
         body: "scheduled body".to_owned(),
         send_at_ms: future_epoch_ms(Duration::from_secs(60)),
-        draft_revision: 1,
+        draft_revision: 1.into(),
     }))
     .await
     .expect("schedule send");
@@ -162,7 +240,7 @@ async fn local_fallback_scheduled_send_ids_do_not_reuse_fresh_runtime_request_id
             thread_root_event_id: None,
             body: "unique scheduled message".to_owned(),
             send_at_ms: future_epoch_ms(Duration::from_secs(60)),
-            draft_revision: 0,
+            draft_revision: 0.into(),
         }))
         .await
         .expect("schedule send");
@@ -212,7 +290,7 @@ async fn local_fallback_scheduled_send_is_retained_when_delivery_cannot_start() 
         thread_root_event_id: None,
         body: "retry instead of drop".to_owned(),
         send_at_ms,
-        draft_revision: 0,
+        draft_revision: 0.into(),
     }))
     .await
     .expect("schedule send");
@@ -304,7 +382,7 @@ async fn local_fallback_scheduled_sends_persist_and_load_on_restart() {
             thread_root_event_id: None,
             body: "survives restart".to_owned(),
             send_at_ms,
-            draft_revision: 0,
+            draft_revision: 0.into(),
         }))
         .await
         .expect("schedule send");
@@ -356,7 +434,7 @@ async fn local_fallback_scheduled_sends_survive_a_session_lock() {
             thread_root_event_id: None,
             body: "survives lock".to_owned(),
             send_at_ms,
-            draft_revision: 0,
+            draft_revision: 0.into(),
         }))
         .await
         .expect("schedule send");
@@ -416,7 +494,7 @@ async fn due_local_fallback_scheduled_send_is_retained_for_retry_after_restart()
             thread_root_event_id: None,
             body: "retry after restart".to_owned(),
             send_at_ms,
-            draft_revision: 0,
+            draft_revision: 0.into(),
         }))
         .await
         .expect("schedule send");
@@ -478,7 +556,7 @@ async fn cancelled_local_fallback_scheduled_send_does_not_resurrect_on_restart()
             thread_root_event_id: None,
             body: "cancel before restart".to_owned(),
             send_at_ms: future_epoch_ms(Duration::from_secs(120)),
-            draft_revision: 0,
+            draft_revision: 0.into(),
         }))
         .await
         .expect("schedule send");

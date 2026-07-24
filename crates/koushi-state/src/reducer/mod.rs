@@ -893,10 +893,12 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             timeline::handle_composer_drafts_loaded(state, drafts)
         }
         AppAction::ComposerDraftChanged { room_id, draft } => {
-            let revision = state
-                .composer_drafts
-                .room_revision(&room_id)
-                .saturating_add(1);
+            let Ok(revision) = crate::ComposerDraftRevision::checked_successor(
+                state.composer_drafts.room_revision(&room_id),
+                crate::ComposerDraftRevision::ZERO,
+            ) else {
+                return Vec::new();
+            };
             timeline::handle_composer_draft_changed(state, room_id, draft, revision)
         }
         AppAction::ComposerDraftChangedAtRevision {
@@ -994,10 +996,14 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             root_event_id,
             draft,
         } => {
-            let revision = state
-                .composer_drafts
-                .thread_revision(&room_id, &root_event_id)
-                .saturating_add(1);
+            let Ok(revision) = crate::ComposerDraftRevision::checked_successor(
+                state
+                    .composer_drafts
+                    .thread_revision(&room_id, &root_event_id),
+                crate::ComposerDraftRevision::ZERO,
+            ) else {
+                return Vec::new();
+            };
             thread::handle_thread_composer_draft_changed(
                 state,
                 room_id,

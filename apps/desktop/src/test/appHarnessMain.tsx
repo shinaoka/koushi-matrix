@@ -48,6 +48,12 @@ import type {
 import { TauriIpcMock, type IpcInvocation } from "./tauriIpcMock";
 import { computeBrowserRoomListProjection } from "../backend/roomListProjection";
 import { composeSidebar } from "../domain/desktopModel";
+import {
+  COMPOSER_DRAFT_REVISION_ZERO,
+  compareComposerDraftRevisions,
+  nextComposerDraftRevision
+} from "../domain/composerDraftRevision";
+import type { ComposerDraftRevision } from "../domain/types";
 import "../styles.css";
 
 const CORE_EVENT_NAME = "koushi-desktop://event";
@@ -189,7 +195,7 @@ function readySnapshot(
         ui: {
           navigation: { active_space_id: activeSpaceId, active_room_id: ROOM_ID, space_order: spaces.map((space) => space.space_id), last_room_by_space_id: {} },
           room_list: computeBrowserRoomListProjection({ kind: "rooms" }, { kind: "activity" }, activeSpaceId, spaces, rooms, []),
-          timeline: { room_id: ROOM_ID, is_subscribed: true, is_paginating_backwards: false, composer: { accepted_submission_ids: [], pending_transaction_id: null, draft_revision: 0, draft: "", mode: composerMode }, submission_registry: { accepted_submission_ids: [], settled_submission_ids: [] }, scheduled_send_capability: "unknown", scheduled_sends: [], staged_uploads: [], media_gallery: [], media_downloads: {}, continuity: { kind: "unknown" } },
+          timeline: { room_id: ROOM_ID, is_subscribed: true, is_paginating_backwards: false, composer: { accepted_submission_ids: [], pending_transaction_id: null, draft_revision: COMPOSER_DRAFT_REVISION_ZERO, last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO, draft: "", mode: composerMode }, submission_registry: { accepted_submission_ids: [], settled_submission_ids: [] }, scheduled_send_capability: "unknown", scheduled_sends: [], staged_uploads: [], media_gallery: [], media_downloads: {}, continuity: { kind: "unknown" } },
           thread: { kind: "closed" }, threads_list: { kind: "closed" }, focused_context: { kind: "closed" },
           files_view: { kind: "closed" }, errors: [], basic_operation: basicOperation
         }
@@ -915,7 +921,8 @@ mock.setCommandResponse("select_room", ({ roomId }: { roomId: string }) => {
           composer: {
             accepted_submission_ids: [],
             pending_transaction_id: null,
-            draft_revision: 0,
+            draft_revision: COMPOSER_DRAFT_REVISION_ZERO,
+            last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO,
             draft: "",
             mode: "Plain"
           }
@@ -1761,7 +1768,7 @@ mock.setCommandResponse("set_composer_draft", ({
   accountDeviceId: string;
   roomId: string;
   draft: string;
-  revision: number;
+  revision: ComposerDraftRevision;
 }) => {
   if (
     currentSnapshot.state.domain.session.homeserver !== accountHomeserver ||
@@ -1771,7 +1778,12 @@ mock.setCommandResponse("set_composer_draft", ({
   ) {
     return currentSnapshot;
   }
-  if (revision <= currentSnapshot.state.ui.timeline.composer.draft_revision) {
+  if (
+    compareComposerDraftRevisions(
+      revision,
+      currentSnapshot.state.ui.timeline.composer.draft_revision
+    ) <= 0
+  ) {
     return currentSnapshot;
   }
   return setCurrentSnapshot({
@@ -1812,7 +1824,7 @@ for (const command of ["send_reply", "send_text"] as const) {
     accountUserId: string;
     accountDeviceId: string;
     submissionId: string;
-    draftRevision: number;
+    draftRevision: ComposerDraftRevision;
   }) => {
     if (!composerCommandAccountMatches({
       accountHomeserver,
@@ -1832,8 +1844,18 @@ for (const command of ["send_reply", "send_text"] as const) {
             ...currentSnapshot.state.ui.timeline,
             composer: {
               ...composer,
-              draft: composer.draft_revision > draftRevision ? composer.draft : "",
-              draft_revision: Math.max(composer.draft_revision, draftRevision) + 1,
+              draft:
+                compareComposerDraftRevisions(composer.draft_revision, draftRevision) > 0
+                  ? composer.draft
+                  : "",
+              draft_revision: nextComposerDraftRevision(
+                composer.draft_revision,
+                draftRevision
+              ),
+              last_accepted_clear_revision:
+                compareComposerDraftRevisions(composer.draft_revision, draftRevision) <= 0
+                  ? nextComposerDraftRevision(composer.draft_revision, draftRevision)
+                  : composer.last_accepted_clear_revision,
               mode: "Plain" as const
             }
           }
@@ -1866,7 +1888,8 @@ mock.setCommandResponse(
           composer: {
             accepted_submission_ids: [],
             pending_transaction_id: null,
-              draft_revision: 0,
+              draft_revision: COMPOSER_DRAFT_REVISION_ZERO,
+              last_accepted_clear_revision: COMPOSER_DRAFT_REVISION_ZERO,
               draft: "",
               mode: "Plain"
             }
@@ -1906,7 +1929,7 @@ mock.setCommandResponse(
     roomId: string;
     rootEventId: string;
     draft: string;
-    revision: number;
+    revision: ComposerDraftRevision;
   }) => {
     const thread = currentSnapshot.state.ui.thread;
     if (
@@ -1920,7 +1943,7 @@ mock.setCommandResponse(
     ) {
       return currentSnapshot;
     }
-    if (revision <= thread.composer.draft_revision) {
+    if (compareComposerDraftRevisions(revision, thread.composer.draft_revision) <= 0) {
       return currentSnapshot;
     }
     const next: DesktopSnapshot = {
@@ -1953,7 +1976,7 @@ mock.setCommandResponse(
     roomId: string;
     rootEventId: string;
     body: string;
-    draftRevision: number;
+    draftRevision: ComposerDraftRevision;
   }) => {
     if (!composerCommandAccountMatches({
       accountHomeserver,
@@ -1984,8 +2007,17 @@ mock.setCommandResponse(
           composer: {
             ...thread.composer,
             draft:
-              thread.composer.draft_revision > draftRevision ? thread.composer.draft : "",
-            draft_revision: Math.max(thread.composer.draft_revision, draftRevision) + 1,
+              compareComposerDraftRevisions(thread.composer.draft_revision, draftRevision) > 0
+                ? thread.composer.draft
+                : "",
+            draft_revision: nextComposerDraftRevision(
+              thread.composer.draft_revision,
+              draftRevision
+            ),
+            last_accepted_clear_revision:
+              compareComposerDraftRevisions(thread.composer.draft_revision, draftRevision) <= 0
+                ? nextComposerDraftRevision(thread.composer.draft_revision, draftRevision)
+                : thread.composer.last_accepted_clear_revision,
             pending_transaction_id: null
           }
         }
@@ -2357,7 +2389,7 @@ mock.setCommandResponse("send_prepared_uploads", ({
   accountUserId: string;
   accountDeviceId: string;
   target: ComposerTarget;
-  draftRevision: number;
+  draftRevision: ComposerDraftRevision;
 }) => {
   if (!composerCommandAccountMatches({
     accountHomeserver,
@@ -2383,14 +2415,26 @@ mock.setCommandResponse("send_prepared_uploads", ({
                 composer: {
                   ...withoutUploads.state.ui.timeline.composer,
                   draft:
-                    withoutUploads.state.ui.timeline.composer.draft_revision > draftRevision
-                      ? withoutUploads.state.ui.timeline.composer.draft
-                      : "",
-                  draft_revision:
-                    Math.max(
+                    compareComposerDraftRevisions(
                       withoutUploads.state.ui.timeline.composer.draft_revision,
                       draftRevision
-                    ) + 1
+                    ) > 0
+                      ? withoutUploads.state.ui.timeline.composer.draft
+                      : "",
+                  draft_revision: nextComposerDraftRevision(
+                    withoutUploads.state.ui.timeline.composer.draft_revision,
+                    draftRevision
+                  ),
+                  last_accepted_clear_revision:
+                    compareComposerDraftRevisions(
+                      withoutUploads.state.ui.timeline.composer.draft_revision,
+                      draftRevision
+                    ) <= 0
+                      ? nextComposerDraftRevision(
+                          withoutUploads.state.ui.timeline.composer.draft_revision,
+                          draftRevision
+                        )
+                      : withoutUploads.state.ui.timeline.composer.last_accepted_clear_revision
                 }
               }
             }
@@ -2409,14 +2453,27 @@ mock.setCommandResponse("send_prepared_uploads", ({
                   composer: {
                     ...withoutUploads.state.ui.thread.composer,
                     draft:
-                      withoutUploads.state.ui.thread.composer.draft_revision > draftRevision
-                        ? withoutUploads.state.ui.thread.composer.draft
-                        : "",
-                    draft_revision:
-                      Math.max(
+                      compareComposerDraftRevisions(
                         withoutUploads.state.ui.thread.composer.draft_revision,
                         draftRevision
-                      ) + 1
+                      ) > 0
+                        ? withoutUploads.state.ui.thread.composer.draft
+                        : "",
+                    draft_revision: nextComposerDraftRevision(
+                      withoutUploads.state.ui.thread.composer.draft_revision,
+                      draftRevision
+                    ),
+                    last_accepted_clear_revision:
+                      compareComposerDraftRevisions(
+                        withoutUploads.state.ui.thread.composer.draft_revision,
+                        draftRevision
+                      ) <= 0
+                        ? nextComposerDraftRevision(
+                            withoutUploads.state.ui.thread.composer.draft_revision,
+                            draftRevision
+                          )
+                        : withoutUploads.state.ui.thread.composer
+                            .last_accepted_clear_revision
                   }
                 }
               }
