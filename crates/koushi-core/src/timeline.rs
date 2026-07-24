@@ -677,6 +677,20 @@ enum ReadActorApplyKind {
     FullyRead,
 }
 
+#[derive(Clone)]
+struct ReadRetryToken {
+    epoch: Arc<()>,
+    serial: u64,
+}
+
+impl PartialEq for ReadRetryToken {
+    fn eq(&self, other: &Self) -> bool {
+        self.serial == other.serial && Arc::ptr_eq(&self.epoch, &other.epoch)
+    }
+}
+
+impl Eq for ReadRetryToken {}
+
 enum ReadWorkerCompletion {
     Network {
         operation: ReadOperation,
@@ -691,7 +705,7 @@ enum ReadWorkerCompletion {
     },
     RetryWake {
         key: ReadStateKey,
-        generation: u64,
+        generation: ReadRetryToken,
         cancelled: bool,
     },
 }
@@ -723,8 +737,9 @@ struct ReadWorkerSupervisor {
     retry_attempts: HashMap<ReadStateKey, u32>,
     /// Manager-wide token for distinguishing a current retry from cancelled
     /// sleepers without retaining one generation entry per historical key.
+    retry_epoch: Arc<()>,
     retry_serial: u64,
-    scheduled_retries: HashMap<ReadStateKey, (u64, oneshot::Sender<()>)>,
+    scheduled_retries: HashMap<ReadStateKey, (ReadRetryToken, oneshot::Sender<()>)>,
     reconciliation_pending: HashSet<ReadStateKey>,
     persistence: Option<ReadPersistenceIngress>,
     save_generation: u64,
@@ -748,6 +763,7 @@ impl ReadWorkerSupervisor {
             retry_base_delay: READ_RETRY_BASE_DELAY,
             retry_max_delay: READ_RETRY_MAX_DELAY,
             retry_attempts: HashMap::new(),
+            retry_epoch: Arc::new(()),
             retry_serial: 0,
             scheduled_retries: HashMap::new(),
             reconciliation_pending: HashSet::new(),
@@ -785,6 +801,7 @@ impl ReadWorkerSupervisor {
             retry_base_delay: READ_RETRY_BASE_DELAY,
             retry_max_delay: READ_RETRY_MAX_DELAY,
             retry_attempts: HashMap::new(),
+            retry_epoch: Arc::new(()),
             retry_serial: 0,
             scheduled_retries: HashMap::new(),
             reconciliation_pending,
@@ -843,6 +860,7 @@ impl ReadWorkerSupervisor {
             retry_base_delay: Duration::from_secs(1),
             retry_max_delay: Duration::from_secs(4),
             retry_attempts: HashMap::new(),
+            retry_epoch: Arc::new(()),
             retry_serial: 0,
             scheduled_retries: HashMap::new(),
             reconciliation_pending,
@@ -935,11 +953,24 @@ impl ReadWorkerSupervisor {
         let delay =
             read_retry_delay_for_attempt(self.retry_base_delay, self.retry_max_delay, *attempt);
         *attempt = attempt.saturating_add(1);
-        self.retry_serial = self.retry_serial.wrapping_add(1).max(1);
-        let generation = self.retry_serial;
+        self.retry_serial = match self.retry_serial.checked_add(1) {
+            Some(serial) => serial,
+            None => {
+                // A stale retry future can still own the previous serial.
+                // Rotate allocation identity before restarting the scalar so
+                // no live stale token can compare equal to a fresh retry.
+                self.retry_epoch = Arc::new(());
+                1
+            }
+        };
+        let generation = ReadRetryToken {
+            epoch: self.retry_epoch.clone(),
+            serial: self.retry_serial,
+        };
+        let cancelled_generation = generation.clone();
         let (cancel, mut cancelled) = oneshot::channel();
         self.scheduled_retries
-            .insert(key.clone(), (generation, cancel));
+            .insert(key.clone(), (generation.clone(), cancel));
         let key = key.clone();
         self.retry_tasks.push(Box::pin(async move {
             tokio::select! {
@@ -950,19 +981,18 @@ impl ReadWorkerSupervisor {
                 },
                 _ = &mut cancelled => ReadWorkerCompletion::RetryWake {
                     key,
-                    generation,
+                    generation: cancelled_generation,
                     cancelled: true,
                 },
             }
         }));
     }
 
-    fn accept_retry_wake(&mut self, key: &ReadStateKey, generation: u64) -> bool {
+    fn accept_retry_wake(&mut self, key: &ReadStateKey, generation: ReadRetryToken) -> bool {
         if self
             .scheduled_retries
             .get(key)
-            .map(|(scheduled, _)| *scheduled)
-            != Some(generation)
+            .is_none_or(|(scheduled, _)| scheduled != &generation)
         {
             return false;
         }
@@ -30097,6 +30127,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retry_serial_exhaustion_never_reuses_a_live_stale_token() {
+        let (network_tx, _network_rx) = mpsc::unbounded_channel();
+        let mut supervisor = ReadWorkerSupervisor::synthetic_with_retry(
+            network_tx,
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+        );
+        let key = ReadStateKey::PublicUnthreaded {
+            room_id: "!retry-token-exhaustion:example.invalid".to_owned(),
+        };
+
+        supervisor.retry_serial = u64::MAX;
+        supervisor.schedule_retry(&key);
+        let stale_generation = supervisor
+            .scheduled_retries
+            .get(&key)
+            .map(|(generation, _)| generation.clone())
+            .expect("stale retry token");
+        supervisor.invalidate_retry(&key);
+
+        // Model the manager-wide serial reaching exhaustion again while the
+        // cancelled wake remains queued in `retry_tasks`.
+        supervisor.retry_serial = u64::MAX;
+        supervisor.schedule_retry(&key);
+        let current_generation = supervisor
+            .scheduled_retries
+            .get(&key)
+            .map(|(generation, _)| generation.clone())
+            .expect("current retry token");
+
+        let stale =
+            executor::timeout(Duration::from_millis(25), supervisor.retry_tasks.next())
+                .await
+                .expect("cancelled stale wake must be ready")
+                .expect("cancelled stale retry completion");
+        assert!(matches!(
+            stale,
+            ReadWorkerCompletion::RetryWake {
+                key: observed,
+                generation: observed_generation,
+                cancelled: true,
+            } if observed == key && observed_generation == stale_generation
+        ));
+        assert!(
+            !supervisor.accept_retry_wake(&key, stale_generation),
+            "an exhausted stale token must not settle the current retry"
+        );
+        assert!(
+            supervisor
+                .scheduled_retries
+                .get(&key)
+                .is_some_and(|(generation, _)| generation == &current_generation),
+            "the current retry must remain scheduled after the stale wake"
+        );
+    }
+
+    #[tokio::test]
     async fn completed_retry_keys_do_not_accumulate_generation_bookkeeping() {
         let (network_tx, _network_rx) = mpsc::unbounded_channel();
         let mut supervisor = ReadWorkerSupervisor::synthetic_with_retry(
@@ -30114,7 +30202,7 @@ mod tests {
             let generation = supervisor
                 .scheduled_retries
                 .get(&key)
-                .map(|(generation, _)| *generation)
+                .map(|(generation, _)| generation.clone())
                 .expect("retry generation");
 
             supervisor.reset_retry(&key);
