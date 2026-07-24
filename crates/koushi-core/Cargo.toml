@@ -32,6 +32,7 @@ matrix-sdk-base = { workspace = true }
 matrix-sdk-ui = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tempfile = "3"
 thiserror = "2"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter"] }
 url = "2"
@@ -53,6 +54,5 @@ koushi-core = { path = ".", features = ["test-hooks"] }
 koushi-sdk = { path = "../koushi-sdk", features = ["test-hooks"] }
 matrix-sdk = { workspace = true, features = ["testing"] }
 matrix-sdk-test = { workspace = true }
-tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "rt", "sync", "time", "macros", "test-util"] }
 wiremock = "0.6"

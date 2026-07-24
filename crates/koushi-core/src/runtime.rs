@@ -21,10 +21,10 @@ use koushi_state::{
     AccountManagementOperation, ActivityMarkReadTarget, ActivityResolutionState, ActivityRow,
     ActivityRowKind, ActivityState, ActivityStream, ActivityTab, AppAction, AppEffect, AppState,
     ComposerDraftProtection, ComposerDraftRevision, ComposerDraftStore, ComposerTarget,
-    LoginAttemptId, OperationFailureKind, ProfileUpdateRequest, RoomNotificationMode, RoomSummary,
-    ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchScope as AppSearchScope,
-    SessionState, SpaceSummary, SubmissionId, ThreadPaneState, UiEvent, reduce,
-    room_activity_unread_count,
+    LoginAttemptId, NavigationState, OperationFailureKind, ProfileUpdateRequest,
+    RoomNotificationMode, RoomSummary, ScheduledSendCapability, ScheduledSendHandle,
+    ScheduledSendItem, ScheduledSendStore, SearchScope as AppSearchScope, SessionState,
+    SpaceSummary, SubmissionId, ThreadPaneState, UiEvent, reduce, room_activity_unread_count,
 };
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
@@ -404,6 +404,7 @@ impl CoreRuntime {
             activity_projection: ActivityProjection::default(),
             activity_resolution_generation: 0,
             next_internal_request_sequence: 1,
+            navigation_projection_generation: 0,
             pending_select: HashMap::new(),
             pending_focused_navigation: None,
             pending_date_navigation_request_id: None,
@@ -639,6 +640,9 @@ struct AppActor {
     activity_projection: ActivityProjection,
     activity_resolution_generation: u64,
     next_internal_request_sequence: u64,
+    /// Private ordering fence for committed room projections. Request ids are
+    /// correlation values and are not monotonic across connections.
+    navigation_projection_generation: u64,
     /// Correlation map for SelectRoom intents: room_id → FIFO queue of request_ids.
     /// Multiple concurrent SelectRoom commands for the same room are queued in
     /// submission order; each `AppAction::SelectRoom` pops the oldest entry so
@@ -694,6 +698,22 @@ struct PendingComposerDraftPersist {
     key_id: koushi_key::SessionKeyId,
     drafts: ComposerDraftStore,
     deadline: Instant,
+}
+
+enum DeferredScheduledSendPersist {
+    ClearLoadedMarker,
+    Persist {
+        key_id: koushi_key::SessionKeyId,
+        scheduled_sends: ScheduledSendStore,
+    },
+}
+
+#[derive(Default)]
+struct DeferredReducerSideEffects {
+    cancel_activity_resolution: bool,
+    navigation: Option<(koushi_key::SessionKeyId, NavigationState)>,
+    composer_drafts: Option<(koushi_key::SessionKeyId, ComposerDraftStore)>,
+    scheduled_sends: Option<DeferredScheduledSendPersist>,
 }
 
 #[derive(Default)]
@@ -1442,7 +1462,31 @@ impl AppActor {
                             } else {
                                 None
                             };
-                        let post_projection_effects = self.reduce_app_action(action).await;
+                        let active_room_before_reduce =
+                            self.state.navigation.active_room_id.clone();
+                        let (post_projection_effects, deferred_reducer_side_effects) =
+                            self.reduce_app_action_state(action);
+                        let active_room_changed = active_room_before_reduce
+                            != self.state.navigation.active_room_id;
+                        let navigation_projection_generation = if active_room_changed {
+                            match self.navigation_projection_generation.checked_add(1) {
+                                Some(generation) => {
+                                    self.navigation_projection_generation = generation;
+                                    Some(generation)
+                                }
+                                None => {
+                                    record(DiagnosticEvent::new(
+                                        DiagnosticLevel::Error,
+                                        "core.navigation",
+                                        "projection_generation_exhausted",
+                                    ));
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                        let mut navigation_projection_cause = None;
                         if let Some((generation, transition_id)) = trust_projection_transition {
                             let _ = self
                                 .account_actor
@@ -1502,36 +1546,6 @@ impl AppActor {
                             {
                                 self.pending_select.remove(&room_id);
                             }
-                            if committed {
-                                if let Some(key) = cancel_replaced_room_timeline_pagination {
-                                    let cancel_request_id = request_id_to_emit.unwrap_or(RequestId {
-                                        connection_id: RuntimeConnectionId(0),
-                                        sequence: 0,
-                                    });
-                                    self.send_timeline_command_or_fail(
-                                        cancel_request_id,
-                                        TimelineCommand::CancelPagination {
-                                            request_id: cancel_request_id,
-                                            key,
-                                        },
-                                    )
-                                    .await;
-                                }
-                                if let Some(key) = cancel_replaced_room_timeline_link_previews {
-                                    let cancel_request_id = request_id_to_emit.unwrap_or(RequestId {
-                                        connection_id: RuntimeConnectionId(0),
-                                        sequence: 0,
-                                    });
-                                    self.send_timeline_command_or_fail(
-                                        cancel_request_id,
-                                        TimelineCommand::CancelLinkPreviews {
-                                            request_id: cancel_request_id,
-                                            key,
-                                        },
-                                    )
-                                    .await;
-                                }
-                            }
                             if let Some(request_id) = request_id_to_emit {
                                 record(
                                     DiagnosticEvent::new(
@@ -1551,7 +1565,26 @@ impl AppActor {
                                 );
                                 self.emit(CoreEvent::IntentLifecycle { request_id, outcome });
                             }
+                            if committed {
+                                navigation_projection_cause = request_id_to_emit;
+                            }
                         }
+                        self.handle_post_projection_effects(
+                            &post_projection_effects,
+                            navigation_projection_generation,
+                            navigation_projection_cause,
+                            crate::timeline::NavigationProjectionCleanup {
+                                cancel_pagination:
+                                    cancel_replaced_room_timeline_pagination,
+                                cancel_link_previews:
+                                    cancel_replaced_room_timeline_link_previews,
+                            },
+                        )
+                        .await;
+                        self.apply_deferred_reducer_side_effects(
+                            deferred_reducer_side_effects,
+                        )
+                        .await;
                         if let Some(activity_update) = self
                             .activity_projection
                             .update_action_for_open_state(&self.state)
@@ -1559,8 +1592,6 @@ impl AppActor {
                             let _activity_effects =
                                 self.reduce_app_action(activity_update).await;
                         }
-                        self.handle_post_projection_effects(&post_projection_effects)
-                            .await;
                         self.handle_ui_event_effects(&post_projection_effects).await;
                         self.load_room_preferences_for_current_session().await;
                         self.load_navigation_for_current_session().await;
@@ -1581,6 +1612,15 @@ impl AppActor {
     }
 
     async fn reduce_app_action(&mut self, action: AppAction) -> Vec<AppEffect> {
+        let (effects, deferred) = self.reduce_app_action_state(action);
+        self.apply_deferred_reducer_side_effects(deferred).await;
+        effects
+    }
+
+    fn reduce_app_action_state(
+        &mut self,
+        action: AppAction,
+    ) -> (Vec<AppEffect>, DeferredReducerSideEffects) {
         let activity_was_open = matches!(self.state.activity, ActivityState::Open { .. });
         let previous_session = composer_draft_session_key(&self.state);
         let previous_drafts = self.state.composer_drafts.clone();
@@ -1601,24 +1641,22 @@ impl AppActor {
                     leased: BTreeSet::new(),
                 });
         }
-        if activity_was_open && matches!(self.state.activity, ActivityState::Closed) {
-            let _ = self
-                .account_actor
-                .send(AccountMessage::CancelActivityResolution)
-                .await;
-        }
+        let mut deferred = DeferredReducerSideEffects {
+            cancel_activity_resolution: activity_was_open
+                && matches!(self.state.activity, ActivityState::Closed),
+            ..DeferredReducerSideEffects::default()
+        };
         if previous_navigation != self.state.navigation {
             let target_session =
                 navigation_session_key(&self.state).or(previous_navigation_session);
             if let Some(key_id) = target_session {
-                self.persist_navigation(key_id).await;
+                deferred.navigation = Some((key_id, self.state.navigation.clone()));
             }
         }
         if previous_drafts != self.state.composer_drafts {
             let target_session = composer_draft_session_key(&self.state).or(previous_session);
             if let Some(key_id) = target_session {
-                self.schedule_composer_draft_persist(key_id, self.state.composer_drafts.clone())
-                    .await;
+                deferred.composer_drafts = Some((key_id, self.state.composer_drafts.clone()));
             }
         }
         if previous_scheduled_sends != self.state.scheduled_sends {
@@ -1627,17 +1665,49 @@ impl AppActor {
                 && previous_scheduled_session.is_some()
                 && current_scheduled_session.is_none();
 
-            if cleared_for_session_transition {
+            deferred.scheduled_sends = if cleared_for_session_transition {
+                Some(DeferredScheduledSendPersist::ClearLoadedMarker)
+            } else {
+                current_scheduled_session
+                    .or(previous_scheduled_session)
+                    .map(|key_id| DeferredScheduledSendPersist::Persist {
+                        key_id,
+                        scheduled_sends: self.state.scheduled_sends.clone(),
+                    })
+            };
+        }
+        (effects, deferred)
+    }
+
+    async fn apply_deferred_reducer_side_effects(&mut self, deferred: DeferredReducerSideEffects) {
+        if deferred.cancel_activity_resolution {
+            let _ = self
+                .account_actor
+                .send(AccountMessage::CancelActivityResolution)
+                .await;
+        }
+        if let Some((key_id, navigation)) = deferred.navigation {
+            self.persist_navigation(key_id, navigation).await;
+        }
+        if let Some((key_id, drafts)) = deferred.composer_drafts {
+            self.schedule_composer_draft_persist(key_id, drafts).await;
+        }
+        match deferred.scheduled_sends {
+            Some(DeferredScheduledSendPersist::ClearLoadedMarker) => {
                 // `clear_session_views` intentionally clears the in-memory
                 // projection on lock, logout, and account switch. That is not
                 // a user cancellation, so do not overwrite the account's
                 // persisted scheduled sends with an empty store.
                 self.scheduled_sends_loaded_for = None;
-            } else if let Some(key_id) = current_scheduled_session.or(previous_scheduled_session) {
-                self.persist_scheduled_sends(key_id).await;
             }
+            Some(DeferredScheduledSendPersist::Persist {
+                key_id,
+                scheduled_sends,
+            }) => {
+                self.persist_scheduled_sends(key_id, scheduled_sends).await;
+            }
+            None => {}
         }
-        effects
     }
 
     async fn load_navigation_for_current_session(&mut self) {
@@ -1732,17 +1802,23 @@ impl AppActor {
         self.handle_ui_event_effects(&effects).await;
     }
 
-    async fn persist_scheduled_sends(&mut self, key_id: koushi_key::SessionKeyId) {
+    async fn persist_scheduled_sends(
+        &mut self,
+        key_id: koushi_key::SessionKeyId,
+        scheduled_sends: ScheduledSendStore,
+    ) {
         let store = self.composer_draft_store_actor.clone();
-        let scheduled_sends = self.state.scheduled_sends.clone();
         let _ =
             executor::spawn_blocking(move || store.save_scheduled_sends(&key_id, &scheduled_sends))
                 .await;
     }
 
-    async fn persist_navigation(&mut self, key_id: koushi_key::SessionKeyId) {
+    async fn persist_navigation(
+        &mut self,
+        key_id: koushi_key::SessionKeyId,
+        navigation: NavigationState,
+    ) {
         let store = self.composer_draft_store_actor.clone();
-        let navigation = self.state.navigation.clone();
         let _ = executor::spawn_blocking(move || store.save_navigation(&key_id, &navigation)).await;
     }
 
@@ -3409,7 +3485,13 @@ impl AppActor {
         }
     }
 
-    async fn handle_post_projection_effects(&mut self, effects: &[AppEffect]) {
+    async fn handle_post_projection_effects(
+        &mut self,
+        effects: &[AppEffect],
+        navigation_projection_generation: Option<u64>,
+        navigation_projection_cause: Option<RequestId>,
+        navigation_cleanup: crate::timeline::NavigationProjectionCleanup,
+    ) {
         for effect in effects {
             match effect {
                 AppEffect::StartSync => {
@@ -3459,7 +3541,14 @@ impl AppActor {
                         .await;
                 }
                 AppEffect::SubscribeTimeline { room_id } => {
-                    let request_id = self.next_internal_request_id();
+                    if self.state.navigation.active_room_id.as_deref() != Some(room_id.as_str()) {
+                        continue;
+                    }
+                    if self.navigation_projection_generation == 0 {
+                        self.navigation_projection_generation = 1;
+                    }
+                    let request_id = navigation_projection_cause
+                        .unwrap_or_else(|| self.next_internal_request_id());
                     let Some(account_key) = self.current_account_key() else {
                         self.emit(CoreEvent::OperationFailed {
                             request_id,
@@ -3467,20 +3556,21 @@ impl AppActor {
                         });
                         continue;
                     };
-                    self.send_timeline_command_or_fail(
-                        request_id,
-                        TimelineCommand::EnsureSubscribed {
-                            request_id,
+                    let _ = self.account_actor.admit_navigation_projection(
+                        crate::timeline::NavigationProjectionIntent {
+                            generation: navigation_projection_generation
+                                .unwrap_or(self.navigation_projection_generation),
                             key: TimelineKey {
                                 account_key,
                                 kind: TimelineKind::Room {
                                     room_id: room_id.clone(),
                                 },
                             },
+                            cause_request_id: request_id,
                             replay_existing: true,
+                            cleanup: navigation_cleanup.clone(),
                         },
-                    )
-                    .await;
+                    );
                 }
                 AppEffect::PersistRoomPreferences { preferences, .. } => {
                     self.persist_room_preferences(preferences).await;
@@ -5634,8 +5724,12 @@ mod tests {
             .expect("post-projection effects helper should exist");
 
         assert!(
-            effects_helper.contains("TimelineCommand::EnsureSubscribed"),
-            "room selection should ensure a room timeline exists"
+            effects_helper.contains("NavigationProjectionIntent"),
+            "room selection should admit the latest desired room projection"
+        );
+        assert!(
+            effects_helper.contains("admit_navigation_projection"),
+            "room selection must use the bounded latest-desired projection lane"
         );
         assert!(
             effects_helper.contains("replay_existing: true"),
@@ -5917,6 +6011,159 @@ mod tests {
         assert!(
             source.contains("TimelineCommand::CancelLinkPreviews"),
             "runtime must route room-switch link preview cancellation through the timeline actor"
+        );
+    }
+
+    #[tokio::test]
+    async fn committed_room_cleanup_bypasses_a_saturated_account_mailbox() {
+        let data_dir = tempfile::tempdir().expect("runtime data directory");
+        let (account_tx, mut saturated_account_rx) = mpsc::channel(1);
+        account_tx
+            .try_send(AccountMessage::CancelActivityResolution)
+            .expect("fill the ordinary AccountActor mailbox");
+        let (navigation_projection, navigation_projection_rx) =
+            crate::timeline::NavigationProjectionIngress::channel();
+        drop(navigation_projection_rx);
+        let account_actor =
+            AccountActorHandle::for_app_actor_test(account_tx, navigation_projection.clone());
+
+        let session = SessionInfo {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: "@synthetic:example.invalid".to_owned(),
+            device_id: "SYNTHETIC".to_owned(),
+        };
+        let session_key = session_key_id_from_info(&session);
+        let old_room = "!old:example.invalid";
+        let next_room = "!next:example.invalid";
+        let mut state = AppState {
+            session: SessionState::Ready(session),
+            rooms: vec![
+                unread_diagnostic_room(old_room),
+                unread_diagnostic_room(next_room),
+            ],
+            ..AppState::default()
+        };
+        state.navigation.active_room_id = Some(old_room.to_owned());
+
+        let (command_tx, command_rx) = mpsc::channel(1);
+        let (action_tx, action_rx) = mpsc::channel(1);
+        let (event_tx, mut event_rx) = broadcast::channel(16);
+        let (snapshot_tx, mut snapshot_rx) = watch::channel(VersionedAppStateSnapshot {
+            generation: 0,
+            state: state.clone(),
+        });
+        let request_id = RequestId {
+            connection_id: RuntimeConnectionId(91),
+            sequence: 7,
+        };
+        let mut pending_select = HashMap::new();
+        pending_select.insert(
+            next_room.to_owned(),
+            std::collections::VecDeque::from([request_id]),
+        );
+        let actor = AppActor {
+            command_rx,
+            action_rx,
+            event_tx,
+            snapshot_tx,
+            state,
+            settings_store: SettingsStore::new(data_dir.path()),
+            composer_draft_store_actor: StoreActor::new(data_dir.path().to_owned()),
+            composer_draft_loaded_for: Some(session_key.clone()),
+            navigation_loaded_for: Some(session_key.clone()),
+            scheduled_sends_loaded_for: Some(session_key.clone()),
+            room_preferences_loaded_for: Some(session_key),
+            state_generation: 0,
+            pending_composer_draft_persist: None,
+            account_actor,
+            activity_projection: ActivityProjection::default(),
+            activity_resolution_generation: 0,
+            next_internal_request_sequence: 1,
+            navigation_projection_generation: 0,
+            pending_select,
+            pending_focused_navigation: None,
+            pending_date_navigation_request_id: None,
+        };
+        let actor_task = executor::spawn(actor.run());
+
+        action_tx
+            .send(vec![AppAction::SelectRoom {
+                room_id: next_room.to_owned(),
+            }])
+            .await
+            .expect("inject committed room selection");
+
+        let terminal = executor::timeout(Duration::from_millis(100), event_rx.recv())
+            .await
+            .expect("committed terminal must not wait for cleanup transport")
+            .expect("event stream remains open");
+        assert!(matches!(
+            terminal,
+            CoreEvent::IntentLifecycle {
+                request_id: observed,
+                outcome: IntentOutcome::Committed,
+            } if observed == request_id
+        ));
+        executor::timeout(Duration::from_millis(100), snapshot_rx.changed())
+            .await
+            .expect("the committed selection must finish reducing")
+            .expect("snapshot channel remains open");
+        assert_eq!(
+            snapshot_rx
+                .borrow()
+                .state
+                .navigation
+                .active_room_id
+                .as_deref(),
+            Some(next_room)
+        );
+        let terminal_deadline = Instant::now() + Duration::from_millis(20);
+        while let Ok(Ok(event)) = executor::timeout(
+            terminal_deadline.saturating_duration_since(Instant::now()),
+            event_rx.recv(),
+        )
+        .await
+        {
+            assert!(
+                !matches!(
+                    event,
+                    CoreEvent::IntentLifecycle {
+                        request_id: observed,
+                        ..
+                    } | CoreEvent::OperationFailed {
+                        request_id: observed,
+                        ..
+                    } if observed == request_id
+                ),
+                "cleanup admission must not emit a second correlated terminal"
+            );
+            if Instant::now() >= terminal_deadline {
+                break;
+            }
+        }
+        let mut retained_rx = navigation_projection.subscribe();
+        let retained = retained_rx
+            .borrow_and_update()
+            .clone()
+            .expect("cleanup and replacement projection remain latest-wins");
+        assert_eq!(
+            retained.cleanup.cancel_pagination,
+            Some(TimelineKey::room(
+                AccountKey("@synthetic:example.invalid".to_owned()),
+                old_room,
+            ))
+        );
+        assert_eq!(
+            retained.cleanup.cancel_link_previews,
+            retained.cleanup.cancel_pagination
+        );
+
+        actor_task.abort();
+        drop(command_tx);
+        drop(action_tx);
+        assert!(
+            saturated_account_rx.try_recv().is_ok(),
+            "ordinary mailbox remained saturated throughout the selection"
         );
     }
 

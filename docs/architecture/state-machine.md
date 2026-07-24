@@ -338,6 +338,61 @@ stateDiagram-v2
     RoomSelected --> NoRoom: LogoutRequested/SessionCleared
 ```
 
+Room selection has a separate private projection lifecycle. Reducer commit is
+the public terminal: the correlated `IntentLifecycle::Committed` is emitted
+exactly once and is never delayed by old-room cleanup, persistence, receipt
+network calls, or timeline background work. Projection readiness must not emit
+a second intent terminal.
+
+```mermaid
+stateDiagram-v2
+    [*] --> ProjectionIdle
+    ProjectionIdle --> ProjectionDesired: committed active room / generation++
+    ProjectionDesired --> ProjectionDesired: newer generation / replace latest
+    ProjectionDesired --> CachedReplay: foreground manager admission
+    CachedReplay --> ProjectionSettled: InitialItems [current generation]
+    CachedReplay --> ProjectionDesired: newer generation
+    CachedReplay --> StaleDiscarded: completion [older generation]
+    StaleDiscarded --> ProjectionDesired: latest desired retained
+```
+
+- `generation` is AppActor-owned and monotonic; request IDs correlate events
+  but never order projections.
+- The latest desired projection is a retained value plus bounded wake. A full
+  ordinary actor mailbox cannot lose it, and an equal-generation replay may
+  only strengthen `replay_existing` without replacing the original cause.
+- Old-room invalidation happens before best-effort cleanup. New-room
+  cancel/start/begin controls use the actor control lane; a missing
+  cancellation acknowledgement is bounded by one absolute deadline.
+- Actor-originated subscription effects are admitted only when their target is
+  still the reducer-owned active room. Late A/B work cannot replace desired C.
+
+Read-state convergence is a separate private lifecycle and never gates the
+navigation lifecycle above:
+
+```mermaid
+stateDiagram-v2
+    [*] --> ReadIdle
+    ReadIdle --> ReadDesired: receipt/fully-read intent admitted
+    ReadDesired --> ReadInFlight: connectivity wake / newest candidate
+    ReadInFlight --> ReadConverged: SDK success or authoritative sync proof
+    ReadInFlight --> ReadDesired: timeout/network failure / retain desired
+    ReadDesired --> ReadDesired: newer provable target / coalesce
+    ReadDesired --> ReadDesired: unordered target / retain bounded candidate
+    ReadInFlight --> StaleReadDiscarded: old session/actor/operation completion
+    StaleReadDiscarded --> ReadDesired: latest desired retained
+```
+
+The private keys are room-wide public unthreaded read, per-root threaded read,
+and the atomic fully-read plus private-unthreaded receipt bundle. Focused and
+room timelines share the room-wide public key. Candidate and waiter capacity
+rejects new admission explicitly; existing desired state is never evicted.
+Command waiters settle independently from the retained desired state, so a
+timeout may report failure while later reconnect/sync still converges the
+newest target. Persistence, retries, and completion publication are fenced by
+session and operation generation and expose only private-data-free diagnostic
+stage/count tokens.
+
 ## Room Tags
 
 Room tags are Rust-owned room-list state. `RoomSummary.tags` carries the

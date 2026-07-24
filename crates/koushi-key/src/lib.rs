@@ -22,6 +22,7 @@ const COMPOSER_DRAFTS_INFO: &[u8] = b"koushi-desktop:composer-drafts";
 const SCHEDULED_SENDS_INFO: &[u8] = b"koushi-desktop:scheduled-sends";
 const NAVIGATION_INFO: &[u8] = b"koushi-desktop:navigation";
 const ROOM_PREFERENCES_INFO: &[u8] = b"koushi-desktop:room-preferences";
+const READ_STATE_OUTBOX_INFO: &[u8] = b"koushi-desktop:read-state-outbox";
 const LAST_SESSION_ACCOUNT_NAME: &str = "koushi-desktop:last-session:v1";
 const SAVED_SESSIONS_ACCOUNT_NAME: &str = "koushi-desktop:saved-sessions:v1";
 
@@ -403,6 +404,22 @@ pub struct RoomPreferencesKey {
     key: Zeroizing<[u8; LOCAL_UNLOCK_SECRET_LEN]>,
 }
 
+pub struct ReadStateOutboxKey {
+    key: Zeroizing<[u8; LOCAL_UNLOCK_SECRET_LEN]>,
+}
+
+impl ReadStateOutboxKey {
+    pub fn as_bytes(&self) -> &[u8; LOCAL_UNLOCK_SECRET_LEN] {
+        &self.key
+    }
+}
+
+impl fmt::Debug for ReadStateOutboxKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ReadStateOutboxKey(..)")
+    }
+}
+
 impl RoomPreferencesKey {
     pub fn as_bytes(&self) -> &[u8; LOCAL_UNLOCK_SECRET_LEN] {
         &self.key
@@ -548,6 +565,14 @@ impl LocalUnlockSecret {
         RoomPreferencesKey {
             key: self
                 .derive_key(ROOM_PREFERENCES_INFO)
+                .expect("32-byte HKDF output length is valid"),
+        }
+    }
+
+    pub fn derive_read_state_outbox_key(&self) -> ReadStateOutboxKey {
+        ReadStateOutboxKey {
+            key: self
+                .derive_key(READ_STATE_OUTBOX_INFO)
                 .expect("32-byte HKDF output length is valid"),
         }
     }
@@ -716,4 +741,28 @@ pub fn is_locked_or_inaccessible_error(error: &LocalSecretError) -> bool {
         error,
         LocalSecretError::CredentialBackend(CredentialBackendErrorKind::LockedOrInaccessible)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LocalUnlockSecret;
+
+    #[test]
+    fn read_state_outbox_uses_a_dedicated_hkdf_domain() {
+        let secret = LocalUnlockSecret::generate();
+        let read_state = secret.derive_read_state_outbox_key();
+
+        assert_ne!(
+            read_state.as_bytes(),
+            secret.derive_composer_drafts_key().as_bytes()
+        );
+        assert_ne!(
+            read_state.as_bytes(),
+            secret.derive_scheduled_sends_key().as_bytes()
+        );
+        assert_ne!(
+            read_state.as_bytes(),
+            secret.derive_navigation_key().as_bytes()
+        );
+    }
 }

@@ -12,6 +12,7 @@ vi.mock("../domain/externalLinks", async (importOriginal) => ({
 }));
 
 import {
+  focusedTimelineKey,
   roomTimelineKey,
   threadTimelineKey,
   type CoreEventPayload,
@@ -66,6 +67,14 @@ function message(eventId: string, body: string): TimelineItem {
     can_edit: false,
     reactions: []
   };
+}
+
+function expectLocalizedTooltip(button: HTMLButtonElement, label: string): void {
+  fireEvent.focus(button);
+  const tooltip = button.parentElement?.querySelector<HTMLElement>('[role="tooltip"]') ?? null;
+  expect(tooltip?.textContent).toBe(label);
+  expect(button.getAttribute("aria-describedby")).toBe(tooltip?.id);
+  fireEvent.blur(button);
 }
 
 function imageMessage(eventId: string, encrypted = false): TimelineItem {
@@ -552,8 +561,9 @@ describe("TimelineView", () => {
     expect(picker.classList.contains("is-below")).toBe(false);
   });
 
-  it("offers normal reply as an inline action next to reactions", async () => {
+  it("orders and routes distinct reply actions in a fully actionable room row", () => {
     const onReply = vi.fn();
+    const onOpenThread = vi.fn();
     const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
       InitialItems: {
         request_id: null,
@@ -562,6 +572,7 @@ describe("TimelineView", () => {
         items: [
           {
             ...message("$reply-inline", "Reply inline"),
+            can_edit: true,
             actions: {
               can_copy: true,
               can_forward: false,
@@ -580,6 +591,7 @@ describe("TimelineView", () => {
           roomId="!room:example.invalid"
           transport={baseTransport({})}
           onReply={onReply}
+          onOpenThread={onOpenThread}
         />
       </TimelineStoreContext.Provider>
     );
@@ -593,16 +605,188 @@ describe("TimelineView", () => {
     expect(actionButtons.map((button) => button.getAttribute("aria-label"))).toEqual([
       "Add reaction",
       "Reply to message",
+      "Reply in thread",
+      "Edit message",
       "Pin message",
       "Message actions"
     ]);
 
-    fireEvent.click(within(row!).getByRole("button", { name: "Reply to message" }));
+    const replyButton = within(row!).getByRole<HTMLButtonElement>("button", {
+      name: "Reply to message"
+    });
+    const replyInThreadButton = within(row!).getByRole<HTMLButtonElement>("button", {
+      name: "Reply in thread"
+    });
+    const replyIcon = replyButton.querySelector<SVGElement>(
+      '[data-message-action-icon="reply"]'
+    );
+    const replyInThreadIcon = replyInThreadButton.querySelector<SVGElement>(
+      '[data-message-action-icon="reply-in-thread"]'
+    );
+    expect(replyIcon?.getAttribute("aria-hidden")).toBe("true");
+    expect(replyInThreadIcon?.getAttribute("aria-hidden")).toBe("true");
+    expectLocalizedTooltip(replyButton, "Reply to message");
+    expectLocalizedTooltip(replyInThreadButton, "Reply in thread");
+
+    fireEvent.click(replyButton);
     expect(onReply).toHaveBeenCalledWith("!room:example.invalid", "$reply-inline");
+    expect(onOpenThread).not.toHaveBeenCalled();
+    fireEvent.click(replyInThreadButton);
+    expect(onOpenThread).toHaveBeenCalledWith("!room:example.invalid", "$reply-inline");
+    expect(onReply).toHaveBeenCalledTimes(1);
 
     fireEvent.click(within(row!).getByRole("button", { name: "Message actions" }));
     const menu = within(row!).getByRole("menu", { name: "Message actions" });
     expect(within(menu).queryByRole("menuitem", { name: "Reply to message" })).toBeNull();
+  });
+
+  it("preserves reply action order when edit and more actions are absent", () => {
+    const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [message("$reply-inline-minimal", "Reply inline minimal")]
+      }
+    });
+
+    render(
+      <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={baseTransport({})}
+          onReply={vi.fn()}
+          onOpenThread={vi.fn()}
+        />
+      </TimelineStoreContext.Provider>
+    );
+
+    const row = screen.getByText("Reply inline minimal").closest("article");
+    expect(row).not.toBeNull();
+    expect(
+      Array.from(
+        row!.querySelectorAll<HTMLButtonElement>(".message-actions .message-action")
+      ).map((button) => button.getAttribute("aria-label"))
+    ).toEqual(["Add reaction", "Reply to message", "Reply in thread", "Pin message"]);
+  });
+
+  it("localizes both reply action names and tooltips in Japanese", () => {
+    setActiveLocaleProfile("ja", "none");
+    const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [message("$reply-inline-ja", "返信操作")]
+      }
+    });
+
+    render(
+      <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={baseTransport({})}
+          onReply={vi.fn()}
+          onOpenThread={vi.fn()}
+        />
+      </TimelineStoreContext.Provider>
+    );
+
+    const row = screen.getByText("返信操作").closest("article");
+    expect(row).not.toBeNull();
+    const replyButton = within(row!).getByRole<HTMLButtonElement>("button", {
+      name: "メッセージに返信"
+    });
+    const replyInThreadButton = within(row!).getByRole<HTMLButtonElement>("button", {
+      name: "スレッドで返信"
+    });
+    expectLocalizedTooltip(replyButton, "メッセージに返信");
+    expectLocalizedTooltip(replyInThreadButton, "スレッドで返信");
+  });
+
+  it.each(["thread", "focused"] as const)(
+    "omits reply in thread from %s presentation while preserving ordinary reply",
+    (presentationContext) => {
+      const key =
+        presentationContext === "thread"
+          ? threadTimelineKey(
+              "@alice:example.invalid",
+              "!room:example.invalid",
+              "$thread-root:example.invalid"
+            )
+          : focusedTimelineKey(
+              "@alice:example.invalid",
+              "!room:example.invalid",
+              "$focused:example.invalid"
+            );
+      const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+        InitialItems: {
+          request_id: null,
+          key,
+          generation: 1,
+          items: [message(`$${presentationContext}-reply`, `${presentationContext} reply`)]
+        }
+      });
+
+      render(
+        <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+          <TimelineView
+            presentationContext={presentationContext}
+            timelineKey={key}
+            roomId="!room:example.invalid"
+            transport={baseTransport({})}
+            onReply={vi.fn()}
+            onOpenThread={vi.fn()}
+          />
+        </TimelineStoreContext.Provider>
+      );
+
+      const row = screen.getByText(`${presentationContext} reply`).closest("article");
+      expect(row).not.toBeNull();
+      expect(
+        within(row!).getByRole("button", { name: "Reply to message" })
+      ).not.toBeNull();
+      expect(within(row!).queryByRole("button", { name: "Reply in thread" })).toBeNull();
+    }
+  );
+
+  it("does not expose reply actions for redacted, hidden, or bodyless rows", () => {
+    const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [
+          { ...message("$reply-redacted", "Redacted reply"), is_redacted: true },
+          { ...message("$reply-hidden", "Hidden reply"), is_hidden: true },
+          { ...message("$reply-bodyless", "Bodyless reply"), body: null }
+        ]
+      }
+    });
+
+    render(
+      <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={baseTransport({})}
+          onReply={vi.fn()}
+          onOpenThread={vi.fn()}
+        />
+      </TimelineStoreContext.Provider>
+    );
+
+    expect(document.querySelector('article[data-content-event-id="$reply-hidden"]')).toBeNull();
+    for (const eventId of ["$reply-redacted", "$reply-bodyless"]) {
+      const row = document.querySelector<HTMLElement>(
+        `article[data-content-event-id="${eventId}"]`
+      );
+      expect(row).not.toBeNull();
+      expect(within(row!).queryByRole("button", { name: "Reply to message" })).toBeNull();
+      expect(within(row!).queryByRole("button", { name: "Reply in thread" })).toBeNull();
+    }
   });
 
   it("autosaves sender aliases from the message action menu", () => {
