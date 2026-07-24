@@ -31,7 +31,10 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     future::Future,
-    sync::{Arc, atomic::AtomicU64},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -51,7 +54,7 @@ use koushi_state::{
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters};
 use matrix_sdk::ruma::events::room::MediaSource as SdkMediaSource;
 use matrix_sdk::ruma::{MxcUri, OwnedMxcUri};
-use tokio::sync::{Semaphore, broadcast, mpsc, oneshot};
+use tokio::sync::{Semaphore, broadcast, mpsc, oneshot, watch};
 
 use crate::command::{
     AccountCommand, RoomCommand, RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand,
@@ -80,13 +83,17 @@ use crate::startup_trace::{self, StartupPhase};
 use crate::store::{StoreActor, account_key_from_info, session_key_id_from_info};
 use crate::sync::{SyncActorHandle, SyncMessage};
 use crate::timeline::{
-    NavigationProjectionIngress, NavigationProjectionIntent, TimelineManagerHandle,
-    TimelineMessage, build_room_message_content_from_composer_body,
+    NavigationProjectionIngress, NavigationProjectionIntent, ReadPersistenceIngress,
+    ReadPersistenceRequest, TimelineManagerHandle, TimelineMessage,
+    build_room_message_content_from_composer_body,
 };
 
 /// "Credential store healthy, but no stored session for that account"
 /// during restore/switch (canon: `CoreFailure::SessionNotFound`).
 const SESSION_NOT_FOUND_FAILURE: CoreFailure = CoreFailure::SessionNotFound;
+const READ_PERSISTENCE_DEBOUNCE: Duration = Duration::from_millis(100);
+const READ_PERSISTENCE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+static READ_PERSISTENCE_SESSION_SERIAL: AtomicU64 = AtomicU64::new(0);
 
 /// Maximum number of concurrent avatar thumbnail downloads. Bounded to avoid
 /// flooding the SDK media layer with parallel requests during large room joins.
@@ -172,6 +179,113 @@ fn trace_restore_simple(stage: &'static str, action: &'static str) {
         DiagnosticEvent::new(DiagnosticLevel::Debug, "core.account", stage)
             .field(DiagnosticField::token("action", action)),
     );
+}
+
+fn record_read_persistence(
+    stage: &'static str,
+    outcome: &'static str,
+    session_generation: u64,
+    save_generation: u64,
+    entry_count: usize,
+    candidate_count: usize,
+) {
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "core.read_state_persistence", stage)
+            .field(DiagnosticField::token("outcome", outcome))
+            .field(DiagnosticField::count(
+                "session_generation",
+                session_generation,
+            ))
+            .field(DiagnosticField::count("save_generation", save_generation))
+            .field(DiagnosticField::count(
+                "entry_count",
+                entry_count.try_into().unwrap_or(u64::MAX),
+            ))
+            .field(DiagnosticField::count(
+                "candidate_count",
+                candidate_count.try_into().unwrap_or(u64::MAX),
+            )),
+    );
+}
+
+fn next_read_persistence_session_generation() -> u64 {
+    READ_PERSISTENCE_SESSION_SERIAL
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1)
+        .max(1)
+}
+
+async fn run_read_persistence_worker(
+    store: StoreActor,
+    key_id: SessionKeyId,
+    session_generation: u64,
+    mut requests: watch::Receiver<Option<ReadPersistenceRequest>>,
+) {
+    let mut accepted_save_generation = 0;
+    while requests.changed().await.is_ok() {
+        executor::sleep(READ_PERSISTENCE_DEBOUNCE).await;
+        let request = requests.borrow_and_update().clone();
+        let Some(request) = request else {
+            continue;
+        };
+        if request.session_generation() != session_generation
+            || request.save_generation() <= accepted_save_generation
+        {
+            record_read_persistence(
+                "save",
+                "stale_rejected",
+                request.session_generation(),
+                request.save_generation(),
+                request.snapshot().entry_count(),
+                request.snapshot().candidate_count(),
+            );
+            continue;
+        }
+        let save_generation = request.save_generation();
+        let snapshot = request.snapshot().clone();
+        let entry_count = snapshot.entry_count();
+        let candidate_count = snapshot.candidate_count();
+        let save_store = store.clone();
+        let save_key_id = key_id.clone();
+        let outcome = executor::spawn_blocking(move || {
+            save_store.save_read_state_outbox_if_current(
+                &save_key_id,
+                session_generation,
+                save_generation,
+                &snapshot,
+            )
+        })
+        .await;
+        match outcome {
+            Ok(Ok(true)) => {
+                accepted_save_generation = save_generation;
+                record_read_persistence(
+                    "save",
+                    "saved",
+                    session_generation,
+                    save_generation,
+                    entry_count,
+                    candidate_count,
+                );
+            }
+            Ok(Ok(false)) => record_read_persistence(
+                "save",
+                "stale_rejected",
+                session_generation,
+                save_generation,
+                entry_count,
+                candidate_count,
+            ),
+            Ok(Err(_)) | Err(_) => record_read_persistence(
+                "save",
+                "failed",
+                session_generation,
+                save_generation,
+                entry_count,
+                candidate_count,
+            ),
+        }
+    }
 }
 
 fn record_verification_admission_event(event: DiagnosticEvent) {
@@ -474,6 +588,17 @@ impl AccountActorHandle {
 
     pub(crate) fn admit_navigation_projection(&self, intent: NavigationProjectionIntent) -> bool {
         self.navigation_projection.admit(intent)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_app_actor_test(
+        tx: mpsc::Sender<AccountMessage>,
+        navigation_projection: NavigationProjectionIngress,
+    ) -> Self {
+        Self {
+            tx,
+            navigation_projection,
+        }
     }
 }
 
@@ -1010,6 +1135,8 @@ pub struct AccountActor {
     /// TimelineManagerActor handle (Phase 5). Spawned once at actor creation;
     /// session reference is updated when a store-backed session is established.
     timeline_manager: TimelineManagerHandle,
+    read_persistence_task: Option<crate::executor::JoinHandle<()>>,
+    read_persistence_session_generation: u64,
     /// Stable projection ingress retained across session-scoped manager
     /// replacement and cloned into the AppActor-facing handle.
     navigation_projection: NavigationProjectionIngress,
@@ -1168,6 +1295,8 @@ impl AccountActor {
             sync_generation: Arc::new(AtomicU64::new(0)),
             room_actor,
             timeline_manager,
+            read_persistence_task: None,
+            read_persistence_session_generation: 0,
             navigation_projection: navigation_projection.clone(),
             messages_backpressure,
             activity_resolution_task: None,
@@ -2491,6 +2620,7 @@ impl AccountActor {
         self.stop_session_change_observer().await;
         self.record_lifecycle_probe("shutdown_stop_timeline_actor");
         self.stop_timeline_actor().await;
+        self.stop_read_persistence_worker().await;
         self.stop_threads_list_actor().await;
         self.record_lifecycle_probe("shutdown_stop_search_actor");
         self.stop_search_actor().await;
@@ -2519,15 +2649,43 @@ impl AccountActor {
     /// Ordered shutdown of the TimelineManagerActor (step 2 of the shutdown
     /// sequence per Async rule 12 — timelines before search/room/sync).
     async fn stop_timeline_actor(&mut self) {
-        let (acknowledged, acknowledgement) = tokio::sync::oneshot::channel();
-        if self
-            .timeline_manager
-            .send(TimelineMessage::Shutdown {
-                acknowledged: Some(acknowledged),
-            })
+        let _ = self.timeline_manager.shutdown().await;
+    }
+
+    async fn stop_read_persistence_worker(&mut self) {
+        let Some(mut task) = self.read_persistence_task.take() else {
+            return;
+        };
+        if executor::timeout(READ_PERSISTENCE_SHUTDOWN_TIMEOUT, &mut task)
             .await
+            .is_err()
         {
-            let _ = acknowledgement.await;
+            self.read_persistence_session_generation = next_read_persistence_session_generation();
+            if let Some(key_id) = self.session_key_id.as_ref() {
+                self.store.invalidate_read_state_outbox_saves(
+                    key_id,
+                    self.read_persistence_session_generation,
+                );
+            }
+            task.abort();
+            let _ = task.await;
+            record_read_persistence(
+                "shutdown",
+                "timed_out",
+                self.read_persistence_session_generation,
+                0,
+                0,
+                0,
+            );
+        } else {
+            record_read_persistence(
+                "shutdown",
+                "saved",
+                self.read_persistence_session_generation,
+                0,
+                0,
+                0,
+            );
         }
     }
 
@@ -2695,13 +2853,62 @@ impl AccountActor {
         // the next AccountActor tick.
         self.flush_pending_crawler_notification();
 
-        // Replace the TimelineManagerActor with one holding the current session
-        // AND the search index sender. The old manager (with no session) is
-        // stopped by dropping its handle. We use try_send to shut down the old.
-        self.timeline_manager
-            .try_send(TimelineMessage::Shutdown { acknowledged: None });
+        // Load the account-scoped encrypted read outbox before constructing a
+        // retry-capable manager. Replacement sessions first quiesce the old
+        // manager and its serialized saver so late blocking writes cannot race
+        // the new account/session generation.
+        self.stop_timeline_actor().await;
+        if self.read_persistence_task.is_some() {
+            self.stop_read_persistence_worker().await;
+        }
+        self.read_persistence_session_generation = next_read_persistence_session_generation();
+        let read_session_generation = self.read_persistence_session_generation;
+        let restored_read_state = if let Some(key_id) = self.session_key_id.clone() {
+            let store = self.store.clone();
+            let load_key_id = key_id.clone();
+            match executor::spawn_blocking(move || store.load_read_state_outbox(&load_key_id)).await
+            {
+                Ok(Ok(snapshot)) => {
+                    record_read_persistence(
+                        "load",
+                        "loaded",
+                        read_session_generation,
+                        0,
+                        snapshot.entry_count(),
+                        snapshot.candidate_count(),
+                    );
+                    snapshot
+                }
+                Ok(Err(_)) | Err(_) => {
+                    record_read_persistence(
+                        "load",
+                        "failed_closed",
+                        read_session_generation,
+                        0,
+                        0,
+                        0,
+                    );
+                    crate::read_state::ReadPersistenceSnapshot::default()
+                }
+            }
+        } else {
+            record_read_persistence("load", "session_missing", read_session_generation, 0, 0, 0);
+            crate::read_state::ReadPersistenceSnapshot::default()
+        };
+        let (read_persistence, read_persistence_rx) = ReadPersistenceIngress::channel();
+        if let Some(key_id) = self.session_key_id.clone() {
+            self.read_persistence_task = Some(executor::spawn(run_read_persistence_worker(
+                self.store.clone(),
+                key_id,
+                read_session_generation,
+                read_persistence_rx,
+            )));
+        }
         self.timeline_manager = crate::timeline::TimelineManagerActor::spawn_with_session(
             session.clone(),
+            read_session_generation,
+            restored_read_state,
+            read_persistence,
             self.action_tx.clone(),
             self.event_tx.clone(),
             search_index_tx,
@@ -6991,6 +7198,7 @@ impl AccountActor {
         self.stop_session_change_observer().await;
         self.record_lifecycle_probe("stop_timeline_manager");
         self.stop_timeline_actor().await;
+        self.stop_read_persistence_worker().await;
         self.timeline_manager = crate::timeline::TimelineManagerActor::spawn(
             self.action_tx.clone(),
             self.event_tx.clone(),
@@ -7453,7 +7661,7 @@ impl AccountActor {
     }
 
     async fn handle_reset_local_data(&mut self, request_id: RequestId) {
-        let Some(key_id) = self.session_key_id.take() else {
+        let Some(key_id) = self.session_key_id.clone() else {
             self.send_actions(vec![AppAction::ResetLocalDataFailed {
                 request_id: request_id.sequence,
             }])
@@ -7463,6 +7671,10 @@ impl AccountActor {
         };
 
         self.stop_current_session_runtime().await;
+        self.session_key_id.take();
+        self.read_persistence_session_generation = next_read_persistence_session_generation();
+        self.store
+            .invalidate_read_state_outbox_saves(&key_id, self.read_persistence_session_generation);
 
         drop(self.session.take());
         self.clear_account_persistence(&key_id).await;
@@ -11993,7 +12205,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_persistence_worker_saves_latest_snapshot_and_joins_after_channel_close() {
+        use crate::read_state::{ReadStateEngine, ReadStateKey, ReadTarget, ReadWaiterId};
+
+        fn snapshot(event_id: &str) -> crate::read_state::ReadPersistenceSnapshot {
+            let mut engine = ReadStateEngine::new(1);
+            engine.admit(
+                1,
+                ReadStateKey::PublicUnthreaded {
+                    room_id: "!worker-room:example.test".to_owned(),
+                },
+                ReadTarget::new(event_id.to_owned()),
+                ReadWaiterId::new(1),
+            );
+            engine.persistence_snapshot()
+        }
+
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let key_id = SessionKeyId {
+            homeserver: "https://example.test".to_owned(),
+            user_id: "@worker:example.test".to_owned(),
+            device_id: "WORKER".to_owned(),
+        };
+        let store = StoreActor::with_backend(
+            CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+                cred_dir.path(),
+            )),
+            data_dir.path(),
+        );
+        store
+            .account_store_config(&key_id)
+            .expect("seed unlock secret");
+        let (ingress, requests) = ReadPersistenceIngress::channel();
+        let worker_store = store.clone();
+        let worker_key_id = key_id.clone();
+        let mut worker = executor::spawn(run_read_persistence_worker(
+            worker_store,
+            worker_key_id,
+            7,
+            requests,
+        ));
+        ingress.publish(ReadPersistenceRequest::new(7, 1, snapshot("$first")));
+        let latest = snapshot("$latest");
+        ingress.publish(ReadPersistenceRequest::new(7, 2, latest.clone()));
+        drop(ingress);
+
+        executor::timeout(Duration::from_secs(1), &mut worker)
+            .await
+            .expect("closed persistence channel must join within the shutdown bound")
+            .expect("persistence worker task");
+        assert_eq!(
+            store
+                .load_read_state_outbox(&key_id)
+                .expect("load saved latest snapshot"),
+            latest
+        );
+    }
+
+    #[test]
+    fn read_persistence_session_generation_survives_actor_recreation() {
+        let first_actor_generation = next_read_persistence_session_generation();
+        let recreated_actor_generation = next_read_persistence_session_generation();
+
+        assert!(
+            recreated_actor_generation > first_actor_generation,
+            "a recreated AccountActor must not reuse a process-local outbox generation"
+        );
+    }
+
+    #[tokio::test]
     async fn reset_local_data_clears_current_account_persistence_and_signs_out_locally() {
+        use crate::read_state::{ReadStateEngine, ReadStateKey, ReadTarget, ReadWaiterId};
+
         let cred_dir = tempdir().expect("tempdir");
         let data_dir = tempdir().expect("tempdir");
         let key_id = SessionKeyId {
@@ -12022,6 +12306,18 @@ mod tests {
             b"local data",
         )
         .expect("write local store sentinel");
+        let mut read_state = ReadStateEngine::new(1);
+        read_state.admit(
+            1,
+            ReadStateKey::PublicUnthreaded {
+                room_id: "!reset-room:example.test".to_owned(),
+            },
+            ReadTarget::new("$reset-event".to_owned()),
+            ReadWaiterId::new(1),
+        );
+        store
+            .save_read_state_outbox(&key_id, &read_state.persistence_snapshot())
+            .expect("seed read-state outbox");
         store
             .credential_backend()
             .save_matrix_session(&key_id, &StoredMatrixSession::new("{\"redacted\":true}"))
@@ -12077,7 +12373,7 @@ mod tests {
             trust_observation_is_synthetic: false,
             recovery_download_override: std::sync::Mutex::new(None),
             close_store_results: std::collections::VecDeque::new(),
-            store,
+            store: store.clone(),
             action_tx,
             event_tx,
             command_rx,
@@ -12086,6 +12382,8 @@ mod tests {
             sync_generation: Arc::new(AtomicU64::new(0)),
             room_actor,
             timeline_manager,
+            read_persistence_task: None,
+            read_persistence_session_generation: 0,
             navigation_projection,
             messages_backpressure,
             activity_resolution_task: None,
@@ -12137,6 +12435,12 @@ mod tests {
             "reset must complete and locally sign out, got {actions:?}"
         );
         assert!(!account_root.exists(), "account root should be removed");
+        assert!(
+            store
+                .load_read_state_outbox(&key_id)
+                .expect("removed read-state outbox reads as empty")
+                .is_empty()
+        );
 
         let check_backend = CredentialStoreBackend::FileDir(
             crate::store::FileCredentialStore::new(cred_dir.path()),

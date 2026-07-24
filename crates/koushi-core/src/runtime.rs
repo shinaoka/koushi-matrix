@@ -1394,7 +1394,6 @@ impl AppActor {
                             None
                         };
                         let mut navigation_projection_cause = None;
-                        let mut selection_committed = false;
                         if let Some((generation, transition_id)) = trust_projection_transition {
                             let _ = self
                                 .account_actor
@@ -1475,42 +1474,20 @@ impl AppActor {
                             }
                             if committed {
                                 navigation_projection_cause = request_id_to_emit;
-                                selection_committed = true;
                             }
                         }
                         self.handle_post_projection_effects(
                             &post_projection_effects,
                             navigation_projection_generation,
                             navigation_projection_cause,
+                            crate::timeline::NavigationProjectionCleanup {
+                                cancel_pagination:
+                                    cancel_replaced_room_timeline_pagination,
+                                cancel_link_previews:
+                                    cancel_replaced_room_timeline_link_previews,
+                            },
                         )
                         .await;
-                        if selection_committed {
-                            let cancel_request_id =
-                                navigation_projection_cause.unwrap_or(RequestId {
-                                    connection_id: RuntimeConnectionId(0),
-                                    sequence: 0,
-                                });
-                            if let Some(key) = cancel_replaced_room_timeline_pagination {
-                                self.send_timeline_command_or_fail(
-                                    cancel_request_id,
-                                    TimelineCommand::CancelPagination {
-                                        request_id: cancel_request_id,
-                                        key,
-                                    },
-                                )
-                                .await;
-                            }
-                            if let Some(key) = cancel_replaced_room_timeline_link_previews {
-                                self.send_timeline_command_or_fail(
-                                    cancel_request_id,
-                                    TimelineCommand::CancelLinkPreviews {
-                                        request_id: cancel_request_id,
-                                        key,
-                                    },
-                                )
-                                .await;
-                            }
-                        }
                         self.apply_deferred_reducer_side_effects(
                             deferred_reducer_side_effects,
                         )
@@ -3365,6 +3342,7 @@ impl AppActor {
         effects: &[AppEffect],
         navigation_projection_generation: Option<u64>,
         navigation_projection_cause: Option<RequestId>,
+        navigation_cleanup: crate::timeline::NavigationProjectionCleanup,
     ) {
         for effect in effects {
             match effect {
@@ -3442,6 +3420,7 @@ impl AppActor {
                             },
                             cause_request_id: request_id,
                             replay_existing: true,
+                            cleanup: navigation_cleanup.clone(),
                         },
                     );
                 }
@@ -5789,6 +5768,159 @@ mod tests {
         assert!(
             source.contains("TimelineCommand::CancelLinkPreviews"),
             "runtime must route room-switch link preview cancellation through the timeline actor"
+        );
+    }
+
+    #[tokio::test]
+    async fn committed_room_cleanup_bypasses_a_saturated_account_mailbox() {
+        let data_dir = tempfile::tempdir().expect("runtime data directory");
+        let (account_tx, mut saturated_account_rx) = mpsc::channel(1);
+        account_tx
+            .try_send(AccountMessage::CancelActivityResolution)
+            .expect("fill the ordinary AccountActor mailbox");
+        let (navigation_projection, navigation_projection_rx) =
+            crate::timeline::NavigationProjectionIngress::channel();
+        drop(navigation_projection_rx);
+        let account_actor =
+            AccountActorHandle::for_app_actor_test(account_tx, navigation_projection.clone());
+
+        let session = SessionInfo {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: "@synthetic:example.invalid".to_owned(),
+            device_id: "SYNTHETIC".to_owned(),
+        };
+        let session_key = session_key_id_from_info(&session);
+        let old_room = "!old:example.invalid";
+        let next_room = "!next:example.invalid";
+        let mut state = AppState {
+            session: SessionState::Ready(session),
+            rooms: vec![
+                unread_diagnostic_room(old_room),
+                unread_diagnostic_room(next_room),
+            ],
+            ..AppState::default()
+        };
+        state.navigation.active_room_id = Some(old_room.to_owned());
+
+        let (command_tx, command_rx) = mpsc::channel(1);
+        let (action_tx, action_rx) = mpsc::channel(1);
+        let (event_tx, mut event_rx) = broadcast::channel(16);
+        let (snapshot_tx, mut snapshot_rx) = watch::channel(VersionedAppStateSnapshot {
+            generation: 0,
+            state: state.clone(),
+        });
+        let request_id = RequestId {
+            connection_id: RuntimeConnectionId(91),
+            sequence: 7,
+        };
+        let mut pending_select = HashMap::new();
+        pending_select.insert(
+            next_room.to_owned(),
+            std::collections::VecDeque::from([request_id]),
+        );
+        let actor = AppActor {
+            command_rx,
+            action_rx,
+            event_tx,
+            snapshot_tx,
+            state,
+            settings_store: SettingsStore::new(data_dir.path()),
+            composer_draft_store_actor: StoreActor::new(data_dir.path().to_owned()),
+            composer_draft_loaded_for: Some(session_key.clone()),
+            navigation_loaded_for: Some(session_key.clone()),
+            scheduled_sends_loaded_for: Some(session_key.clone()),
+            room_preferences_loaded_for: Some(session_key),
+            state_generation: 0,
+            pending_composer_draft_persist: None,
+            account_actor,
+            activity_projection: ActivityProjection::default(),
+            activity_resolution_generation: 0,
+            next_internal_request_sequence: 1,
+            navigation_projection_generation: 0,
+            pending_select,
+            pending_focused_navigation: None,
+            pending_date_navigation_request_id: None,
+        };
+        let actor_task = executor::spawn(actor.run());
+
+        action_tx
+            .send(vec![AppAction::SelectRoom {
+                room_id: next_room.to_owned(),
+            }])
+            .await
+            .expect("inject committed room selection");
+
+        let terminal = executor::timeout(Duration::from_millis(100), event_rx.recv())
+            .await
+            .expect("committed terminal must not wait for cleanup transport")
+            .expect("event stream remains open");
+        assert!(matches!(
+            terminal,
+            CoreEvent::IntentLifecycle {
+                request_id: observed,
+                outcome: IntentOutcome::Committed,
+            } if observed == request_id
+        ));
+        executor::timeout(Duration::from_millis(100), snapshot_rx.changed())
+            .await
+            .expect("the committed selection must finish reducing")
+            .expect("snapshot channel remains open");
+        assert_eq!(
+            snapshot_rx
+                .borrow()
+                .state
+                .navigation
+                .active_room_id
+                .as_deref(),
+            Some(next_room)
+        );
+        let terminal_deadline = Instant::now() + Duration::from_millis(20);
+        while let Ok(Ok(event)) = executor::timeout(
+            terminal_deadline.saturating_duration_since(Instant::now()),
+            event_rx.recv(),
+        )
+        .await
+        {
+            assert!(
+                !matches!(
+                    event,
+                    CoreEvent::IntentLifecycle {
+                        request_id: observed,
+                        ..
+                    } | CoreEvent::OperationFailed {
+                        request_id: observed,
+                        ..
+                    } if observed == request_id
+                ),
+                "cleanup admission must not emit a second correlated terminal"
+            );
+            if Instant::now() >= terminal_deadline {
+                break;
+            }
+        }
+        let mut retained_rx = navigation_projection.subscribe();
+        let retained = retained_rx
+            .borrow_and_update()
+            .clone()
+            .expect("cleanup and replacement projection remain latest-wins");
+        assert_eq!(
+            retained.cleanup.cancel_pagination,
+            Some(TimelineKey::room(
+                AccountKey("@synthetic:example.invalid".to_owned()),
+                old_room,
+            ))
+        );
+        assert_eq!(
+            retained.cleanup.cancel_link_previews,
+            retained.cleanup.cancel_pagination
+        );
+
+        actor_task.abort();
+        drop(command_tx);
+        drop(action_tx);
+        assert!(
+            saturated_account_rx.try_recv().is_ok(),
+            "ordinary mailbox remained saturated throughout the selection"
         );
     }
 

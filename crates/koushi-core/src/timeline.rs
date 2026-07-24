@@ -150,8 +150,10 @@ use crate::live_tail_freshness::{
 };
 use crate::messages_backpressure::MessagesBackpressure;
 use crate::read_state::{
-    ReadAdmissionStatus, ReadNetworkOutcome, ReadOperation, ReadOperationFence, ReadStateEngine,
-    ReadStateKey, ReadTarget, ReadWaiterId, ReadWaiterTerminal, ReadWakeResult,
+    ReadAdmissionDiagnostic, ReadAdmissionStatus, ReadCompletionDiagnostic,
+    ReadCompletionDisposition, ReadNetworkOutcome, ReadOperation, ReadOperationFence,
+    ReadPersistenceSnapshot, ReadStateEngine, ReadStateKey, ReadTarget, ReadWaiterId,
+    ReadWaiterTerminal, ReadWakeResult,
 };
 use crate::search::SearchIndexMessage;
 use crate::startup_trace::{self, StartupPhase};
@@ -176,6 +178,8 @@ const JAVASCRIPT_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
 const REPLY_QUOTE_PREVIEW_MAX_CHARS: usize = 160;
 const MEDIA_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 const READ_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
+const READ_RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
+const READ_RETRY_MAX_DELAY: Duration = Duration::from_secs(60);
 /// One absolute deadline for the complete set of manager-owned enqueue workers.
 /// This is deliberately not a per-worker timeout, so shutdown latency cannot
 /// grow with the number of outstanding sends.
@@ -278,7 +282,7 @@ impl TimelineSendTerminalIngress {
 }
 
 /// Messages routed to the `TimelineManagerActor`.
-pub enum TimelineMessage {
+pub(crate) enum TimelineMessage {
     Command(TimelineCommand),
     AcknowledgeProjection {
         projection_request_id: RequestId,
@@ -347,6 +351,13 @@ pub enum TimelineMessage {
         activity: ThreadRootProjectionActivity,
         result: Result<TimelineItem, OperationFailureKind>,
     },
+    AuthoritativeReadStateObserved {
+        key: TimelineKey,
+        actor_generation: u64,
+        read_key: ReadStateKey,
+        event_id: Option<String>,
+    },
+    #[cfg_attr(not(test), allow(dead_code))]
     Shutdown {
         acknowledged: Option<tokio::sync::oneshot::Sender<()>>,
     },
@@ -361,6 +372,19 @@ pub(crate) struct NavigationProjectionIntent {
     pub(crate) key: TimelineKey,
     pub(crate) cause_request_id: RequestId,
     pub(crate) replay_existing: bool,
+    pub(crate) cleanup: NavigationProjectionCleanup,
+}
+
+/// Best-effort cleanup folded into the same latest-wins projection admission.
+///
+/// AppActor must never wait for the ordinary AccountActor/TimelineManager
+/// mailboxes after it has committed a room selection. These keys therefore
+/// travel with the retained navigation projection and are deliberately
+/// uncorrelated with the already-terminal user request.
+#[derive(Clone, Default)]
+pub(crate) struct NavigationProjectionCleanup {
+    pub(crate) cancel_pagination: Option<TimelineKey>,
+    pub(crate) cancel_link_previews: Option<TimelineKey>,
 }
 
 /// Stable latest-wins ingress shared across session-scoped timeline-manager
@@ -405,11 +429,77 @@ impl NavigationProjectionIngress {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct ReadPersistenceIngress {
+    tx: watch::Sender<Option<ReadPersistenceRequest>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ReadPersistenceRequest {
+    session_generation: u64,
+    save_generation: u64,
+    snapshot: ReadPersistenceSnapshot,
+}
+
+impl ReadPersistenceRequest {
+    pub(crate) fn new(
+        session_generation: u64,
+        save_generation: u64,
+        snapshot: ReadPersistenceSnapshot,
+    ) -> Self {
+        Self {
+            session_generation,
+            save_generation,
+            snapshot,
+        }
+    }
+
+    pub(crate) fn session_generation(&self) -> u64 {
+        self.session_generation
+    }
+
+    pub(crate) fn save_generation(&self) -> u64 {
+        self.save_generation
+    }
+
+    pub(crate) fn snapshot(&self) -> &ReadPersistenceSnapshot {
+        &self.snapshot
+    }
+}
+
+impl std::fmt::Debug for ReadPersistenceRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ReadPersistenceRequest")
+            .field("session_generation", &self.session_generation)
+            .field("save_generation", &self.save_generation)
+            .field("entry_count", &self.snapshot.entry_count())
+            .field("candidate_count", &self.snapshot.candidate_count())
+            .finish()
+    }
+}
+
+impl ReadPersistenceIngress {
+    pub(crate) fn channel() -> (Self, watch::Receiver<Option<ReadPersistenceRequest>>) {
+        let (tx, rx) = watch::channel(None);
+        (Self { tx }, rx)
+    }
+
+    pub(crate) fn publish(&self, request: ReadPersistenceRequest) {
+        self.tx.send_replace(Some(request));
+    }
+}
+
 /// Handle to the timeline manager task (owned by `AccountActor`).
 pub struct TimelineManagerHandle {
     tx: mpsc::Sender<TimelineMessage>,
+    control_tx: mpsc::Sender<TimelineManagerControl>,
     #[cfg(test)]
     terminal_ingress: TimelineSendTerminalIngress,
+}
+
+enum TimelineManagerControl {
+    Shutdown { acknowledged: oneshot::Sender<()> },
 }
 
 #[derive(Clone)]
@@ -417,6 +507,7 @@ struct MatrixTimelineSendEnqueueContext {
     key: TimelineKey,
     timeline: Arc<Timeline>,
     session: Arc<MatrixClientSession>,
+    cleanup: TimelineActorCleanupIngress,
 }
 
 #[derive(Clone)]
@@ -548,6 +639,27 @@ enum ReadCommandKind {
     FullyRead,
 }
 
+#[derive(Clone, Copy)]
+enum ReadRetrySource {
+    Backoff,
+    Reconnect,
+    Checkpoint,
+    AuthoritativeReceipt,
+    SyncReconciliation,
+}
+
+impl ReadRetrySource {
+    fn token(self) -> &'static str {
+        match self {
+            Self::Backoff => "backoff",
+            Self::Reconnect => "reconnect",
+            Self::Checkpoint => "checkpoint",
+            Self::AuthoritativeReceipt => "authoritative_receipt",
+            Self::SyncReconciliation => "sync_reconciliation",
+        }
+    }
+}
+
 struct ReadCommandWaiter {
     request_id: RequestId,
     key: TimelineKey,
@@ -573,14 +685,20 @@ enum ReadWorkerCompletion {
     Cancelled {
         operation: ReadOperation,
     },
+    RetryWake {
+        key: ReadStateKey,
+        generation: u64,
+        cancelled: bool,
+    },
 }
 
 impl ReadWorkerCompletion {
-    fn fence(&self) -> ReadOperationFence {
+    fn fence(&self) -> Option<ReadOperationFence> {
         match self {
             Self::Network { operation, .. }
             | Self::ActorApplied { operation, .. }
-            | Self::Cancelled { operation } => operation.fence(),
+            | Self::Cancelled { operation } => Some(operation.fence()),
+            Self::RetryWake { .. } => None,
         }
     }
 }
@@ -592,9 +710,18 @@ struct ReadWorkerSupervisor {
     network: Option<ReadNetworkContext>,
     network_timeout: Duration,
     tasks: FuturesUnordered<ReadWorkerFuture>,
+    retry_tasks: FuturesUnordered<ReadWorkerFuture>,
     cancellations: HashMap<ReadOperationFence, oneshot::Sender<()>>,
     waiters: HashMap<ReadWaiterId, ReadCommandWaiter>,
     next_waiter_id: u64,
+    retry_base_delay: Duration,
+    retry_max_delay: Duration,
+    retry_attempts: HashMap<ReadStateKey, u32>,
+    retry_generations: HashMap<ReadStateKey, u64>,
+    scheduled_retries: HashMap<ReadStateKey, (u64, oneshot::Sender<()>)>,
+    reconciliation_pending: HashSet<ReadStateKey>,
+    persistence: Option<ReadPersistenceIngress>,
+    save_generation: u64,
 }
 
 impl ReadWorkerSupervisor {
@@ -608,9 +735,18 @@ impl ReadWorkerSupervisor {
             network,
             network_timeout,
             tasks: FuturesUnordered::new(),
+            retry_tasks: FuturesUnordered::new(),
             cancellations: HashMap::new(),
             waiters: HashMap::new(),
             next_waiter_id: 0,
+            retry_base_delay: READ_RETRY_BASE_DELAY,
+            retry_max_delay: READ_RETRY_MAX_DELAY,
+            retry_attempts: HashMap::new(),
+            retry_generations: HashMap::new(),
+            scheduled_retries: HashMap::new(),
+            reconciliation_pending: HashSet::new(),
+            persistence: None,
+            save_generation: 0,
         }
     }
 
@@ -618,12 +754,41 @@ impl ReadWorkerSupervisor {
         Self::new(0, None, READ_NETWORK_TIMEOUT)
     }
 
-    fn matrix(session: Arc<MatrixClientSession>) -> Self {
-        Self::new(
-            1,
-            Some(ReadNetworkContext::Matrix(session)),
-            READ_NETWORK_TIMEOUT,
-        )
+    fn matrix(
+        session: Arc<MatrixClientSession>,
+        session_generation: u64,
+        restored: ReadPersistenceSnapshot,
+        persistence: ReadPersistenceIngress,
+    ) -> Self {
+        let reconciliation_pending = restored
+            .entries()
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+        let state = ReadStateEngine::restore(session_generation, restored)
+            .unwrap_or_else(|| ReadStateEngine::new(session_generation));
+        let mut supervisor = Self {
+            state,
+            network: Some(ReadNetworkContext::Matrix(session)),
+            network_timeout: READ_NETWORK_TIMEOUT,
+            tasks: FuturesUnordered::new(),
+            retry_tasks: FuturesUnordered::new(),
+            cancellations: HashMap::new(),
+            waiters: HashMap::new(),
+            next_waiter_id: 0,
+            retry_base_delay: READ_RETRY_BASE_DELAY,
+            retry_max_delay: READ_RETRY_MAX_DELAY,
+            retry_attempts: HashMap::new(),
+            retry_generations: HashMap::new(),
+            scheduled_retries: HashMap::new(),
+            reconciliation_pending,
+            persistence: Some(persistence),
+            save_generation: 0,
+        };
+        for key in supervisor.reconciliation_pending.clone() {
+            supervisor.schedule_retry(&key);
+        }
+        supervisor
     }
 
     #[cfg(test)]
@@ -632,6 +797,56 @@ impl ReadWorkerSupervisor {
         timeout: Duration,
     ) -> Self {
         Self::new(1, Some(ReadNetworkContext::Synthetic { requests }), timeout)
+    }
+
+    #[cfg(test)]
+    fn synthetic_with_retry(
+        requests: mpsc::UnboundedSender<SyntheticReadNetworkRequest>,
+        timeout: Duration,
+        retry_base_delay: Duration,
+        retry_max_delay: Duration,
+    ) -> Self {
+        let mut supervisor =
+            Self::new(1, Some(ReadNetworkContext::Synthetic { requests }), timeout);
+        supervisor.retry_base_delay = retry_base_delay;
+        supervisor.retry_max_delay = retry_max_delay;
+        supervisor
+    }
+
+    #[cfg(test)]
+    fn synthetic_restored(
+        requests: mpsc::UnboundedSender<SyntheticReadNetworkRequest>,
+        restored: ReadPersistenceSnapshot,
+        persistence: ReadPersistenceIngress,
+    ) -> Self {
+        let reconciliation_pending = restored
+            .entries()
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+        let mut supervisor = Self {
+            state: ReadStateEngine::restore(7, restored)
+                .expect("synthetic restored read state must be valid"),
+            network: Some(ReadNetworkContext::Synthetic { requests }),
+            network_timeout: Duration::from_secs(30),
+            tasks: FuturesUnordered::new(),
+            retry_tasks: FuturesUnordered::new(),
+            cancellations: HashMap::new(),
+            waiters: HashMap::new(),
+            next_waiter_id: 0,
+            retry_base_delay: Duration::from_secs(1),
+            retry_max_delay: Duration::from_secs(4),
+            retry_attempts: HashMap::new(),
+            retry_generations: HashMap::new(),
+            scheduled_retries: HashMap::new(),
+            reconciliation_pending,
+            persistence: Some(persistence),
+            save_generation: 0,
+        };
+        for key in supervisor.reconciliation_pending.clone() {
+            supervisor.schedule_retry(&key);
+        }
+        supervisor
     }
 
     fn allocate_waiter(&mut self) -> Option<ReadWaiterId> {
@@ -701,15 +916,119 @@ impl ReadWorkerSupervisor {
     }
 
     fn finish(&mut self, completion: &ReadWorkerCompletion) {
-        self.cancellations.remove(&completion.fence());
+        if let Some(fence) = completion.fence() {
+            self.cancellations.remove(&fence);
+        }
+    }
+
+    fn schedule_retry(&mut self, key: &ReadStateKey) {
+        if self.scheduled_retries.contains_key(key) {
+            return;
+        }
+        let attempt = self.retry_attempts.entry(key.clone()).or_default();
+        let delay =
+            read_retry_delay_for_attempt(self.retry_base_delay, self.retry_max_delay, *attempt);
+        *attempt = attempt.saturating_add(1);
+        let generation = self
+            .retry_generations
+            .entry(key.clone())
+            .and_modify(|generation| *generation = generation.wrapping_add(1).max(1))
+            .or_insert(1);
+        let generation = *generation;
+        let (cancel, mut cancelled) = oneshot::channel();
+        self.scheduled_retries
+            .insert(key.clone(), (generation, cancel));
+        let key = key.clone();
+        self.retry_tasks.push(Box::pin(async move {
+            tokio::select! {
+                _ = executor::sleep(delay) => ReadWorkerCompletion::RetryWake {
+                    key,
+                    generation,
+                    cancelled: false,
+                },
+                _ = &mut cancelled => ReadWorkerCompletion::RetryWake {
+                    key,
+                    generation,
+                    cancelled: true,
+                },
+            }
+        }));
+    }
+
+    fn accept_retry_wake(&mut self, key: &ReadStateKey, generation: u64) -> bool {
+        if self
+            .scheduled_retries
+            .get(key)
+            .map(|(scheduled, _)| *scheduled)
+            != Some(generation)
+        {
+            return false;
+        }
+        self.scheduled_retries.remove(key);
+        true
+    }
+
+    fn invalidate_retry(&mut self, key: &ReadStateKey) {
+        if let Some((_, cancel)) = self.scheduled_retries.remove(key) {
+            let _ = cancel.send(());
+        }
+        self.retry_generations
+            .entry(key.clone())
+            .and_modify(|generation| *generation = generation.wrapping_add(1).max(1))
+            .or_insert(1);
+    }
+
+    fn reset_retry(&mut self, key: &ReadStateKey) {
+        self.invalidate_retry(key);
+        self.retry_attempts.remove(key);
+    }
+
+    fn desired_keys(&self) -> Vec<ReadStateKey> {
+        self.state
+            .persistence_snapshot()
+            .entries()
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect()
+    }
+
+    fn reconciliation_pending(&self, key: &ReadStateKey) -> bool {
+        self.reconciliation_pending.contains(key)
+    }
+
+    fn finish_reconciliation(&mut self, key: &ReadStateKey) {
+        self.reconciliation_pending.remove(key);
+    }
+
+    fn publish_persistence(&mut self) {
+        let Some(persistence) = self.persistence.as_ref() else {
+            return;
+        };
+        self.save_generation = self.save_generation.wrapping_add(1).max(1);
+        persistence.publish(ReadPersistenceRequest::new(
+            self.state.session_generation(),
+            self.save_generation,
+            self.state.persistence_snapshot(),
+        ));
     }
 
     fn cancel_all(&mut self) {
         for (_, cancel) in self.cancellations.drain() {
             let _ = cancel.send(());
         }
+        for (_, (_, cancel)) in self.scheduled_retries.drain() {
+            let _ = cancel.send(());
+        }
         self.tasks = FuturesUnordered::new();
+        self.retry_tasks = FuturesUnordered::new();
+        self.retry_generations.clear();
+        self.retry_attempts.clear();
     }
+}
+
+fn read_retry_delay_for_attempt(base: Duration, cap: Duration, attempt: u32) -> Duration {
+    let multiplier = 1_u32.checked_shl(attempt.min(31)).unwrap_or(u32::MAX);
+    base.saturating_mul(multiplier).min(cap)
 }
 
 impl Drop for ReadWorkerSupervisor {
@@ -2063,16 +2382,25 @@ impl ReplayKnownThreadRootProjectionRegistry {
 }
 
 impl TimelineManagerHandle {
-    pub async fn send(&self, msg: TimelineMessage) -> bool {
+    pub(crate) async fn send(&self, msg: TimelineMessage) -> bool {
         self.tx.send(msg).await.is_ok()
-    }
-
-    pub fn try_send(&self, msg: TimelineMessage) -> bool {
-        self.tx.try_send(msg).is_ok()
     }
 
     pub(crate) fn sender(&self) -> mpsc::Sender<TimelineMessage> {
         self.tx.clone()
+    }
+
+    pub(crate) async fn shutdown(&self) -> bool {
+        let (acknowledged, acknowledgement) = oneshot::channel();
+        if self
+            .control_tx
+            .send(TimelineManagerControl::Shutdown { acknowledged })
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        acknowledgement.await.is_ok()
     }
 
     #[cfg(test)]
@@ -2113,6 +2441,7 @@ pub struct TimelineManagerActor {
     event_tx: broadcast::Sender<CoreEvent>,
     msg_tx: mpsc::Sender<TimelineMessage>,
     msg_rx: mpsc::Receiver<TimelineMessage>,
+    control_rx: Option<mpsc::Receiver<TimelineManagerControl>>,
     navigation_projection_rx: Option<watch::Receiver<Option<NavigationProjectionIntent>>>,
     last_navigation_projection_generation: u64,
     /// Non-evicting active terminal-delivery state. Admission is synchronous
@@ -2228,6 +2557,7 @@ impl TimelineManagerActor {
         navigation_projection_rx: Option<watch::Receiver<Option<NavigationProjectionIntent>>>,
     ) -> TimelineManagerHandle {
         let (tx, msg_rx) = mpsc::channel(crate::runtime::ACTOR_MESSAGE_QUEUE_CAPACITY);
+        let (control_tx, control_rx) = mpsc::channel(1);
         let (terminal_ingress, terminal_rx) = TimelineSendTerminalIngress::channel();
         let actor = TimelineManagerActor {
             session: None,
@@ -2245,6 +2575,7 @@ impl TimelineManagerActor {
             event_tx,
             msg_tx: tx.clone(),
             msg_rx,
+            control_rx: Some(control_rx),
             navigation_projection_rx,
             last_navigation_projection_generation: 0,
             terminal_ingress: terminal_ingress.clone(),
@@ -2269,6 +2600,7 @@ impl TimelineManagerActor {
         executor::spawn(actor.run());
         TimelineManagerHandle {
             tx,
+            control_tx,
             #[cfg(test)]
             terminal_ingress,
         }
@@ -2278,6 +2610,9 @@ impl TimelineManagerActor {
     /// Called by `AccountActor::spawn_sync_actor` (Phase 6 wiring).
     pub(crate) fn spawn_with_session(
         session: Arc<MatrixClientSession>,
+        read_session_generation: u64,
+        restored_read_state: ReadPersistenceSnapshot,
+        read_persistence: ReadPersistenceIngress,
         action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
         search_index_tx: mpsc::Sender<SearchIndexMessage>,
@@ -2287,6 +2622,7 @@ impl TimelineManagerActor {
         navigation_projection_rx: Option<watch::Receiver<Option<NavigationProjectionIntent>>>,
     ) -> TimelineManagerHandle {
         let (tx, msg_rx) = mpsc::channel(crate::runtime::ACTOR_MESSAGE_QUEUE_CAPACITY);
+        let (control_tx, control_rx) = mpsc::channel(1);
         let (terminal_ingress, terminal_rx) = TimelineSendTerminalIngress::channel();
         let send_completion = SharedSendCompletionCoordinator::default();
         let global_send_completion_observer_future =
@@ -2306,11 +2642,17 @@ impl TimelineManagerActor {
             send_completion,
             global_send_completion_observer_future,
             send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
-            read_workers: ReadWorkerSupervisor::matrix(session),
+            read_workers: ReadWorkerSupervisor::matrix(
+                session,
+                read_session_generation,
+                restored_read_state,
+                read_persistence,
+            ),
             action_tx,
             event_tx,
             msg_tx: tx.clone(),
             msg_rx,
+            control_rx: Some(control_rx),
             navigation_projection_rx,
             last_navigation_projection_generation: 0,
             terminal_ingress: terminal_ingress.clone(),
@@ -2335,6 +2677,7 @@ impl TimelineManagerActor {
         executor::spawn(actor.run());
         TimelineManagerHandle {
             tx,
+            control_tx,
             #[cfg(test)]
             terminal_ingress,
         }
@@ -2470,6 +2813,20 @@ impl TimelineManagerActor {
         loop {
             let msg = tokio::select! {
                 biased;
+                control = async {
+                    match self.control_rx.as_mut() {
+                        Some(receiver) => receiver.recv().await,
+                        None => futures_util::future::pending().await,
+                    }
+                } => {
+                    match control {
+                        Some(TimelineManagerControl::Shutdown { acknowledged }) => {
+                            shutdown_acknowledgement = Some(acknowledged);
+                        }
+                        None => {}
+                    }
+                    break;
+                }
                 projection = receive_navigation_projection(
                     &mut self.navigation_projection_rx
                 ) => {
@@ -2487,6 +2844,13 @@ impl TimelineManagerActor {
                     if !self.read_workers.tasks.is_empty() => {
                     if let Some(completion) = completion {
                         self.handle_read_worker_completion(completion).await;
+                    }
+                    continue;
+                }
+                retry = self.read_workers.retry_tasks.next(),
+                    if !self.read_workers.retry_tasks.is_empty() => {
+                    if let Some(retry) = retry {
+                        self.handle_read_worker_completion(retry).await;
                     }
                     continue;
                 }
@@ -2607,6 +2971,20 @@ impl TimelineManagerActor {
                     )
                     .await;
                 }
+                TimelineMessage::AuthoritativeReadStateObserved {
+                    key,
+                    actor_generation,
+                    read_key,
+                    event_id,
+                } => {
+                    self.handle_authoritative_read_state_observed(
+                        &key,
+                        actor_generation,
+                        read_key,
+                        event_id,
+                    )
+                    .await;
+                }
                 TimelineMessage::Command(command) => {
                     self.handle_command(command).await;
                 }
@@ -2649,6 +3027,7 @@ impl TimelineManagerActor {
         // while the sole global terminal observer remains live. A worker may
         // still bind a durably saved SDK transaction during this phase.
         self.read_workers.cancel_all();
+        self.read_workers.publish_persistence();
         let abandoned_read_waiters = self
             .read_workers
             .waiters
@@ -2708,10 +3087,21 @@ impl TimelineManagerActor {
         if intent.generation > self.last_navigation_projection_generation {
             self.last_navigation_projection_generation = intent.generation;
         }
+        if let Some(key) = intent.cleanup.cancel_pagination.as_ref()
+            && let Some(handle) = self.timelines.get(key)
+        {
+            handle.cancel_pagination_after_commit();
+        }
+        if let Some(key) = intent.cleanup.cancel_link_previews.as_ref()
+            && let Some(handle) = self.timelines.get(key)
+        {
+            handle.cancel_link_previews_after_commit();
+        }
         self.handle_committed_room_selection(
             intent.cause_request_id,
             intent.key,
             intent.replay_existing,
+            false,
         )
         .await;
     }
@@ -2913,6 +3303,7 @@ impl TimelineManagerActor {
         room_list_service: Option<Arc<matrix_sdk_ui::room_list_service::RoomListService>>,
         legacy_committed_from_response_sequence: Option<u64>,
     ) {
+        self.wake_all_desired_reads(ReadRetrySource::Reconnect);
         self.room_subscription_service_epoch =
             self.room_subscription_service_epoch.wrapping_add(1).max(1);
         let service_epoch = self.room_subscription_service_epoch;
@@ -3095,6 +3486,7 @@ impl TimelineManagerActor {
         if service_epoch != self.room_subscription_service_epoch {
             return;
         }
+        self.wake_desired_reads_for_room(checkpoint.room_id(), ReadRetrySource::Checkpoint);
         let matching_keys = self
             .timelines
             .iter()
@@ -3197,27 +3589,12 @@ impl TimelineManagerActor {
                     let Some(handle) = self.timelines.get(&key) else {
                         continue;
                     };
-                    let (acknowledged, acknowledgement) = oneshot::channel();
                     let started = Instant::now();
-                    let deadline = executor::Instant::now() + LIVE_TAIL_CANCELLATION_DEADLINE;
-                    let outcome = executor::timeout_at(deadline, async {
-                        if !handle
-                            .send_control(TimelineActorControl::CancelLiveTailNetwork {
-                                operation_generation,
-                                acknowledged,
-                            })
-                            .await
-                        {
-                            return "actor_closed";
-                        }
-                        if acknowledgement.await.is_ok() {
-                            "acknowledged"
-                        } else {
-                            "actor_closed"
-                        }
-                    })
-                    .await
-                    .unwrap_or("timed_out");
+                    let outcome = if handle.cancel_live_tail_network(operation_generation) {
+                        "admitted"
+                    } else {
+                        "actor_closed"
+                    };
                     record_live_tail_cancellation(
                         outcome,
                         operation_generation,
@@ -3399,7 +3776,8 @@ impl TimelineManagerActor {
             Err(kind) => {
                 self.timeline_actor_generations
                     .restore_failed_activation(&key, activation);
-                self.emit_subscription_failure(request_id, &key, kind).await;
+                self.emit_subscription_failure(request_id, &key, kind, true)
+                    .await;
             }
         }
     }
@@ -3418,6 +3796,7 @@ impl TimelineManagerActor {
         request_id: RequestId,
         key: TimelineKey,
         replay_existing: bool,
+        emit_failure_terminal: bool,
     ) {
         let previous_foreground = self
             .live_tail_refreshes
@@ -3432,7 +3811,7 @@ impl TimelineManagerActor {
             if let Some(handle) = self.timelines.get(&previous) {
                 // Generation invalidation above makes late old-room work inert;
                 // cleanup is best-effort and must never hold the new room.
-                let _ = handle.try_send_control(TimelineActorControl::EndGapRepairDemand);
+                handle.end_gap_repair_demand();
             }
         }
         record_live_tail_state(
@@ -3450,8 +3829,13 @@ impl TimelineManagerActor {
             }
         }
 
-        self.handle_subscribe(request_id, key.clone(), replay_existing)
-            .await;
+        self.handle_subscribe(
+            request_id,
+            key.clone(),
+            replay_existing,
+            emit_failure_terminal,
+        )
+        .await;
         if let Some(handle) = self.timelines.get(&key) {
             let deadline = executor::Instant::now() + LIVE_TAIL_CANCELLATION_DEADLINE;
             let _ = executor::timeout_at(
@@ -3501,7 +3885,7 @@ impl TimelineManagerActor {
         match command {
             TimelineCommand::Subscribe { request_id, key } => {
                 trace_timeline_route("manager_received", "subscribe", request_id, &key);
-                self.handle_subscribe(request_id, key, true).await;
+                self.handle_subscribe(request_id, key, true, true).await;
             }
             TimelineCommand::EnsureSubscribed {
                 request_id,
@@ -3510,10 +3894,10 @@ impl TimelineManagerActor {
             } => {
                 trace_timeline_route("manager_received", "ensure_subscribed", request_id, &key);
                 if matches!(key.kind, TimelineKind::Room { .. }) {
-                    self.handle_committed_room_selection(request_id, key, replay_existing)
+                    self.handle_committed_room_selection(request_id, key, replay_existing, true)
                         .await;
                 } else {
-                    self.handle_subscribe(request_id, key, replay_existing)
+                    self.handle_subscribe(request_id, key, replay_existing, true)
                         .await;
                 }
             }
@@ -4305,6 +4689,7 @@ impl TimelineManagerActor {
         request_id: RequestId,
         key: TimelineKey,
         replay_existing: bool,
+        emit_failure_terminal: bool,
     ) {
         let trace = |stage: &str| {
             record_subscribe_stage(stage, None);
@@ -4315,8 +4700,13 @@ impl TimelineManagerActor {
         #[cfg(not(test))]
         let session_missing = self.session.is_none();
         if session_missing {
-            self.emit_subscription_failure(request_id, &key, TimelineFailureKind::NotSubscribed)
-                .await;
+            self.emit_subscription_failure(
+                request_id,
+                &key,
+                TimelineFailureKind::NotSubscribed,
+                emit_failure_terminal,
+            )
+            .await;
             return;
         };
 
@@ -4386,7 +4776,8 @@ impl TimelineManagerActor {
             Err(kind) => {
                 self.timeline_actor_generations
                     .restore_failed_activation(&key, activation);
-                self.emit_subscription_failure(request_id, &key, kind).await;
+                self.emit_subscription_failure(request_id, &key, kind, emit_failure_terminal)
+                    .await;
             }
         }
     }
@@ -4559,6 +4950,7 @@ impl TimelineManagerActor {
             target,
             waiter,
         );
+        record_read_admission(&read_key, admission.diagnostic());
         match admission.status() {
             ReadAdmissionStatus::Accepted | ReadAdmissionStatus::Coalesced => {
                 self.read_workers.waiters.insert(
@@ -4584,10 +4976,15 @@ impl TimelineManagerActor {
         if let Some(superseded) = admission.superseded_operation() {
             self.read_workers.cancel(superseded);
         }
+        self.read_workers.publish_persistence();
         self.wake_read_operation(&read_key);
     }
 
     fn wake_read_operation(&mut self, key: &ReadStateKey) {
+        if self.read_workers.reconciliation_pending(key) {
+            self.read_workers.schedule_retry(key);
+            return;
+        }
         match self.read_workers.state.wake(key) {
             ReadWakeResult::Start(operation) => {
                 if !self.read_workers.spawn_network(operation.clone()) {
@@ -4634,9 +5031,165 @@ impl TimelineManagerActor {
         }
     }
 
+    fn wake_all_desired_reads(&mut self, source: ReadRetrySource) {
+        for key in self.read_workers.desired_keys() {
+            record_read_retry(
+                &key,
+                source,
+                self.read_workers.state.candidate_count(&key),
+                self.read_workers.state.waiter_count(&key),
+            );
+            if self.read_workers.reconciliation_pending(&key) {
+                self.read_workers.schedule_retry(&key);
+                continue;
+            }
+            self.read_workers.invalidate_retry(&key);
+            self.wake_read_operation(&key);
+        }
+    }
+
+    fn wake_desired_reads_for_room(&mut self, room_id: &str, source: ReadRetrySource) {
+        let keys = self
+            .read_workers
+            .desired_keys()
+            .into_iter()
+            .filter(|key| read_state_room_id(key) == room_id)
+            .collect::<Vec<_>>();
+        for key in keys {
+            record_read_retry(
+                &key,
+                source,
+                self.read_workers.state.candidate_count(&key),
+                self.read_workers.state.waiter_count(&key),
+            );
+            if self.read_workers.reconciliation_pending(&key) {
+                self.read_workers.schedule_retry(&key);
+                continue;
+            }
+            self.read_workers.invalidate_retry(&key);
+            self.wake_read_operation(&key);
+        }
+    }
+
+    async fn handle_authoritative_read_state_observed(
+        &mut self,
+        timeline_key: &TimelineKey,
+        actor_generation: u64,
+        read_key: ReadStateKey,
+        event_id: Option<String>,
+    ) {
+        let Some(position_index) = self
+            .timelines
+            .get(timeline_key)
+            .and_then(TimelineActorHandle::read_position_index)
+        else {
+            return;
+        };
+        if position_index.actor_generation() != actor_generation
+            || !timeline_key_matches_read_state_key(timeline_key, &read_key)
+        {
+            return;
+        }
+        let restored_entries = self.read_workers.state.persistence_snapshot();
+        if let Some(entry) = restored_entries
+            .entries()
+            .iter()
+            .find(|entry| entry.key() == &read_key)
+        {
+            for desired_event_id in entry.event_ids() {
+                let Some(position) = position_index.evidence(desired_event_id) else {
+                    continue;
+                };
+                self.read_workers.state.observe_position(
+                    self.read_workers.state.session_generation(),
+                    &read_key,
+                    desired_event_id,
+                    position,
+                );
+            }
+        }
+        let Some(event_id) = event_id else {
+            self.read_workers.finish_reconciliation(&read_key);
+            record_read_retry(
+                &read_key,
+                ReadRetrySource::SyncReconciliation,
+                self.read_workers.state.candidate_count(&read_key),
+                self.read_workers.state.waiter_count(&read_key),
+            );
+            self.read_workers.invalidate_retry(&read_key);
+            self.wake_read_operation(&read_key);
+            return;
+        };
+        let confirmed_position = position_index.evidence(&event_id);
+        let confirmed = confirmed_position
+            .map(|position| ReadTarget::with_position(event_id.clone(), position))
+            .unwrap_or_else(|| ReadTarget::new(event_id));
+        let confirmation = self.read_workers.state.confirm_authoritative(
+            self.read_workers.state.session_generation(),
+            &read_key,
+            confirmed,
+        );
+        if let Some(superseded) = confirmation.superseded_operation() {
+            self.read_workers.cancel(superseded);
+        }
+        self.settle_read_waiters(confirmation.settlements().to_vec())
+            .await;
+        let remaining = self.read_workers.state.candidate_count(&read_key);
+        if remaining == 0 {
+            self.read_workers.finish_reconciliation(&read_key);
+            self.read_workers.reset_retry(&read_key);
+        } else if self.read_workers.reconciliation_pending(&read_key)
+            && (confirmed_position.is_none()
+                || self
+                    .read_workers
+                    .state
+                    .persistence_snapshot()
+                    .entries()
+                    .iter()
+                    .find(|entry| entry.key() == &read_key)
+                    .is_some_and(|entry| {
+                        entry
+                            .event_ids()
+                            .iter()
+                            .any(|event_id| position_index.evidence(event_id).is_none())
+                    }))
+        {
+            // Different targets outside one current canonical position index
+            // cannot be ordered safely. Keep the restored intent pending until
+            // a later projection or receipt update supplies proof.
+        } else {
+            self.read_workers.finish_reconciliation(&read_key);
+            record_read_retry(
+                &read_key,
+                ReadRetrySource::AuthoritativeReceipt,
+                remaining,
+                self.read_workers.state.waiter_count(&read_key),
+            );
+            self.read_workers.invalidate_retry(&read_key);
+            self.wake_read_operation(&read_key);
+        }
+        self.read_workers.publish_persistence();
+    }
+
     async fn handle_read_worker_completion(&mut self, completion: ReadWorkerCompletion) {
         self.read_workers.finish(&completion);
         match completion {
+            ReadWorkerCompletion::RetryWake {
+                key,
+                generation,
+                cancelled,
+            } => {
+                if !cancelled && self.read_workers.accept_retry_wake(&key, generation) {
+                    self.read_workers.finish_reconciliation(&key);
+                    record_read_retry(
+                        &key,
+                        ReadRetrySource::Backoff,
+                        self.read_workers.state.candidate_count(&key),
+                        self.read_workers.state.waiter_count(&key),
+                    );
+                    self.wake_read_operation(&key);
+                }
+            }
             ReadWorkerCompletion::Cancelled { operation } => {
                 self.settle_read_operation(operation, ReadNetworkOutcome::Failed)
                     .await;
@@ -4719,11 +5272,20 @@ impl TimelineManagerActor {
     }
 
     fn read_timeline_key_for_operation(&self, operation: &ReadOperation) -> Option<TimelineKey> {
-        self.read_workers.waiters.values().find_map(|waiter| {
-            (waiter.event_id == operation.target().event_id()
-                && read_state_key_for_command(&waiter.key, waiter.kind) == *operation.key())
-            .then(|| waiter.key.clone())
-        })
+        self.read_workers
+            .waiters
+            .values()
+            .find_map(|waiter| {
+                (waiter.event_id == operation.target().event_id()
+                    && read_state_key_for_command(&waiter.key, waiter.kind) == *operation.key())
+                .then(|| waiter.key.clone())
+            })
+            .or_else(|| {
+                self.timelines
+                    .keys()
+                    .find(|key| timeline_key_matches_read_state_key(key, operation.key()))
+                    .cloned()
+            })
     }
 
     async fn settle_read_operation(
@@ -4732,12 +5294,33 @@ impl TimelineManagerActor {
         outcome: ReadNetworkOutcome,
     ) {
         let read_key = operation.key().clone();
-        let settlements = self
+        let completion = self
             .read_workers
             .state
-            .complete(&read_key, operation.fence(), outcome)
-            .settlements()
-            .to_vec();
+            .complete(&read_key, operation.fence(), outcome);
+        record_read_completion(&read_key, completion.diagnostic());
+        let disposition = completion.disposition();
+        let settlements = completion.settlements().to_vec();
+        self.settle_read_waiters(settlements).await;
+        match disposition {
+            ReadCompletionDisposition::Succeeded => {
+                self.read_workers.reset_retry(&read_key);
+                self.wake_read_operation(&read_key);
+            }
+            ReadCompletionDisposition::Failed | ReadCompletionDisposition::TimedOut => {
+                self.read_workers.schedule_retry(&read_key);
+            }
+            ReadCompletionDisposition::StaleDiscarded => {}
+        }
+        if disposition != ReadCompletionDisposition::StaleDiscarded {
+            self.read_workers.publish_persistence();
+        }
+    }
+
+    async fn settle_read_waiters(
+        &mut self,
+        settlements: Vec<crate::read_state::ReadWaiterSettlement>,
+    ) {
         for settlement in settlements {
             let Some(waiter) = self.read_workers.waiters.remove(&settlement.waiter()) else {
                 continue;
@@ -4788,9 +5371,6 @@ impl TimelineManagerActor {
                 }
             }
         }
-        if outcome == ReadNetworkOutcome::Succeeded {
-            self.wake_read_operation(&read_key);
-        }
     }
 
     async fn route_to_actor_or_fail(
@@ -4830,11 +5410,18 @@ impl TimelineManagerActor {
         request_id: RequestId,
         key: &TimelineKey,
         kind: TimelineFailureKind,
+        emit_failure_terminal: bool,
     ) {
         if let Some(action) = timeline_subscription_failed_action(key) {
-            let _ = self.action_tx.send(vec![action]).await;
+            if emit_failure_terminal {
+                let _ = self.action_tx.send(vec![action]).await;
+            } else {
+                let _ = self.action_tx.try_send(vec![action]);
+            }
         }
-        self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
+        if emit_failure_terminal {
+            self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
+        }
     }
 
     async fn emit_timeline_subscribed_action(&mut self, key: &TimelineKey) {
@@ -4862,6 +5449,153 @@ impl TimelineManagerActor {
     }
 }
 
+fn read_state_kind_token(key: &ReadStateKey) -> &'static str {
+    match key {
+        ReadStateKey::PublicUnthreaded { .. } => "public_unthreaded",
+        ReadStateKey::ThreadRead { .. } => "thread",
+        ReadStateKey::FullyReadAndPrivateUnthreaded { .. } => "fully_read_private",
+    }
+}
+
+fn record_read_admission(key: &ReadStateKey, diagnostic: ReadAdmissionDiagnostic) {
+    let (outcome, candidate_count, waiter_count, superseded_operation_count) = match diagnostic {
+        ReadAdmissionDiagnostic::Accepted {
+            candidate_count,
+            waiter_count,
+            superseded_operation_count,
+        } => (
+            "accepted",
+            candidate_count,
+            waiter_count,
+            superseded_operation_count,
+        ),
+        ReadAdmissionDiagnostic::Coalesced {
+            candidate_count,
+            waiter_count,
+            superseded_operation_count,
+        } => (
+            "coalesced",
+            candidate_count,
+            waiter_count,
+            superseded_operation_count,
+        ),
+        ReadAdmissionDiagnostic::Rejected {
+            candidate_count,
+            waiter_count,
+            ..
+        } => ("rejected", candidate_count, waiter_count, 0),
+    };
+    record_read_state_diagnostic(
+        "admission",
+        key,
+        outcome,
+        candidate_count,
+        waiter_count,
+        superseded_operation_count,
+        None,
+    );
+}
+
+fn record_read_completion(key: &ReadStateKey, diagnostic: ReadCompletionDiagnostic) {
+    let (outcome, settled, candidates, waiters) = match diagnostic {
+        ReadCompletionDiagnostic::Succeeded {
+            settled_waiter_count,
+            remaining_candidate_count,
+            remaining_waiter_count,
+        } => (
+            "succeeded",
+            settled_waiter_count,
+            remaining_candidate_count,
+            remaining_waiter_count,
+        ),
+        ReadCompletionDiagnostic::Failed {
+            settled_waiter_count,
+            remaining_candidate_count,
+            remaining_waiter_count,
+        } => (
+            "failed",
+            settled_waiter_count,
+            remaining_candidate_count,
+            remaining_waiter_count,
+        ),
+        ReadCompletionDiagnostic::TimedOut {
+            settled_waiter_count,
+            remaining_candidate_count,
+            remaining_waiter_count,
+        } => (
+            "timed_out",
+            settled_waiter_count,
+            remaining_candidate_count,
+            remaining_waiter_count,
+        ),
+        ReadCompletionDiagnostic::StaleDiscarded {
+            remaining_candidate_count,
+            remaining_waiter_count,
+        } => (
+            "stale_discarded",
+            0,
+            remaining_candidate_count,
+            remaining_waiter_count,
+        ),
+    };
+    record_read_state_diagnostic(
+        "completion",
+        key,
+        outcome,
+        candidates,
+        waiters,
+        settled,
+        None,
+    );
+}
+
+fn record_read_retry(
+    key: &ReadStateKey,
+    source: ReadRetrySource,
+    candidate_count: usize,
+    waiter_count: usize,
+) {
+    record_read_state_diagnostic(
+        "retry_wake",
+        key,
+        "woken",
+        candidate_count,
+        waiter_count,
+        0,
+        Some(source.token()),
+    );
+}
+
+fn record_read_state_diagnostic(
+    stage: &'static str,
+    key: &ReadStateKey,
+    outcome: &'static str,
+    candidate_count: usize,
+    waiter_count: usize,
+    related_count: usize,
+    source: Option<&'static str>,
+) {
+    let mut event = DiagnosticEvent::new(DiagnosticLevel::Debug, "core.read_state", stage)
+        .field(DiagnosticField::token("kind", read_state_kind_token(key)))
+        .field(DiagnosticField::token("outcome", outcome))
+        .field(DiagnosticField::count(
+            "candidate_count",
+            candidate_count.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "waiter_count",
+            waiter_count.try_into().unwrap_or(u64::MAX),
+        ))
+        .field(DiagnosticField::count(
+            "related_count",
+            related_count.try_into().unwrap_or(u64::MAX),
+        ));
+    if let Some(source) = source {
+        event = event.field(DiagnosticField::token("source", source));
+    }
+    koushi_diagnostics::record(event);
+}
+
 fn read_state_key_for_command(key: &TimelineKey, kind: ReadCommandKind) -> ReadStateKey {
     match (kind, &key.kind) {
         (
@@ -4887,6 +5621,40 @@ fn read_state_key_for_command(key: &TimelineKey, kind: ReadCommandKind) -> ReadS
                 | TimelineKind::Focused { room_id, .. } => room_id.clone(),
             },
         },
+    }
+}
+
+fn read_state_room_id(key: &ReadStateKey) -> &str {
+    match key {
+        ReadStateKey::PublicUnthreaded { room_id }
+        | ReadStateKey::ThreadRead { room_id, .. }
+        | ReadStateKey::FullyReadAndPrivateUnthreaded { room_id } => room_id,
+    }
+}
+
+fn timeline_key_matches_read_state_key(key: &TimelineKey, read_key: &ReadStateKey) -> bool {
+    match (read_key, &key.kind) {
+        (
+            ReadStateKey::PublicUnthreaded { room_id: desired },
+            TimelineKind::Room { room_id } | TimelineKind::Focused { room_id, .. },
+        ) => room_id == desired,
+        (
+            ReadStateKey::ThreadRead {
+                room_id: desired_room,
+                root_event_id: desired_root,
+            },
+            TimelineKind::Thread {
+                room_id,
+                root_event_id,
+            },
+        ) => room_id == desired_room && root_event_id == desired_root,
+        (
+            ReadStateKey::FullyReadAndPrivateUnthreaded { room_id: desired },
+            TimelineKind::Room { room_id }
+            | TimelineKind::Thread { room_id, .. }
+            | TimelineKind::Focused { room_id, .. },
+        ) => room_id == desired,
+        _ => false,
     }
 }
 
@@ -5479,6 +6247,53 @@ enum TimelineActorControl {
     },
     BeginGapRepairDemand,
     EndGapRepairDemand,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct TimelineActorCleanupState {
+    end_gap_demand_serial: u64,
+    cancel_network_serial: u64,
+    cancel_network_operation_generation: u64,
+    cancel_pagination_serial: u64,
+    cancel_link_previews_serial: u64,
+}
+
+#[derive(Clone)]
+struct TimelineActorCleanupIngress {
+    tx: watch::Sender<TimelineActorCleanupState>,
+}
+
+impl TimelineActorCleanupIngress {
+    fn channel() -> (Self, watch::Receiver<TimelineActorCleanupState>) {
+        let (tx, rx) = watch::channel(TimelineActorCleanupState::default());
+        (Self { tx }, rx)
+    }
+
+    fn end_gap_repair_demand(&self) {
+        self.tx.send_modify(|state| {
+            state.end_gap_demand_serial = state.end_gap_demand_serial.wrapping_add(1).max(1);
+        });
+    }
+
+    fn cancel_live_tail_network(&self, operation_generation: u64) {
+        self.tx.send_modify(|state| {
+            state.cancel_network_serial = state.cancel_network_serial.wrapping_add(1).max(1);
+            state.cancel_network_operation_generation = operation_generation;
+        });
+    }
+
+    fn cancel_pagination(&self) {
+        self.tx.send_modify(|state| {
+            state.cancel_pagination_serial = state.cancel_pagination_serial.wrapping_add(1).max(1);
+        });
+    }
+
+    fn cancel_link_previews(&self) {
+        self.tx.send_modify(|state| {
+            state.cancel_link_previews_serial =
+                state.cancel_link_previews_serial.wrapping_add(1).max(1);
+        });
+    }
 }
 
 impl From<TimelineActorControl> for TimelineActorMessage {
@@ -8234,6 +9049,10 @@ impl TimelinePositionIndex {
                 rank,
             })
     }
+
+    fn actor_generation(&self) -> u64 {
+        (self.generation >> 64) as u64
+    }
 }
 
 impl TimelineActorHandle {
@@ -8255,10 +9074,58 @@ impl TimelineActorHandle {
         }
     }
 
+    fn end_gap_repair_demand(&self) {
+        if let Some(cleanup) = self.cleanup_ingress() {
+            cleanup.end_gap_repair_demand();
+        } else {
+            let _ = self.try_send_control(TimelineActorControl::EndGapRepairDemand);
+        }
+    }
+
+    fn cancel_live_tail_network(&self, operation_generation: u64) -> bool {
+        if let Some(cleanup) = self.cleanup_ingress() {
+            cleanup.cancel_live_tail_network(operation_generation);
+            true
+        } else {
+            let (acknowledged, _acknowledgement) = oneshot::channel();
+            self.try_send_control(TimelineActorControl::CancelLiveTailNetwork {
+                operation_generation,
+                acknowledged,
+            })
+        }
+    }
+
+    fn cancel_pagination_after_commit(&self) {
+        if let Some(cleanup) = self.cleanup_ingress() {
+            cleanup.cancel_pagination();
+        }
+    }
+
+    fn cancel_link_previews_after_commit(&self) {
+        if let Some(cleanup) = self.cleanup_ingress() {
+            cleanup.cancel_link_previews();
+        }
+    }
+
+    fn cleanup_ingress(&self) -> Option<&TimelineActorCleanupIngress> {
+        match self.enqueue_context.as_ref() {
+            Some(TimelineSendEnqueueContext::Matrix(context)) => Some(&context.cleanup),
+            #[cfg(test)]
+            Some(TimelineSendEnqueueContext::Synthetic { .. }) => None,
+            None => None,
+        }
+    }
+
     fn read_position(&self, event_id: &str) -> Option<crate::read_state::ReadPositionEvidence> {
         self.position_rx
             .as_ref()
             .and_then(|receiver| receiver.borrow().evidence(event_id))
+    }
+
+    fn read_position_index(&self) -> Option<Arc<TimelinePositionIndex>> {
+        self.position_rx
+            .as_ref()
+            .map(|receiver| Arc::clone(&receiver.borrow()))
     }
 
     async fn stop(mut self) {
@@ -11019,8 +11886,12 @@ mod timeline_gap_repair_tracker_tests {
         let (action_tx, _action_rx) = mpsc::channel(64);
         let (event_tx, mut event_rx) = broadcast::channel(128);
         let (search_index_tx, _search_index_rx) = mpsc::channel(16);
+        let (read_persistence, _read_persistence_rx) = ReadPersistenceIngress::channel();
         let manager = TimelineManagerActor::spawn_with_session(
             session.clone(),
+            1,
+            ReadPersistenceSnapshot::default(),
+            read_persistence,
             action_tx,
             event_tx,
             search_index_tx,
@@ -12651,6 +13522,11 @@ struct TimelineActor {
     msg_tx: mpsc::Sender<TimelineActorMessage>,
     msg_rx: mpsc::Receiver<TimelineActorMessage>,
     control_rx: mpsc::Receiver<TimelineActorControl>,
+    cleanup_rx: watch::Receiver<TimelineActorCleanupState>,
+    last_end_gap_demand_cleanup_serial: u64,
+    last_cancel_network_cleanup_serial: u64,
+    last_cancel_pagination_cleanup_serial: u64,
+    last_cancel_link_previews_cleanup_serial: u64,
     position_tx: watch::Sender<Arc<TimelinePositionIndex>>,
     relay_control_tx: mpsc::Sender<TimelineRelayControl>,
     relay_control_rx: mpsc::Receiver<TimelineRelayControl>,
@@ -13308,22 +14184,17 @@ impl TimelineActor {
             }
         }
         let own_user_id = session.client().user_id().map(|user_id| user_id.to_owned());
-        let mut initial_thread_receipt_changes =
-            if matches!(key.kind, TimelineKind::Thread { .. }) && own_user_id.is_some() {
-                Some(timeline.subscribe_own_user_read_receipts_changed().await)
-            } else {
-                None
-            };
-        let initial_thread_receipt_event_id = if matches!(key.kind, TimelineKind::Thread { .. }) {
-            match own_user_id.as_deref() {
-                Some(own_user_id) => timeline
-                    .latest_user_read_receipt_timeline_event_id(own_user_id)
-                    .await
-                    .map(|event_id| event_id.to_string()),
-                None => None,
-            }
+        let mut initial_read_receipt_changes = if own_user_id.is_some() {
+            Some(timeline.subscribe_own_user_read_receipts_changed().await)
         } else {
             None
+        };
+        let initial_read_receipt_event_id = match own_user_id.as_deref() {
+            Some(own_user_id) => timeline
+                .latest_user_read_receipt_timeline_event_id(own_user_id)
+                .await
+                .map(|event_id| event_id.to_string()),
+            None => None,
         };
         let room_id = key.room_id().to_owned();
 
@@ -13358,11 +14229,12 @@ impl TimelineActor {
         let (actor_tx, actor_rx) = mpsc::channel(256);
         let (actor_control_tx, actor_control_rx) =
             mpsc::channel(TIMELINE_ACTOR_CONTROL_QUEUE_CAPACITY);
+        let (actor_cleanup_tx, actor_cleanup_rx) = TimelineActorCleanupIngress::channel();
         let (relay_control_tx, relay_control_rx) = mpsc::channel(1);
         let (relay_data_tx, relay_data_rx) = mpsc::channel(256);
         let mut send_statuses = HashMap::new();
         let mut send_handles = HashMap::new();
-        if let Some(mut receipt_changes) = initial_thread_receipt_changes.take() {
+        if let Some(mut receipt_changes) = initial_read_receipt_changes.take() {
             use futures_util::StreamExt;
             let receipt_tx = actor_tx.clone();
             auxiliary_tasks.push(executor::spawn(async move {
@@ -13474,7 +14346,7 @@ impl TimelineActor {
             &key,
             &navigation_items,
             own_user_id.as_ref().map(|user_id| user_id.as_str()),
-            initial_thread_receipt_event_id,
+            initial_read_receipt_event_id,
         );
         if thread_attention.counts != ThreadAttentionCounters::default() {
             if let Some(action) = thread_attention_action(thread_attention.counts, &key) {
@@ -13490,6 +14362,7 @@ impl TimelineActor {
                 key: key.clone(),
                 timeline: Arc::clone(&timeline),
                 session: Arc::clone(&session),
+                cleanup: actor_cleanup_tx,
             });
         let (position_tx, position_rx) = watch::channel(Arc::new(
             TimelinePositionIndex::from_items(actor_generation, generation, &navigation_items),
@@ -13503,6 +14376,11 @@ impl TimelineActor {
             msg_tx: actor_tx.clone(),
             msg_rx: actor_rx,
             control_rx: actor_control_rx,
+            cleanup_rx: actor_cleanup_rx,
+            last_end_gap_demand_cleanup_serial: 0,
+            last_cancel_network_cleanup_serial: 0,
+            last_cancel_pagination_cleanup_serial: 0,
+            last_cancel_link_previews_cleanup_serial: 0,
             position_tx,
             relay_control_tx,
             relay_control_rx,
@@ -13592,6 +14470,10 @@ impl TimelineActor {
     }
 
     async fn run(mut self) {
+        // This must run only after `spawn` has returned the handle to the
+        // manager. Publishing through the manager mailbox while construction
+        // is still awaited can self-deadlock when that bounded mailbox is full.
+        self.publish_authoritative_read_state().await;
         let initial_trigger = if self.gap_repair.has_live_edge_target() {
             TimelineGapRepairTrigger::LiveEdge
         } else {
@@ -13601,6 +14483,13 @@ impl TimelineActor {
         loop {
             tokio::select! {
                 biased;
+                cleanup = self.cleanup_rx.changed() => {
+                    if cleanup.is_err() {
+                        break;
+                    }
+                    let cleanup = *self.cleanup_rx.borrow_and_update();
+                    self.handle_cleanup(cleanup);
+                }
                 control = self.control_rx.recv() => {
                     let Some(control) = control else { break };
                     self.handle_msg(control.into()).await;
@@ -13651,6 +14540,34 @@ impl TimelineActor {
                 self.request_timeline_gap_inspection(TimelineGapRepairTrigger::LiveTailSnapshot)
                     .await;
             }
+        }
+    }
+
+    fn handle_cleanup(&mut self, cleanup: TimelineActorCleanupState) {
+        if cleanup.end_gap_demand_serial != self.last_end_gap_demand_cleanup_serial {
+            self.last_end_gap_demand_cleanup_serial = cleanup.end_gap_demand_serial;
+            self.foreground_gap_demand_active = false;
+            self.gap_repair.pending_trigger = None;
+        }
+        if cleanup.cancel_network_serial != self.last_cancel_network_cleanup_serial {
+            self.last_cancel_network_cleanup_serial = cleanup.cancel_network_serial;
+            if let Some((current_generation, cancellation, _)) = self.live_tail_refresh.as_ref()
+                && *current_generation == cleanup.cancel_network_operation_generation
+            {
+                cancellation.cancel();
+            }
+        }
+        let cleanup_request_id = RequestId {
+            connection_id: RuntimeConnectionId(0),
+            sequence: 0,
+        };
+        if cleanup.cancel_pagination_serial != self.last_cancel_pagination_cleanup_serial {
+            self.last_cancel_pagination_cleanup_serial = cleanup.cancel_pagination_serial;
+            self.handle_cancel_pagination(cleanup_request_id);
+        }
+        if cleanup.cancel_link_previews_serial != self.last_cancel_link_previews_cleanup_serial {
+            self.last_cancel_link_previews_cleanup_serial = cleanup.cancel_link_previews_serial;
+            self.handle_cancel_link_previews(cleanup_request_id);
         }
     }
 
@@ -13896,6 +14813,7 @@ impl TimelineActor {
                         self.gap_repair.batches_processed,
                     );
                     self.start_pending_timeline_gap_inspection().await;
+                    self.publish_authoritative_read_state().await;
                 }
             }
             TimelineActorMessage::InspectTimelineGaps { trigger } => {
@@ -16938,10 +17856,59 @@ impl TimelineActor {
         };
         if let Some(action) =
             self.thread_attention
-                .acknowledge(&self.key, &self.navigation_items, event_id)
+                .acknowledge(&self.key, &self.navigation_items, event_id.clone())
         {
             let _ = self.emit_action_reliable(action).await;
         }
+        self.publish_authoritative_read_observation(
+            read_state_key_for_command(&self.key, ReadCommandKind::Receipt),
+            Some(event_id),
+        )
+        .await;
+    }
+
+    async fn publish_authoritative_read_state(&self) {
+        let receipt_event_id = if let Some(own_user_id) = self.own_user_id.as_deref() {
+            self.timeline
+                .latest_user_read_receipt_timeline_event_id(own_user_id)
+                .await
+                .map(|event_id| event_id.to_string())
+        } else {
+            None
+        };
+        self.publish_authoritative_read_observation(
+            read_state_key_for_command(&self.key, ReadCommandKind::Receipt),
+            receipt_event_id,
+        )
+        .await;
+        let fully_read_event_id = matrix_sdk::ruma::RoomId::parse(self.key.room_id())
+            .ok()
+            .and_then(|room_id| self.session.client().get_room(&room_id))
+            .and_then(|room| {
+                room.fully_read_event_id()
+                    .map(|event_id| event_id.to_string())
+            });
+        self.publish_authoritative_read_observation(
+            read_state_key_for_command(&self.key, ReadCommandKind::FullyRead),
+            fully_read_event_id,
+        )
+        .await;
+    }
+
+    async fn publish_authoritative_read_observation(
+        &self,
+        read_key: ReadStateKey,
+        event_id: Option<String>,
+    ) {
+        let _ = self
+            .manager_tx
+            .send(TimelineMessage::AuthoritativeReadStateObserved {
+                key: self.key.clone(),
+                actor_generation: self.actor_generation,
+                read_key,
+                event_id,
+            })
+            .await;
     }
 
     async fn handle_set_typing(&mut self, request_id: RequestId, is_typing: bool) {
@@ -26710,6 +27677,7 @@ mod tests {
             event_tx,
             msg_tx,
             msg_rx,
+            control_rx: None,
             navigation_projection_rx: None,
             last_navigation_projection_generation: 0,
             terminal_ingress,
@@ -28157,6 +29125,7 @@ mod tests {
             event_tx,
             msg_tx,
             msg_rx,
+            control_rx: None,
             navigation_projection_rx: None,
             last_navigation_projection_generation: 0,
             terminal_ingress,
@@ -28874,6 +29843,7 @@ mod tests {
             event_tx,
             msg_tx,
             msg_rx,
+            control_rx: None,
             navigation_projection_rx: None,
             last_navigation_projection_generation: 0,
             terminal_ingress,
@@ -28906,6 +29876,306 @@ mod tests {
             Poll::Ready(())
         })
         .await;
+    }
+
+    fn restored_public_read_snapshot(room_id: &str, event_id: &str) -> ReadPersistenceSnapshot {
+        let mut engine = ReadStateEngine::new(7);
+        engine.admit(
+            7,
+            ReadStateKey::PublicUnthreaded {
+                room_id: room_id.to_owned(),
+            },
+            ReadTarget::new(event_id.to_owned()),
+            ReadWaiterId::new(1),
+        );
+        engine.persistence_snapshot()
+    }
+
+    #[tokio::test]
+    async fn restored_read_waits_for_authoritative_reconciliation_before_retrying() {
+        let key = room_key();
+        let read_key = ReadStateKey::PublicUnthreaded {
+            room_id: key.room_id().to_owned(),
+        };
+        let (ordinary_tx, _ordinary_rx) = mpsc::channel(1);
+        let (control_tx, _control_rx) = mpsc::channel(1);
+        let (_position_tx, position_rx) = watch::channel(Arc::new(TimelinePositionIndex {
+            generation: u128::from(7_u64) << 64,
+            ranks: HashMap::from([("$desired:test".to_owned(), 5)]),
+        }));
+        let actor_handle = TimelineActorHandle {
+            tx: ordinary_tx,
+            control_tx: Some(control_tx),
+            position_rx: Some(position_rx),
+            task: None,
+            auxiliary_tasks: Vec::new(),
+            subscription_generation: None,
+            enqueue_context: None,
+        };
+        let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), actor_handle)]));
+        let (read_network_tx, mut read_network_rx) = mpsc::unbounded_channel();
+        let (persistence, mut persistence_rx) = ReadPersistenceIngress::channel();
+        manager.read_workers = ReadWorkerSupervisor::synthetic_restored(
+            read_network_tx,
+            restored_public_read_snapshot(key.room_id(), "$desired:test"),
+            persistence,
+        );
+
+        manager.wake_all_desired_reads(ReadRetrySource::Reconnect);
+        assert!(manager.read_workers.tasks.is_empty());
+        assert!(read_network_rx.try_recv().is_err());
+
+        manager
+            .handle_authoritative_read_state_observed(&key, 7, read_key, None)
+            .await;
+        let responder = async {
+            let retry = read_network_rx
+                .recv()
+                .await
+                .expect("server-behind reconciliation starts retry");
+            assert_eq!(retry.operation.target().event_id(), "$desired:test");
+            retry.response.send(Ok(())).expect("retry succeeds");
+        };
+        let (completion, ()) = tokio::join!(manager.read_workers.tasks.next(), responder);
+        manager
+            .handle_read_worker_completion(completion.expect("retry completion"))
+            .await;
+        persistence_rx
+            .changed()
+            .await
+            .expect("successful retry publishes outbox removal");
+        assert!(
+            persistence_rx
+                .borrow_and_update()
+                .as_ref()
+                .expect("persistence request")
+                .snapshot()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_preserves_a_bounded_reconciliation_wake_for_new_read_waiters() {
+        let key = room_key();
+        let read_key = ReadStateKey::PublicUnthreaded {
+            room_id: key.room_id().to_owned(),
+        };
+        let (ordinary_tx, _ordinary_rx) = mpsc::channel(1);
+        let (control_tx, _control_rx) = mpsc::channel(1);
+        let (_position_tx, position_rx) = watch::channel(Arc::new(TimelinePositionIndex {
+            generation: u128::from(7_u64) << 64,
+            ranks: HashMap::new(),
+        }));
+        let actor_handle = TimelineActorHandle {
+            tx: ordinary_tx,
+            control_tx: Some(control_tx),
+            position_rx: Some(position_rx),
+            task: None,
+            auxiliary_tasks: Vec::new(),
+            subscription_generation: None,
+            enqueue_context: None,
+        };
+        let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), actor_handle)]));
+        let (read_network_tx, mut read_network_rx) = mpsc::unbounded_channel();
+        let (persistence, _persistence_rx) = ReadPersistenceIngress::channel();
+        manager.read_workers = ReadWorkerSupervisor::synthetic_restored(
+            read_network_tx,
+            restored_public_read_snapshot(key.room_id(), "$restored:test"),
+            persistence,
+        );
+
+        manager.wake_all_desired_reads(ReadRetrySource::Reconnect);
+        manager.route_read_command(
+            fake_rid(29_601),
+            key,
+            "$new-waiter:test".to_owned(),
+            ReadCommandKind::Receipt,
+        );
+
+        assert!(
+            manager
+                .read_workers
+                .scheduled_retries
+                .contains_key(&read_key),
+            "reconnect must not cancel the only bounded reconciliation wake"
+        );
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let completion = manager
+            .read_workers
+            .retry_tasks
+            .next()
+            .await
+            .expect("bounded reconciliation wake");
+        manager.handle_read_worker_completion(completion).await;
+        let responder = async {
+            let request = read_network_rx
+                .recv()
+                .await
+                .expect("new waiter receives a network attempt after the bound");
+            assert_eq!(request.operation.target().event_id(), "$new-waiter:test");
+            request.response.send(Err(())).expect("settle retry");
+        };
+        let (completion, ()) = tokio::join!(manager.read_workers.tasks.next(), responder);
+        manager
+            .handle_read_worker_completion(completion.expect("network completion"))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn invalidating_retry_actively_finishes_the_long_lived_sleeper() {
+        let (network_tx, _network_rx) = mpsc::unbounded_channel();
+        let mut supervisor = ReadWorkerSupervisor::synthetic_with_retry(
+            network_tx,
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+        );
+        let key = ReadStateKey::PublicUnthreaded {
+            room_id: "!retry-cancel:example.invalid".to_owned(),
+        };
+        supervisor.schedule_retry(&key);
+        assert_eq!(supervisor.retry_tasks.len(), 1);
+        assert_eq!(supervisor.scheduled_retries.len(), 1);
+
+        supervisor.invalidate_retry(&key);
+
+        assert!(supervisor.scheduled_retries.is_empty());
+        let completion =
+            executor::timeout(Duration::from_millis(25), supervisor.retry_tasks.next())
+                .await
+                .expect("retry invalidation must wake the sleeper promptly")
+                .expect("cancelled retry completion");
+        assert!(matches!(
+            completion,
+            ReadWorkerCompletion::RetryWake {
+                key: observed,
+                cancelled: true,
+                ..
+            } if observed == key
+        ));
+        assert!(
+            supervisor.retry_tasks.is_empty(),
+            "an invalidated retry must not leave a sixty-second task behind"
+        );
+    }
+
+    #[tokio::test]
+    async fn authoritative_server_ahead_clears_restored_read_without_network_retry() {
+        let key = room_key();
+        let read_key = ReadStateKey::PublicUnthreaded {
+            room_id: key.room_id().to_owned(),
+        };
+        let (ordinary_tx, _ordinary_rx) = mpsc::channel(1);
+        let (control_tx, _control_rx) = mpsc::channel(1);
+        let (_position_tx, position_rx) = watch::channel(Arc::new(TimelinePositionIndex {
+            generation: u128::from(7_u64) << 64,
+            ranks: HashMap::from([
+                ("$desired:test".to_owned(), 5),
+                ("$server-ahead:test".to_owned(), 6),
+            ]),
+        }));
+        let actor_handle = TimelineActorHandle {
+            tx: ordinary_tx,
+            control_tx: Some(control_tx),
+            position_rx: Some(position_rx),
+            task: None,
+            auxiliary_tasks: Vec::new(),
+            subscription_generation: None,
+            enqueue_context: None,
+        };
+        let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), actor_handle)]));
+        let (read_network_tx, mut read_network_rx) = mpsc::unbounded_channel();
+        let (persistence, mut persistence_rx) = ReadPersistenceIngress::channel();
+        manager.read_workers = ReadWorkerSupervisor::synthetic_restored(
+            read_network_tx,
+            restored_public_read_snapshot(key.room_id(), "$desired:test"),
+            persistence,
+        );
+
+        manager
+            .handle_authoritative_read_state_observed(
+                &key,
+                7,
+                read_key,
+                Some("$server-ahead:test".to_owned()),
+            )
+            .await;
+
+        assert!(read_network_rx.try_recv().is_err());
+        assert!(manager.read_workers.tasks.is_empty());
+        persistence_rx
+            .changed()
+            .await
+            .expect("server-ahead reconciliation publishes removal");
+        assert!(
+            persistence_rx
+                .borrow_and_update()
+                .as_ref()
+                .expect("persistence request")
+                .snapshot()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn authoritative_reconciliation_keeps_unordered_remaining_candidate_pending() {
+        let key = room_key();
+        let read_key = ReadStateKey::PublicUnthreaded {
+            room_id: key.room_id().to_owned(),
+        };
+        let mut restored = ReadStateEngine::new(7);
+        restored.admit(
+            7,
+            read_key.clone(),
+            ReadTarget::new("$positioned:test".to_owned()),
+            ReadWaiterId::new(1),
+        );
+        restored.admit(
+            7,
+            read_key.clone(),
+            ReadTarget::new("$outside-window:test".to_owned()),
+            ReadWaiterId::new(2),
+        );
+        let (ordinary_tx, _ordinary_rx) = mpsc::channel(1);
+        let (control_tx, _control_rx) = mpsc::channel(1);
+        let (_position_tx, position_rx) = watch::channel(Arc::new(TimelinePositionIndex {
+            generation: u128::from(7_u64) << 64,
+            ranks: HashMap::from([
+                ("$positioned:test".to_owned(), 5),
+                ("$server-ahead:test".to_owned(), 6),
+            ]),
+        }));
+        let actor_handle = TimelineActorHandle {
+            tx: ordinary_tx,
+            control_tx: Some(control_tx),
+            position_rx: Some(position_rx),
+            task: None,
+            auxiliary_tasks: Vec::new(),
+            subscription_generation: None,
+            enqueue_context: None,
+        };
+        let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), actor_handle)]));
+        let (read_network_tx, mut read_network_rx) = mpsc::unbounded_channel();
+        let (persistence, _persistence_rx) = ReadPersistenceIngress::channel();
+        manager.read_workers = ReadWorkerSupervisor::synthetic_restored(
+            read_network_tx,
+            restored.persistence_snapshot(),
+            persistence,
+        );
+
+        manager
+            .handle_authoritative_read_state_observed(
+                &key,
+                7,
+                read_key.clone(),
+                Some("$server-ahead:test".to_owned()),
+            )
+            .await;
+
+        assert_eq!(manager.read_workers.state.candidate_count(&read_key), 1);
+        assert!(manager.read_workers.reconciliation_pending(&read_key));
+        assert!(manager.read_workers.tasks.is_empty());
+        assert!(read_network_rx.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -29413,8 +30683,8 @@ mod tests {
         assert!(read_network_rx.try_recv().is_err());
     }
 
-    #[tokio::test]
-    async fn failed_read_network_settles_waiter_once_without_retrying() {
+    #[tokio::test(start_paused = true)]
+    async fn failed_read_network_settles_waiter_once_then_retries_after_capped_backoff() {
         let key = room_key();
         let request_id = fake_rid(28_492);
         let (event_tx, mut event_rx) = broadcast::channel(4);
@@ -29422,13 +30692,17 @@ mod tests {
             live_tail_test_manager(HashMap::from([(key.clone(), test_timeline_actor_handle())]));
         manager.event_tx = event_tx;
         let (read_network_tx, mut read_network_rx) = mpsc::unbounded_channel();
-        manager.read_workers =
-            ReadWorkerSupervisor::synthetic(read_network_tx, Duration::from_secs(30));
+        manager.read_workers = ReadWorkerSupervisor::synthetic_with_retry(
+            read_network_tx,
+            Duration::from_secs(30),
+            Duration::from_secs(1),
+            Duration::from_secs(4),
+        );
 
         manager
             .handle_command(TimelineCommand::SendReadReceipt {
                 request_id,
-                key,
+                key: key.clone(),
                 event_id: "$event:test".to_owned(),
             })
             .await;
@@ -29454,8 +30728,200 @@ mod tests {
             }) if failed == request_id
         ));
         assert!(event_rx.try_recv().is_err());
-        assert!(manager.read_workers.tasks.is_empty());
         assert!(read_network_rx.try_recv().is_err());
+
+        assert!(
+            manager
+                .read_workers
+                .retry_tasks
+                .next()
+                .now_or_never()
+                .is_none(),
+            "scheduled retry must begin pending"
+        );
+        tokio::time::advance(Duration::from_millis(999)).await;
+        assert!(
+            manager
+                .read_workers
+                .retry_tasks
+                .next()
+                .now_or_never()
+                .is_none(),
+            "retry must not run before the backoff deadline"
+        );
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let retry_wake = manager
+            .read_workers
+            .retry_tasks
+            .next()
+            .await
+            .expect("backoff wake");
+        manager.handle_read_worker_completion(retry_wake).await;
+        let responder = async {
+            let retried = read_network_rx.recv().await.expect("retry network request");
+            assert_eq!(retried.operation.target().event_id(), "$event:test");
+            retried.response.send(Ok(())).expect("retry succeeds");
+        };
+        let (completion, ()) = tokio::join!(manager.read_workers.tasks.next(), responder);
+        manager
+            .handle_read_worker_completion(completion.expect("retry completion"))
+            .await;
+        assert!(
+            event_rx.try_recv().is_err(),
+            "background retry must not emit a second user terminal"
+        );
+        assert!(!manager.read_workers.state.has_candidate(
+            &ReadStateKey::PublicUnthreaded {
+                room_id: key.room_id().to_owned(),
+            },
+            "$event:test",
+        ));
+    }
+
+    #[test]
+    fn read_retry_delay_is_exponential_and_capped() {
+        assert_eq!(
+            read_retry_delay_for_attempt(Duration::from_secs(1), Duration::from_secs(4), 0,),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            read_retry_delay_for_attempt(Duration::from_secs(1), Duration::from_secs(4), 1,),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            read_retry_delay_for_attempt(Duration::from_secs(1), Duration::from_secs(4), 64,),
+            Duration::from_secs(4)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sync_restart_wakes_failed_read_immediately_and_invalidates_backoff() {
+        let key = room_key();
+        let request_id = fake_rid(28_493);
+        let (event_tx, mut event_rx) = broadcast::channel(4);
+        let mut manager =
+            live_tail_test_manager(HashMap::from([(key.clone(), test_timeline_actor_handle())]));
+        manager.event_tx = event_tx;
+        let (read_network_tx, mut read_network_rx) = mpsc::unbounded_channel();
+        manager.read_workers = ReadWorkerSupervisor::synthetic_with_retry(
+            read_network_tx,
+            Duration::from_secs(30),
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+        );
+
+        manager
+            .handle_command(TimelineCommand::SendReadReceipt {
+                request_id,
+                key,
+                event_id: "$event:test".to_owned(),
+            })
+            .await;
+        let responder = async {
+            let first = read_network_rx.recv().await.expect("initial request");
+            first.response.send(Err(())).expect("fail initial request");
+        };
+        let (completion, ()) = tokio::join!(manager.read_workers.tasks.next(), responder);
+        manager
+            .handle_read_worker_completion(completion.expect("initial completion"))
+            .await;
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::OperationFailed {
+                request_id: failed,
+                ..
+            }) if failed == request_id
+        ));
+
+        manager.handle_sync_started(None, None).await;
+        let responder = async {
+            let retry = read_network_rx
+                .recv()
+                .await
+                .expect("sync restart must wake desired read without waiting for backoff");
+            retry.response.send(Ok(())).expect("restart retry succeeds");
+        };
+        let (completion, ()) = tokio::join!(manager.read_workers.tasks.next(), responder);
+        manager
+            .handle_read_worker_completion(completion.expect("restart retry completion"))
+            .await;
+        tokio::time::advance(Duration::from_secs(60)).await;
+        while let Some(completion) = manager.read_workers.tasks.next().now_or_never().flatten() {
+            manager.handle_read_worker_completion(completion).await;
+        }
+        assert!(
+            read_network_rx.try_recv().is_err(),
+            "invalidated backoff must not start a duplicate retry"
+        );
+        assert!(
+            event_rx.try_recv().is_err(),
+            "restart retry must not emit a second user terminal"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn room_subscription_checkpoint_wakes_failed_read_immediately() {
+        let key = room_key();
+        let request_id = fake_rid(28_494);
+        let (event_tx, mut event_rx) = broadcast::channel(4);
+        let mut manager =
+            live_tail_test_manager(HashMap::from([(key.clone(), test_timeline_actor_handle())]));
+        manager.event_tx = event_tx;
+        manager.room_subscription_service_epoch = 9;
+        let (read_network_tx, mut read_network_rx) = mpsc::unbounded_channel();
+        manager.read_workers = ReadWorkerSupervisor::synthetic_with_retry(
+            read_network_tx,
+            Duration::from_secs(30),
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+        );
+
+        manager
+            .handle_command(TimelineCommand::SendReadReceipt {
+                request_id,
+                key: key.clone(),
+                event_id: "$event:test".to_owned(),
+            })
+            .await;
+        let responder = async {
+            let first = read_network_rx.recv().await.expect("initial request");
+            first.response.send(Err(())).expect("fail initial request");
+        };
+        let (completion, ()) = tokio::join!(manager.read_workers.tasks.next(), responder);
+        manager
+            .handle_read_worker_completion(completion.expect("initial completion"))
+            .await;
+        assert!(event_rx.try_recv().is_ok());
+
+        let checkpoint_room_id =
+            matrix_sdk::ruma::RoomId::parse(key.room_id()).expect("synthetic room id");
+        manager
+            .handle_room_subscription_checkpoint(
+                9,
+                MatrixRoomSubscriptionCheckpoint::from_legacy_room_absent_for_testing(
+                    1,
+                    &checkpoint_room_id,
+                ),
+            )
+            .await;
+        let responder = async {
+            let retry = read_network_rx
+                .recv()
+                .await
+                .expect("checkpoint must wake desired read");
+            retry
+                .response
+                .send(Ok(()))
+                .expect("checkpoint retry succeeds");
+        };
+        let (completion, ()) = tokio::join!(manager.read_workers.tasks.next(), responder);
+        manager
+            .handle_read_worker_completion(completion.expect("checkpoint retry completion"))
+            .await;
+        assert!(
+            event_rx.try_recv().is_err(),
+            "checkpoint retry must not emit a second user terminal"
+        );
     }
 
     #[test]
@@ -29498,10 +30964,10 @@ mod tests {
         let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), actor_handle)]));
 
         manager
-            .handle_subscribe(first_subscribe_request_id, key.clone(), true)
+            .handle_subscribe(first_subscribe_request_id, key.clone(), true, true)
             .await;
         manager
-            .handle_subscribe(second_subscribe_request_id, key, true)
+            .handle_subscribe(second_subscribe_request_id, key, true, true)
             .await;
 
         assert!(matches!(
@@ -29540,7 +31006,7 @@ mod tests {
 
         executor::timeout(
             Duration::from_millis(250),
-            manager.handle_subscribe(request_id, key, true),
+            manager.handle_subscribe(request_id, key, true, true),
         )
         .await
         .expect("cached replay must not wait for the ordinary actor mailbox");
@@ -29594,6 +31060,7 @@ mod tests {
             key: key.clone(),
             cause_request_id: request_id,
             replay_existing: true,
+            cleanup: NavigationProjectionCleanup::default(),
         }));
         let (state_tx, state_rx) = oneshot::channel();
         manager
@@ -29631,6 +31098,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn manager_shutdown_control_quiesces_before_retained_navigation() {
+        let key = room_key();
+        let (actor_tx, mut actor_rx) = mpsc::channel(1);
+        let actor_handle = TimelineActorHandle {
+            tx: actor_tx,
+            control_tx: None,
+            position_rx: None,
+            task: None,
+            auxiliary_tasks: Vec::new(),
+            subscription_generation: None,
+            enqueue_context: None,
+        };
+        let (navigation_projection, navigation_projection_rx) =
+            NavigationProjectionIngress::channel();
+        let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), actor_handle)]));
+        manager.navigation_projection_rx = Some(navigation_projection_rx);
+        assert!(navigation_projection.admit(NavigationProjectionIntent {
+            generation: 1,
+            key,
+            cause_request_id: fake_rid(28_514),
+            replay_existing: true,
+            cleanup: NavigationProjectionCleanup::default(),
+        }));
+        let (control_tx, control_rx) = mpsc::channel(1);
+        manager.control_rx = Some(control_rx);
+        let (acknowledged, acknowledgement) = oneshot::channel();
+        control_tx
+            .send(TimelineManagerControl::Shutdown { acknowledged })
+            .await
+            .expect("admit high-priority shutdown");
+
+        let manager_task = executor::spawn(manager.run());
+        executor::timeout(Duration::from_secs(1), acknowledgement)
+            .await
+            .expect("shutdown acknowledgement must be bounded")
+            .expect("manager must acknowledge quiescence");
+        assert!(
+            !matches!(
+                executor::timeout(Duration::from_millis(20), actor_rx.recv()).await,
+                Ok(Some(_))
+            ),
+            "the old sessionless manager must not consume retained navigation"
+        );
+        manager_task
+            .await
+            .expect("manager exits after acknowledged shutdown");
+    }
+
+    #[tokio::test]
     async fn navigation_projection_retains_latest_value_across_manager_replacement() {
         let (ingress, initial_receiver) = NavigationProjectionIngress::channel();
         drop(initial_receiver);
@@ -29642,18 +31158,21 @@ mod tests {
             key: newest_key.clone(),
             cause_request_id: newest_cause,
             replay_existing: false,
+            cleanup: NavigationProjectionCleanup::default(),
         }));
         assert!(ingress.admit(NavigationProjectionIntent {
             generation: 6,
             key: TimelineKey::room(AccountKey("@a:test".to_owned()), "!stale:test"),
             cause_request_id: fake_rid(28_512),
             replay_existing: true,
+            cleanup: NavigationProjectionCleanup::default(),
         }));
         assert!(ingress.admit(NavigationProjectionIntent {
             generation: 7,
             key: newest_key.clone(),
             cause_request_id: fake_rid(28_513),
             replay_existing: true,
+            cleanup: NavigationProjectionCleanup::default(),
         }));
 
         let mut replacement_receiver = Some(ingress.subscribe());
@@ -29693,11 +31212,11 @@ mod tests {
 
         manager.room_subscription_service_epoch = 7;
         manager
-            .handle_committed_room_selection(fake_rid(1), room_a, false)
+            .handle_committed_room_selection(fake_rid(1), room_a, false, false)
             .await;
         manager.room_subscription_service_epoch = 9;
         manager
-            .handle_committed_room_selection(fake_rid(2), room_b, false)
+            .handle_committed_room_selection(fake_rid(2), room_b, false, false)
             .await;
 
         tokio::time::timeout(Duration::from_secs(1), async {
@@ -29721,7 +31240,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_tail_preemption_missing_cancel_ack_does_not_block_new_room() {
+    async fn post_commit_cleanup_never_waits_for_a_missing_cancel_ack() {
         let account = AccountKey("@stalled-cancel:test".to_owned());
         let room_a = TimelineKey::room(account.clone(), "!stalled-a:test");
         let room_b = TimelineKey::room(account, "!stalled-b:test");
@@ -29739,15 +31258,15 @@ mod tests {
 
         manager.room_subscription_service_epoch = 7;
         manager
-            .handle_committed_room_selection(fake_rid(1), room_a, false)
+            .handle_committed_room_selection(fake_rid(1), room_a, false, false)
             .await;
         manager.room_subscription_service_epoch = 9;
         executor::timeout(
-            Duration::from_millis(250),
-            manager.handle_committed_room_selection(fake_rid(2), room_b, false),
+            Duration::from_millis(25),
+            manager.handle_committed_room_selection(fake_rid(2), room_b, false, false),
         )
         .await
-        .expect("missing cancellation acknowledgement must not block room selection");
+        .expect("post-commit cleanup must not consume the cancellation deadline");
 
         tokio::task::yield_now().await;
         assert_eq!(
@@ -29757,6 +31276,32 @@ mod tests {
                 "cancel-network:A",
                 "start:B:epoch=9:limit=128",
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn committed_navigation_projection_failure_does_not_emit_a_second_terminal() {
+        let mut manager = live_tail_test_manager(HashMap::new());
+        manager.test_session_available = false;
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        manager.event_tx = event_tx;
+        let request_id = fake_rid(29_604);
+
+        manager
+            .handle_navigation_projection(NavigationProjectionIntent {
+                generation: 1,
+                key: room_key(),
+                cause_request_id: request_id,
+                replay_existing: true,
+                cleanup: NavigationProjectionCleanup::default(),
+            })
+            .await;
+
+        assert!(
+            executor::timeout(Duration::from_millis(10), event_rx.recv())
+                .await
+                .is_err(),
+            "AppActor already emitted Committed; projection cleanup must not emit OperationFailed"
         );
     }
 
@@ -29778,10 +31323,10 @@ mod tests {
         ]));
 
         manager
-            .handle_committed_room_selection(fake_rid(1), room_a, false)
+            .handle_committed_room_selection(fake_rid(1), room_a, false, false)
             .await;
         manager
-            .handle_committed_room_selection(fake_rid(2), room_b, false)
+            .handle_committed_room_selection(fake_rid(2), room_b, false, false)
             .await;
         tokio::task::yield_now().await;
 
@@ -29800,7 +31345,7 @@ mod tests {
             gap_demand_test_actor_handle("old", log.clone()),
         )]));
         manager
-            .handle_committed_room_selection(fake_rid(1), room.clone(), false)
+            .handle_committed_room_selection(fake_rid(1), room.clone(), false, false)
             .await;
         manager.timelines.insert(
             room.clone(),
@@ -30443,6 +31988,111 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn timeline_actor_spawn_returns_before_authoritative_publish_waits_for_manager_capacity()
+    {
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+        use matrix_sdk_test::{ALICE, JoinedRoomBuilder, event_factory::EventFactory};
+
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        client
+            .event_cache()
+            .subscribe()
+            .expect("event cache subscription");
+        let room_id = matrix_sdk::ruma::room_id!("!startup-capacity:example.org");
+        let factory = EventFactory::new().room(room_id).sender(&ALICE);
+        let room = server.sync_joined_room(&client, room_id).await;
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(room_id).add_timeline_event(
+                    factory
+                        .text_msg("synthetic")
+                        .event_id(matrix_sdk::ruma::event_id!("$startup:example.org"))
+                        .into_raw_sync(),
+                ),
+            )
+            .await;
+        let timeline = Arc::new(
+            koushi_timeline_builder(
+                &room,
+                TimelineFocus::Live {
+                    hide_threaded_events: false,
+                },
+            )
+            .build()
+            .await
+            .expect("room timeline"),
+        );
+        let session = Arc::new(MatrixClientSession::from_client_for_testing(
+            client,
+            SessionInfo {
+                homeserver: "http://example.invalid".to_owned(),
+                user_id: ALICE.to_string(),
+                device_id: "DEVICE".to_owned(),
+            },
+        ));
+        let key = TimelineKey::room(AccountKey("@startup:test".to_owned()), room_id.to_string());
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = generations.activate_after_quiescence(&key).await.generation;
+        let (manager_tx, mut manager_rx) = mpsc::channel(1);
+        manager_tx
+            .send(TimelineMessage::IgnoredUsersUpdated {
+                user_ids: BTreeSet::new(),
+            })
+            .await
+            .expect("saturate manager mailbox");
+        let (action_tx, _action_rx) = mpsc::channel(8);
+        let (event_tx, _) = broadcast::channel(8);
+        let (terminal_ingress, _terminal_rx) = TimelineSendTerminalIngress::channel();
+
+        let handle = executor::timeout(
+            Duration::from_millis(100),
+            TimelineActor::spawn(
+                key.clone(),
+                timeline,
+                session,
+                fake_rid(38_001),
+                action_tx,
+                event_tx,
+                None,
+                BTreeSet::new(),
+                None,
+                LinkPreviewContext::default(),
+                MessagesBackpressure::default(),
+                Arc::new(Mutex::new(ThreadRootProjectionService::default())),
+                Arc::new(Mutex::new(
+                    ReplayKnownThreadRootProjectionRegistry::default(),
+                )),
+                generations,
+                actor_generation,
+                None,
+                SharedSendCompletionCoordinator::default(),
+                terminal_ingress,
+                manager_tx,
+            ),
+        )
+        .await
+        .expect("actor construction must not await manager capacity");
+
+        assert!(matches!(
+            manager_rx.recv().await,
+            Some(TimelineMessage::IgnoredUsersUpdated { .. })
+        ));
+        assert!(matches!(
+            executor::timeout(Duration::from_millis(100), manager_rx.recv())
+                .await
+                .expect("authoritative startup publish must resume after capacity opens"),
+            Some(TimelineMessage::AuthoritativeReadStateObserved {
+                key: observed,
+                actor_generation: observed_generation,
+                ..
+            }) if observed == key && observed_generation == actor_generation
+        ));
+        handle.stop().await;
+    }
+
+    #[tokio::test]
     async fn live_tail_replacement_ignores_old_epoch_actor_and_projection_completion() {
         let room = TimelineKey::room(AccountKey("@a:test".to_owned()), "!a:test");
         let log = Arc::new(Mutex::new(Vec::new()));
@@ -30458,7 +32108,7 @@ mod tests {
 
         manager.room_subscription_service_epoch = 7;
         manager
-            .handle_committed_room_selection(fake_rid(1), room.clone(), false)
+            .handle_committed_room_selection(fake_rid(1), room.clone(), false, false)
             .await;
         manager.handle_sync_started(None, None).await;
 
@@ -30609,6 +32259,7 @@ mod tests {
             event_tx,
             msg_tx,
             msg_rx,
+            control_rx: None,
             navigation_projection_rx: None,
             last_navigation_projection_generation: 0,
             terminal_ingress,
@@ -31006,6 +32657,7 @@ mod tests {
             event_tx,
             msg_tx: msg_tx.clone(),
             msg_rx,
+            control_rx: None,
             navigation_projection_rx: None,
             last_navigation_projection_generation: 0,
             terminal_ingress,
@@ -31083,6 +32735,7 @@ mod tests {
             event_tx,
             msg_tx,
             msg_rx,
+            control_rx: None,
             navigation_projection_rx: None,
             last_navigation_projection_generation: 0,
             terminal_ingress,
@@ -32132,6 +33785,14 @@ mod tests {
     fn timeline_diagnostic_helpers_collect_typed_records_without_trace_env() {
         let key = room_key();
         let request_id = fake_rid(7001);
+        record_read_retry(
+            &ReadStateKey::PublicUnthreaded {
+                room_id: "!private-read-room:test".to_owned(),
+            },
+            ReadRetrySource::Reconnect,
+            2,
+            1,
+        );
 
         trace_timeline_actor_operation(
             "actor_finish",
@@ -32212,6 +33873,7 @@ mod tests {
             ("core.timeline", "complete"),
             ("core.timeline_item", "initial"),
             ("core.event_cache", "cache_diff"),
+            ("core.read_state", "retry_wake"),
         ];
         for (source, stage) in expected {
             let event = records
@@ -32220,15 +33882,14 @@ mod tests {
                 .map(|record| &record.event)
                 .unwrap_or_else(|| panic!("missing {source}/{stage}"));
             assert!(event.fields.iter().any(|field| field.key == "kind"));
-            assert!(
-                event
-                    .fields
-                    .iter()
-                    .any(|field| { matches!(field.key, "duration" | "count" | "request_id") })
-            );
+            assert!(event.fields.iter().any(|field| {
+                matches!(field.key, "duration" | "count" | "request_id")
+                    || matches!(field.value, DiagnosticValue::Count(_))
+            }));
             let serialized = serde_json::to_string(event).expect("diagnostic event serializes");
             for private_value in [
                 "!r:test",
+                "!private-read-room:test",
                 "$private-event:test",
                 "@private-sender:test",
                 "private body",
@@ -32347,6 +34008,7 @@ mod tests {
             event_tx,
             msg_tx: manager_tx.clone(),
             msg_rx: manager_rx,
+            control_rx: None,
             navigation_projection_rx: None,
             last_navigation_projection_generation: 0,
             terminal_ingress,
@@ -32368,7 +34030,9 @@ mod tests {
             test_session_available: true,
         };
 
-        manager.handle_subscribe(fake_rid(7100), key, false).await;
+        manager
+            .handle_subscribe(fake_rid(7100), key, false, true)
+            .await;
         drop(manager_tx);
 
         let event = koushi_diagnostics::snapshot()
@@ -32539,6 +34203,7 @@ mod tests {
             event_tx,
             msg_tx: _manager_tx,
             msg_rx: manager_rx,
+            control_rx: None,
             navigation_projection_rx: None,
             last_navigation_projection_generation: 0,
             terminal_ingress,
@@ -32561,7 +34226,7 @@ mod tests {
         };
 
         manager
-            .handle_subscribe(fake_rid(7199), key.clone(), false)
+            .handle_subscribe(fake_rid(7199), key.clone(), false, true)
             .await;
 
         let commands = [
@@ -33339,7 +35004,7 @@ mod tests {
         manager.msg_tx = manager_tx;
         manager.test_session_available = false;
         manager
-            .handle_subscribe(projection_request_id, key.clone(), true)
+            .handle_subscribe(projection_request_id, key.clone(), true, true)
             .await;
 
         let (old_actor_generation, timeline_generation) =
