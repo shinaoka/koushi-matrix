@@ -39,7 +39,7 @@ impl fmt::Debug for ReadStateKey {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ReadPositionEvidence {
-    pub(crate) generation: u64,
+    pub(crate) generation: u128,
     pub(crate) rank: u64,
 }
 
@@ -102,7 +102,7 @@ impl fmt::Debug for ReadWaiterId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct ReadOperationFence {
     session_generation: u64,
     operation_generation: u64,
@@ -877,7 +877,13 @@ mod tests {
     }
 
     fn positioned(event: &str, generation: u64, rank: u64) -> ReadTarget {
-        ReadTarget::with_position(event.to_owned(), ReadPositionEvidence { generation, rank })
+        ReadTarget::with_position(
+            event.to_owned(),
+            ReadPositionEvidence {
+                generation: generation.into(),
+                rank,
+            },
+        )
     }
 
     fn waiter(value: u64) -> ReadWaiterId {

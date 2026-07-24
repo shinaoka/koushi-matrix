@@ -5502,8 +5502,12 @@ mod tests {
             .expect("post-projection effects helper should exist");
 
         assert!(
-            effects_helper.contains("TimelineCommand::EnsureSubscribed"),
-            "room selection should ensure a room timeline exists"
+            effects_helper.contains("NavigationProjectionIntent"),
+            "room selection should admit the latest desired room projection"
+        );
+        assert!(
+            effects_helper.contains("admit_navigation_projection"),
+            "room selection must use the bounded latest-desired projection lane"
         );
         assert!(
             effects_helper.contains("replay_existing: true"),

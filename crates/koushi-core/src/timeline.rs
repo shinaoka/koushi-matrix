@@ -149,13 +149,16 @@ use crate::live_tail_freshness::{
     LiveTailSchedulerAction,
 };
 use crate::messages_backpressure::MessagesBackpressure;
+use crate::read_state::{
+    ReadAdmissionStatus, ReadNetworkOutcome, ReadOperation, ReadOperationFence, ReadStateEngine,
+    ReadStateKey, ReadTarget, ReadWaiterId, ReadWaiterTerminal, ReadWakeResult,
+};
 use crate::search::SearchIndexMessage;
 use crate::startup_trace::{self, StartupPhase};
 use crate::threads_list::{
     ThreadRootProjectionActivity, ThreadRootProjectionDecision, ThreadRootProjectionRecord,
     ThreadRootProjectionService, activity_is_newer,
 };
-use crate::unread_trace;
 use koushi_sdk::MatrixLiveTailRefreshOutcome as LiveTailRefreshOutcome;
 
 /// Bounded diff queue capacity per subscribed timeline (overview.md, Async rule 10).
@@ -172,6 +175,7 @@ const ROOM_REPLAY_KNOWN_THREAD_ROOT_PROJECTIONS_MAX: usize = 32;
 const JAVASCRIPT_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
 const REPLY_QUOTE_PREVIEW_MAX_CHARS: usize = 160;
 const MEDIA_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
+const READ_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
 /// One absolute deadline for the complete set of manager-owned enqueue workers.
 /// This is deliberately not a per-worker timeout, so shutdown latency cannot
 /// grow with the number of outstanding sends.
@@ -520,6 +524,259 @@ impl Drop for SendEnqueueWorkerSupervisor {
         // registration fail closed without a detached Tokio task.
         self.terminal_ingress.stop_accepting();
         self.cancel_all();
+    }
+}
+
+#[derive(Clone)]
+enum ReadNetworkContext {
+    Matrix(Arc<MatrixClientSession>),
+    #[cfg(test)]
+    Synthetic {
+        requests: mpsc::UnboundedSender<SyntheticReadNetworkRequest>,
+    },
+}
+
+#[cfg(test)]
+struct SyntheticReadNetworkRequest {
+    operation: ReadOperation,
+    response: oneshot::Sender<Result<(), ()>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReadCommandKind {
+    Receipt,
+    FullyRead,
+}
+
+struct ReadCommandWaiter {
+    request_id: RequestId,
+    key: TimelineKey,
+    event_id: String,
+    kind: ReadCommandKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReadActorApplyKind {
+    ThreadReceipt,
+    FullyRead,
+}
+
+enum ReadWorkerCompletion {
+    Network {
+        operation: ReadOperation,
+        outcome: ReadNetworkOutcome,
+    },
+    ActorApplied {
+        operation: ReadOperation,
+        applied: bool,
+    },
+    Cancelled {
+        operation: ReadOperation,
+    },
+}
+
+impl ReadWorkerCompletion {
+    fn fence(&self) -> ReadOperationFence {
+        match self {
+            Self::Network { operation, .. }
+            | Self::ActorApplied { operation, .. }
+            | Self::Cancelled { operation } => operation.fence(),
+        }
+    }
+}
+
+type ReadWorkerFuture = Pin<Box<dyn Future<Output = ReadWorkerCompletion> + Send + 'static>>;
+
+struct ReadWorkerSupervisor {
+    state: ReadStateEngine,
+    network: Option<ReadNetworkContext>,
+    network_timeout: Duration,
+    tasks: FuturesUnordered<ReadWorkerFuture>,
+    cancellations: HashMap<ReadOperationFence, oneshot::Sender<()>>,
+    waiters: HashMap<ReadWaiterId, ReadCommandWaiter>,
+    next_waiter_id: u64,
+}
+
+impl ReadWorkerSupervisor {
+    fn new(
+        session_generation: u64,
+        network: Option<ReadNetworkContext>,
+        network_timeout: Duration,
+    ) -> Self {
+        Self {
+            state: ReadStateEngine::new(session_generation),
+            network,
+            network_timeout,
+            tasks: FuturesUnordered::new(),
+            cancellations: HashMap::new(),
+            waiters: HashMap::new(),
+            next_waiter_id: 0,
+        }
+    }
+
+    fn unavailable() -> Self {
+        Self::new(0, None, READ_NETWORK_TIMEOUT)
+    }
+
+    fn matrix(session: Arc<MatrixClientSession>) -> Self {
+        Self::new(
+            1,
+            Some(ReadNetworkContext::Matrix(session)),
+            READ_NETWORK_TIMEOUT,
+        )
+    }
+
+    #[cfg(test)]
+    fn synthetic(
+        requests: mpsc::UnboundedSender<SyntheticReadNetworkRequest>,
+        timeout: Duration,
+    ) -> Self {
+        Self::new(1, Some(ReadNetworkContext::Synthetic { requests }), timeout)
+    }
+
+    fn allocate_waiter(&mut self) -> Option<ReadWaiterId> {
+        let next = self.next_waiter_id.checked_add(1)?;
+        self.next_waiter_id = next;
+        Some(ReadWaiterId::new(next))
+    }
+
+    fn spawn_network(&mut self, operation: ReadOperation) -> bool {
+        let Some(network) = self.network.clone() else {
+            return false;
+        };
+        let timeout = self.network_timeout;
+        let fence = operation.fence();
+        let cancelled_operation = operation.clone();
+        let (cancel, mut cancelled) = oneshot::channel();
+        self.cancellations.insert(fence, cancel);
+        self.tasks.push(Box::pin(async move {
+            tokio::select! {
+                biased;
+                _ = &mut cancelled => ReadWorkerCompletion::Cancelled {
+                    operation: cancelled_operation,
+                },
+                outcome = executor::timeout(timeout, perform_read_network_operation(
+                    network,
+                    &operation,
+                )) => ReadWorkerCompletion::Network {
+                    operation,
+                    outcome: match outcome {
+                        Ok(Ok(())) => ReadNetworkOutcome::Succeeded,
+                        Ok(Err(())) => ReadNetworkOutcome::Failed,
+                        Err(_) => ReadNetworkOutcome::TimedOut,
+                    },
+                },
+            }
+        }));
+        true
+    }
+
+    fn spawn_actor_apply<F>(&mut self, operation: ReadOperation, apply: F)
+    where
+        F: Future<Output = bool> + Send + 'static,
+    {
+        let timeout = self.network_timeout;
+        let fence = operation.fence();
+        let cancelled_operation = operation.clone();
+        let (cancel, mut cancelled) = oneshot::channel();
+        self.cancellations.insert(fence, cancel);
+        self.tasks.push(Box::pin(async move {
+            tokio::select! {
+                biased;
+                _ = &mut cancelled => ReadWorkerCompletion::Cancelled {
+                    operation: cancelled_operation,
+                },
+                applied = executor::timeout(timeout, apply) => ReadWorkerCompletion::ActorApplied {
+                    operation,
+                    applied: applied.unwrap_or(false),
+                },
+            }
+        }));
+    }
+
+    fn cancel(&mut self, fence: ReadOperationFence) {
+        if let Some(cancel) = self.cancellations.remove(&fence) {
+            let _ = cancel.send(());
+        }
+    }
+
+    fn finish(&mut self, completion: &ReadWorkerCompletion) {
+        self.cancellations.remove(&completion.fence());
+    }
+
+    fn cancel_all(&mut self) {
+        for (_, cancel) in self.cancellations.drain() {
+            let _ = cancel.send(());
+        }
+        self.tasks = FuturesUnordered::new();
+    }
+}
+
+impl Drop for ReadWorkerSupervisor {
+    fn drop(&mut self) {
+        self.cancel_all();
+    }
+}
+
+async fn perform_read_network_operation(
+    network: ReadNetworkContext,
+    operation: &ReadOperation,
+) -> Result<(), ()> {
+    match network {
+        ReadNetworkContext::Matrix(session) => {
+            let room_id = matrix_sdk::ruma::RoomId::parse(match operation.key() {
+                ReadStateKey::PublicUnthreaded { room_id }
+                | ReadStateKey::ThreadRead { room_id, .. }
+                | ReadStateKey::FullyReadAndPrivateUnthreaded { room_id } => room_id.as_str(),
+            })
+            .map_err(|_| ())?;
+            let event_id =
+                matrix_sdk::ruma::EventId::parse(operation.target().event_id()).map_err(|_| ())?;
+            let room = session.client().get_room(&room_id).ok_or(())?;
+            match operation.key() {
+                ReadStateKey::PublicUnthreaded { .. } => room
+                    .send_multiple_receipts(Receipts::new().public_read_receipt(event_id))
+                    .await
+                    .map_err(|_| ()),
+                ReadStateKey::ThreadRead { root_event_id, .. } => {
+                    let root_event_id =
+                        matrix_sdk::ruma::EventId::parse(root_event_id).map_err(|_| ())?;
+                    room.send_single_receipt(
+                        SendReceiptType::Read,
+                        ReceiptThread::Thread(root_event_id),
+                        event_id,
+                    )
+                    .await
+                    .map_err(|_| ())
+                }
+                ReadStateKey::FullyReadAndPrivateUnthreaded { .. } => {
+                    let private_event_id = private_read_receipt_event_id_from_room_for_fully_read(
+                        &room,
+                        operation.target().event_id(),
+                    );
+                    let private_event_id =
+                        matrix_sdk::ruma::EventId::parse(private_event_id).map_err(|_| ())?;
+                    room.send_multiple_receipts(
+                        Receipts::new()
+                            .fully_read_marker(event_id)
+                            .private_read_receipt(private_event_id),
+                    )
+                    .await
+                    .map_err(|_| ())
+                }
+            }
+        }
+        #[cfg(test)]
+        ReadNetworkContext::Synthetic { requests } => {
+            let (response, outcome) = oneshot::channel();
+            requests
+                .send(SyntheticReadNetworkRequest {
+                    operation: operation.clone(),
+                    response,
+                })
+                .map_err(|_| ())?;
+            outcome.await.unwrap_or(Err(()))
+        }
     }
 }
 
@@ -1851,6 +2108,7 @@ pub struct TimelineManagerActor {
     send_completion: SharedSendCompletionCoordinator,
     global_send_completion_observer_future: Option<GlobalSendCompletionObserverFuture>,
     send_enqueue_workers: SendEnqueueWorkerSupervisor,
+    read_workers: ReadWorkerSupervisor,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     msg_tx: mpsc::Sender<TimelineMessage>,
@@ -1894,6 +2152,7 @@ impl Drop for TimelineManagerActor {
         // directly-polled futures. On cancellation or panic, close admission,
         // then settle worker registrations before stopping the observer.
         self.terminal_ingress.stop_accepting();
+        self.read_workers.cancel_all();
         self.send_enqueue_workers.cancel_all();
         self.global_send_completion_observer_future.take();
     }
@@ -1981,6 +2240,7 @@ impl TimelineManagerActor {
             send_completion: SharedSendCompletionCoordinator::default(),
             global_send_completion_observer_future: None,
             send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
+            read_workers: ReadWorkerSupervisor::unavailable(),
             action_tx,
             event_tx,
             msg_tx: tx.clone(),
@@ -2036,7 +2296,7 @@ impl TimelineManagerActor {
                 terminal_ingress.clone(),
             )) as GlobalSendCompletionObserverFuture);
         let actor = TimelineManagerActor {
-            session: Some(session),
+            session: Some(Arc::clone(&session)),
             room_list_service: None,
             room_subscription_checkpoint_task: None,
             room_subscription_service_epoch: 0,
@@ -2046,6 +2306,7 @@ impl TimelineManagerActor {
             send_completion,
             global_send_completion_observer_future,
             send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
+            read_workers: ReadWorkerSupervisor::matrix(session),
             action_tx,
             event_tx,
             msg_tx: tx.clone(),
@@ -2222,6 +2483,13 @@ impl TimelineManagerActor {
                     }
                     continue;
                 }
+                completion = self.read_workers.tasks.next(),
+                    if !self.read_workers.tasks.is_empty() => {
+                    if let Some(completion) = completion {
+                        self.handle_read_worker_completion(completion).await;
+                    }
+                    continue;
+                }
                 terminal = self.terminal_rx.recv() => {
                     let Some(terminal) = terminal else { break };
                     self.handle_send_terminal_handoff(terminal).await;
@@ -2380,6 +2648,21 @@ impl TimelineManagerActor {
         // Stop accepting commands, then join session-owned enqueue workers
         // while the sole global terminal observer remains live. A worker may
         // still bind a durably saved SDK transaction during this phase.
+        self.read_workers.cancel_all();
+        let abandoned_read_waiters = self
+            .read_workers
+            .waiters
+            .drain()
+            .map(|(_, waiter)| waiter)
+            .collect::<Vec<_>>();
+        for waiter in abandoned_read_waiters {
+            self.emit_failure(
+                waiter.request_id,
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Sdk,
+                },
+            );
+        }
         self.join_send_enqueue_workers().await;
         // Once enqueue workers are quiescent, stop the observer before actor
         // presentation producers. Every remaining bound request then receives
@@ -3660,15 +3943,7 @@ impl TimelineManagerActor {
                 event_id,
             } => {
                 trace_timeline_route("manager_received", "send_read_receipt", request_id, &key);
-                self.route_to_actor_or_fail(
-                    request_id,
-                    &key,
-                    TimelineActorMessage::SendReadReceipt {
-                        request_id,
-                        event_id,
-                    },
-                )
-                .await;
+                self.route_read_command(request_id, key, event_id, ReadCommandKind::Receipt);
             }
             TimelineCommand::SetFullyRead {
                 request_id,
@@ -3676,15 +3951,7 @@ impl TimelineManagerActor {
                 event_id,
             } => {
                 trace_timeline_route("manager_received", "set_fully_read", request_id, &key);
-                self.route_to_actor_or_fail(
-                    request_id,
-                    &key,
-                    TimelineActorMessage::SetFullyRead {
-                        request_id,
-                        event_id,
-                    },
-                )
-                .await;
+                self.route_read_command(request_id, key, event_id, ReadCommandKind::FullyRead);
             }
             TimelineCommand::SetTyping {
                 request_id,
@@ -4235,6 +4502,297 @@ impl TimelineManagerActor {
         Ok(handle)
     }
 
+    fn route_read_command(
+        &mut self,
+        request_id: RequestId,
+        key: TimelineKey,
+        event_id: String,
+        kind: ReadCommandKind,
+    ) {
+        if self.read_workers.network.is_none() {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        }
+        let Some(handle) = self.timelines.get(&key) else {
+            self.emit_failure(
+                request_id,
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::NotSubscribed,
+                },
+            );
+            return;
+        };
+        if matrix_sdk::ruma::RoomId::parse(key.room_id()).is_err()
+            || matrix_sdk::ruma::EventId::parse(event_id.as_str()).is_err()
+            || matches!(
+                &key.kind,
+                TimelineKind::Thread { root_event_id, .. }
+                    if matrix_sdk::ruma::EventId::parse(root_event_id.as_str()).is_err()
+            )
+        {
+            self.emit_failure(
+                request_id,
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Sdk,
+                },
+            );
+            return;
+        }
+
+        let read_key = read_state_key_for_command(&key, kind);
+        let target = match handle.read_position(&event_id) {
+            Some(position) => ReadTarget::with_position(event_id.clone(), position),
+            None => ReadTarget::new(event_id.clone()),
+        };
+        let Some(waiter) = self.read_workers.allocate_waiter() else {
+            self.emit_failure(
+                request_id,
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::QueueOverflow,
+                },
+            );
+            return;
+        };
+        let admission = self.read_workers.state.admit(
+            self.read_workers.state.session_generation(),
+            read_key.clone(),
+            target,
+            waiter,
+        );
+        match admission.status() {
+            ReadAdmissionStatus::Accepted | ReadAdmissionStatus::Coalesced => {
+                self.read_workers.waiters.insert(
+                    waiter,
+                    ReadCommandWaiter {
+                        request_id,
+                        key,
+                        event_id,
+                        kind,
+                    },
+                );
+            }
+            ReadAdmissionStatus::Rejected(_) => {
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::TimelineOperationFailed {
+                        kind: TimelineFailureKind::QueueOverflow,
+                    },
+                );
+                return;
+            }
+        }
+        if let Some(superseded) = admission.superseded_operation() {
+            self.read_workers.cancel(superseded);
+        }
+        self.wake_read_operation(&read_key);
+    }
+
+    fn wake_read_operation(&mut self, key: &ReadStateKey) {
+        match self.read_workers.state.wake(key) {
+            ReadWakeResult::Start(operation) => {
+                if !self.read_workers.spawn_network(operation.clone()) {
+                    let completion = self.read_workers.state.complete(
+                        operation.key(),
+                        operation.fence(),
+                        ReadNetworkOutcome::Failed,
+                    );
+                    for settlement in completion.settlements() {
+                        if let Some(waiter) = self.read_workers.waiters.remove(&settlement.waiter())
+                        {
+                            self.emit_failure(
+                                waiter.request_id,
+                                CoreFailure::TimelineOperationFailed {
+                                    kind: TimelineFailureKind::Sdk,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+            ReadWakeResult::AlreadyActive | ReadWakeResult::NoDesired => {}
+            ReadWakeResult::OperationGenerationExhausted => {
+                let waiter_ids = self
+                    .read_workers
+                    .waiters
+                    .iter()
+                    .filter_map(|(waiter_id, waiter)| {
+                        (read_state_key_for_command(&waiter.key, waiter.kind) == *key)
+                            .then_some(*waiter_id)
+                    })
+                    .collect::<Vec<_>>();
+                for waiter_id in waiter_ids {
+                    if let Some(waiter) = self.read_workers.waiters.remove(&waiter_id) {
+                        self.emit_failure(
+                            waiter.request_id,
+                            CoreFailure::TimelineOperationFailed {
+                                kind: TimelineFailureKind::QueueOverflow,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    async fn handle_read_worker_completion(&mut self, completion: ReadWorkerCompletion) {
+        self.read_workers.finish(&completion);
+        match completion {
+            ReadWorkerCompletion::Cancelled { operation } => {
+                self.settle_read_operation(operation, ReadNetworkOutcome::Failed)
+                    .await;
+            }
+            ReadWorkerCompletion::Network { operation, outcome } => {
+                if outcome == ReadNetworkOutcome::Succeeded
+                    && self.read_workers.state.active_operation(operation.key())
+                        == Some(operation.fence())
+                {
+                    match operation.key() {
+                        ReadStateKey::PublicUnthreaded { .. } => {
+                            let actor_is_current = self
+                                .read_timeline_key_for_operation(&operation)
+                                .is_some_and(|key| self.timelines.contains_key(&key));
+                            if !actor_is_current {
+                                self.settle_read_operation(operation, ReadNetworkOutcome::Failed)
+                                    .await;
+                                return;
+                            }
+                        }
+                        ReadStateKey::ThreadRead { .. }
+                        | ReadStateKey::FullyReadAndPrivateUnthreaded { .. } => {
+                            if self.spawn_read_actor_apply(operation.clone()) {
+                                return;
+                            }
+                            self.settle_read_operation(operation, ReadNetworkOutcome::Failed)
+                                .await;
+                            return;
+                        }
+                    }
+                }
+                self.settle_read_operation(operation, outcome).await;
+            }
+            ReadWorkerCompletion::ActorApplied { operation, applied } => {
+                self.settle_read_operation(
+                    operation,
+                    if applied {
+                        ReadNetworkOutcome::Succeeded
+                    } else {
+                        ReadNetworkOutcome::Failed
+                    },
+                )
+                .await;
+            }
+        }
+    }
+
+    fn spawn_read_actor_apply(&mut self, operation: ReadOperation) -> bool {
+        let apply_kind = match operation.key() {
+            ReadStateKey::PublicUnthreaded { .. } => return false,
+            ReadStateKey::ThreadRead { .. } => ReadActorApplyKind::ThreadReceipt,
+            ReadStateKey::FullyReadAndPrivateUnthreaded { .. } => ReadActorApplyKind::FullyRead,
+        };
+        let Some(timeline_key) = self.read_timeline_key_for_operation(&operation) else {
+            return false;
+        };
+        let Some(handle) = self.timelines.get(&timeline_key) else {
+            return false;
+        };
+        let Some(control_tx) = handle.control_tx.clone() else {
+            return false;
+        };
+        let event_id = operation.target().event_id().to_owned();
+        self.read_workers.spawn_actor_apply(operation, async move {
+            let (acknowledged, acknowledgement) = oneshot::channel();
+            if control_tx
+                .send(TimelineActorControl::ApplyReadSuccess {
+                    kind: apply_kind,
+                    event_id,
+                    acknowledged,
+                })
+                .await
+                .is_err()
+            {
+                return false;
+            }
+            acknowledgement.await.unwrap_or(false)
+        });
+        true
+    }
+
+    fn read_timeline_key_for_operation(&self, operation: &ReadOperation) -> Option<TimelineKey> {
+        self.read_workers.waiters.values().find_map(|waiter| {
+            (waiter.event_id == operation.target().event_id()
+                && read_state_key_for_command(&waiter.key, waiter.kind) == *operation.key())
+            .then(|| waiter.key.clone())
+        })
+    }
+
+    async fn settle_read_operation(
+        &mut self,
+        operation: ReadOperation,
+        outcome: ReadNetworkOutcome,
+    ) {
+        let read_key = operation.key().clone();
+        let settlements = self
+            .read_workers
+            .state
+            .complete(&read_key, operation.fence(), outcome)
+            .settlements()
+            .to_vec();
+        for settlement in settlements {
+            let Some(waiter) = self.read_workers.waiters.remove(&settlement.waiter()) else {
+                continue;
+            };
+            match settlement.terminal() {
+                ReadWaiterTerminal::Converged => {
+                    if waiter.kind == ReadCommandKind::FullyRead {
+                        let room_id = waiter.key.room_id().to_owned();
+                        if !self
+                            .emit_action_reliable(AppAction::RoomMarkedAsReadSucceeded {
+                                request_id: waiter.request_id.sequence,
+                                room_id,
+                            })
+                            .await
+                        {
+                            self.emit_failure(
+                                waiter.request_id,
+                                CoreFailure::TimelineOperationFailed {
+                                    kind: TimelineFailureKind::Sdk,
+                                },
+                            );
+                            continue;
+                        }
+                        self.emit(CoreEvent::LiveSignals(LiveSignalsEvent::FullyReadSet {
+                            request_id: waiter.request_id,
+                            key: waiter.key,
+                            event_id: waiter.event_id,
+                        }));
+                    } else {
+                        self.emit(CoreEvent::LiveSignals(LiveSignalsEvent::ReadReceiptSent {
+                            request_id: waiter.request_id,
+                            key: waiter.key,
+                            event_id: waiter.event_id,
+                        }));
+                    }
+                }
+                ReadWaiterTerminal::Failed | ReadWaiterTerminal::TimedOut => {
+                    self.emit_failure(
+                        waiter.request_id,
+                        CoreFailure::TimelineOperationFailed {
+                            kind: if settlement.terminal() == ReadWaiterTerminal::TimedOut {
+                                TimelineFailureKind::Timeout
+                            } else {
+                                TimelineFailureKind::Sdk
+                            },
+                        },
+                    );
+                }
+            }
+        }
+        if outcome == ReadNetworkOutcome::Succeeded {
+            self.wake_read_operation(&read_key);
+        }
+    }
+
     async fn route_to_actor_or_fail(
         &mut self,
         request_id: RequestId,
@@ -4301,6 +4859,34 @@ impl TimelineManagerActor {
 
     async fn emit_action_reliable(&mut self, action: AppAction) -> bool {
         emit_app_action_reliable(&self.action_tx, action).await
+    }
+}
+
+fn read_state_key_for_command(key: &TimelineKey, kind: ReadCommandKind) -> ReadStateKey {
+    match (kind, &key.kind) {
+        (
+            ReadCommandKind::Receipt,
+            TimelineKind::Thread {
+                room_id,
+                root_event_id,
+            },
+        ) => ReadStateKey::ThreadRead {
+            room_id: room_id.clone(),
+            root_event_id: root_event_id.clone(),
+        },
+        (ReadCommandKind::Receipt, TimelineKind::Room { room_id })
+        | (ReadCommandKind::Receipt, TimelineKind::Focused { room_id, .. }) => {
+            ReadStateKey::PublicUnthreaded {
+                room_id: room_id.clone(),
+            }
+        }
+        (ReadCommandKind::FullyRead, kind) => ReadStateKey::FullyReadAndPrivateUnthreaded {
+            room_id: match kind {
+                TimelineKind::Room { room_id }
+                | TimelineKind::Thread { room_id, .. }
+                | TimelineKind::Focused { room_id, .. } => room_id.clone(),
+            },
+        },
     }
 }
 
@@ -4790,13 +5376,10 @@ enum TimelineActorMessage {
         reaction_key: String,
         reaction_event_id: String,
     },
-    SendReadReceipt {
-        request_id: RequestId,
+    ApplyReadSuccess {
+        kind: ReadActorApplyKind,
         event_id: String,
-    },
-    SetFullyRead {
-        request_id: RequestId,
-        event_id: String,
+        acknowledged: oneshot::Sender<bool>,
     },
     SetTyping {
         request_id: RequestId,
@@ -4889,6 +5472,11 @@ enum TimelineActorControl {
         operation_generation: u64,
         acknowledged: oneshot::Sender<()>,
     },
+    ApplyReadSuccess {
+        kind: ReadActorApplyKind,
+        event_id: String,
+        acknowledged: oneshot::Sender<bool>,
+    },
     BeginGapRepairDemand,
     EndGapRepairDemand,
 }
@@ -4915,6 +5503,15 @@ impl From<TimelineActorControl> for TimelineActorMessage {
                 acknowledged,
             } => Self::CancelLiveTailNetwork {
                 operation_generation,
+                acknowledged,
+            },
+            TimelineActorControl::ApplyReadSuccess {
+                kind,
+                event_id,
+                acknowledged,
+            } => Self::ApplyReadSuccess {
+                kind,
+                event_id,
                 acknowledged,
             },
             TimelineActorControl::BeginGapRepairDemand => Self::BeginGapRepairDemand,
@@ -7596,10 +8193,47 @@ fn thread_summary_from_loaded_root_raw(raw: &serde_json::Value) -> Option<Thread
 struct TimelineActorHandle {
     tx: mpsc::Sender<TimelineActorMessage>,
     control_tx: Option<mpsc::Sender<TimelineActorControl>>,
+    position_rx: Option<watch::Receiver<Arc<TimelinePositionIndex>>>,
     task: Option<executor::JoinHandle<()>>,
     auxiliary_tasks: Vec<executor::JoinHandle<()>>,
     subscription_generation: Option<u64>,
     enqueue_context: Option<TimelineSendEnqueueContext>,
+}
+
+struct TimelinePositionIndex {
+    generation: u128,
+    ranks: HashMap<String, u64>,
+}
+
+impl TimelinePositionIndex {
+    fn from_items(
+        actor_generation: u64,
+        timeline_generation: TimelineGeneration,
+        items: &[TimelineItem],
+    ) -> Self {
+        let generation = (u128::from(actor_generation) << 64) | u128::from(timeline_generation.0);
+        let ranks = items
+            .iter()
+            .enumerate()
+            .filter_map(|(rank, item)| {
+                let TimelineItemId::Event { event_id } = &item.id else {
+                    return None;
+                };
+                Some((event_id.clone(), rank.try_into().unwrap_or(u64::MAX)))
+            })
+            .collect();
+        Self { generation, ranks }
+    }
+
+    fn evidence(&self, event_id: &str) -> Option<crate::read_state::ReadPositionEvidence> {
+        self.ranks
+            .get(event_id)
+            .copied()
+            .map(|rank| crate::read_state::ReadPositionEvidence {
+                generation: self.generation,
+                rank,
+            })
+    }
 }
 
 impl TimelineActorHandle {
@@ -7619,6 +8253,12 @@ impl TimelineActorHandle {
             Some(tx) => tx.try_send(control).is_ok(),
             None => self.tx.try_send(control.into()).is_ok(),
         }
+    }
+
+    fn read_position(&self, event_id: &str) -> Option<crate::read_state::ReadPositionEvidence> {
+        self.position_rx
+            .as_ref()
+            .and_then(|receiver| receiver.borrow().evidence(event_id))
     }
 
     async fn stop(mut self) {
@@ -12011,6 +12651,7 @@ struct TimelineActor {
     msg_tx: mpsc::Sender<TimelineActorMessage>,
     msg_rx: mpsc::Receiver<TimelineActorMessage>,
     control_rx: mpsc::Receiver<TimelineActorControl>,
+    position_tx: watch::Sender<Arc<TimelinePositionIndex>>,
     relay_control_tx: mpsc::Sender<TimelineRelayControl>,
     relay_control_rx: mpsc::Receiver<TimelineRelayControl>,
     relay_data_rx: Option<mpsc::Receiver<TimelineRelayBatch>>,
@@ -12850,6 +13491,9 @@ impl TimelineActor {
                 timeline: Arc::clone(&timeline),
                 session: Arc::clone(&session),
             });
+        let (position_tx, position_rx) = watch::channel(Arc::new(
+            TimelinePositionIndex::from_items(actor_generation, generation, &navigation_items),
+        ));
         let mut actor = TimelineActor {
             key: key.clone(),
             timeline,
@@ -12859,6 +13503,7 @@ impl TimelineActor {
             msg_tx: actor_tx.clone(),
             msg_rx: actor_rx,
             control_rx: actor_control_rx,
+            position_tx,
             relay_control_tx,
             relay_control_rx,
             relay_data_rx: Some(relay_data_rx),
@@ -12938,6 +13583,7 @@ impl TimelineActor {
         TimelineActorHandle {
             tx: actor_tx,
             control_tx: Some(actor_control_tx),
+            position_rx: Some(position_rx),
             task: Some(task),
             auxiliary_tasks,
             subscription_generation,
@@ -13548,17 +14194,13 @@ impl TimelineActor {
                 self.handle_redact_reaction(request_id, event_id, reaction_key, reaction_event_id)
                     .await;
             }
-            TimelineActorMessage::SendReadReceipt {
-                request_id,
+            TimelineActorMessage::ApplyReadSuccess {
+                kind,
                 event_id,
+                acknowledged,
             } => {
-                self.handle_send_read_receipt(request_id, event_id).await;
-            }
-            TimelineActorMessage::SetFullyRead {
-                request_id,
-                event_id,
-            } => {
-                self.handle_set_fully_read(request_id, event_id).await;
+                let applied = self.handle_read_success(kind, event_id).await;
+                let _ = acknowledged.send(applied);
             }
             TimelineActorMessage::SetTyping {
                 request_id,
@@ -16241,133 +16883,47 @@ impl TimelineActor {
         }
     }
 
-    async fn handle_send_read_receipt(&mut self, request_id: RequestId, event_id: String) {
-        let started = Instant::now();
-        trace_timeline_actor_operation(
-            "actor_start",
-            "send_read_receipt",
-            request_id,
-            &self.key,
-            None,
-            None,
-        );
-        let parsed_event_id = match matrix_sdk::ruma::EventId::parse(event_id.as_str()) {
-            Ok(event_id) => event_id,
-            Err(_) => {
-                trace_timeline_actor_operation(
-                    "actor_finish",
-                    "send_read_receipt",
-                    request_id,
-                    &self.key,
-                    Some(started.elapsed().as_millis()),
-                    Some("invalid_event"),
-                );
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
-                return;
-            }
-        };
-
-        let result = match &self.key.kind {
-            TimelineKind::Thread { root_event_id, .. } => {
-                let parsed_root_event_id =
-                    match matrix_sdk::ruma::EventId::parse(root_event_id.as_str()) {
-                        Ok(event_id) => event_id,
-                        Err(_) => {
-                            trace_timeline_actor_operation(
-                                "actor_finish",
-                                "send_read_receipt",
-                                request_id,
-                                &self.key,
-                                Some(started.elapsed().as_millis()),
-                                Some("invalid_thread_root"),
-                            );
-                            self.emit_failure(
-                                request_id,
-                                CoreFailure::TimelineOperationFailed {
-                                    kind: TimelineFailureKind::Sdk,
-                                },
-                            );
-                            return;
-                        }
-                    };
-                self.timeline
-                    .room()
-                    .send_single_receipt(
-                        SendReceiptType::Read,
-                        ReceiptThread::Thread(parsed_root_event_id),
-                        parsed_event_id,
-                    )
-                    .await
-            }
-            TimelineKind::Room { .. } | TimelineKind::Focused { .. } => {
-                let receipts = Receipts::new().public_read_receipt(parsed_event_id);
-                self.timeline.room().send_multiple_receipts(receipts).await
-            }
-        };
-
-        match result {
-            Ok(_) => {
-                if matches!(self.key.kind, TimelineKind::Thread { .. }) {
-                    let queried_event_id = match self.own_user_id.as_deref() {
-                        Some(own_user_id) => self
-                            .timeline
-                            .latest_user_read_receipt_timeline_event_id(own_user_id)
-                            .await
-                            .map(|event_id| event_id.to_string()),
-                        None => None,
-                    };
-                    let authoritative_event_id = newest_provable_receipt_event_id(
-                        &self.navigation_items,
-                        &event_id,
-                        queried_event_id,
-                        self.thread_attention.receipt_event_id.as_deref(),
-                    );
-                    if let Some(action) = self.thread_attention.acknowledge(
-                        &self.key,
-                        &self.navigation_items,
-                        authoritative_event_id,
-                    ) {
-                        let _ = self.emit_action_reliable(action).await;
-                    }
+    async fn handle_read_success(&mut self, kind: ReadActorApplyKind, event_id: String) -> bool {
+        match kind {
+            ReadActorApplyKind::ThreadReceipt => {
+                if !matches!(self.key.kind, TimelineKind::Thread { .. }) {
+                    return false;
                 }
-                trace_timeline_actor_operation(
-                    "actor_finish",
-                    "send_read_receipt",
-                    request_id,
-                    &self.key,
-                    Some(started.elapsed().as_millis()),
-                    Some("success"),
+                let authoritative_event_id = newest_provable_receipt_event_id(
+                    &self.navigation_items,
+                    &event_id,
+                    None,
+                    self.thread_attention.receipt_event_id.as_deref(),
                 );
-                self.emit(CoreEvent::LiveSignals(LiveSignalsEvent::ReadReceiptSent {
-                    request_id,
-                    key: self.key.clone(),
-                    event_id,
-                }));
+                if let Some(action) = self.thread_attention.acknowledge(
+                    &self.key,
+                    &self.navigation_items,
+                    authoritative_event_id,
+                ) && !self.emit_action_reliable(action).await
+                {
+                    return false;
+                }
+                true
             }
-            Err(_) => {
-                trace_timeline_actor_operation(
-                    "actor_finish",
-                    "send_read_receipt",
-                    request_id,
-                    &self.key,
-                    Some(started.elapsed().as_millis()),
-                    Some("sdk_error"),
-                );
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
+            ReadActorApplyKind::FullyRead => {
+                let Some(room_id) = timeline_room_id(&self.key) else {
+                    return false;
+                };
+                if !self
+                    .emit_action_reliable(AppAction::FullyReadMarkerUpdated {
+                        room_id,
+                        event_id: Some(event_id.clone()),
+                    })
+                    .await
+                {
+                    return false;
+                }
+                self.fully_read_event_id = Some(event_id);
+                self.emit_navigation_if_changed();
+                true
             }
         }
     }
-
     async fn handle_own_read_receipt_changed(&mut self) {
         let Some(own_user_id) = self.own_user_id.as_deref() else {
             return;
@@ -16385,163 +16941,6 @@ impl TimelineActor {
                 .acknowledge(&self.key, &self.navigation_items, event_id)
         {
             let _ = self.emit_action_reliable(action).await;
-        }
-    }
-
-    async fn handle_set_fully_read(&mut self, request_id: RequestId, event_id: String) {
-        let started = Instant::now();
-        trace_timeline_actor_operation(
-            "actor_start",
-            "set_fully_read",
-            request_id,
-            &self.key,
-            None,
-            None,
-        );
-        let room_id_for_trace = timeline_room_id(&self.key);
-        if let Some(room_id) = &room_id_for_trace {
-            unread_trace::trace_mark_read(
-                "set_fully_read_requested",
-                request_id.sequence,
-                room_id,
-                Some(event_id.as_str()),
-            );
-        }
-        let parsed_event_id = match matrix_sdk::ruma::EventId::parse(event_id.as_str()) {
-            Ok(event_id) => event_id,
-            Err(_) => {
-                trace_timeline_actor_operation(
-                    "actor_finish",
-                    "set_fully_read",
-                    request_id,
-                    &self.key,
-                    Some(started.elapsed().as_millis()),
-                    Some("invalid_event"),
-                );
-                if let Some(room_id) = &room_id_for_trace {
-                    unread_trace::trace_mark_read(
-                        "set_fully_read_failed",
-                        request_id.sequence,
-                        room_id,
-                        Some(event_id.as_str()),
-                    );
-                }
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
-                return;
-            }
-        };
-
-        let private_read_receipt_event_id =
-            private_read_receipt_event_id_from_room_for_fully_read(self.timeline.room(), &event_id);
-        if private_read_receipt_event_id != event_id
-            && let Some(room_id) = &room_id_for_trace
-        {
-            unread_trace::trace_mark_read(
-                "set_fully_read_private_receipt_target",
-                request_id.sequence,
-                room_id,
-                Some(private_read_receipt_event_id.as_str()),
-            );
-        }
-        let parsed_private_read_receipt_event_id =
-            match matrix_sdk::ruma::EventId::parse(private_read_receipt_event_id.as_str()) {
-                Ok(event_id) => event_id,
-                Err(_) => {
-                    trace_timeline_actor_operation(
-                        "actor_finish",
-                        "set_fully_read",
-                        request_id,
-                        &self.key,
-                        Some(started.elapsed().as_millis()),
-                        Some("invalid_private_receipt"),
-                    );
-                    if let Some(room_id) = &room_id_for_trace {
-                        unread_trace::trace_mark_read(
-                            "set_fully_read_failed",
-                            request_id.sequence,
-                            room_id,
-                            Some(private_read_receipt_event_id.as_str()),
-                        );
-                    }
-                    self.emit_failure(
-                        request_id,
-                        CoreFailure::TimelineOperationFailed {
-                            kind: TimelineFailureKind::Sdk,
-                        },
-                    );
-                    return;
-                }
-            };
-
-        let receipts = Receipts::new()
-            .fully_read_marker(parsed_event_id)
-            .private_read_receipt(parsed_private_read_receipt_event_id);
-
-        match self.timeline.room().send_multiple_receipts(receipts).await {
-            Ok(_) => {
-                trace_timeline_actor_operation(
-                    "actor_finish",
-                    "set_fully_read",
-                    request_id,
-                    &self.key,
-                    Some(started.elapsed().as_millis()),
-                    Some("success"),
-                );
-                self.fully_read_event_id = Some(event_id.clone());
-                if let Some(room_id) = room_id_for_trace {
-                    unread_trace::trace_mark_read(
-                        "set_fully_read_success",
-                        request_id.sequence,
-                        &room_id,
-                        Some(event_id.as_str()),
-                    );
-                    let _ = self.action_tx.try_send(vec![
-                        AppAction::FullyReadMarkerUpdated {
-                            room_id: room_id.clone(),
-                            event_id: Some(event_id.clone()),
-                        },
-                        AppAction::RoomMarkedAsReadSucceeded {
-                            request_id: request_id.sequence,
-                            room_id,
-                        },
-                    ]);
-                }
-                self.emit(CoreEvent::LiveSignals(LiveSignalsEvent::FullyReadSet {
-                    request_id,
-                    key: self.key.clone(),
-                    event_id,
-                }));
-                self.emit_navigation_if_changed();
-            }
-            Err(_) => {
-                trace_timeline_actor_operation(
-                    "actor_finish",
-                    "set_fully_read",
-                    request_id,
-                    &self.key,
-                    Some(started.elapsed().as_millis()),
-                    Some("sdk_error"),
-                );
-                if let Some(room_id) = &room_id_for_trace {
-                    unread_trace::trace_mark_read(
-                        "set_fully_read_failed",
-                        request_id.sequence,
-                        room_id,
-                        Some(event_id.as_str()),
-                    );
-                }
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
-            }
         }
     }
 
@@ -16724,6 +17123,12 @@ impl TimelineActor {
             |projection_lease, projected_batch, navigation_items, display_projection| {
                 // State and synchronous batch-derived publications share this
                 // one generation lease; a stale actor commits neither half.
+                self.position_tx
+                    .send_replace(Arc::new(TimelinePositionIndex::from_items(
+                        self.actor_generation,
+                        self.generation,
+                        navigation_items,
+                    )));
                 self.diff_batch_seq = self.diff_batch_seq.wrapping_add(1);
                 for diff in &sdk_diffs {
                     Self::apply_sdk_media_cache_diff(&mut self.media_sources, diff);
@@ -18055,6 +18460,11 @@ impl TimelineActor {
             .await;
         }
         trace_timeline_items("overflow_initial", &self.key, &items);
+        let recovery_position_index = Arc::new(TimelinePositionIndex::from_items(
+            self.actor_generation,
+            recovery_generation,
+            &items,
+        ));
         if !commit_authoritative_recovery_window(
             &mut self.navigation_items,
             &mut self.display_projection,
@@ -18071,6 +18481,8 @@ impl TimelineActor {
                 // Generation-local mirrors must become authoritative in the
                 // same lease as ResyncRequired + InitialItems. A replacement
                 // actor therefore sees all of this recovery or none of it.
+                self.position_tx
+                    .send_replace(Arc::clone(&recovery_position_index));
                 self.generation = recovery_generation;
                 self.next_batch_id = TimelineBatchId(0);
                 self.gap_repair.clear_projected_gaps();
@@ -26293,6 +26705,7 @@ mod tests {
             send_completion: SharedSendCompletionCoordinator::default(),
             global_send_completion_observer_future: None,
             send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
+            read_workers: ReadWorkerSupervisor::unavailable(),
             action_tx,
             event_tx,
             msg_tx,
@@ -27739,6 +28152,7 @@ mod tests {
             send_completion: SharedSendCompletionCoordinator::default(),
             global_send_completion_observer_future: None,
             send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
+            read_workers: ReadWorkerSupervisor::unavailable(),
             action_tx,
             event_tx,
             msg_tx,
@@ -27977,48 +28391,56 @@ mod tests {
     #[test]
     fn set_fully_read_success_uses_private_read_receipt_before_clearing_room_unread_summary() {
         let source = include_str!("timeline.rs");
-        let handler = source
-            .split("async fn handle_set_fully_read")
+        let network = source
+            .split("async fn perform_read_network_operation")
             .nth(1)
-            .expect("handle_set_fully_read should exist")
-            .split("async fn handle_set_typing")
+            .expect("manager read network worker should exist")
+            .split("async fn run_send_enqueue_future")
             .next()
-            .expect("handle_set_typing should follow handle_set_fully_read");
-        let success_arm = handler
-            .split("Ok(_) => {")
+            .expect("send worker should follow read worker");
+        let actor_success = source
+            .split("async fn handle_read_success")
             .nth(1)
-            .expect("set fully read success arm should exist")
-            .split("Err(_) => {")
+            .expect("actor read success handler should exist")
+            .split("async fn handle_own_read_receipt_changed")
             .next()
-            .expect("set fully read error arm should follow success arm");
+            .expect("own receipt handler should follow actor success");
+        let manager_settlement = source
+            .split("async fn settle_read_operation")
+            .nth(1)
+            .expect("manager settlement should exist")
+            .split("async fn route_to_actor_or_fail")
+            .next()
+            .expect("actor route should follow read settlement");
 
         assert!(
-            handler.contains("send_multiple_receipts"),
+            network.contains("send_multiple_receipts"),
             "set_fully_read must use SDK read-marker batching so the marker and read receipt share one source of truth"
         );
         assert!(
-            handler.contains("self.timeline.room().send_multiple_receipts"),
-            "set_fully_read must force the room read-marker API instead of Timeline receipt de-duplication; stale server unread counts still need a fresh private receipt"
+            network.contains("room.send_multiple_receipts"),
+            "manager worker must force the room read-marker API; stale server unread counts still need a fresh private receipt"
         );
         assert!(
-            handler.contains("fully_read_marker"),
+            network.contains("fully_read_marker"),
             "set_fully_read must continue to update the fully-read marker"
         );
         assert!(
-            handler.contains("private_read_receipt"),
+            network.contains("private_read_receipt"),
             "set_fully_read must include a private read receipt so SDK/server unread counts advance without publishing public receipts"
         );
         assert!(
-            !handler.contains("send_single_receipt(ReceiptType::FullyRead"),
+            !network.contains("send_single_receipt(ReceiptType::FullyRead"),
             "fully-read alone must not be used as the persistent unread-count source of truth"
         );
         assert!(
-            success_arm.contains("AppAction::FullyReadMarkerUpdated"),
-            "set_fully_read must update the fully-read marker after SDK success"
+            actor_success.contains("AppAction::FullyReadMarkerUpdated")
+                && actor_success.contains("emit_action_reliable"),
+            "actor control success must reliably update the fully-read marker before ACK"
         );
         assert!(
-            success_arm.contains("AppAction::RoomMarkedAsReadSucceeded"),
-            "set_fully_read SDK success must also clear RoomSummary unread counts so sidebar and Activity/Unread agree"
+            manager_settlement.contains("AppAction::RoomMarkedAsReadSucceeded"),
+            "ACKed fully-read success must clear RoomSummary unread counts so sidebar and Activity/Unread agree"
         );
     }
 
@@ -28087,24 +28509,24 @@ mod tests {
     #[test]
     fn send_read_receipt_uses_threaded_receipt_for_thread_timelines() {
         let source = include_str!("timeline.rs");
-        let handler = source
-            .split("async fn handle_send_read_receipt")
+        let worker = source
+            .split("async fn perform_read_network_operation")
             .nth(1)
-            .expect("handle_send_read_receipt should exist")
-            .split("async fn handle_set_fully_read")
+            .expect("manager read worker should exist")
+            .split("async fn run_send_enqueue_future")
             .next()
-            .expect("handle_set_fully_read should follow handle_send_read_receipt");
+            .expect("send worker should follow read worker");
 
         assert!(
-            handler.contains("TimelineKind::Thread"),
-            "thread timeline read receipts must branch on TimelineKind::Thread"
+            worker.contains("ReadStateKey::ThreadRead"),
+            "thread timeline receipts must remain a distinct manager-owned operation"
         );
         assert!(
-            handler.contains("ReceiptThread::Thread"),
+            worker.contains("ReceiptThread::Thread"),
             "thread timeline read receipts must use ReceiptThread::Thread(root)"
         );
         assert!(
-            handler.contains("send_single_receipt"),
+            worker.contains("send_single_receipt"),
             "threaded read receipts must use the SDK single-receipt endpoint that accepts a thread"
         );
     }
@@ -28146,6 +28568,7 @@ mod tests {
         let handle = TimelineActorHandle {
             tx,
             control_tx: None,
+            position_rx: None,
             task: Some(actor_task),
             auxiliary_tasks: vec![auxiliary_task],
             subscription_generation: None,
@@ -28174,6 +28597,7 @@ mod tests {
         let handle = TimelineActorHandle {
             tx,
             control_tx: Some(control_tx),
+            position_rx: None,
             task: None,
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
@@ -28243,6 +28667,7 @@ mod tests {
         TimelineActorHandle {
             tx,
             control_tx: None,
+            position_rx: None,
             task: Some(task),
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
@@ -28297,6 +28722,7 @@ mod tests {
         TimelineActorHandle {
             tx,
             control_tx: None,
+            position_rx: None,
             task: Some(task),
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
@@ -28337,6 +28763,7 @@ mod tests {
         TimelineActorHandle {
             tx,
             control_tx: None,
+            position_rx: None,
             task: Some(task),
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
@@ -28382,6 +28809,7 @@ mod tests {
         TimelineActorHandle {
             tx,
             control_tx: None,
+            position_rx: None,
             task: Some(task),
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
@@ -28415,6 +28843,7 @@ mod tests {
         TimelineActorHandle {
             tx,
             control_tx: None,
+            position_rx: None,
             task: Some(task),
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
@@ -28440,6 +28869,7 @@ mod tests {
             send_completion: SharedSendCompletionCoordinator::default(),
             global_send_completion_observer_future: None,
             send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
+            read_workers: ReadWorkerSupervisor::unavailable(),
             action_tx,
             event_tx,
             msg_tx,
@@ -28479,6 +28909,578 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stalled_read_receipt_worker_does_not_block_cached_subscription_replay() {
+        let key = room_key();
+        let read_request_id = fake_rid(28_480);
+        let subscribe_request_id = fake_rid(28_481);
+        let (ordinary_tx, _ordinary_rx) = mpsc::channel(1);
+        let (control_tx, mut control_rx) = mpsc::channel(2);
+        let (_position_tx, position_rx) = watch::channel(Arc::new(TimelinePositionIndex {
+            generation: 11,
+            ranks: HashMap::from([("$read-target:test".to_owned(), 7)]),
+        }));
+        let actor_handle = TimelineActorHandle {
+            tx: ordinary_tx,
+            control_tx: Some(control_tx),
+            position_rx: Some(position_rx),
+            task: None,
+            auxiliary_tasks: Vec::new(),
+            subscription_generation: None,
+            enqueue_context: None,
+        };
+        let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), actor_handle)]));
+        let (read_network_tx, mut read_network_rx) = mpsc::unbounded_channel();
+        manager.read_workers =
+            ReadWorkerSupervisor::synthetic(read_network_tx, Duration::from_secs(30));
+        let (manager_tx, manager_rx) = mpsc::channel(4);
+        manager.msg_tx = manager_tx.clone();
+        manager.msg_rx = manager_rx;
+        let run = executor::spawn(manager.run());
+
+        manager_tx
+            .send(TimelineMessage::Command(TimelineCommand::SendReadReceipt {
+                request_id: read_request_id,
+                key: key.clone(),
+                event_id: "$read-target:test".to_owned(),
+            }))
+            .await
+            .expect("admit read command");
+        let stalled = executor::timeout(Duration::from_millis(100), read_network_rx.recv())
+            .await
+            .expect("read worker must start")
+            .expect("synthetic read request");
+
+        manager_tx
+            .send(TimelineMessage::Command(TimelineCommand::Subscribe {
+                request_id: subscribe_request_id,
+                key,
+            }))
+            .await
+            .expect("queue cached subscribe");
+
+        assert!(matches!(
+            executor::timeout(Duration::from_millis(100), control_rx.recv())
+                .await
+                .expect("cached replay must not wait for read network"),
+            Some(TimelineActorControl::ReplayInitialItems { cause_request_id })
+                if cause_request_id == subscribe_request_id
+        ));
+
+        drop(stalled);
+        let (acknowledged, acknowledgement) = oneshot::channel();
+        manager_tx
+            .send(TimelineMessage::Shutdown {
+                acknowledged: Some(acknowledged),
+            })
+            .await
+            .expect("shutdown manager");
+        acknowledgement.await.expect("shutdown acknowledgement");
+        run.await.expect("manager task");
+    }
+
+    #[tokio::test]
+    async fn newer_positioned_read_target_cancels_stale_worker_and_settles_both_waiters_once() {
+        let key = room_key();
+        let older_request_id = fake_rid(28_482);
+        let newer_request_id = fake_rid(28_483);
+        let (ordinary_tx, _ordinary_rx) = mpsc::channel(1);
+        let (control_tx, _control_rx) = mpsc::channel(2);
+        let (_position_tx, position_rx) = watch::channel(Arc::new(TimelinePositionIndex {
+            generation: 12,
+            ranks: HashMap::from([
+                ("$read-old:test".to_owned(), 7),
+                ("$read-new:test".to_owned(), 8),
+            ]),
+        }));
+        let actor_handle = TimelineActorHandle {
+            tx: ordinary_tx,
+            control_tx: Some(control_tx),
+            position_rx: Some(position_rx),
+            task: None,
+            auxiliary_tasks: Vec::new(),
+            subscription_generation: None,
+            enqueue_context: None,
+        };
+        let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), actor_handle)]));
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        manager.event_tx = event_tx;
+        let (read_network_tx, mut read_network_rx) = mpsc::unbounded_channel();
+        manager.read_workers =
+            ReadWorkerSupervisor::synthetic(read_network_tx, Duration::from_secs(30));
+        let (manager_tx, manager_rx) = mpsc::channel(4);
+        manager.msg_tx = manager_tx.clone();
+        manager.msg_rx = manager_rx;
+        let run = executor::spawn(manager.run());
+
+        for (request_id, event_id) in [
+            (older_request_id, "$read-old:test"),
+            (newer_request_id, "$read-new:test"),
+        ] {
+            manager_tx
+                .send(TimelineMessage::Command(TimelineCommand::SendReadReceipt {
+                    request_id,
+                    key: key.clone(),
+                    event_id: event_id.to_owned(),
+                }))
+                .await
+                .expect("admit read command");
+            if request_id == older_request_id {
+                break;
+            }
+        }
+        let older = executor::timeout(Duration::from_millis(100), read_network_rx.recv())
+            .await
+            .expect("older read worker must start")
+            .expect("older synthetic read request");
+        assert_eq!(older.operation.target().event_id(), "$read-old:test");
+
+        manager_tx
+            .send(TimelineMessage::Command(TimelineCommand::SendReadReceipt {
+                request_id: newer_request_id,
+                key: key.clone(),
+                event_id: "$read-new:test".to_owned(),
+            }))
+            .await
+            .expect("admit newer read command");
+        let newer = executor::timeout(Duration::from_millis(100), read_network_rx.recv())
+            .await
+            .expect("newer read worker must start")
+            .expect("newer synthetic read request");
+        assert_eq!(newer.operation.target().event_id(), "$read-new:test");
+        assert!(
+            older.response.send(Ok(())).is_err(),
+            "dominated worker must be cancelled before its late success"
+        );
+        newer.response.send(Ok(())).expect("complete newer target");
+
+        let mut settled = HashSet::new();
+        while settled.len() < 2 {
+            let event = executor::timeout(Duration::from_millis(100), event_rx.recv())
+                .await
+                .expect("both waiters must settle")
+                .expect("event stream");
+            if let CoreEvent::LiveSignals(LiveSignalsEvent::ReadReceiptSent {
+                request_id, ..
+            }) = event
+            {
+                assert!(settled.insert(request_id), "duplicate waiter success");
+            }
+        }
+        assert_eq!(settled, HashSet::from([older_request_id, newer_request_id]));
+        assert!(
+            executor::timeout(Duration::from_millis(25), event_rx.recv())
+                .await
+                .is_err(),
+            "stale completion must not emit a second terminal"
+        );
+
+        let (acknowledged, acknowledgement) = oneshot::channel();
+        manager_tx
+            .send(TimelineMessage::Shutdown {
+                acknowledged: Some(acknowledged),
+            })
+            .await
+            .expect("shutdown manager");
+        acknowledgement.await.expect("shutdown acknowledgement");
+        run.await.expect("manager task");
+    }
+
+    #[tokio::test]
+    async fn coalesced_read_timeout_fails_each_waiter_once_without_retry_storm() {
+        let key = room_key();
+        let request_ids = [fake_rid(28_484), fake_rid(28_485)];
+        let (ordinary_tx, _ordinary_rx) = mpsc::channel(1);
+        let (control_tx, _control_rx) = mpsc::channel(1);
+        let actor_handle = TimelineActorHandle {
+            tx: ordinary_tx,
+            control_tx: Some(control_tx),
+            position_rx: None,
+            task: None,
+            auxiliary_tasks: Vec::new(),
+            subscription_generation: None,
+            enqueue_context: None,
+        };
+        let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), actor_handle)]));
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        manager.event_tx = event_tx;
+        let (read_network_tx, mut read_network_rx) = mpsc::unbounded_channel();
+        manager.read_workers =
+            ReadWorkerSupervisor::synthetic(read_network_tx, Duration::from_millis(20));
+        let (manager_tx, manager_rx) = mpsc::channel(4);
+        manager.msg_tx = manager_tx.clone();
+        manager.msg_rx = manager_rx;
+        let run = executor::spawn(manager.run());
+
+        for request_id in request_ids {
+            manager_tx
+                .send(TimelineMessage::Command(TimelineCommand::SendReadReceipt {
+                    request_id,
+                    key: key.clone(),
+                    event_id: "$same-target:test".to_owned(),
+                }))
+                .await
+                .expect("admit coalesced read");
+        }
+        let stalled = executor::timeout(Duration::from_millis(100), read_network_rx.recv())
+            .await
+            .expect("one network worker must start")
+            .expect("synthetic read request");
+
+        let mut failed = HashSet::new();
+        while failed.len() < 2 {
+            let event = executor::timeout(Duration::from_millis(100), event_rx.recv())
+                .await
+                .expect("timeout must settle both waiters")
+                .expect("event stream");
+            if let CoreEvent::OperationFailed {
+                request_id,
+                failure:
+                    CoreFailure::TimelineOperationFailed {
+                        kind: TimelineFailureKind::Timeout,
+                    },
+            } = event
+            {
+                assert!(failed.insert(request_id), "duplicate waiter timeout");
+            }
+        }
+        assert_eq!(failed, HashSet::from(request_ids));
+        assert!(
+            executor::timeout(Duration::from_millis(40), read_network_rx.recv())
+                .await
+                .is_err(),
+            "timeout retains desired state but must not spin an immediate retry"
+        );
+        assert!(
+            executor::timeout(Duration::from_millis(20), event_rx.recv())
+                .await
+                .is_err(),
+            "each waiter receives exactly one timeout"
+        );
+
+        drop(stalled);
+        let (acknowledged, acknowledgement) = oneshot::channel();
+        manager_tx
+            .send(TimelineMessage::Shutdown {
+                acknowledged: Some(acknowledged),
+            })
+            .await
+            .expect("shutdown manager");
+        acknowledgement.await.expect("shutdown acknowledgement");
+        run.await.expect("manager task");
+    }
+
+    #[tokio::test]
+    async fn fully_read_success_waits_for_actor_control_ack_before_terminal_event() {
+        let key = room_key();
+        let request_id = fake_rid(28_486);
+        let (ordinary_tx, _ordinary_rx) = mpsc::channel(1);
+        let (control_tx, mut control_rx) = mpsc::channel(1);
+        let actor_handle = TimelineActorHandle {
+            tx: ordinary_tx,
+            control_tx: Some(control_tx),
+            position_rx: None,
+            task: None,
+            auxiliary_tasks: Vec::new(),
+            subscription_generation: None,
+            enqueue_context: None,
+        };
+        let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), actor_handle)]));
+        let (action_tx, mut action_rx) = mpsc::channel(4);
+        let (event_tx, mut event_rx) = broadcast::channel(4);
+        manager.action_tx = action_tx;
+        manager.event_tx = event_tx;
+        let (read_network_tx, mut read_network_rx) = mpsc::unbounded_channel();
+        manager.read_workers =
+            ReadWorkerSupervisor::synthetic(read_network_tx, Duration::from_secs(30));
+        let (manager_tx, manager_rx) = mpsc::channel(4);
+        manager.msg_tx = manager_tx.clone();
+        manager.msg_rx = manager_rx;
+        let run = executor::spawn(manager.run());
+
+        manager_tx
+            .send(TimelineMessage::Command(TimelineCommand::SetFullyRead {
+                request_id,
+                key: key.clone(),
+                event_id: "$fully-read:test".to_owned(),
+            }))
+            .await
+            .expect("admit fully-read command");
+        let network = executor::timeout(Duration::from_millis(100), read_network_rx.recv())
+            .await
+            .expect("fully-read worker must start")
+            .expect("synthetic read request");
+        network.response.send(Ok(())).expect("SDK success");
+        let control = executor::timeout(Duration::from_millis(100), control_rx.recv())
+            .await
+            .expect("success must enter actor control lane")
+            .expect("actor apply control");
+        assert!(
+            event_rx.try_recv().is_err(),
+            "success must wait for actor ACK"
+        );
+        let TimelineActorControl::ApplyReadSuccess {
+            kind: ReadActorApplyKind::FullyRead,
+            event_id,
+            acknowledged,
+        } = control
+        else {
+            panic!("expected fully-read actor control");
+        };
+        assert_eq!(event_id, "$fully-read:test");
+        acknowledged.send(true).expect("ack actor state update");
+
+        assert!(matches!(
+            executor::timeout(Duration::from_millis(100), action_rx.recv())
+                .await
+                .expect("reducer action after ACK"),
+            Some(actions)
+                if matches!(actions.as_slice(), [AppAction::RoomMarkedAsReadSucceeded { request_id: sequence, .. }] if *sequence == request_id.sequence)
+        ));
+        assert!(matches!(
+            executor::timeout(Duration::from_millis(100), event_rx.recv())
+                .await
+                .expect("success after ACK")
+                .expect("event stream"),
+            CoreEvent::LiveSignals(LiveSignalsEvent::FullyReadSet {
+                request_id: settled,
+                ..
+            }) if settled == request_id
+        ));
+
+        let (acknowledged, acknowledgement) = oneshot::channel();
+        manager_tx
+            .send(TimelineMessage::Shutdown {
+                acknowledged: Some(acknowledged),
+            })
+            .await
+            .expect("shutdown manager");
+        acknowledgement.await.expect("shutdown acknowledgement");
+        run.await.expect("manager task");
+    }
+
+    #[tokio::test]
+    async fn fully_read_success_after_actor_removal_fails_without_success_terminal() {
+        let key = room_key();
+        let request_id = fake_rid(28_487);
+        let (ordinary_tx, _ordinary_rx) = mpsc::channel(1);
+        let (control_tx, mut control_rx) = mpsc::channel(1);
+        let actor_handle = TimelineActorHandle {
+            tx: ordinary_tx,
+            control_tx: Some(control_tx),
+            position_rx: None,
+            task: None,
+            auxiliary_tasks: Vec::new(),
+            subscription_generation: None,
+            enqueue_context: None,
+        };
+        let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), actor_handle)]));
+        let (action_tx, _action_rx) = mpsc::channel(4);
+        let (event_tx, mut event_rx) = broadcast::channel(4);
+        manager.action_tx = action_tx;
+        manager.event_tx = event_tx;
+        let (read_network_tx, mut read_network_rx) = mpsc::unbounded_channel();
+        manager.read_workers =
+            ReadWorkerSupervisor::synthetic(read_network_tx, Duration::from_secs(30));
+        let (manager_tx, manager_rx) = mpsc::channel(4);
+        manager.msg_tx = manager_tx.clone();
+        manager.msg_rx = manager_rx;
+        let run = executor::spawn(manager.run());
+
+        manager_tx
+            .send(TimelineMessage::Command(TimelineCommand::SetFullyRead {
+                request_id,
+                key: key.clone(),
+                event_id: "$fully-read:test".to_owned(),
+            }))
+            .await
+            .expect("admit fully-read command");
+        let network = executor::timeout(Duration::from_millis(100), read_network_rx.recv())
+            .await
+            .expect("fully-read worker must start")
+            .expect("synthetic read request");
+        manager_tx
+            .send(TimelineMessage::Command(TimelineCommand::Unsubscribe {
+                request_id: fake_rid(28_488),
+                key: key.clone(),
+            }))
+            .await
+            .expect("remove actor");
+        assert!(
+            executor::timeout(Duration::from_millis(100), control_rx.recv())
+                .await
+                .expect("actor control sender must close")
+                .is_none()
+        );
+        network
+            .response
+            .send(Ok(()))
+            .expect("late SDK success after actor removal");
+
+        assert!(matches!(
+            executor::timeout(Duration::from_millis(100), event_rx.recv())
+                .await
+                .expect("missing actor must fail waiter")
+                .expect("event stream"),
+            CoreEvent::OperationFailed {
+                request_id: failed,
+                failure: CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Sdk,
+                },
+            } if failed == request_id
+        ));
+        assert!(
+            executor::timeout(Duration::from_millis(20), event_rx.recv())
+                .await
+                .is_err(),
+            "late network success must not emit a success terminal"
+        );
+
+        let (acknowledged, acknowledgement) = oneshot::channel();
+        manager_tx
+            .send(TimelineMessage::Shutdown {
+                acknowledged: Some(acknowledged),
+            })
+            .await
+            .expect("shutdown manager");
+        acknowledgement.await.expect("shutdown acknowledgement");
+        run.await.expect("manager task");
+    }
+
+    #[tokio::test]
+    async fn read_admission_rejects_missing_session_actor_and_invalid_ids_immediately() {
+        let key = room_key();
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        let mut manager =
+            live_tail_test_manager(HashMap::from([(key.clone(), test_timeline_actor_handle())]));
+        manager.event_tx = event_tx;
+
+        manager
+            .handle_command(TimelineCommand::SendReadReceipt {
+                request_id: fake_rid(28_489),
+                key: key.clone(),
+                event_id: "$event:test".to_owned(),
+            })
+            .await;
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::OperationFailed {
+                failure: CoreFailure::SessionRequired,
+                ..
+            })
+        ));
+
+        let (read_network_tx, mut read_network_rx) = mpsc::unbounded_channel();
+        manager.read_workers =
+            ReadWorkerSupervisor::synthetic(read_network_tx, Duration::from_secs(30));
+        manager.timelines.clear();
+        manager
+            .handle_command(TimelineCommand::SendReadReceipt {
+                request_id: fake_rid(28_490),
+                key: key.clone(),
+                event_id: "$event:test".to_owned(),
+            })
+            .await;
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::OperationFailed {
+                failure: CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::NotSubscribed,
+                },
+                ..
+            })
+        ));
+
+        manager
+            .timelines
+            .insert(key.clone(), test_timeline_actor_handle());
+        manager
+            .handle_command(TimelineCommand::SetFullyRead {
+                request_id: fake_rid(28_491),
+                key,
+                event_id: "not-an-event-id".to_owned(),
+            })
+            .await;
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::OperationFailed {
+                failure: CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Sdk,
+                },
+                ..
+            })
+        ));
+        assert!(manager.read_workers.tasks.is_empty());
+        assert!(read_network_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn failed_read_network_settles_waiter_once_without_retrying() {
+        let key = room_key();
+        let request_id = fake_rid(28_492);
+        let (event_tx, mut event_rx) = broadcast::channel(4);
+        let mut manager =
+            live_tail_test_manager(HashMap::from([(key.clone(), test_timeline_actor_handle())]));
+        manager.event_tx = event_tx;
+        let (read_network_tx, mut read_network_rx) = mpsc::unbounded_channel();
+        manager.read_workers =
+            ReadWorkerSupervisor::synthetic(read_network_tx, Duration::from_secs(30));
+
+        manager
+            .handle_command(TimelineCommand::SendReadReceipt {
+                request_id,
+                key,
+                event_id: "$event:test".to_owned(),
+            })
+            .await;
+        let responder = async {
+            let request = read_network_rx.recv().await.expect("read request");
+            request
+                .response
+                .send(Err(()))
+                .expect("fail network request");
+        };
+        let (completion, ()) = tokio::join!(manager.read_workers.tasks.next(), responder);
+        manager
+            .handle_read_worker_completion(completion.expect("worker completion"))
+            .await;
+
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::OperationFailed {
+                request_id: failed,
+                failure: CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Sdk,
+                },
+            }) if failed == request_id
+        ));
+        assert!(event_rx.try_recv().is_err());
+        assert!(manager.read_workers.tasks.is_empty());
+        assert!(read_network_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn manager_read_completion_lane_precedes_ordinary_mailbox() {
+        let source = include_str!("timeline.rs");
+        let manager_run = source
+            .split("    async fn run(mut self) {")
+            .nth(1)
+            .expect("timeline manager run loop")
+            .split("    async fn handle_navigation_projection")
+            .next()
+            .expect("manager run boundary");
+        let read_completion = manager_run
+            .find("completion = self.read_workers.tasks.next()")
+            .expect("manager read completion lane");
+        let ordinary_mailbox = manager_run
+            .find("msg = self.msg_rx.recv()")
+            .expect("manager ordinary mailbox");
+        assert!(
+            read_completion < ordinary_mailbox,
+            "biased manager select must poll read completions before ordinary commands"
+        );
+    }
+
+    #[tokio::test]
     async fn idempotent_subscribe_replay_carries_exact_command_cause() {
         let key = room_key();
         let first_subscribe_request_id = fake_rid(28_500);
@@ -28487,6 +29489,7 @@ mod tests {
         let actor_handle = TimelineActorHandle {
             tx: actor_tx,
             control_tx: None,
+            position_rx: None,
             task: None,
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
@@ -28527,6 +29530,7 @@ mod tests {
         let actor_handle = TimelineActorHandle {
             tx: actor_tx,
             control_tx: Some(control_tx),
+            position_rx: None,
             task: None,
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
@@ -28559,6 +29563,7 @@ mod tests {
         let actor_handle = TimelineActorHandle {
             tx: actor_tx,
             control_tx: None,
+            position_rx: None,
             task: None,
             auxiliary_tasks: Vec::new(),
             subscription_generation: None,
@@ -29599,6 +30604,7 @@ mod tests {
             send_completion: SharedSendCompletionCoordinator::default(),
             global_send_completion_observer_future: None,
             send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
+            read_workers: ReadWorkerSupervisor::unavailable(),
             action_tx,
             event_tx,
             msg_tx,
@@ -29984,6 +30990,7 @@ mod tests {
                 TimelineActorHandle {
                     tx: actor_tx,
                     control_tx: None,
+                    position_rx: None,
                     task: Some(child),
                     auxiliary_tasks: Vec::new(),
                     subscription_generation: None,
@@ -29994,6 +31001,7 @@ mod tests {
             send_completion: SharedSendCompletionCoordinator::default(),
             global_send_completion_observer_future: None,
             send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
+            read_workers: ReadWorkerSupervisor::unavailable(),
             action_tx,
             event_tx,
             msg_tx: msg_tx.clone(),
@@ -30070,6 +31078,7 @@ mod tests {
             send_completion: SharedSendCompletionCoordinator::default(),
             global_send_completion_observer_future: None,
             send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
+            read_workers: ReadWorkerSupervisor::unavailable(),
             action_tx,
             event_tx,
             msg_tx,
@@ -31322,6 +32331,7 @@ mod tests {
                 TimelineActorHandle {
                     tx: actor_tx,
                     control_tx: None,
+                    position_rx: None,
                     task: Some(actor_task),
                     auxiliary_tasks: Vec::new(),
                     subscription_generation: None,
@@ -31332,6 +32342,7 @@ mod tests {
             send_completion: SharedSendCompletionCoordinator::default(),
             global_send_completion_observer_future: None,
             send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
+            read_workers: ReadWorkerSupervisor::unavailable(),
             action_tx,
             event_tx,
             msg_tx: manager_tx.clone(),
@@ -31512,6 +32523,7 @@ mod tests {
                 TimelineActorHandle {
                     tx: actor_tx,
                     control_tx: None,
+                    position_rx: None,
                     task: Some(actor_task),
                     auxiliary_tasks: Vec::new(),
                     subscription_generation: None,
@@ -31522,6 +32534,7 @@ mod tests {
             send_completion: SharedSendCompletionCoordinator::default(),
             global_send_completion_observer_future: None,
             send_enqueue_workers: SendEnqueueWorkerSupervisor::new(terminal_ingress.clone()),
+            read_workers: ReadWorkerSupervisor::unavailable(),
             action_tx,
             event_tx,
             msg_tx: _manager_tx,
@@ -32808,7 +33821,7 @@ mod tests {
         // The existing-key branch must be present and must end with an early
         // return — proving the full SDK rebuild is skipped.
         let existing_key_branch = handle_subscribe_source
-            .split("let replay_result = self.timelines.get(&key)")
+            .split("let replay_result = if let Some(handle) = self.timelines.get(&key)")
             .nth(1)
             .expect("handle_subscribe must detect an already-subscribed key via timelines.get")
             .split("let client = session.client()")
@@ -33603,7 +34616,7 @@ mod tests {
     }
 
     #[test]
-    fn recovery_emits_attention_changes_and_receipt_subscription_precedes_query() {
+    fn recovery_and_manager_owned_receipt_success_preserve_attention_ordering() {
         let source = include_str!("timeline.rs");
         let recovery = source
             .split("async fn handle_relay_overflow")
@@ -33632,21 +34645,45 @@ mod tests {
             "subscribe-before-query closes the startup receipt race"
         );
 
-        let send_success = source
-            .split("match result {")
-            .filter(|section| section.contains("LiveSignalsEvent::ReadReceiptSent"))
-            .next()
-            .and_then(|section| section.split("Err(_) =>").next())
-            .expect("read-receipt success handler must exist");
-        let authoritative_query = send_success
-            .find("latest_user_read_receipt_timeline_event_id")
-            .expect("successful threaded send must re-query the authoritative receipt");
-        let acknowledge = send_success
-            .find("thread_attention.acknowledge")
-            .expect("successful threaded send must acknowledge the tracker");
+        let manager_completion = source
+            .split("async fn handle_read_worker_completion")
+            .nth(1)
+            .and_then(|section| section.split("fn spawn_read_actor_apply").next())
+            .expect("manager read-worker completion handler must exist");
         assert!(
-            authoritative_query < acknowledge,
-            "a stale requested event ID must not regress the authoritative baseline"
+            manager_completion.contains("self.spawn_read_actor_apply(operation.clone())")
+                && !manager_completion.contains("LiveSignalsEvent::ReadReceiptSent"),
+            "threaded network success must wait for actor control-lane application before terminal success"
+        );
+
+        let actor_apply = source
+            .split("async fn handle_read_success")
+            .nth(1)
+            .and_then(|section| {
+                section
+                    .split("async fn handle_own_read_receipt_changed")
+                    .next()
+            })
+            .expect("actor read-success application handler must exist");
+        let acknowledge = actor_apply
+            .find("thread_attention.acknowledge")
+            .expect("threaded read success must acknowledge the tracker");
+        let reliable_action = actor_apply
+            .find("emit_action_reliable(action).await")
+            .expect("thread attention acknowledgement must reach the reducer reliably");
+        assert!(
+            acknowledge < reliable_action,
+            "thread attention must update before the actor acknowledges read success"
+        );
+
+        let settlement = source
+            .split("async fn settle_read_operation")
+            .nth(1)
+            .and_then(|section| section.split("async fn route_to_actor_or_fail").next())
+            .expect("manager read settlement handler must exist");
+        assert!(
+            settlement.contains("LiveSignalsEvent::ReadReceiptSent"),
+            "only manager settlement may emit the existing read-receipt success event"
         );
     }
 
@@ -35571,6 +36608,7 @@ mod tests {
             TimelineActorHandle {
                 tx: actor_tx,
                 control_tx: None,
+                position_rx: None,
                 task: Some(actor_task),
                 auxiliary_tasks: Vec::new(),
                 subscription_generation: None,
@@ -36293,12 +37331,7 @@ mod tests {
     #[test]
     fn reaction_and_read_signal_handlers_emit_private_latency_traces() {
         let source = include_str!("timeline.rs");
-        for kind in [
-            "send_reaction",
-            "redact_reaction",
-            "send_read_receipt",
-            "set_fully_read",
-        ] {
+        for kind in ["send_reaction", "redact_reaction"] {
             assert!(
                 source.contains(&format!(
                     "trace_timeline_actor_operation(\n            \"actor_start\",\n            \"{kind}\""
@@ -36314,6 +37347,19 @@ mod tests {
                 "{kind} should trace actor completion"
             );
         }
+        for kind in ["send_read_receipt", "set_fully_read"] {
+            assert!(
+                source.contains(&format!(
+                    "trace_timeline_route(\"manager_received\", \"{kind}\""
+                )),
+                "{kind} should trace manager admission"
+            );
+        }
+        assert!(
+            source.contains("ReadWorkerCompletion::Network")
+                && source.contains("ReadWorkerCompletion::ActorApplied"),
+            "read operations must expose manager-owned network and state-apply completion stages"
+        );
         assert!(
             source.contains("trace_timeline_actor_scan(\n                    \"target_scan\"")
                 || source.contains("trace_timeline_actor_scan(\n                \"target_scan\""),
