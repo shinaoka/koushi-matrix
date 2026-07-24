@@ -602,7 +602,7 @@ describe("appStore projection cache", () => {
 function makeSnapshot(): DesktopSnapshot {
   return {
     state: {
-      schema_version: 2,
+      schema_version: 3,
       domain: {
         session: { kind: "ready", homeserver: "https://example.invalid", user_id: "@user:example.invalid", device_id: "DEVICE" },
         auth: { kind: "unknown" },

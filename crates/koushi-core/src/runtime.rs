@@ -808,6 +808,16 @@ impl CoreCommandHandle {
         self.composer_draft_leases.release(generation, lease_id)
     }
 
+    pub fn acquire_composer_draft_command_permit(
+        &self,
+        generation: ComposerRendererGeneration,
+        lease_id: ComposerDraftLeaseId,
+        scope: &ComposerDraftScope,
+    ) -> Result<ComposerDraftCommandPermit, ComposerDraftLeaseFailure> {
+        self.composer_draft_leases
+            .try_command_permit(generation, lease_id, scope)
+    }
+
     pub async fn command_with_composer_lease(
         &self,
         generation: ComposerRendererGeneration,
@@ -920,6 +930,16 @@ impl CoreConnection {
     ) -> Result<(), ComposerDraftLeaseFailure> {
         self.command_handle()
             .release_composer_draft_lease(generation, lease_id)
+    }
+
+    pub fn acquire_composer_draft_command_permit(
+        &self,
+        generation: ComposerRendererGeneration,
+        lease_id: ComposerDraftLeaseId,
+        scope: &ComposerDraftScope,
+    ) -> Result<ComposerDraftCommandPermit, ComposerDraftLeaseFailure> {
+        self.command_handle()
+            .acquire_composer_draft_command_permit(generation, lease_id, scope)
     }
 
     pub async fn command_with_composer_lease(
@@ -4961,6 +4981,49 @@ mod tests {
         RoomLatestEventSummary, RoomNotificationModeOperation, RoomNotificationSettings,
         RoomSummary, RoomTags, SessionInfo, SettingsPatch, UserProfile, reduce,
     };
+
+    #[test]
+    fn standalone_composer_command_permit_outlives_activation_lease() {
+        let composer_draft_leases = Arc::new(ComposerDraftLeaseRegistry::new());
+        let (command_tx, _command_rx) = mpsc::channel(1);
+        let handle = CoreCommandHandle {
+            connection_id: RuntimeConnectionId(1),
+            command_tx,
+            composer_draft_leases: Arc::clone(&composer_draft_leases),
+        };
+        let account = koushi_key::SessionKeyId {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: "@permit:example.invalid".to_owned(),
+            device_id: "DEVICE".to_owned(),
+        };
+        let target = ComposerTarget::Main {
+            room_id: "!room:example.invalid".to_owned(),
+        };
+        let scope = ComposerDraftScope {
+            account: account.clone(),
+            target: target.clone(),
+        };
+        let generation = handle
+            .begin_composer_draft_renderer_generation()
+            .expect("renderer generation");
+        let lease_id = handle
+            .acquire_composer_draft_lease(generation, scope.clone())
+            .expect("activation lease");
+        let permit = handle
+            .acquire_composer_draft_command_permit(generation, lease_id, &scope)
+            .expect("standalone terminal permit");
+
+        handle
+            .release_composer_draft_lease(generation, lease_id)
+            .expect("release activation lease");
+        assert_eq!(
+            composer_draft_leases.protected_targets(&account),
+            std::collections::BTreeSet::from([target.clone()])
+        );
+
+        drop(permit);
+        assert!(composer_draft_leases.protected_targets(&account).is_empty());
+    }
 
     #[test]
     fn destructive_composer_draft_clear_does_not_schedule_resurrection() {

@@ -41,6 +41,10 @@ import type {
 } from "../domain/types";
 import type { DiagnosticLogSnapshot } from "../domain/diagnostics";
 import type { RequestId, TimelineKey } from "../domain/coreEvents";
+import type {
+  ComposerDraftLeaseSnapshot,
+  ComposerDraftScope
+} from "../domain/composerDraftLifecycle";
 
 export function createDesktopApi(): DesktopApi {
   if (isTauriRuntime()) {
@@ -290,8 +294,37 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("select_room", { roomId });
   }
 
+  async beginComposerDraftRendererGeneration(): Promise<string> {
+    return invoke<string>("begin_composer_draft_renderer_generation");
+  }
+
+  async acquireComposerDraftLease(
+    scope: ComposerDraftScope,
+    rendererGeneration: string
+  ): Promise<ComposerDraftLeaseSnapshot> {
+    return invoke<ComposerDraftLeaseSnapshot>("acquire_composer_draft_lease", {
+      accountHomeserver: scope.account.homeserver,
+      accountUserId: scope.account.user_id,
+      accountDeviceId: scope.account.device_id,
+      target: scope.target,
+      rendererGeneration
+    });
+  }
+
+  async releaseComposerDraftLease(
+    leaseId: string,
+    rendererGeneration: string
+  ): Promise<void> {
+    return invoke<void>("release_composer_draft_lease", {
+      leaseId,
+      rendererGeneration
+    });
+  }
+
   async sendText(
     account: ComposerDraftAccountOwner,
+    leaseId: string,
+    rendererGeneration: string,
     submissionId: string,
     roomId: string,
     body: string,
@@ -302,6 +335,8 @@ class TauriDesktopApi implements DesktopApi {
       accountHomeserver: account.homeserver,
       accountUserId: account.userId,
       accountDeviceId: account.deviceId,
+      leaseId,
+      rendererGeneration,
       submissionId,
       roomId,
       body,
@@ -312,6 +347,8 @@ class TauriDesktopApi implements DesktopApi {
 
   async scheduleSend(
     account: ComposerDraftAccountOwner,
+    leaseId: string,
+    rendererGeneration: string,
     target: ComposerTarget,
     body: string,
     sendAtMs: number,
@@ -321,6 +358,8 @@ class TauriDesktopApi implements DesktopApi {
       accountHomeserver: account.homeserver,
       accountUserId: account.userId,
       accountDeviceId: account.deviceId,
+      leaseId,
+      rendererGeneration,
       target,
       body,
       sendAtMs,
@@ -378,6 +417,8 @@ class TauriDesktopApi implements DesktopApi {
 
   async sendPreparedUploads(
     account: ComposerDraftAccountOwner,
+    leaseId: string,
+    rendererGeneration: string,
     target: ComposerTarget,
     draftRevision: ComposerDraftRevision
   ): Promise<ComposerDraftAcceptanceResponse> {
@@ -385,6 +426,8 @@ class TauriDesktopApi implements DesktopApi {
       accountHomeserver: account.homeserver,
       accountUserId: account.userId,
       accountDeviceId: account.deviceId,
+      leaseId,
+      rendererGeneration,
       target,
       draftRevision
     });
@@ -647,6 +690,8 @@ class TauriDesktopApi implements DesktopApi {
 
   async setComposerDraft(
     account: ComposerDraftAccountOwner,
+    leaseId: string,
+    rendererGeneration: string,
     roomId: string,
     draft: string,
     revision: ComposerDraftRevision
@@ -655,9 +700,11 @@ class TauriDesktopApi implements DesktopApi {
       accountHomeserver: account.homeserver,
       accountUserId: account.userId,
       accountDeviceId: account.deviceId,
+      leaseId,
+      rendererGeneration,
       roomId,
       draft,
-      revision
+      draftRevision: revision
     });
   }
 
@@ -695,6 +742,8 @@ class TauriDesktopApi implements DesktopApi {
 
   async setThreadComposerDraft(
     account: ComposerDraftAccountOwner,
+    leaseId: string,
+    rendererGeneration: string,
     roomId: string,
     rootEventId: string,
     draft: string,
@@ -704,15 +753,19 @@ class TauriDesktopApi implements DesktopApi {
       accountHomeserver: account.homeserver,
       accountUserId: account.userId,
       accountDeviceId: account.deviceId,
+      leaseId,
+      rendererGeneration,
       roomId,
       rootEventId,
       draft,
-      revision
+      draftRevision: revision
     });
   }
 
   async sendThreadReply(
     account: ComposerDraftAccountOwner,
+    leaseId: string,
+    rendererGeneration: string,
     submissionId: string,
     roomId: string,
     rootEventId: string,
@@ -724,6 +777,8 @@ class TauriDesktopApi implements DesktopApi {
       accountHomeserver: account.homeserver,
       accountUserId: account.userId,
       accountDeviceId: account.deviceId,
+      leaseId,
+      rendererGeneration,
       submissionId,
       roomId,
       rootEventId,
@@ -874,6 +929,8 @@ class TauriDesktopApi implements DesktopApi {
 
   async sendReply(
     account: ComposerDraftAccountOwner,
+    leaseId: string,
+    rendererGeneration: string,
     submissionId: string,
     roomId: string,
     inReplyToEventId: string,
@@ -885,6 +942,8 @@ class TauriDesktopApi implements DesktopApi {
       accountHomeserver: account.homeserver,
       accountUserId: account.userId,
       accountDeviceId: account.deviceId,
+      leaseId,
+      rendererGeneration,
       submissionId,
       roomId,
       inReplyToEventId,

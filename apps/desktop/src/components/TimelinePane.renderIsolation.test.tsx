@@ -261,7 +261,7 @@ describe("TimelinePane render isolation", () => {
 function makeSnapshot(): DesktopSnapshot {
   return {
     state: {
-      schema_version: 2,
+      schema_version: 3,
       domain: {
         session: {
           kind: "ready",

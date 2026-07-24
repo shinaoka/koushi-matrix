@@ -7475,6 +7475,9 @@ mod tests {
             let state = super::CoreRuntimeState {
                 runtime,
                 connection: tokio::sync::Mutex::new(connection),
+                composer_draft_transport: std::sync::Mutex::new(
+                    crate::ComposerDraftTransportIdentities::default(),
+                ),
                 timeline_items_count: std::sync::atomic::AtomicUsize::new(0),
             };
             super::search::submit_search_production_path(

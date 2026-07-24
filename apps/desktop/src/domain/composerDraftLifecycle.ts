@@ -1,5 +1,6 @@
 import {
   COMPOSER_DRAFT_REVISION_ZERO,
+  compareComposerDraftRevisions,
   nextComposerDraftRevision
 } from "./composerDraftRevision";
 import type {
@@ -25,6 +26,7 @@ export interface ComposerDraftLeaseSnapshot {
 }
 
 export interface ComposerDraftLifecycleBackend {
+  begin(): Promise<string>;
   acquire(
     scope: ComposerDraftScope,
     rendererGeneration: string
@@ -44,6 +46,11 @@ export interface ComposerDraftLifecycleCounts {
   protected: number;
 }
 
+export interface ComposerDraftActiveOverlay {
+  value: string;
+  revision: ComposerDraftRevision | null;
+}
+
 export interface ComposerDraftLifecycleRegistry {
   activate(scope: ComposerDraftScope): Promise<ComposerDraftLeaseSnapshot>;
   observe(
@@ -51,13 +58,27 @@ export interface ComposerDraftLifecycleRegistry {
     revision: ComposerDraftRevision,
     lastAcceptedClearRevision: ComposerDraftRevision,
     hasAuthoritativeContent: boolean
-  ): void;
+  ): boolean;
   nextDraft(scope: ComposerDraftScope): ComposerDraftRevision;
+  reserveAcceptedRevision(
+    capture: ComposerDraftOperationCapture,
+    submittedRevision: ComposerDraftRevision
+  ): ComposerDraftRevision;
   beginOperation(scope: ComposerDraftScope): ComposerDraftOperationCapture;
   settleOperation(capture: ComposerDraftOperationCapture): boolean;
+  settleOperationCompletion(
+    capture: ComposerDraftOperationCapture,
+    leaseId: string,
+    capturedRevision: ComposerDraftRevision
+  ): boolean;
   setDebounce(scope: ComposerDraftScope, handle: number): void;
   clearDebounce(scope: ComposerDraftScope): void;
-  setActiveOverlay(scope: ComposerDraftScope, value: string | null): void;
+  setActiveOverlay(
+    scope: ComposerDraftScope,
+    value: string | null,
+    revision: ComposerDraftRevision | null
+  ): void;
+  activeOverlay(scope: ComposerDraftScope): ComposerDraftActiveOverlay | null;
   deactivate(scope: ComposerDraftScope): Promise<void>;
   revokeRendererGeneration(): void;
   counts(): ComposerDraftLifecycleCounts;
@@ -70,10 +91,17 @@ interface Entry {
   revision: ComposerDraftRevision;
   lastAcceptedClearRevision: ComposerDraftRevision;
   hasAuthoritativeContent: boolean;
-  activeOverlay: string | null;
+  activeOverlay: ComposerDraftActiveOverlay | null;
   active: boolean;
   debounce: number | null;
-  pendingOperations: Set<number>;
+  pendingOperations: Map<
+    number,
+    {
+      settled: Promise<void>;
+      resolve: () => void;
+      reservedAcceptedRevision: ComposerDraftRevision | null;
+    }
+  >;
   lease: ComposerDraftLeaseSnapshot | null;
   activation: Promise<ComposerDraftLeaseSnapshot> | null;
   releasePending: boolean;
@@ -99,9 +127,29 @@ export function createComposerDraftLifecycleRegistry(
   backend: ComposerDraftLifecycleBackend
 ): ComposerDraftLifecycleRegistry {
   const accounts = new Map<string, UserEntries>();
-  let rendererGeneration = 1n;
+  let rendererGeneration: string | null = null;
+  let rendererGenerationActivation: Promise<string> | null = null;
   let nextOperationId = 1;
   let nextLruSequence = 1;
+
+  async function activateRendererGeneration(): Promise<string> {
+    if (rendererGeneration !== null) return rendererGeneration;
+    if (rendererGenerationActivation !== null) return rendererGenerationActivation;
+    const activation = backend.begin();
+    rendererGenerationActivation = activation;
+    try {
+      const generation = await activation;
+      if (rendererGenerationActivation !== activation) {
+        throw new ComposerDraftRendererRetiredError();
+      }
+      rendererGeneration = generation;
+      return generation;
+    } finally {
+      if (rendererGenerationActivation === activation) {
+        rendererGenerationActivation = null;
+      }
+    }
+  }
 
   function accountEntries(
     account: ComposerDraftAccountOwner,
@@ -149,7 +197,7 @@ export function createComposerDraftLifecycleRegistry(
       activeOverlay: null,
       active: false,
       debounce: null,
-      pendingOperations: new Set(),
+      pendingOperations: new Map(),
       lease: null,
       activation: null,
       releasePending: false,
@@ -203,7 +251,7 @@ export function createComposerDraftLifecycleRegistry(
   function isProtected(entry: Entry): boolean {
     return (
       entry.hasAuthoritativeContent ||
-      (entry.activeOverlay !== null && entry.activeOverlay.length > 0) ||
+      (entry.activeOverlay !== null && entry.activeOverlay.value.length > 0) ||
       entry.active ||
       entry.debounce !== null ||
       entry.pendingOperations.size > 0 ||
@@ -240,15 +288,17 @@ export function createComposerDraftLifecycleRegistry(
     entry.lruSequence = null;
     if (entry.lease) return entry.lease;
     if (entry.activation) return entry.activation;
-    const admittedGeneration = rendererGeneration.toString();
-    const activation = backend.acquire(cloneScope(scope), admittedGeneration);
+    const activation = activateRendererGeneration().then((admittedGeneration) =>
+      backend.acquire(cloneScope(scope), admittedGeneration)
+    );
     entry.activation = activation;
     try {
       const lease = await activation;
+      const admittedGeneration = lease.rendererGeneration;
       const current = lookup(scope);
       if (
         current !== entry ||
-        rendererGeneration.toString() !== admittedGeneration ||
+        rendererGeneration !== admittedGeneration ||
         lease.rendererGeneration !== admittedGeneration
       ) {
         await backend.release(lease);
@@ -272,12 +322,37 @@ export function createComposerDraftLifecycleRegistry(
     revision: ComposerDraftRevision,
     lastAcceptedClearRevision: ComposerDraftRevision,
     hasAuthoritativeContent: boolean
-  ): void {
+  ): boolean {
     const entry = ensure(scope);
-    entry.revision = revision;
-    entry.lastAcceptedClearRevision = lastAcceptedClearRevision;
+    if (entry.lease) {
+      if (compareComposerDraftRevisions(revision, entry.revision) > 0) {
+        entry.revision = revision;
+      }
+      if (
+        compareComposerDraftRevisions(
+          lastAcceptedClearRevision,
+          entry.lastAcceptedClearRevision
+        ) > 0
+      ) {
+        entry.lastAcceptedClearRevision = lastAcceptedClearRevision;
+      }
+    } else {
+      entry.revision = revision;
+      entry.lastAcceptedClearRevision = lastAcceptedClearRevision;
+    }
     entry.hasAuthoritativeContent = hasAuthoritativeContent;
+    const overlayCleared =
+      entry.activeOverlay?.revision !== null &&
+      entry.activeOverlay?.revision !== undefined &&
+      compareComposerDraftRevisions(
+        entry.lastAcceptedClearRevision,
+        entry.activeOverlay.revision
+      ) > 0;
+    if (overlayCleared) {
+      entry.activeOverlay = null;
+    }
     reconcile(entry);
+    return overlayCleared;
   }
 
   function nextDraft(scope: ComposerDraftScope): ComposerDraftRevision {
@@ -287,24 +362,84 @@ export function createComposerDraftLifecycleRegistry(
     return entry.revision;
   }
 
+  function reserveAcceptedRevision(
+    capture: ComposerDraftOperationCapture,
+    submittedRevision: ComposerDraftRevision
+  ): ComposerDraftRevision {
+    const entry = lookup(capture.scope);
+    const pending = entry?.pendingOperations.get(capture.operationId);
+    if (
+      !entry ||
+      !pending ||
+      capture.rendererGeneration !== rendererGeneration ||
+      !entry.lease ||
+      entry.lease.rendererGeneration !== rendererGeneration
+    ) {
+      throw new ComposerDraftRendererRetiredError();
+    }
+    entry.revision = nextComposerDraftRevision(entry.revision, submittedRevision);
+    pending.reservedAcceptedRevision = entry.revision;
+    reconcile(entry);
+    return entry.revision;
+  }
+
   function beginOperation(scope: ComposerDraftScope): ComposerDraftOperationCapture {
     const entry = ensure(scope);
+    const generation = entry.lease?.rendererGeneration;
+    if (!generation || generation !== rendererGeneration) {
+      throw new ComposerDraftRendererRetiredError();
+    }
     const operationId = nextOperationId++;
-    entry.pendingOperations.add(operationId);
+    let resolve!: () => void;
+    const settled = new Promise<void>((done) => {
+      resolve = done;
+    });
+    entry.pendingOperations.set(operationId, {
+      settled,
+      resolve,
+      reservedAcceptedRevision: null
+    });
     entry.lruSequence = null;
     return {
       scope: cloneScope(scope),
-      rendererGeneration: rendererGeneration.toString(),
+      rendererGeneration: generation,
       operationId
     };
   }
 
   function settleOperation(capture: ComposerDraftOperationCapture): boolean {
     const entry = lookup(capture.scope);
-    if (!entry || !entry.pendingOperations.delete(capture.operationId)) return false;
-    const current = capture.rendererGeneration === rendererGeneration.toString();
+    const pending = entry?.pendingOperations.get(capture.operationId);
+    if (!entry || !pending) return false;
+    entry.pendingOperations.delete(capture.operationId);
+    pending.resolve();
+    const current = capture.rendererGeneration === rendererGeneration;
     reconcile(entry);
     return current;
+  }
+
+  function settleOperationCompletion(
+    capture: ComposerDraftOperationCapture,
+    leaseId: string,
+    capturedRevision: ComposerDraftRevision
+  ): boolean {
+    const entry = lookup(capture.scope);
+    const pending = entry?.pendingOperations.get(capture.operationId);
+    const revisionMatchesCompletion =
+      entry?.revision === capturedRevision ||
+      entry?.revision === pending?.reservedAcceptedRevision ||
+      (entry !== undefined &&
+        compareComposerDraftRevisions(
+          entry.lastAcceptedClearRevision,
+          capturedRevision
+        ) > 0 &&
+        entry.revision === entry.lastAcceptedClearRevision);
+    const canApply =
+      capture.rendererGeneration === rendererGeneration &&
+      entry?.lease?.leaseId === leaseId &&
+      revisionMatchesCompletion;
+    const generationIsCurrent = settleOperation(capture);
+    return generationIsCurrent && canApply;
   }
 
   function setDebounce(scope: ComposerDraftScope, handle: number): void {
@@ -320,9 +455,13 @@ export function createComposerDraftLifecycleRegistry(
     reconcile(entry);
   }
 
-  function setActiveOverlay(scope: ComposerDraftScope, value: string | null): void {
+  function setActiveOverlay(
+    scope: ComposerDraftScope,
+    value: string | null,
+    revision: ComposerDraftRevision | null
+  ): void {
     const entry = ensure(scope);
-    entry.activeOverlay = value;
+    entry.activeOverlay = value === null ? null : { value, revision };
     reconcile(entry);
   }
 
@@ -330,6 +469,12 @@ export function createComposerDraftLifecycleRegistry(
     const entry = lookup(scope);
     if (!entry) return;
     entry.active = false;
+    while (entry.pendingOperations.size > 0) {
+      await Promise.all(
+        [...entry.pendingOperations.values()].map((operation) => operation.settled)
+      );
+      if (lookup(scope) !== entry) return;
+    }
     const lease = entry.lease;
     entry.lease = null;
     if (!lease) {
@@ -348,19 +493,28 @@ export function createComposerDraftLifecycleRegistry(
   }
 
   function revokeRendererGeneration(): void {
-    rendererGeneration += 1n;
+    rendererGeneration = null;
+    rendererGenerationActivation = null;
     for (const entry of entries()) {
       entry.active = false;
       const lease = entry.lease;
       entry.lease = null;
       if (lease) {
         entry.releasePending = true;
-        void backend.release(lease).finally(() => {
-          if (lookup(entry.scope) === entry) {
-            entry.releasePending = false;
-            reconcile(entry);
+        void backend.release(lease).then(
+          () => {
+            if (lookup(entry.scope) === entry) {
+              entry.releasePending = false;
+              reconcile(entry);
+            }
+          },
+          () => {
+            if (lookup(entry.scope) === entry) {
+              entry.releasePending = false;
+              reconcile(entry);
+            }
           }
-        });
+        );
       }
       reconcile(entry);
     }
@@ -385,11 +539,17 @@ export function createComposerDraftLifecycleRegistry(
     activate,
     observe,
     nextDraft,
+    reserveAcceptedRevision,
     beginOperation,
     settleOperation,
+    settleOperationCompletion,
     setDebounce,
     clearDebounce,
     setActiveOverlay,
+    activeOverlay: (scope) => {
+      const overlay = lookup(scope)?.activeOverlay;
+      return overlay ? { ...overlay } : null;
+    },
     deactivate,
     revokeRendererGeneration,
     counts,
@@ -398,7 +558,7 @@ export function createComposerDraftLifecycleRegistry(
       const entry = lookup(scope);
       if (!entry) return null;
       return {
-        rendererGeneration: rendererGeneration.toString(),
+        rendererGeneration: entry.lease?.rendererGeneration ?? rendererGeneration ?? "",
         leaseId: entry.lease?.leaseId ?? "",
         revision: entry.revision,
         lastAcceptedClearRevision: entry.lastAcceptedClearRevision,

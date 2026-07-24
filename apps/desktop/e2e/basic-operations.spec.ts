@@ -2644,7 +2644,47 @@ test("eligible unverified peer devices do not gate ordinary sends", async ({ pag
   await expect(page.getByText(/send anyway/i)).toHaveCount(0);
 });
 
-test("main composer draft is Rust snapshot scoped per room", async ({ page }) => {
+test("composer string revision stays exact above Number.MAX_SAFE_INTEGER", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const current = window.__harness.currentSnapshot();
+    const exactRevision = "9007199254740993";
+    window.__harness.setSnapshot({
+      ...current,
+      state: {
+        ...current.state,
+        ui: {
+          ...current.state.ui,
+          timeline: {
+            ...current.state.ui.timeline,
+            composer: {
+              ...current.state.ui.timeline.composer,
+              draft: "exact Rust baseline",
+              draft_revision: exactRevision,
+              last_accepted_clear_revision: exactRevision
+            }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+    window.__harness.clearInvocations();
+  });
+
+  const composer = page.getByRole("textbox", { name: "Message composer" });
+  await expect(composer).toHaveValue("exact Rust baseline");
+  await composer.fill("exact revision");
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__harness.invocationsOf("set_composer_draft").at(-1)?.args)
+    )
+    .toMatchObject({
+      draft: "exact revision",
+      draftRevision: "9007199254740994"
+    });
+});
+
+test("main composer delayed write survives churn then rejects stale completion", async ({ page }) => {
   await gotoReadyShell(page);
   await page.evaluate(() => {
     const primaryRoomId = "!harness-room:example.invalid";
@@ -2721,14 +2761,22 @@ test("main composer draft is Rust snapshot scoped per room", async ({ page }) =>
     window.__harness.setSnapshot(projectRoom(primaryRoomId));
     window.__harness.setCommandResponse(
       "set_composer_draft",
-      ({ roomId, draft, revision }: { roomId: string; draft: string; revision: string }) => {
+      ({
+        roomId,
+        draft,
+        draftRevision
+      }: {
+        roomId: string;
+        draft: string;
+        draftRevision: string;
+      }) => {
         const normalizedRoomId = String(roomId);
-        if (BigInt(revision) <= BigInt(revisionByRoom[normalizedRoomId] ?? "0")) {
+        if (BigInt(draftRevision) <= BigInt(revisionByRoom[normalizedRoomId] ?? "0")) {
           return projectRoom(
             window.__harness.currentSnapshot().state.ui.timeline.room_id ?? primaryRoomId
           );
         }
-        revisionByRoom[normalizedRoomId] = revision;
+        revisionByRoom[normalizedRoomId] = draftRevision;
         if (draft.length === 0) {
           delete draftByRoom[normalizedRoomId];
         } else {
@@ -2767,14 +2815,14 @@ test("main composer draft is Rust snapshot scoped per room", async ({ page }) =>
           .map(({ args }) => args)
       )
     )
-    .toEqual([
+    .toMatchObject([
       {
         accountHomeserver: "https://harness.example.invalid",
         accountUserId: "@harness-user:example.invalid",
         accountDeviceId: "HARNESSDEVICE",
         roomId: HARNESS_ROOM_ID,
         draft: "Room A draft",
-        revision: "1"
+        draftRevision: "1"
       },
       {
         accountHomeserver: "https://harness.example.invalid",
@@ -2782,7 +2830,7 @@ test("main composer draft is Rust snapshot scoped per room", async ({ page }) =>
         accountDeviceId: "HARNESSDEVICE",
         roomId: "!draft-room-b:example.invalid",
         draft: "Room B draft",
-        revision: "1"
+        draftRevision: "1"
       }
     ]);
 
@@ -3078,7 +3126,7 @@ test("main composer keeps an emptied local draft across stale snapshot refresh",
     window.__harness.setSnapshot(staleDraftSnapshot);
     window.__harness.setCommandResponse(
       "set_composer_draft",
-      ({ draft, revision }: { draft: string; revision: string }) => {
+      ({ draft, draftRevision }: { draft: string; draftRevision: string }) => {
         const snapshot = window.__harness.currentSnapshot();
         return {
           ...snapshot,
@@ -3091,7 +3139,7 @@ test("main composer keeps an emptied local draft across stale snapshot refresh",
                 composer: {
                   ...snapshot.state.ui.timeline.composer,
                   draft,
-                  draft_revision: revision
+                  draft_revision: draftRevision
                 }
               }
             }
@@ -3114,13 +3162,13 @@ test("main composer keeps an emptied local draft across stale snapshot refresh",
     .poll(async () =>
       page.evaluate(() => window.__harness.invocationsOf("set_composer_draft").at(-1)?.args)
     )
-    .toEqual({
+    .toMatchObject({
       accountHomeserver: "https://harness.example.invalid",
       accountUserId: "@harness-user:example.invalid",
       accountDeviceId: "HARNESSDEVICE",
       roomId: HARNESS_ROOM_ID,
       draft: "",
-      revision: "2"
+      draftRevision: "2"
     });
 
   await page.evaluate(() => {
@@ -3130,7 +3178,7 @@ test("main composer keeps an emptied local draft across stale snapshot refresh",
 });
 
 for (const completionOrder of ["accepted-first", "persist-first"] as const) {
-  test(`main composer revision fence keeps immediate next input (${completionOrder})`, async ({
+  test(`accepted clear changes IME sync while newer input does not (${completionOrder})`, async ({
     page
   }) => {
     await gotoReadyShell(page);
@@ -3155,17 +3203,19 @@ for (const completionOrder of ["accepted-first", "persist-first"] as const) {
         "set_composer_draft",
         async ({
           draft,
-          revision
+          draftRevision
         }: {
           roomId: string;
           draft: string;
-          revision: string;
+          draftRevision: string;
         }) => {
-          if (revision === "1") {
+          if (draftRevision === "1") {
             await persistGate;
           }
           const current = window.__harness.currentSnapshot();
-          if (BigInt(revision) <= BigInt(current.state.ui.timeline.composer.draft_revision)) {
+          if (
+            BigInt(draftRevision) <= BigInt(current.state.ui.timeline.composer.draft_revision)
+          ) {
             return current;
           }
           const next = {
@@ -3179,7 +3229,7 @@ for (const completionOrder of ["accepted-first", "persist-first"] as const) {
                   composer: {
                     ...current.state.ui.timeline.composer,
                     draft,
-                    draft_revision: revision
+                    draft_revision: draftRevision
                   }
                 }
               }
@@ -3201,6 +3251,11 @@ for (const completionOrder of ["accepted-first", "persist-first"] as const) {
           await sendGate;
           const current = window.__harness.currentSnapshot();
           const currentComposer = current.state.ui.timeline.composer;
+          const acceptedRevision = (
+            (BigInt(currentComposer.draft_revision) > BigInt(draftRevision)
+              ? BigInt(currentComposer.draft_revision)
+              : BigInt(draftRevision)) + 1n
+          ).toString();
           const next = {
             outcome: "accepted",
             submissionId,
@@ -3220,11 +3275,8 @@ for (const completionOrder of ["accepted-first", "persist-first"] as const) {
                           ? currentComposer.draft
                           : "",
                       draft_revision:
-                        (
-                          (BigInt(currentComposer.draft_revision) > BigInt(draftRevision)
-                            ? BigInt(currentComposer.draft_revision)
-                            : BigInt(draftRevision)) + 1n
-                        ).toString()
+                        acceptedRevision,
+                      last_accepted_clear_revision: acceptedRevision
                     }
                   }
                 }
@@ -3271,7 +3323,7 @@ for (const completionOrder of ["accepted-first", "persist-first"] as const) {
     await expect
       .poll(async () =>
         page.evaluate(
-          () => window.__harness.invocationsOf("set_composer_draft").at(-1)?.args.revision
+          () => window.__harness.invocationsOf("set_composer_draft").at(-1)?.args.draftRevision
         )
       )
       .toBe("3");
@@ -3279,7 +3331,7 @@ for (const completionOrder of ["accepted-first", "persist-first"] as const) {
   });
 }
 
-test("main composer discards an accepted send response from the previous account", async ({
+test("account switch revokes unresolved composer lifecycle", async ({
   page
 }) => {
   await gotoReadyShell(page);
@@ -3406,7 +3458,7 @@ for (const failure of ["rejected", "timeout"] as const) {
       .poll(async () =>
         page.evaluate(() => window.__harness.invocationsOf("send_text")[0]?.args.draftRevision)
       )
-      .toBe(1);
+      .toBe("1");
   });
 }
 
@@ -3575,8 +3627,8 @@ test("scheduled send UI dispatches typed commands and waits for Rust snapshot ch
       window.__harness.setSnapshot(projectScheduled([], ""));
       window.__harness.setCommandResponse(
         "set_composer_draft",
-        ({ draft, revision }: { draft: string; revision: string }) => {
-          const next = projectScheduled([], draft, revision);
+        ({ draft, draftRevision }: { draft: string; draftRevision: string }) => {
+          const next = projectScheduled([], draft, draftRevision);
           window.__harness.setSnapshot(next);
           return next;
         }
@@ -3625,7 +3677,7 @@ test("scheduled send UI dispatches typed commands and waits for Rust snapshot ch
 
   await expect
     .poll(async () => page.evaluate(() => window.__harness.invocationsOf("schedule_send")[0]?.args))
-    .toEqual({
+    .toMatchObject({
       accountHomeserver: "https://harness.example.invalid",
       accountUserId: "@harness-user:example.invalid",
       accountDeviceId: "HARNESSDEVICE",
@@ -4683,7 +4735,7 @@ test("paste/drop upload UX stages ordinary files for the captured main composer 
     .poll(async () =>
       page.evaluate(() => window.__harness.invocationsOf("send_prepared_uploads")[0]?.args)
     )
-    .toEqual({
+    .toMatchObject({
       accountHomeserver: "https://harness.example.invalid",
       accountUserId: "@harness-user:example.invalid",
       accountDeviceId: "HARNESSDEVICE",
@@ -5447,7 +5499,7 @@ test("thread panel scrollback invokes thread pagination command only", async ({
   ).toBeVisible();
 });
 
-test("thread composer drafts and sends through thread reply commands only", async ({
+test("thread composer delayed write is root isolated across churn", async ({
   page
 }) => {
   await gotoReadyShell(page);
@@ -5468,14 +5520,14 @@ test("thread composer drafts and sends through thread reply commands only", asyn
     .poll(async () =>
       page.evaluate(() => window.__harness.invocationsOf("set_thread_composer_draft")[0]?.args)
     )
-    .toEqual({
+    .toMatchObject({
       accountHomeserver: "https://harness.example.invalid",
       accountUserId: "@harness-user:example.invalid",
       accountDeviceId: "HARNESSDEVICE",
       roomId: "!harness-room:example.invalid",
       rootEventId: "$seed-event:example.invalid",
       draft: threadReplyBody,
-      revision: "1"
+      draftRevision: "1"
     });
 
   await threadComposer.press("Enter");
@@ -5546,7 +5598,7 @@ test("thread composer drafts and sends through thread reply commands only", asyn
     .poll(async () =>
       page.evaluate(() => window.__harness.invocationsOf("send_prepared_uploads")[0]?.args)
     )
-    .toEqual({
+    .toMatchObject({
       accountHomeserver: "https://harness.example.invalid",
       accountUserId: "@harness-user:example.invalid",
       accountDeviceId: "HARNESSDEVICE",

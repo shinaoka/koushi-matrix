@@ -152,7 +152,7 @@ function snapshotForPanelMode(
 ): Pick<DesktopSnapshot, "state" | "thread"> {
   return {
     state: {
-      schema_version: 2,
+      schema_version: 3,
       domain: {
         session: { kind: sessionKind },
         auth: { kind: "unknown" },

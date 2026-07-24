@@ -150,8 +150,8 @@ export function ContextualRightPanel({
   onThreadUseOriginalStagedUpload = () => undefined,
   onThreadUpdateStagedUploadCaption = () => undefined,
   threadComposerMentionIntents = {},
-  threadComposerDraftClearEpochs = {},
-  threadComposerDraftOverrides = {}
+  threadComposerDraftImeKey,
+  threadComposerDraftOverride
 }: {
   activeRoom: DesktopSnapshot["state"]["domain"]["rooms"][number] | null;
   activeSpace: DesktopSnapshot["state"]["domain"]["spaces"][number] | null;
@@ -306,8 +306,8 @@ export function ContextualRightPanel({
     caption: string
   ) => void;
   threadComposerMentionIntents?: Record<string, MentionIntent>;
-  threadComposerDraftClearEpochs?: Record<string, number>;
-  threadComposerDraftOverrides?: Record<string, string>;
+  threadComposerDraftImeKey?: string;
+  threadComposerDraftOverride?: string;
 }) {
   const mediaDownloads = snapshot.state.ui.timeline.media_downloads ?? {};
 
@@ -648,11 +648,7 @@ export function ContextualRightPanel({
   const threadComposer = threadState.kind === "open" ? threadState.composer : undefined;
   const threadDraftKeyValue =
     threadRoomId && rootEventId ? threadComposerDraftKey(threadRoomId, rootEventId) : null;
-  const threadDraft =
-    threadDraftKeyValue &&
-    Object.prototype.hasOwnProperty.call(threadComposerDraftOverrides, threadDraftKeyValue)
-      ? threadComposerDraftOverrides[threadDraftKeyValue] ?? ""
-      : threadComposer?.draft ?? "";
+  const threadDraft = threadComposerDraftOverride ?? threadComposer?.draft ?? "";
   const threadSendPending = Boolean(threadComposer?.pending_transaction_id);
   const threadStagedUploads = threadState.kind === "open" ? threadState.staged_uploads ?? [] : [];
   const threadUploadsReady = threadStagedUploads.every(
@@ -761,9 +757,10 @@ export function ContextualRightPanel({
       ) : null}
       <ThreadComposer
         draft={threadDraft}
-        draftKey={`${threadDraftKeyValue ?? `${threadRoomId}:${rootEventId}`}\u0000${
-          threadDraftKeyValue ? (threadComposerDraftClearEpochs[threadDraftKeyValue] ?? 0) : 0
-        }`}
+        draftKey={
+          threadComposerDraftImeKey ??
+          `${threadDraftKeyValue ?? `${threadRoomId}:${rootEventId}`}\u00000`
+        }
         isSending={threadSendPending}
         hasStagedUploads={threadStagedUploads.length > 0}
         stagedUploadsReady={threadUploadsReady}

@@ -39,12 +39,30 @@ function revision(value: number | string) {
 function immediateBackend(): ComposerDraftLifecycleBackend {
   let nextLease = 1;
   return {
+    begin: async () => "1",
     acquire: async (_scope, rendererGeneration) => ({
       rendererGeneration,
       leaseId: String(nextLease++),
       revision: revision(0),
       lastAcceptedClearRevision: revision(0),
       hasAuthoritativeContent: false
+    }),
+    release: async () => {}
+  };
+}
+
+function backendAt(
+  capturedRevision: string,
+  lastAcceptedClearRevision = "0"
+): ComposerDraftLifecycleBackend {
+  return {
+    begin: async () => "1",
+    acquire: async (_scope, rendererGeneration) => ({
+      rendererGeneration,
+      leaseId: "lease-large",
+      revision: revision(capturedRevision),
+      lastAcceptedClearRevision: revision(lastAcceptedClearRevision),
+      hasAuthoritativeContent: true
     }),
     release: async () => {}
   };
@@ -59,6 +77,177 @@ function deferred<T>() {
 }
 
 describe("composer draft lifecycle registry", () => {
+  it("uses the opaque backend renderer generation for lease acquisition", async () => {
+    const acquiredGenerations: string[] = [];
+    let beginCount = 0;
+    const backend = {
+      begin: async () => {
+        beginCount += 1;
+        return "2";
+      },
+      acquire: async (_scope: ComposerDraftScope, rendererGeneration: string) => {
+        acquiredGenerations.push(rendererGeneration);
+        return {
+          rendererGeneration,
+          leaseId: "opaque-generation-lease",
+          revision: revision(0),
+          lastAcceptedClearRevision: revision(0),
+          hasAuthoritativeContent: false
+        };
+      },
+      release: async () => {}
+    } as ComposerDraftLifecycleBackend;
+    const registry = createComposerDraftLifecycleRegistry(backend);
+
+    await registry.activate(main(account("opaque-generation"), "room"));
+
+    expect(beginCount).toBe(1);
+    expect(acquiredGenerations).toEqual(["2"]);
+  });
+
+  it("begins and uses the next backend generation after revocation", async () => {
+    const backendGenerations = ["2", "17"];
+    const acquiredGenerations: string[] = [];
+    const backend = {
+      begin: async () => backendGenerations.shift()!,
+      acquire: async (_scope: ComposerDraftScope, rendererGeneration: string) => {
+        acquiredGenerations.push(rendererGeneration);
+        return {
+          rendererGeneration,
+          leaseId: `lease-${rendererGeneration}`,
+          revision: revision(0),
+          lastAcceptedClearRevision: revision(0),
+          hasAuthoritativeContent: false
+        };
+      },
+      release: async () => {}
+    } as ComposerDraftLifecycleBackend;
+    const registry = createComposerDraftLifecycleRegistry(backend);
+    const owner = account("next-generation");
+
+    await registry.activate(main(owner, "first-room"));
+    registry.revokeRendererGeneration();
+    await registry.activate(main(owner, "second-room"));
+
+    expect(backendGenerations).toEqual([]);
+    expect(acquiredGenerations).toEqual(["2", "17"]);
+  });
+
+  it("uses the backend current generation after a fresh registry remount", async () => {
+    let backendGeneration = 1;
+    const acquiredGenerations: string[] = [];
+    const backend = {
+      begin: async () => String(++backendGeneration),
+      acquire: async (_scope: ComposerDraftScope, rendererGeneration: string) => {
+        acquiredGenerations.push(rendererGeneration);
+        return {
+          rendererGeneration,
+          leaseId: `lease-${rendererGeneration}`,
+          revision: revision(0),
+          lastAcceptedClearRevision: revision(0),
+          hasAuthoritativeContent: false
+        };
+      },
+      release: async () => {}
+    } as ComposerDraftLifecycleBackend;
+    const owner = account("fresh-registry");
+
+    await createComposerDraftLifecycleRegistry(backend).activate(main(owner, "first-room"));
+    await createComposerDraftLifecycleRegistry(backend).activate(main(owner, "second-room"));
+
+    expect(acquiredGenerations).toEqual(["2", "3"]);
+  });
+
+  it("does not roll back a locally advanced revision while its lease is live", async () => {
+    const owner = account("live-observe");
+    const scope = main(owner, "live-room");
+    const registry = createComposerDraftLifecycleRegistry(backendAt("5", "4"));
+    await registry.activate(scope);
+    expect(registry.nextDraft(scope)).toBe("6");
+
+    registry.observe(scope, revision(5), revision(4), true);
+
+    expect(registry.snapshot(scope)).toMatchObject({
+      revision: "6",
+      lastAcceptedClearRevision: "4"
+    });
+    expect(registry.nextDraft(scope)).toBe("7");
+  });
+
+  it.each(["response-first", "accepted-clear-first"] as const)(
+    "reserves an accepted successor before %s completion",
+    async (order) => {
+      const owner = account(`reserved-${order}`);
+      const scope = main(owner, "reserved-room");
+      const registry = createComposerDraftLifecycleRegistry(backendAt("1"));
+      const lease = await registry.activate(scope);
+      registry.setActiveOverlay(scope, "submitted", revision(1));
+      const capture = registry.beginOperation(scope);
+
+      expect(registry.reserveAcceptedRevision(capture, revision(1))).toBe("2");
+      if (order === "accepted-clear-first") {
+        expect(registry.observe(scope, revision(2), revision(2), false)).toBe(true);
+      }
+
+      expect(
+        registry.settleOperationCompletion(capture, lease.leaseId, revision(1))
+      ).toBe(true);
+      expect(registry.snapshot(scope)).toMatchObject({
+        revision: "2",
+        lastAcceptedClearRevision:
+          order === "accepted-clear-first" ? "2" : "0"
+      });
+    }
+  );
+
+  it("rejects an old completion after an accepted clear and newer local input", async () => {
+    const owner = account("accepted-clear-newer");
+    const scope = main(owner, "accepted-clear-room");
+    const registry = createComposerDraftLifecycleRegistry(backendAt("1"));
+    const lease = await registry.activate(scope);
+    registry.setActiveOverlay(scope, "submitted", revision(1));
+    const capture = registry.beginOperation(scope);
+    expect(registry.reserveAcceptedRevision(capture, revision(1))).toBe("2");
+    expect(registry.observe(scope, revision(2), revision(2), false)).toBe(true);
+
+    const newerRevision = registry.nextDraft(scope);
+    registry.setActiveOverlay(scope, "newer input", newerRevision);
+
+    expect(newerRevision).toBe("3");
+    expect(
+      registry.settleOperationCompletion(capture, lease.leaseId, revision(1))
+    ).toBe(false);
+    expect(registry.activeOverlay(scope)).toEqual({
+      value: "newer input",
+      revision: "3"
+    });
+    expect(registry.snapshot(scope)).toMatchObject({
+      revision: "3",
+      lastAcceptedClearRevision: "2"
+    });
+  });
+
+  it("clears only an overlay older than the Rust accepted-clear token", async () => {
+    const owner = account("overlay-clear");
+    const scope = main(owner, "overlay-room");
+    const registry = createComposerDraftLifecycleRegistry(backendAt("1"));
+    await registry.activate(scope);
+    registry.setActiveOverlay(scope, "submitted", revision(1));
+    const capture = registry.beginOperation(scope);
+    registry.reserveAcceptedRevision(capture, revision(1));
+
+    expect(registry.observe(scope, revision(2), revision(2), false)).toBe(true);
+    expect(registry.activeOverlay(scope)).toBeNull();
+
+    const newerRevision = registry.nextDraft(scope);
+    registry.setActiveOverlay(scope, "newer", newerRevision);
+    expect(registry.observe(scope, revision(3), revision(2), true)).toBe(false);
+    expect(registry.activeOverlay(scope)).toEqual({
+      value: "newer",
+      revision: "3"
+    });
+  });
+
   it("bounds room and thread quiescent entries by lifecycle order", async () => {
     const owner = account("bounds");
     const registry = createComposerDraftLifecycleRegistry(immediateBackend());
@@ -120,9 +309,10 @@ describe("composer draft lifecycle registry", () => {
     registry.observe(protectedScopes[2], revision(1), revision(0), false);
     registry.setDebounce(protectedScopes[2], 7);
     registry.observe(protectedScopes[3], revision(1), revision(0), false);
+    await registry.activate(protectedScopes[3]);
     registry.beginOperation(protectedScopes[3]);
     registry.observe(protectedScopes[4], revision(1), revision(0), false);
-    registry.setActiveOverlay(protectedScopes[4], "typed");
+    registry.setActiveOverlay(protectedScopes[4], "typed", revision(1));
 
     for (let index = 0; index < 140; index += 1) {
       registry.observe(main(owner, `churn-main-${index}`), revision(0), revision(0), false);
@@ -146,17 +336,19 @@ describe("composer draft lifecycle registry", () => {
     }
   });
 
-  it("retires protected entries after flush and settlement", () => {
+  it("retires protected entries after flush and settlement", async () => {
     const owner = account("settlement");
     const registry = createComposerDraftLifecycleRegistry(immediateBackend());
     const scope = main(owner, "settle");
     registry.observe(scope, revision(1), revision(1), false);
     registry.setDebounce(scope, 3);
+    await registry.activate(scope);
     const capture = registry.beginOperation(scope);
 
     registry.clearDebounce(scope);
     expect(registry.counts().protected).toBe(1);
     expect(registry.settleOperation(capture)).toBe(true);
+    await registry.deactivate(scope);
 
     expect(registry.counts()).toEqual({
       quiescentMain: 1,
@@ -165,12 +357,73 @@ describe("composer draft lifecycle registry", () => {
     });
   });
 
-  it("rejects late completion from a retired renderer generation", () => {
+  it("waits for admitted operations before releasing an active lease", async () => {
+    const owner = account("deactivate-barrier");
+    const scope = main(owner, "barrier-room");
+    let releaseCount = 0;
+    const registry = createComposerDraftLifecycleRegistry({
+      ...immediateBackend(),
+      release: async () => {
+        releaseCount += 1;
+      }
+    });
+    await registry.activate(scope);
+    const capture = registry.beginOperation(scope);
+
+    const deactivation = registry.deactivate(scope);
+    await Promise.resolve();
+    expect(releaseCount).toBe(0);
+
+    expect(registry.settleOperation(capture)).toBe(true);
+    await deactivation;
+    expect(releaseCount).toBe(1);
+  });
+
+  it.each(["response-first", "accepted-clear-first"] as const)(
+    "settles exact large terminal revision when %s",
+    async (order) => {
+      const captured = revision("9007199254740993");
+      const accepted = revision("9007199254740994");
+      const owner = account(`terminal-${order}`);
+      const scope = main(owner, "large-order-room");
+      const registry = createComposerDraftLifecycleRegistry(
+        backendAt(captured)
+      );
+      const lease = await registry.activate(scope);
+      const capture = registry.beginOperation(scope);
+      const response = deferred<void>();
+      const completion = response.promise.then(() =>
+        registry.settleOperationCompletion(
+          capture,
+          lease.leaseId,
+          captured
+        )
+      );
+
+      if (order === "accepted-clear-first") {
+        registry.observe(scope, accepted, accepted, false);
+        response.resolve();
+        await expect(completion).resolves.toBe(true);
+      } else {
+        response.resolve();
+        await expect(completion).resolves.toBe(true);
+        registry.observe(scope, accepted, accepted, false);
+      }
+
+      expect(registry.snapshot(scope)).toMatchObject({
+        revision: accepted,
+        lastAcceptedClearRevision: accepted
+      });
+      expect(typeof registry.snapshot(scope)?.revision).toBe("string");
+    }
+  );
+
+  it("rejects late completion from a retired renderer generation", async () => {
     const owner = account("retired");
-    const registry = createComposerDraftLifecycleRegistry(immediateBackend());
+    const registry = createComposerDraftLifecycleRegistry(backendAt("4", "3"));
     const scope = main(owner, "retired-room");
-    registry.observe(scope, revision(4), revision(3), false);
-    registry.setActiveOverlay(scope, "new input");
+    registry.setActiveOverlay(scope, "new input", revision(4));
+    await registry.activate(scope);
     const capture = registry.beginOperation(scope);
 
     registry.revokeRendererGeneration();
@@ -214,6 +467,7 @@ describe("composer draft lifecycle registry", () => {
     const scope = main(owner, "rehydrate-room");
     const acquire = deferred<ComposerDraftLeaseSnapshot>();
     const backend: ComposerDraftLifecycleBackend = {
+      begin: async () => "1",
       acquire: () => acquire.promise,
       release: async () => {}
     };
@@ -221,7 +475,7 @@ describe("composer draft lifecycle registry", () => {
     registry.observe(scope, revision(12), revision(11), false);
 
     const activation = registry.activate(scope);
-    registry.setActiveOverlay(scope, "typed during acquire");
+    registry.setActiveOverlay(scope, "typed during acquire", null);
     acquire.resolve({
       rendererGeneration: "1",
       leaseId: "lease",
@@ -242,6 +496,7 @@ describe("composer draft lifecycle registry", () => {
     const scope = main(owner, "late-room");
     const acquire = deferred<ComposerDraftLeaseSnapshot>();
     const backend: ComposerDraftLifecycleBackend = {
+      begin: async () => "1",
       acquire: () => acquire.promise,
       release: async () => {}
     };

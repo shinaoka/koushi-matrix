@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { createDesktopApi } from "./client";
+import { parseComposerDraftRevision } from "../domain/composerDraftRevision";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async () => ({ ok: true }))
@@ -131,6 +132,59 @@ describe("TauriDesktopApi", () => {
       },
       autocompleteOpen: false,
       sendEnabled: true
+    });
+  });
+
+  test("passes the renderer generation and composer draft lease to Rust", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+    const api = createDesktopApi();
+    const account = {
+      homeserver: "https://example.invalid",
+      userId: "@user:example.invalid",
+      deviceId: "DEVICE"
+    };
+    const scope = {
+      account: {
+        homeserver: account.homeserver,
+        user_id: account.userId,
+        device_id: account.deviceId
+      },
+      target: { kind: "main" as const, room_id: "!room:example.invalid" }
+    };
+
+    await api.beginComposerDraftRendererGeneration();
+    await api.acquireComposerDraftLease(scope, "renderer-7");
+    await api.setComposerDraft(
+      account,
+      "lease-9",
+      "renderer-7",
+      "!room:example.invalid",
+      "body",
+      parseComposerDraftRevision("9007199254740993")
+    );
+    await api.releaseComposerDraftLease("lease-9", "renderer-7");
+
+    expect(invoke).toHaveBeenCalledWith("begin_composer_draft_renderer_generation");
+    expect(invoke).toHaveBeenCalledWith("acquire_composer_draft_lease", {
+      accountHomeserver: account.homeserver,
+      accountUserId: account.userId,
+      accountDeviceId: account.deviceId,
+      target: scope.target,
+      rendererGeneration: "renderer-7"
+    });
+    expect(invoke).toHaveBeenCalledWith("set_composer_draft", {
+      accountHomeserver: account.homeserver,
+      accountUserId: account.userId,
+      accountDeviceId: account.deviceId,
+      leaseId: "lease-9",
+      rendererGeneration: "renderer-7",
+      roomId: "!room:example.invalid",
+      draft: "body",
+      draftRevision: "9007199254740993"
+    });
+    expect(invoke).toHaveBeenCalledWith("release_composer_draft_lease", {
+      leaseId: "lease-9",
+      rendererGeneration: "renderer-7"
     });
   });
 
