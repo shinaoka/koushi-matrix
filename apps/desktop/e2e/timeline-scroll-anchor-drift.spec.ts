@@ -1,35 +1,32 @@
 /**
  * Real-browser regression for free-scroll stability.
  *
- * TimelineView no longer runs a retained-anchor post-settle correction loop.
- * In free-scroll mode, layout changes above the viewport are expected to be
- * handled by native browser scroll anchoring (`overflow-anchor: auto`). jsdom
- * cannot prove that, so this spec uses Playwright/Chromium and the real
- * TimelineView harness.
+ * `.timeline-view` deliberately disables browser scroll anchoring
+ * (`overflow-anchor: none`) so Koushi owns event-based viewport stability.
+ * jsdom cannot prove real scroll positions or wheel behavior, so this spec uses
+ * Playwright/Chromium and the real TimelineView harness.
  */
 
 import { expect, test, type Page } from "@playwright/test";
+import { roomTimelineKey } from "../src/domain/coreEvents";
 
 const HARNESS_ROOM_ID = "!harness-room:example.invalid";
 const HARNESS_ACCOUNT_KEY = "@harness-user:example.invalid";
 const HARNESS_SEED_EVENT_ID = "$seed-event:example.invalid";
 const ANCHOR_PIXEL_TOLERANCE = 3;
 
-const TIMELINE_KEY = {
-  account_key: HARNESS_ACCOUNT_KEY,
-  kind: { Room: { room_id: HARNESS_ROOM_ID } }
-};
+const TIMELINE_KEY = roomTimelineKey(HARNESS_ACCOUNT_KEY, HARNESS_ROOM_ID);
 
 function makeEventItem(index: number, body?: string) {
   const eventId = `$scroll-anchor-item-${String(index).padStart(4, "0")}:example.invalid`;
   return {
     id: { Event: { event_id: eventId } },
-    sender: "@sender:example.invalid",
+    sender: HARNESS_ACCOUNT_KEY,
+    sender_label: "Harness User",
     body: body ?? `scroll anchor message ${index}\nThis row has stable text height.`,
-    formatted: null,
     timestamp_ms: 1_800_000_000_000 + index * 1000,
     in_reply_to_event_id: null,
-    reply_quote: null,
+    thread_root: null,
     can_react: false,
     is_redacted: false,
     is_hidden: false,
@@ -38,17 +35,14 @@ function makeEventItem(index: number, body?: string) {
     can_edit: false,
     reactions: [],
     send_state: null,
-    actions: null,
-    thread_summary: null,
-    media: null,
-    sender_label: `Sender ${index}`,
-    original_display_label: ""
+    thread_summary: null
   };
 }
 
 async function gotoReadyApp(page: Page): Promise<void> {
   await page.goto("/appHarness.html");
   await expect(page.getByRole("main", { name: "Conversation timeline" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Reply to message" }).first()).toBeVisible();
 }
 
 async function seedTimeline(page: Page, itemCount: number): Promise<void> {
@@ -67,27 +61,38 @@ async function seedTimelineWithItems(
   // test's InitialItems between Playwright assertions.
   await expect(page.locator(`[data-event-id="${HARNESS_SEED_EVENT_ID}"]`)).toBeVisible();
 
-  await page.evaluate(
-    async ({ key, nextItems }) => {
-      await window.__harness.pushCoreEvent({
-        kind: "Timeline",
-        event: {
-          InitialItems: {
-            request_id: null,
-            key,
-            generation: 2,
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            items: nextItems as any[]
-          }
-        }
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } as any);
-    },
-    { key: TIMELINE_KEY, nextItems: items }
-  );
-  const lastIndex = items.length - 1;
-  const lastEventId = `$scroll-anchor-item-${String(lastIndex).padStart(4, "0")}:example.invalid`;
-  await expect(page.locator(`[data-event-id="${lastEventId}"]`)).toBeAttached();
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(
+          async ({ key, nextItems }) => {
+            const itemDomIds = nextItems.map(
+              (item) =>
+                (item as { id: { Event: { event_id: string } } }).id.Event.event_id
+            );
+            await window.__harness.pushCoreEvent({
+              kind: "Timeline",
+              event: {
+                InitialItems: {
+                  request_id: null,
+                  key,
+                  generation: 2,
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  items: nextItems as any[]
+                }
+              }
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            } as any);
+            await new Promise((resolve) => setTimeout(resolve, 25));
+            return itemDomIds.some((id) =>
+              document.querySelector(`[data-item-id="${CSS.escape(id)}"]`)
+            );
+          },
+          { key: TIMELINE_KEY, nextItems: items }
+        ),
+      { timeout: 10_000, intervals: [25, 50, 100, 250] }
+    )
+    .toBe(true);
 }
 
 async function waitAnimationFrames(page: Page, count: number): Promise<void> {
@@ -176,18 +181,7 @@ async function timelineScrollTop(page: Page): Promise<number> {
   });
 }
 
-test("native scroll anchoring keeps non-virtualized free-scroll viewport stable", async ({
-  page
-}) => {
-  await gotoReadyApp(page);
-  await seedTimeline(page, 80);
-
-  const { anchorEventId, originalOffset } = await placeAnchorInViewport(page, 8);
-  await growRenderedRowAboveViewport(page);
-  await expectAnchorStayedPut(page, anchorEventId, originalOffset);
-});
-
-test("native scroll anchoring keeps virtualized free-scroll viewport stable", async ({
+test("Koushi-owned anchoring keeps virtualized free-scroll viewport stable", async ({
   page
 }) => {
   await gotoReadyApp(page);

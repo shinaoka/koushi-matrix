@@ -16,9 +16,9 @@ test("the space rail follows the OS color scheme", async ({ page }) => {
   await page.emulateMedia({ colorScheme: "dark" });
   const dark = await railBackground(page);
 
-  // --rail is #16213E light, #0A111F dark.
-  expect(light).toBe("rgb(22, 33, 62)");
-  expect(dark).toBe("rgb(10, 17, 31)");
+  // --rail is #f7f8fa light, #151719 dark.
+  expect(light).toBe("rgb(247, 248, 250)");
+  expect(dark).toBe("rgb(21, 23, 25)");
   expect(light).not.toBe(dark);
 });
 

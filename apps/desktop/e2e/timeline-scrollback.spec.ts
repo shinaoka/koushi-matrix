@@ -1303,11 +1303,11 @@ test("measurement commit compensates the local anchor before paint", async ({ pa
   const afterTop = await anchor.evaluate((node) => node.getBoundingClientRect().top);
   expect(Math.abs(afterTop - beforeTop)).toBeLessThanOrEqual(ANCHOR_PIXEL_TOLERANCE);
   const diagnostics = await page.evaluate(() => window.__harness.scrollDiagnostics());
-  expect(diagnostics?.maxAnchorTopDeltaPx ?? 0).toBeGreaterThan(0);
-  expect(diagnostics?.scrollWrites.backfillCompensation ?? 0).toBeGreaterThan(0);
+  expect(diagnostics?.heightModelCommits ?? 0).toBeGreaterThan(0);
+  expect(diagnostics?.latestFrame?.changedMeasuredRowCount ?? 0).toBeGreaterThan(0);
 });
 
-test("active upward input defers prepend until idle", async ({ page }) => {
+test("active upward input keeps the anchor stable when prepend arrives", async ({ page }) => {
   await page.goto("/harness.html");
   await page.waitForSelector("[data-testid=timeline-view]");
   await page.addStyleTag({
@@ -1362,7 +1362,6 @@ test("active upward input defers prepend until idle", async ({ page }) => {
   );
 
   await waitAnimationFrames(page, 1);
-  expect(await container.locator('[data-item-id^="$deferred-old"]').count()).toBe(0);
   await expect
     .poll(() => container.locator('[data-item-id^="$deferred-old"]').count())
     .toBe(4);
@@ -1572,54 +1571,15 @@ test("scrolling to bottom marks the latest readable event", async ({ page }) => 
     });
 });
 
-test("timeline jump-to-date dispatches Rust timestamp resolution", async ({ page }) => {
+test("timeline header omits date jump and keeps the latest control", async ({ page }) => {
   await page.goto("/appHarness.html");
   await page.waitForSelector("[data-testid=timeline-view]");
   await pushInitialTimelineItems(page, 8);
 
-  await page.getByRole("button", { name: "Jump to date" }).click();
-  await expect(page.getByRole("dialog", { name: "Jump to date" })).toBeVisible();
-  await page.getByRole("textbox", { name: "Jump to date" }).fill("2026-06-16T12:34");
-  await page.getByRole("button", { name: "Open date in timeline" }).click();
-
-  const expectedTimestamp = await page.evaluate(() =>
-    new Date("2026-06-16T12:34").getTime()
-  );
-  await expect
-    .poll(() =>
-      page.evaluate(() =>
-        window.__harness.invocationsOf("open_timeline_at_timestamp")[0]?.args
-      )
-    )
-    .toEqual({
-      roomId: ROOM_ID,
-      timestampMs: expectedTimestamp
-    });
-});
-
-test("timeline jump-to-date reads the submitted input value", async ({ page }) => {
-  await page.goto("/appHarness.html");
-  await page.waitForSelector("[data-testid=timeline-view]");
-  await pushInitialTimelineItems(page, 8);
-
-  await page.getByRole("button", { name: "Jump to date" }).click();
-  await expect(page.getByRole("dialog", { name: "Jump to date" })).toBeVisible();
-  await page.getByRole("textbox", { name: "Jump to date" }).evaluate((node) => {
-    (node as HTMLInputElement).value = "2026-06-16T12:35";
-  });
-  await page.getByRole("button", { name: "Open date in timeline" }).click();
-
-  const expectedTimestamp = await page.evaluate(() =>
-    new Date("2026-06-16T12:35").getTime()
-  );
-  await expect
-    .poll(() =>
-      page.evaluate(() =>
-        window.__harness.invocationsOf("open_timeline_at_timestamp")[0]?.args
-      )
-    )
-    .toEqual({
-      roomId: ROOM_ID,
-      timestampMs: expectedTimestamp
-    });
+  await expect(page.getByRole("button", { name: "Jump to date" })).toHaveCount(0);
+  await expect(
+    page
+      .getByRole("navigation", { name: "Timeline navigation" })
+      .getByRole("button", { name: "Latest", exact: true })
+  ).toBeVisible();
 });

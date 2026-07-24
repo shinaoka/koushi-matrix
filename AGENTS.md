@@ -221,9 +221,15 @@ reverse.
   group; classify whether the problem is fixture drift, a missing DTO mirror,
   unstable Playwright actionability, or product behavior. Repair the shared
   helper/contract boundary before rerunning the broad gate.
-- Cooperate with the external auditor (codex) for independent root-cause
-  verification and diff review (see the recipe below). A subagent's "gates
-  passed" claim is not evidence — re-run the gate yourself.
+- Use external diff review deliberately, not reflexively. Prefer local,
+  reproducible gates plus a direct self-review for small, well-scoped fixes.
+  Escalate to the external auditor (codex) for broad cross-boundary changes,
+  security/privacy-sensitive changes, reducer/state-machine rewrites,
+  substantial work primarily authored by non-frontier agents, or when local
+  reasoning finds a concrete uncertainty that review can answer. A timed-out or
+  silent external review is not evidence and should not block a verified small
+  fix indefinitely. A subagent's "gates passed" claim is not evidence — re-run
+  the gate yourself.
 - Native / manual GUI inspection is the last and weakest layer: a confirmation
   only, never the primary correctness gate.
 
@@ -251,9 +257,12 @@ a per-file exception or local composition workaround.
 
 ## Codex Diff Review Recipe
 
-The preferred external auditor is OpenAI `codex` (the `codex` CLI). For
-substantial changes authored by non-frontier agents, run a diff review with the
-command below.
+The preferred external auditor is OpenAI `codex` (the `codex` CLI). Use it at a
+low frequency, when the change is broad or risky enough to justify the latency:
+substantial changes authored by non-frontier agents, cross-layer Rust/Tauri/TS
+contract changes, state-machine or reducer rewrites, security/privacy-sensitive
+changes, or unclear root-cause analysis. Do not run it after every small
+mechanical patch or let a timeout replace owned verification.
 
 Generate the diff and pipe it to `codex review -`:
 
@@ -1234,6 +1243,14 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 
 ## Headless UI (Playwright) Flakes
 
+- A red full local Playwright run is not automatically scope for the active PR.
+  First classify each failure: introduced by the current diff, changed-area
+  regression, shared fixture/harness drift, local browser/actionability
+  environment, or unrelated product backlog. Fix it in the current PR only when
+  it is introduced by the diff, blocks a required gate, or shares the same
+  contract boundary the PR is already repairing. Otherwise record the inventory
+  and move it to a dedicated UI-harness stabilization branch/issue; do not
+  absorb unrelated legacy failures merely to make a broad local run green.
 - If `locator.click()` broadly times out while waiting for elements to be
   stable, first prove whether Chromium headless is producing animation frames:
   run a blank-page `requestAnimationFrame` probe. In this local environment,

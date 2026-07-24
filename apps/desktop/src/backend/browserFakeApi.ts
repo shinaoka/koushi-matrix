@@ -1407,6 +1407,7 @@ class BrowserFakeApi implements DesktopApi {
     }
 
     this.snapshot.state.ui.focused_context = { kind: "closed" };
+    this.snapshot.state.ui.navigation.main_timeline_anchor = null;
     return this.getSnapshot();
   }
 

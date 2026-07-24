@@ -3162,6 +3162,38 @@ mod tests {
     }
 
     #[test]
+    fn select_space_command_records_private_data_free_transition_trace() {
+        let source = commands_source();
+        let production_source = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("command production source should precede tests");
+        let select_space_source = production_source
+            .split("pub async fn select_space")
+            .nth(1)
+            .expect("select_space command should exist")
+            .split("#[tauri::command]\npub async fn reorder_spaces")
+            .next()
+            .expect("reorder_spaces command should follow select_space");
+
+        let submit_offset = select_space_source
+            .find("\"desktop.space.transition\", \"submit\"")
+            .expect("select_space should record submit trace");
+        let command_offset = select_space_source
+            .find("build_select_space_command")
+            .expect("select_space should submit the SelectSpace command");
+        let snapshot_offset = select_space_source
+            .find("\"snapshot\"")
+            .expect("select_space should record snapshot-return trace");
+
+        assert!(submit_offset < command_offset);
+        assert!(command_offset < snapshot_offset);
+        assert!(select_space_source.contains("DiagnosticField::request_id"));
+        assert!(select_space_source.contains("DiagnosticField::milliseconds"));
+        assert!(select_space_source.contains("DiagnosticField::boolean"));
+    }
+
+    #[test]
     fn search_scope_resolution_preserves_non_all_scope_contract() {
         let source = commands_source();
         let production_source = source

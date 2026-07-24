@@ -10,7 +10,8 @@ import {
 } from "./domain/composerSubmission";
 import { COMPOSER_DRAFT_REVISION_ZERO } from "./domain/composerDraftRevision";
 import { MessageSourceDialog, TimelineItemRow } from "./components/TimelineView";
-import type { TimelineItem } from "./domain/coreEvents";
+import { focusedTimelineKey, type TimelineItem } from "./domain/coreEvents";
+import { timelineStoreKeyId } from "./domain/timelineStore";
 import type { DesktopSnapshot } from "./domain/types";
 import type { RightPanelMode } from "./domain/rightPanel";
 import { formatScheduledSendTime } from "./app/uiShared";
@@ -1615,6 +1616,31 @@ describe("desktop integration source guards", () => {
     expect(timelineViewSource).toContain("isAnchored && onReturnToLive");
   });
 
+  test("retains the anchored main timeline key while focused context panel is closed", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { retainedTimelineStoreKeyIds } = await import("./App");
+    const snapshot = await createBrowserFakeApi().getSnapshot();
+    snapshot.state.ui.navigation.main_timeline_anchor = {
+      event_id: "$seed-event:example.invalid"
+    };
+    snapshot.state.ui.focused_context = { kind: "closed" };
+    const userId =
+      snapshot.state.domain.session.kind === "ready"
+        ? snapshot.state.domain.session.user_id!
+        : "";
+    const roomId = snapshot.state.ui.timeline.room_id!;
+
+    expect(retainedTimelineStoreKeyIds(snapshot)).toContain(
+      timelineStoreKeyId(
+        focusedTimelineKey(
+          userId,
+          roomId,
+          "$seed-event:example.invalid"
+        )
+      )
+    );
+  });
+
   test("anchored timeline header latest button returns to live instead of scrolling focused history", () => {
     const panesSource = readFileSync(
       new URL("./components/panes.tsx", import.meta.url),
@@ -1764,6 +1790,38 @@ describe("desktop integration source guards", () => {
     expect(startOffset).toBeGreaterThanOrEqual(0);
     expect(apiOffset).toBeGreaterThan(startOffset);
     expect(doneOffset).toBeGreaterThan(apiOffset);
+  });
+
+  test("space selection keeps transition diagnostics on structured Rust lanes", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const tauriNavigationSource = readFileSync(
+      new URL("../src-tauri/src/commands/navigation.rs", import.meta.url),
+      "utf8"
+    );
+    const runtimeSource = readFileSync(
+      new URL("../../../crates/koushi-core/src/runtime.rs", import.meta.url),
+      "utf8"
+    );
+    const fnStart = source.indexOf("async function selectSpace(spaceId: string | null)");
+    const fnEnd = source.indexOf("async function reorderSpaces", fnStart);
+    expect(fnStart).toBeGreaterThanOrEqual(0);
+    expect(fnEnd).toBeGreaterThan(fnStart);
+    const selectSpaceSource = source.slice(fnStart, fnEnd);
+
+    const apiOffset = selectSpaceSource.indexOf("api.selectSpace(spaceId)");
+
+    expect(apiOffset).toBeGreaterThanOrEqual(0);
+    expect(selectSpaceSource).not.toContain('source: "space.transition"');
+    expect(selectSpaceSource).not.toContain("stage=select_");
+    expect(tauriNavigationSource).toContain('"desktop.space.transition"');
+    expect(tauriNavigationSource).toContain("DiagnosticField::request_id");
+    expect(tauriNavigationSource).toContain('"request_id"');
+    expect(tauriNavigationSource).toContain("DiagnosticField::boolean");
+    expect(runtimeSource).toContain('"core.space.transition"');
+    expect(runtimeSource).toContain("DiagnosticField::boolean");
+    expect(runtimeSource).toContain('"active_room_changed"');
+    expect(runtimeSource).toContain("DiagnosticField::count");
+    expect(runtimeSource).toContain('"rooms"');
   });
 });
 

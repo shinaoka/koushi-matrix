@@ -1880,24 +1880,36 @@ impl AppActor {
                         // AppActor owns AppCommand effects above; replaying
                         // actor-projection effects here would double-execute
                         // login, restore, sync, or recovery work.
-                        let cancel_replaced_room_timeline_pagination =
-                            if let AppAction::SelectRoom { room_id } = &action {
-                                self.cancel_replaced_room_timeline_pagination(room_id)
-                            } else {
-                                None
-                            };
-                        let cancel_replaced_room_timeline_link_previews =
-                            if let AppAction::SelectRoom { room_id } = &action {
-                                self.cancel_replaced_room_timeline_link_previews(room_id)
-                            } else {
-                                None
-                            };
                         let active_room_before_reduce =
                             self.state.navigation.active_room_id.clone();
+                        let room_timeline_before_reduce = self.current_room_timeline_key();
+                        let action_for_navigation_cleanup = action.clone();
                         let (post_projection_effects, deferred_reducer_side_effects) =
                             self.reduce_app_action_state(action);
                         let active_room_changed = active_room_before_reduce
                             != self.state.navigation.active_room_id;
+                        let replacement_room_for_cleanup = navigation_replacement_room_for_cleanup(
+                            &action_for_navigation_cleanup,
+                            active_room_before_reduce.as_deref(),
+                            self.state.navigation.active_room_id.as_deref(),
+                        );
+                        let replacement_room_id_for_cleanup = replacement_room_for_cleanup
+                            .as_ref()
+                            .and_then(NavigationReplacementRoomForCleanup::room_id);
+                        let cancel_replaced_room_timeline_pagination =
+                            replacement_room_for_cleanup.as_ref().and_then(|_| {
+                                cancel_replaced_room_timeline_pagination_key(
+                                    room_timeline_before_reduce.clone(),
+                                    replacement_room_id_for_cleanup,
+                                )
+                            });
+                        let cancel_replaced_room_timeline_link_previews =
+                            replacement_room_for_cleanup.as_ref().and_then(|_| {
+                                cancel_replaced_room_timeline_link_previews_key(
+                                    room_timeline_before_reduce.clone(),
+                                    replacement_room_id_for_cleanup,
+                                )
+                            });
                         let navigation_projection_generation = if active_room_changed {
                             match self.navigation_projection_generation.checked_add(1) {
                                 Some(generation) => {
@@ -1916,6 +1928,39 @@ impl AppActor {
                         } else {
                             None
                         };
+                        if matches!(
+                            action_for_navigation_cleanup,
+                            AppAction::SelectSpace { .. }
+                        ) {
+                            record(
+                                DiagnosticEvent::new(
+                                    DiagnosticLevel::Debug,
+                                    "core.space.transition",
+                                    "reduce",
+                                )
+                                .field(DiagnosticField::boolean(
+                                    "active_room_changed",
+                                    active_room_changed,
+                                ))
+                                .field(DiagnosticField::boolean(
+                                    "active_room_present",
+                                    self.state.navigation.active_room_id.is_some(),
+                                ))
+                                .field(DiagnosticField::boolean(
+                                    "cleanup_pending",
+                                    cancel_replaced_room_timeline_pagination.is_some()
+                                        || cancel_replaced_room_timeline_link_previews.is_some(),
+                                ))
+                                .field(DiagnosticField::count(
+                                    "rooms",
+                                    self.state.rooms.len() as u64,
+                                ))
+                                .field(DiagnosticField::count(
+                                    "projection_generation",
+                                    navigation_projection_generation.unwrap_or(0),
+                                )),
+                            );
+                        }
                         let mut navigation_projection_cause = None;
                         if let Some((generation, transition_id)) = trust_projection_transition {
                             let _ = self
@@ -4450,14 +4495,6 @@ impl AppActor {
         })
     }
 
-    fn cancel_replaced_room_timeline_pagination(&self, room_id: &str) -> Option<TimelineKey> {
-        cancel_replaced_room_timeline_pagination_key(self.current_room_timeline_key(), room_id)
-    }
-
-    fn cancel_replaced_room_timeline_link_previews(&self, room_id: &str) -> Option<TimelineKey> {
-        cancel_replaced_room_timeline_link_previews_key(self.current_room_timeline_key(), room_id)
-    }
-
     fn unsubscribe_replaced_thread_timeline(
         &self,
         room_id: &str,
@@ -4557,22 +4594,61 @@ fn unsubscribe_replaced_timeline_key(
 
 fn cancel_replaced_room_timeline_pagination_key(
     current_key: Option<TimelineKey>,
-    replacement_room_id: &str,
+    replacement_room_id: Option<&str>,
 ) -> Option<TimelineKey> {
     current_key.filter(|current_key| match &current_key.kind {
-        TimelineKind::Room { room_id } => room_id != replacement_room_id,
+        TimelineKind::Room { room_id } => {
+            replacement_room_id.map_or(true, |replacement| room_id != replacement)
+        }
         TimelineKind::Thread { .. } | TimelineKind::Focused { .. } => false,
     })
 }
 
 fn cancel_replaced_room_timeline_link_previews_key(
     current_key: Option<TimelineKey>,
-    replacement_room_id: &str,
+    replacement_room_id: Option<&str>,
 ) -> Option<TimelineKey> {
     current_key.filter(|current_key| match &current_key.kind {
-        TimelineKind::Room { room_id } => room_id != replacement_room_id,
+        TimelineKind::Room { room_id } => {
+            replacement_room_id.map_or(true, |replacement| room_id != replacement)
+        }
         TimelineKind::Thread { .. } | TimelineKind::Focused { .. } => false,
     })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum NavigationReplacementRoomForCleanup {
+    Room(String),
+    Cleared,
+}
+
+impl NavigationReplacementRoomForCleanup {
+    fn room_id(&self) -> Option<&str> {
+        match self {
+            Self::Room(room_id) => Some(room_id),
+            Self::Cleared => None,
+        }
+    }
+}
+
+fn navigation_replacement_room_for_cleanup(
+    action: &AppAction,
+    active_room_before_reduce: Option<&str>,
+    active_room_after_reduce: Option<&str>,
+) -> Option<NavigationReplacementRoomForCleanup> {
+    match action {
+        AppAction::SelectRoom { room_id } => {
+            Some(NavigationReplacementRoomForCleanup::Room(room_id.clone()))
+        }
+        AppAction::SelectSpace { .. } if active_room_before_reduce != active_room_after_reduce => {
+            Some(match active_room_after_reduce {
+                Some(room_id) => NavigationReplacementRoomForCleanup::Room(room_id.to_owned()),
+                None => NavigationReplacementRoomForCleanup::Cleared,
+            })
+        }
+        AppAction::SelectSpace { .. } => None,
+        _ => None,
+    }
 }
 
 fn is_ready_session_for_commands(session: &SessionState) -> bool {
@@ -6664,6 +6740,58 @@ mod tests {
                 focused_key("$event-c:example.invalid")
             ),
             None
+        );
+    }
+
+    #[test]
+    fn select_space_cleanup_targets_previous_room_only_when_active_room_changes() {
+        let action = AppAction::SelectSpace {
+            space_id: Some("!space:example.invalid".to_owned()),
+        };
+
+        assert_eq!(
+            navigation_replacement_room_for_cleanup(
+                &action,
+                Some("!old:example.invalid"),
+                Some("!next:example.invalid"),
+            ),
+            Some(NavigationReplacementRoomForCleanup::Room(
+                "!next:example.invalid".to_owned()
+            ))
+        );
+        assert_eq!(
+            navigation_replacement_room_for_cleanup(&action, Some("!old:example.invalid"), None,),
+            Some(NavigationReplacementRoomForCleanup::Cleared)
+        );
+        assert_eq!(
+            navigation_replacement_room_for_cleanup(
+                &action,
+                Some("!same:example.invalid"),
+                Some("!same:example.invalid"),
+            ),
+            None
+        );
+        assert_eq!(
+            navigation_replacement_room_for_cleanup(&action, None, None),
+            None
+        );
+    }
+
+    #[test]
+    fn select_room_cleanup_still_uses_explicit_target_room() {
+        let action = AppAction::SelectRoom {
+            room_id: "!target:example.invalid".to_owned(),
+        };
+
+        assert_eq!(
+            navigation_replacement_room_for_cleanup(
+                &action,
+                Some("!old:example.invalid"),
+                Some("!target:example.invalid"),
+            ),
+            Some(NavigationReplacementRoomForCleanup::Room(
+                "!target:example.invalid".to_owned()
+            ))
         );
     }
 
