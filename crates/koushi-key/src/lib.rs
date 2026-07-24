@@ -192,7 +192,7 @@ impl CredentialBackend for InMemoryCredentialBackend {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Deserialize, Serialize)]
 pub struct SessionKeyId {
     pub homeserver: String,
     pub user_id: String,

@@ -12,6 +12,7 @@ mod activity_resolution;
 pub(crate) mod cached_image;
 mod causal_projection;
 pub mod command;
+pub mod composer_draft_lifecycle;
 pub mod event;
 pub mod executor;
 pub mod failure;
