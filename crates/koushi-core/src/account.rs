@@ -31,7 +31,10 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     future::Future,
-    sync::{Arc, atomic::AtomicU64},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -51,7 +54,7 @@ use koushi_state::{
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters};
 use matrix_sdk::ruma::events::room::MediaSource as SdkMediaSource;
 use matrix_sdk::ruma::{MxcUri, OwnedMxcUri};
-use tokio::sync::{Semaphore, broadcast, mpsc, oneshot};
+use tokio::sync::{Semaphore, broadcast, mpsc, oneshot, watch};
 
 use crate::command::{
     AccountCommand, RoomCommand, RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand,
@@ -80,12 +83,17 @@ use crate::startup_trace::{self, StartupPhase};
 use crate::store::{StoreActor, account_key_from_info, session_key_id_from_info};
 use crate::sync::{SyncActorHandle, SyncMessage};
 use crate::timeline::{
-    TimelineManagerHandle, TimelineMessage, build_room_message_content_from_composer_body,
+    NavigationProjectionIngress, NavigationProjectionIntent, ReadPersistenceIngress,
+    ReadPersistenceRequest, TimelineManagerHandle, TimelineMessage,
+    build_room_message_content_from_composer_body,
 };
 
 /// "Credential store healthy, but no stored session for that account"
 /// during restore/switch (canon: `CoreFailure::SessionNotFound`).
 const SESSION_NOT_FOUND_FAILURE: CoreFailure = CoreFailure::SessionNotFound;
+const READ_PERSISTENCE_DEBOUNCE: Duration = Duration::from_millis(100);
+const READ_PERSISTENCE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+static READ_PERSISTENCE_SESSION_SERIAL: AtomicU64 = AtomicU64::new(0);
 
 /// Maximum number of concurrent avatar thumbnail downloads. Bounded to avoid
 /// flooding the SDK media layer with parallel requests during large room joins.
@@ -171,6 +179,113 @@ fn trace_restore_simple(stage: &'static str, action: &'static str) {
         DiagnosticEvent::new(DiagnosticLevel::Debug, "core.account", stage)
             .field(DiagnosticField::token("action", action)),
     );
+}
+
+fn record_read_persistence(
+    stage: &'static str,
+    outcome: &'static str,
+    session_generation: u64,
+    save_generation: u64,
+    entry_count: usize,
+    candidate_count: usize,
+) {
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "core.read_state_persistence", stage)
+            .field(DiagnosticField::token("outcome", outcome))
+            .field(DiagnosticField::count(
+                "session_generation",
+                session_generation,
+            ))
+            .field(DiagnosticField::count("save_generation", save_generation))
+            .field(DiagnosticField::count(
+                "entry_count",
+                entry_count.try_into().unwrap_or(u64::MAX),
+            ))
+            .field(DiagnosticField::count(
+                "candidate_count",
+                candidate_count.try_into().unwrap_or(u64::MAX),
+            )),
+    );
+}
+
+fn next_read_persistence_session_generation() -> u64 {
+    READ_PERSISTENCE_SESSION_SERIAL
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1)
+        .max(1)
+}
+
+async fn run_read_persistence_worker(
+    store: StoreActor,
+    key_id: SessionKeyId,
+    session_generation: u64,
+    mut requests: watch::Receiver<Option<ReadPersistenceRequest>>,
+) {
+    let mut accepted_save_generation = 0;
+    while requests.changed().await.is_ok() {
+        executor::sleep(READ_PERSISTENCE_DEBOUNCE).await;
+        let request = requests.borrow_and_update().clone();
+        let Some(request) = request else {
+            continue;
+        };
+        if request.session_generation() != session_generation
+            || request.save_generation() <= accepted_save_generation
+        {
+            record_read_persistence(
+                "save",
+                "stale_rejected",
+                request.session_generation(),
+                request.save_generation(),
+                request.snapshot().entry_count(),
+                request.snapshot().candidate_count(),
+            );
+            continue;
+        }
+        let save_generation = request.save_generation();
+        let snapshot = request.snapshot().clone();
+        let entry_count = snapshot.entry_count();
+        let candidate_count = snapshot.candidate_count();
+        let save_store = store.clone();
+        let save_key_id = key_id.clone();
+        let outcome = executor::spawn_blocking(move || {
+            save_store.save_read_state_outbox_if_current(
+                &save_key_id,
+                session_generation,
+                save_generation,
+                &snapshot,
+            )
+        })
+        .await;
+        match outcome {
+            Ok(Ok(true)) => {
+                accepted_save_generation = save_generation;
+                record_read_persistence(
+                    "save",
+                    "saved",
+                    session_generation,
+                    save_generation,
+                    entry_count,
+                    candidate_count,
+                );
+            }
+            Ok(Ok(false)) => record_read_persistence(
+                "save",
+                "stale_rejected",
+                session_generation,
+                save_generation,
+                entry_count,
+                candidate_count,
+            ),
+            Ok(Err(_)) | Err(_) => record_read_persistence(
+                "save",
+                "failed",
+                session_generation,
+                save_generation,
+                entry_count,
+                candidate_count,
+            ),
+        }
+    }
 }
 
 fn record_verification_admission_event(event: DiagnosticEvent) {
@@ -463,11 +578,27 @@ pub enum AccountMessage {
 #[derive(Clone)]
 pub struct AccountActorHandle {
     tx: mpsc::Sender<AccountMessage>,
+    navigation_projection: NavigationProjectionIngress,
 }
 
 impl AccountActorHandle {
     pub async fn send(&self, msg: AccountMessage) -> bool {
         self.tx.send(msg).await.is_ok()
+    }
+
+    pub(crate) fn admit_navigation_projection(&self, intent: NavigationProjectionIntent) -> bool {
+        self.navigation_projection.admit(intent)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_app_actor_test(
+        tx: mpsc::Sender<AccountMessage>,
+        navigation_projection: NavigationProjectionIngress,
+    ) -> Self {
+        Self {
+            tx,
+            navigation_projection,
+        }
     }
 }
 
@@ -495,7 +626,11 @@ struct IncomingVerificationObservation {
     observer: koushi_sdk::MatrixIncomingVerificationRequestObserver,
 }
 
-async fn send_incoming_verification_message_until_stopped<T>(
+/// Session-owned observers must race every blocking outbound delivery against
+/// their stop signal. Normal operation still awaits reliable mailbox delivery;
+/// shutdown drops only the not-yet-delivered observer output so its owner can
+/// join the task without mailbox-backpressure deadlock.
+async fn send_observer_output_until_stopped<T>(
     sender: &mpsc::Sender<T>,
     message: T,
     stop_rx: &mut oneshot::Receiver<()>,
@@ -1004,6 +1139,11 @@ pub struct AccountActor {
     /// TimelineManagerActor handle (Phase 5). Spawned once at actor creation;
     /// session reference is updated when a store-backed session is established.
     timeline_manager: TimelineManagerHandle,
+    read_persistence_task: Option<crate::executor::JoinHandle<()>>,
+    read_persistence_session_generation: u64,
+    /// Stable projection ingress retained across session-scoped manager
+    /// replacement and cloned into the AppActor-facing handle.
+    navigation_projection: NavigationProjectionIngress,
     /// Account-wide gate for `/rooms/{roomId}/messages` requests. Timeline
     /// pagination has priority over background search-history crawling.
     messages_backpressure: crate::messages_backpressure::MessagesBackpressure,
@@ -1111,6 +1251,8 @@ impl AccountActor {
         // session and waits for RoomMessage::SyncStarted.
         let room_actor = crate::room::RoomActor::spawn(action_tx.clone(), event_tx.clone());
         let messages_backpressure = crate::messages_backpressure::MessagesBackpressure::default();
+        let (navigation_projection, navigation_projection_rx) =
+            NavigationProjectionIngress::channel();
         // Spawn TimelineManagerActor. It starts with no session; the session
         // is injected when a store-backed session is established.
         let timeline_manager = crate::timeline::TimelineManagerActor::spawn(
@@ -1118,6 +1260,7 @@ impl AccountActor {
             event_tx.clone(),
             Some(data_dir.clone()),
             messages_backpressure.clone(),
+            Some(navigation_projection_rx),
         );
         let actor = AccountActor {
             session: None,
@@ -1156,6 +1299,9 @@ impl AccountActor {
             sync_generation: Arc::new(AtomicU64::new(0)),
             room_actor,
             timeline_manager,
+            read_persistence_task: None,
+            read_persistence_session_generation: 0,
+            navigation_projection: navigation_projection.clone(),
             messages_backpressure,
             activity_resolution_task: None,
             data_dir,
@@ -1193,7 +1339,10 @@ impl AccountActor {
             avatar_session_generation: 0,
         };
         crate::executor::spawn(actor.run());
-        AccountActorHandle { tx }
+        AccountActorHandle {
+            tx,
+            navigation_projection,
+        }
     }
 
     async fn run(mut self) {
@@ -2475,6 +2624,7 @@ impl AccountActor {
         self.stop_session_change_observer().await;
         self.record_lifecycle_probe("shutdown_stop_timeline_actor");
         self.stop_timeline_actor().await;
+        self.stop_read_persistence_worker().await;
         self.stop_threads_list_actor().await;
         self.record_lifecycle_probe("shutdown_stop_search_actor");
         self.stop_search_actor().await;
@@ -2503,15 +2653,43 @@ impl AccountActor {
     /// Ordered shutdown of the TimelineManagerActor (step 2 of the shutdown
     /// sequence per Async rule 12 — timelines before search/room/sync).
     async fn stop_timeline_actor(&mut self) {
-        let (acknowledged, acknowledgement) = tokio::sync::oneshot::channel();
-        if self
-            .timeline_manager
-            .send(TimelineMessage::Shutdown {
-                acknowledged: Some(acknowledged),
-            })
+        let _ = self.timeline_manager.shutdown().await;
+    }
+
+    async fn stop_read_persistence_worker(&mut self) {
+        let Some(mut task) = self.read_persistence_task.take() else {
+            return;
+        };
+        if executor::timeout(READ_PERSISTENCE_SHUTDOWN_TIMEOUT, &mut task)
             .await
+            .is_err()
         {
-            let _ = acknowledgement.await;
+            self.read_persistence_session_generation = next_read_persistence_session_generation();
+            if let Some(key_id) = self.session_key_id.as_ref() {
+                self.store.invalidate_read_state_outbox_saves(
+                    key_id,
+                    self.read_persistence_session_generation,
+                );
+            }
+            task.abort();
+            let _ = task.await;
+            record_read_persistence(
+                "shutdown",
+                "timed_out",
+                self.read_persistence_session_generation,
+                0,
+                0,
+                0,
+            );
+        } else {
+            record_read_persistence(
+                "shutdown",
+                "saved",
+                self.read_persistence_session_generation,
+                0,
+                0,
+                0,
+            );
         }
     }
 
@@ -2679,19 +2857,69 @@ impl AccountActor {
         // the next AccountActor tick.
         self.flush_pending_crawler_notification();
 
-        // Replace the TimelineManagerActor with one holding the current session
-        // AND the search index sender. The old manager (with no session) is
-        // stopped by dropping its handle. We use try_send to shut down the old.
-        self.timeline_manager
-            .try_send(TimelineMessage::Shutdown { acknowledged: None });
+        // Load the account-scoped encrypted read outbox before constructing a
+        // retry-capable manager. Replacement sessions first quiesce the old
+        // manager and its serialized saver so late blocking writes cannot race
+        // the new account/session generation.
+        self.stop_timeline_actor().await;
+        if self.read_persistence_task.is_some() {
+            self.stop_read_persistence_worker().await;
+        }
+        self.read_persistence_session_generation = next_read_persistence_session_generation();
+        let read_session_generation = self.read_persistence_session_generation;
+        let restored_read_state = if let Some(key_id) = self.session_key_id.clone() {
+            let store = self.store.clone();
+            let load_key_id = key_id.clone();
+            match executor::spawn_blocking(move || store.load_read_state_outbox(&load_key_id)).await
+            {
+                Ok(Ok(snapshot)) => {
+                    record_read_persistence(
+                        "load",
+                        "loaded",
+                        read_session_generation,
+                        0,
+                        snapshot.entry_count(),
+                        snapshot.candidate_count(),
+                    );
+                    snapshot
+                }
+                Ok(Err(_)) | Err(_) => {
+                    record_read_persistence(
+                        "load",
+                        "failed_closed",
+                        read_session_generation,
+                        0,
+                        0,
+                        0,
+                    );
+                    crate::read_state::ReadPersistenceSnapshot::default()
+                }
+            }
+        } else {
+            record_read_persistence("load", "session_missing", read_session_generation, 0, 0, 0);
+            crate::read_state::ReadPersistenceSnapshot::default()
+        };
+        let (read_persistence, read_persistence_rx) = ReadPersistenceIngress::channel();
+        if let Some(key_id) = self.session_key_id.clone() {
+            self.read_persistence_task = Some(executor::spawn(run_read_persistence_worker(
+                self.store.clone(),
+                key_id,
+                read_session_generation,
+                read_persistence_rx,
+            )));
+        }
         self.timeline_manager = crate::timeline::TimelineManagerActor::spawn_with_session(
             session.clone(),
+            read_session_generation,
+            restored_read_state,
+            read_persistence,
             self.action_tx.clone(),
             self.event_tx.clone(),
             search_index_tx,
             Some(self.data_dir.clone()),
             self.link_preview_policy.clone(),
             self.messages_backpressure.clone(),
+            Some(self.navigation_projection.subscribe()),
         );
 
         let handle = crate::sync::SyncActor::spawn(
@@ -2727,6 +2955,8 @@ impl AccountActor {
             self.action_tx.clone(),
             self.event_tx.clone(),
             stop_rx,
+            #[cfg(test)]
+            None,
         ));
         self.recovery_observer = Some(RecoveryStateObservation { stop_tx, task });
     }
@@ -2749,7 +2979,7 @@ impl AccountActor {
                     request = receiver.recv() => {
                         let Some(request) = request else { break };
                         let (target, handle) = request.into_parts();
-                        if !send_incoming_verification_message_until_stopped(
+                        if !send_observer_output_until_stopped(
                             &tx,
                             AccountMessage::IncomingVerificationRequest {
                                 generation,
@@ -2774,35 +3004,16 @@ impl AccountActor {
     }
 
     fn start_session_change_observer(&mut self, session: Arc<MatrixClientSession>) {
-        let (stop_tx, mut stop_rx) = oneshot::channel();
-        let mut changes = session.client().subscribe_to_session_changes();
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let changes = session.client().subscribe_to_session_changes();
         let tx = self.self_tx.clone();
-        let task = crate::executor::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = &mut stop_rx => break,
-                    change = changes.recv() => {
-                        match change {
-                            Ok(matrix_sdk::SessionChange::UnknownToken(data)) => {
-                                if tx
-                                    .send(AccountMessage::SessionInvalidated {
-                                        soft_logout: data.soft_logout,
-                                    })
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                                break;
-                            }
-                            Ok(matrix_sdk::SessionChange::TokensRefreshed) => {}
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                        }
-                    }
-                }
-            }
-        });
+        let task = crate::executor::spawn(run_session_change_observation(
+            changes,
+            tx,
+            stop_rx,
+            #[cfg(test)]
+            None,
+        ));
         self.session_change_observer = Some(SessionChangeObservation { stop_tx, task });
     }
 
@@ -6974,11 +7185,13 @@ impl AccountActor {
         self.stop_session_change_observer().await;
         self.record_lifecycle_probe("stop_timeline_manager");
         self.stop_timeline_actor().await;
+        self.stop_read_persistence_worker().await;
         self.timeline_manager = crate::timeline::TimelineManagerActor::spawn(
             self.action_tx.clone(),
             self.event_tx.clone(),
             Some(self.data_dir.clone()),
             self.messages_backpressure.clone(),
+            Some(self.navigation_projection.subscribe()),
         );
         self.record_lifecycle_probe("stop_threads_manager");
         self.stop_threads_list_actor().await;
@@ -7435,7 +7648,7 @@ impl AccountActor {
     }
 
     async fn handle_reset_local_data(&mut self, request_id: RequestId) {
-        let Some(key_id) = self.session_key_id.take() else {
+        let Some(key_id) = self.session_key_id.clone() else {
             self.send_actions(vec![AppAction::ResetLocalDataFailed {
                 request_id: request_id.sequence,
             }])
@@ -7445,6 +7658,10 @@ impl AccountActor {
         };
 
         self.stop_current_session_runtime().await;
+        self.session_key_id.take();
+        self.read_persistence_session_generation = next_read_persistence_session_generation();
+        self.store
+            .invalidate_read_state_outbox_saves(&key_id, self.read_persistence_session_generation);
 
         drop(self.session.take());
         self.clear_account_persistence(&key_id).await;
@@ -7656,12 +7873,50 @@ fn session_info_from_key_id(key_id: &SessionKeyId) -> SessionInfo {
     }
 }
 
+async fn run_session_change_observation(
+    mut changes: tokio::sync::broadcast::Receiver<matrix_sdk::SessionChange>,
+    tx: mpsc::Sender<AccountMessage>,
+    mut stop_rx: oneshot::Receiver<()>,
+    #[cfg(test)] delivery_barrier: Option<Arc<tokio::sync::Barrier>>,
+) {
+    loop {
+        tokio::select! {
+            _ = &mut stop_rx => break,
+            change = changes.recv() => {
+                match change {
+                    Ok(matrix_sdk::SessionChange::UnknownToken(data)) => {
+                        #[cfg(test)]
+                        if let Some(barrier) = delivery_barrier.as_ref() {
+                            barrier.wait().await;
+                        }
+                        if !send_observer_output_until_stopped(
+                            &tx,
+                            AccountMessage::SessionInvalidated {
+                                soft_logout: data.soft_logout,
+                            },
+                            &mut stop_rx,
+                        )
+                        .await {
+                            break;
+                        }
+                        break;
+                    }
+                    Ok(matrix_sdk::SessionChange::TokensRefreshed) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }
+    }
+}
+
 async fn run_recovery_state_observation<S>(
     state_stream: S,
     account_key: AccountKey,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     mut stop_rx: oneshot::Receiver<()>,
+    #[cfg(test)] delivery_barrier: Option<Arc<tokio::sync::Barrier>>,
 ) where
     S: futures_util::Stream<Item = E2eeRecoveryState> + Send + 'static,
 {
@@ -7686,23 +7941,41 @@ async fn run_recovery_state_observation<S>(
                 match state {
                     E2eeRecoveryState::Unknown => {}
                     E2eeRecoveryState::Incomplete => {
-                        let _ = action_tx
-                            .send(vec![AppAction::E2eeRecoveryStateChanged {
+                        #[cfg(test)]
+                        if let Some(barrier) = delivery_barrier.as_ref() {
+                            barrier.wait().await;
+                        }
+                        if !send_observer_output_until_stopped(
+                            &action_tx,
+                            vec![AppAction::E2eeRecoveryStateChanged {
                                 state: E2eeRecoveryState::Incomplete,
                                 methods: recovery_methods.clone(),
-                            }])
-                            .await;
+                            }],
+                            &mut stop_rx,
+                        )
+                        .await {
+                            break;
+                        }
                         let _ = event_tx.send(CoreEvent::Account(AccountEvent::RecoveryRequired {
                             account_key: account_key.clone(),
                         }));
                     }
                     E2eeRecoveryState::Enabled | E2eeRecoveryState::Disabled => {
-                        let _ = action_tx
-                            .send(vec![AppAction::E2eeRecoveryStateChanged {
+                        #[cfg(test)]
+                        if let Some(barrier) = delivery_barrier.as_ref() {
+                            barrier.wait().await;
+                        }
+                        if !send_observer_output_until_stopped(
+                            &action_tx,
+                            vec![AppAction::E2eeRecoveryStateChanged {
                                 state,
                                 methods: recovery_methods.clone(),
-                            }])
-                            .await;
+                            }],
+                            &mut stop_rx,
+                        )
+                        .await {
+                            break;
+                        }
                     }
                 }
             }
@@ -8761,13 +9034,12 @@ mod tests {
         let (sender, mut receiver) = mpsc::channel(1);
         let (_first_stop_tx, mut first_stop_rx) = oneshot::channel();
         assert!(
-            send_incoming_verification_message_until_stopped(&sender, 1_u8, &mut first_stop_rx,)
-                .await,
+            send_observer_output_until_stopped(&sender, 1_u8, &mut first_stop_rx,).await,
             "the first ready delivery must fill the product mailbox"
         );
         let (stop_tx, mut stop_rx) = oneshot::channel();
         let blocked_send = executor::spawn(async move {
-            send_incoming_verification_message_until_stopped(&sender, 2, &mut stop_rx).await
+            send_observer_output_until_stopped(&sender, 2, &mut stop_rx).await
         });
         tokio::task::yield_now().await;
 
@@ -11349,7 +11621,7 @@ mod tests {
     #[test]
     fn session_change_observer_routes_unknown_token_to_session_lock() {
         let source = include_str!("account.rs");
-        let observer_body = source
+        let observer_start_body = source
             .split("fn start_session_change_observer")
             .nth(1)
             .and_then(|rest| {
@@ -11357,6 +11629,11 @@ mod tests {
                     .next()
             })
             .expect("start_session_change_observer body");
+        let observer_run_body = source
+            .split("async fn run_session_change_observation")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn run_recovery_state_observation").next())
+            .expect("run_session_change_observation body");
         let handler_body = source
             .split("async fn handle_session_invalidated")
             .nth(1)
@@ -11364,15 +11641,15 @@ mod tests {
             .expect("handle_session_invalidated body");
 
         assert!(
-            observer_body.contains("subscribe_to_session_changes()"),
+            observer_start_body.contains("subscribe_to_session_changes()"),
             "AccountActor must subscribe to the SDK session-change channel; sync errors are not a reliable auth-invalidated source"
         );
         assert!(
-            observer_body.contains("matrix_sdk::SessionChange::UnknownToken(data)"),
+            observer_run_body.contains("matrix_sdk::SessionChange::UnknownToken(data)"),
             "UnknownToken must be handled explicitly instead of inferred from SyncService Offline/Error"
         );
         assert!(
-            observer_body.contains("soft_logout: data.soft_logout"),
+            observer_run_body.contains("soft_logout: data.soft_logout"),
             "only the private-data-free soft_logout bool may cross into AccountActor"
         );
         assert!(
@@ -11382,6 +11659,48 @@ mod tests {
         assert!(
             handler_body.contains("self.stop_sync_actor().await"),
             "auth invalidation must stop the old sync loop instead of leaving it reconnecting forever"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_change_observer_stop_interrupts_blocked_mailbox_delivery() {
+        let (tx, mut receiver) = mpsc::channel(1);
+        tx.send(AccountMessage::Shutdown)
+            .await
+            .expect("fill the account mailbox");
+        let (change_tx, change_rx) = broadcast::channel(1);
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let delivery_barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let mut task = executor::spawn(run_session_change_observation(
+            change_rx,
+            tx,
+            stop_rx,
+            Some(delivery_barrier.clone()),
+        ));
+        let mut unknown_token = matrix_sdk::ruma::api::error::UnknownTokenErrorData::new();
+        unknown_token.soft_logout = true;
+        change_tx
+            .send(matrix_sdk::SessionChange::UnknownToken(unknown_token))
+            .expect("publish synthetic session invalidation");
+
+        delivery_barrier.wait().await;
+        stop_tx.send(()).expect("request observer stop");
+        match executor::timeout(Duration::from_millis(250), &mut task).await {
+            Ok(joined) => joined.expect("session-change observer task"),
+            Err(_) => {
+                task.abort();
+                let _ = task.await;
+                panic!("stop must interrupt a blocked session-change mailbox delivery");
+            }
+        }
+
+        assert!(matches!(
+            receiver.recv().await,
+            Some(AccountMessage::Shutdown)
+        ));
+        assert!(
+            receiver.try_recv().is_err(),
+            "stop must discard only the blocked observer delivery"
         );
     }
 
@@ -11975,7 +12294,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_persistence_worker_saves_latest_snapshot_and_joins_after_channel_close() {
+        use crate::read_state::{ReadStateEngine, ReadStateKey, ReadTarget, ReadWaiterId};
+
+        fn snapshot(event_id: &str) -> crate::read_state::ReadPersistenceSnapshot {
+            let mut engine = ReadStateEngine::new(1);
+            engine.admit(
+                1,
+                ReadStateKey::PublicUnthreaded {
+                    room_id: "!worker-room:example.test".to_owned(),
+                },
+                ReadTarget::new(event_id.to_owned()),
+                ReadWaiterId::new(1),
+            );
+            engine.persistence_snapshot()
+        }
+
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let key_id = SessionKeyId {
+            homeserver: "https://example.test".to_owned(),
+            user_id: "@worker:example.test".to_owned(),
+            device_id: "WORKER".to_owned(),
+        };
+        let store = StoreActor::with_backend(
+            CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+                cred_dir.path(),
+            )),
+            data_dir.path(),
+        );
+        store
+            .account_store_config(&key_id)
+            .expect("seed unlock secret");
+        let (ingress, requests) = ReadPersistenceIngress::channel();
+        let worker_store = store.clone();
+        let worker_key_id = key_id.clone();
+        let mut worker = executor::spawn(run_read_persistence_worker(
+            worker_store,
+            worker_key_id,
+            7,
+            requests,
+        ));
+        ingress.publish(ReadPersistenceRequest::new(7, 1, snapshot("$first")));
+        let latest = snapshot("$latest");
+        ingress.publish(ReadPersistenceRequest::new(7, 2, latest.clone()));
+        drop(ingress);
+
+        executor::timeout(Duration::from_secs(1), &mut worker)
+            .await
+            .expect("closed persistence channel must join within the shutdown bound")
+            .expect("persistence worker task");
+        assert_eq!(
+            store
+                .load_read_state_outbox(&key_id)
+                .expect("load saved latest snapshot"),
+            latest
+        );
+    }
+
+    #[test]
+    fn read_persistence_session_generation_survives_actor_recreation() {
+        let first_actor_generation = next_read_persistence_session_generation();
+        let recreated_actor_generation = next_read_persistence_session_generation();
+
+        assert!(
+            recreated_actor_generation > first_actor_generation,
+            "a recreated AccountActor must not reuse a process-local outbox generation"
+        );
+    }
+
+    #[tokio::test]
     async fn reset_local_data_clears_current_account_persistence_and_signs_out_locally() {
+        use crate::read_state::{ReadStateEngine, ReadStateKey, ReadTarget, ReadWaiterId};
+
         let cred_dir = tempdir().expect("tempdir");
         let data_dir = tempdir().expect("tempdir");
         let key_id = SessionKeyId {
@@ -12004,6 +12395,18 @@ mod tests {
             b"local data",
         )
         .expect("write local store sentinel");
+        let mut read_state = ReadStateEngine::new(1);
+        read_state.admit(
+            1,
+            ReadStateKey::PublicUnthreaded {
+                room_id: "!reset-room:example.test".to_owned(),
+            },
+            ReadTarget::new("$reset-event".to_owned()),
+            ReadWaiterId::new(1),
+        );
+        store
+            .save_read_state_outbox(&key_id, &read_state.persistence_snapshot())
+            .expect("seed read-state outbox");
         store
             .credential_backend()
             .save_matrix_session(&key_id, &StoredMatrixSession::new("{\"redacted\":true}"))
@@ -12027,11 +12430,14 @@ mod tests {
         let data_dir_path = store.data_dir().to_path_buf();
         let room_actor = crate::room::RoomActor::spawn(action_tx.clone(), event_tx.clone());
         let messages_backpressure = crate::messages_backpressure::MessagesBackpressure::default();
+        let (navigation_projection, navigation_projection_rx) =
+            NavigationProjectionIngress::channel();
         let timeline_manager = crate::timeline::TimelineManagerActor::spawn(
             action_tx.clone(),
             event_tx.clone(),
             Some(data_dir_path.clone()),
             messages_backpressure.clone(),
+            Some(navigation_projection_rx),
         );
         let mut actor = AccountActor {
             session: None,
@@ -12056,7 +12462,7 @@ mod tests {
             trust_observation_is_synthetic: false,
             recovery_download_override: std::sync::Mutex::new(None),
             close_store_results: std::collections::VecDeque::new(),
-            store,
+            store: store.clone(),
             action_tx,
             event_tx,
             command_rx,
@@ -12065,6 +12471,9 @@ mod tests {
             sync_generation: Arc::new(AtomicU64::new(0)),
             room_actor,
             timeline_manager,
+            read_persistence_task: None,
+            read_persistence_session_generation: 0,
+            navigation_projection,
             messages_backpressure,
             activity_resolution_task: None,
             data_dir: data_dir_path,
@@ -12115,6 +12524,12 @@ mod tests {
             "reset must complete and locally sign out, got {actions:?}"
         );
         assert!(!account_root.exists(), "account root should be removed");
+        assert!(
+            store
+                .load_read_state_outbox(&key_id)
+                .expect("removed read-state outbox reads as empty")
+                .is_empty()
+        );
 
         let check_backend = CredentialStoreBackend::FileDir(
             crate::store::FileCredentialStore::new(cred_dir.path()),
@@ -12171,8 +12586,15 @@ mod tests {
         let (event_tx, mut event_rx) = broadcast::channel(8);
         let (_stop_tx, stop_rx) = tokio::sync::oneshot::channel();
 
-        run_recovery_state_observation(states, account_key.clone(), action_tx, event_tx, stop_rx)
-            .await;
+        run_recovery_state_observation(
+            states,
+            account_key.clone(),
+            action_tx,
+            event_tx,
+            stop_rx,
+            None,
+        )
+        .await;
 
         let first_actions = action_rx.recv().await.expect("first action batch");
         assert_eq!(
@@ -12214,6 +12636,51 @@ mod tests {
                 Err(tokio::sync::broadcast::error::RecvError::Closed)
             ),
             "repeated recovery states must not emit duplicate RecoveryRequired events"
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_state_observer_stop_interrupts_blocked_action_delivery() {
+        let states = stream::iter([koushi_state::E2eeRecoveryState::Incomplete]);
+        let (action_tx, mut action_rx) = mpsc::channel(1);
+        action_tx
+            .send(vec![AppAction::SessionLocked])
+            .await
+            .expect("fill the reducer action mailbox");
+        let (event_tx, mut event_rx) = broadcast::channel(1);
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let delivery_barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let mut task = executor::spawn(run_recovery_state_observation(
+            states,
+            AccountKey("@observer-stop:example.invalid".to_owned()),
+            action_tx,
+            event_tx,
+            stop_rx,
+            Some(delivery_barrier.clone()),
+        ));
+
+        delivery_barrier.wait().await;
+        stop_tx.send(()).expect("request observer stop");
+        match executor::timeout(Duration::from_millis(250), &mut task).await {
+            Ok(joined) => joined.expect("recovery-state observer task"),
+            Err(_) => {
+                task.abort();
+                let _ = task.await;
+                panic!("stop must interrupt a blocked recovery action delivery");
+            }
+        }
+
+        assert!(matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::SessionLocked])
+        ));
+        assert!(
+            action_rx.try_recv().is_err(),
+            "stop must discard only the blocked observer action"
+        );
+        assert!(
+            event_rx.try_recv().is_err(),
+            "a stopped Incomplete delivery must not emit RecoveryRequired"
         );
     }
 
