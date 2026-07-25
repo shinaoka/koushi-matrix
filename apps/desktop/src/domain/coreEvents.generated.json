@@ -305,6 +305,7 @@
           {
             "avatar_url": null,
             "canonical_alias": "#public:example.test",
+            "room_type": null,
             "guest_can_join": false,
             "joined_members": 5,
             "name": "Public Room",

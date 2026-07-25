@@ -653,6 +653,9 @@ export interface DirectoryQuery {
 export interface DirectoryRoomSummary {
   room_id: string;
   canonical_alias: string | null;
+  /** Matrix `room_type`, e.g. `m.space`. Absent for an ordinary room. */
+  room_type: string | null;
+  /** Empty when the entry has no name; the GUI supplies the fallback. */
   name: string;
   topic: string | null;
   avatar_url: string | null;
