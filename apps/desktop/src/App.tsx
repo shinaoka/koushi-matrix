@@ -43,6 +43,7 @@ import {
 } from "./domain/composerDraftLifecycle";
 import type { ComposerDraftRevision, TimelinePaneState } from "./domain/types";
 import type { MatrixPermalinkTarget } from "./domain/matrixPermalink";
+import { resolveDirectorySubmission } from "./domain/directorySubmission";
 import { setActiveLocaleProfile, t } from "./i18n/messages";
 
 export function reconcileComposerSubmissionSnapshot(
@@ -2747,6 +2748,49 @@ export function App() {
   }
 
   /**
+   * Submit the Explore field.
+   *
+   * A link or a sigil-qualified id names one room, so it is joined directly; a
+   * directory text search cannot find a room addressed by id at all. Ordinary
+   * words stay a search.
+   */
+  async function submitDirectorySearch() {
+    if (isBusy) {
+      return;
+    }
+    const submission = resolveDirectorySubmission(directorySearchDraft);
+    switch (submission.kind) {
+      case "empty":
+        return;
+      case "join":
+        await joinDirectoryTarget(submission.roomIdOrAlias, submission.viaServers);
+        return;
+      case "user":
+        // A person is not joinable, and creating a DM would invite them; leave
+        // that to an explicit action rather than a submitted search field.
+        return;
+      case "search":
+        await queryDirectory(submission.term);
+    }
+  }
+
+  async function joinDirectoryTarget(roomIdOrAlias: string, viaServers: string[]) {
+    if (snapshot?.state.domain.directory.join.kind === "joining") {
+      return;
+    }
+    const joined = snapshot?.state.domain.rooms.find(
+      (room) => room.room_id === roomIdOrAlias
+    );
+    if (joined) {
+      await selectRoom(joined.room_id);
+      return;
+    }
+    const nextSnapshot = await api.joinDirectoryRoom(roomIdOrAlias, viaServers);
+    setPrimaryView("timeline");
+    setSnapshot(nextSnapshot);
+  }
+
+  /**
    * Open a Matrix entity a message linked to.
    *
    * An already-joined room is plain navigation. Anything else is handed to the
@@ -2766,9 +2810,7 @@ export function App() {
       return;
     }
     setDirectorySearchDraft(target.roomIdOrAlias);
-    setSnapshot(await api.getSnapshot());
-    setPrimaryView("explore");
-    await queryDirectory(target.roomIdOrAlias);
+    await joinDirectoryTarget(target.roomIdOrAlias, target.viaServers);
   }
 
   async function joinDirectoryRoom(room: DirectoryRoomSummary) {
@@ -4568,7 +4610,7 @@ export function App() {
             }}
             onQueryChange={setDirectorySearchDraft}
             onSearch={() => {
-              void queryDirectory();
+              void submitDirectorySearch();
             }}
           />
         ) : primaryView === "invites" ? (
