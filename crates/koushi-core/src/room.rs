@@ -2837,6 +2837,7 @@ fn directory_room_summary_from_sdk(room: MatrixPublicRoomDirectoryRoom) -> Direc
     DirectoryRoomSummary {
         room_id: room.room_id,
         canonical_alias: room.canonical_alias,
+        room_type: room.room_type,
         name: room.name,
         topic: room.topic,
         avatar_url: room.avatar_url,

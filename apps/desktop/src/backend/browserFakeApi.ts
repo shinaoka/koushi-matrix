@@ -2349,6 +2349,7 @@ class BrowserFakeApi implements DesktopApi {
         {
           room_id: "!public-demo:fake.local",
           canonical_alias: alias,
+          room_type: null,
           name: "Public Demo Room",
           topic: "Synthetic browser directory result",
           avatar_url: null,

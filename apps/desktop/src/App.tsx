@@ -44,6 +44,7 @@ import {
 import type { ComposerDraftRevision, TimelinePaneState } from "./domain/types";
 import type { MatrixPermalinkTarget } from "./domain/matrixPermalink";
 import { resolveDirectorySubmission } from "./domain/directorySubmission";
+import { serverNameFromMatrixId } from "./domain/matrixPermalink";
 import { setActiveLocaleProfile, t } from "./i18n/messages";
 
 export function reconcileComposerSubmissionSnapshot(
@@ -201,7 +202,6 @@ import {
   EMPTY_MENTION_INTENT,
   composerModeProp,
   pruneMentionIntentForDraft,
-  serverNameFromAlias,
   serverNameFromRoomId,
   type ActiveContextMenu,
   type ContextMenuTarget,
@@ -1189,6 +1189,8 @@ export function App() {
   const [homeSelection, setHomeSelectionState] =
     useState<HomeSelection>(readHomeSelection);
   const [directorySearchDraft, setDirectorySearchDraft] = useState("");
+  // Blank means the user's own homeserver directory.
+  const [directoryServerDraft, setDirectoryServerDraft] = useState("");
   const [newDmDialogOpen, setNewDmDialogOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [runtimeDiagnosticSnapshot, setRuntimeDiagnosticSnapshot] =
@@ -2740,7 +2742,7 @@ export function App() {
     setSnapshot(
       await api.queryDirectory({
         term: term || null,
-        server_name: null,
+        server_name: directoryServerDraft.trim() || null,
         limit: 20,
         since: null
       })
@@ -2814,17 +2816,15 @@ export function App() {
   }
 
   async function joinDirectoryRoom(room: DirectoryRoomSummary) {
-    const alias = room.canonical_alias?.trim();
-    if (!alias || isBusy || snapshot?.state.domain.directory.join.kind === "joining") {
+    if (isBusy) {
       return;
     }
-    const viaServer = serverNameFromAlias(alias);
-    const nextSnapshot = await api.joinDirectoryRoom(
-      alias,
-      viaServer ? [viaServer] : []
-    );
-    setPrimaryView("timeline");
-    setSnapshot(nextSnapshot);
+    // A public space frequently has no canonical alias, so fall back to the
+    // room id rather than leaving the result findable but unjoinable.
+    const alias = room.canonical_alias?.trim() || null;
+    const target = alias ?? room.room_id;
+    const viaServer = serverNameFromMatrixId(target);
+    await joinDirectoryTarget(target, viaServer ? [viaServer] : []);
   }
 
   function openCreateDialog(kind: "room" | "space") {
@@ -4604,11 +4604,13 @@ export function App() {
           <ExplorePane
             isBusy={isBusy}
             queryDraft={directorySearchDraft}
+            serverDraft={directoryServerDraft}
             snapshot={snapshot}
             onJoinRoom={(room) => {
               void joinDirectoryRoom(room);
             }}
             onQueryChange={setDirectorySearchDraft}
+            onServerChange={setDirectoryServerDraft}
             onSearch={() => {
               void submitDirectorySearch();
             }}

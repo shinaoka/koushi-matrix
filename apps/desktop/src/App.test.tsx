@@ -1421,21 +1421,41 @@ describe("desktop integration source guards", () => {
     expect(acceptSource).toContain('setPrimaryView("timeline")');
   });
 
+  test("directory search queries the chosen homeserver, not always the user's own", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const queryStart = source.indexOf("async function queryDirectory");
+    const queryEnd = source.indexOf("async function submitDirectorySearch", queryStart);
+    const querySource = source.slice(queryStart, queryEnd);
+
+    // A hardcoded null limited discovery to the user's own server directory,
+    // which cannot find rooms or spaces hosted elsewhere.
+    expect(querySource).toContain("server_name: directoryServerDraft.trim() || null");
+    expect(querySource).not.toContain("server_name: null");
+  });
+
   test("joining a directory room shows the backend-selected timeline", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     const joinStart = source.indexOf("async function joinDirectoryRoom");
     const joinEnd = source.indexOf("function openCreateDialog", joinStart);
     const joinSource = source.slice(joinStart, joinEnd);
 
-    expect(joinSource).toContain("api.joinDirectoryRoom(");
-    // The alias server is a routing hint, passed as the via list the Rust
-    // command now takes rather than a single optional server.
-    expect(joinSource).toContain("serverNameFromAlias(alias)");
-    expect(joinSource).toContain("viaServer ? [viaServer] : []");
-    expect(joinSource).toContain('setPrimaryView("timeline")');
-    expect(joinSource).toContain("setSnapshot(nextSnapshot)");
+    // A result row joins through the one shared target path, so a link click
+    // and a directory Join cannot drift into different join behavior.
+    expect(joinSource).toContain("joinDirectoryTarget(");
+    // A public space often has no alias, so the row falls back to the room id
+    // rather than becoming findable but unjoinable.
+    expect(joinSource).toContain("alias ?? room.room_id");
+    expect(joinSource).toContain("serverNameFromMatrixId(target)");
     expect(joinSource).not.toContain("previousRoomIds");
     expect(joinSource).not.toContain("api.selectRoom(");
+
+    const sharedStart = source.indexOf("async function joinDirectoryTarget");
+    const sharedEnd = source.indexOf("async function joinDirectoryRoom", sharedStart);
+    const sharedSource = source.slice(sharedStart, sharedEnd);
+
+    expect(sharedSource).toContain("api.joinDirectoryRoom(");
+    expect(sharedSource).toContain('setPrimaryView("timeline")');
+    expect(sharedSource).toContain("setSnapshot(nextSnapshot)");
   });
 
   test("room mark-as-read prefers the room latest event over stale markers", () => {

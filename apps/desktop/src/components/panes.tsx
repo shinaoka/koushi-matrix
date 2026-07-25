@@ -319,16 +319,21 @@ export function ActivityPane({
 export function ExplorePane({
   isBusy,
   queryDraft,
+  serverDraft,
   snapshot,
   onJoinRoom,
   onQueryChange,
+  onServerChange,
   onSearch
 }: {
   isBusy: boolean;
   queryDraft: string;
+  /** Homeserver whose public directory to query; blank means the user's own. */
+  serverDraft: string;
   snapshot: DesktopSnapshot;
   onJoinRoom: (room: DirectoryRoomSummary) => void;
   onQueryChange: (value: string) => void;
+  onServerChange: (value: string) => void;
   onSearch: () => void;
 }) {
   const queryState = snapshot.state.domain.directory.query;
@@ -361,6 +366,17 @@ export function ExplorePane({
             onChange={(event) => onQueryChange(event.currentTarget.value)}
           />
         </label>
+        <label className="directory-search-field directory-search-server">
+          <span>{t("directory.searchServer")}</span>
+          <ImeTextField
+            type="text"
+            value={serverDraft}
+            syncKey="directory-search-server"
+            aria-label={t("directory.searchServer")}
+            placeholder={t("directory.searchServerPlaceholder")}
+            onChange={(event) => onServerChange(event.currentTarget.value)}
+          />
+        </label>
         <button
           className="dialog-button is-primary"
           type="submit"
@@ -390,20 +406,38 @@ export function ExplorePane({
         ) : rooms.length ? (
           rooms.map((room) => {
             const alias = room.canonical_alias?.trim() || null;
+            // Join by alias when there is one, otherwise by room id: a public
+            // space often has no canonical alias, and refusing those would
+            // make it findable but unjoinable.
+            const joinTarget = alias ?? room.room_id;
             const joiningThisRoom =
-              joinState.kind === "joining" && joinState.room_id_or_alias === alias;
+              joinState.kind === "joining" && joinState.room_id_or_alias === joinTarget;
             const joinFailed =
-              joinState.kind === "failed" && joinState.room_id_or_alias === alias
+              joinState.kind === "failed" && joinState.room_id_or_alias === joinTarget
                 ? joinState
                 : null;
-            const canJoin = Boolean(alias) && !joiningThisRoom && !isBusy;
+            const isSpace = room.room_type === "m.space";
+            const displayName =
+              room.name.trim() ||
+              alias ||
+              t(isSpace ? "directory.unnamedSpace" : "directory.unnamedRoom");
+            const canJoin = !joiningThisRoom && !isBusy;
             return (
               <article className="directory-result" key={room.room_id}>
                 <div className="directory-result-avatar" aria-hidden="true">
-                  <span dir="auto">{initials(room.name)}</span>
+                  <span dir="auto">{initials(displayName)}</span>
                 </div>
                 <div className="directory-result-main">
-                  <h2 dir="auto">{room.name}</h2>
+                  <h2>
+                    <span className="directory-result-name" dir="auto">
+                      {displayName}
+                    </span>
+                    {isSpace ? (
+                      <span className="directory-result-type">
+                        {t("directory.spaceBadge")}
+                      </span>
+                    ) : null}
+                  </h2>
                   <p dir="auto">
                     {room.topic?.trim() || alias || t("directory.noAlias")}
                   </p>
@@ -427,7 +461,7 @@ export function ExplorePane({
                 <button
                   className="dialog-button is-primary directory-join-button"
                   type="button"
-                  aria-label={t("directory.joinRoom", { name: room.name })}
+                  aria-label={t("directory.joinRoom", { name: displayName })}
                   disabled={!canJoin}
                   onClick={() => onJoinRoom(room)}
                 >

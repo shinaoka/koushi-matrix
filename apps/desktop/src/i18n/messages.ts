@@ -241,6 +241,11 @@ export type MessageId =
   | "directory.searching"
   | "directory.searchPlaceholder"
   | "directory.searchPublicRooms"
+  | "directory.searchServer"
+  | "directory.searchServerPlaceholder"
+  | "directory.spaceBadge"
+  | "directory.unnamedRoom"
+  | "directory.unnamedSpace"
   | "directory.worldReadable"
   | "invite.accept"
   | "invite.decline"
@@ -1257,6 +1262,11 @@ const en: Catalog = {
   "directory.searchFailed": "Search failed: {reason}",
   "directory.searching": "Searching",
   "directory.searchPlaceholder": "Room name, topic, or a room link",
+  "directory.searchServer": "Directory server",
+  "directory.searchServerPlaceholder": "Your server",
+  "directory.spaceBadge": "Space",
+  "directory.unnamedRoom": "Unnamed room",
+  "directory.unnamedSpace": "Unnamed space",
   "directory.searchPublicRooms": "Search public rooms",
   "directory.worldReadable": "World readable",
   "invite.accept": "Accept invite",
@@ -2173,6 +2183,11 @@ const ja: Catalog = {
   "directory.searchFailed": "検索に失敗: {reason}",
   "directory.searching": "検索中",
   "directory.searchPlaceholder": "ルーム名・トピック・ルームのリンク",
+  "directory.searchServer": "ディレクトリサーバ",
+  "directory.searchServerPlaceholder": "自分のサーバ",
+  "directory.spaceBadge": "スペース",
+  "directory.unnamedRoom": "名前のないルーム",
+  "directory.unnamedSpace": "名前のないスペース",
   "directory.searchPublicRooms": "公開ルームを検索",
   "directory.worldReadable": "誰でも閲覧可",
   "invite.accept": "招待を承認",

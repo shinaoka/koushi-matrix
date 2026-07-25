@@ -2963,6 +2963,7 @@ mod tests {
                 rooms: vec![DirectoryRoomSummary {
                     room_id: "!public:example.test".to_owned(),
                     canonical_alias: Some("#public:example.test".to_owned()),
+                    room_type: None,
                     name: "Public Room".to_owned(),
                     topic: Some("Directory sample".to_owned()),
                     avatar_url: None,

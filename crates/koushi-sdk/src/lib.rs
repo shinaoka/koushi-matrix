@@ -4417,6 +4417,10 @@ pub struct MatrixPublicRoomDirectoryResult {
 pub struct MatrixPublicRoomDirectoryRoom {
     pub room_id: String,
     pub canonical_alias: Option<String>,
+    /// Matrix `room_type`, e.g. `m.space`. Absent for an ordinary room.
+    pub room_type: Option<String>,
+    /// Empty when the directory entry has no name; the caller decides how to
+    /// label it, because a room and a space need different fallbacks.
     pub name: String,
     pub topic: Option<String>,
     pub avatar_url: Option<String>,
@@ -6581,7 +6585,10 @@ fn matrix_public_room_from_chunk(
     MatrixPublicRoomDirectoryRoom {
         room_id: chunk.room_id.to_string(),
         canonical_alias: chunk.canonical_alias.map(|alias| alias.to_string()),
-        name: chunk.name.unwrap_or_else(|| "Public room".to_owned()),
+        room_type: chunk.room_type.map(|room_type| room_type.to_string()),
+        // An unnamed entry stays empty: labelling it here would hardcode
+        // English prose and would call an unnamed space a room.
+        name: chunk.name.unwrap_or_default(),
         topic: chunk.topic,
         avatar_url: chunk.avatar_url.map(|avatar_url| avatar_url.to_string()),
         joined_members: chunk.num_joined_members.into(),
@@ -7986,6 +7993,7 @@ mod tests {
         MatrixRoomTagInfo, MatrixRoomTags, MatrixSearchIndexKey, MatrixSearchIndexStoreConfig,
         SYNC_INVITE_PROBE_TIMEOUT, SdkUnreadTrace, SessionInfo, create_public_directory_room,
         MatrixJoinTarget, MatrixRoomOperationError, create_room_request,
+        matrix_public_room_from_chunk,
         get_room_settings_snapshot, join_room_target, resolve_join_target,
         matrix_conversation_activity_source, matrix_room_list_room_from_counts,
         matrix_room_member_role, moderate_room_member, newest_conversation_activity,
@@ -9263,6 +9271,42 @@ mod tests {
     }
 
     #[test]
+    fn directory_chunk_keeps_the_room_type_so_a_space_is_distinguishable() {
+        let mut chunk = matrix_sdk::ruma::directory::PublicRoomsChunk::from(
+            matrix_sdk::ruma::directory::PublicRoomsChunkInit {
+                num_joined_members: matrix_sdk::ruma::UInt::from(3u32),
+                room_id: matrix_sdk::ruma::room_id!("!space:example.invalid").to_owned(),
+                world_readable: true,
+                guest_can_join: false,
+            },
+        );
+        chunk.room_type = Some(matrix_sdk::ruma::room::RoomType::Space);
+
+        let room = matrix_public_room_from_chunk(chunk);
+
+        // Without this the entry is indistinguishable from an ordinary room.
+        assert_eq!(room.room_type.as_deref(), Some("m.space"));
+    }
+
+    #[test]
+    fn directory_chunk_without_a_name_stays_empty_rather_than_claiming_to_be_a_room() {
+        let chunk = matrix_sdk::ruma::directory::PublicRoomsChunk::from(
+            matrix_sdk::ruma::directory::PublicRoomsChunkInit {
+                num_joined_members: matrix_sdk::ruma::UInt::from(0u32),
+                room_id: matrix_sdk::ruma::room_id!("!unnamed:example.invalid").to_owned(),
+                world_readable: false,
+                guest_can_join: false,
+            },
+        );
+
+        let room = matrix_public_room_from_chunk(chunk);
+
+        // A hardcoded "Public room" would mislabel an unnamed space.
+        assert_eq!(room.name, "");
+        assert_eq!(room.room_type, None);
+    }
+
+    #[test]
     fn directory_operations_use_public_room_and_alias_join_apis() {
         let _query = MatrixPublicRoomDirectoryQuery {
             term: Some("synthetic".to_owned()),
@@ -9273,6 +9317,7 @@ mod tests {
         let _room = MatrixPublicRoomDirectoryRoom {
             room_id: "!room:example.invalid".to_owned(),
             canonical_alias: Some("#room:example.invalid".to_owned()),
+            room_type: None,
             name: "Synthetic Room".to_owned(),
             topic: None,
             avatar_url: None,

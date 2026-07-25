@@ -147,6 +147,10 @@ impl fmt::Debug for DirectoryQuery {
 pub struct DirectoryRoomSummary {
     pub room_id: String,
     pub canonical_alias: Option<String>,
+    /// Matrix `room_type`, e.g. `m.space`. Absent for an ordinary room.
+    pub room_type: Option<String>,
+    /// Empty when the directory entry has no name. The GUI supplies a
+    /// type-appropriate fallback; inventing one here would hardcode prose.
     pub name: String,
     pub topic: Option<String>,
     pub avatar_url: Option<String>,

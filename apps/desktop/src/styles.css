@@ -5,6 +5,11 @@
 @import "twemoji-colr-font/twemoji.css";
 
 :root {
+  /* #315 directory results: gap between the name and its type badge. */
+  --directory-result-badge-gap: 8px;
+  /* #315 discovery: width of the directory-server column. */
+  --directory-server-column: 200px;
+
   /* #314 hover actions: a floating pill on the row's trailing edge. */
   --message-actions-z-index: 6;
   --message-actions-inset-block: -10px;
@@ -2009,11 +2014,23 @@ button:disabled {
 
 .directory-search {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  /* Term, directory server, then the submit button. The server column is
+     narrower because a host name is shorter than a search phrase. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, var(--directory-server-column)) auto;
   gap: 10px;
   align-items: end;
   padding: 16px 20px;
   border-bottom: 1px solid var(--line);
+}
+
+@media (width <= 720px) {
+  .directory-search {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .directory-search-server {
+    grid-column: 1 / -1;
+  }
 }
 
 .directory-search-field {
@@ -2087,13 +2104,33 @@ button:disabled {
 }
 
 .directory-result-main h2 {
+  display: flex;
+  align-items: center;
+  /* The badge must stay readable, so only the name is allowed to ellipsize. */
+  gap: var(--directory-result-badge-gap);
+  min-inline-size: 0;
   margin: 0;
-  overflow: hidden;
   color: var(--text);
   font-size: 15px;
   font-weight: 850;
+}
+
+.directory-result-name {
+  overflow: hidden;
+  min-inline-size: 0;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.directory-result-type {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-hover);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .directory-result-main p {

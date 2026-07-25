@@ -32,6 +32,7 @@ fn room(alias: &str) -> DirectoryRoomSummary {
     DirectoryRoomSummary {
         room_id: "!room:example.invalid".to_owned(),
         canonical_alias: Some(alias.to_owned()),
+        room_type: None,
         name: "Synthetic Directory Room".to_owned(),
         topic: Some("Synthetic public topic".to_owned()),
         avatar_url: None,
@@ -52,6 +53,7 @@ fn directory_debug_output_redacts_private_directory_values() {
     let private_room = DirectoryRoomSummary {
         room_id: "!private-room:example.invalid".to_owned(),
         canonical_alias: Some("#private-room:example.invalid".to_owned()),
+        room_type: None,
         name: "Private Directory Room".to_owned(),
         topic: Some("Private directory topic".to_owned()),
         avatar_url: Some("mxc://example.invalid/private-avatar".to_owned()),

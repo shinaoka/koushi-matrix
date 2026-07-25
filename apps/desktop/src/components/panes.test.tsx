@@ -3,9 +3,15 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ActivityPane } from "./panes";
+import { createBrowserFakeApi } from "../backend/browserFakeApi";
+import { ActivityPane, ExplorePane } from "./panes";
 import { setActiveLocaleProfile } from "../i18n/messages";
-import type { ActivityRow, ActivityState } from "../domain/types";
+import type {
+  ActivityRow,
+  ActivityState,
+  DesktopSnapshot,
+  DirectoryRoomSummary
+} from "../domain/types";
 
 function activityState(rows: ActivityRow[]): ActivityState {
   return {
@@ -174,5 +180,113 @@ describe("ActivityPane", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: /Mark all read/ }));
     expect(onMarkRead).toHaveBeenCalledWith({ kind: "all" });
+  });
+});
+
+function directoryEntry(overrides: Partial<DirectoryRoomSummary>): DirectoryRoomSummary {
+  return {
+    room_id: "!entry:example.invalid",
+    canonical_alias: null,
+    room_type: null,
+    name: "",
+    topic: null,
+    avatar_url: null,
+    joined_members: 0,
+    world_readable: false,
+    guest_can_join: false,
+    ...overrides
+  };
+}
+
+async function snapshotWithDirectoryResults(
+  rooms: DirectoryRoomSummary[]
+): Promise<DesktopSnapshot> {
+  const snapshot = await createBrowserFakeApi().getSnapshot();
+  snapshot.state.domain.directory.query = {
+    kind: "results",
+    request_id: 1,
+    query: { term: "anything", server_name: null, limit: 20, since: null },
+    rooms,
+    next_batch: null
+  };
+  return snapshot;
+}
+
+describe("ExplorePane public discovery", () => {
+  afterEach(cleanup);
+
+  it("marks a space result so it is not mistaken for an ordinary room", async () => {
+    const snapshot = await snapshotWithDirectoryResults([
+      directoryEntry({
+        room_id: "!space:example.invalid",
+        room_type: "m.space",
+        name: "Community"
+      })
+    ]);
+
+    render(
+      <ExplorePane
+        isBusy={false}
+        queryDraft=""
+        serverDraft=""
+        snapshot={snapshot}
+        onJoinRoom={vi.fn()}
+        onQueryChange={vi.fn()}
+        onServerChange={vi.fn()}
+        onSearch={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("Space")).toBeTruthy();
+  });
+
+  it("joins an aliasless space, which would otherwise be findable but unjoinable", async () => {
+    const space = directoryEntry({
+      room_id: "!aliasless:example.invalid",
+      room_type: "m.space",
+      name: "No alias space"
+    });
+    const snapshot = await snapshotWithDirectoryResults([space]);
+    const onJoinRoom = vi.fn();
+
+    render(
+      <ExplorePane
+        isBusy={false}
+        queryDraft=""
+        serverDraft=""
+        snapshot={snapshot}
+        onJoinRoom={onJoinRoom}
+        onQueryChange={vi.fn()}
+        onServerChange={vi.fn()}
+        onSearch={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /No alias space/ }));
+
+    expect(onJoinRoom).toHaveBeenCalledWith(space);
+  });
+
+  it("labels an unnamed entry by its type rather than leaving the row blank", async () => {
+    const snapshot = await snapshotWithDirectoryResults([
+      directoryEntry({ room_id: "!unnamed:example.invalid", room_type: "m.space" }),
+      directoryEntry({ room_id: "!plain:example.invalid" })
+    ]);
+
+    render(
+      <ExplorePane
+        isBusy={false}
+        queryDraft=""
+        serverDraft=""
+        snapshot={snapshot}
+        onJoinRoom={vi.fn()}
+        onQueryChange={vi.fn()}
+        onServerChange={vi.fn()}
+        onSearch={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("Unnamed space")).toBeTruthy();
+    expect(screen.getByText("Unnamed room")).toBeTruthy();
   });
 });

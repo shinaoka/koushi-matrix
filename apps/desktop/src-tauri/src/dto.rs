@@ -1932,6 +1932,7 @@ mod tests {
                 rooms: vec![DirectoryRoomSummary {
                     room_id: "!dir:example.invalid".to_owned(),
                     canonical_alias: Some("#fixture:example.invalid".to_owned()),
+                    room_type: Some("m.space".to_owned()),
                     name: "Fixture Public Room".to_owned(),
                     topic: Some("Fixture topic".to_owned()),
                     avatar_url: None,

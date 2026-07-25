@@ -160,6 +160,7 @@
               "joined_members": 42,
               "name": "Fixture Public Room",
               "room_id": "!dir:example.invalid",
+              "room_type": "m.space",
               "topic": "Fixture topic",
               "world_readable": true
             }

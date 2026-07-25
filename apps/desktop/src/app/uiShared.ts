@@ -4,6 +4,8 @@
 import {
   type MouseEvent
 } from "react";
+
+import { serverNameFromMatrixId } from "../domain/matrixPermalink";
 import type {
   ComposerMode,
   ImageUploadCompressionMode,
@@ -296,19 +298,13 @@ export function operationFailureLabel(kind: OperationFailureKind): string {
   }
 }
 
-export function serverNameFromAlias(alias: string): string | null {
-  const separatorIndex = alias.indexOf(":");
-  if (separatorIndex < 0 || separatorIndex + 1 >= alias.length) {
-    return null;
-  }
-  return alias.slice(separatorIndex + 1).trim() || null;
-}
-
 export function serverNameFromRoomId(roomId: string): string | null {
   if (!roomId.startsWith("!")) {
     return null;
   }
-  return serverNameFromAlias(roomId);
+  // One owner for "server part of a Matrix id": a second local copy would
+  // drift from the parser the join and permalink paths already share.
+  return serverNameFromMatrixId(roomId);
 }
 
 export function formatTime(timestampMs: number): string {
