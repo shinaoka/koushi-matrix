@@ -1077,7 +1077,11 @@ impl RoomActor {
             return;
         };
 
-        match koushi_sdk::join_room_by_alias(session, &alias, via_server.as_deref()).await {
+        let join_target = koushi_sdk::MatrixJoinTarget {
+            room_id_or_alias: alias.clone(),
+            via_servers: via_server.clone().into_iter().collect(),
+        };
+        match koushi_sdk::join_room_target(session, &join_target).await {
             Ok(room_id) => {
                 self.reduce_reliable(vec![AppAction::DirectoryJoinSucceeded {
                     request_id: request_id.sequence,

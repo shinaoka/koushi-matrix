@@ -5853,20 +5853,48 @@ pub async fn query_public_room_directory(
     })
 }
 
-pub async fn join_room_by_alias(
-    session: &MatrixClientSession,
-    alias: &str,
-    via_server: Option<&str>,
-) -> Result<String, MatrixRoomOperationError> {
-    let alias = matrix_sdk::ruma::RoomAliasId::parse(alias)
+/// A room to join, as named by a directory result or a `matrix.to` link.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MatrixJoinTarget {
+    /// `#alias:server` or `!id:server`.
+    pub room_id_or_alias: String,
+    /// Servers to try when the homeserver does not already know the room.
+    pub via_servers: Vec<String>,
+}
+
+/// Resolve a join target into the ids the SDK join call needs.
+///
+/// A room id is a legitimate join target, not a malformed alias: links carry
+/// ids far more often than aliases. Every `via` server is kept, because for an
+/// id target they are the only way the homeserver can locate a room it has
+/// never seen - dropping all but the first silently breaks federated joins.
+fn resolve_join_target(
+    target: &MatrixJoinTarget,
+) -> Result<
+    (
+        matrix_sdk::ruma::OwnedRoomOrAliasId,
+        Vec<matrix_sdk::ruma::OwnedServerName>,
+    ),
+    MatrixRoomOperationError,
+> {
+    let room_or_alias = matrix_sdk::ruma::RoomOrAliasId::parse(&target.room_id_or_alias)
         .map_err(|_| MatrixRoomOperationError::InvalidRoomAlias)?;
-    let room_or_alias = matrix_sdk::ruma::OwnedRoomOrAliasId::from(alias);
-    let via = via_server
-        .map(matrix_sdk::ruma::OwnedServerName::try_from)
-        .transpose()
-        .map_err(|_| MatrixRoomOperationError::InvalidServerName)?
-        .into_iter()
-        .collect::<Vec<_>>();
+    let via = target
+        .via_servers
+        .iter()
+        .map(|server| {
+            matrix_sdk::ruma::OwnedServerName::try_from(server.as_str())
+                .map_err(|_| MatrixRoomOperationError::InvalidServerName)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((room_or_alias, via))
+}
+
+pub async fn join_room_target(
+    session: &MatrixClientSession,
+    target: &MatrixJoinTarget,
+) -> Result<String, MatrixRoomOperationError> {
+    let (room_or_alias, via) = resolve_join_target(target)?;
     let room = session
         .client()
         .join_room_by_id_or_alias(room_or_alias.as_ref(), &via)
@@ -7957,7 +7985,8 @@ mod tests {
         MatrixRoomPermissionFacts, MatrixRoomSettingChange, MatrixRoomSettingsSnapshot,
         MatrixRoomTagInfo, MatrixRoomTags, MatrixSearchIndexKey, MatrixSearchIndexStoreConfig,
         SYNC_INVITE_PROBE_TIMEOUT, SdkUnreadTrace, SessionInfo, create_public_directory_room,
-        create_room_request, get_room_settings_snapshot, join_room_by_alias,
+        MatrixJoinTarget, MatrixRoomOperationError, create_room_request,
+        get_room_settings_snapshot, join_room_target, resolve_join_target,
         matrix_conversation_activity_source, matrix_room_list_room_from_counts,
         matrix_room_member_role, moderate_room_member, newest_conversation_activity,
         normalized_local_user_aliases, query_public_room_directory,
@@ -9169,6 +9198,71 @@ mod tests {
     }
 
     #[test]
+    fn join_target_accepts_a_room_id_because_links_carry_ids_more_often_than_aliases() {
+        let target = MatrixJoinTarget {
+            room_id_or_alias: "!room:example.invalid".to_owned(),
+            via_servers: Vec::new(),
+        };
+
+        let (resolved, _via) = resolve_join_target(&target).expect("room id is a join target");
+
+        assert_eq!(resolved.as_str(), "!room:example.invalid");
+    }
+
+    #[test]
+    fn join_target_keeps_every_via_server_so_a_federated_room_stays_reachable() {
+        let target = MatrixJoinTarget {
+            room_id_or_alias: "!room:example.invalid".to_owned(),
+            via_servers: vec!["first.invalid".to_owned(), "second.invalid".to_owned()],
+        };
+
+        let (_resolved, via) = resolve_join_target(&target).expect("room id is a join target");
+
+        // For an id target these are the only routing hints the homeserver has.
+        let names = via.iter().map(|server| server.as_str()).collect::<Vec<_>>();
+        assert_eq!(names, vec!["first.invalid", "second.invalid"]);
+    }
+
+    #[test]
+    fn join_target_still_accepts_an_alias() {
+        let target = MatrixJoinTarget {
+            room_id_or_alias: "#room:example.invalid".to_owned(),
+            via_servers: Vec::new(),
+        };
+
+        let (resolved, via) = resolve_join_target(&target).expect("alias is a join target");
+
+        assert_eq!(resolved.as_str(), "#room:example.invalid");
+        assert!(via.is_empty());
+    }
+
+    #[test]
+    fn join_target_rejects_input_that_is_neither_a_room_id_nor_an_alias() {
+        let target = MatrixJoinTarget {
+            room_id_or_alias: "room-without-a-sigil".to_owned(),
+            via_servers: Vec::new(),
+        };
+
+        assert!(matches!(
+            resolve_join_target(&target),
+            Err(MatrixRoomOperationError::InvalidRoomAlias)
+        ));
+    }
+
+    #[test]
+    fn join_target_rejects_an_unusable_via_server_instead_of_dropping_it() {
+        let target = MatrixJoinTarget {
+            room_id_or_alias: "!room:example.invalid".to_owned(),
+            via_servers: vec!["not a server name".to_owned()],
+        };
+
+        assert!(matches!(
+            resolve_join_target(&target),
+            Err(MatrixRoomOperationError::InvalidServerName)
+        ));
+    }
+
+    #[test]
     fn directory_operations_use_public_room_and_alias_join_apis() {
         let _query = MatrixPublicRoomDirectoryQuery {
             term: Some("synthetic".to_owned()),
@@ -9187,7 +9281,7 @@ mod tests {
             guest_can_join: false,
         };
         let _query_fn = query_public_room_directory;
-        let _join_fn = join_room_by_alias;
+        let _join_fn = join_room_target;
         let _create_public_fn = create_public_directory_room;
     }
 
