@@ -9560,6 +9560,113 @@ describe("TimelineView", () => {
     });
   });
 
+  it("routes a plain-text matrix.to room link into the app instead of the browser", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const permalink = "https://matrix.to/#/%23room%3Aexample.invalid";
+    const text = `Join ${permalink}`;
+    const item: TimelineItem = {
+      ...message("$matrixto-plain:example.invalid", text),
+      link_ranges: [
+        { url: permalink, start_utf16: "Join ".length, end_utf16: text.length }
+      ]
+    };
+    const onOpenMatrixTarget = vi.fn();
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        onOpenMatrixTarget={onOpenMatrixTarget}
+      />
+    );
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [item]
+        }
+      }
+    });
+
+    const link = await screen.findByRole("link", { name: permalink });
+    fireEvent.click(link);
+    await waitFor(() => {
+      expect(onOpenMatrixTarget).toHaveBeenCalledWith({
+        kind: "room",
+        roomIdOrAlias: "#room:example.invalid",
+        viaServers: []
+      });
+    });
+    // A Matrix target is in-app navigation, so it must never reach the browser.
+    expect(openExternalHttpUrl).not.toHaveBeenCalledWith(permalink);
+  });
+
+  it("routes a formatted matrix.to anchor into the app, keeping its via servers", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const permalink =
+      "https://matrix.to/#/%23room%3Aexample.invalid?via=first.invalid&via=second.invalid";
+    const item: TimelineItem = {
+      ...message("$matrixto-formatted:example.invalid", "#room:example.invalid"),
+      formatted: {
+        html: `<a href="${permalink}">#room:example.invalid</a>`,
+        plain_text: "#room:example.invalid",
+        code_blocks: []
+      }
+    };
+    const onOpenMatrixTarget = vi.fn();
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        onOpenMatrixTarget={onOpenMatrixTarget}
+      />
+    );
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [item]
+        }
+      }
+    });
+
+    const link = await screen.findByRole("link", { name: "#room:example.invalid" });
+    fireEvent.click(link);
+    await waitFor(() => {
+      expect(onOpenMatrixTarget).toHaveBeenCalledWith({
+        kind: "room",
+        roomIdOrAlias: "#room:example.invalid",
+        viaServers: ["first.invalid", "second.invalid"]
+      });
+    });
+    expect(openExternalHttpUrl).not.toHaveBeenCalledWith(permalink);
+  });
+
   it("preserves formatted HTML when adding Rust-projected link anchors", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const transport = baseTransport({

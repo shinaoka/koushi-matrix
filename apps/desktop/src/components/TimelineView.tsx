@@ -103,6 +103,10 @@ import type {
   TimelineMessageSource
 } from "../domain/coreEvents";
 import { openExternalHttpUrl, toExternalHttpUrl } from "../domain/externalLinks";
+import {
+  parseMatrixPermalink,
+  type MatrixPermalinkTarget
+} from "../domain/matrixPermalink";
 import { mediaSourceUrl } from "../domain/mediaUrl";
 import { ImeOwnedTextArea, ImeSafeForm, ImeTextField } from "./ImeTextControl";
 import {
@@ -305,6 +309,12 @@ export interface TimelineRowActionHandlers {
   onSetLocalUserAlias: (userId: string, alias: string | null) => void;
   onRetrySend: (roomId: string, transactionId: string) => void;
   onCancelSend: (roomId: string, transactionId: string) => void;
+  /**
+   * Opens a Matrix entity a message links to. Optional so surfaces that render
+   * rows without in-app navigation keep matrix.to links as ordinary links
+   * rather than swallowing the click.
+   */
+  onOpenMatrixTarget?: OpenMatrixTargetHandler;
 }
 
 // ---------------------------------------------------------------------------
@@ -1093,6 +1103,30 @@ function timelineItemHeightAtIndex(model: TimelineHeightModel, index: number): n
   return model.offsets[index + 1] - model.offsets[index] || model.fallbackHeight;
 }
 
+/** Opens a Matrix entity a rendered message links to. */
+export type OpenMatrixTargetHandler = (target: MatrixPermalinkTarget) => void;
+
+/**
+ * Decide what activating a rendered message link does.
+ *
+ * A `matrix.to` URL names a room or user this client already owns, so it is
+ * navigation rather than a web link: handing it to the browser would bounce the
+ * user out of the app to reach something the app can open directly. Every other
+ * URL stays an ordinary external link. Both message renderers route through
+ * here so plain-text and formatted links cannot drift apart.
+ */
+function activateTimelineLink(
+  href: string,
+  onOpenMatrixTarget: OpenMatrixTargetHandler | undefined
+): void {
+  const target = onOpenMatrixTarget ? parseMatrixPermalink(href) : null;
+  if (target && onOpenMatrixTarget) {
+    onOpenMatrixTarget(target);
+    return;
+  }
+  void openExternalHttpUrl(href);
+}
+
 export function renderTimelineMessageText(
   text: string,
   query = "",
@@ -1159,7 +1193,8 @@ function renderPlainTextBody(
   spoilerSpans: TimelineItem["spoiler_spans"] | undefined,
   query: string,
   profileUsers: Record<string, UserProfile>,
-  spoilerState: SpoilerRevealState
+  spoilerState: SpoilerRevealState,
+  onOpenMatrixTarget: OpenMatrixTargetHandler | undefined
 ): ReactNode {
   if (linkRanges.length === 0) {
     return renderTimelineMessageTextWithSpoilers(
@@ -1187,7 +1222,8 @@ function renderPlainTextBody(
             span.start_utf16,
             sortedLinks,
             query,
-            profileUsers
+            profileUsers,
+            onOpenMatrixTarget
           )}
         </Fragment>
       );
@@ -1199,7 +1235,8 @@ function renderPlainTextBody(
       span.end_utf16,
       sortedLinks,
       query,
-      profileUsers
+      profileUsers,
+      onOpenMatrixTarget
     );
     nodes.push(
       renderSpoiler(
@@ -1215,7 +1252,15 @@ function renderPlainTextBody(
   if (cursor < text.length) {
     nodes.push(
       <Fragment key={`text:${cursor}`}>
-        {renderPlainTextSegment(text, cursor, text.length, sortedLinks, query, profileUsers)}
+        {renderPlainTextSegment(
+          text,
+          cursor,
+          text.length,
+          sortedLinks,
+          query,
+          profileUsers,
+          onOpenMatrixTarget
+        )}
       </Fragment>
     );
   }
@@ -1228,7 +1273,8 @@ function renderPlainTextSegment(
   segEnd: number,
   sortedLinks: TimelineLinkRange[],
   query: string,
-  profileUsers: Record<string, UserProfile>
+  profileUsers: Record<string, UserProfile>,
+  onOpenMatrixTarget: OpenMatrixTargetHandler | undefined
 ): ReactNode {
   const nodes: ReactNode[] = [];
   let cursor = segStart;
@@ -1260,7 +1306,7 @@ function renderPlainTextSegment(
           target="_blank"
           onClick={(event) => {
             event.preventDefault();
-            void openExternalHttpUrl(href);
+            activateTimelineLink(href, onOpenMatrixTarget);
           }}
         >
           {linkContent}
@@ -1398,7 +1444,8 @@ function renderFormattedBody(
   codeBlockWrap: boolean,
   onCopyText: TimelineRowActionHandlers["onCopyText"],
   searchQuery: string,
-  spoilerState: SpoilerRevealState
+  spoilerState: SpoilerRevealState,
+  onOpenMatrixTarget: OpenMatrixTargetHandler | undefined
 ): ReactNode {
   const nodes =
     linkRanges.length > 0 && !formatted.html.includes("<a")
@@ -1412,7 +1459,8 @@ function renderFormattedBody(
     codeBlockIndexRef,
     onCopyText,
     searchQuery,
-    spoilerState
+    spoilerState,
+    onOpenMatrixTarget
   );
 }
 
@@ -1580,6 +1628,7 @@ function renderFormattedNodes(
   onCopyText: TimelineRowActionHandlers["onCopyText"],
   searchQuery: string,
   spoilerState: SpoilerRevealState,
+  onOpenMatrixTarget: OpenMatrixTargetHandler | undefined,
   keyPrefix = "",
   parentTagName: string | null = null
 ): ReactNode {
@@ -1596,7 +1645,8 @@ function renderFormattedNodes(
       codeBlockIndexRef,
       onCopyText,
       searchQuery,
-      spoilerState
+      spoilerState,
+      onOpenMatrixTarget
     )
   );
 }
@@ -1609,7 +1659,8 @@ function renderFormattedNode(
   codeBlockIndexRef: { current: number },
   onCopyText: TimelineRowActionHandlers["onCopyText"],
   searchQuery: string,
-  spoilerState: SpoilerRevealState
+  spoilerState: SpoilerRevealState,
+  onOpenMatrixTarget: OpenMatrixTargetHandler | undefined
 ): ReactNode {
   if (node.kind === "text") {
     return (
@@ -1624,6 +1675,7 @@ function renderFormattedNode(
     onCopyText,
     searchQuery,
     spoilerState,
+    onOpenMatrixTarget,
     key,
     node.tagName
   );
@@ -1639,7 +1691,8 @@ function renderFormattedNode(
     codeBlockWrap,
     codeBlockIndexRef,
     onCopyText,
-    spoilerState
+    spoilerState,
+    onOpenMatrixTarget
   );
 }
 
@@ -1679,7 +1732,8 @@ type FormattedTagRenderer = (
   codeBlockWrap: boolean,
   codeBlockIndexRef: { current: number },
   onCopyText: TimelineRowActionHandlers["onCopyText"],
-  spoilerState: SpoilerRevealState
+  spoilerState: SpoilerRevealState,
+  onOpenMatrixTarget?: OpenMatrixTargetHandler
 ) => ReactNode;
 
 const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
@@ -1690,7 +1744,9 @@ const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
     _formatted: NonNullable<TimelineItem["formatted"]>,
     _codeBlockWrap: boolean,
     _codeBlockIndexRef: { current: number },
-    _onCopyText: TimelineRowActionHandlers["onCopyText"]
+    _onCopyText: TimelineRowActionHandlers["onCopyText"],
+    _spoilerState: SpoilerRevealState,
+    onOpenMatrixTarget?: OpenMatrixTargetHandler
   ) {
     const href = toExternalHttpUrl(node.attrs.href?.trim());
     if (!href) {
@@ -1704,7 +1760,7 @@ const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
         target="_blank"
         onClick={(event) => {
           event.preventDefault();
-          void openExternalHttpUrl(href);
+          activateTimelineLink(href, onOpenMatrixTarget);
         }}
       >
         {children}
@@ -2196,6 +2252,7 @@ export const TimelineView = memo(function TimelineView({
   presentationContext = "room",
   transport,
   onReply,
+  onOpenMatrixTarget,
   onOpenThread = () => undefined,
   resolveComposerKeyAction = ignoreComposerKeyAction,
   liveSignals,
@@ -2231,6 +2288,7 @@ export const TimelineView = memo(function TimelineView({
   presentationContext?: "room" | "thread" | "focused";
   transport: TimelineTransport;
   onReply: TimelineRowActionHandlers["onReply"];
+  onOpenMatrixTarget?: TimelineRowActionHandlers["onOpenMatrixTarget"];
   onOpenThread?: TimelineRowActionHandlers["onOpenThread"];
   resolveComposerKeyAction?: ResolveComposerKeyAction;
   liveSignals?: LiveSignalsState;
@@ -5356,6 +5414,7 @@ export const TimelineView = memo(function TimelineView({
                 forwardDestinations={effectiveForwardDestinations}
                 onRetrySend={onRetrySend}
                 onCancelSend={onCancelSend}
+                onOpenMatrixTarget={onOpenMatrixTarget}
                 presence={item.sender ? liveSignals?.presence[item.sender] : undefined}
                 profile={item.sender ? profileUsers[item.sender] : undefined}
                 avatarThumbnails={avatarThumbnails}
@@ -5533,6 +5592,7 @@ export function TimelineItemRow({
   forwardDestinations = [],
   onRetrySend = ignoreSendQueueAction,
   onCancelSend = ignoreSendQueueAction,
+  onOpenMatrixTarget,
   presence,
   profile,
   avatarThumbnails = {},
@@ -5585,6 +5645,7 @@ export function TimelineItemRow({
   forwardDestinations?: readonly TimelineForwardDestination[];
   onRetrySend?: TimelineRowActionHandlers["onRetrySend"];
   onCancelSend?: TimelineRowActionHandlers["onCancelSend"];
+  onOpenMatrixTarget?: TimelineRowActionHandlers["onOpenMatrixTarget"];
   presence?: PresenceKind;
   profile?: UserProfile;
   avatarThumbnails?: Record<string, AvatarThumbnailState>;
@@ -6059,7 +6120,8 @@ export function TimelineItemRow({
         codeBlockWrap,
         onCopyText,
         searchQuery,
-        spoilerState
+        spoilerState,
+        onOpenMatrixTarget
       )
     : renderPlainTextBody(
         displayBody,
@@ -6067,7 +6129,8 @@ export function TimelineItemRow({
         item.spoiler_spans,
         searchQuery,
         mentionProfileUsers,
-        spoilerState
+        spoilerState,
+        onOpenMatrixTarget
       );
   const emotePrefix =
     messageKind === "emote" ? (
