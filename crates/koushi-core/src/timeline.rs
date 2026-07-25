@@ -116,7 +116,7 @@ use matrix_sdk_ui::timeline::{
 };
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
-use crate::account_work::{AccountWorkKind, AccountWorkScheduler};
+use crate::account_work::{AccountWorkKind, AccountWorkScheduler, InteractiveWorkGuard};
 #[cfg(test)]
 use crate::causal_projection::{CAUSAL_PROJECTION_DOMAIN_BIT, CAUSAL_PROJECTION_SERIAL_MAX};
 use crate::causal_projection::{
@@ -1140,6 +1140,7 @@ async fn perform_read_network_operation(
     }
 }
 
+#[cfg(test)]
 async fn run_send_enqueue_future<F>(
     mut registration: SendCompletionRegistration,
     event_tx: broadcast::Sender<CoreEvent>,
@@ -2726,6 +2727,7 @@ impl TimelineManagerActor {
         }
     }
 
+    #[cfg(test)]
     fn spawn_send_enqueue_future<F>(&mut self, registration: SendCompletionRegistration, enqueue: F)
     where
         F: Future<Output = Result<SendEnqueueSuccess, TimelineFailureKind>> + Send + 'static,
@@ -2744,25 +2746,54 @@ impl TimelineManagerActor {
     fn spawn_send_enqueue(
         &mut self,
         context: TimelineSendEnqueueContext,
-        registration: SendCompletionRegistration,
+        mut registration: SendCompletionRegistration,
         admission: Option<oneshot::Receiver<()>>,
         payload: TimelineSendEnqueuePayload,
     ) -> oneshot::Receiver<()> {
         let (preflight_started_tx, preflight_started_rx) = oneshot::channel();
         let account_work = self.account_work.clone();
-        self.spawn_send_enqueue_future(registration, async move {
-            if !await_submission_admission(admission).await {
-                return Err(TimelineFailureKind::QueueOverflow);
-            }
-            let _ = preflight_started_tx.send(());
-            // Interactive: the guard never queues, so admission and the local
-            // echo stay immediate. Holding it across the SDK enqueue asks
-            // background history work to yield and keeps a yielding job from
-            // re-contending until the enqueue completes. It is deliberately not
-            // held for remote settlement.
-            let _interactive = account_work.begin_interactive(AccountWorkKind::MessageSend);
-            enqueue_timeline_send(context, payload).await
-        });
+        let event_tx = self.event_tx.clone();
+        self.send_enqueue_workers.tasks.push(Box::pin(async move {
+            let worker = async move {
+                let outcome = async {
+                    if !await_submission_admission(admission).await {
+                        return Err(TimelineFailureKind::QueueOverflow);
+                    }
+                    let _ = preflight_started_tx.send(());
+                    // Interactive: the guard never queues, so admission and the local
+                    // echo stay immediate. Keep it attached to the send completion
+                    // registration so background history work yields until the SDK
+                    // terminal settles the send.
+                    let interactive = account_work.begin_interactive(AccountWorkKind::MessageSend);
+                    registration.hold_interactive_guard(interactive);
+                    enqueue_timeline_send(context, payload).await
+                }
+                .await;
+                match outcome {
+                    Ok(success) => {
+                        let SendEnqueueSuccess {
+                            sdk_transaction_id,
+                            media_queued,
+                        } = success;
+                        if let Some(media) = media_queued {
+                            let _ = event_tx.send(CoreEvent::Timeline(
+                                TimelineEvent::MediaSendQueued {
+                                    request_id: media.request_id,
+                                    key: media.key,
+                                    transaction_id: media.transaction_id,
+                                },
+                            ));
+                        }
+                        registration.bind(sdk_transaction_id);
+                    }
+                    Err(kind) => {
+                        registration.fail_known(kind);
+                    }
+                }
+            };
+            let _ = AssertUnwindSafe(worker).catch_unwind().await;
+            SendEnqueueWorkerCompletion
+        }));
         preflight_started_rx
     }
 
@@ -11464,6 +11495,53 @@ mod timeline_gap_repair_tracker_tests {
                 .expect("admission must still be acknowledged before the guard")
                 < guard_offset,
             "send admission and local echo must not wait for the scheduler"
+        );
+    }
+
+    #[test]
+    fn send_completion_keeps_the_interactive_guard_until_terminal() {
+        let source = include_str!("timeline.rs");
+        let pending_source = source
+            .split(concat!("struct ", "CoordinatedPendingSend"))
+            .nth(1)
+            .and_then(|section| section.split("enum SendCompletionObservation").next())
+            .expect("pending send state should exist");
+        assert!(
+            pending_source.contains("interactive_guard: Option<InteractiveWorkGuard>"),
+            "a bound send must retain the interactive guard until its SDK terminal"
+        );
+
+        let spawn_source = source
+            .split("fn spawn_send_enqueue(")
+            .nth(1)
+            .and_then(|section| {
+                section
+                    .split("fn handle_send_enqueue_worker_completion")
+                    .next()
+            })
+            .expect("send enqueue spawner should exist");
+        let guard_offset = spawn_source
+            .find("begin_interactive(AccountWorkKind::MessageSend)")
+            .expect("send enqueue must take the interactive work guard");
+        let retain_offset = spawn_source
+            .find("registration.hold_interactive_guard")
+            .expect("send enqueue must hand the guard to the completion registration");
+        let enqueue_offset = spawn_source
+            .find("enqueue_timeline_send(context, payload)")
+            .expect("send enqueue must still call the SDK enqueue");
+        assert!(
+            guard_offset < retain_offset && retain_offset < enqueue_offset,
+            "the interactive guard must be retained before SDK enqueue can bind"
+        );
+
+        let terminal_source = source
+            .split(concat!("fn ", "apply_terminal("))
+            .nth(1)
+            .and_then(|section| section.split("fn media_upload_progress_identity").next())
+            .expect("send terminal applier should exist");
+        assert!(
+            terminal_source.contains("pending.interactive_guard.take()"),
+            "terminal handling must explicitly release the retained send guard"
         );
     }
 
@@ -23891,6 +23969,7 @@ struct CoordinatedPendingSend {
     request_id: RequestId,
     settles_composer: bool,
     failure_reported: bool,
+    interactive_guard: Option<InteractiveWorkGuard>,
 }
 
 enum SendCompletionObservation {
@@ -23916,6 +23995,7 @@ struct SendCompletionRegistration {
     coordinator: SharedSendCompletionCoordinator,
     terminal_ingress: TimelineSendTerminalIngress,
     registration_id: Option<u64>,
+    interactive_guard: Option<InteractiveWorkGuard>,
 }
 
 impl SendCompletionRegistration {
@@ -23949,6 +24029,7 @@ impl SendCompletionRegistration {
                     request_id,
                     settles_composer,
                     failure_reported: false,
+                    interactive_guard: None,
                 },
             );
             registration_id
@@ -23957,6 +24038,7 @@ impl SendCompletionRegistration {
             coordinator,
             terminal_ingress,
             registration_id: Some(registration_id),
+            interactive_guard: None,
         }
     }
 
@@ -23974,15 +24056,21 @@ impl SendCompletionRegistration {
         self.registration_id
     }
 
+    fn hold_interactive_guard(&mut self, guard: InteractiveWorkGuard) {
+        self.interactive_guard = Some(guard);
+    }
+
     fn bind(&mut self, sdk_transaction_id: String) {
         let Some(registration_id) = self.registration_id.take() else {
             return;
         };
+        let interactive_guard = self.interactive_guard.take();
         let mut coordinator = self
             .coordinator
             .lock()
             .expect("send completion coordinator lock must not be poisoned");
-        let handoffs = coordinator.bind_registration(registration_id, sdk_transaction_id);
+        let handoffs =
+            coordinator.bind_registration(registration_id, sdk_transaction_id, interactive_guard);
         for handoff in handoffs {
             let _admission = self.terminal_ingress.admit(handoff);
         }
@@ -23996,6 +24084,7 @@ impl SendCompletionRegistration {
             .coordinator
             .lock()
             .expect("send completion coordinator lock must not be poisoned");
+        self.interactive_guard.take();
         if let Some(handoff) = coordinator.fail_registration(registration_id, kind) {
             let _admission = self.terminal_ingress.admit(handoff);
         }
@@ -24011,6 +24100,7 @@ impl Drop for SendCompletionRegistration {
             .coordinator
             .lock()
             .expect("send completion coordinator lock must not be poisoned");
+        self.interactive_guard.take();
         if let Some(handoff) = coordinator.abandon_registration(registration_id) {
             let _admission = self.terminal_ingress.admit(handoff);
         }
@@ -24121,14 +24211,16 @@ impl SendCompletionCoordinator {
         &mut self,
         registration_id: u64,
         sdk_transaction_id: String,
+        interactive_guard: Option<InteractiveWorkGuard>,
     ) -> Vec<TimelineSendTerminalHandoff> {
-        let Some(registration) = self.registrations.remove(&registration_id) else {
+        let Some(mut registration) = self.registrations.remove(&registration_id) else {
             return Vec::new();
         };
         if !registration.active {
             self.purge_unmatched_for_inactive_room(registration.key.room_id());
             return Vec::new();
         }
+        registration.interactive_guard = interactive_guard;
         let correlation = SendCorrelationKey {
             room_id: registration.key.room_id().to_owned(),
             sdk_transaction_id,
@@ -24246,6 +24338,7 @@ impl SendCompletionCoordinator {
                 continue;
             }
             registration.failure_reported = true;
+            registration.interactive_guard.take();
             handoffs.push(timeline_send_observation_loss_handoff(registration));
         }
         handoffs
@@ -24258,7 +24351,8 @@ impl SendCompletionCoordinator {
     ) -> Option<TimelineSendTerminalHandoff> {
         match terminal {
             ObservedSendTerminal::Sent { event_id } => {
-                let pending = self.pending_sends.remove(correlation)?;
+                let mut pending = self.pending_sends.remove(correlation)?;
+                let _send_guard = pending.interactive_guard.take();
                 let settles_composer = pending.settles_composer && !pending.failure_reported;
                 self.remember_settled(correlation.clone());
                 self.purge_unmatched_for_inactive_room(&correlation.room_id);
@@ -24279,6 +24373,7 @@ impl SendCompletionCoordinator {
                     return None;
                 }
                 pending.failure_reported = true;
+                pending.interactive_guard.take();
                 Some(timeline_send_terminal_handoff(
                     &pending.key,
                     pending.client_txn_id.clone(),
@@ -24289,7 +24384,8 @@ impl SendCompletionCoordinator {
                 ))
             }
             ObservedSendTerminal::Cancelled => {
-                let pending = self.pending_sends.remove(correlation)?;
+                let mut pending = self.pending_sends.remove(correlation)?;
+                let _send_guard = pending.interactive_guard.take();
                 let settles_composer = pending.settles_composer && !pending.failure_reported;
                 self.remember_settled(correlation.clone());
                 self.purge_unmatched_for_inactive_room(&correlation.room_id);
