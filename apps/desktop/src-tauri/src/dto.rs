@@ -1944,7 +1944,12 @@ mod tests {
             join: DirectoryJoinState::Joining {
                 request_id: 8,
                 room_id_or_alias: "#fixture:example.invalid".to_owned(),
-                via_servers: Vec::new(),
+                // Two servers so the golden covers the list shape, not just
+                // an empty array that any scalar field would also satisfy.
+                via_servers: vec![
+                    "first.example.invalid".to_owned(),
+                    "second.example.invalid".to_owned(),
+                ],
             },
         };
 

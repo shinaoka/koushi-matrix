@@ -134,10 +134,13 @@
       },
       "directory": {
         "join": {
-          "alias": "#fixture:example.invalid",
           "kind": "joining",
           "request_id": 8,
-          "via_server": null
+          "room_id_or_alias": "#fixture:example.invalid",
+          "via_servers": [
+            "first.example.invalid",
+            "second.example.invalid"
+          ]
         },
         "query": {
           "kind": "results",
