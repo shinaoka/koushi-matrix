@@ -1322,8 +1322,8 @@ test("Activity renders Rust-owned streams and waits for mark-read snapshots", as
   });
 
   await page
-    .getByRole("complementary", { name: t("workspace.rooms") })
-    .getByRole("button", { name: t("workspace.home") })
+    .getByRole("navigation", { name: t("workspace.workspaces") })
+    .getByRole("button", { name: t("workspace.home"), exact: true })
     .click();
 
   await expect.poll(() => invocationCount(page, "open_activity")).toBeGreaterThanOrEqual(1);
@@ -1504,8 +1504,8 @@ test("Activity Unread replaces unresolved room placeholders with retryable statu
   });
 
   await page
-    .getByRole("complementary", { name: t("workspace.rooms") })
-    .getByRole("button", { name: t("workspace.home") })
+    .getByRole("navigation", { name: t("workspace.workspaces") })
+    .getByRole("button", { name: t("workspace.home"), exact: true })
     .click();
   await expect(page.getByRole("alert")).toContainText("Unread messages could not be loaded");
   await expect(page.locator('[data-kind="roomUnread"]')).toHaveCount(0);
@@ -8221,7 +8221,7 @@ test("thread attention renders one Rust count in the root and header and clears 
   await expect(threadsButton).toHaveCount(0);
 });
 
-test("sidebar Home and Threads navigation buttons dispatch Rust-owned commands", async ({
+test("rail Home and sidebar Threads navigation buttons dispatch Rust-owned commands", async ({
   page
 }) => {
   await gotoReadyShell(page);
@@ -8240,7 +8240,10 @@ test("sidebar Home and Threads navigation buttons dispatch Rust-owned commands",
   await sidebar.getByRole("button", { name: t("workspace.explore") }).click();
   await expect(page.getByRole("main", { name: t("workspace.explore") })).toBeVisible();
 
-  await sidebar.getByRole("button", { name: t("workspace.home") }).click();
+  await page
+    .getByRole("navigation", { name: t("workspace.workspaces") })
+    .getByRole("button", { name: t("workspace.home"), exact: true })
+    .click();
   await expect.poll(() => invocationCount(page, "select_space")).toBeGreaterThanOrEqual(1);
   await expect
     .poll(async () => page.evaluate(() => window.__harness.invocationsOf("select_space")[0]?.args))

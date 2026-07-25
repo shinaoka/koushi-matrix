@@ -727,6 +727,17 @@ describe("BrowserFakeApi settings preview", () => {
     ]);
   });
 
+  test("selecting account home clears the active room instead of selecting a default timeline", async () => {
+    const api = createBrowserFakeApi();
+    await api.selectSpace("!space-beta:example.invalid");
+
+    const home = await api.selectSpace(null);
+
+    expect(home.state.ui.navigation.active_space_id).toBeNull();
+    expect(home.state.ui.navigation.active_room_id).toBeNull();
+    expect(home.state.ui.timeline.room_id).toBeNull();
+  });
+
   test("projects room-list filters within the active space like the Rust reducer", async () => {
     const api = createBrowserFakeApi();
 

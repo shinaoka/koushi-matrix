@@ -743,9 +743,7 @@ class BrowserFakeApi implements DesktopApi {
     this.refreshRoomListProjection();
     this.refreshSidebar();
 
-    const targetRoomId = nextSpaceId
-      ? this.preferredRoomIdInSpace(nextSpaceId)
-      : this.firstDefaultRoomId();
+    const targetRoomId = nextSpaceId ? this.preferredRoomIdInSpace(nextSpaceId) : null;
     if (targetRoomId && targetRoomId !== this.snapshot.state.ui.navigation.active_room_id) {
       await this.selectRoom(targetRoomId);
     } else if (!targetRoomId) {
@@ -3601,14 +3599,6 @@ class BrowserFakeApi implements DesktopApi {
       return rememberedRoomId;
     }
     return this.firstRoomIdInSpace(spaceId);
-  }
-
-  private firstDefaultRoomId(): string | null {
-    return (
-      this.snapshot.state.domain.rooms.find((room) => !room.is_dm)?.room_id ??
-      this.snapshot.state.domain.rooms[0]?.room_id ??
-      null
-    );
   }
 
   private clearActiveRoomSelection(): void {

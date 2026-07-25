@@ -1012,6 +1012,47 @@ fn selecting_space_filters_rooms_and_keeps_dms_global() {
 }
 
 #[test]
+fn selecting_account_home_clears_active_room_without_subscribing_default_room() {
+    let mut state = AppState {
+        session: SessionState::Ready(session_info()),
+        spaces: spaces(),
+        rooms: rooms(),
+        navigation: koushi_state::NavigationState {
+            active_space_id: Some("space-a".to_owned()),
+            active_room_id: Some("room-a".to_owned()),
+            ..Default::default()
+        },
+        timeline: TimelinePaneState {
+            room_id: Some("room-a".to_owned()),
+            is_subscribed: true,
+            ..Default::default()
+        },
+        ..AppState::default()
+    };
+
+    let effects = reduce(&mut state, AppAction::SelectSpace { space_id: None });
+
+    assert_eq!(state.navigation.active_space_id, None);
+    assert_eq!(state.navigation.active_room_id, None);
+    assert_eq!(state.timeline, TimelinePaneState::default());
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
+                room_id: "room-a".to_owned(),
+            }),
+        ]
+    );
+    assert!(
+        effects
+            .iter()
+            .all(|effect| !matches!(effect, AppEffect::SubscribeTimeline { .. })),
+        "account Home must not subscribe an arbitrary default room: {effects:?}"
+    );
+}
+
+#[test]
 fn active_space_hides_child_room_ids_without_joined_room_summaries() {
     let mut spaces = spaces();
     spaces[0].child_room_ids.push("room-not-joined".to_owned());

@@ -156,7 +156,6 @@ describe("Sidebar", () => {
         onOpenContextMenu={() => undefined}
         onOpenActivity={() => undefined}
         onOpenExplore={() => undefined}
-        onOpenHome={() => undefined}
         onOpenInvites={() => undefined}
         onOpenSpaceInfo={() => undefined}
         onOpenThreads={() => undefined}
@@ -191,7 +190,6 @@ describe("Sidebar", () => {
           onOpenContextMenu={() => undefined}
           onOpenActivity={() => undefined}
           onOpenExplore={() => undefined}
-          onOpenHome={() => undefined}
           onOpenInvites={() => undefined}
           onOpenSpaceInfo={() => undefined}
           onOpenThreads={() => undefined}
@@ -234,7 +232,6 @@ describe("Sidebar", () => {
         onOpenContextMenu={() => undefined}
         onOpenActivity={() => undefined}
         onOpenExplore={() => undefined}
-        onOpenHome={() => undefined}
         onOpenInvites={() => undefined}
         onOpenSpaceInfo={() => undefined}
         onOpenThreads={() => undefined}
@@ -262,7 +259,6 @@ describe("Sidebar", () => {
           onOpenContextMenu={() => undefined}
           onOpenActivity={() => undefined}
           onOpenExplore={() => undefined}
-          onOpenHome={() => undefined}
           onOpenInvites={() => undefined}
           onOpenSpaceInfo={() => undefined}
           onOpenThreads={() => undefined}
@@ -350,7 +346,6 @@ describe("Sidebar", () => {
         onOpenContextMenu={() => undefined}
         onOpenActivity={() => undefined}
         onOpenExplore={() => undefined}
-        onOpenHome={() => undefined}
         onOpenInvites={() => undefined}
         onOpenSpaceInfo={() => undefined}
         onOpenThreads={() => undefined}
@@ -383,7 +378,6 @@ describe("Sidebar", () => {
         onOpenContextMenu={() => undefined}
         onOpenActivity={() => undefined}
         onOpenExplore={() => undefined}
-        onOpenHome={() => undefined}
         onOpenInvites={() => undefined}
         onOpenSpaceInfo={() => undefined}
         onOpenThreads={() => undefined}
@@ -391,7 +385,7 @@ describe("Sidebar", () => {
       />
     );
 
-    expect(screen.getByRole("button", { name: "Home" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Home" })).toBeNull();
     expect(screen.getByRole("button", { name: "Threads" })).toBeTruthy();
     expect(screen.getByRole("region", { name: "Rooms" })).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Direct Messages" })).toBeNull();
@@ -419,7 +413,6 @@ describe("Sidebar", () => {
         onOpenContextMenu={() => undefined}
         onOpenActivity={() => undefined}
         onOpenExplore={() => undefined}
-        onOpenHome={() => undefined}
         onOpenInvites={() => undefined}
         onOpenSpaceInfo={() => undefined}
         onOpenThreads={() => undefined}
@@ -453,7 +446,6 @@ describe("Sidebar", () => {
         onOpenContextMenu={onOpenContextMenu}
         onOpenActivity={() => undefined}
         onOpenExplore={() => undefined}
-        onOpenHome={() => undefined}
         onOpenInvites={() => undefined}
         onOpenSpaceInfo={() => undefined}
         onOpenThreads={() => undefined}

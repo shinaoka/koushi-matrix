@@ -1581,16 +1581,14 @@ describe("desktop integration source guards", () => {
 
   test("home rail button resets Home to Activity Recent instead of restoring the saved Home pane", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
-    const sidebarRenderStart = source.indexOf("<Sidebar");
-    const sidebarRenderEnd = source.indexOf("</Sidebar>", sidebarRenderStart);
-    const sidebarRenderSource = source.slice(sidebarRenderStart, sidebarRenderEnd);
-    const onOpenHomeStart = sidebarRenderSource.indexOf("onOpenHome={() =>");
-    const onOpenHomeEnd = sidebarRenderSource.indexOf("onOpenInvites", onOpenHomeStart);
-    const onOpenHomeSource = sidebarRenderSource.slice(onOpenHomeStart, onOpenHomeEnd);
+    const selectSpaceStart = source.indexOf("async function selectSpace(spaceId: string | null)");
+    const selectSpaceEnd = source.indexOf("async function reorderSpaces", selectSpaceStart);
+    const selectSpaceSource = source.slice(selectSpaceStart, selectSpaceEnd);
 
-    expect(onOpenHomeStart).toBeGreaterThanOrEqual(0);
-    expect(onOpenHomeSource).toContain("openHomeActivityView()");
-    expect(onOpenHomeSource).not.toContain("selectSpace(null)");
+    expect(selectSpaceStart).toBeGreaterThanOrEqual(0);
+    expect(selectSpaceSource).toContain("if (spaceId === null)");
+    expect(selectSpaceSource).toContain("openHomeActivityView()");
+    expect(selectSpaceSource).not.toContain("api.selectSpace(null)");
   });
 
   test("initial Home selection does not override an already selected room", () => {

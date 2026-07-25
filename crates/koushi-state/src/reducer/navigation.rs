@@ -6,10 +6,9 @@ use crate::{
 use super::{
     apply_space_order,
     avatar::{collect_known_avatar_thumbnails, preserve_avatar_thumbnail},
-    clear_active_room_for_navigation, first_default_room_id, has_session_projection_context,
-    is_complete_space_order, is_session_ready, preferred_room_id_in_space,
-    recompute_room_list_projection, remember_active_room_for_current_space,
-    select_active_room_for_navigation,
+    clear_active_room_for_navigation, has_session_projection_context, is_complete_space_order,
+    is_session_ready, preferred_room_id_in_space, recompute_room_list_projection,
+    remember_active_room_for_current_space, select_active_room_for_navigation,
 };
 
 const MAX_ROOM_SCROLL_ANCHORS: usize = 200;
@@ -189,9 +188,17 @@ pub(crate) fn handle_select_space(
     state.navigation.active_space_id =
         space_id.filter(|space_id| state.spaces.iter().any(|space| space.space_id == *space_id));
     recompute_room_list_projection(state);
+    if state.navigation.active_space_id.is_none() {
+        let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
+        close_current_room_search_for_room_change(state, None, &mut effects);
+        if let Some(previous_room_id) = previous_room_id {
+            clear_active_room_for_navigation(state, &mut effects, previous_room_id);
+        }
+        return effects;
+    }
     let target_room_id = match state.navigation.active_space_id.as_deref() {
         Some(space_id) => preferred_room_id_in_space(state, space_id),
-        None => first_default_room_id(state),
+        None => None,
     };
     let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
     if target_room_id != state.navigation.active_room_id {

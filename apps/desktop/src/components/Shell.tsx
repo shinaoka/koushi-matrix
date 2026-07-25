@@ -418,7 +418,6 @@ export function Sidebar({
   onOpenContextMenu,
   onOpenActivity,
   onOpenExplore,
-  onOpenHome,
   onOpenInvites,
   onOpenSpaceInfo,
   onOpenThreads,
@@ -434,7 +433,6 @@ export function Sidebar({
   onOpenContextMenu: OpenContextMenu;
   onOpenActivity: () => void;
   onOpenExplore: () => void;
-  onOpenHome: () => void;
   onOpenInvites: () => void;
   onOpenSpaceInfo: () => void;
   onOpenThreads: () => void;
@@ -533,22 +531,14 @@ export function Sidebar({
             onClick={onOpenActivity}
           />
         ) : (
-          <>
-            <NavButton
-              active={activeView === "timeline" && snapshot.sidebar.account_home.is_active}
-              icon={<Home size={ICON_SIZE.control} />}
-              label={t("workspace.home")}
-              onClick={onOpenHome}
-            />
-            <NavButton
-              count={threadAttention?.notification_count ?? 0}
-              icon={<MessageCircle size={ICON_SIZE.control} />}
-              label={t("workspace.threads")}
-              liveCount={threadAttention?.live_event_marker_count ?? 0}
-              mentionCount={threadAttention?.highlight_count ?? 0}
-              onClick={onOpenThreads}
-            />
-          </>
+          <NavButton
+            count={threadAttention?.notification_count ?? 0}
+            icon={<MessageCircle size={ICON_SIZE.control} />}
+            label={t("workspace.threads")}
+            liveCount={threadAttention?.live_event_marker_count ?? 0}
+            mentionCount={threadAttention?.highlight_count ?? 0}
+            onClick={onOpenThreads}
+          />
         )}
         <NavButton
           active={activeView === "explore"}

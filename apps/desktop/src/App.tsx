@@ -4577,9 +4577,6 @@ export function App() {
           onOpenExplore={() => {
             void (homeContextActive ? openHomeExploreView() : openExploreView());
           }}
-          onOpenHome={() => {
-            void openHomeActivityView();
-          }}
           onOpenInvites={() => {
             void (homeContextActive ? openHomeInvitesView() : openInvitesView());
           }}
