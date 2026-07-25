@@ -42,6 +42,7 @@ import {
   type ComposerDraftScope
 } from "./domain/composerDraftLifecycle";
 import type { ComposerDraftRevision, TimelinePaneState } from "./domain/types";
+import type { MatrixPermalinkTarget } from "./domain/matrixPermalink";
 import { setActiveLocaleProfile, t } from "./i18n/messages";
 
 export function reconcileComposerSubmissionSnapshot(
@@ -2730,11 +2731,11 @@ export function App() {
     setSnapshot(await api.markActivityRead(target));
   }
 
-  async function queryDirectory() {
+  async function queryDirectory(termOverride?: string) {
     if (isBusy) {
       return;
     }
-    const term = directorySearchDraft.trim();
+    const term = (termOverride ?? directorySearchDraft).trim();
     setSnapshot(
       await api.queryDirectory({
         term: term || null,
@@ -2743,6 +2744,31 @@ export function App() {
         since: null
       })
     );
+  }
+
+  /**
+   * Open a Matrix entity a message linked to.
+   *
+   * An already-joined room is plain navigation. Anything else is handed to the
+   * Rust-owned directory query/join state machine by seeding Explore with the
+   * target, so joining a linked room uses exactly the same path as joining a
+   * searched one instead of growing a second join flow.
+   */
+  async function openMatrixTarget(target: MatrixPermalinkTarget) {
+    if (target.kind !== "room") {
+      return;
+    }
+    const joined = snapshot?.state.domain.rooms.find(
+      (room) => room.room_id === target.roomIdOrAlias
+    );
+    if (joined) {
+      await selectRoom(joined.room_id);
+      return;
+    }
+    setDirectorySearchDraft(target.roomIdOrAlias);
+    setSnapshot(await api.getSnapshot());
+    setPrimaryView("explore");
+    await queryDirectory(target.roomIdOrAlias);
   }
 
   async function joinDirectoryRoom(room: DirectoryRoomSummary) {
@@ -4603,6 +4629,9 @@ export function App() {
             }}
             onMentionIntentChange={setComposerMentions}
             onOpenThread={openThread}
+            onOpenMatrixTarget={(target) => {
+              void openMatrixTarget(target);
+            }}
             onReply={(roomId, eventId) => {
               void setComposerReplyTarget(roomId, eventId);
             }}

@@ -625,6 +625,7 @@ export function TimelinePane({
   onOpenThread,
   onRedactMessage,
   onReply,
+  onOpenMatrixTarget,
   onRescheduleScheduledSend,
   onResultSelect,
   onScheduleSend,
@@ -669,6 +670,7 @@ export function TimelinePane({
   onOpenThread: (roomId: string, rootEventId: string) => void;
   onRedactMessage: (roomId: string, eventId: string) => void;
   onReply: TimelineRowActionHandlers["onReply"];
+  onOpenMatrixTarget?: TimelineRowActionHandlers["onOpenMatrixTarget"];
   onRescheduleScheduledSend: (scheduledId: string, sendAtMs: number) => void;
   onResultSelect: (roomId: string, eventId: string) => void;
   onScheduleSend: (sendAtMs: number, body: string) => void;
@@ -765,6 +767,11 @@ export function TimelinePane({
   const onOpenThreadStable = useStableEvent(onOpenThread);
   const onRedactMessageStable = useStableEvent(onRedactMessage);
   const onReplyStable = useStableEvent(onReply);
+  const onOpenMatrixTargetStable = useStableEvent(
+    // A pane without in-app navigation must leave matrix.to links external,
+    // so absence stays absent rather than becoming a click-swallowing no-op.
+    onOpenMatrixTarget ?? (() => undefined)
+  );
   const onRescheduleScheduledSendStable = useStableEvent(onRescheduleScheduledSend);
   const onResultSelectStable = useStableEvent(onResultSelect);
   const onScheduleSendStable = useStableEvent(onScheduleSend);
@@ -899,6 +906,7 @@ export function TimelinePane({
               onReturnToLive={onReturnToLive}
               transport={timelineTransport}
               onReply={onReplyStable}
+              onOpenMatrixTarget={onOpenMatrixTarget ? onOpenMatrixTargetStable : undefined}
               onOpenThread={onOpenThreadStable}
               resolveComposerKeyAction={resolveComposerKeyActionStable}
               liveSignals={snapshot.state.domain.live_signals}
