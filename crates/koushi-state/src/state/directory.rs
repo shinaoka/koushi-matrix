@@ -75,13 +75,15 @@ pub enum DirectoryJoinState {
     Idle,
     Joining {
         request_id: u64,
-        alias: String,
-        via_server: Option<String>,
+        /// `#alias:server` or `!id:server`.
+        room_id_or_alias: String,
+        /// Servers to try when the homeserver does not already know the room.
+        via_servers: Vec<String>,
     },
     Failed {
         request_id: u64,
-        alias: String,
-        via_server: Option<String>,
+        room_id_or_alias: String,
+        via_servers: Vec<String>,
         #[serde(rename = "failureKind")]
         kind: OperationFailureKind,
     },
@@ -93,24 +95,24 @@ impl fmt::Debug for DirectoryJoinState {
             Self::Idle => formatter.write_str("Idle"),
             Self::Joining {
                 request_id,
-                via_server,
+                via_servers,
                 ..
             } => formatter
                 .debug_struct("Joining")
                 .field("request_id", request_id)
-                .field("alias", &"RoomAlias(..)")
-                .field("via_server", &via_server.as_ref().map(|_| "ServerName(..)"))
+                .field("room_id_or_alias", &"RoomIdOrAlias(..)")
+                .field("via_server_count", &via_servers.len())
                 .finish(),
             Self::Failed {
                 request_id,
-                via_server,
+                via_servers,
                 kind,
                 ..
             } => formatter
                 .debug_struct("Failed")
                 .field("request_id", request_id)
-                .field("alias", &"RoomAlias(..)")
-                .field("via_server", &via_server.as_ref().map(|_| "ServerName(..)"))
+                .field("room_id_or_alias", &"RoomIdOrAlias(..)")
+                .field("via_server_count", &via_servers.len())
                 .field("kind", kind)
                 .finish(),
         }

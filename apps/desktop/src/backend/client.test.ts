@@ -352,7 +352,7 @@ describe("TauriDesktopApi", () => {
       limit: 20,
       since: "page-2"
     });
-    await api.joinDirectoryRoom("#public:example.invalid", "example.invalid");
+    await api.joinDirectoryRoom("#public:example.invalid", ["example.invalid"]);
 
     expect(invoke).toHaveBeenCalledWith("query_directory", {
       term: "public rooms",
@@ -361,8 +361,8 @@ describe("TauriDesktopApi", () => {
       since: "page-2"
     });
     expect(invoke).toHaveBeenCalledWith("join_directory_room", {
-      alias: "#public:example.invalid",
-      viaServer: "example.invalid"
+      roomIdOrAlias: "#public:example.invalid",
+      viaServers: ["example.invalid"]
     });
   });
 

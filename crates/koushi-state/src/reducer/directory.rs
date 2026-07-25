@@ -74,8 +74,8 @@ pub(crate) fn handle_directory_query_failed(
 pub(crate) fn handle_directory_join_requested(
     state: &mut AppState,
     request_id: u64,
-    alias: String,
-    via_server: Option<String>,
+    room_id_or_alias: String,
+    via_servers: Vec<String>,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
         return Vec::new();
@@ -83,8 +83,8 @@ pub(crate) fn handle_directory_join_requested(
 
     state.directory.join = DirectoryJoinState::Joining {
         request_id,
-        alias,
-        via_server,
+        room_id_or_alias,
+        via_servers,
     };
     vec![AppEffect::EmitUiEvent(UiEvent::DirectoryChanged)]
 }
@@ -149,27 +149,27 @@ pub(crate) fn handle_directory_join_succeeded(
 pub(crate) fn handle_directory_join_failed(
     state: &mut AppState,
     request_id: u64,
-    alias: String,
-    via_server: Option<String>,
+    room_id_or_alias: String,
+    via_servers: Vec<String>,
     kind: crate::state::OperationFailureKind,
 ) -> Vec<AppEffect> {
     if !matches!(
         &state.directory.join,
         DirectoryJoinState::Joining {
             request_id: current_request_id,
-            alias: current_alias,
-            via_server: current_via_server,
+            room_id_or_alias: current_target,
+            via_servers: current_via_servers,
         } if *current_request_id == request_id
-            && *current_alias == alias
-            && *current_via_server == via_server
+            && *current_target == room_id_or_alias
+            && *current_via_servers == via_servers
     ) {
         return Vec::new();
     }
 
     state.directory.join = DirectoryJoinState::Failed {
         request_id,
-        alias,
-        via_server,
+        room_id_or_alias,
+        via_servers,
         kind,
     };
     vec![AppEffect::EmitUiEvent(UiEvent::DirectoryChanged)]

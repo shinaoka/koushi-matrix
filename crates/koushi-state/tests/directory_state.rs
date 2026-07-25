@@ -75,8 +75,8 @@ fn directory_debug_output_redacts_private_directory_values() {
             "{:?}",
             DirectoryJoinState::Joining {
                 request_id: 22,
-                alias: "#private-room:example.invalid".to_owned(),
-                via_server: Some("private.example.invalid".to_owned()),
+                room_id_or_alias: "#private-room:example.invalid".to_owned(),
+                via_servers: vec!["private.example.invalid".to_owned()],
             }
         ),
         format!(
@@ -92,8 +92,8 @@ fn directory_debug_output_redacts_private_directory_values() {
             "{:?}",
             AppAction::DirectoryJoinRequested {
                 request_id: 24,
-                alias: "#private-room:example.invalid".to_owned(),
-                via_server: Some("private.example.invalid".to_owned()),
+                room_id_or_alias: "#private-room:example.invalid".to_owned(),
+                via_servers: vec!["private.example.invalid".to_owned()],
             }
         ),
         format!(
@@ -107,8 +107,8 @@ fn directory_debug_output_redacts_private_directory_values() {
             "{:?}",
             AppAction::DirectoryJoinFailed {
                 request_id: 26,
-                alias: "#private-room:example.invalid".to_owned(),
-                via_server: Some("private.example.invalid".to_owned()),
+                room_id_or_alias: "#private-room:example.invalid".to_owned(),
+                via_servers: vec!["private.example.invalid".to_owned()],
                 kind: OperationFailureKind::Forbidden,
             }
         ),
@@ -252,8 +252,8 @@ fn directory_join_by_alias_is_rust_owned_and_request_correlated() {
         &mut state,
         AppAction::DirectoryJoinRequested {
             request_id: 11,
-            alias: alias.clone(),
-            via_server: Some("example.invalid".to_owned()),
+            room_id_or_alias: alias.clone(),
+            via_servers: vec!["example.invalid".to_owned()],
         },
     );
 
@@ -261,8 +261,8 @@ fn directory_join_by_alias_is_rust_owned_and_request_correlated() {
         state.directory.join,
         DirectoryJoinState::Joining {
             request_id: 11,
-            alias: alias.clone(),
-            via_server: Some("example.invalid".to_owned()),
+            room_id_or_alias: alias.clone(),
+            via_servers: vec!["example.invalid".to_owned()],
         }
     );
     assert_eq!(
@@ -327,8 +327,8 @@ fn directory_join_selects_joined_room_in_home_scope() {
         &mut state,
         AppAction::DirectoryJoinRequested {
             request_id: 17,
-            alias: alias.clone(),
-            via_server: Some("example.invalid".to_owned()),
+            room_id_or_alias: alias.clone(),
+            via_servers: vec!["example.invalid".to_owned()],
         },
     );
 
@@ -373,8 +373,8 @@ fn directory_join_failure_preserves_alias_without_raw_sdk_error() {
         &mut state,
         AppAction::DirectoryJoinRequested {
             request_id: 13,
-            alias: alias.clone(),
-            via_server: None,
+            room_id_or_alias: alias.clone(),
+            via_servers: Vec::new(),
         },
     );
     assert_eq!(
@@ -382,8 +382,8 @@ fn directory_join_failure_preserves_alias_without_raw_sdk_error() {
             &mut state,
             AppAction::DirectoryJoinFailed {
                 request_id: 13,
-                alias: "#other:example.invalid".to_owned(),
-                via_server: None,
+                room_id_or_alias: "#other:example.invalid".to_owned(),
+                via_servers: Vec::new(),
                 kind: OperationFailureKind::Forbidden,
             },
         ),
@@ -398,8 +398,8 @@ fn directory_join_failure_preserves_alias_without_raw_sdk_error() {
         &mut state,
         AppAction::DirectoryJoinFailed {
             request_id: 13,
-            alias: alias.clone(),
-            via_server: None,
+            room_id_or_alias: alias.clone(),
+            via_servers: Vec::new(),
             kind: OperationFailureKind::Forbidden,
         },
     );
@@ -408,8 +408,8 @@ fn directory_join_failure_preserves_alias_without_raw_sdk_error() {
         state.directory.join,
         DirectoryJoinState::Failed {
             request_id: 13,
-            alias,
-            via_server: None,
+            room_id_or_alias: alias,
+            via_servers: Vec::new(),
             kind: OperationFailureKind::Forbidden,
         }
     );
@@ -434,8 +434,8 @@ fn directory_actions_require_ready_session_and_logout_clears_state() {
             &mut signed_out,
             AppAction::DirectoryJoinRequested {
                 request_id: 15,
-                alias: "#synthetic:example.invalid".to_owned(),
-                via_server: None,
+                room_id_or_alias: "#synthetic:example.invalid".to_owned(),
+                via_servers: Vec::new(),
             },
         ),
         Vec::new()
@@ -447,8 +447,8 @@ fn directory_actions_require_ready_session_and_logout_clears_state() {
         &mut state,
         AppAction::DirectoryJoinRequested {
             request_id: 16,
-            alias: "#synthetic:example.invalid".to_owned(),
-            via_server: None,
+            room_id_or_alias: "#synthetic:example.invalid".to_owned(),
+            via_servers: Vec::new(),
         },
     );
     reduce(&mut state, AppAction::LogoutFinished);

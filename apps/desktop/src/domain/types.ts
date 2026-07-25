@@ -897,14 +897,16 @@ export type DirectoryJoinState =
   | {
       kind: "joining";
       request_id: number;
-      alias: string;
-      via_server: string | null;
+      /** `#alias:server` or `!id:server`. */
+      room_id_or_alias: string;
+      /** Servers to try when the homeserver does not already know the room. */
+      via_servers: string[];
     }
   | {
       kind: "failed";
       request_id: number;
-      alias: string;
-      via_server: string | null;
+      room_id_or_alias: string;
+      via_servers: string[];
       failureKind: OperationFailureKind;
     };
 

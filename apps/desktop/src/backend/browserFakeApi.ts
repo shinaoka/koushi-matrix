@@ -307,7 +307,7 @@ export interface DesktopApi {
   ): Promise<SubmissionResponse>;
   submitSearch(query: string, scope: SearchScopeKind): Promise<DesktopSnapshot>;
   queryDirectory(query: DirectoryQuery): Promise<DesktopSnapshot>;
-  joinDirectoryRoom(alias: string, viaServer?: string | null): Promise<DesktopSnapshot>;
+  joinDirectoryRoom(roomIdOrAlias: string, viaServers?: string[]): Promise<DesktopSnapshot>;
   joinRoom(roomId: string): Promise<DesktopSnapshot>;
   loadRoomSettings(roomId: string): Promise<DesktopSnapshot>;
   repairRoomTimeline(roomId: string): Promise<DesktopSnapshot>;
@@ -2362,25 +2362,27 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
-  async joinDirectoryRoom(alias: string, viaServer: string | null = null): Promise<DesktopSnapshot> {
-    if (!this.canUseSyncedViews() || alias.trim().length === 0) {
+  async joinDirectoryRoom(roomIdOrAlias: string, viaServers: string[] = []): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || roomIdOrAlias.trim().length === 0) {
       return this.getSnapshot();
     }
 
     const requestId = this.nextRequestId();
-    const normalizedAlias = alias.trim();
-    const normalizedViaServer = viaServer?.trim() ? viaServer.trim() : null;
+    const normalizedTarget = roomIdOrAlias.trim();
+    const normalizedViaServers = viaServers
+      .map((server) => server.trim())
+      .filter((server) => server.length > 0);
     this.snapshot.state.domain.directory.join = {
       kind: "joining",
       request_id: requestId,
-      alias: normalizedAlias,
-      via_server: normalizedViaServer
+      room_id_or_alias: normalizedTarget,
+      via_servers: normalizedViaServers
     };
 
     await Promise.resolve();
 
     const roomId = `!joined-${this.snapshot.state.domain.rooms.length + 1}:fake.local`;
-    const displayName = normalizedAlias.replace(/^#/, "").split(":")[0] || "Public Room";
+    const displayName = normalizedTarget.replace(/^[#!]/, "").split(":")[0] || "Public Room";
     const joinedRoom: RoomSummary = {
       room_id: roomId,
       display_name: displayName,

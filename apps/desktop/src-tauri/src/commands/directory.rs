@@ -41,14 +41,15 @@ pub async fn query_directory(
 
 #[tauri::command]
 pub async fn join_directory_room(
-    alias: String,
-    via_server: Option<String>,
+    room_id_or_alias: String,
+    via_servers: Vec<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
     let mut event_conn = state.runtime.attach();
     let request_id = event_conn.next_request_id();
-    let Some(command) = build_join_directory_room_command(request_id, alias, via_server) else {
+    let Some(command) = build_join_directory_room_command(request_id, room_id_or_alias, via_servers)
+    else {
         update_qa_window_title_from_state(&app, state.inner()).await;
         return current_snapshot(state.inner()).await;
     };

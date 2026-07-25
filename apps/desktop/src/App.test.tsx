@@ -1427,7 +1427,11 @@ describe("desktop integration source guards", () => {
     const joinEnd = source.indexOf("function openCreateDialog", joinStart);
     const joinSource = source.slice(joinStart, joinEnd);
 
-    expect(joinSource).toContain("api.joinDirectoryRoom(alias, serverNameFromAlias(alias))");
+    expect(joinSource).toContain("api.joinDirectoryRoom(");
+    // The alias server is a routing hint, passed as the via list the Rust
+    // command now takes rather than a single optional server.
+    expect(joinSource).toContain("serverNameFromAlias(alias)");
+    expect(joinSource).toContain("viaServer ? [viaServer] : []");
     expect(joinSource).toContain('setPrimaryView("timeline")');
     expect(joinSource).toContain("setSnapshot(nextSnapshot)");
     expect(joinSource).not.toContain("previousRoomIds");

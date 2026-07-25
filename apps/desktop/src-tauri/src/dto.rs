@@ -1943,8 +1943,8 @@ mod tests {
             },
             join: DirectoryJoinState::Joining {
                 request_id: 8,
-                alias: "#fixture:example.invalid".to_owned(),
-                via_server: None,
+                room_id_or_alias: "#fixture:example.invalid".to_owned(),
+                via_servers: Vec::new(),
             },
         };
 

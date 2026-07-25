@@ -1319,11 +1319,11 @@ describe("BrowserFakeApi settings preview", () => {
     const queried = await queryPromise;
     expect(queried.state.domain.directory.query.kind).toBe("results");
 
-    const joinPromise = api.joinDirectoryRoom("#public-demo:fake.local", "fake.local");
+    const joinPromise = api.joinDirectoryRoom("#public-demo:fake.local", ["fake.local"]);
     expect((await api.getSnapshot()).state.domain.directory.join).toMatchObject({
       kind: "joining",
-      alias: "#public-demo:fake.local",
-      via_server: "fake.local"
+      room_id_or_alias: "#public-demo:fake.local",
+      via_servers: ["fake.local"]
     });
 
     const joined = await joinPromise;

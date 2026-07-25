@@ -1833,8 +1833,10 @@ pub enum RoomCommand {
     },
     JoinDirectoryRoom {
         request_id: RequestId,
-        alias: String,
-        via_server: Option<String>,
+        /// `#alias:server` or `!id:server`.
+        room_id_or_alias: String,
+        /// Servers to try when the homeserver does not already know the room.
+        via_servers: Vec<String>,
     },
     LoadRoomSettings {
         request_id: RequestId,
@@ -3304,8 +3306,8 @@ mod tests {
         let join_request_id = fake_rid(14);
         let join = RoomCommand::JoinDirectoryRoom {
             request_id: join_request_id,
-            alias: "#private-room:example.invalid".to_owned(),
-            via_server: Some("example.invalid".to_owned()),
+            room_id_or_alias: "#private-room:example.invalid".to_owned(),
+            via_servers: vec!["example.invalid".to_owned()],
         };
         let create_request_id = fake_rid(15);
         let create_public = RoomCommand::CreatePublicDirectoryRoom {
@@ -3317,8 +3319,8 @@ mod tests {
         assert_eq!(
             CoreCommand::Room(RoomCommand::JoinDirectoryRoom {
                 request_id: join_request_id,
-                alias: "#private-room:example.invalid".to_owned(),
-                via_server: Some("example.invalid".to_owned()),
+                room_id_or_alias: "#private-room:example.invalid".to_owned(),
+                via_servers: vec!["example.invalid".to_owned()],
             })
             .request_id(),
             join_request_id

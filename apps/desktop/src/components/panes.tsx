@@ -391,9 +391,11 @@ export function ExplorePane({
           rooms.map((room) => {
             const alias = room.canonical_alias?.trim() || null;
             const joiningThisRoom =
-              joinState.kind === "joining" && joinState.alias === alias;
+              joinState.kind === "joining" && joinState.room_id_or_alias === alias;
             const joinFailed =
-              joinState.kind === "failed" && joinState.alias === alias ? joinState : null;
+              joinState.kind === "failed" && joinState.room_id_or_alias === alias
+                ? joinState
+                : null;
             const canJoin = Boolean(alias) && !joiningThisRoom && !isBusy;
             return (
               <article className="directory-result" key={room.room_id}>

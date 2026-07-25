@@ -2460,17 +2460,25 @@ pub(crate) fn build_query_directory_command(
 
 pub(crate) fn build_join_directory_room_command(
     request_id: koushi_core::RequestId,
-    alias: String,
-    via_server: Option<String>,
+    room_id_or_alias: String,
+    via_servers: Vec<String>,
 ) -> Option<CoreCommand> {
-    let alias = alias.trim().to_owned();
-    if alias.is_empty() {
+    let room_id_or_alias = room_id_or_alias.trim().to_owned();
+    if room_id_or_alias.is_empty() {
         return None;
     }
+    // A blank server name is not a routing hint, and keeping duplicates would
+    // make the homeserver retry the same server.
+    let mut seen = std::collections::BTreeSet::new();
+    let via_servers = via_servers
+        .into_iter()
+        .filter_map(|server| optional_non_blank(Some(server)))
+        .filter(|server| seen.insert(server.clone()))
+        .collect::<Vec<_>>();
     Some(CoreCommand::Room(RoomCommand::JoinDirectoryRoom {
         request_id,
-        alias,
-        via_server: optional_non_blank(via_server),
+        room_id_or_alias,
+        via_servers,
     }))
 }
 
@@ -5232,24 +5240,24 @@ mod tests {
         match build_join_directory_room_command(
             fake_request_id(28),
             "#public:example.org".to_owned(),
-            Some("example.org".to_owned()),
+            vec!["example.org".to_owned()],
         )
         .expect("directory join should build a command")
         {
             CoreCommand::Room(RoomCommand::JoinDirectoryRoom {
                 request_id,
-                alias,
-                via_server,
+                room_id_or_alias,
+                via_servers,
             }) => {
                 assert_eq!(request_id, fake_request_id(28));
-                assert_eq!(alias, "#public:example.org");
-                assert_eq!(via_server.as_deref(), Some("example.org"));
+                assert_eq!(room_id_or_alias, "#public:example.org");
+                assert_eq!(via_servers, vec!["example.org".to_owned()]);
             }
             other => panic!("unexpected command: {other:?}"),
         }
 
         assert!(
-            build_join_directory_room_command(fake_request_id(29), "   ".to_owned(), None,)
+            build_join_directory_room_command(fake_request_id(29), "   ".to_owned(), Vec::new(),)
                 .is_none()
         );
 

@@ -548,19 +548,30 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         } => directory::handle_directory_query_failed(state, request_id, query, kind),
         AppAction::DirectoryJoinRequested {
             request_id,
-            alias,
-            via_server,
-        } => directory::handle_directory_join_requested(state, request_id, alias, via_server),
+            room_id_or_alias,
+            via_servers,
+        } => directory::handle_directory_join_requested(
+            state,
+            request_id,
+            room_id_or_alias,
+            via_servers,
+        ),
         AppAction::DirectoryJoinSucceeded {
             request_id,
             room_id,
         } => directory::handle_directory_join_succeeded(state, request_id, room_id),
         AppAction::DirectoryJoinFailed {
             request_id,
-            alias,
-            via_server,
+            room_id_or_alias,
+            via_servers,
             kind,
-        } => directory::handle_directory_join_failed(state, request_id, alias, via_server, kind),
+        } => directory::handle_directory_join_failed(
+            state,
+            request_id,
+            room_id_or_alias,
+            via_servers,
+            kind,
+        ),
         AppAction::RoomSettingsSnapshotLoaded { room_id, settings } => {
             room_management::handle_room_settings_snapshot_loaded(state, room_id, settings)
         }

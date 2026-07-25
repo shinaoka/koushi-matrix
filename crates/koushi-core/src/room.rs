@@ -464,10 +464,10 @@ impl RoomActor {
             }
             RoomCommand::JoinDirectoryRoom {
                 request_id,
-                alias,
-                via_server,
+                room_id_or_alias,
+                via_servers,
             } => {
-                self.handle_join_directory_room(request_id, alias, via_server)
+                self.handle_join_directory_room(request_id, room_id_or_alias, via_servers)
                     .await;
             }
             RoomCommand::LoadRoomSettings {
@@ -1056,20 +1056,20 @@ impl RoomActor {
     async fn handle_join_directory_room(
         &self,
         request_id: RequestId,
-        alias: String,
-        via_server: Option<String>,
+        room_id_or_alias: String,
+        via_servers: Vec<String>,
     ) {
         self.reduce_reliable(vec![AppAction::DirectoryJoinRequested {
             request_id: request_id.sequence,
-            alias: alias.clone(),
-            via_server: via_server.clone(),
+            room_id_or_alias: room_id_or_alias.clone(),
+            via_servers: via_servers.clone(),
         }])
         .await;
         let Some(session) = &self.session else {
             self.reduce_reliable(vec![AppAction::DirectoryJoinFailed {
                 request_id: request_id.sequence,
-                alias,
-                via_server,
+                room_id_or_alias,
+                via_servers,
                 kind: OperationFailureKind::Sdk,
             }])
             .await;
@@ -1078,8 +1078,8 @@ impl RoomActor {
         };
 
         let join_target = koushi_sdk::MatrixJoinTarget {
-            room_id_or_alias: alias.clone(),
-            via_servers: via_server.clone().into_iter().collect(),
+            room_id_or_alias: room_id_or_alias.clone(),
+            via_servers: via_servers.clone(),
         };
         match koushi_sdk::join_room_target(session, &join_target).await {
             Ok(room_id) => {
@@ -1098,8 +1098,8 @@ impl RoomActor {
                 let kind = classify_room_error(&error);
                 self.reduce_reliable(vec![AppAction::DirectoryJoinFailed {
                     request_id: request_id.sequence,
-                    alias,
-                    via_server,
+                    room_id_or_alias,
+                    via_servers,
                     kind: operation_failure_kind(kind),
                 }])
                 .await;

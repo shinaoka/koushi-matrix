@@ -2776,7 +2776,11 @@ export function App() {
     if (!alias || isBusy || snapshot?.state.domain.directory.join.kind === "joining") {
       return;
     }
-    const nextSnapshot = await api.joinDirectoryRoom(alias, serverNameFromAlias(alias));
+    const viaServer = serverNameFromAlias(alias);
+    const nextSnapshot = await api.joinDirectoryRoom(
+      alias,
+      viaServer ? [viaServer] : []
+    );
     setPrimaryView("timeline");
     setSnapshot(nextSnapshot);
   }
