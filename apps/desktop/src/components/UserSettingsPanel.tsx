@@ -761,11 +761,6 @@ function SecuritySection({
   const passphraseChangeRecoveryPathRef = useRef<HTMLInputElement>(null);
   const [roomKeyPassphraseRequest, setRoomKeyPassphraseRequest] =
     useState<RoomKeyPassphraseRequest | null>(null);
-  const canReset =
-    localEncryption.kind === "missingCredential" ||
-    localEncryption.kind === "resetRequired" ||
-    localEncryption.kind === "resetting";
-
   async function chooseRoomKeyExport(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const destinationPath = await onChooseRoomKeyExportDestination();
@@ -859,30 +854,28 @@ function SecuritySection({
             />
           }
         />
-        {canReset ? (
-          <TrustStatusRow
-            icon={<RotateCcw size={16} />}
-            label={t("settings.localData")}
-            value={t("settings.localDataResetAvailable")}
-            tone={localEncryption.kind === "resetting" ? "progress" : "danger"}
-            action={
-              <>
-                <TrustActionButton
-                  icon={<KeyRound size={14} />}
-                  label={t("settings.openRecovery")}
-                  variant="secondary"
-                  onClick={onOpenRecovery}
-                />
-                <TrustActionButton
-                  icon={<RotateCcw size={14} />}
-                  label={t("settings.resetLocalData")}
-                  disabled={localEncryption.kind === "resetting"}
-                  onClick={onResetLocalData}
-                />
-              </>
-            }
-          />
-        ) : null}
+        <TrustStatusRow
+          icon={<RotateCcw size={16} />}
+          label={t("settings.localData")}
+          value={t("settings.localDataResetAvailable")}
+          tone={localEncryption.kind === "resetting" ? "progress" : "danger"}
+          action={
+            <>
+              <TrustActionButton
+                icon={<KeyRound size={14} />}
+                label={t("settings.openRecovery")}
+                variant="secondary"
+                onClick={onOpenRecovery}
+              />
+              <TrustActionButton
+                icon={<RotateCcw size={14} />}
+                label={t("settings.resetLocalData")}
+                disabled={localEncryption.kind === "resetting"}
+                onClick={onResetLocalData}
+              />
+            </>
+          }
+        />
       </div>
       <section className="settings-section" aria-label={t("settings.keyManagement")}>
         <h4 className="settings-subheading">{t("settings.keyManagement")}</h4>

@@ -267,6 +267,35 @@ describe("UserSettingsPanel", () => {
     expect(onLogout).toHaveBeenCalledTimes(1);
   });
 
+  test("shows the destructive local data reset action even when local encryption is healthy", () => {
+    const onResetLocalData = vi.fn();
+
+    render(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={e2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        deviceSessions={idleDeviceSessions}
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+        onResetLocalData={onResetLocalData}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset local data" }));
+
+    expect(onResetLocalData).toHaveBeenCalledTimes(1);
+  });
+
   test("hides the account switcher when there are no saved accounts", () => {
     render(
       <UserSettingsPanel
