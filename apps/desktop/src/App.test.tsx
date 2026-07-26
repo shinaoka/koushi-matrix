@@ -182,6 +182,21 @@ describe("ContextualRightPanel", () => {
     expect(markup).toContain('aria-label="Send"');
   });
 
+  test("reset local data asks for confirmation before deleting local state", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const resetHandler = source
+      .split("async function resetLocalData()")
+      .at(1)
+      ?.split("async function acceptVerification")
+      .at(0);
+
+    expect(resetHandler).toBeDefined();
+    expect(resetHandler).toContain('window.confirm(t("settings.resetLocalDataConfirm"))');
+    expect(resetHandler!.indexOf("window.confirm")).toBeLessThan(
+      resetHandler!.indexOf("api.resetLocalData()")
+    );
+  });
+
   test("TimelineItemRow renders reaction pills with accessible labels", () => {
     const markup = renderToStaticMarkup(
       <TimelineItemRow

@@ -2452,6 +2452,9 @@ export function App() {
   }
 
   async function resetLocalData() {
+    if (!window.confirm(t("settings.resetLocalDataConfirm"))) {
+      return;
+    }
     setSnapshot(await api.resetLocalData());
   }
 

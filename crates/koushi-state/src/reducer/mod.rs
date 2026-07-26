@@ -6,7 +6,7 @@ use crate::{
         DeviceSessionListState, DirectoryState, E2eeKeyManagementState, E2eeTrustState,
         FilesViewState, FocusedContextState, LocalEncryptionState, NavigationState, QrLoginState,
         SearchState, SessionState, SoftLogoutReauthState, ThreadAttentionState, ThreadPaneState,
-        ThreadsListState, TimelinePaneState, compute_room_list_projection,
+        ThreadsListState, TimelinePaneState, VerificationFlowState, compute_room_list_projection,
     },
 };
 
@@ -62,6 +62,14 @@ pub(crate) fn recompute_room_list_projection(state: &mut AppState) {
         &state.rooms,
         &visible_invites,
     );
+}
+
+pub(crate) fn clear_stale_verification_flow(state: &mut AppState) -> bool {
+    if matches!(state.e2ee_trust.verification, VerificationFlowState::Idle) {
+        return false;
+    }
+    state.e2ee_trust.verification = VerificationFlowState::Idle;
+    true
 }
 
 pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
@@ -2037,6 +2045,90 @@ mod tests {
             device_id: "DEVICE".to_owned(),
         });
         state
+    }
+
+    fn verification_gate(
+        methods: Vec<crate::state::VerificationMethodCapability>,
+    ) -> crate::state::VerificationGateState {
+        crate::state::VerificationGateState {
+            methods,
+            account_kind: crate::state::VerificationAccountKind::ExistingIdentity,
+            failure: None,
+        }
+    }
+
+    fn awaiting_verification_state(
+        methods: Vec<crate::state::VerificationMethodCapability>,
+    ) -> AppState {
+        let mut state = ready_state();
+        let info = match state.session.clone() {
+            SessionState::Ready(info) => info,
+            other => panic!("ready_state must be Ready, got {other:?}"),
+        };
+        state.session = SessionState::AwaitingVerification {
+            info,
+            gate: verification_gate(methods),
+        };
+        state
+    }
+
+    fn stale_cancelled_verification() -> crate::state::VerificationFlowState {
+        crate::state::VerificationFlowState::Failed {
+            request_id: 9,
+            target: crate::state::VerificationTarget {
+                user_id: "@alice:example.invalid".to_owned(),
+                device_id: "OLD".to_owned(),
+            },
+            kind: crate::state::TrustOperationFailureKind::Cancelled,
+        }
+    }
+
+    #[test]
+    fn verification_method_submission_clears_stale_device_verification_failure() {
+        let mut state = awaiting_verification_state(vec![
+            crate::state::VerificationMethodCapability::ExistingDeviceSas,
+        ]);
+        state.e2ee_trust.verification = stale_cancelled_verification();
+
+        let effects = reduce(
+            &mut state,
+            AppAction::VerificationMethodSubmitted {
+                method: crate::state::VerificationMethod::ExistingDeviceSas,
+                flow_id: 10,
+            },
+        );
+
+        assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::SessionChanged)));
+        assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)));
+        assert_eq!(
+            state.e2ee_trust.verification,
+            crate::state::VerificationFlowState::Idle
+        );
+    }
+
+    #[test]
+    fn recovery_submission_clears_stale_device_verification_failure() {
+        let mut state = awaiting_verification_state(vec![
+            crate::state::VerificationMethodCapability::RecoveryKey,
+        ]);
+        state.e2ee_trust.verification = stale_cancelled_verification();
+
+        let effects = reduce(
+            &mut state,
+            AppAction::E2eeRecoverySubmitted {
+                flow_id: 11,
+                request: crate::action::RecoveryRequest {
+                    secret: crate::action::AuthSecret::new("secret"),
+                },
+            },
+        );
+
+        assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::SessionChanged)));
+        assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)));
+        assert_eq!(
+            state.e2ee_trust.verification,
+            crate::state::VerificationFlowState::Idle
+        );
     }
 
     fn test_space(space_id: &str) -> crate::state::SpaceSummary {

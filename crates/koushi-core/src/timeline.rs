@@ -20249,7 +20249,11 @@ fn koushi_timeline_builder(
 ) -> matrix_sdk_ui::timeline::TimelineBuilder {
     matrix_sdk_ui::timeline::TimelineBuilder::new(room)
         .with_focus(focus)
-        .track_read_marker_and_receipts(TimelineReadReceiptTracking::AllEvents)
+        // Koushi renders read receipts on message-like timeline rows. Tracking
+        // state-event receipts widens the SDK event-cache ordering surface and
+        // has triggered linked_chunk order assertions during post-verification
+        // normal-sync startup.
+        .track_read_marker_and_receipts(TimelineReadReceiptTracking::MessageLikeEvents)
 }
 
 struct PreparedRelayRecovery<Snapshot, Stream> {
@@ -35605,6 +35609,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn timeline_builder_does_not_track_state_event_read_receipts() {
+        let source = include_str!("timeline.rs");
+        let production = source.split("\nmod tests").next().unwrap_or(source);
+        let builder_source = production
+            .split("fn koushi_timeline_builder")
+            .nth(1)
+            .expect("timeline builder should exist")
+            .split("struct PreparedRelayRecovery")
+            .next()
+            .expect("relay recovery structs should follow timeline builder");
+
+        assert!(
+            builder_source.contains("TimelineReadReceiptTracking::MessageLikeEvents"),
+            "timeline read receipts should only track message-like events; state-event tracking exercises SDK event-cache ordering paths that are not needed by Koushi rows"
+        );
+        assert!(
+            !builder_source.contains("TimelineReadReceiptTracking::AllEvents"),
+            "do not restore AllEvents for the product timeline builder"
+        );
+    }
+
     #[tokio::test]
     async fn koushi_timeline_builder_projects_sdk_read_receipts() {
         use matrix_sdk::assert_next_with_timeout;
@@ -40054,7 +40080,10 @@ mod tests {
                 EditedContent::RoomMessage(content) => match &content.msgtype {
                     MessageType::Text(text) => assert_eq!(text.body, "edited body"),
                     other => {
-                        panic!("{target}: text replacement expected, got {:?}", other.msgtype())
+                        panic!(
+                            "{target}: text replacement expected, got {:?}",
+                            other.msgtype()
+                        )
                     }
                 },
                 other => panic!("{target}: text replacement expected, got {other:?}"),

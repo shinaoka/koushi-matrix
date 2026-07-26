@@ -10,7 +10,8 @@ use crate::{
 };
 
 use super::{
-    clear_login_failed_errors, clear_session_views, current_session_info, is_session_ready,
+    clear_login_failed_errors, clear_session_views, clear_stale_verification_flow,
+    current_session_info, is_session_ready,
 };
 
 pub(crate) fn handle_app_started(state: &mut AppState) -> Vec<AppEffect> {
@@ -265,10 +266,15 @@ pub(crate) fn handle_verification_method_submitted(
         flow_id,
         sas_emojis: Vec::new(),
     };
-    vec![
+    let verification_cleared = clear_stale_verification_flow(state);
+    let mut effects = vec![
         AppEffect::BeginSessionVerification { method, flow_id },
         AppEffect::EmitUiEvent(UiEvent::SessionChanged),
-    ]
+    ];
+    if verification_cleared {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged));
+    }
+    effects
 }
 
 pub(crate) fn handle_verification_gate_attempt_failed(

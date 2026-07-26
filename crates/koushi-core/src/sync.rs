@@ -49,6 +49,7 @@ use std::time::Duration;
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_sdk::{MatrixClientSession, MatrixSlidingSyncInviteListSupport};
 use koushi_state::{AppAction, SyncLifecycleStatus, SyncMode};
+use matrix_sdk_base::{StateStoreDataKey, StateStoreDataValue};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::command::SyncCommand;
@@ -72,7 +73,9 @@ const ENV_FORCE_SYNC_BACKEND: &str = "KOUSHI_QA_FORCE_SYNC_BACKEND";
 const SYNC_ACTOR_SHUTDOWN_SEND_TIMEOUT: Duration = Duration::from_secs(1);
 const SYNC_ACTOR_SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(10);
 const SYNC_SERVICE_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+const LEGACY_SYNC_FIRST_RESPONSE_RECONNECT_TIMEOUT: Duration = Duration::from_secs(45);
 const LEGACY_SYNC_ROOM_TIMELINE_LIMIT: u32 = 128;
+const LEGACY_SYNC_COLD_START_ROOM_TIMELINE_LIMIT: u32 = 20;
 macro_rules! trace_sync {
     ($stage:expr, [$($field:expr),* $(,)?], $($arg:tt)*) => {{
         let event = DiagnosticEvent::new(
@@ -167,7 +170,10 @@ fn accepts_first_legacy_response(
     observed_generation: u64,
 ) -> bool {
     active_backend == ActiveBackend::LegacySync
-        && lifecycle == SyncLifecycle::Starting
+        && matches!(
+            lifecycle,
+            SyncLifecycle::Starting | SyncLifecycle::Reconnecting
+        )
         && active_generation == observed_generation
 }
 
@@ -192,6 +198,18 @@ fn accepts_backend_transition(
 ) -> bool {
     active_backend == observed_backend
         && lifecycle == expected_lifecycle
+        && active_generation == observed_generation
+}
+
+fn accepts_backend_reconnecting(
+    active_backend: ActiveBackend,
+    lifecycle: SyncLifecycle,
+    active_generation: u64,
+    observed_backend: ActiveBackend,
+    observed_generation: u64,
+) -> bool {
+    active_backend == observed_backend
+        && matches!(lifecycle, SyncLifecycle::Starting | SyncLifecycle::Running)
         && active_generation == observed_generation
 }
 
@@ -623,13 +641,12 @@ impl SyncActor {
                 backend,
                 run_generation,
                 reason,
-            } if accepts_backend_transition(
+            } if accepts_backend_reconnecting(
                 self.active_backend,
                 self.lifecycle,
                 self.active_run_generation(),
                 backend,
                 run_generation,
-                SyncLifecycle::Running,
             ) =>
             {
                 self.lifecycle = SyncLifecycle::Reconnecting;
@@ -1640,7 +1657,21 @@ async fn run_legacy_sync_loop(
 ) -> SyncTaskOutcome {
     use futures_util::StreamExt as _;
 
-    let settings = legacy_sync_settings();
+    let cold_start = legacy_sync_is_cold_start(&client).await;
+    let settings = legacy_sync_settings_for_start(cold_start);
+    trace_sync!(
+        "legacy_filter",
+        [
+            DiagnosticField::boolean("cold_start", cold_start),
+            DiagnosticField::count(
+                "timeline_limit",
+                legacy_sync_timeline_limit_for_start(cold_start).into()
+            ),
+        ],
+        "cold_start={} timeline_limit={}",
+        cold_start,
+        legacy_sync_timeline_limit_for_start(cold_start)
+    );
     let sync_stream = client.sync_stream(settings).await;
     tokio::pin!(sync_stream);
 
@@ -1664,6 +1695,33 @@ async fn run_legacy_sync_loop(
                     reconnecting
                 );
                 return SyncTaskOutcome::Stopped;
+            }
+            _ = executor::sleep(LEGACY_SYNC_FIRST_RESPONSE_RECONNECT_TIMEOUT), if !ever_ran && !reconnecting => {
+                trace_sync!(
+                    "legacy_state",
+                    [
+                        DiagnosticField::token("state", "starting"),
+                        DiagnosticField::boolean("ever_ran", ever_ran),
+                        DiagnosticField::boolean("reconnecting", reconnecting),
+                        DiagnosticField::milliseconds(
+                            "timeout_ms",
+                            LEGACY_SYNC_FIRST_RESPONSE_RECONNECT_TIMEOUT.as_millis(),
+                        ),
+                        DiagnosticField::token("action", "initial_response_timeout"),
+                    ],
+                    "state=starting ever_ran={} reconnecting={} timeout_ms={} action=initial_response_timeout",
+                    ever_ran,
+                    reconnecting,
+                    LEGACY_SYNC_FIRST_RESPONSE_RECONNECT_TIMEOUT.as_millis()
+                );
+                reconnecting = true;
+                let _ = control_tx
+                    .send(SyncActorControl::BackendReconnecting {
+                        backend: ActiveBackend::LegacySync,
+                        run_generation: legacy_run_generation,
+                        reason: "initial_sync_timeout",
+                    })
+                    .await;
             }
             item = sync_stream.next() => {
                 match item {
@@ -1871,20 +1929,50 @@ async fn probe_backend(session: &MatrixClientSession) -> BackendProbeResult {
     }
 }
 
+#[cfg(test)]
 fn legacy_sync_settings() -> matrix_sdk::config::SyncSettings {
+    legacy_sync_settings_for_start(false)
+}
+
+fn legacy_sync_settings_for_start(cold_start: bool) -> matrix_sdk::config::SyncSettings {
     use matrix_sdk::ruma::api::client::sync::sync_events;
 
     matrix_sdk::config::SyncSettings::default().filter(sync_events::v3::Filter::from(
-        legacy_sync_filter_definition(),
+        legacy_sync_filter_definition_for_start(cold_start),
     ))
 }
 
+#[cfg(test)]
 fn legacy_sync_filter_definition() -> matrix_sdk::ruma::api::client::filter::FilterDefinition {
+    legacy_sync_filter_definition_for_start(false)
+}
+
+fn legacy_sync_filter_definition_for_start(
+    cold_start: bool,
+) -> matrix_sdk::ruma::api::client::filter::FilterDefinition {
     let mut filter = matrix_sdk::ruma::api::client::filter::FilterDefinition::default();
     filter.room.timeline.limit = Some(matrix_sdk::ruma::UInt::from(
-        LEGACY_SYNC_ROOM_TIMELINE_LIMIT,
+        legacy_sync_timeline_limit_for_start(cold_start),
     ));
     filter
+}
+
+fn legacy_sync_timeline_limit_for_start(cold_start: bool) -> u32 {
+    if cold_start {
+        LEGACY_SYNC_COLD_START_ROOM_TIMELINE_LIMIT
+    } else {
+        LEGACY_SYNC_ROOM_TIMELINE_LIMIT
+    }
+}
+
+async fn legacy_sync_is_cold_start(client: &matrix_sdk::Client) -> bool {
+    !matches!(
+        client
+            .state_store()
+            .get_kv_data(StateStoreDataKey::SyncToken)
+            .await,
+        Ok(Some(StateStoreDataValue::SyncToken(_)))
+    )
 }
 
 /// True only when the QA env override requests the legacy backend.
@@ -3695,6 +3783,40 @@ pub mod tests {
     }
 
     #[test]
+    fn legacy_sync_cold_start_filter_is_lightweight() {
+        let filter = legacy_sync_filter_definition_for_start(true);
+
+        assert_eq!(
+            filter.room.timeline.limit,
+            Some(matrix_sdk::ruma::uint!(20)),
+            "Cold legacy /sync must keep the first request lightweight; warm/live legacy sync keeps the larger 128-event tail"
+        );
+    }
+
+    #[test]
+    fn legacy_sync_loop_selects_filter_from_persisted_sync_token() {
+        let source = include_str!("sync.rs");
+        let legacy_loop = source
+            .split("async fn run_legacy_sync_loop")
+            .nth(1)
+            .and_then(|rest| rest.split("// ---------------------------------------------------------------------------\n// Helpers").next())
+            .expect("legacy sync loop body");
+
+        assert!(
+            legacy_loop.contains("legacy_sync_is_cold_start(&client).await"),
+            "legacy sync must inspect the persisted token before deciding whether this is a cold start"
+        );
+        assert!(
+            legacy_loop.contains("legacy_sync_settings_for_start(cold_start)"),
+            "legacy sync must choose the cold-start filter before opening the stream"
+        );
+        assert!(
+            legacy_loop.contains("\"legacy_filter\""),
+            "legacy cold/warm filter choice must be visible in diagnostics"
+        );
+    }
+
+    #[test]
     fn stale_legacy_first_response_cannot_promote_a_replacement_run() {
         assert!(accepts_first_legacy_response(
             ActiveBackend::LegacySync,
@@ -3714,6 +3836,70 @@ pub mod tests {
             8,
             8,
         ));
+    }
+
+    #[test]
+    fn legacy_sync_initial_reconnect_first_response_promotes_active_run() {
+        assert!(accepts_first_legacy_response(
+            ActiveBackend::LegacySync,
+            SyncLifecycle::Reconnecting,
+            8,
+            8,
+        ));
+    }
+
+    #[test]
+    fn legacy_sync_initial_reconnect_controls_are_generation_fenced() {
+        assert!(accepts_backend_reconnecting(
+            ActiveBackend::LegacySync,
+            SyncLifecycle::Starting,
+            4,
+            ActiveBackend::LegacySync,
+            4,
+        ));
+        assert!(accepts_backend_reconnecting(
+            ActiveBackend::LegacySync,
+            SyncLifecycle::Running,
+            4,
+            ActiveBackend::LegacySync,
+            4,
+        ));
+        assert!(!accepts_backend_reconnecting(
+            ActiveBackend::LegacySync,
+            SyncLifecycle::Reconnecting,
+            4,
+            ActiveBackend::LegacySync,
+            4,
+        ));
+        assert!(!accepts_backend_reconnecting(
+            ActiveBackend::LegacySync,
+            SyncLifecycle::Starting,
+            5,
+            ActiveBackend::LegacySync,
+            4,
+        ));
+    }
+
+    #[test]
+    fn legacy_sync_initial_reconnect_watchdog_is_present() {
+        let source = include_str!("sync.rs");
+        let legacy_loop = source
+            .split("async fn run_legacy_sync_loop")
+            .nth(1)
+            .and_then(|rest| rest.split("// ---------------------------------------------------------------------------\n// Helpers").next())
+            .expect("legacy sync loop body");
+        assert!(
+            legacy_loop.contains("LEGACY_SYNC_FIRST_RESPONSE_RECONNECT_TIMEOUT"),
+            "legacy sync must not leave the UI in Starting forever before the first /sync response"
+        );
+        assert!(
+            legacy_loop.contains("initial_response_timeout"),
+            "initial response watchdog must be visible in diagnostics"
+        );
+        assert!(
+            legacy_loop.contains("BackendReconnecting"),
+            "initial response watchdog must project Reconnecting rather than silently waiting"
+        );
     }
 
     #[test]

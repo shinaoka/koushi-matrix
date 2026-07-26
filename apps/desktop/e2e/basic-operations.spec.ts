@@ -7138,6 +7138,10 @@ test("Security settings render local encryption health and dispatch probe comman
       return next;
     });
   });
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("Reset local data");
+    await dialog.accept();
+  });
   await page.getByRole("button", { name: "Reset local data" }).click();
   await expect.poll(() => invocationCount(page, "reset_local_data")).toBe(1);
   await expect(page.getByText("Not checked")).toBeVisible();

@@ -557,6 +557,7 @@ export type MessageId =
   | "settings.passphraseChangeRecoveryKeySaved"
   | "settings.passphraseChangeFailed"
   | "settings.resetLocalData"
+  | "settings.resetLocalDataConfirm"
   | "settings.session"
   | "settings.sessionSecretLabel"
   | "settings.sessionSecret"
@@ -1615,6 +1616,7 @@ const en: Catalog = {
   "settings.passphraseChangeRecoveryKeySaved": "Changed; recovery key saved",
   "settings.passphraseChangeFailed": "Change failed: {reason}",
   "settings.resetLocalData": "Reset local data",
+  "settings.resetLocalDataConfirm": "Reset local data for this session? This removes the local Matrix store, cached history, and saved credentials on this device. This cannot be undone.",
   "settings.session": "Session",
   "settings.sessionSecretLabel": "Session secret",
   "settings.sessionSecret": "OS credential store",
@@ -2560,6 +2562,7 @@ const ja: Catalog = {
   "settings.passphraseChangeRecoveryKeySaved": "変更済み、リカバリーキー保存済み",
   "settings.passphraseChangeFailed": "変更失敗: {reason}",
   "settings.resetLocalData": "ローカルデータをリセット",
+  "settings.resetLocalDataConfirm": "このセッションのローカルデータをリセットしますか？このデバイス上の Matrix ストア、キャッシュ済み履歴、保存済み資格情報が削除されます。この操作は元に戻せません。",
   "settings.session": "セッション",
   "settings.sessionSecretLabel": "セッションシークレット",
   "settings.sessionSecret": "OS資格情報ストア",

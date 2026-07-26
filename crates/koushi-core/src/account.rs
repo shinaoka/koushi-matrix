@@ -724,6 +724,7 @@ enum SessionTeardownContinuation {
     Logout {
         request_id: RequestId,
         server_logout: bool,
+        preserve_persistence: bool,
     },
     InstallReplacement {
         session: MatrixClientSession,
@@ -1756,7 +1757,7 @@ impl AccountActor {
                         .await;
                 }
                 AccountMessage::RejectProvisionalSession { request_id } => {
-                    self.perform_logout(request_id, true).await;
+                    self.perform_logout(request_id, true, false).await;
                 }
                 AccountMessage::RetrySessionTeardown { generation } => {
                     self.retry_session_teardown(generation).await;
@@ -5759,6 +5760,15 @@ impl AccountActor {
         let info = login_session.info.clone();
         let key_id = session_key_id_from_info(&info);
         let account_key = account_key_from_info(&info);
+        let (login_session, info, key_id) = self
+            .prefer_saved_device_for_password_login(
+                login_session,
+                info,
+                key_id,
+                &account_key,
+                &request.password,
+            )
+            .await;
 
         // Build a restorable in-memory session shape without writing the
         // active credential index or last-session pointer before verification.
@@ -5872,28 +5882,36 @@ impl AccountActor {
             return;
         }
         trace_account_request("restore_last_session", request_id, "load_pointer");
-        let key_id = match self.store.credential_backend().load_last_session() {
-            Ok(Some(key_id)) => {
-                trace_account_request("restore_last_session", request_id, "pointer_found");
-                key_id
-            }
-            Ok(None) => {
-                trace_account_request("restore_last_session", request_id, "pointer_missing");
-                self.send_actions(vec![AppAction::RestoreSessionNotFound])
+        let store = self.store.clone();
+        let key_id =
+            match executor::spawn_blocking(move || store.credential_backend().load_last_session())
+                .await
+            {
+                Ok(Ok(Some(key_id))) => {
+                    trace_account_request("restore_last_session", request_id, "pointer_found");
+                    key_id
+                }
+                Ok(Ok(None)) => {
+                    trace_account_request("restore_last_session", request_id, "pointer_missing");
+                    self.send_actions(vec![AppAction::RestoreSessionNotFound])
+                        .await;
+                    self.emit_failure(request_id, SESSION_NOT_FOUND_FAILURE);
+                    return;
+                }
+                Ok(Err(_)) | Err(_) => {
+                    trace_account_request(
+                        "restore_last_session",
+                        request_id,
+                        "pointer_load_failed",
+                    );
+                    self.send_actions(vec![AppAction::RestoreSessionFailed {
+                        message: RESTORE_FAILED_MESSAGE.to_owned(),
+                    }])
                     .await;
-                self.emit_failure(request_id, SESSION_NOT_FOUND_FAILURE);
-                return;
-            }
-            Err(_) => {
-                trace_account_request("restore_last_session", request_id, "pointer_load_failed");
-                self.send_actions(vec![AppAction::RestoreSessionFailed {
-                    message: RESTORE_FAILED_MESSAGE.to_owned(),
-                }])
-                .await;
-                self.emit_failure(request_id, CoreFailure::StoreUnavailable);
-                return;
-            }
-        };
+                    self.emit_failure(request_id, CoreFailure::StoreUnavailable);
+                    return;
+                }
+            };
 
         self.restore_account(request_id, key_id, RestoreOutcome::Restored)
             .await;
@@ -6240,7 +6258,7 @@ impl AccountActor {
                 .await;
                 // Deactivation ends the account on the server. Perform local
                 // sign-out cleanup without sending a second /logout request.
-                self.perform_logout(request_id, false).await;
+                self.perform_logout(request_id, false, false).await;
             }
             Err(koushi_sdk::AccountManagementError::UiaaChallenge { session }) => {
                 let flow_id = request_id.sequence;
@@ -6382,6 +6400,7 @@ impl AccountActor {
                             connection_id: request_id.connection_id,
                             sequence: flow_id,
                         },
+                        false,
                         false,
                     )
                     .await;
@@ -6895,7 +6914,12 @@ impl AccountActor {
             .await;
     }
 
-    async fn perform_logout(&mut self, request_id: RequestId, server_logout: bool) {
+    async fn perform_logout(
+        &mut self,
+        request_id: RequestId,
+        server_logout: bool,
+        preserve_persistence: bool,
+    ) {
         if self.pending_session_teardown.is_some() {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
@@ -6925,6 +6949,7 @@ impl AccountActor {
             continuation: SessionTeardownContinuation::Logout {
                 request_id,
                 server_logout,
+                preserve_persistence,
             },
         });
         self.retry_session_teardown(generation).await;
@@ -6997,15 +7022,24 @@ impl AccountActor {
             SessionTeardownContinuation::Logout {
                 request_id,
                 server_logout,
+                preserve_persistence,
             } => {
                 let _ = server_logout;
                 let account_key = if let Some(key_id) = &pending.key_id {
-                    self.clear_account_persistence(key_id).await;
+                    if preserve_persistence {
+                        self.forget_last_session_pointer_if_matches(key_id).await;
+                    } else {
+                        self.clear_account_persistence(key_id).await;
+                    }
                     AccountKey(key_id.user_id.clone())
                 } else {
                     AccountKey(String::new())
                 };
-                self.record_lifecycle_probe("session_persistence_deleted");
+                self.record_lifecycle_probe(if preserve_persistence {
+                    "session_persistence_preserved"
+                } else {
+                    "session_persistence_deleted"
+                });
                 self.send_actions(vec![AppAction::LogoutFinished]).await;
                 self.emit(CoreEvent::Account(AccountEvent::LoggedOut {
                     request_id,
@@ -7029,7 +7063,7 @@ impl AccountActor {
     }
 
     async fn handle_logout(&mut self, request_id: RequestId) {
-        self.perform_logout(request_id, true).await;
+        self.perform_logout(request_id, true, true).await;
     }
 
     // --- helpers ---
@@ -7580,6 +7614,99 @@ impl AccountActor {
         }
     }
 
+    /// When a normal sign-out preserved a keyed store for this Matrix user,
+    /// prefer logging back into that same device id. This preserves the local
+    /// SDK store and avoids turning every sign-out/sign-in into a cold device.
+    ///
+    /// The optimization is deliberately fail-open: if the homeserver rejects an
+    /// existing-device login, continue with the already-successful fresh login
+    /// instead of converting a successful password login into a user-visible
+    /// failure.
+    async fn prefer_saved_device_for_password_login(
+        &self,
+        fresh_login_session: MatrixClientSession,
+        fresh_info: SessionInfo,
+        fresh_key_id: SessionKeyId,
+        account_key: &AccountKey,
+        password: &koushi_state::AuthSecret,
+    ) -> (MatrixClientSession, SessionInfo, SessionKeyId) {
+        let saved_key_id = match self.lookup_session_key_id(account_key).await {
+            Ok(Some(key_id)) => key_id,
+            Ok(None) | Err(()) => {
+                return (fresh_login_session, fresh_info, fresh_key_id);
+            }
+        };
+
+        if saved_key_id == fresh_key_id {
+            return (fresh_login_session, fresh_info, fresh_key_id);
+        }
+
+        if saved_key_id.homeserver != fresh_key_id.homeserver
+            || saved_key_id.user_id != fresh_key_id.user_id
+        {
+            return (fresh_login_session, fresh_info, fresh_key_id);
+        }
+
+        record(
+            DiagnosticEvent::new(
+                DiagnosticLevel::Debug,
+                "core.account",
+                "password_login_saved_device_attempted",
+            )
+            .field(DiagnosticField::boolean("has_saved_device", true)),
+        );
+
+        let saved_login_session = match koushi_sdk::login_with_existing_device(
+            &fresh_info.homeserver,
+            &fresh_info.user_id,
+            &saved_key_id.device_id,
+            password,
+        )
+        .await
+        {
+            Ok(session) => session,
+            Err(_) => {
+                record(
+                    DiagnosticEvent::new(
+                        DiagnosticLevel::Warn,
+                        "core.account",
+                        "password_login_saved_device_failed",
+                    )
+                    .field(DiagnosticField::boolean("fallback_to_fresh_device", true)),
+                );
+                return (fresh_login_session, fresh_info, fresh_key_id);
+            }
+        };
+
+        let saved_info = saved_login_session.info.clone();
+        let actual_saved_key_id = session_key_id_from_info(&saved_info);
+        if actual_saved_key_id != saved_key_id {
+            let _ = koushi_sdk::logout(&saved_login_session).await;
+            drop(saved_login_session);
+            record(
+                DiagnosticEvent::new(
+                    DiagnosticLevel::Warn,
+                    "core.account",
+                    "password_login_saved_device_mismatch",
+                )
+                .field(DiagnosticField::boolean("fallback_to_fresh_device", true)),
+            );
+            return (fresh_login_session, fresh_info, fresh_key_id);
+        }
+
+        let _ = koushi_sdk::logout(&fresh_login_session).await;
+        drop(fresh_login_session);
+        record(
+            DiagnosticEvent::new(
+                DiagnosticLevel::Debug,
+                "core.account",
+                "password_login_saved_device_reused",
+            )
+            .field(DiagnosticField::boolean("fallback_to_fresh_device", false)),
+        );
+        (saved_login_session, saved_info, actual_saved_key_id)
+    }
+
     /// Remove all persisted material for one account: session JSON, saved
     /// session index entry, last-session pointer (only if it points at this
     /// account), unlock secret, and store/cache directories.
@@ -7600,6 +7727,28 @@ impl AccountActor {
                 }
             }
             store.delete_account_credentials(&key_id);
+        })
+        .await;
+    }
+
+    /// Leave the saved session, unlock secret, and keyed store intact, but
+    /// remove the automatic startup pointer when it targets the just-signed-out
+    /// device. Normal sign-out should not make the next login a cold start, but
+    /// it also must not auto-restore a token that server logout just invalidated.
+    async fn forget_last_session_pointer_if_matches(&self, key_id: &SessionKeyId) {
+        let store = self.store.clone();
+        let key_id = key_id.clone();
+        let _ = executor::spawn_blocking(move || {
+            let backend = store.credential_backend();
+            match backend.load_last_session() {
+                Ok(Some(last)) if last == key_id => {
+                    let _ = backend.delete_last_session();
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    let _ = backend.delete_last_session();
+                }
+            }
         })
         .await;
     }
@@ -10280,7 +10429,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn logout_cleanup_is_bounded_and_ordered_before_persistence_removal() {
+    async fn logout_cleanup_is_bounded_and_preserves_account_persistence() {
         let homeserver = spawn_quarantine_password_server();
         let cred_dir = tempdir().expect("tempdir");
         let data_dir = tempdir().expect("tempdir");
@@ -10288,6 +10437,7 @@ mod tests {
         let (handle, mut action_rx, mut event_rx) =
             spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
         let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        configure_verified_trust(&handle).await;
         handle
             .send(AccountMessage::AttachLifecycleProbe { probe_tx })
             .await;
@@ -10296,10 +10446,10 @@ mod tests {
                 results: vec![false, true],
             })
             .await;
-        let request_id = test_request_id();
+        let login_request_id = test_request_id();
         handle
             .send(AccountMessage::Command(AccountCommand::LoginPassword {
-                request_id,
+                request_id: login_request_id,
                 request: LoginRequest {
                     homeserver,
                     username: "fixture-user".to_owned(),
@@ -10315,8 +10465,14 @@ mod tests {
         let files_before_logout = recursive_file_count(data_dir.path());
         assert!(files_before_logout > baseline_files);
 
+        let request_id = RequestId {
+            connection_id: crate::ids::RuntimeConnectionId(1),
+            sequence: 2,
+        };
         handle
-            .send(AccountMessage::RejectProvisionalSession { request_id })
+            .send(AccountMessage::Command(AccountCommand::Logout {
+                request_id,
+            }))
             .await;
         while probe_rx.recv().await != Some("session_store_close_retrying") {}
         assert_eq!(recursive_file_count(data_dir.path()), files_before_logout);
@@ -10326,12 +10482,20 @@ mod tests {
             .send(AccountMessage::RetrySessionTeardown { generation: 1 })
             .await;
         assert_eq!(probe_rx.recv().await, Some("session_store_closed"));
-        assert_eq!(probe_rx.recv().await, Some("session_persistence_deleted"));
+        assert_eq!(probe_rx.recv().await, Some("session_persistence_preserved"));
         while !matches!(
             action_rx.recv().await.as_deref(),
             Some([AppAction::LogoutFinished])
         ) {}
-        assert_eq!(recursive_file_count(data_dir.path()), baseline_files);
+        let backend = CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+            cred_dir.path(),
+        ));
+        assert!(
+            backend
+                .load_last_session()
+                .expect("last pointer after logout")
+                .is_none()
+        );
         loop {
             if let CoreEvent::Account(AccountEvent::LoggedOut {
                 request_id: terminal,
@@ -10343,6 +10507,39 @@ mod tests {
             }
         }
         let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[test]
+    fn logout_teardown_preserves_persistence_and_only_forgets_startup_pointer() {
+        let source = include_str!("account.rs");
+        let logout_continuation = source
+            .split("match pending.continuation")
+            .nth(1)
+            .expect("teardown continuation match should exist")
+            .split("SessionTeardownContinuation::Logout")
+            .nth(1)
+            .expect("logout continuation should exist")
+            .split("SessionTeardownContinuation::InstallReplacement")
+            .next()
+            .expect("logout continuation should precede replacement continuation");
+
+        assert!(
+            logout_continuation.contains("preserve_persistence")
+                && logout_continuation.contains("forget_last_session_pointer_if_matches(key_id)"),
+            "normal sign-out should preserve the keyed store and saved-session index"
+        );
+        assert!(
+            logout_continuation.contains("clear_account_persistence(key_id)"),
+            "non-preserving teardown paths such as provisional rejection must still delete the local database"
+        );
+        assert!(
+            logout_continuation.contains("session_persistence_preserved"),
+            "logout diagnostics should make the preservation explicit"
+        );
+        assert!(
+            logout_continuation.contains("session_persistence_deleted"),
+            "non-preserving teardown diagnostics should remain explicit"
+        );
     }
 
     #[tokio::test]
@@ -11903,6 +12100,10 @@ mod tests {
             "startup restore must log before reading the last-session pointer"
         );
         assert!(
+            restore_last.contains("executor::spawn_blocking"),
+            "startup restore must not block the account actor on keychain/filesystem pointer reads"
+        );
+        assert!(
             restore_last.contains(
                 "trace_account_request(\"restore_last_session\", request_id, \"pointer_found\")"
             ),
@@ -11965,6 +12166,46 @@ mod tests {
             .and_then(|body| body.split("async fn persist_session").next())
             .expect("trust promotion handler");
         assert!(promotion.contains("spawn_account_hydration"));
+    }
+
+    #[test]
+    fn password_login_prefers_saved_device_without_making_login_fail_closed() {
+        let source = include_str!("account.rs");
+        let login_handler = source
+            .split("    async fn handle_login_password")
+            .nth(1)
+            .expect("login handler should exist")
+            .split("    async fn handle_restore_session")
+            .next()
+            .expect("restore handler should follow login handler");
+        let reuse_helper = source
+            .split("    async fn prefer_saved_device_for_password_login")
+            .nth(1)
+            .expect("saved-device reuse helper should exist")
+            .split("    /// Remove all persisted material")
+            .next()
+            .expect("clear persistence helper should follow saved-device helper");
+
+        assert!(
+            login_handler.contains("prefer_saved_device_for_password_login"),
+            "password login should try to reuse a preserved signed-out device before restoring into a store"
+        );
+        assert!(
+            reuse_helper.contains("self.lookup_session_key_id(account_key).await"),
+            "saved-device reuse must be driven by the saved-session index"
+        );
+        assert!(
+            reuse_helper.contains("koushi_sdk::login_with_existing_device"),
+            "saved-device reuse must explicitly login with the preserved device id"
+        );
+        assert!(
+            reuse_helper.contains("fallback_to_fresh_device"),
+            "saved-device reuse must be fail-open so password login availability is not reduced"
+        );
+        assert!(
+            reuse_helper.contains("actual_saved_key_id != saved_key_id"),
+            "homeservers that ignore the requested device id must not poison the preserved store"
+        );
     }
 
     #[test]

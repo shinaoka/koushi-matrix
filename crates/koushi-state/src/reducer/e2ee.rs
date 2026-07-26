@@ -11,8 +11,8 @@ use crate::{
 };
 
 use super::{
-    clear_login_failed_errors, clear_session_views, has_verification_gate_projection_context,
-    is_session_ready,
+    clear_login_failed_errors, clear_session_views, clear_stale_verification_flow,
+    has_verification_gate_projection_context, is_session_ready,
 };
 
 fn recovery_gate(
@@ -116,10 +116,15 @@ pub(crate) fn handle_e2ee_recovery_submitted(
         flow_id,
         sas_emojis: Vec::new(),
     };
-    vec![
+    let verification_cleared = clear_stale_verification_flow(state);
+    let mut effects = vec![
         AppEffect::RecoverE2ee(request),
         AppEffect::EmitUiEvent(UiEvent::SessionChanged),
-    ]
+    ];
+    if verification_cleared {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged));
+    }
+    effects
 }
 
 pub(crate) fn handle_e2ee_recovery_succeeded(state: &mut AppState) -> Vec<AppEffect> {
