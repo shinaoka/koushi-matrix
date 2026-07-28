@@ -1544,6 +1544,43 @@ describe("timeline store — generation handling", () => {
       expect(rows.some((row) => row.row_id === "$reply")).toBe(false);
     }
   });
+
+  test("display projection derives a thread summary from a visible reply when SDK summary lacks latest event details", () => {
+    const root = {
+      ...makeMsg("$root", "root"),
+      timestamp_ms: 1_800_000_000_000,
+      thread_summary: {
+        reply_count: 1,
+        latest_event_id: null,
+        latest_sender: null,
+        latest_sender_label: null,
+        latest_body_preview: null,
+        latest_timestamp_ms: null
+      }
+    };
+    const reply = {
+      ...makeMsg("$reply", "visible reply"),
+      sender: "@reply:example.invalid",
+      sender_label: "Reply Alias",
+      timestamp_ms: 1_800_000_010_000,
+      thread_root: "$root"
+    };
+
+    const rows = projectTimelineDisplayRows([root, reply], KEY, LATEST_REPLY);
+    const projectedRoot = rows.find((row) => row.row_id === "thread-root:$root");
+
+    expect(projectedRoot?.activity_event_id).toBe("$reply");
+    expect(projectedRoot?.display_timestamp_ms).toBe(reply.timestamp_ms);
+    expect(projectedRoot?.item.thread_summary).toEqual({
+      reply_count: 1,
+      latest_event_id: "$reply",
+      latest_sender: "@reply:example.invalid",
+      latest_sender_label: "Reply Alias",
+      latest_body_preview: "visible reply",
+      latest_timestamp_ms: reply.timestamp_ms
+    });
+    expect(rows.some((row) => row.row_id === "$reply")).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -374,8 +374,8 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
       async loadMessageSource(roomId: string, eventId: string) {
         await invoke("load_message_source", { roomId, eventId });
       },
-      async requestRoomKey(roomId: string, eventId: string) {
-        await invoke("request_room_key", { roomId, eventId });
+      async requestRoomKey(roomId: string, eventId: string, timelineKey?: TimelineKey) {
+        await invoke("request_room_key", { roomId, eventId, timelineKey });
       },
       async forwardMessage(
         roomId: string,

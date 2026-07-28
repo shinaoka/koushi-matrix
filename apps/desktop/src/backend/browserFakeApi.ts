@@ -249,7 +249,11 @@ export interface DesktopApi {
   editMessage(roomId: string, eventId: string, body: string): Promise<DesktopSnapshot>;
   redactMessage(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   loadMessageSource(roomId: string, eventId: string): Promise<DesktopSnapshot>;
-  requestRoomKey(roomId: string, eventId: string): Promise<DesktopSnapshot>;
+  requestRoomKey(
+    roomId: string,
+    eventId: string,
+    timelineKey?: import("../domain/coreEvents").TimelineKey
+  ): Promise<DesktopSnapshot>;
   forwardMessage(
     roomId: string,
     sourceEventId: string,
@@ -2005,7 +2009,11 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
-  async requestRoomKey(_roomId: string, _eventId: string): Promise<DesktopSnapshot> {
+  async requestRoomKey(
+    _roomId: string,
+    _eventId: string,
+    _timelineKey?: import("../domain/coreEvents").TimelineKey
+  ): Promise<DesktopSnapshot> {
     return this.getSnapshot();
   }
 

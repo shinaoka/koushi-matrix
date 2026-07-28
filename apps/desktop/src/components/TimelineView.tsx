@@ -136,6 +136,7 @@ import {
   getMediaUploadProgress,
   getKeyState,
   getPaginationState,
+  timelineStoreKeyId,
   type TimelineStoreState
 } from "../domain/timelineStore";
 import {
@@ -248,7 +249,7 @@ export interface TimelineTransport {
   /** Request a Rust-owned safe source DTO for an event-backed item. */
   loadMessageSource(roomId: string, eventId: string): Promise<void>;
   /** Request missing room keys for an undecryptable event and retry decryption. */
-  requestRoomKey(roomId: string, eventId: string): Promise<void>;
+  requestRoomKey(roomId: string, eventId: string, timelineKey?: TimelineKey): Promise<void>;
   /** Forward an event-backed message through Rust-owned source projection. */
   forwardMessage(
     roomId: string,
@@ -582,6 +583,10 @@ function canonicalTimelineContainsActivityEventId(
   return items.some(
     (item) => "Event" in item.id && item.id.Event.event_id === eventId
   );
+}
+
+function timelineItemEventId(item: TimelineItem): string | null {
+  return "Event" in item.id ? item.id.Event.event_id : null;
 }
 
 function timelineEventIdentityAttribute(identity: TimelineEventIdentity): string {
@@ -2571,6 +2576,7 @@ export const TimelineView = memo(function TimelineView({
   const readSignalEventRef = useRef<string | null>(null);
   const lastViewportObservationRef = useRef<string | null>(null);
   const downloadedEventIdsRef = useRef<Set<string>>(new Set());
+  const autoRequestedRoomKeyIdsRef = useRef<Set<string>>(new Set());
   const requestedImagePreviewEventIdsRef = useRef<Set<string>>(new Set());
   const relevantAvatarMxcsRef = useRef<Set<string>>(new Set());
   const requestedAvatarMxcsRef = useRef<Set<string>>(new Set());
@@ -2605,6 +2611,7 @@ export const TimelineView = memo(function TimelineView({
   const readSignalThreadRootEventId =
     "Thread" in timelineKey.kind ? timelineKey.kind.Thread.root_event_id : null;
   const items = getItems(store, timelineKey);
+  const timelineStoreKey = useMemo(() => timelineStoreKeyId(timelineKey), [timelineKeyHash]);
   // The selector returns an array. Memoize it by the separately-owned map so
   // ordinary scroll/measurement renders keep the existing display-row
   // identity; otherwise an empty projection source would churn Task 4's
@@ -2625,6 +2632,35 @@ export const TimelineView = memo(function TimelineView({
     },
     [onDiagnosticLogEntry]
   );
+  useEffect(() => {
+    if (!("Thread" in timelineKey.kind)) {
+      return;
+    }
+    for (const item of items) {
+      if (!item.unable_to_decrypt?.can_request_keys) {
+        continue;
+      }
+      const eventId = timelineItemEventId(item);
+      if (eventId === null) {
+        continue;
+      }
+      const requestKey = `${timelineStoreKey}\u0000${eventId}`;
+      if (autoRequestedRoomKeyIdsRef.current.has(requestKey)) {
+        continue;
+      }
+      autoRequestedRoomKeyIdsRef.current.add(requestKey);
+      emitDiagnosticLog(
+        "e2ee.room_key",
+        "operation=request_keys stage=request source=auto timeline=thread"
+      );
+      void transport.requestRoomKey(roomId, eventId, timelineKey).catch(() => {
+        emitDiagnosticLog(
+          "e2ee.room_key",
+          "operation=request_keys stage=failed source=auto kind=transport timeline=thread"
+        );
+      });
+    }
+  }, [emitDiagnosticLog, items, roomId, timelineKey, timelineStoreKey, transport]);
   useLayoutEffect(() => {
     if (!("Thread" in timelineKey.kind) || !timelineKeyState) {
       return;
@@ -4032,7 +4068,7 @@ export const TimelineView = memo(function TimelineView({
         source: "e2ee.room_key",
         message: "operation=request_keys stage=request"
       });
-      void transport.requestRoomKey(targetRoomId, eventId).catch(() => {
+      void transport.requestRoomKey(targetRoomId, eventId, timelineKey).catch(() => {
         onDiagnosticLogEntry?.({
           timestampMs: Date.now(),
           source: "e2ee.room_key",
@@ -4040,7 +4076,7 @@ export const TimelineView = memo(function TimelineView({
         });
       });
     },
-    [onDiagnosticLogEntry, transport]
+    [onDiagnosticLogEntry, timelineKey, transport]
   );
   const onForwardMessage = useCallback(
     (targetRoomId: string, sourceEventId: string, destinationRoomId: string) => {

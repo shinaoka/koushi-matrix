@@ -1948,14 +1948,22 @@ pub(crate) fn build_request_room_key_command(
     request_id: koushi_core::RequestId,
     account_key: AccountKey,
     room_id: String,
+    timeline_key: Option<TimelineKey>,
     event_id: String,
 ) -> Option<CoreCommand> {
     if event_id.trim().is_empty() {
         return None;
     }
+    let key = match timeline_key {
+        Some(timeline_key) => TimelineKey {
+            account_key,
+            kind: timeline_key.kind,
+        },
+        None => build_timeline_key(account_key, room_id),
+    };
     Some(CoreCommand::Timeline(TimelineCommand::RequestRoomKey {
         request_id,
-        key: build_timeline_key(account_key, room_id),
+        key,
         event_id,
     }))
 }
@@ -3424,7 +3432,7 @@ mod tests {
 
     use crate::commands::{
         TIMELINE_BACKWARDS_PAGE_EVENT_COUNT, TIMELINE_RESTORE_ANCHOR_MAX_BATCHES,
-        snapshot_has_login_transport_terminal,
+        build_request_room_key_command, snapshot_has_login_transport_terminal,
     };
     use koushi_core::AccountKey;
     use koushi_core::{
@@ -3433,7 +3441,7 @@ mod tests {
         ImageUploadCompressionState, ImageUploadDimensions, ImageUploadVariantInfo,
         ImageUploadVariantKind, IntentNoOpReason, IntentOutcome, MediaDownloadSelection,
         PaginationDirection, RequestId, RoomCommand, SearchCommand, SearchScope, SyncCommand,
-        TimelineCommand, UploadMediaKind, UploadMediaThumbnail,
+        TimelineCommand, TimelineKey, UploadMediaKind, UploadMediaThumbnail,
     };
     use koushi_state::{
         ActivityMarkReadTarget, ActivityTab, AppearanceSettings, ImageUploadCompressionMode,
@@ -4229,6 +4237,40 @@ mod tests {
                     key.kind,
                     koushi_core::TimelineKind::Room {
                         room_id: room_id.clone()
+                    }
+                );
+                assert_eq!(event_id, "$source-event");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_request_room_key_command(
+            fake_request_id(36),
+            active_account_key.clone(),
+            room_id.clone(),
+            Some(TimelineKey {
+                account_key: AccountKey("@stale:example.invalid".to_owned()),
+                kind: koushi_core::TimelineKind::Thread {
+                    room_id: room_id.clone(),
+                    root_event_id: "$thread-root".to_owned(),
+                },
+            }),
+            "$source-event".to_owned(),
+        )
+        .expect("request_room_key should build a command")
+        {
+            CoreCommand::Timeline(TimelineCommand::RequestRoomKey {
+                request_id,
+                key,
+                event_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(36));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    koushi_core::TimelineKind::Thread {
+                        room_id: room_id.clone(),
+                        root_event_id: "$thread-root".to_owned()
                     }
                 );
                 assert_eq!(event_id, "$source-event");

@@ -9258,7 +9258,79 @@ describe("TimelineView", () => {
     const button = await screen.findByRole("button", { name: "Request keys and retry" });
     fireEvent.click(button);
 
-    expect(requestRoomKey).toHaveBeenCalledWith("!room:example.invalid", "$encrypted");
+    expect(requestRoomKey).toHaveBeenCalledWith("!room:example.invalid", "$encrypted", KEY);
+  });
+
+  it("automatically requests missing room keys once for undecryptable thread timeline events", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const requestRoomKey = vi.fn(async () => undefined);
+    const threadKey = threadTimelineKey(
+      "@alice:example.invalid",
+      "!room:example.invalid",
+      "$thread-root:example.invalid"
+    );
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      requestRoomKey
+    });
+    const encrypted = {
+      ...message("$encrypted-thread-reply:example.invalid", "Unable to decrypt message"),
+      thread_root: "$thread-root:example.invalid",
+      unable_to_decrypt: {
+        session_id: "session-1",
+        reason: "missingRoomKey" as const,
+        can_request_keys: true
+      }
+    };
+
+    render(
+      <TimelineView
+        timelineKey={threadKey}
+        roomId="!room:example.invalid"
+        presentationContext="thread"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: threadKey,
+          generation: 1,
+          items: [encrypted]
+        }
+      }
+    });
+
+    await waitFor(() => {
+      expect(requestRoomKey).toHaveBeenCalledWith(
+        "!room:example.invalid",
+        "$encrypted-thread-reply:example.invalid",
+        threadKey
+      );
+    });
+    expect(requestRoomKey).toHaveBeenCalledTimes(1);
+
+    emit({
+      kind: "Timeline",
+      event: {
+        ItemsUpdated: {
+          key: threadKey,
+          generation: 1,
+          batch_id: 2,
+          diffs: [{ Set: { index: 0, item: encrypted } }]
+        }
+      }
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(requestRoomKey).toHaveBeenCalledTimes(1);
   });
 
   it("emits fixed private-data-free diagnostics when a room-key request fails", async () => {

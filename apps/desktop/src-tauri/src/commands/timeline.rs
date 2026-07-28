@@ -1806,13 +1806,14 @@ pub async fn load_message_source(
 pub async fn request_room_key(
     room_id: String,
     event_id: String,
+    timeline_key: Option<TimelineKey>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
     let account_key = account_key_from_snapshot(state.inner()).await;
     let request_id = next_request_id(state.inner()).await;
     if let Some(command) =
-        build_request_room_key_command(request_id, account_key, room_id, event_id)
+        build_request_room_key_command(request_id, account_key, room_id, timeline_key, event_id)
     {
         submit_core_command(state.inner(), command).await?;
     }
