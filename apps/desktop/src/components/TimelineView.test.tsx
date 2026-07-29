@@ -3785,7 +3785,9 @@ describe("TimelineView", () => {
     expect(acknowledgeProjection).toHaveBeenCalledWith(
       { connection_id: 4, sequence: 8 },
       KEY,
-      1
+      1,
+      1,
+      true
     );
     expect(acknowledgeProjection).toHaveBeenCalledTimes(1);
   });

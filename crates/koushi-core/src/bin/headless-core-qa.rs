@@ -11610,6 +11610,8 @@ async fn subscribe_and_ack_active_timeline_projection_for_qa(
                         projection_request_id,
                         key: key.clone(),
                         generation,
+                        item_count: items.len() as u64,
+                        target_present: true,
                     },
                 ))
                 .await

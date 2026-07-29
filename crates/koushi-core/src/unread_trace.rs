@@ -27,6 +27,7 @@ fn unread_reason_token(value: &str) -> &'static str {
         "fully_read_latest" => "fully_read_latest",
         "cleared_latest" => "cleared_latest",
         "cleared_local" => "cleared_local",
+        "latest_event_read" => "latest_event_read",
         "room_metrics" => "room_metrics",
         _ => "other",
     }
@@ -156,6 +157,8 @@ mod tests {
             conversation_activity: None,
             latest_event: Some(RoomLatestEventSummary {
                 event_id: "$private-event:example.invalid".to_owned(),
+                relation_type: None,
+                relation_event_id: None,
                 sender_id: Some("@private-sender:example.invalid".to_owned()),
                 sender_label: Some("Private Sender".to_owned()),
                 sender_avatar: None,
@@ -199,6 +202,7 @@ mod tests {
             "fully_read_latest",
             "cleared_latest",
             "cleared_local",
+            "latest_event_read",
             "room_metrics",
         ] {
             trace_activity_room("activity_recent_event", &room, true, reason);

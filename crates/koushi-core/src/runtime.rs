@@ -21,10 +21,11 @@ use koushi_state::{
     AccountManagementOperation, ActivityMarkReadTarget, ActivityResolutionState, ActivityRow,
     ActivityRowKind, ActivityState, ActivityStream, ActivityTab, AppAction, AppEffect, AppState,
     ComposerDraftProtection, ComposerDraftRevision, ComposerDraftStore, ComposerTarget,
-    LoginAttemptId, NavigationState, OperationFailureKind, ProfileUpdateRequest,
-    RoomNotificationMode, RoomSummary, ScheduledSendCapability, ScheduledSendHandle,
-    ScheduledSendItem, ScheduledSendStore, SearchScope as AppSearchScope, SessionState,
-    SpaceSummary, SubmissionId, ThreadPaneState, UiEvent, reduce, room_activity_unread_count,
+    FocusedContextState, LoginAttemptId, NavigationState, OperationFailureKind,
+    ProfileUpdateRequest, RoomLatestEventSummary, RoomNotificationMode, RoomSummary,
+    ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, ScheduledSendStore,
+    SearchScope as AppSearchScope, SessionState, SpaceSummary, SubmissionId, ThreadPaneState,
+    UiEvent, reduce, room_activity_unread_count,
 };
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
@@ -1084,15 +1085,53 @@ fn anchored_action_after_projection_ack(
     projection_request_id: RequestId,
     key: &TimelineKey,
     actor_accepted: bool,
+    frontend_target_present: bool,
+    actor_target_present: bool,
 ) -> Option<AppAction> {
     if !actor_accepted {
         return None;
     }
     let accepted = take_acknowledged_focused_navigation(pending, projection_request_id, key)?;
-    Some(AppAction::EnterAnchoredTimeline {
-        room_id: accepted.room_id,
-        event_id: accepted.event_id,
-    })
+    if frontend_target_present && actor_target_present {
+        Some(AppAction::EnterAnchoredTimeline {
+            room_id: accepted.room_id,
+            event_id: accepted.event_id,
+        })
+    } else {
+        Some(AppAction::CloseFocusedContext)
+    }
+}
+
+fn focused_navigation_outcome_after_reduce(
+    state: &AppState,
+    navigation: &PendingFocusedNavigation,
+    target_found: bool,
+) -> IntentOutcome {
+    let room_is_active =
+        state.navigation.active_room_id.as_deref() == Some(navigation.room_id.as_str());
+    let focused_is_closed = state.focused_context == FocusedContextState::Closed;
+    let exact_anchor = state
+        .navigation
+        .main_timeline_anchor
+        .as_ref()
+        .is_some_and(|anchor| anchor.event_id == navigation.event_id);
+    let settled = if target_found {
+        room_is_active && exact_anchor
+    } else {
+        room_is_active && focused_is_closed && state.navigation.main_timeline_anchor.is_none()
+    };
+
+    if settled {
+        if target_found {
+            IntentOutcome::Committed
+        } else {
+            IntentOutcome::BenignNoOp(IntentNoOpReason::TimelineTargetMissing)
+        }
+    } else if !matches!(state.session, SessionState::Ready(_)) {
+        IntentOutcome::FailedNoOp(IntentNoOpReason::SessionNotReady)
+    } else {
+        IntentOutcome::FailedNoOp(IntentNoOpReason::RoomNotInState)
+    }
 }
 
 struct PendingComposerDraftPersist {
@@ -1138,6 +1177,17 @@ struct ActivityProjection {
 struct ActivityMarkReadResult {
     cleared_event_ids: Vec<String>,
     cleared_placeholder_room_ids: Vec<String>,
+}
+
+fn activity_latest_display_event_id(latest: &RoomLatestEventSummary) -> Option<&str> {
+    match latest.relation_type.as_deref() {
+        Some("m.replace") => latest
+            .relation_event_id
+            .as_deref()
+            .filter(|event_id| !event_id.trim().is_empty()),
+        Some("m.annotation") => None,
+        _ => Some(latest.event_id.as_str()),
+    }
 }
 
 impl ActivityProjection {
@@ -1445,7 +1495,10 @@ impl ActivityProjection {
             let Some(latest_event) = &room.latest_event else {
                 continue;
             };
-            if recent_event_ids.contains(&latest_event.event_id) {
+            let Some(display_event_id) = activity_latest_display_event_id(latest_event) else {
+                continue;
+            };
+            if recent_event_ids.contains(display_event_id) {
                 continue;
             }
             let fully_read_event_id = state
@@ -1460,14 +1513,14 @@ impl ActivityProjection {
             let room_activity_unread = room_has_activity_unread(room, mode);
             let has_room_metrics = room.unread_count > 0 || room_activity_unread;
             let unread_row = room_activity_unread
-                && fully_read_event_id != Some(latest_event.event_id.as_str())
-                && !self.cleared_event_ids.contains(&latest_event.event_id);
+                && fully_read_event_id != Some(display_event_id)
+                && !self.cleared_event_ids.contains(display_event_id);
             if has_room_metrics {
                 let reason = if !room_activity_unread {
                     "plain_unread_only"
                 } else if unread_row {
                     "unread"
-                } else if fully_read_event_id == Some(latest_event.event_id.as_str()) {
+                } else if fully_read_event_id == Some(display_event_id) {
                     "fully_read_latest"
                 } else {
                     "cleared_latest"
@@ -1486,7 +1539,7 @@ impl ActivityProjection {
             let context_label = activity_row_context_label(room, &state.spaces);
             let mut row = ActivityRow::event(
                 room.room_id.clone(),
-                latest_event.event_id.clone(),
+                display_event_id.to_owned(),
                 latest_event.sender_id.clone(),
                 room.display_label.clone(),
                 latest_event.sender_label.clone(),
@@ -1522,6 +1575,26 @@ impl ActivityProjection {
                     room,
                     false,
                     "plain_unread_only",
+                );
+                continue;
+            }
+            let latest_display_event_id = room
+                .latest_event
+                .as_ref()
+                .and_then(activity_latest_display_event_id);
+            let fully_read_event_id = state
+                .live_signals
+                .rooms
+                .get(room.room_id.as_str())
+                .and_then(|signals| signals.fully_read_event_id.as_deref());
+            if latest_display_event_id.is_some_and(|event_id| {
+                self.cleared_event_ids.contains(event_id) || fully_read_event_id == Some(event_id)
+            }) {
+                unread_trace::trace_activity_room(
+                    "activity_placeholder",
+                    room,
+                    false,
+                    "latest_event_read",
                 );
                 continue;
             }
@@ -3210,18 +3283,22 @@ impl AppActor {
                     true
                 }
                 AppCommand::AcknowledgeTimelineProjection {
-                    request_id,
+                    request_id: _,
                     projection_request_id,
                     key,
                     generation,
+                    item_count,
+                    target_present,
                 } => {
-                    let pending_matches =
-                        self.pending_focused_navigation
-                            .as_ref()
-                            .is_some_and(|pending| {
-                                pending.projection_request_id == projection_request_id
-                                    && pending.key == key
-                            });
+                    let pending_navigation = self
+                        .pending_focused_navigation
+                        .as_ref()
+                        .filter(|pending| {
+                            pending.projection_request_id == projection_request_id
+                                && pending.key == key
+                        })
+                        .cloned();
+                    let pending_matches = pending_navigation.is_some();
                     let (response, accepted) = oneshot::channel();
                     let routed = self
                         .account_actor
@@ -3232,17 +3309,89 @@ impl AppActor {
                             response,
                         })
                         .await;
-                    let actor_accepted = routed && accepted.await.unwrap_or(false);
+                    let actor_acknowledgement = if routed {
+                        accepted.await.unwrap_or_default()
+                    } else {
+                        crate::timeline::TimelineProjectionAcknowledgement::default()
+                    };
+                    record(
+                        DiagnosticEvent::new(
+                            DiagnosticLevel::Debug,
+                            "core.activity_navigation",
+                            "projection_acknowledged",
+                        )
+                        .field(DiagnosticField::count("item_count", item_count))
+                        .field(DiagnosticField::boolean(
+                            "frontend_target_present",
+                            target_present,
+                        ))
+                        .field(DiagnosticField::count(
+                            "actor_item_count",
+                            actor_acknowledgement.item_count,
+                        ))
+                        .field(DiagnosticField::boolean(
+                            "actor_target_present",
+                            actor_acknowledgement.target_present,
+                        ))
+                        .field(DiagnosticField::boolean(
+                            "evidence_matches",
+                            target_present == actor_acknowledgement.target_present
+                                && item_count == actor_acknowledgement.item_count,
+                        ))
+                        .field(DiagnosticField::boolean(
+                            "actor_accepted",
+                            actor_acknowledgement.accepted,
+                        )),
+                    );
                     if pending_matches
                         && let Some(action) = anchored_action_after_projection_ack(
                             &mut self.pending_focused_navigation,
                             projection_request_id,
                             &key,
-                            actor_accepted,
+                            actor_acknowledgement.accepted,
+                            target_present,
+                            actor_acknowledgement.target_present,
                         )
                     {
+                        let navigation = pending_navigation
+                            .expect("matching focused navigation must remain available");
+                        let target_found =
+                            matches!(action, AppAction::EnterAnchoredTimeline { .. });
+                        let outcome = if target_found {
+                            "anchor_committed"
+                        } else {
+                            "live_fallback"
+                        };
+                        record(DiagnosticEvent::new(
+                            DiagnosticLevel::Debug,
+                            "core.activity_navigation",
+                            outcome,
+                        ));
+                        let focused_key = (!target_found)
+                            .then(|| self.current_focused_context_timeline_key())
+                            .flatten();
                         let effects = self.reduce_app_action(action).await;
-                        self.handle_app_effects(request_id, effects).await;
+                        if let Some(key) = focused_key {
+                            self.send_timeline_command_or_fail(
+                                projection_request_id,
+                                TimelineCommand::Unsubscribe {
+                                    request_id: projection_request_id,
+                                    key,
+                                },
+                            )
+                            .await;
+                        }
+                        self.handle_app_effects(projection_request_id, effects)
+                            .await;
+                        let lifecycle_outcome = focused_navigation_outcome_after_reduce(
+                            &self.state,
+                            &navigation,
+                            target_found,
+                        );
+                        self.emit(CoreEvent::IntentLifecycle {
+                            request_id: projection_request_id,
+                            outcome: lifecycle_outcome,
+                        });
                     }
                     true
                 }
@@ -5419,6 +5568,8 @@ mod tests {
                 expected.projection_request_id,
                 &expected.key,
                 false,
+                true,
+                true,
             )
             .is_none()
         );
@@ -5429,6 +5580,8 @@ mod tests {
             expected.projection_request_id,
             &expected.key,
             true,
+            true,
+            true,
         )
         .expect("accepted exact projection advances the anchor");
         assert!(matches!(
@@ -5437,6 +5590,40 @@ mod tests {
                 if room_id == expected.room_id && event_id == expected.event_id
         ));
         assert!(pending.is_none());
+
+        let mut target_missing = Some(expected.clone());
+        assert_eq!(
+            anchored_action_after_projection_ack(
+                &mut target_missing,
+                expected.projection_request_id,
+                &expected.key,
+                true,
+                false,
+                true,
+            ),
+            Some(AppAction::CloseFocusedContext)
+        );
+        assert!(
+            target_missing.is_none(),
+            "an accepted target-missing projection must terminate the focused attempt"
+        );
+
+        let mut actor_missing = Some(expected.clone());
+        assert_eq!(
+            anchored_action_after_projection_ack(
+                &mut actor_missing,
+                expected.projection_request_id,
+                &expected.key,
+                true,
+                true,
+                false,
+            ),
+            Some(AppAction::CloseFocusedContext)
+        );
+        assert!(
+            actor_missing.is_none(),
+            "the frontend and actor must both prove that the target is present"
+        );
 
         let thread_key = TimelineKey {
             account_key: expected.key.account_key.clone(),
@@ -5451,8 +5638,49 @@ mod tests {
                 expected.projection_request_id,
                 &thread_key,
                 true,
+                true,
+                true,
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn focused_navigation_lifecycle_uses_the_reduced_state() {
+        let expected = focused_projection_fixture(13);
+        let mut state = AppState {
+            session: SessionState::Ready(SessionInfo {
+                homeserver: "https://example.invalid".to_owned(),
+                user_id: "@synthetic:example.invalid".to_owned(),
+                device_id: "SYNTHETIC".to_owned(),
+            }),
+            focused_context: FocusedContextState::Open {
+                room_id: expected.room_id.clone(),
+                event_id: expected.event_id.clone(),
+                is_subscribed: true,
+            },
+            ..AppState::default()
+        };
+        state.navigation.active_room_id = Some(expected.room_id.clone());
+        state.navigation.main_timeline_anchor = Some(koushi_state::MainTimelineAnchor {
+            event_id: expected.event_id.clone(),
+        });
+        assert_eq!(
+            focused_navigation_outcome_after_reduce(&state, &expected, true),
+            IntentOutcome::Committed
+        );
+
+        state.navigation.main_timeline_anchor = None;
+        state.focused_context = FocusedContextState::Closed;
+        assert_eq!(
+            focused_navigation_outcome_after_reduce(&state, &expected, false),
+            IntentOutcome::BenignNoOp(IntentNoOpReason::TimelineTargetMissing)
+        );
+
+        state.navigation.active_room_id = Some("!other:example.invalid".to_owned());
+        assert_eq!(
+            focused_navigation_outcome_after_reduce(&state, &expected, true),
+            IntentOutcome::FailedNoOp(IntentNoOpReason::RoomNotInState)
         );
     }
 
@@ -5740,6 +5968,8 @@ mod tests {
             conversation_activity: None,
             latest_event: Some(RoomLatestEventSummary {
                 event_id: "$latest:example.invalid".to_owned(),
+                relation_type: None,
+                relation_event_id: None,
                 sender_id: Some("@sender:example.invalid".to_owned()),
                 sender_label: Some("Sender".to_owned()),
                 sender_avatar: None,
@@ -5833,6 +6063,8 @@ mod tests {
             conversation_activity: None,
             latest_event: Some(RoomLatestEventSummary {
                 event_id: "$latest:example.invalid".to_owned(),
+                relation_type: None,
+                relation_event_id: None,
                 sender_id: Some("@sender:example.invalid".to_owned()),
                 sender_label: Some("Sender".to_owned()),
                 sender_avatar: None,
@@ -5896,6 +6128,8 @@ mod tests {
             conversation_activity: None,
             latest_event: Some(RoomLatestEventSummary {
                 event_id: "$latest:example.invalid".to_owned(),
+                relation_type: None,
+                relation_event_id: None,
                 sender_id: Some("@sender:example.invalid".to_owned()),
                 sender_label: Some("Sender".to_owned()),
                 sender_avatar: None,
@@ -5912,6 +6146,141 @@ mod tests {
         let (recent, _unread, _excluded_room_ids) = projection.snapshot(&state);
 
         assert_eq!(recent.rows[0].context_label, "Science / Papers");
+    }
+
+    #[test]
+    fn activity_projection_reconciles_replacement_latest_with_original_timeline_row() {
+        let room_id = "!room:example.invalid";
+        let original_event_id = "$original:example.invalid";
+        let sender_id = "@sender:example.invalid";
+        let mut state = AppState::default();
+        state.profile.users.insert(
+            sender_id.to_owned(),
+            UserProfile {
+                user_id: sender_id.to_owned(),
+                display_name: Some("Sender".to_owned()),
+                display_label: "Sender".to_owned(),
+                original_display_label: "Sender".to_owned(),
+                mention_search_terms: vec!["Sender".to_owned()],
+                avatar: Some(koushi_state::AvatarImage {
+                    mxc_uri: "mxc://example.invalid/enriched".to_owned(),
+                    thumbnail: Default::default(),
+                }),
+            },
+        );
+        state.rooms = vec![RoomSummary {
+            room_id: room_id.to_owned(),
+            display_name: "Room".to_owned(),
+            display_label: "Room".to_owned(),
+            original_display_label: "Room".to_owned(),
+            avatar: None,
+            is_dm: false,
+            dm_user_ids: Vec::new(),
+            tags: RoomTags::default(),
+            unread_count: 0,
+            notification_count: 0,
+            highlight_count: 0,
+            marked_unread: false,
+            recency_stamp: Some(42),
+            conversation_activity: None,
+            latest_event: Some(RoomLatestEventSummary {
+                event_id: "$edit:example.invalid".to_owned(),
+                relation_type: Some("m.replace".to_owned()),
+                relation_event_id: Some(original_event_id.to_owned()),
+                sender_id: Some(sender_id.to_owned()),
+                sender_label: Some("Sender".to_owned()),
+                sender_avatar: None,
+                preview: Some("edited body".to_owned()),
+                timestamp_ms: 42,
+            }),
+            parent_space_ids: Vec::new(),
+            dm_space_ids: Vec::new(),
+            is_encrypted: false,
+            joined_members: 2,
+        }];
+        state.rooms[0].unread_count = 1;
+        state.rooms[0].notification_count = 1;
+
+        let mut fallback_projection = ActivityProjection::default();
+        let (_recent, unread_before_clear, _excluded) = fallback_projection.snapshot(&state);
+        assert_eq!(
+            unread_before_clear.rows[0].event_id.as_deref(),
+            Some(original_event_id)
+        );
+        fallback_projection
+            .cleared_event_ids
+            .insert(original_event_id.to_owned());
+        let (_recent, unread_after_clear, _excluded) = fallback_projection.snapshot(&state);
+        assert!(
+            unread_after_clear.rows.is_empty(),
+            "clearing the canonical original event must keep an edited fallback row read"
+        );
+
+        let mut projection = ActivityProjection::default();
+        projection.ingest(vec![ActivityRow::event(
+            room_id.to_owned(),
+            original_event_id.to_owned(),
+            Some(sender_id.to_owned()),
+            "Room".to_owned(),
+            Some("Sender".to_owned()),
+            Some("edited body".to_owned()),
+            41,
+            false,
+            false,
+        )]);
+
+        let (recent, _unread, _excluded) = projection.snapshot(&state);
+
+        assert_eq!(recent.rows.len(), 1);
+        assert_eq!(recent.rows[0].event_id.as_deref(), Some(original_event_id));
+        assert_eq!(recent.rows[0].timestamp_ms, 41);
+        assert_eq!(
+            recent.rows[0]
+                .sender_avatar
+                .as_ref()
+                .map(|avatar| avatar.mxc_uri.as_str()),
+            Some("mxc://example.invalid/enriched")
+        );
+    }
+
+    #[test]
+    fn activity_projection_does_not_append_annotation_latest_event() {
+        let mut state = AppState::default();
+        state.rooms = vec![RoomSummary {
+            room_id: "!room:example.invalid".to_owned(),
+            display_name: "Room".to_owned(),
+            display_label: "Room".to_owned(),
+            original_display_label: "Room".to_owned(),
+            avatar: None,
+            is_dm: false,
+            dm_user_ids: Vec::new(),
+            tags: RoomTags::default(),
+            unread_count: 0,
+            notification_count: 0,
+            highlight_count: 0,
+            marked_unread: false,
+            recency_stamp: Some(42),
+            conversation_activity: None,
+            latest_event: Some(RoomLatestEventSummary {
+                event_id: "$reaction:example.invalid".to_owned(),
+                relation_type: Some("m.annotation".to_owned()),
+                relation_event_id: Some("$target:example.invalid".to_owned()),
+                sender_id: Some("@sender:example.invalid".to_owned()),
+                sender_label: Some("Sender".to_owned()),
+                sender_avatar: None,
+                preview: None,
+                timestamp_ms: 42,
+            }),
+            parent_space_ids: Vec::new(),
+            dm_space_ids: Vec::new(),
+            is_encrypted: false,
+            joined_members: 2,
+        }];
+
+        let (recent, unread, _excluded) = ActivityProjection::default().snapshot(&state);
+
+        assert!(recent.rows.is_empty());
+        assert!(unread.rows.is_empty());
     }
 
     #[tokio::test]

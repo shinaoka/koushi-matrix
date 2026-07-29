@@ -1135,7 +1135,8 @@ export type ReportFailureKind =
 export type IntentNoOpReason =
   | "session_not_ready"
   | "room_not_in_state"
-  | "already_active";
+  | "already_active"
+  | "timeline_target_missing";
 
 /**
  * Terminal outcome of a user-intent command (Slice 1: SelectRoom only).

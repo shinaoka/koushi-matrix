@@ -136,6 +136,7 @@ import {
   getMediaUploadProgress,
   getKeyState,
   getPaginationState,
+  timelineProjectionEvidence,
   timelineStoreKeyId,
   type TimelineStoreState
 } from "../domain/timelineStore";
@@ -200,7 +201,9 @@ export interface TimelineTransport {
   acknowledgeProjection?(
     projectionRequestId: RequestId,
     timelineKey: TimelineKey,
-    generation: number
+    generation: number,
+    itemCount: number,
+    targetPresent: boolean
   ): Promise<void>;
   /** Confirm that one repair-produced Room batch committed through layout. */
   acknowledgeRenderedBatch?(
@@ -4641,9 +4644,16 @@ export const TimelineView = memo(function TimelineView({
         projectionSignature !== lastProjectionAcknowledgementSignatureRef.current &&
         projectionSignature !== projectionAcknowledgementInFlightRef.current
       ) {
+        const evidence = timelineProjectionEvidence(timelineKeyRef.current, items);
         projectionAcknowledgementInFlightRef.current = projectionSignature;
         void transport
-          .acknowledgeProjection!(projectionRequestId, timelineKeyRef.current, generation)
+          .acknowledgeProjection!(
+            projectionRequestId,
+            timelineKeyRef.current,
+            generation,
+            evidence.itemCount,
+            evidence.targetPresent
+          )
           .then(() => {
             if (projectionAcknowledgementInFlightRef.current === projectionSignature) {
               projectionAcknowledgementInFlightRef.current = null;
@@ -4721,6 +4731,7 @@ export const TimelineView = memo(function TimelineView({
   }, [
     continuity,
     generation,
+    items,
     projectionSettlementRevision,
     roomTimelineRoomId,
     timelineKeyHash,

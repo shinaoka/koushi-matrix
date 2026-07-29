@@ -303,7 +303,7 @@ pub(crate) enum TimelineMessage {
         projection_request_id: RequestId,
         key: TimelineKey,
         generation: TimelineGeneration,
-        response: oneshot::Sender<bool>,
+        response: oneshot::Sender<TimelineProjectionAcknowledgement>,
     },
     AcknowledgeBatchRendered {
         key: TimelineKey,
@@ -376,6 +376,13 @@ pub(crate) enum TimelineMessage {
     Shutdown {
         acknowledged: Option<tokio::sync::oneshot::Sender<()>>,
     },
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TimelineProjectionAcknowledgement {
+    pub accepted: bool,
+    pub item_count: u64,
+    pub target_present: bool,
 }
 
 /// Private projection work admitted only after Rust-owned room navigation has
@@ -1732,6 +1739,24 @@ fn accept_projection_ack_for_active_actor(
     };
     *projection_acknowledged = true;
     true
+}
+
+fn projection_acknowledgement_for_current_items(
+    key: &TimelineKey,
+    items: &[TimelineItem],
+    accepted: bool,
+) -> TimelineProjectionAcknowledgement {
+    let target_present = match &key.kind {
+        TimelineKind::Focused { event_id, .. } => items.iter().any(
+            |item| matches!(&item.id, TimelineItemId::Event { event_id: id } if id == event_id),
+        ),
+        TimelineKind::Room { .. } | TimelineKind::Thread { .. } => true,
+    };
+    TimelineProjectionAcknowledgement {
+        accepted,
+        item_count: items.len() as u64,
+        target_present,
+    }
 }
 
 fn replay_projection_request_id(
@@ -4855,9 +4880,9 @@ impl TimelineManagerActor {
         projection_request_id: RequestId,
         key: &TimelineKey,
         generation: TimelineGeneration,
-    ) -> bool {
+    ) -> TimelineProjectionAcknowledgement {
         let Some(handle) = self.timelines.get(key) else {
-            return false;
+            return TimelineProjectionAcknowledgement::default();
         };
         let (response, accepted) = oneshot::channel();
         if !handle
@@ -4868,9 +4893,9 @@ impl TimelineManagerActor {
             })
             .await
         {
-            return false;
+            return TimelineProjectionAcknowledgement::default();
         }
-        accepted.await.unwrap_or(false)
+        accepted.await.unwrap_or_default()
     }
 
     async fn acknowledge_batch_rendered(
@@ -6422,7 +6447,7 @@ enum TimelineActorMessage {
     AcknowledgeProjection {
         projection_request_id: RequestId,
         generation: TimelineGeneration,
-        response: oneshot::Sender<bool>,
+        response: oneshot::Sender<TimelineProjectionAcknowledgement>,
     },
     AcknowledgeBatchRendered {
         actor_generation: u64,
@@ -12680,7 +12705,12 @@ mod timeline_gap_repair_tracker_tests {
                 })
                 .await
         );
-        assert!(projection_ack_rx.await.expect("projection ACK response"));
+        assert!(
+            projection_ack_rx
+                .await
+                .expect("projection ACK response")
+                .accepted
+        );
         let live_tail_snapshot_diagnostics_baseline = koushi_diagnostics::snapshot().records.len();
         server
             .sync_room(
@@ -13489,7 +13519,7 @@ mod timeline_gap_repair_tracker_tests {
                 })
                 .await
         );
-        assert!(ack_rx.await.expect("projection ACK response"));
+        assert!(ack_rx.await.expect("projection ACK response").accepted);
 
         let (barrier_tx, barrier_rx) = oneshot::channel();
         assert!(handle.send(TimelineActorMessage::Barrier(barrier_tx)).await);
@@ -15911,7 +15941,12 @@ impl TimelineActor {
             } => {
                 let was_acknowledged = self.projection_acknowledged;
                 let accepted = self.acknowledge_projection(projection_request_id, generation);
-                let _ = response.send(accepted);
+                let acknowledgement = projection_acknowledgement_for_current_items(
+                    &self.key,
+                    self.display_projection.display_items(),
+                    accepted,
+                );
+                let _ = response.send(acknowledgement);
                 if accepted && !was_acknowledged {
                     self.start_pending_timeline_gap_inspection().await;
                 }
@@ -27518,6 +27553,35 @@ mod tests {
         assert!(acknowledged);
     }
 
+    #[test]
+    fn projection_ack_evidence_is_recomputed_from_current_actor_items() {
+        let key = focused_key();
+        let TimelineKind::Focused { event_id, .. } = &key.kind else {
+            panic!("fixture must be focused");
+        };
+        let with_target = vec![timeline_item(
+            event_id,
+            Some("target"),
+            "@sender:test",
+            false,
+        )];
+        let present = projection_acknowledgement_for_current_items(&key, &with_target, true);
+        assert!(present.accepted);
+        assert!(present.target_present);
+        assert_eq!(present.item_count, 1);
+
+        let without_target = vec![timeline_item(
+            "$other:test",
+            Some("other"),
+            "@sender:test",
+            false,
+        )];
+        let missing = projection_acknowledgement_for_current_items(&key, &without_target, true);
+        assert!(missing.accepted);
+        assert!(!missing.target_present);
+        assert_eq!(missing.item_count, 1);
+    }
+
     #[tokio::test]
     async fn generation_fenced_send_discards_a_continuation_replaced_during_capacity_await() {
         let key = room_key();
@@ -36472,6 +36536,7 @@ mod tests {
             projection_ack_rx
                 .await
                 .expect("initial projection acknowledgement")
+                .accepted
         );
 
         let (reached_tx, reached_rx) = oneshot::channel();

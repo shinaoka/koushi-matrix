@@ -168,6 +168,9 @@ fn record_select_intent_trace(
         IntentOutcome::BenignNoOp(IntentNoOpReason::AlreadyActive) => {
             ("already_active", "selected")
         }
+        IntentOutcome::BenignNoOp(IntentNoOpReason::TimelineTargetMissing) => {
+            ("timeline_target_missing", "selected")
+        }
         IntentOutcome::BenignNoOp(IntentNoOpReason::RoomNotInState) => {
             ("room_not_in_state", "unknown")
         }
@@ -182,6 +185,9 @@ fn record_select_intent_trace(
         }
         IntentOutcome::FailedNoOp(IntentNoOpReason::AlreadyActive) => {
             ("already_active", "selected")
+        }
+        IntentOutcome::FailedNoOp(IntentNoOpReason::TimelineTargetMissing) => {
+            ("timeline_target_missing", "unknown")
         }
     };
     record_select_trace(
@@ -476,6 +482,34 @@ fn snapshot_has_main_timeline_anchor(
             .is_some_and(|anchor| anchor.event_id == event_id)
 }
 
+fn snapshot_has_live_main_timeline(snapshot: &koushi_state::AppState, room_id: &str) -> bool {
+    snapshot.navigation.active_room_id.as_deref() == Some(room_id)
+        && snapshot.focused_context == FocusedContextState::Closed
+        && snapshot.navigation.main_timeline_anchor.is_none()
+}
+
+#[derive(Clone, Copy)]
+enum MainTimelineSettlement {
+    Anchor,
+    LiveFallback,
+}
+
+fn snapshot_matches_main_timeline_settlement(
+    snapshot: &koushi_state::AppState,
+    room_id: &str,
+    event_id: &str,
+    settlement: Option<MainTimelineSettlement>,
+) -> bool {
+    match settlement {
+        Some(MainTimelineSettlement::Anchor) | None => {
+            snapshot_has_main_timeline_anchor(snapshot, room_id, event_id)
+        }
+        Some(MainTimelineSettlement::LiveFallback) => {
+            snapshot_has_live_main_timeline(snapshot, room_id)
+        }
+    }
+}
+
 async fn wait_for_focused_context_closed(
     event_conn: &mut CoreConnection,
     request_id: RequestId,
@@ -561,9 +595,11 @@ async fn wait_for_main_timeline_anchor(
     timeout: std::time::Duration,
 ) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + timeout;
+    let mut settlement = None;
 
     loop {
-        if snapshot_has_main_timeline_anchor(&event_conn.snapshot(), room_id, event_id) {
+        let current = event_conn.snapshot();
+        if snapshot_matches_main_timeline_settlement(&current, room_id, event_id, settlement) {
             return Ok(());
         }
 
@@ -571,10 +607,30 @@ async fn wait_for_main_timeline_anchor(
             .await
             .map_err(|_| "main timeline anchor did not open".to_owned())?;
         match event {
-            Ok(CoreEvent::StateChanged(snapshot))
-                if snapshot_has_main_timeline_anchor(&snapshot, room_id, event_id) =>
-            {
-                return Ok(());
+            Ok(CoreEvent::StateChanged(snapshot)) => {
+                if snapshot_matches_main_timeline_settlement(
+                    &snapshot, room_id, event_id, settlement,
+                ) {
+                    return Ok(());
+                }
+            }
+            Ok(CoreEvent::IntentLifecycle {
+                request_id: settled_request_id,
+                outcome: IntentOutcome::Committed,
+            }) if settled_request_id == request_id => {
+                settlement = Some(MainTimelineSettlement::Anchor);
+            }
+            Ok(CoreEvent::IntentLifecycle {
+                request_id: settled_request_id,
+                outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::TimelineTargetMissing),
+            }) if settled_request_id == request_id => {
+                settlement = Some(MainTimelineSettlement::LiveFallback);
+            }
+            Ok(CoreEvent::IntentLifecycle {
+                request_id: settled_request_id,
+                outcome: IntentOutcome::FailedNoOp(_),
+            }) if settled_request_id == request_id => {
+                return Err("main timeline anchor open failed".to_owned());
             }
             Ok(CoreEvent::OperationFailed {
                 request_id: failed_request_id,
@@ -586,12 +642,14 @@ async fn wait_for_main_timeline_anchor(
                 ));
             }
             Ok(_) => {}
-            Err(_)
-                if snapshot_has_main_timeline_anchor(&event_conn.snapshot(), room_id, event_id) =>
-            {
-                return Ok(());
+            Err(_) => {
+                let current = event_conn.snapshot();
+                if snapshot_matches_main_timeline_settlement(
+                    &current, room_id, event_id, settlement,
+                ) {
+                    return Ok(());
+                }
             }
-            Err(_) => continue,
         }
     }
 }
@@ -723,6 +781,17 @@ async fn wait_for_selected_room<S: SelectEventSource + ?Sized>(
                             "selected",
                         );
                         return Ok(());
+                    }
+                    IntentOutcome::FailedNoOp(IntentNoOpReason::TimelineTargetMissing) => {
+                        record_select_trace(
+                            "failed_timeline_target_missing",
+                            "timeline_target_missing",
+                            events,
+                            state_changed,
+                            state_delta,
+                            "unknown",
+                        );
+                        return Err("timeline target not available".to_owned());
                     }
                 }
             }
@@ -3510,6 +3579,49 @@ mod tests {
     struct ScriptedSearchPathIo;
 
     const SYNTHETIC_QUERY: &str = "  synthetic-query-text event synthetic-event-id user synthetic-user-id body synthetic-body-text url https://synthetic.example/path absolute /synthetic/private/path  ";
+
+    #[test]
+    fn main_timeline_lifecycle_requires_the_matching_settled_snapshot() {
+        let room_id = "!room:example.invalid";
+        let event_id = "$event:example.invalid";
+        let mut state = AppState::default();
+        state.navigation.active_room_id = Some(room_id.to_owned());
+
+        assert!(!super::snapshot_matches_main_timeline_settlement(
+            &state,
+            room_id,
+            event_id,
+            Some(super::MainTimelineSettlement::Anchor),
+        ));
+        state.navigation.main_timeline_anchor = Some(koushi_state::MainTimelineAnchor {
+            event_id: event_id.to_owned(),
+        });
+        assert!(super::snapshot_matches_main_timeline_settlement(
+            &state,
+            room_id,
+            event_id,
+            Some(super::MainTimelineSettlement::Anchor),
+        ));
+
+        state.navigation.main_timeline_anchor = None;
+        state.focused_context = koushi_state::FocusedContextState::Opening {
+            room_id: room_id.to_owned(),
+            event_id: event_id.to_owned(),
+        };
+        assert!(!super::snapshot_matches_main_timeline_settlement(
+            &state,
+            room_id,
+            event_id,
+            Some(super::MainTimelineSettlement::LiveFallback),
+        ));
+        state.focused_context = koushi_state::FocusedContextState::Closed;
+        assert!(super::snapshot_matches_main_timeline_settlement(
+            &state,
+            room_id,
+            event_id,
+            Some(super::MainTimelineSettlement::LiveFallback),
+        ));
+    }
 
     impl super::search::SearchPathIo for ScriptedSearchPathIo {
         fn submit<'a>(

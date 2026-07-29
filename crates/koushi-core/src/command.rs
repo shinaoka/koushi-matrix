@@ -462,6 +462,8 @@ pub enum AppCommand {
         projection_request_id: RequestId,
         key: TimelineKey,
         generation: TimelineGeneration,
+        item_count: u64,
+        target_present: bool,
     },
     /// Confirms that the WebView committed a repair-produced timeline batch
     /// through layout. Every generation fence is required so a stale actor,
@@ -752,6 +754,8 @@ impl fmt::Debug for AppCommand {
                 request_id,
                 projection_request_id,
                 generation,
+                item_count,
+                target_present,
                 ..
             } => formatter
                 .debug_struct("AcknowledgeTimelineProjection")
@@ -759,6 +763,8 @@ impl fmt::Debug for AppCommand {
                 .field("projection_request_id", projection_request_id)
                 .field("key", &"TimelineKey(..)")
                 .field("generation", generation)
+                .field("item_count", item_count)
+                .field("target_present", target_present)
                 .finish(),
             Self::AcknowledgeTimelineBatchRendered {
                 request_id,
@@ -3694,6 +3700,8 @@ mod tests {
                 projection_request_id: fake_rid(28),
                 key,
                 generation: TimelineGeneration(3),
+                item_count: 7,
+                target_present: true,
             }
         );
         assert!(debug.contains("RoomId(..)"), "{debug}");

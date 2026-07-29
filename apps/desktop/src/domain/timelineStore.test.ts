@@ -216,7 +216,9 @@ describe("timeline store — diff application", () => {
       kind: "applied",
       requestId,
       key,
-      generation: 4
+      generation: 4,
+      itemCount: 1,
+      targetPresent: true
     });
     expect(getItems(applied.store, key).map(itemId)).toEqual(["$target"]);
 
@@ -255,6 +257,30 @@ describe("timeline store — diff application", () => {
     });
     expect(replacement.projection.kind).toBe("applied");
     expect(getKeyState(replacement.store, key)?.actorGeneration).toBe(5);
+  });
+
+  test("reports an accepted focused projection whose target is missing", () => {
+    const key = focusedTimelineKey(ACCOUNT_KEY, "!room:example.invalid", "$target");
+    const requestId = { connection_id: 7, sequence: 12 };
+
+    const applied = applyTimelineEventWithProjectionResult(createTimelineStore(), {
+      InitialItems: {
+        request_id: requestId,
+        key,
+        actor_generation: 4,
+        generation: 4,
+        items: [makeMsg("$context", "context")]
+      }
+    });
+
+    expect(applied.projection).toEqual({
+      kind: "applied",
+      requestId,
+      key,
+      generation: 4,
+      itemCount: 1,
+      targetPresent: false
+    });
   });
 
   test("ignores InitialItems without an acknowledgement-bearing request identity", () => {

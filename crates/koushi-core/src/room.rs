@@ -2747,6 +2747,8 @@ fn normalize_rooms(snapshot: &koushi_sdk::MatrixRoomListSnapshot) -> Vec<RoomSum
                 latest_event: room.latest_event.as_ref().map(|event| {
                     koushi_state::RoomLatestEventSummary {
                         event_id: event.event_id.clone(),
+                        relation_type: event.relation_type.clone(),
+                        relation_event_id: event.relation_event_id.clone(),
                         sender_id: event.sender_id.clone(),
                         sender_label: event.sender_label.clone(),
                         sender_avatar: avatar_from_mxc_uri(event.sender_avatar_mxc_uri.as_deref()),

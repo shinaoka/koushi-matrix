@@ -273,9 +273,32 @@ export function applyTimelineEvent(
 }
 
 export type TimelineProjectionApplication =
-  | { kind: "applied"; requestId: RequestId; key: TimelineKey; generation: number }
+  | {
+      kind: "applied";
+      requestId: RequestId;
+      key: TimelineKey;
+      generation: number;
+      itemCount: number;
+      targetPresent: boolean;
+    }
   | { kind: "rejectedStale" }
   | { kind: "ignored" };
+
+export function timelineProjectionEvidence(
+  key: TimelineKey,
+  items: readonly TimelineItem[]
+): { itemCount: number; targetPresent: boolean } {
+  if (!("Focused" in key.kind)) {
+    return { itemCount: items.length, targetPresent: true };
+  }
+  const target = key.kind.Focused.event_id;
+  return {
+    itemCount: items.length,
+    targetPresent: items.some(
+      (item) => "Event" in item.id && item.id.Event.event_id === target
+    )
+  };
+}
 
 export function applyTimelineEventWithProjectionResult(
   store: TimelineStoreState,
@@ -310,7 +333,8 @@ export function applyTimelineEventWithProjectionResult(
       kind: "applied",
       requestId,
       key: payload.key,
-      generation: payload.generation
+      generation: payload.generation,
+      ...timelineProjectionEvidence(payload.key, payload.items)
     }
   };
 }

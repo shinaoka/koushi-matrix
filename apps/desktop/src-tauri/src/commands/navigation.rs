@@ -183,6 +183,8 @@ pub async fn acknowledge_timeline_projection(
     projection_request_id: RequestId,
     key: TimelineKey,
     generation: TimelineGeneration,
+    item_count: u64,
+    target_present: bool,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<(), String> {
     let request_id = next_request_id(state.inner()).await;
@@ -193,6 +195,8 @@ pub async fn acknowledge_timeline_projection(
             projection_request_id,
             key,
             generation,
+            item_count,
+            target_present,
         }),
     )
     .await

@@ -134,6 +134,10 @@ pub(crate) fn compare_conversation_activity(
 pub struct RoomLatestEventSummary {
     pub event_id: String,
     #[serde(default)]
+    pub relation_type: Option<String>,
+    #[serde(default)]
+    pub relation_event_id: Option<String>,
+    #[serde(default)]
     pub sender_id: Option<String>,
     #[serde(default)]
     pub sender_label: Option<String>,
@@ -146,9 +150,20 @@ pub struct RoomLatestEventSummary {
 
 impl fmt::Debug for RoomLatestEventSummary {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let relation_kind = match self.relation_type.as_deref() {
+            Some("m.replace") => Some("replace"),
+            Some("m.annotation") => Some("annotation"),
+            Some(_) => Some("other"),
+            None => None,
+        };
         formatter
             .debug_struct("RoomLatestEventSummary")
             .field("event_id", &"EventId(..)")
+            .field("relation_type", &relation_kind)
+            .field(
+                "relation_event_id",
+                &self.relation_event_id.as_ref().map(|_| "EventId(..)"),
+            )
             .field("sender_id", &self.sender_id.as_ref().map(|_| "UserId(..)"))
             .field(
                 "sender_label",

@@ -54,6 +54,9 @@ pub enum IntentNoOpReason {
     RoomNotInState,
     /// The room was already the active room (idempotent, not a failure).
     AlreadyActive,
+    /// The focused projection settled without the requested event, so the
+    /// navigation safely returned to the room's live timeline.
+    TimelineTargetMissing,
 }
 
 /// Terminal outcome of a user-intent command (§4.7 Slice 1 telemetry-lane

@@ -1328,8 +1328,20 @@ export function App() {
     }
     return {
       ...tauriTimelineTransport,
-      async acknowledgeProjection(projectionRequestId, key, generation) {
-        await api.acknowledgeTimelineProjection(projectionRequestId, key, generation);
+      async acknowledgeProjection(
+        projectionRequestId,
+        key,
+        generation,
+        itemCount,
+        targetPresent
+      ) {
+        await api.acknowledgeTimelineProjection(
+          projectionRequestId,
+          key,
+          generation,
+          itemCount,
+          targetPresent
+        );
       },
       async acknowledgeRenderedBatch(
         key,
@@ -2055,7 +2067,9 @@ export function App() {
             void api.acknowledgeTimelineProjection(
               applied.projection.requestId,
               applied.projection.key,
-              applied.projection.generation
+              applied.projection.generation,
+              applied.projection.itemCount,
+              applied.projection.targetPresent
             );
           }
           next = applied.store;

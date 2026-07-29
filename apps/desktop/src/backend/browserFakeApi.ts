@@ -152,7 +152,9 @@ export interface DesktopApi {
   acknowledgeTimelineProjection(
     projectionRequestId: import("../domain/coreEvents").RequestId,
     key: import("../domain/coreEvents").TimelineKey,
-    generation: number
+    generation: number,
+    itemCount: number,
+    targetPresent: boolean
   ): Promise<void>;
   acknowledgeTimelineBatchRendered(
     key: import("../domain/coreEvents").TimelineKey,

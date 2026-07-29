@@ -325,6 +325,8 @@ async fn activity_recent_includes_room_list_latest_event_for_unopened_read_dm() 
     dm.highlight_count = 0;
     dm.latest_event = Some(RoomLatestEventSummary {
         event_id: "$latest-dm:example.test".to_owned(),
+        relation_type: None,
+        relation_event_id: None,
         sender_id: Some("@terasaki:example.test".to_owned()),
         sender_label: Some("Satoshi Terasaki".to_owned()),
         sender_avatar: None,

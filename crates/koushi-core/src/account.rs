@@ -88,7 +88,7 @@ use crate::sync::{SyncActorHandle, SyncMessage};
 use crate::timeline::{
     NavigationProjectionIngress, NavigationProjectionIntent, ReadPersistenceIngress,
     ReadPersistenceRequest, TimelineManagerHandle, TimelineMessage,
-    build_room_message_content_from_composer_body,
+    TimelineProjectionAcknowledgement, build_room_message_content_from_composer_body,
 };
 
 /// "Credential store healthy, but no stored session for that account"
@@ -376,7 +376,7 @@ pub enum AccountMessage {
         projection_request_id: RequestId,
         key: TimelineKey,
         generation: TimelineGeneration,
-        response: oneshot::Sender<bool>,
+        response: oneshot::Sender<TimelineProjectionAcknowledgement>,
     },
     AcknowledgeTimelineBatchRendered {
         key: TimelineKey,
