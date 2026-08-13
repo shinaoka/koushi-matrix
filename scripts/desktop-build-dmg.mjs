@@ -22,6 +22,7 @@ if (process.platform !== "darwin" && !args.has("--print-command")) {
 printStorageNotice();
 
 const bundleVersion = macOSBundleVersion();
+const buildEnvironment = localSigningEnvironment();
 const buildCommand = [
   "run",
   "tauri",
@@ -68,11 +69,44 @@ function run(command, commandArgs, cwd) {
   const result = spawnSync(command, commandArgs, {
     cwd,
     stdio: "inherit",
-    env: process.env
+    env: buildEnvironment
   });
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }
+}
+
+function localSigningEnvironment() {
+  const environment = { ...process.env };
+  if (environment.APPLE_SIGNING_IDENTITY) {
+    console.log("desktop-build-dmg: using APPLE_SIGNING_IDENTITY from the environment");
+    return environment;
+  }
+  if (process.platform !== "darwin") {
+    return environment;
+  }
+
+  const identities = spawnSync("security", ["find-identity", "-v", "-p", "codesigning"], {
+    encoding: "utf8"
+  });
+  if (identities.status !== 0) {
+    console.warn("desktop-build-dmg: no usable signing identity; falling back to ad-hoc signing");
+    return environment;
+  }
+  const developerIds = [...identities.stdout.matchAll(/"(Developer ID Application: [^"]+)"/g)]
+    .map((match) => match[1]);
+  const uniqueDeveloperIds = [...new Set(developerIds)];
+  if (uniqueDeveloperIds.length !== 1) {
+    console.warn(
+      `desktop-build-dmg: expected one Developer ID Application identity, found ${uniqueDeveloperIds.length}; ` +
+        "set APPLE_SIGNING_IDENTITY to select one, otherwise this build is ad-hoc signed"
+    );
+    return environment;
+  }
+
+  environment.APPLE_SIGNING_IDENTITY = uniqueDeveloperIds[0];
+  console.log("desktop-build-dmg: using the locally installed Developer ID Application identity");
+  return environment;
 }
 
 function listDmgArtifacts() {
