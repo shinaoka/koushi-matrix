@@ -1,0 +1,12 @@
+{
+  "name": "@puppeteer/browsers",
+  "version": "2.13.3",
+  "description": "Koushi security stub: browser download and archive extraction are intentionally disabled.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  }
+}
