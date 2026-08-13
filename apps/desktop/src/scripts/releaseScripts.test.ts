@@ -4681,6 +4681,8 @@ fn test_only() {
     expect(source).toContain('git", ["rev-list", "--count", "HEAD"]');
     expect(source).toContain("JSON.stringify({ bundle: { macOS: { bundleVersion } } })");
     expect(source).toContain('"find-identity", "-v", "-p", "codesigning"');
+    expect(source).toContain("validIdentities.some");
+    expect(source).toContain("APPLE_SIGNING_IDENTITY is not a valid local code-signing identity");
     expect(source).toContain("Developer ID Application:");
     expect(source).toContain("environment.APPLE_SIGNING_IDENTITY = uniqueDeveloperIds[0]");
   });

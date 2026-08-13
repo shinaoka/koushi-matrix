@@ -78,10 +78,6 @@ function run(command, commandArgs, cwd) {
 
 function localSigningEnvironment() {
   const environment = { ...process.env };
-  if (environment.APPLE_SIGNING_IDENTITY) {
-    console.log("desktop-build-dmg: using APPLE_SIGNING_IDENTITY from the environment");
-    return environment;
-  }
   if (process.platform !== "darwin") {
     return environment;
   }
@@ -90,11 +86,32 @@ function localSigningEnvironment() {
     encoding: "utf8"
   });
   if (identities.status !== 0) {
+    if (environment.APPLE_SIGNING_IDENTITY) {
+      console.error("desktop-build-dmg: could not validate APPLE_SIGNING_IDENTITY");
+      process.exit(1);
+    }
     console.warn("desktop-build-dmg: no usable signing identity; falling back to ad-hoc signing");
     return environment;
   }
-  const developerIds = [...identities.stdout.matchAll(/"(Developer ID Application: [^"]+)"/g)]
-    .map((match) => match[1]);
+  // `security find-identity -v` returns only identities whose certificate and
+  // private key currently form a valid code-signing identity.  Keep both the
+  // fingerprint and display name so an explicit environment value can use
+  // either representation without bypassing validation.
+  const validIdentities = [...identities.stdout.matchAll(/\b([0-9A-F]{40})\s+"([^"]+)"/g)]
+    .map((match) => ({ fingerprint: match[1], name: match[2] }));
+  if (environment.APPLE_SIGNING_IDENTITY) {
+    const requested = environment.APPLE_SIGNING_IDENTITY;
+    if (!validIdentities.some(({ fingerprint, name }) => requested === fingerprint || requested === name)) {
+      console.error("desktop-build-dmg: APPLE_SIGNING_IDENTITY is not a valid local code-signing identity");
+      process.exit(1);
+    }
+    console.log("desktop-build-dmg: using validated APPLE_SIGNING_IDENTITY from the environment");
+    return environment;
+  }
+
+  const developerIds = validIdentities
+    .map(({ name }) => name)
+    .filter((name) => name.startsWith("Developer ID Application: "));
   const uniqueDeveloperIds = [...new Set(developerIds)];
   if (uniqueDeveloperIds.length !== 1) {
     console.warn(
