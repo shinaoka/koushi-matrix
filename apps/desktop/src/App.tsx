@@ -112,8 +112,9 @@ import {
 } from "./domain/rightPanel";
 import {
   applyDesktopAttentionToWindow,
-  createDesktopAttentionTransientDispatcher,
+  createDesktopBadgeSoundDispatcher,
   createTauriDesktopAttentionTransientTransport,
+  dispatchDesktopAttentionTransientEffects,
   desktopAttentionSummary,
   desktopAttentionWindowTitle,
   desktopAttentionNotificationCandidate
@@ -543,7 +544,7 @@ const tauriNativeBadgeTransport = isTauriRuntime()
         invoke<"applied" | "unsupported" | "mismatch">("set_native_attention_badge", { count })
     }
   : null;
-const desktopAttentionTransientDispatcher = createDesktopAttentionTransientDispatcher();
+const desktopBadgeSoundDispatcher = createDesktopBadgeSoundDispatcher();
 type ReportDialogState =
   | { kind: "user"; userId: string }
   | { kind: "content"; roomId: string; eventId: string }
@@ -2519,10 +2520,32 @@ export function App() {
       }),
       tauriNativeBadgeTransport ?? undefined
     );
+
+    if (
+      !snapshot || snapshot.state.domain.session.kind !== "ready" ||
+      !tauriAttentionTransientTransport
+    ) {
+      desktopBadgeSoundDispatcher.reset();
+      return;
+    }
+
+    void desktopBadgeSoundDispatcher.observe(
+      tauriAttentionTransientTransport,
+      safeAttentionSummary.badgeCount,
+      snapshot.state.domain.native_attention.summary.capabilities,
+      snapshot.state.domain.settings.values.notifications,
+      (token) => appendDiagnosticLog({
+        timestampMs: Date.now(),
+        source: "native.attention",
+        message: token
+      })
+    );
   }, [
     attentionCapabilities,
     attentionWindowTitle,
-    safeAttentionSummary.badgeCount
+    safeAttentionSummary.badgeCount,
+    snapshot?.state.domain.session.kind,
+    snapshot?.state.domain.settings.values.notifications.sound
   ]);
 
   useEffect(() => {
@@ -2534,19 +2557,18 @@ export function App() {
       snapshot.state.domain.native_attention
     );
 
-    if (!candidate || !tauriNotificationTransport || !tauriAttentionTransientTransport) {
+    if (!candidate || !tauriNotificationTransport) {
       return;
     }
 
     const currentWindow = getCurrentWindow();
-    void desktopAttentionTransientDispatcher.dispatch(
+    void dispatchDesktopAttentionTransientEffects(
       {
-        ...tauriAttentionTransientTransport,
         requestUserAttention: (requestType) => currentWindow.requestUserAttention(requestType)
       },
       candidate,
       snapshot.state.domain.native_attention.summary.capabilities,
-      snapshot.state.domain.settings.values.notifications,
+      { sound: false },
       (token) => appendDiagnosticLog({
         timestampMs: Date.now(),
         source: "native.attention",

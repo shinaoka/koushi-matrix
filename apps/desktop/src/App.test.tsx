@@ -1849,8 +1849,8 @@ describe("desktop integration source guards", () => {
 
     const notificationEffectEnd = source.indexOf("]);", notificationStart);
     const notificationEffectSource = source.slice(notificationStart, notificationEffectEnd);
-    expect(notificationEffectSource).toContain("void desktopAttentionTransientDispatcher.dispatch");
-    expect(notificationEffectSource).toContain("tauriAttentionTransientTransport");
+    expect(notificationEffectSource).toContain("void dispatchDesktopAttentionTransientEffects");
+    expect(notificationEffectSource).toContain("{ sound: false }");
     expect(notificationEffectSource).toContain("snapshot.state.domain.native_attention.summary.capabilities");
     expect(notificationEffectSource).not.toContain("snapshot.state.domain.rooms");
 
@@ -1863,7 +1863,8 @@ describe("desktop integration source guards", () => {
 
     expect(source).toContain("desktopAttentionWindowTitle");
     expect(source).toContain("sendDesktopAttentionNotification");
-    expect(source).toContain("createDesktopAttentionTransientDispatcher");
+    expect(source).toContain("createDesktopBadgeSoundDispatcher");
+    expect(source).toContain("desktopBadgeSoundDispatcher.observe");
     expect(source).toContain("applyDesktopAttentionToWindow");
     expect(source).toContain("qaWindowTitle(");
     expect(source).toContain("effectiveRightPanelModeForSnapshot");

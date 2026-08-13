@@ -255,35 +255,66 @@ export async function dispatchDesktopAttentionTransientEffects(
   await Promise.allSettled(operations);
 }
 
-export interface DesktopAttentionTransientDispatcher {
-  dispatch(
+export interface DesktopBadgeSoundDispatcher {
+  observe(
     transport: DesktopAttentionTransientLike,
-    candidate: DesktopAttentionNotificationCandidate | null,
+    badgeCount: number,
     capabilities: NativeAttentionCapabilities,
     policy: DesktopAttentionTransientPolicy,
     diagnostic?: DesktopAttentionDiagnosticSink
   ): Promise<void>;
+  reset(): void;
 }
 
-export function createDesktopAttentionTransientDispatcher(
+export function createDesktopBadgeSoundDispatcher(
   now: () => number = Date.now,
   cooldownMs = DESKTOP_ATTENTION_SOUND_COOLDOWN_MS
-): DesktopAttentionTransientDispatcher {
+): DesktopBadgeSoundDispatcher {
+  let previousBadgeCount: number | null = null;
   let lastSoundAt = Number.NEGATIVE_INFINITY;
   let soundInFlight = false;
+  let generation = 0;
   return {
-    async dispatch(transport, candidate, capabilities, policy, diagnostic) {
+    reset() {
+      generation += 1;
+      previousBadgeCount = null;
+      lastSoundAt = Number.NEGATIVE_INFINITY;
+      soundInFlight = false;
+    },
+    async observe(transport, badgeCount, capabilities, policy, diagnostic) {
+      const currentBadgeCount = normalizeAttentionCount(badgeCount);
+      if (previousBadgeCount === null) {
+        previousBadgeCount = currentBadgeCount;
+        diagnostic?.(`attention_badge_sound_baseline count=${currentBadgeCount}`);
+        return;
+      }
+
+      const priorBadgeCount = previousBadgeCount;
+      previousBadgeCount = currentBadgeCount;
+      if (currentBadgeCount <= priorBadgeCount) {
+        if (currentBadgeCount < priorBadgeCount) {
+          diagnostic?.(
+            `attention_badge_sound_decrease previous=${priorBadgeCount} current=${currentBadgeCount}`
+          );
+        }
+        return;
+      }
+
+      diagnostic?.(
+        `attention_badge_sound_delta previous=${priorBadgeCount} current=${currentBadgeCount} delta=${currentBadgeCount - priorBadgeCount}`
+      );
       const timestamp = now();
       const soundAllowed = !soundInFlight && timestamp - lastSoundAt >= cooldownMs;
       if (
-        candidate && policy.sound && capabilities.sound === "available" &&
+        policy.sound && capabilities.sound === "available" &&
         soundAllowed && transport.playAttentionSound
       ) {
+        const dispatchGeneration = generation;
         soundInFlight = true;
         try {
           const outcome = await transport.playAttentionSound();
           diagnostic?.(`attention_sound_outcome outcome=${outcome}`);
-          if (outcome === "played") {
+          if (outcome === "played" && generation === dispatchGeneration) {
             lastSoundAt = now();
           } else if (outcome === "failed") {
             diagnostic?.("attention_sound_failed");
@@ -291,20 +322,15 @@ export function createDesktopAttentionTransientDispatcher(
         } catch {
           diagnostic?.("attention_sound_failed");
         } finally {
-          soundInFlight = false;
+          if (generation === dispatchGeneration) {
+            soundInFlight = false;
+          }
         }
-      } else if (candidate) {
+      } else {
         diagnostic?.(
           `attention_sound_skipped policy_sound=${policy.sound ? "true" : "false"} capability=${capabilityToken(capabilities.sound)} transport=${transport.playAttentionSound ? "available" : "missing"} cooldown=${soundAllowed ? "false" : "true"} inflight=${soundInFlight ? "true" : "false"}`
         );
       }
-      await dispatchDesktopAttentionTransientEffects(
-        { ...transport, playAttentionSound: undefined },
-        candidate,
-        capabilities,
-        { sound: false },
-        diagnostic
-      );
     }
   };
 }

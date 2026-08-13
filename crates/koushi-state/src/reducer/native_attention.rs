@@ -14,7 +14,10 @@ pub(crate) fn handle_dispatch_started(
     if !is_session_ready(state) {
         return Vec::new();
     }
-    if state.native_attention.summary.candidate.is_none() {
+    // Sound dispatch is driven by a positive Dock-badge delta. A push-rule
+    // notification candidate is intentionally not required here: unread badge
+    // changes and banner candidates are separate projections.
+    if state.native_attention.summary.badge_count == 0 {
         return Vec::new();
     }
     if matches!(

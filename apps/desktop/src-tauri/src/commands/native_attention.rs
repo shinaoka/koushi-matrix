@@ -389,26 +389,21 @@ mod tests {
                         unread_count: 1,
                         highlight_count: 0,
                         badge_count: 1,
-                        candidate: Some(NativeAttentionCandidate {
-                            room_display_name: "Room".to_owned(),
-                            kind: RoomAttentionKind::Message,
-                            unread_count: 1,
-                            highlight_count: 0,
-                        }),
+                        candidate: None,
                         capabilities: NativeAttentionCapabilities::default(),
                     },
                     dispatch: NativeAttentionDispatchState::Idle,
                 },
             }))
             .await
-            .expect("seed native attention candidate through core command");
+            .expect("seed native attention badge through core command");
         executor::timeout(Duration::from_secs(1), async {
             loop {
-                if matches!(observer.recv_event().await, Ok(CoreEvent::StateChanged(snapshot)) if snapshot.native_attention.summary.candidate.is_some()) {
+                if matches!(observer.recv_event().await, Ok(CoreEvent::StateChanged(snapshot)) if snapshot.native_attention.summary.badge_count == 1) {
                     break;
                 }
             }
-        }).await.expect("seed candidate must reach reducer before dispatch");
+        }).await.expect("seed badge must reach reducer before dispatch");
 
         let backend = FakeBackend {
             calls: Cell::new(0),

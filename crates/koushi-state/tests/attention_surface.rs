@@ -513,6 +513,7 @@ fn native_sound_dispatch_outcomes_are_correlated_and_stale_safe() {
         (NativeAttentionSoundOutcome::Failed, "failed"),
     ] {
         let mut state = ready_state();
+        state.native_attention.summary.badge_count = 1;
         state.native_attention.summary.candidate = Some(NativeAttentionCandidate {
             room_display_name: "Room".to_owned(),
             kind: RoomAttentionKind::Message,
@@ -551,8 +552,28 @@ fn native_sound_dispatch_outcomes_are_correlated_and_stale_safe() {
 }
 
 #[test]
+fn native_sound_dispatch_accepts_badge_without_notification_candidate() {
+    let mut state = ready_state();
+    state.native_attention.summary.badge_count = 1;
+    state.native_attention.summary.candidate = None;
+    let dispatch_id = NativeAttentionDispatchId::new(3, 1);
+
+    let effects = reduce(
+        &mut state,
+        AppAction::NativeAttentionDispatchStarted { dispatch_id },
+    );
+
+    assert_eq!(
+        state.native_attention.dispatch,
+        NativeAttentionDispatchState::Dispatching { dispatch_id }
+    );
+    assert_eq!(effects.len(), 1);
+}
+
+#[test]
 fn native_attention_projection_preserves_and_does_not_replace_active_dispatch() {
     let mut state = ready_state();
+    state.native_attention.summary.badge_count = 1;
     state.native_attention.summary.candidate = Some(NativeAttentionCandidate {
         room_display_name: "Room".to_owned(),
         kind: RoomAttentionKind::Message,
