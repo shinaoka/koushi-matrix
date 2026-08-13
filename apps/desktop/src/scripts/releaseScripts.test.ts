@@ -4671,4 +4671,14 @@ fn test_only() {
     // The icon set referenced by Tauri must include the source SVG.
     expect(conf.bundle.icon).toContain("icons/icon.svg");
   });
+
+  test("local DMG builds use a git-derived macOS bundle version to invalidate stale icons", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-build-dmg.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain('git", ["rev-list", "--count", "HEAD"]');
+    expect(source).toContain("JSON.stringify({ bundle: { macOS: { bundleVersion } } })");
+  });
 });

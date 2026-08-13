@@ -17,7 +17,10 @@ pub(crate) mod composer_drafts;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{
+    Arc, Mutex, OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
 
 use chacha20poly1305::{
     ChaCha20Poly1305, Key, KeyInit, Nonce,
@@ -1293,6 +1296,7 @@ pub struct OsCredentialStore {
     primary: CredentialStore<Arc<dyn koushi_key::CredentialBackend>>,
     vault_file: crate::credential_vault::CredentialVaultFile,
     vault_state: Arc<Mutex<Option<OsCredentialVaultState>>>,
+    cache_reuse_recorded: Arc<AtomicBool>,
 }
 
 struct OsCredentialVaultState {
@@ -1314,6 +1318,7 @@ impl OsCredentialStore {
                     .join("credentials.v1.enc"),
             ),
             vault_state: Arc::new(Mutex::new(None)),
+            cache_reuse_recorded: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -1459,12 +1464,25 @@ impl OsCredentialStore {
         state: &mut Option<OsCredentialVaultState>,
     ) -> Result<(), koushi_key::LocalSecretError> {
         if state.is_some() {
+            if !self.cache_reuse_recorded.swap(true, Ordering::Relaxed) {
+                record_credential_vault_access("memory_cache_reused");
+            }
             return Ok(());
         }
+        record_credential_vault_access("keychain_read_started");
         let master_key = match self.primary.load_vault_master_key() {
-            Ok(master_key) => Some(master_key),
-            Err(error) if koushi_key::is_missing_credential_error(&error) => None,
-            Err(error) => return Err(error),
+            Ok(master_key) => {
+                record_credential_vault_access("keychain_read_succeeded");
+                Some(master_key)
+            }
+            Err(error) if koushi_key::is_missing_credential_error(&error) => {
+                record_credential_vault_access("keychain_entry_missing");
+                None
+            }
+            Err(error) => {
+                record_credential_vault_access(credential_vault_failure_outcome(&error));
+                return Err(error);
+            }
         };
         if self.vault_file.exists() {
             let master_key = master_key.ok_or_else(missing_credential_error)?;
@@ -1767,6 +1785,31 @@ fn record_local_unlock_secret(purpose: Option<&'static str>, outcome: &'static s
             .field(DiagnosticField::token("purpose", purpose))
             .field(DiagnosticField::token("outcome", outcome)),
     );
+}
+
+fn record_credential_vault_access(outcome: &'static str) {
+    record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Debug,
+            "core.store",
+            "credential_vault_access",
+        )
+        .field(DiagnosticField::token("outcome", outcome)),
+    );
+}
+
+fn credential_vault_failure_outcome(error: &koushi_key::LocalSecretError) -> &'static str {
+    match error {
+        koushi_key::LocalSecretError::CredentialBackend(
+            koushi_key::CredentialBackendErrorKind::LockedOrInaccessible,
+        ) => "keychain_read_locked_or_denied",
+        koushi_key::LocalSecretError::CredentialBackend(
+            koushi_key::CredentialBackendErrorKind::Corrupt,
+        )
+        | koushi_key::LocalSecretError::Base64Decode(_)
+        | koushi_key::LocalSecretError::InvalidSecretLength { .. } => "keychain_read_corrupt",
+        _ => "keychain_read_unavailable",
+    }
 }
 
 /// QA/debug structural guard: true only when the env-resolved credential
@@ -2355,6 +2398,10 @@ mod tests {
 
     #[test]
     fn credential_vault_concurrent_initialization_reads_keychain_once() {
+        let _diagnostic_lock = koushi_diagnostics::test_support::lock();
+        let diagnostic_start = koushi_diagnostics::test_support::detail_snapshot()
+            .records
+            .len();
         let data_dir = tempdir().expect("tempdir");
         let backend = koushi_key::InMemoryCredentialBackend::default();
         let key_store = koushi_key::CredentialStore::with_backend(
@@ -2396,6 +2443,25 @@ mod tests {
         }
 
         assert_eq!(backend.get_password_count(), 1);
+        let outcomes = koushi_diagnostics::test_support::detail_snapshot()
+            .records
+            .into_iter()
+            .skip(diagnostic_start)
+            .filter(|record| {
+                record.event.source == "core.store"
+                    && record.event.stage == "credential_vault_access"
+            })
+            .flat_map(|record| record.event.fields)
+            .filter_map(|field| match field.value {
+                koushi_diagnostics::DiagnosticValue::Token(outcome) if field.key == "outcome" => {
+                    Some(outcome)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(outcomes.contains(&"keychain_read_started"));
+        assert!(outcomes.contains(&"keychain_read_succeeded"));
+        assert!(outcomes.contains(&"memory_cache_reused"));
     }
 
     #[test]

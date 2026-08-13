@@ -30,10 +30,33 @@ test("icon generation keeps shared rasters separate from the macOS ICNS source",
 
   assert.match(generator, /MACOS_SRC=.*koushi-photon-macos\.svg/);
   assert.match(generator, /convert[\s\S]*"\$\{SRC\}"[\s\S]*icon\.png/);
-  assert.match(generator, /generate-icns\.py[\s\S]*"\$\{MACOS_ICON_DIR\}\/32x32\.png"/);
+  assert.match(generator, /for size in 16 32 64 128 256 512 1024/);
+  assert.match(generator, /generate-icns\.py[\s\S]*"\$\{MACOS_ICON_DIR\}\/1024x1024\.png"/);
   assert.doesNotMatch(
     generator,
     /generate-icns\.py[\s\S]*"\$\{OUT_DIR\}\/32x32\.png"/,
     "the ICNS must not reuse the shared transparent raster"
+  );
+});
+
+test("macOS ICNS contains the complete modern icon family", async () => {
+  const icns = await readFile(
+    join(projectRoot, "apps/desktop/src-tauri/icons/icon.icns")
+  );
+  assert.equal(icns.subarray(0, 4).toString("ascii"), "icns");
+  assert.equal(icns.readUInt32BE(4), icns.length);
+
+  const entryTypes = new Set();
+  for (let offset = 8; offset < icns.length; ) {
+    const type = icns.subarray(offset, offset + 4).toString("ascii");
+    const length = icns.readUInt32BE(offset + 4);
+    assert.ok(length > 8, `invalid ${type} ICNS entry length`);
+    entryTypes.add(type);
+    offset += length;
+  }
+
+  assert.deepEqual(
+    entryTypes,
+    new Set(["icp4", "icp5", "icp6", "ic07", "ic13", "ic09", "ic10"])
   );
 });

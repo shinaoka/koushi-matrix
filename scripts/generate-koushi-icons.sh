@@ -55,19 +55,22 @@ convert -background none "${SRC}" -resize 256x256 \
 
 # macOS ICNS: render the full-bleed source separately so the shared transparent
 # raster assets retain their existing cross-platform appearance.
-convert -background none "${MACOS_SRC}" -resize 32x32 "${MACOS_ICON_DIR}/32x32.png"
-convert -background none "${MACOS_SRC}" -resize 128x128 "${MACOS_ICON_DIR}/128x128.png"
-convert -background none "${MACOS_SRC}" -resize 256x256 "${MACOS_ICON_DIR}/128x128@2x.png"
-convert -background none "${MACOS_SRC}" -resize 512x512 "${MACOS_ICON_DIR}/icon.png"
+for size in 16 32 64 128 256 512 1024; do
+  convert -background none "${MACOS_SRC}" -resize "${size}x${size}" \
+    "${MACOS_ICON_DIR}/${size}x${size}.png"
+done
 
 # Pack PNGs into a simple ICNS container. This script uses a small Python helper
 # so the assets remain reproducible without macOS-only tools.
 python3 "${SCRIPT_DIR}/lib/generate-icns.py" \
   "${OUT_DIR}/icon.icns" \
+  "${MACOS_ICON_DIR}/16x16.png" \
   "${MACOS_ICON_DIR}/32x32.png" \
+  "${MACOS_ICON_DIR}/64x64.png" \
   "${MACOS_ICON_DIR}/128x128.png" \
-  "${MACOS_ICON_DIR}/128x128@2x.png" \
-  "${MACOS_ICON_DIR}/icon.png"
+  "${MACOS_ICON_DIR}/256x256.png" \
+  "${MACOS_ICON_DIR}/512x512.png" \
+  "${MACOS_ICON_DIR}/1024x1024.png"
 
 echo "Done. Assets in ${OUT_DIR}:"
 ls -la "${OUT_DIR}"

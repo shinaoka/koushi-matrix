@@ -21,7 +21,17 @@ if (process.platform !== "darwin" && !args.has("--print-command")) {
 
 printStorageNotice();
 
-const buildCommand = ["run", "tauri", "--", "build", "--bundles", "dmg"];
+const bundleVersion = macOSBundleVersion();
+const buildCommand = [
+  "run",
+  "tauri",
+  "--",
+  "build",
+  "--bundles",
+  "dmg",
+  "--config",
+  JSON.stringify({ bundle: { macOS: { bundleVersion } } })
+];
 if (args.has("--print-command")) {
   console.log(`desktop-build-dmg: npm ${buildCommand.join(" ")}`);
   process.exit(0);
@@ -73,6 +83,27 @@ function listDmgArtifacts() {
     .filter((file) => file.endsWith(".dmg"))
     .sort()
     .map((file) => join(dmgDir, file));
+}
+
+function macOSBundleVersion() {
+  const commitCount = spawnSync("git", ["rev-list", "--count", "HEAD"], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+  if (commitCount.status !== 0 || !/^\d+$/.test(commitCount.stdout.trim())) {
+    console.error("desktop-build-dmg: failed to derive a macOS bundle version from git");
+    process.exit(commitCount.status ?? 1);
+  }
+
+  const dirty = spawnSync("git", ["status", "--porcelain", "--untracked-files=no"], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+  if (dirty.status !== 0) {
+    console.error("desktop-build-dmg: failed to inspect the worktree");
+    process.exit(dirty.status ?? 1);
+  }
+  return `${commitCount.stdout.trim()}.${dirty.stdout.trim() ? "1" : "0"}`;
 }
 
 function printStorageNotice() {

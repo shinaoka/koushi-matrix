@@ -1176,8 +1176,11 @@ impl CoreRuntime {
         data_dir: PathBuf,
         os_backend: std::sync::Arc<dyn koushi_key::CredentialBackend>,
     ) -> Self {
-        let account_store_actor = StoreActor::with_os_backend(data_dir.clone(), os_backend.clone());
-        let composer_draft_store_actor = StoreActor::with_os_backend(data_dir.clone(), os_backend);
+        // The OS-backed actor owns the in-memory credential-vault cache.  Keep one
+        // instance per runtime and clone it for the independent consumers so a
+        // single launch never asks Keychain for the vault master key twice.
+        let account_store_actor = StoreActor::with_os_backend(data_dir.clone(), os_backend);
+        let composer_draft_store_actor = account_store_actor.clone();
         Self::start_inner(
             EVENT_QUEUE_CAPACITY,
             data_dir,
