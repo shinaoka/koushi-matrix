@@ -965,6 +965,7 @@ export function ContextualRightPanel({
             onThreadReplySend(threadRoomId, rootEventId, document);
           }
         }}
+        onDiagnosticLogEntry={onTimelineDiagnosticLogEntry}
       />
     </aside>
   );

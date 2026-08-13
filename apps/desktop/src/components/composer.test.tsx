@@ -392,6 +392,35 @@ describe("Composer", () => {
     expect(onSend).toHaveBeenCalledWith("visible reply");
   });
 
+  it("records privacy-safe button submission diagnostics through callback settlement", async () => {
+    const onDiagnosticLogEntry = vi.fn();
+    const onSend = vi.fn(async () => undefined);
+    render(
+      <Composer
+        composerMode={{ kind: "plain" }}
+        isSending={false}
+        roomName="Room"
+        document={documentFromText("private message content")}
+        onCancelReply={() => undefined}
+        onDocumentChange={textChange(vi.fn())}
+        onSend={textSend(onSend)}
+        onDiagnosticLogEntry={onDiagnosticLogEntry}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /send/i }));
+
+    await waitFor(() => expect(onDiagnosticLogEntry).toHaveBeenCalledTimes(3));
+    expect(onDiagnosticLogEntry.mock.calls.map(([entry]) => entry.message)).toEqual([
+      expect.stringContaining(
+        "stage=attempt surface=main trigger=button can_edit=true is_sending=false ime_composing=false body_length=21-100"
+      ),
+      "stage=handoff surface=main trigger=button target=text",
+      "stage=callback_settled surface=main trigger=button outcome=resolved"
+    ]);
+    expect(JSON.stringify(onDiagnosticLogEntry.mock.calls)).not.toContain("private message content");
+  });
+
   it("passes the visible thread DOM draft through keyboard send", async () => {
     vi.useFakeTimers();
     const onSend = vi.fn();

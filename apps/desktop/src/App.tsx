@@ -2050,6 +2050,16 @@ export function App() {
   const appendDiagnosticLog = useCallback((entry: TimelineDiagnosticLogEntry) => {
     diagnosticLogBuffer.append(entry);
   }, [diagnosticLogBuffer]);
+  const appendComposerSubmitDiagnostic = useCallback(
+    (surface: "main" | "thread", stage: string, details: string) => {
+      appendDiagnosticLog({
+        timestampMs: Date.now(),
+        source: "composer.submit",
+        message: `stage=${stage} surface=${surface} layer=app ${details}`
+      });
+    },
+    [appendDiagnosticLog]
+  );
   const updateTimelineDiagnostics = useCallback((diagnostics: TimelineDiagnostics) => {
     if (timelineDiagnosticsEqual(timelineDiagnosticsRef.current, diagnostics)) {
       return;
@@ -4512,9 +4522,20 @@ export function App() {
     const account = readyComposerDraftAccountOwner(snapshot);
     const accountOwner = account ? composerDraftAccountOwnerKey(account) : null;
     const target: ComposerTarget | null = roomId ? { kind: "main", room_id: roomId } : null;
+    appendComposerSubmitDiagnostic(
+      "main",
+      "received",
+      `room_present=${Boolean(roomId)} account_ready=${Boolean(account && accountOwner)} body_present=${Boolean(body.trim())}`
+    );
     // Text only. Staged attachments have their own send in the staging panel,
     // so this never dispatches them and never leaves the draft silently unsent.
     if (!roomId || !target || !account || !accountOwner || !body.trim()) {
+      const reason = !roomId
+        ? "room_missing"
+        : !account || !accountOwner
+          ? "account_not_ready"
+          : "empty_body";
+      appendComposerSubmitDiagnostic("main", "blocked", `reason=${reason}`);
       return;
     }
     // Reply semantics are Rust-owned: dispatch sendReply when the composer is
@@ -4523,6 +4544,7 @@ export function App() {
     const submissionController = submissionRegistryRef.current!.forTarget(mainSubmissionTarget(roomId));
     const submissionId = submissionController.begin();
     if (submissionId === null) {
+      appendComposerSubmitDiagnostic("main", "blocked", "reason=submission_in_progress");
       return;
     }
 
@@ -4570,14 +4592,21 @@ export function App() {
     }
     const admitted = beginComposerOperation(captured.scope);
     if (!admitted) {
+      appendComposerSubmitDiagnostic("main", "blocked", "reason=draft_operation_not_admitted");
       submissionController.reject(submissionId);
       return;
     }
     if (!reserveComposerAcceptedRevision(admitted, captured.draftRevision)) {
+      appendComposerSubmitDiagnostic("main", "blocked", "reason=draft_revision_not_reserved");
       submissionController.reject(submissionId);
       return;
     }
     try {
+      appendComposerSubmitDiagnostic(
+        "main",
+        "dispatch",
+        `mode=${captured.composerMode === "Plain" ? "plain" : "reply"}`
+      );
       const nextSnapshot =
         captured.composerMode === "Plain"
           ? await api.sendText(
@@ -4600,13 +4629,18 @@ export function App() {
               captured.draftRevision
             );
       const canApply = composerOperationCanApply(admitted, captured.draftRevision);
-      if (!canApply || submissionAccountOwnerRef.current !== captured.accountOwner) return;
+      if (!canApply || submissionAccountOwnerRef.current !== captured.accountOwner) {
+        appendComposerSubmitDiagnostic("main", "settled", "outcome=stale_context_ignored");
+        return;
+      }
       if (nextSnapshot.submissionId !== submissionId || nextSnapshot.outcome !== "accepted") {
+        appendComposerSubmitDiagnostic("main", "settled", "outcome=rejected_by_backend");
         submissionController.reject(submissionId);
         setSnapshot(nextSnapshot.snapshot);
         return;
       }
       submissionController.accept(submissionId);
+      appendComposerSubmitDiagnostic("main", "settled", "outcome=accepted");
       const hasNewerDraft =
         mainComposerOverlayRef.current?.revision !== captured.localRevisionAtSubmission;
       if (!hasNewerDraft) {
@@ -4630,6 +4664,11 @@ export function App() {
         return;
       }
       const disposition = classifySubmissionFailure(error);
+      appendComposerSubmitDiagnostic(
+        "main",
+        "settled",
+        `outcome=failed failure_class=${disposition.kind}`
+      );
       if (disposition.kind === "unknown") {
         submissionController.markUnknown(submissionId, disposition.reason);
       } else {
@@ -5179,8 +5218,15 @@ export function App() {
     const account = readyComposerDraftAccountOwner(snapshot);
     const accountOwner = account ? composerDraftAccountOwnerKey(account) : null;
     const target: ComposerTarget = { kind: "thread", room_id: roomId, root_event_id: rootEventId };
+    appendComposerSubmitDiagnostic(
+      "thread",
+      "received",
+      `room_present=${Boolean(roomId)} root_present=${Boolean(rootEventId)} account_ready=${Boolean(account && accountOwner)} body_present=${Boolean(body.trim())}`
+    );
     // Text only: thread attachments are sent from the staging panel.
     if (!account || !accountOwner || !body.trim()) {
+      const reason = !account || !accountOwner ? "account_not_ready" : "empty_body";
+      appendComposerSubmitDiagnostic("thread", "blocked", `reason=${reason}`);
       return;
     }
     const submissionController = submissionRegistryRef.current!.forTarget(
@@ -5188,6 +5234,7 @@ export function App() {
     );
     const submissionId = submissionController.begin();
     if (submissionId === null) {
+      appendComposerSubmitDiagnostic("thread", "blocked", "reason=submission_in_progress");
       return;
     }
     if (submissionController.payload(submissionId) === undefined) {
@@ -5221,15 +5268,18 @@ export function App() {
     }>(submissionId)!;
     const admitted = beginComposerOperation(captured.scope);
     if (!admitted) {
+      appendComposerSubmitDiagnostic("thread", "blocked", "reason=draft_operation_not_admitted");
       submissionController.reject(submissionId);
       return;
     }
     if (!reserveComposerAcceptedRevision(admitted, captured.draftRevision)) {
+      appendComposerSubmitDiagnostic("thread", "blocked", "reason=draft_revision_not_reserved");
       submissionController.reject(submissionId);
       return;
     }
     let response;
     try {
+      appendComposerSubmitDiagnostic("thread", "dispatch", "mode=thread_reply");
       response = await api.sendThreadReply(
         captured.account,
         admitted.lease.leaseId,
@@ -5246,6 +5296,11 @@ export function App() {
         return;
       }
       const disposition = classifySubmissionFailure(error);
+      appendComposerSubmitDiagnostic(
+        "thread",
+        "settled",
+        `outcome=failed failure_class=${disposition.kind}`
+      );
       if (disposition.kind === "unknown") {
         submissionController.markUnknown(submissionId, disposition.reason);
       } else {
@@ -5254,13 +5309,18 @@ export function App() {
       return;
     }
     const canApply = composerOperationCanApply(admitted, captured.draftRevision);
-    if (!canApply || submissionAccountOwnerRef.current !== captured.accountOwner) return;
+    if (!canApply || submissionAccountOwnerRef.current !== captured.accountOwner) {
+      appendComposerSubmitDiagnostic("thread", "settled", "outcome=stale_context_ignored");
+      return;
+    }
     if (response.submissionId !== submissionId || response.outcome !== "accepted") {
+      appendComposerSubmitDiagnostic("thread", "settled", "outcome=rejected_by_backend");
       submissionController.reject(submissionId);
       setSnapshot(response.snapshot);
       return;
     }
     submissionController.accept(submissionId);
+    appendComposerSubmitDiagnostic("thread", "settled", "outcome=accepted");
     const hasNewerDraft =
       threadComposerOverlayRef.current?.revision !== captured.localRevisionAtSubmission;
     if (!hasNewerDraft) {

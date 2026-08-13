@@ -275,6 +275,7 @@ export interface ImeInlineMentionEditorProps
 export interface ImeInlineMentionEditorHandle {
   commit(mutation: DocumentMutation): void;
   focus(): void;
+  isComposing(): boolean;
   selection(): DocumentSelection;
   setSelection(selection: DocumentSelection): void;
 }
@@ -378,6 +379,7 @@ export const ImeInlineMentionEditor = forwardRef<
       () => ({
         commit: publish,
         focus: () => controlRef.current?.focus(),
+        isComposing: () => composingRef.current,
         selection,
         setSelection: (nextSelection) => {
           const control = controlRef.current;

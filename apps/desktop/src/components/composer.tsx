@@ -31,6 +31,7 @@ import type {
   ComposerSurface,
   ResolveComposerKeyAction
 } from "../domain/types";
+import type { DiagnosticLogEntry } from "../domain/diagnostics";
 import {
   IS_MAC_PLATFORM,
   applyMacEmacsAction,
@@ -99,6 +100,7 @@ export const Composer = memo(function Composer({
   onScheduleSend,
   onSend,
   onSendStagedUploads,
+  onDiagnosticLogEntry,
   notice = null
 }: {
   surface?: ComposerSurface;
@@ -128,6 +130,7 @@ export const Composer = memo(function Composer({
   /** #send-key-unification: routed when the send shortcut is pressed while
    *  staged uploads are ready, instead of sending the composer body. */
   onSendStagedUploads?: () => void;
+  onDiagnosticLogEntry?: (entry: DiagnosticLogEntry) => void;
   /** Localized transient notice rendered above the composer (issue #450). */
   notice?: string | null;
 }) {
@@ -287,6 +290,44 @@ export const Composer = memo(function Composer({
 
   function keepComposerFocus(event: MouseEvent<HTMLButtonElement>) {
     event.preventDefault();
+  }
+
+  function appendSubmitDiagnostic(stage: string, details: string) {
+    onDiagnosticLogEntry?.({
+      timestampMs: Date.now(),
+      source: "composer.submit",
+      message: `stage=${stage} surface=${surface} ${details}`
+    });
+  }
+
+  function submitDocument(
+    trigger: "button" | "keyboard",
+    intentDocument: ComposerDocument,
+    intentValue: string
+  ) {
+    const bodyState = composerBodyLengthBucket(intentValue);
+    const composing = editorRef.current?.isComposing() ?? false;
+    appendSubmitDiagnostic(
+      "attempt",
+      `trigger=${trigger} can_edit=${canEdit} is_sending=${isSending} ime_composing=${composing} body_length=${bodyState} has_staged_uploads=${hasStagedUploads} staged_uploads_ready=${stagedUploadsReady}`
+    );
+    if (!canEdit) {
+      appendSubmitDiagnostic("blocked", `trigger=${trigger} reason=not_editable`);
+      return;
+    }
+    if (isSending) {
+      appendSubmitDiagnostic("blocked", `trigger=${trigger} reason=already_sending`);
+      return;
+    }
+    if (!intentValue.trim()) {
+      appendSubmitDiagnostic("blocked", `trigger=${trigger} reason=empty_body`);
+      return;
+    }
+    appendSubmitDiagnostic("handoff", `trigger=${trigger} target=text`);
+    void Promise.resolve(onSend(intentDocument)).then(
+      () => appendSubmitDiagnostic("callback_settled", `trigger=${trigger} outcome=resolved`),
+      () => appendSubmitDiagnostic("callback_settled", `trigger=${trigger} outcome=rejected`)
+    );
   }
 
   function applyInlineMarkdown(prefix: string, suffix = prefix, placeholder = "") {
@@ -495,7 +536,10 @@ export const Composer = memo(function Composer({
       return;
     }
 
-    if (keyResolutionPendingRef.current) return;
+    if (keyResolutionPendingRef.current) {
+      appendSubmitDiagnostic("blocked", "trigger=keyboard reason=key_resolution_pending");
+      return;
+    }
     const intentDocument = localDocument;
     const intentValue = localValue;
     const intentSelection = selectionRange();
@@ -515,6 +559,10 @@ export const Composer = memo(function Composer({
           (stagedUploadsReady && Boolean(onSendStagedUploads)))
     };
     if (shouldLetNativeImeHandleComposerKeyEvent(keyEvent)) {
+      appendSubmitDiagnostic(
+        "deferred",
+        `trigger=keyboard reason=native_ime ime_composing=${event.nativeEvent.isComposing}`
+      );
       void resolveComposerKeyAction(surface, keyEvent, resolverOptions).catch(() => undefined);
       return;
     }
@@ -531,11 +579,16 @@ export const Composer = memo(function Composer({
           // freshly typed draft. A typed message keeps normal-send precedence.
           if (stagedUploadsReady && onSendStagedUploads && !intentValue.trim()) {
             if (documentEpochRef.current !== intentEpoch) {
+              appendSubmitDiagnostic(
+                "blocked",
+                "trigger=keyboard reason=stale_document target=staged_uploads"
+              );
               return;
             }
+            appendSubmitDiagnostic("handoff", "trigger=keyboard target=staged_uploads");
             onSendStagedUploads();
           } else {
-            void onSend(intentDocument);
+            submitDocument("keyboard", intentDocument, intentValue);
           }
           return;
         }
@@ -563,7 +616,9 @@ export const Composer = memo(function Composer({
           else onCancel?.();
         }
       })
-      .catch(() => undefined)
+      .catch(() => {
+        appendSubmitDiagnostic("blocked", "trigger=keyboard reason=resolver_failed");
+      })
       .finally(() => {
         keyResolutionPendingRef.current = false;
       });
@@ -769,7 +824,7 @@ export const Composer = memo(function Composer({
           type="button"
           aria-label={isSending ? t("action.sending") : t("action.send")}
           disabled={!canEdit || isSending || !localValue.trim()}
-          onClick={() => onSend(localDocument)}
+          onClick={() => submitDocument("button", localDocument, localValue)}
         >
           <Send size={ICON_SIZE.input} />
         </button>
@@ -920,7 +975,8 @@ function ThreadComposer({
   onMentionQueryChange,
   onScheduleSend,
   onSend,
-  onSendStagedUploads
+  onSendStagedUploads,
+  onDiagnosticLogEntry
 }: {
   canEdit: boolean;
   document: ComposerDocument;
@@ -939,6 +995,7 @@ function ThreadComposer({
   onScheduleSend?: (sendAtMs: number, document: ComposerDocument) => void | Promise<void>;
   onSend: (document: ComposerDocument) => void | Promise<void>;
   onSendStagedUploads?: () => void;
+  onDiagnosticLogEntry?: (entry: DiagnosticLogEntry) => void;
 }) {
   return (
     <Composer
@@ -964,11 +1021,21 @@ function ThreadComposer({
       onScheduleSend={onScheduleSend}
       onSend={onSend}
       onSendStagedUploads={onSendStagedUploads}
+      onDiagnosticLogEntry={onDiagnosticLogEntry}
     />
   );
 }
 
 export { ThreadComposer };
+
+function composerBodyLengthBucket(value: string): "empty" | "1-20" | "21-100" | "101-1000" | ">1000" {
+  const length = value.trim().length;
+  if (length === 0) return "empty";
+  if (length <= 20) return "1-20";
+  if (length <= 100) return "21-100";
+  if (length <= 1_000) return "101-1000";
+  return ">1000";
+}
 
 /** Shared mention popup used by normal, thread, and inline-edit composers. */
 export function MentionAutocomplete({

@@ -1096,6 +1096,7 @@ export function TimelinePane({
         onMentionQueryChange={onMentionQueryChangeStable}
         onScheduleSend={onScheduleSendStable}
         onSend={onSendTextStable}
+        onDiagnosticLogEntry={onTimelineDiagnosticLogEntryStable}
       />
       {viewerIndex !== null && mediaGallery[viewerIndex] ? (
         <MediaViewer
