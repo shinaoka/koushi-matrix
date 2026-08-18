@@ -2894,6 +2894,24 @@ fn test_only() {
     expect(workflow).toMatch(/publish-release:[\s\S]*needs:\s*\[prepare, build-macos, build-windows\]/);
   });
 
+  test("desktop release workflow preserves trusted Rust build outputs across retries", () => {
+    const workflow = readFileSync(
+      new URL("../../../../.github/workflows/release-desktop.yml", import.meta.url),
+      "utf8"
+    );
+
+    for (const token of [
+      "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1",
+      "workspaces: . -> target",
+      "cache-on-failure: true",
+      "cache-all-crates: true",
+      "cache-workspace-crates: true",
+    ]) {
+      expect(workflow.match(new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")))
+        .toHaveLength(2);
+    }
+  });
+
   test("desktop release skill is shared by Codex, Claude Code, OpenCode, and Pi", () => {
     const sharedSkill = readFileSync(
       new URL("../../../../.agents/skills/koushi-release/SKILL.md", import.meta.url),
