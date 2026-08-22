@@ -43,6 +43,13 @@ From immutable baseline, use TypeScript AST declarations keyed by kind/name:
 
 Run the same focused browser fake/client checks before and after, then full review/matrix/CI.
 
+## Implementation evidence
+
+- Immutable-baseline focused `browserFakeApi.test.ts`143 + `client.test.ts`25 = 168/168; the same two-file command passed168/168 x3 post-move; typecheck/lint/diff green.
+- Exactness verifier: bodies/parameters2/2 exact, parent definitions0, leaf order/exports2, one direct import, calls4, class methods205/fields15 and parent exports exact, no glob.
+- Metrics: parent5,995→5,940 lines; leaf62; combined6,002 (+7 lines / +313 bytes from explicit imports/exports).
+- Post-implementation full-diff review: `reviewer-flash` `Correct-to-merge`; no blocking findings. Full matrix pending.
+
 ## Residual architecture decision
 
 After this move, no other clean browser-fake seam remains. The class is the lifecycle composition root; fixture registries and remaining helpers are cross-feature inputs. The final residual audit evidence must be recorded on #551 rather than creating line-count-only leaves.
