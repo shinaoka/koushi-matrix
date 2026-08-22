@@ -32,7 +32,7 @@ Move these28 functions exactly:
 
 Preserve bodies, attrs, schema/version, path, atomic tmp+rename behavior, fail-closed pre-arm gate and all geometry math.
 
-The leaf imports `std::{fs, path::{Path, PathBuf}, sync::Mutex}`, `serde::{Deserialize, Serialize}`, Tauri `Manager` plus exact geometry/window types, and `crate::app_data_dir`; tests use the existing `tempfile` dev dependency. Parent has one unconditional import group with exactly seven `pub(super)` items: `WindowStatePersistenceGate`, `WindowCloseEvent`, `restore_main_window_state`, `persist_close_window_state_if_ready`, `persist_observed_window_geometry`, `window_event_should_persist`, and `window_event_is_geometry`. Tests move with the owner, so test-only geometry internals do not become parent-visible. No façade/re-export/glob.
+The leaf imports `std::{path::{Path, PathBuf}, sync::Mutex}`, uses baseline-qualified `std::fs::*`, imports `serde::{Deserialize, Serialize}`, Tauri `Manager` plus exact geometry/window types, and `crate::app_data_dir`; tests use the existing `tempfile` dev dependency. Parent has one unconditional import group with exactly seven imported `pub(super)` items: `WindowStatePersistenceGate`, `WindowCloseEvent`, `restore_main_window_state`, `persist_close_window_state_if_ready`, `persist_observed_window_geometry`, `window_event_should_persist`, and `window_event_is_geometry`. `AppliedWindowGeometry` is also `pub(super)` only because it appears in the parent-visible gate enum's variant fields and Rust otherwise emits `private_interfaces`; the parent does not import it. Tests move with the owner, so other test-only geometry internals do not become parent-visible. No façade/re-export/glob.
 
 ## Tests
 
@@ -65,6 +65,13 @@ Replace the exact #544 plan sentence `Keep code in apps/desktop/src-tauri/src/li
 - no glob/default export, second state file, task, timer or dependency.
 
 Run window-state focused baseline/post x3, full Tauri, mac GUI source contracts, full local matrix, design/full-diff review, latest-main integration, CI7/7 and #551 evidence.
+
+## Implementation evidence
+
+- Immutable baseline window-state22/22 x3; post-move22/22 x3; full Tauri150/1 ignored plus keyring5 and mac GUI source contracts green.
+- Exactness verifier: production items42/42 (5 constants,7 types, gate impl,28 functions), moved tests/helpers26/26 exact; parent definitions0; retained visibility/macOS close/run exact; registry183 exact; no glob.
+- Metrics (`wc -l` newline count): parent4,523→3,519 lines; leaf967; combined4,486 (-37 lines / +423 bytes; blank/import relocation only). Content-line counts including the final unterminated line are3,520 +967 =4,487.
+- Post-implementation full-diff review: `reviewer-flash` `Correct-to-merge`; no blocking findings. Compiler-driven `AppliedWindowGeometry` visibility and metric/import wording are documented above. Full matrix pending.
 
 ## Gates
 
