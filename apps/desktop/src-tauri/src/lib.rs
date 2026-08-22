@@ -8,7 +8,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
@@ -32,8 +32,9 @@ use koushi_core::renderable_thumbnail::{
     cleanup_legacy_plaintext_thumbnail_dirs, lookup_renderable_thumbnail,
 };
 use koushi_core::{
-    AccountCommand, CoreCommand, CoreCommandHandle, CoreConnection, CoreEvent, CoreRuntime,
-    SearchEvent, TimelineCommand, TimelineEvent, event::AppStateSnapshot,
+    AccountCommand, AppCommand, CoreCommand, CoreCommandHandle, CoreConnection, CoreEvent,
+    CoreRuntime, EventStreamLag, SearchEvent, TimelineCommand, TimelineEvent,
+    event::AppStateSnapshot,
 };
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 
@@ -57,6 +58,20 @@ const QA_LOGIN_PIPE_ENV: &str = "KOUSHI_QA_LOGIN_PIPE";
 const QA_CONTROL_PIPE_ENV: &str = "KOUSHI_QA_CONTROL_PIPE";
 #[cfg(any(debug_assertions, test))]
 const SKIP_KEYCHAIN_PERSISTENCE_ENV: &str = "KOUSHI_SKIP_KEYCHAIN_PERSISTENCE";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ForwarderLagDisposition {
+    ResyncAndReplay,
+    ResyncAndStop,
+}
+
+struct CoreEventForwarderTask(tauri::async_runtime::JoinHandle<()>);
+
+impl Drop for CoreEventForwarderTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ForwardedWebviewEvent {
@@ -171,7 +186,8 @@ pub struct CoreRuntimeState {
     pub(crate) connection: TokioMutex<CoreConnection>,
     pub(crate) composer_draft_transport: Mutex<ComposerDraftTransportIdentities>,
     /// Tauri-side timeline item count (updated by event loop; QA title only).
-    pub(crate) timeline_items_count: AtomicUsize,
+    pub(crate) timeline_items_count: Arc<AtomicUsize>,
+    _forwarder_task: Option<CoreEventForwarderTask>,
     pub(crate) native_window_focus_generation: AtomicU64,
 }
 
@@ -845,50 +861,61 @@ fn menu_item<R: tauri::Runtime, M: Manager<R>>(
 /// On any `CoreEvent`: emit `koushi-desktop://event` with a serialized DTO.
 /// On `EventStreamLag`: emit the latest snapshot (resync) + a
 /// `ResyncMarker` event so the frontend resets its timeline stores.
+fn forwarder_lag_disposition(lag: EventStreamLag) -> ForwarderLagDisposition {
+    if lag.skipped == 0 {
+        ForwarderLagDisposition::ResyncAndStop
+    } else {
+        ForwarderLagDisposition::ResyncAndReplay
+    }
+}
+
 fn spawn_core_event_forwarder(
     app: tauri::AppHandle,
     mut event_conn: CoreConnection,
-    timeline_items_count: &'static AtomicUsize,
-) {
-    tauri::async_runtime::spawn(async move {
+    timeline_items_count: Arc<AtomicUsize>,
+) -> CoreEventForwarderTask {
+    CoreEventForwarderTask(tauri::async_runtime::spawn(async move {
         loop {
             match event_conn.recv_event().await {
                 Ok(event) => {
                     emit_forwarded_webview_events(
                         &app,
-                        forwarded_webview_events_for_core_event(&event, timeline_items_count),
+                        forwarded_webview_events_for_core_event(&event, &timeline_items_count),
                     );
                 }
-                Err(_lag) => {
-                    // Consumer fell behind. Emit the latest snapshot so the
-                    // frontend can resync, then a ResyncMarker so it resets
-                    // its timeline stores.
+                Err(lag) => {
+                    // Consumer fell behind or the stream closed. Emit the
+                    // latest snapshot and marker once before replay or exit.
                     let snapshot = event_conn.snapshot();
                     emit_forwarded_webview_events(
                         &app,
                         forwarded_webview_events_for_lag_resync(&snapshot),
                     );
-                    let command_handle = event_conn.command_handle();
-                    let request_id = event_conn.next_request_id();
-                    submit_timeline_replay_after_forwarder_lag(command_handle, request_id);
+                    match forwarder_lag_disposition(lag) {
+                        ForwarderLagDisposition::ResyncAndReplay => {
+                            let command_handle = event_conn.command_handle();
+                            let request_id = event_conn.next_request_id();
+                            submit_timeline_replay_after_forwarder_lag(command_handle, request_id)
+                                .await;
+                        }
+                        ForwarderLagDisposition::ResyncAndStop => break,
+                    }
                 }
             }
         }
-    });
+    }))
 }
 
-fn submit_timeline_replay_after_forwarder_lag(
+async fn submit_timeline_replay_after_forwarder_lag(
     command_handle: CoreCommandHandle,
     request_id: koushi_core::RequestId,
 ) {
-    tauri::async_runtime::spawn(async move {
-        let command = CoreCommand::Timeline(TimelineCommand::ReplaySubscribed { request_id });
-        let _ = tokio::time::timeout(
-            CORE_FORWARDER_TIMELINE_REPLAY_TIMEOUT,
-            command_handle.command(command),
-        )
-        .await;
-    });
+    let command = CoreCommand::Timeline(TimelineCommand::ReplaySubscribed { request_id });
+    let _ = tokio::time::timeout(
+        CORE_FORWARDER_TIMELINE_REPLAY_TIMEOUT,
+        command_handle.command(command),
+    )
+    .await;
 }
 
 fn forwarded_webview_events_for_core_event(
@@ -1007,6 +1034,18 @@ fn is_oidc_callback_url(url: &str) -> bool {
         Some(rest) => rest.starts_with('?') || rest.starts_with('#'),
         None => false,
     }
+}
+
+fn submit_core_shutdown(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let core_state = app.state::<CoreRuntimeState>();
+        let request_id = core_state.connection.lock().await.next_request_id();
+        let _ = commands::submit_core_command(
+            &core_state,
+            CoreCommand::App(AppCommand::Shutdown { request_id }),
+        )
+        .await;
+    });
 }
 
 fn submit_oidc_callback_url(app: tauri::AppHandle, callback_url: String) {
@@ -1171,17 +1210,18 @@ pub fn run() {
             // event-forwarding connection (owned by the spawned task below)
             let event_conn = runtime.attach();
 
-            // Static storage for timeline_items_count so the forwarder task
-            // can hold a 'static reference. We use Box::leak because the
-            // runtime lives for the entire process lifetime.
-            let timeline_items_count: &'static AtomicUsize =
-                Box::leak(Box::new(AtomicUsize::new(0)));
-
+            let timeline_items_count = Arc::new(AtomicUsize::new(0));
+            let forwarder_task = spawn_core_event_forwarder(
+                app.handle().clone(),
+                event_conn,
+                Arc::clone(&timeline_items_count),
+            );
             let core_state = CoreRuntimeState {
                 runtime,
                 connection: TokioMutex::new(command_conn),
                 composer_draft_transport: Mutex::new(ComposerDraftTransportIdentities::default()),
-                timeline_items_count: AtomicUsize::new(0),
+                timeline_items_count,
+                _forwarder_task: Some(forwarder_task),
                 native_window_focus_generation: AtomicU64::new(0),
             };
             app.manage(core_state);
@@ -1201,9 +1241,6 @@ pub fn run() {
                     let _ = app.emit(MENU_EVENT_NAME, action_id);
                 }
             });
-
-            // Start the CoreEvent forwarding task.
-            spawn_core_event_forwarder(app.handle().clone(), event_conn, timeline_items_count);
 
             #[cfg(any(debug_assertions, test))]
             if let Some(pipe_path) = qa_login_pipe_path_from_env() {
@@ -1294,9 +1331,7 @@ pub fn run() {
                     let _ = persist_current_window_state(window);
                 }
                 if window_event_should_stop_background_tasks(event) {
-                    // Core runtime cleanup: send Shutdown command.
-                    // (The runtime actor will stop when command_tx is dropped
-                    // at process exit; explicit Shutdown is belt-and-suspenders.)
+                    submit_core_shutdown(window.app_handle().clone());
                 }
             }
         })
@@ -1513,8 +1548,9 @@ mod tests {
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     use super::{
-        CORE_EVENT_NAME, STATE_EVENT_NAME, forwarded_webview_events_for_core_event,
-        forwarded_webview_events_for_lag_resync, serialize_core_event,
+        CORE_EVENT_NAME, ForwarderLagDisposition, STATE_EVENT_NAME,
+        forwarded_webview_events_for_core_event, forwarded_webview_events_for_lag_resync,
+        forwarder_lag_disposition, serialize_core_event,
     };
     use super::{
         MacosCloseRequestedAction, PersistedWindowState, WindowWorkArea, desktop_menu_items,
@@ -1893,6 +1929,18 @@ mod tests {
     }
 
     #[test]
+    fn forwarder_lag_disposition_replays_positive_lag_and_stops_on_zero_sentinel() {
+        assert_eq!(
+            forwarder_lag_disposition(koushi_core::EventStreamLag { skipped: 1 }),
+            ForwarderLagDisposition::ResyncAndReplay
+        );
+        assert_eq!(
+            forwarder_lag_disposition(koushi_core::EventStreamLag { skipped: 0 }),
+            ForwarderLagDisposition::ResyncAndStop
+        );
+    }
+
+    #[test]
     fn lag_resync_forwarder_requests_core_timeline_replay_after_marker() {
         let source = include_str!("lib.rs");
         let production_source = source
@@ -1907,13 +1955,26 @@ mod tests {
             .next()
             .expect("forwarded event helper should follow forwarder");
         let lag_branch = forwarder_source
-            .split("Err(_lag)")
+            .split("Err(lag)")
             .nth(1)
             .expect("forwarder should handle EventStreamLag");
 
         assert!(
             production_source.contains("TimelineCommand::ReplaySubscribed"),
             "forwarder lag recovery must ask core to replay InitialItems for subscribed timelines"
+        );
+        assert!(
+            production_source.contains("struct CoreEventForwarderTask")
+                && production_source.contains("forwarder_task: Some"),
+            "the managed state must own the forwarder task"
+        );
+        assert!(
+            !production_source.contains("Box::leak"),
+            "the forwarder counter must not be leaked"
+        );
+        assert!(
+            !lag_branch.contains("async_runtime::spawn"),
+            "positive-lag replay must be awaited inline rather than detached"
         );
         assert!(
             lag_branch.contains("event_conn.command_handle()")
@@ -1929,6 +1990,13 @@ mod tests {
         assert!(
             marker_offset < replay_offset,
             "ResyncMarker must be emitted before replay is requested so fresh InitialItems are not cleared"
+        );
+        let stop_offset = lag_branch
+            .find("ForwarderLagDisposition::ResyncAndStop")
+            .expect("zero lag must select the defensive stop disposition");
+        assert!(
+            marker_offset < stop_offset,
+            "zero-lag state + marker emission must precede the defensive loop exit"
         );
     }
 
@@ -2261,6 +2329,15 @@ mod tests {
         assert!(!window_event_should_stop_background_tasks(
             &tauri::WindowEvent::Resized(tauri::PhysicalSize::new(1280, 820))
         ));
+
+        let source = include_str!("lib.rs");
+        let destroyed_handler = source
+            .split("if window_event_should_stop_background_tasks(event)")
+            .nth(1)
+            .and_then(|rest| rest.split(".invoke_handler").next())
+            .expect("window destruction handler should exist");
+        assert!(destroyed_handler.contains("submit_core_shutdown"));
+        assert!(source.contains("AppCommand::Shutdown { request_id }"));
     }
 
     #[test]

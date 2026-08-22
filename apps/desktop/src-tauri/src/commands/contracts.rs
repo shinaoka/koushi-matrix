@@ -2613,7 +2613,8 @@ fn env_unset_real_search_and_select_producers_child() {
             composer_draft_transport: std::sync::Mutex::new(
                 crate::ComposerDraftTransportIdentities::default(),
             ),
-            timeline_items_count: std::sync::atomic::AtomicUsize::new(0),
+            timeline_items_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            _forwarder_task: None,
             native_window_focus_generation: std::sync::atomic::AtomicU64::new(0),
         };
         super::search::submit_search_production_path(

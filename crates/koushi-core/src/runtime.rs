@@ -742,6 +742,22 @@ struct AppActor {
     pending_date_navigation_request_id: Option<RequestId>,
 }
 
+enum CommandDisposition {
+    Handle(CoreCommandEnvelope),
+    Shutdown,
+}
+
+fn command_disposition(envelope: CoreCommandEnvelope) -> CommandDisposition {
+    if matches!(
+        &envelope.command,
+        CoreCommand::App(AppCommand::Shutdown { .. })
+    ) {
+        CommandDisposition::Shutdown
+    } else {
+        CommandDisposition::Handle(envelope)
+    }
+}
+
 #[cfg(any(test, feature = "test-hooks"))]
 struct ComposerDraftTestMutation {
     drafts: ComposerDraftStore,
@@ -821,18 +837,35 @@ impl AppActor {
                     let loop_started = std::time::Instant::now();
                     let before_state = self.state.clone();
                     let clone_ms = loop_started.elapsed().as_millis();
-                    let mut state_changed = self.handle_command(command).await;
+                    let mut state_changed = match command_disposition(command) {
+                        CommandDisposition::Handle(command) => self.handle_command(command).await,
+                        CommandDisposition::Shutdown => break,
+                    };
                     let mut handled = 1u32;
+                    let mut shutdown = false;
                     // Coalesce: drain whatever is already queued before
-                    // emitting a single StateChanged for the batch.
+                    // emitting a single StateChanged for the batch. Shutdown is
+                    // an ordered barrier: publish preceding changes, then stop
+                    // without handling duplicate or later commands.
                     while let Ok(next) = self.command_rx.try_recv() {
-                        state_changed |= self.handle_command(next).await;
-                        handled += 1;
+                        match command_disposition(next) {
+                            CommandDisposition::Handle(next) => {
+                                state_changed |= self.handle_command(next).await;
+                                handled += 1;
+                            }
+                            CommandDisposition::Shutdown => {
+                                shutdown = true;
+                                break;
+                            }
+                        }
                     }
                     if state_changed {
                         self.publish_state_delta(&before_state);
                     }
                     app_loop_trace("command", handled, clone_ms, loop_started.elapsed());
+                    if shutdown {
+                        break;
+                    }
                 }
                 actions = self.action_rx.recv() => {
                     let Some(actions) = actions else { break };
@@ -1421,7 +1454,9 @@ impl AppActor {
                 projected_state_changed
             }
             CoreCommand::App(app_command) => match app_command {
-                AppCommand::Shutdown { .. } => false,
+                AppCommand::Shutdown { .. } => {
+                    unreachable!("shutdown is handled by the AppActor command disposition")
+                }
                 AppCommand::SetComposerReplyTarget {
                     request_id,
                     room_id,
@@ -6395,6 +6430,117 @@ mod tests {
             "stale/wrong-account trust changed state"
         );
         runtime.shutdown_handle().abort();
+    }
+
+    async fn wait_for_app_actor_shutdown(runtime: &CoreRuntime) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !runtime.shutdown_handle().is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("AppActor shutdown handle should complete");
+    }
+
+    #[tokio::test]
+    async fn signed_out_shutdown_completes_app_actor_shutdown_handle() {
+        let data_dir = tempfile::tempdir().expect("runtime data dir");
+        let runtime = CoreRuntime::start_with_data_dir(data_dir.path().to_owned());
+        let connection = runtime.attach();
+        let request_id = connection.next_request_id();
+        connection
+            .command(CoreCommand::App(AppCommand::Shutdown { request_id }))
+            .await
+            .expect("signed-out shutdown command");
+
+        wait_for_app_actor_shutdown(&runtime).await;
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn first_shutdown_publishes_preceding_state_and_ignores_duplicate_and_later_commands() {
+        let data_dir = tempfile::tempdir().expect("runtime data dir");
+        let runtime = CoreRuntime::start_with_data_dir(data_dir.path().to_owned());
+        let mut connection = runtime.attach();
+        let first_request_id = connection.next_request_id();
+        let shutdown_request_id = connection.next_request_id();
+        let duplicate_shutdown_request_id = connection.next_request_id();
+        let later_request_id = connection.next_request_id();
+
+        runtime
+            .command_tx
+            .send(CoreCommandEnvelope {
+                command: CoreCommand::App(AppCommand::UpdateSettings {
+                    request_id: first_request_id,
+                    patch: SettingsPatch {
+                        thread_list_order: Some(koushi_state::ThreadListOrder::RootChronology),
+                        ..SettingsPatch::default()
+                    },
+                }),
+                composer_permit: None,
+            })
+            .await
+            .expect("preceding command");
+        runtime
+            .command_tx
+            .send(CoreCommandEnvelope {
+                command: CoreCommand::App(AppCommand::Shutdown {
+                    request_id: shutdown_request_id,
+                }),
+                composer_permit: None,
+            })
+            .await
+            .expect("first shutdown command");
+        runtime
+            .command_tx
+            .send(CoreCommandEnvelope {
+                command: CoreCommand::App(AppCommand::Shutdown {
+                    request_id: duplicate_shutdown_request_id,
+                }),
+                composer_permit: None,
+            })
+            .await
+            .expect("duplicate shutdown command");
+        runtime
+            .command_tx
+            .send(CoreCommandEnvelope {
+                command: CoreCommand::App(AppCommand::UpdateSettings {
+                    request_id: later_request_id,
+                    patch: SettingsPatch {
+                        room_list_sort: Some(koushi_state::RoomListSort::RecentFirst),
+                        ..SettingsPatch::default()
+                    },
+                }),
+                composer_permit: None,
+            })
+            .await
+            .expect("later command");
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if matches!(
+                    connection.recv_event().await,
+                    Ok(CoreEvent::StateDelta(ref delta)) if delta.changed.settings.is_some()
+                ) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("preceding settings delta must publish before shutdown completes");
+        wait_for_app_actor_shutdown(&runtime).await;
+        let snapshot = runtime.snapshot_rx.borrow();
+        assert_eq!(
+            snapshot.state.settings.values.thread_list_order,
+            koushi_state::ThreadListOrder::RootChronology
+        );
+        assert_eq!(
+            snapshot.state.settings.values.room_list_sort,
+            koushi_state::RoomListSort::Activity,
+            "commands queued after the first Shutdown must not be handled"
+        );
+        drop(snapshot);
+        runtime.shutdown().await;
     }
 
     #[tokio::test]

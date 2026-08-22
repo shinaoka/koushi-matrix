@@ -29,6 +29,13 @@ Fix the existing `apps/desktop/src-tauri/src/lib.rs` core-event forwarder owner 
 4. Existing lag serialization/order and timeline count tests remain exact. The zero sentinel result type stays unchanged.
 5. Focused Core and Tauri tests must repeat at least three times.
 
+## Implementation evidence
+
+- RED: signed-out Shutdown timed out waiting for AppActor; Tauri disposition/source tests failed to compile with four missing production symbols.
+- GREEN focused x3: two Core shutdown tests and three Tauri disposition/replay/window tests. Affected suites: Core lib1,023 passed/8 ignored; Tauri150 passed/1 ignored plus keyring5.
+- Static verifier:183-command registry and `serialize_core_event` exact; no `Box::leak` or nested replay spawn; one Arc counter; owned task; closed disposition; Destroyed Shutdown; only the three approved files changed.
+- Post-implementation full-diff review: `reviewer-flash` `Correct-to-merge`; no blocking findings. The documented concurrent-submit cutoff and best-effort Destroyed task race are accepted teardown semantics. Full matrix pending.
+
 ## Invariants
 
 - Final snapshot/ResyncMarker still emits once on a live closed stream; managed-state teardown may abort immediately because no WebView remains.
