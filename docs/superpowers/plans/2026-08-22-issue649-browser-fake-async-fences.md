@@ -42,7 +42,8 @@ Tests must first fail on the immutable production baseline, then pass x3 with th
 - Robust public RED on immutable production: 20/20 focused cases failed (eleven logout owners, five other clear/replacement paths plus logout alias, reset/alias, reset/OIDC, unignore supersession, directory supersession).
 - GREEN exact suite20/20 x3; browser fake134 + client25; typecheck/full lint/diff green.
 - Deterministic source verifier: exactly 14 Promise sites; only the approved 13 method bodies changed; one new fail-closed return per method; 205 method signatures and 15 fields exact; `loadSpaceMembers` unchanged.
-- Post-implementation full-diff review: `reviewer-flash` `Correct-to-merge`; full matrix pending.
+- Post-implementation full-diff review: `reviewer-flash` `Correct-to-merge`.
+- Final local matrix: source verifier green; browser fake134, client25, Vitest1,420, Playwright248, workspace all-targets, Tauri149/1 ignored plus keyring5, Headless Core QA130, wasm state/search, typecheck/lint/build, Tauri/domain/IPC boundaries, secret/release/version, SDK/docs, rustfmt, `cargo deny`, `cargo machete`, and diff checks green without reruns.
 
 ## Implementation constraints
 
