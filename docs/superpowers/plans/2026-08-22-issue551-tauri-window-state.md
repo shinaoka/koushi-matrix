@@ -71,7 +71,8 @@ Run window-state focused baseline/post x3, full Tauri, mac GUI source contracts,
 - Immutable baseline window-state22/22 x3; post-move22/22 x3; full Tauri150/1 ignored plus keyring5 and mac GUI source contracts green.
 - Exactness verifier: production items42/42 (5 constants,7 types, gate impl,28 functions), moved tests/helpers26/26 exact; parent definitions0; retained visibility/macOS close/run exact; registry183 exact; no glob.
 - Metrics (`wc -l` newline count): parent4,523→3,519 lines; leaf967; combined4,486 (-37 lines / +423 bytes; blank/import relocation only). Content-line counts including the final unterminated line are3,520 +967 =4,487.
-- Post-implementation full-diff review: `reviewer-flash` `Correct-to-merge`; no blocking findings. Compiler-driven `AppliedWindowGeometry` visibility and metric/import wording are documented above. Full matrix pending.
+- Post-implementation full-diff review: `reviewer-flash` `Correct-to-merge`; no blocking findings. Compiler-driven `AppliedWindowGeometry` visibility and metric/import wording are documented above.
+- Final local matrix: window-state22/22 x3, Tauri150/1 ignored plus keyring5, mac GUI source contracts, Vitest1,429, Playwright248, workspace all-targets, Headless Core QA130, wasm state/search, typecheck/lint/build, SDK/docs, Tauri/domain/IPC boundaries, secret/release/version, rustfmt, `cargo deny`, `cargo machete`, exactness/diff checks green without reruns.
 
 ## Gates
 
