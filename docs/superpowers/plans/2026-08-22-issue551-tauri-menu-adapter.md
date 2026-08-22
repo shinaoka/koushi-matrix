@@ -48,7 +48,7 @@ Run Tauri focused menu tests baseline/post x3, full Tauri/Core/frontend/QA/polic
 - Metrics: parent4,187→4,029 lines; leaf166; combined4,195 (+8 lines / +386 bytes from explicit module/import visibility).
 - Post-implementation full-diff review: `reviewer-flash` `Correct-to-merge`; no findings.
 - Final local matrix: Tauri150/1 ignored plus keyring5, Vitest1,429, Playwright248, workspace all-targets, Headless Core QA130, wasm state/search, typecheck/lint/build, SDK/docs, Tauri/domain/IPC boundaries, secret/release/version, rustfmt, `cargo deny`, `cargo machete`, exactness/diff checks green without reruns.
-- Latest-main integration: rebased onto `7de3bf84` after #648/#609/#569/#544. Preserved all new window-persistence functions and registry183; resolved one menu/window adjacency conflict, removed a reviewer-detected conflict-message artifact, then reran focused/full Tauri, exactness, the complete local matrix, and policy gates green. Latest-main metrics:4,680→4,523 parent lines +166 leaf =4,689 (+9 lines). Fresh delta review pending.
+- Latest-main integration: rebased onto `7de3bf84` after #648/#609/#569/#544. Preserved all new window-persistence functions and registry183; resolved one menu/window adjacency conflict, removed a reviewer-detected conflict-message artifact, then reran focused/full Tauri, exactness, the complete local matrix, and policy gates green. Latest-main metrics:4,680→4,523 parent lines +166 leaf =4,689 (+9 lines). Fresh delta review: `reviewer-flash` `Correct-to-merge-after-rebase`; no findings.
 
 ## Gates
 
