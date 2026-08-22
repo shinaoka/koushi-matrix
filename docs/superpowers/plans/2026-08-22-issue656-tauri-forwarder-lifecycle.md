@@ -34,7 +34,8 @@ Fix the existing `apps/desktop/src-tauri/src/lib.rs` core-event forwarder owner 
 - RED: signed-out Shutdown timed out waiting for AppActor; Tauri disposition/source tests failed to compile with four missing production symbols.
 - GREEN focused x3: two Core shutdown tests and three Tauri disposition/replay/window tests. Affected suites: Core lib1,023 passed/8 ignored; Tauri150 passed/1 ignored plus keyring5.
 - Static verifier:183-command registry and `serialize_core_event` exact; no `Box::leak` or nested replay spawn; one Arc counter; owned task; closed disposition; Destroyed Shutdown; only the three approved files changed.
-- Post-implementation full-diff review: `reviewer-flash` `Correct-to-merge`; no blocking findings. The documented concurrent-submit cutoff and best-effort Destroyed task race are accepted teardown semantics. Full matrix pending.
+- Post-implementation full-diff review: `reviewer-flash` `Correct-to-merge`; no blocking findings. The documented concurrent-submit cutoff and best-effort Destroyed task race are accepted teardown semantics.
+- Final local matrix: Core lib1,023/8 ignored, Tauri150/1 ignored plus keyring5, Vitest1,429, Playwright248, workspace all-targets, Headless Core QA130, wasm state/search, typecheck/lint/build, SDK/docs, Tauri/domain/IPC boundaries, secret/release/version, rustfmt, `cargo deny`, `cargo machete`, source/diff checks green without reruns.
 
 ## Invariants
 
