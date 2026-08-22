@@ -41,6 +41,13 @@ AST/item verifier from immutable baseline:
 
 Run Tauri focused menu tests baseline/post x3, full Tauri/Core/frontend/QA/policy matrix, design/full-diff review, CI7/7 and #551 evidence.
 
+## Implementation evidence
+
+- Tauri menu baseline2/2 x3; post-move2/2 x3; full Tauri150/1 ignored plus keyring5.
+- Exactness verifier: functions6/6, constants6/6, structs2/2 exact; parent definitions0; module/import cfg groups exact; registry183 exact; no glob.
+- Metrics: parent4,187→4,029 lines; leaf166; combined4,195 (+8 lines / +386 bytes from explicit module/import visibility).
+- Post-implementation full-diff review: `reviewer-flash` `Correct-to-merge`; no findings. Full matrix pending.
+
 ## Gates
 
 - `reviewer-flash` design verdict: `Correct-to-implement`; cfg-gated parent import finding incorporated.

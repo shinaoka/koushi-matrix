@@ -1,6 +1,7 @@
 #![recursion_limit = "256"]
 
 mod commands;
+mod desktop_menu;
 mod dto;
 pub mod keyring_backend;
 
@@ -15,13 +16,15 @@ use std::{
 };
 use tokio::sync::Mutex as TokioMutex;
 
-use tauri::{
-    Emitter, Manager,
-    menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder},
-};
+use tauri::{Emitter, Manager};
 
 use serde::{Deserialize, Serialize};
 
+use crate::desktop_menu::{MENU_EVENT_NAME, build_desktop_menu, desktop_menu_action_id};
+#[cfg(target_os = "macos")]
+use crate::desktop_menu::{MENU_ID_TOGGLE_FULLSCREEN, toggle_main_window_fullscreen};
+#[cfg(test)]
+use crate::desktop_menu::{desktop_menu_items, desktop_standard_menu_items};
 use crate::dto::FrontendDesktopSnapshotDelta;
 
 // koushi-core: the production runtime host. All session, credential,
@@ -38,18 +41,12 @@ use koushi_core::{
 };
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 
-const MENU_EVENT_NAME: &str = "koushi-desktop://menu";
 /// Tauri event for serialized CoreEvent payloads (discrete events + diff batches).
 pub(crate) const CORE_EVENT_NAME: &str = "koushi-desktop://event";
 /// Tauri event for serialized AppStateSnapshot payloads (latest-wins).
 const STATE_EVENT_NAME: &str = "koushi-desktop://state";
 const OIDC_CALLBACK_URL_PREFIX: &str = "koushi-desktop://auth/callback";
 const CORE_FORWARDER_TIMELINE_REPLAY_TIMEOUT: Duration = Duration::from_secs(2);
-const MENU_ID_OPEN_USER_SETTINGS: &str = "open_user_settings";
-const MENU_ID_SIGN_OUT: &str = "sign_out";
-const MENU_ID_SHOW_KEYBOARD_SETTINGS: &str = "show_keyboard_settings";
-const MENU_ID_TOGGLE_RIGHT_PANEL: &str = "toggle_right_panel";
-const MENU_ID_TOGGLE_FULLSCREEN: &str = "toggle_fullscreen";
 const MIN_RESTORABLE_WINDOW_WIDTH: u32 = 760;
 const MIN_RESTORABLE_WINDOW_HEIGHT: u32 = 620;
 const DEFAULT_WINDOW_WIDTH_LOGICAL: u32 = 1280;
@@ -80,88 +77,6 @@ impl Drop for CoreEventForwarderTask {
 struct ForwardedWebviewEvent {
     event_name: &'static str,
     payload: serde_json::Value,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct DesktopMenuItem {
-    pub id: &'static str,
-    pub label: &'static str,
-    pub menu: &'static str,
-    pub accelerator: &'static str,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg(test)]
-pub(crate) struct DesktopStandardMenuItem {
-    pub id: &'static str,
-    pub label: &'static str,
-    pub menu: &'static str,
-    pub accelerator: &'static str,
-}
-
-pub(crate) fn desktop_menu_items() -> Vec<DesktopMenuItem> {
-    vec![
-        DesktopMenuItem {
-            id: MENU_ID_OPEN_USER_SETTINGS,
-            label: "User Settings",
-            menu: "app",
-            accelerator: "CmdOrCtrl+,",
-        },
-        DesktopMenuItem {
-            id: MENU_ID_SIGN_OUT,
-            label: "Sign Out",
-            menu: "app",
-            accelerator: "",
-        },
-        DesktopMenuItem {
-            id: MENU_ID_TOGGLE_RIGHT_PANEL,
-            label: "Toggle Right Panel",
-            menu: "view",
-            accelerator: "CmdOrCtrl+.",
-        },
-        DesktopMenuItem {
-            id: MENU_ID_SHOW_KEYBOARD_SETTINGS,
-            label: "Keyboard Shortcuts",
-            menu: "help",
-            accelerator: "CmdOrCtrl+/",
-        },
-        #[cfg(target_os = "macos")]
-        DesktopMenuItem {
-            id: MENU_ID_TOGGLE_FULLSCREEN,
-            label: "Toggle Fullscreen",
-            menu: "view",
-            accelerator: "Ctrl+Command+F",
-        },
-    ]
-}
-
-#[cfg(test)]
-pub(crate) fn desktop_standard_menu_items() -> Vec<DesktopStandardMenuItem> {
-    vec![
-        DesktopStandardMenuItem {
-            id: "close_window",
-            label: "Close Window",
-            menu: "file",
-            accelerator: "CmdOrCtrl+W",
-        },
-        DesktopStandardMenuItem {
-            id: "quit",
-            label: "Quit",
-            menu: "app",
-            accelerator: "CmdOrCtrl+Q",
-        },
-    ]
-}
-
-fn desktop_menu_action_id(menu_id: &str) -> Option<&'static str> {
-    match menu_id {
-        MENU_ID_OPEN_USER_SETTINGS => Some("openUserSettings"),
-        MENU_ID_SIGN_OUT => Some("logout"),
-        MENU_ID_TOGGLE_RIGHT_PANEL => Some("toggleRightPanel"),
-        MENU_ID_SHOW_KEYBOARD_SETTINGS => Some("showKeyboardSettings"),
-        MENU_ID_TOGGLE_FULLSCREEN => Some("toggleFullscreen"),
-        _ => None,
-    }
 }
 
 /// Transport-adapter state.
@@ -1080,79 +995,7 @@ fn persist_close_window_state_if_ready<R: tauri::Runtime>(
     Ok(())
 }
 
-fn build_desktop_menu<R: tauri::Runtime, M: Manager<R>>(
-    manager: &M,
-) -> tauri::Result<tauri::menu::Menu<R>> {
-    let open_user_settings = menu_item(manager, MENU_ID_OPEN_USER_SETTINGS)?;
-    let sign_out = menu_item(manager, MENU_ID_SIGN_OUT)?;
-    let toggle_right_panel = menu_item(manager, MENU_ID_TOGGLE_RIGHT_PANEL)?;
-    let show_keyboard_settings = menu_item(manager, MENU_ID_SHOW_KEYBOARD_SETTINGS)?;
-
-    #[cfg(target_os = "macos")]
-    let toggle_fullscreen = menu_item(manager, MENU_ID_TOGGLE_FULLSCREEN)?;
-
-    let app_menu = SubmenuBuilder::new(manager, "Koushi")
-        .item(&open_user_settings)
-        .item(&sign_out)
-        .separator()
-        .quit()
-        .build()?;
-    let file_menu = SubmenuBuilder::new(manager, "File")
-        .close_window()
-        .build()?;
-    let edit_menu = SubmenuBuilder::new(manager, "Edit")
-        .undo()
-        .redo()
-        .separator()
-        .cut()
-        .copy()
-        .paste()
-        .select_all()
-        .build()?;
-    let view_menu = {
-        let builder = SubmenuBuilder::new(manager, "View").item(&toggle_right_panel);
-        #[cfg(target_os = "macos")]
-        let builder = builder.item(&toggle_fullscreen);
-        builder.build()?
-    };
-    let help_menu = SubmenuBuilder::new(manager, "Help")
-        .item(&show_keyboard_settings)
-        .build()?;
-
-    MenuBuilder::new(manager)
-        .item(&app_menu)
-        .item(&file_menu)
-        .item(&edit_menu)
-        .item(&view_menu)
-        .item(&help_menu)
-        .build()
-}
-
-#[cfg(target_os = "macos")]
-fn toggle_main_window_fullscreen(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        if let Ok(fullscreen) = window.is_fullscreen() {
-            let _ = window.set_fullscreen(!fullscreen);
-        }
-    }
-}
-
-fn menu_item<R: tauri::Runtime, M: Manager<R>>(
-    manager: &M,
-    id: &str,
-) -> tauri::Result<tauri::menu::MenuItem<R>> {
-    let item = desktop_menu_items()
-        .into_iter()
-        .find(|item| item.id == id)
-        .expect("desktop menu item id should be registered");
-    let builder = MenuItemBuilder::with_id(item.id, item.label);
-    if item.accelerator.is_empty() {
-        builder.build(manager)
-    } else {
-        builder.accelerator(item.accelerator).build(manager)
-    }
-}
-
+ (refactor(desktop): extract Tauri menu adapter)
 /// Spawn the CoreEvent forwarding task. This task owns a dedicated connection
 /// (second `attach()`) so it can loop on `recv_event` without blocking command
 /// dispatch.
