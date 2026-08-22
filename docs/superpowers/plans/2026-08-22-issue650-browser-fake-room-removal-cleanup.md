@@ -41,7 +41,8 @@ Use only public fake APIs to dirty Alpha and Planning projections: URL preview/n
 - Immutable-production public RED: 4 cleanup cases failed and the unrelated-scope preservation case passed.
 - Final focused GREEN: browser fake139/139 x3; browser fake139 + client25; typecheck/lint/source/diff checks green.
 - Deterministic verifier: only `removeRoomFromFakeSnapshot` changed; 205 method signatures, 15 class fields, and exports exact; all required cleanup predicates present; tests use no private snapshot access.
-- Post-implementation full-diff review: `reviewer-flash` `Correct-to-merge`; no blocking findings. The non-empty `dm_space_ids` coverage note is fixture-limited and the exact filter is statically verified without mutating immutable module fixtures. Full matrix pending.
+- Post-implementation full-diff review: `reviewer-flash` `Correct-to-merge`; no blocking findings. The non-empty `dm_space_ids` coverage note is fixture-limited and the exact filter is statically verified without mutating immutable module fixtures.
+- Final local matrix: Vitest1,425, Playwright248, Tauri149/1 ignored plus keyring5, Headless Core QA130, wasm state/search, typecheck/lint/build, SDK/docs, Tauri/domain/IPC boundaries, secret/release/version, rustfmt, `cargo deny`, `cargo machete`, source/diff checks green. Initial workspace run hit tracked #645 (`corrupt_load_attempts_once_per_session`, left3/right2); exact x3, runtime_timeline file, and complete workspace rerun all passed.
 
 ## Implementation
 
