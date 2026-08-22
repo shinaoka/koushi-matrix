@@ -62,7 +62,8 @@ Run focused forwarding/wire baseline/post x3, full Tauri, IPC/generated contract
 - Immutable baseline core-event9/9 x3; post-move9/9 x3; full Tauri150/1 ignored plus keyring5 and IPC/generated contracts green.
 - Exactness verifier: production constants/types/functions+Drop exact; tests8 exact; lag test only documented two-source deltas; parent definitions0; state/setup/run/registry183 and generated artifact exact; no glob.
 - Metrics (`wc -l` newline count): parent3,519→1,337 lines; leaf2,181 (mostly exhaustive wire contract); combined3,518 (-1 line / +554 bytes). Content-line indexing including each file's final unterminated line reports1,338 +2,182 =3,520 (+1), reconciling the reviewer count.
-- Post-implementation full-diff review: `reviewer-flash` `Correct-to-merge`; no blocking findings. Full matrix pending.
+- Post-implementation full-diff review: `reviewer-flash` `Correct-to-merge`; no blocking findings.
+- Final local matrix: core-event9/9 x3, Tauri150/1 ignored plus keyring5, IPC/generated artifact, Vitest1,429, Playwright248, workspace all-targets, Headless Core QA130, wasm state/search, typecheck/lint/build, SDK/docs, Tauri/domain boundaries, secret/release/version, rustfmt, `cargo deny`, `cargo machete`, exactness/diff checks green without reruns.
 
 ## Gates
 
