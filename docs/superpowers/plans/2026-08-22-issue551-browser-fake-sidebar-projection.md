@@ -48,7 +48,8 @@ Run the same focused browser fake/client checks before and after, then full revi
 - Immutable-baseline focused `browserFakeApi.test.ts`143 + `client.test.ts`25 = 168/168; the same two-file command passed168/168 x3 post-move; typecheck/lint/diff green.
 - Exactness verifier: bodies/parameters2/2 exact, parent definitions0, leaf order/exports2, one direct import, calls4, class methods205/fields15 and parent exports exact, no glob.
 - Metrics: parent5,995→5,940 lines; leaf62; combined6,002 (+7 lines / +313 bytes from explicit imports/exports).
-- Post-implementation full-diff review: `reviewer-flash` `Correct-to-merge`; no blocking findings. Full matrix pending.
+- Post-implementation full-diff review: `reviewer-flash` `Correct-to-merge`; no blocking findings.
+- Final local matrix: Vitest1,429, Playwright248, workspace all-targets, Tauri149/1 ignored plus keyring5, Headless Core QA130, wasm state/search, typecheck/lint/build, SDK/docs, Tauri/domain/IPC boundaries, secret/release/version, rustfmt, `cargo deny`, `cargo machete`, exactness/diff checks green. The first Playwright attempt used an out-of-tree symlinked `node_modules`, so Vite correctly denied font files outside `server.fs.allow` (247 pass/1 font-network failure); after installing the same dependency tree at the worktree path, the exact test and complete248 rerun passed.
 
 ## Residual architecture decision
 
