@@ -153,6 +153,65 @@ async function dirtyBrowserFakeSessionViews(api: ReturnType<typeof createBrowser
   );
 }
 
+const alphaRoomId = "!room-alpha:example.invalid";
+const planningRoomId = "!room-planning:example.invalid";
+const alphaSpaceId = "!space-alpha:example.invalid";
+const betaSpaceId = "!space-beta:example.invalid";
+const allAttachmentKinds = ["image", "video", "audio", "file", "sticker"] as const;
+
+async function dirtyRoomOwnedState(
+  api: ReturnType<typeof createBrowserFakeApi>,
+  roomId: string,
+  eventId: string
+) {
+  await api.setRoomUrlPreviewOverride(roomId, false);
+  await api.setRoomNotificationMode(roomId, { kind: "mentions" });
+  await api.pinEvent(roomId, `${eventId}-pin`);
+  await api.queryMentionCandidates(roomId, "main", "member");
+  await api.startRoomCrawl(roomId);
+  await api.sendReadReceipt(roomId, eventId);
+  await api.setFullyRead(roomId, eventId);
+  await api.setTyping(roomId, true);
+}
+
+function roomOwnedProjection(snapshot: DesktopSnapshot, roomId: string) {
+  const { domain, ui } = snapshot.state;
+  const activityRows =
+    domain.activity.kind === "open"
+      ? [...domain.activity.recent.rows, ...domain.activity.unread.rows].filter(
+          (row) => row.room_id === roomId
+        )
+      : [];
+  const searchResults =
+    domain.search.kind === "results"
+      ? domain.search.results.filter((result) => result.room_id === roomId)
+      : [];
+  const threadsItems =
+    ui.threads_list.kind === "open"
+      ? ui.threads_list.items.filter((item) => item.room_id === roomId)
+      : [];
+  const filesItems = ui.files_view.kind === "open" ? ui.files_view.items.filter((item) => item.room_id === roomId) : [];
+
+  return {
+    room: domain.rooms.find((room) => room.room_id === roomId),
+    roomPreference: domain.room_preferences.rooms[roomId],
+    linkPreviewOverride: domain.link_preview_settings.room_overrides[roomId],
+    notification: domain.room_notification_settings[roomId],
+    interaction: domain.room_interactions[roomId],
+    crawler: domain.search_crawler.rooms[roomId],
+    crawlerLastActive:
+      domain.search_crawler.last_active?.room_id === roomId
+        ? domain.search_crawler.last_active
+        : null,
+    liveSignals: domain.live_signals.rooms[roomId],
+    mentionTargets: domain.mention_candidates.targets.filter((target) => target.room_id === roomId),
+    searchResults,
+    activityRows,
+    threadsItems,
+    filesItems
+  };
+}
+
 describe("BrowserFakeApi session-view reset", () => {
   test("locked construction exposes only the locked session boundary", async () => {
     const api = createBrowserFakeApi({ session: "locked" });
@@ -1993,6 +2052,269 @@ describe("BrowserFakeApi settings preview", () => {
     expect(left.sidebar.space_rail.map((space) => space.space_id)).toEqual([
       "!space-beta:example.invalid"
     ]);
+  });
+
+  test.each(["leaveRoom", "forgetRoom"] as const)(
+    "%s clears every active ordinary-room projection",
+    async (operation) => {
+      const api = createBrowserFakeApi();
+      await api.selectRoom(alphaRoomId);
+      await dirtyRoomOwnedState(api, alphaRoomId, "$alpha-update");
+      await api.openActivity();
+      await api.openActivityEvent(alphaRoomId, "$alpha-update");
+      await api.selectSearchResult(alphaRoomId, "$alpha-update");
+      await api.submitSearch("Alpha", "currentRoom");
+      await api.openThreadsList({ kind: "room", room_id: alphaRoomId });
+      await api.openFilesView(
+        { kind: "room", room_id: alphaRoomId },
+        { kinds: [...allAttachmentKinds], filename_query: null },
+        "newestFirst"
+      );
+
+      const account = await readyAccount(api);
+      const { generation, lease } = await beginComposerLease(api, account, {
+        kind: "main",
+        room_id: alphaRoomId
+      });
+      await api.setComposerDraft(
+        account,
+        lease.leaseId,
+        generation,
+        alphaRoomId,
+        documentFromText("Alpha draft"),
+        revision("7")
+      );
+      await api.stageUploadBytes(
+        { kind: "main", room_id: alphaRoomId },
+        [{
+          stagedId: "alpha-upload",
+          position: 0,
+          filename: "fixture_alpha.txt",
+          mimeType: "text/plain",
+          bytes: [1, 2, 3]
+        }]
+      );
+
+      const dirty = roomOwnedProjection(await api.getSnapshot(), alphaRoomId);
+      expect(dirty).toMatchObject({
+        room: expect.objectContaining({ room_id: alphaRoomId }),
+        roomPreference: expect.any(Object),
+        linkPreviewOverride: false,
+        notification: expect.any(Object),
+        interaction: expect.any(Object),
+        crawler: expect.any(Object),
+        crawlerLastActive: expect.any(Object),
+        liveSignals: expect.any(Object)
+      });
+      expect(dirty.mentionTargets).not.toEqual([]);
+      expect(dirty.searchResults).not.toEqual([]);
+      expect(dirty.activityRows).not.toEqual([]);
+      expect(dirty.threadsItems).not.toEqual([]);
+      expect(dirty.filesItems).not.toEqual([]);
+
+      const markRead = api.markActivityRead({
+        kind: "room",
+        room_id: alphaRoomId,
+        up_to_event_id: "$alpha-update"
+      });
+      const removed =
+        operation === "leaveRoom" ? await api.leaveRoom(alphaRoomId) : await api.forgetRoom(alphaRoomId);
+      await markRead;
+
+      expect(removed.state.domain.rooms.some((room) => room.room_id === alphaRoomId)).toBe(false);
+      expect(removed.state.domain.room_preferences.rooms[alphaRoomId]).toBeUndefined();
+      expect(removed.state.domain.link_preview_settings.room_overrides[alphaRoomId]).toBeUndefined();
+      expect(removed.state.domain.room_notification_settings[alphaRoomId]).toBeUndefined();
+      expect(removed.state.domain.room_interactions[alphaRoomId]).toBeUndefined();
+      expect(removed.state.domain.search_crawler.rooms[alphaRoomId]).toBeUndefined();
+      expect(removed.state.domain.search_crawler.last_active).toBeNull();
+      expect(removed.state.domain.live_signals.rooms[alphaRoomId]).toBeUndefined();
+      expect(
+        removed.state.domain.mention_candidates.targets.some((target) => target.room_id === alphaRoomId)
+      ).toBe(false);
+      expect(removed.state.domain.search).toEqual({ kind: "closed" });
+      expect(removed.state.domain.activity.kind).toBe("open");
+      if (removed.state.domain.activity.kind === "open") {
+        expect(
+          [...removed.state.domain.activity.recent.rows, ...removed.state.domain.activity.unread.rows].some(
+            (row) => row.room_id === alphaRoomId
+          )
+        ).toBe(false);
+        expect(removed.state.domain.activity.mark_read).toEqual({ kind: "idle" });
+      }
+      expect(removed.state.ui.navigation.active_room_id).toBeNull();
+      expect(removed.state.ui.navigation.main_timeline_anchor).toBeNull();
+      expect(removed.state.ui.timeline.room_id).toBeNull();
+      expect(removed.state.ui.timeline.is_subscribed).toBe(false);
+      expect(removed.state.ui.timeline.composer.draft).toBe("");
+      expect(removed.state.ui.timeline.staged_uploads).toEqual([]);
+      expect(removed.state.ui.thread).toEqual({ kind: "closed" });
+      expect(removed.state.ui.threads_list).toEqual({ kind: "closed" });
+      expect(removed.state.ui.focused_context).toEqual({ kind: "closed" });
+      expect(removed.state.ui.files_view).toEqual({ kind: "closed" });
+      expect(removed.timeline).toEqual([]);
+      expect(removed.thread).toBeNull();
+      expect(removed.state.domain.rooms.some((room) => room.room_id === planningRoomId)).toBe(true);
+    }
+  );
+
+  test("removing inactive Alpha filters only Alpha-owned state", async () => {
+    const api = createBrowserFakeApi();
+    await dirtyRoomOwnedState(api, alphaRoomId, "$alpha-update");
+    await dirtyRoomOwnedState(api, planningRoomId, "$late-original");
+    await api.selectRoom(planningRoomId);
+    await api.openActivity();
+    await api.openThreadsList({ kind: "home" });
+    await api.openFilesView(
+      { kind: "space", space_id: alphaSpaceId },
+      { kinds: [...allAttachmentKinds], filename_query: null },
+      "newestFirst"
+    );
+    await api.submitSearch("synthetic", "allRooms");
+    await api.openThread(alphaRoomId, "$alpha-update", "existingThread");
+
+    const account = await readyAccount(api);
+    const { generation, lease } = await beginComposerLease(api, account, {
+      kind: "main",
+      room_id: planningRoomId
+    });
+    await api.setComposerDraft(
+      account,
+      lease.leaseId,
+      generation,
+      planningRoomId,
+      documentFromText("Retained Planning draft"),
+      revision("9")
+    );
+    await api.stageUploadBytes(
+      { kind: "main", room_id: planningRoomId },
+      [{
+        stagedId: "retained-planning-upload",
+        position: 0,
+        filename: "fixture_planning.txt",
+        mimeType: "text/plain",
+        bytes: [4, 5, 6]
+      }]
+    );
+
+    const before = await api.getSnapshot();
+    const planningBefore = roomOwnedProjection(before, planningRoomId);
+    const alphaBefore = roomOwnedProjection(before, alphaRoomId);
+    expect(alphaBefore.searchResults).not.toEqual([]);
+    expect(alphaBefore.activityRows).not.toEqual([]);
+    expect(alphaBefore.threadsItems).not.toEqual([]);
+    expect(alphaBefore.filesItems).not.toEqual([]);
+    expect(before.state.ui.thread).toMatchObject({ room_id: alphaRoomId });
+
+    const markRead = api.markActivityRead({
+      kind: "room",
+      room_id: alphaRoomId,
+      up_to_event_id: "$alpha-update"
+    });
+    await api.leaveRoom(alphaRoomId);
+    await markRead;
+    const after = await api.getSnapshot();
+
+    expect(roomOwnedProjection(after, planningRoomId)).toEqual(planningBefore);
+    expect(roomOwnedProjection(after, alphaRoomId)).toEqual({
+      room: undefined,
+      roomPreference: undefined,
+      linkPreviewOverride: undefined,
+      notification: undefined,
+      interaction: undefined,
+      crawler: undefined,
+      crawlerLastActive: null,
+      liveSignals: undefined,
+      mentionTargets: [],
+      searchResults: [],
+      activityRows: [],
+      threadsItems: [],
+      filesItems: []
+    });
+    expect(after.state.domain.search.kind).toBe("results");
+    expect(after.state.domain.activity.kind).toBe("open");
+    if (after.state.domain.activity.kind === "open") {
+      expect(after.state.domain.activity.mark_read).toEqual({ kind: "idle" });
+    }
+    expect(after.state.ui.navigation.active_room_id).toBe(planningRoomId);
+    expect(after.state.ui.timeline.room_id).toBe(planningRoomId);
+    expect(after.state.ui.timeline.composer.draft).toBe("Retained Planning draft");
+    expect(after.state.ui.timeline.staged_uploads).toHaveLength(1);
+    expect(after.state.ui.focused_context).toEqual({ kind: "closed" });
+    expect(after.state.ui.thread).toEqual({ kind: "closed" });
+    expect(after.thread).toBeNull();
+    expect(after.state.ui.threads_list.kind).toBe("open");
+    expect(after.state.ui.files_view.kind).toBe("open");
+    if (after.state.ui.files_view.kind === "open") {
+      expect(after.state.ui.files_view.scope).toEqual({
+        kind: "space",
+        space_id: alphaSpaceId,
+        child_room_ids: [planningRoomId]
+      });
+    }
+  });
+
+  test("removing a Space preserves children and closes only its Space scopes", async () => {
+    const api = createBrowserFakeApi();
+    await api.selectSpace(alphaSpaceId);
+    await api.loadSpaceMembers(alphaSpaceId, 1);
+    await api.openThreadsList({ kind: "space", space_id: alphaSpaceId });
+    await api.openFilesView(
+      { kind: "space", space_id: alphaSpaceId },
+      { kinds: [...allAttachmentKinds], filename_query: null },
+      "newestFirst"
+    );
+
+    const before = await api.getSnapshot();
+    const removed = await api.leaveRoom(alphaSpaceId);
+
+    expect(removed.state.domain.spaces.map((space) => space.space_id)).toEqual([betaSpaceId]);
+    expect(removed.state.domain.rooms).toEqual(
+      before.state.domain.rooms.map((room) => ({
+        ...room,
+        parent_space_ids: room.parent_space_ids.filter((spaceId) => spaceId !== alphaSpaceId),
+        dm_space_ids: room.dm_space_ids.filter((spaceId) => spaceId !== alphaSpaceId)
+      }))
+    );
+    expect(removed.state.ui.navigation.active_space_id).toBeNull();
+    expect(removed.state.ui.navigation.space_order).not.toContain(alphaSpaceId);
+    expect(removed.state.ui.navigation.last_room_by_space_id).not.toHaveProperty(alphaSpaceId);
+    expect(removed.state.ui.navigation.last_selection_by_space_id).not.toHaveProperty(alphaSpaceId);
+    expect(removed.state.domain.space_members).toEqual({
+      selected_space_id: null,
+      generation: 0,
+      space_joined: [],
+      space_invited: [],
+      child_room_only: [],
+      child_room_count: 0,
+      complete_child_room_count: 0,
+      incomplete_child_room_count: 0,
+      operation: { kind: "idle" }
+    });
+    expect(removed.state.ui.threads_list).toEqual({ kind: "closed" });
+    expect(removed.state.ui.files_view).toEqual({ kind: "closed" });
+    expect(removed.state.domain.rooms.map((room) => room.room_id)).toEqual(
+      before.state.domain.rooms.map((room) => room.room_id)
+    );
+    expect(removed.state.domain.spaces[0]?.child_room_ids).toEqual(["!room-search:example.invalid"]);
+  });
+
+  test("Space removal retains unrelated Home and account scopes", async () => {
+    const api = createBrowserFakeApi();
+    await api.openThreadsList({ kind: "home" });
+    await api.openFilesView(
+      { kind: "account" },
+      { kinds: [...allAttachmentKinds], filename_query: null },
+      "newestFirst"
+    );
+
+    const removed = await api.forgetRoom(alphaSpaceId);
+
+    expect(removed.state.ui.threads_list.kind).toBe("open");
+    expect(removed.state.ui.files_view.kind).toBe("open");
+    expect(removed.state.ui.threads_list.kind === "open" ? removed.state.ui.threads_list.items : []).toContainEqual(
+      expect.objectContaining({ room_id: alphaRoomId })
+    );
   });
 
   test("openThreadsList mirrors visible timeline thread summaries", async () => {

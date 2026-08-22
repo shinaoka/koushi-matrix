@@ -4742,16 +4742,138 @@ class BrowserFakeApi implements DesktopApi {
       );
       this.snapshot.state.domain.rooms = this.snapshot.state.domain.rooms.map((room) => ({
         ...room,
-        parent_space_ids: room.parent_space_ids.filter((spaceId) => spaceId !== roomId)
+        parent_space_ids: room.parent_space_ids.filter((spaceId) => spaceId !== roomId),
+        dm_space_ids: room.dm_space_ids.filter((spaceId) => spaceId !== roomId)
       }));
       this.snapshot.state.ui.navigation.space_order =
         this.snapshot.state.ui.navigation.space_order?.filter((spaceId) => spaceId !== roomId) ?? [];
       if (this.snapshot.state.ui.navigation.last_room_by_space_id) {
         delete this.snapshot.state.ui.navigation.last_room_by_space_id[roomId];
       }
+      if (this.snapshot.state.ui.navigation.last_selection_by_space_id) {
+        delete this.snapshot.state.ui.navigation.last_selection_by_space_id[roomId];
+      }
       if (this.snapshot.state.ui.navigation.active_space_id === roomId) {
         this.snapshot.state.ui.navigation.active_space_id = null;
+        this.snapshot.state.domain.space_members = emptyBrowserFakeSpaceMembersState();
       }
+      if (
+        this.snapshot.state.ui.threads_list.kind !== "closed" &&
+        this.snapshot.state.ui.threads_list.room_id === `space:${roomId}`
+      ) {
+        this.snapshot.state.ui.threads_list = { kind: "closed" };
+      }
+      if (
+        this.snapshot.state.ui.files_view.kind !== "closed" &&
+        this.snapshot.state.ui.files_view.scope.kind === "space" &&
+        this.snapshot.state.ui.files_view.scope.space_id === roomId
+      ) {
+        this.snapshot.state.ui.files_view = { kind: "closed" };
+      }
+      this.refreshSidebar();
+      this.refreshRoomListProjection();
+      return this.getSnapshot();
+    }
+
+    const wasActiveRoom = this.snapshot.state.ui.navigation.active_room_id === roomId;
+    delete this.snapshot.state.domain.room_preferences.rooms[roomId];
+    delete this.snapshot.state.domain.link_preview_settings.room_overrides[roomId];
+    delete this.snapshot.state.domain.room_notification_settings[roomId];
+    delete this.snapshot.state.domain.room_interactions[roomId];
+    delete this.snapshot.state.domain.search_crawler.rooms[roomId];
+    delete this.snapshot.state.domain.live_signals.rooms[roomId];
+    if (this.snapshot.state.domain.search_crawler.last_active?.room_id === roomId) {
+      this.snapshot.state.domain.search_crawler.last_active = null;
+    }
+    this.snapshot.state.domain.mention_candidates.targets =
+      this.snapshot.state.domain.mention_candidates.targets.filter(
+        (target) => target.room_id !== roomId
+      );
+    if (this.snapshot.state.domain.search.kind === "results") {
+      this.snapshot.state.domain.search = {
+        ...this.snapshot.state.domain.search,
+        results: this.snapshot.state.domain.search.results.filter(
+          (result) => result.room_id !== roomId
+        )
+      };
+    }
+    if (
+      wasActiveRoom &&
+      this.snapshot.state.domain.search.kind !== "closed" &&
+      this.snapshot.state.domain.search.scope === "currentRoom"
+    ) {
+      this.snapshot.state.domain.search = { kind: "closed" };
+    }
+    if (this.snapshot.state.domain.activity.kind === "open") {
+      this.snapshot.state.domain.activity = {
+        ...this.snapshot.state.domain.activity,
+        recent: {
+          ...this.snapshot.state.domain.activity.recent,
+          rows: this.snapshot.state.domain.activity.recent.rows.filter(
+            (row) => row.room_id !== roomId
+          )
+        },
+        unread: {
+          ...this.snapshot.state.domain.activity.unread,
+          rows: this.snapshot.state.domain.activity.unread.rows.filter(
+            (row) => row.room_id !== roomId
+          )
+        },
+        mark_read:
+          this.snapshot.state.domain.activity.mark_read.kind === "pending" &&
+          this.snapshot.state.domain.activity.mark_read.target.kind === "room" &&
+          this.snapshot.state.domain.activity.mark_read.target.room_id === roomId
+            ? { kind: "idle" }
+            : this.snapshot.state.domain.activity.mark_read
+      };
+    }
+    if (this.snapshot.state.ui.threads_list.kind !== "closed") {
+      if (this.snapshot.state.ui.threads_list.room_id === roomId) {
+        this.snapshot.state.ui.threads_list = { kind: "closed" };
+      } else if (this.snapshot.state.ui.threads_list.kind === "open") {
+        this.snapshot.state.ui.threads_list = {
+          ...this.snapshot.state.ui.threads_list,
+          items: this.snapshot.state.ui.threads_list.items.filter((item) => item.room_id !== roomId)
+        };
+      }
+    }
+    if (this.snapshot.state.ui.files_view.kind !== "closed") {
+      const filesView = this.snapshot.state.ui.files_view;
+      if (filesView.scope.kind === "room" && filesView.scope.room_id === roomId) {
+        this.snapshot.state.ui.files_view = { kind: "closed" };
+      } else {
+        const scope =
+          filesView.scope.kind === "space"
+            ? {
+                ...filesView.scope,
+                child_room_ids: filesView.scope.child_room_ids.filter(
+                  (childRoomId) => childRoomId !== roomId
+                )
+              }
+            : filesView.scope;
+        this.snapshot.state.ui.files_view =
+          filesView.kind === "open"
+            ? {
+                ...filesView,
+                scope,
+                items: filesView.items.filter((item) => item.room_id !== roomId)
+              }
+            : { ...filesView, scope };
+      }
+    }
+    if (
+      this.snapshot.state.ui.focused_context.kind !== "closed" &&
+      this.snapshot.state.ui.focused_context.room_id === roomId
+    ) {
+      this.snapshot.state.ui.focused_context = { kind: "closed" };
+    }
+    if (
+      this.snapshot.state.ui.thread.kind === "open" &&
+      this.snapshot.state.ui.thread.room_id === roomId
+    ) {
+      this.snapshot.state.ui.thread = { kind: "closed" };
+      this.snapshot.state.domain.thread_attention = { kind: "closed" };
+      this.snapshot.thread = null;
     }
 
     this.composerDrafts.delete(roomId);
@@ -4775,13 +4897,9 @@ class BrowserFakeApi implements DesktopApi {
     }));
     // Leaving/forgetting a room is positive evidence of removal.
     this.retainNavigationRoomMemory(true);
-    if (this.snapshot.state.ui.navigation.active_room_id === roomId) {
-      this.snapshot.state.ui.navigation.active_room_id = null;
-      this.snapshot.state.ui.timeline.room_id = null;
-      this.snapshot.state.ui.timeline.is_subscribed = false;
-      this.snapshot.timeline = [];
-      this.snapshot.state.ui.thread = { kind: "closed" };
-      this.snapshot.thread = null;
+    if (wasActiveRoom) {
+      this.clearActiveRoomSelection();
+      this.snapshot.state.ui.navigation.main_timeline_anchor = null;
     }
     this.refreshSidebar();
     this.refreshRoomListProjection();
