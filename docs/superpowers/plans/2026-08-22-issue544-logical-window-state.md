@@ -48,7 +48,7 @@ Pure deterministic tests precede runtime changes:
 
 ## Implementation
 
-Keep code in `apps/desktop/src-tauri/src/lib.rs`. Extract only small pure conversion/selection/gate functions required by deterministic tests. Reuse existing persistence path and atomic write. Do not add a crate/dependency, async task, timer, frontend command, or second state file.
+Keep one private owner in `apps/desktop/src-tauri/src/window_state.rs` (moved without behavior changes by the #551 window-state seam). Keep conversion/selection/gate functions and their deterministic tests together there. Reuse the existing persistence path and atomic write. Do not add a crate/dependency, async task, timer, frontend command, or second state file.
 
 ## Gates
 
