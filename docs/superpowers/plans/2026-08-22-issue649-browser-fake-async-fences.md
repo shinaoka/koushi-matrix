@@ -30,12 +30,19 @@ On mismatch, return the current cloned snapshot without mutating or settling any
 
 Use only public fake APIs.
 
-1. For each of the thirteen unguarded methods, start the operation, synchronously `logout`, then await it. Assert no rejection and exact signed-out reset projections; before the fix, stale writes or supersession-masked state occurs.
+1. For the eleven operations whose stale completion visibly changes a signed-out snapshot, start the operation, synchronously `logout`, then await it and assert exact signed-out projections. Cover `resetLocalData` with the destructive replacement race below and `unignoreUser` with same-owner supersession, where their logout completions are observably idempotent.
 2. Cover all six clear/replacement paths with a profile alias operation: complete OIDC, failed login, switch account, change homeserver, logout, and reset local data. For reset local data, start reset first and the alias second so reset settles before the stale alias continuation. This proves both reset mechanisms used by every guarded owner: synchronous `clearSessionViews` resets and whole-snapshot replacement.
 3. Dedicated destructive race: start `resetLocalData`, synchronously complete OIDC login, then await reset; the ready replacement must remain ready.
 4. Same-owner supersession: start directory query A then B without awaiting. The stale A promise must return B's current querying state rather than terminal A results; B alone may settle results.
 
 Tests must first fail on the immutable production baseline, then pass x3 with the fix. Existing normal-success tests remain unchanged and green.
+
+## Implementation evidence
+
+- Robust public RED on immutable production: 20/20 focused cases failed (eleven logout owners, five other clear/replacement paths plus logout alias, reset/alias, reset/OIDC, unignore supersession, directory supersession).
+- GREEN exact suite20/20 x3; browser fake134 + client25; typecheck/full lint/diff green.
+- Deterministic source verifier: exactly 14 Promise sites; only the approved 13 method bodies changed; one new fail-closed return per method; 205 method signatures and 15 fields exact; `loadSpaceMembers` unchanged.
+- Post-implementation full-diff review: `reviewer-flash` `Correct-to-merge`; full matrix pending.
 
 ## Implementation constraints
 

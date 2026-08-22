@@ -1355,6 +1355,12 @@ class BrowserFakeApi implements DesktopApi {
     const requestId = this.nextRequestId();
     this.snapshot.state.domain.local_encryption = { kind: "probing", request_id: requestId };
     await Promise.resolve();
+    if (
+      this.snapshot.state.domain.local_encryption.kind !== "probing" ||
+      this.snapshot.state.domain.local_encryption.request_id !== requestId
+    ) {
+      return this.getSnapshot();
+    }
     this.snapshot.state.domain.local_encryption = { kind: "healthy" };
     return this.getSnapshot();
   }
@@ -1364,11 +1370,18 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
+    const requestId = this.nextRequestId();
     this.snapshot.state.domain.local_encryption = {
       kind: "resetting",
-      request_id: this.nextRequestId()
+      request_id: requestId
     };
     await Promise.resolve();
+    if (
+      this.snapshot.state.domain.local_encryption.kind !== "resetting" ||
+      this.snapshot.state.domain.local_encryption.request_id !== requestId
+    ) {
+      return this.getSnapshot();
+    }
     this.snapshot.state.domain.session = { kind: "signedOut" };
     this.snapshot.state.domain.sync = "stopped";
     this.snapshot.state.domain.local_encryption = { kind: "unknown" };
@@ -2258,6 +2271,12 @@ class BrowserFakeApi implements DesktopApi {
 
     await Promise.resolve();
 
+    if (
+      this.snapshot.state.domain.profile.local_alias_update.kind !== "saving" ||
+      this.snapshot.state.domain.profile.local_alias_update.request_id !== requestId
+    ) {
+      return this.getSnapshot();
+    }
     if (normalizedAlias) {
       this.snapshot.state.domain.profile.local_aliases[normalizedUserId] = normalizedAlias;
     } else {
@@ -2279,6 +2298,12 @@ class BrowserFakeApi implements DesktopApi {
       request_id: requestId
     };
     await Promise.resolve();
+    if (
+      this.snapshot.state.domain.profile.ignored_user_update.kind !== "saving" ||
+      this.snapshot.state.domain.profile.ignored_user_update.request_id !== requestId
+    ) {
+      return this.getSnapshot();
+    }
     if (!this.snapshot.state.domain.profile.ignored_user_ids.includes(normalizedUserId)) {
       this.snapshot.state.domain.profile.ignored_user_ids = [
         ...this.snapshot.state.domain.profile.ignored_user_ids,
@@ -2300,6 +2325,12 @@ class BrowserFakeApi implements DesktopApi {
       request_id: requestId
     };
     await Promise.resolve();
+    if (
+      this.snapshot.state.domain.profile.ignored_user_update.kind !== "saving" ||
+      this.snapshot.state.domain.profile.ignored_user_update.request_id !== requestId
+    ) {
+      return this.getSnapshot();
+    }
     this.snapshot.state.domain.profile.ignored_user_ids =
       this.snapshot.state.domain.profile.ignored_user_ids.filter((id) => id !== normalizedUserId);
     this.snapshot.state.domain.profile.ignored_user_update = { kind: "idle" };
@@ -2779,6 +2810,12 @@ class BrowserFakeApi implements DesktopApi {
 
     await Promise.resolve();
 
+    if (
+      this.snapshot.state.domain.directory.query.kind !== "querying" ||
+      this.snapshot.state.domain.directory.query.request_id !== requestId
+    ) {
+      return this.getSnapshot();
+    }
     const alias = "#public-demo:fake.local";
     this.snapshot.state.domain.directory.query = {
       kind: "results",
@@ -2824,6 +2861,12 @@ class BrowserFakeApi implements DesktopApi {
 
     await Promise.resolve();
 
+    if (
+      this.snapshot.state.domain.directory.preview.kind !== "loading" ||
+      this.snapshot.state.domain.directory.preview.request_id !== requestId
+    ) {
+      return this.getSnapshot();
+    }
     const label = normalizedTarget.replace(/^[#!]/, "").split(":")[0] ?? "";
     this.snapshot.state.domain.directory.preview = {
       kind: "ready",
@@ -2871,6 +2914,12 @@ class BrowserFakeApi implements DesktopApi {
 
     await Promise.resolve();
 
+    if (
+      this.snapshot.state.domain.directory.join.kind !== "joining" ||
+      this.snapshot.state.domain.directory.join.request_id !== requestId
+    ) {
+      return this.getSnapshot();
+    }
     const roomId = `!joined-${this.snapshot.state.domain.rooms.length + 1}:fake.local`;
     const displayName = normalizedTarget.replace(/^[#!]/, "").split(":")[0] || "Public Room";
     const joinedRoom: RoomSummary = {
@@ -3302,6 +3351,15 @@ class BrowserFakeApi implements DesktopApi {
 
     await Promise.resolve();
 
+    const operation = this.snapshot.state.domain.room_management.operation;
+    if (
+      operation.kind !== "pending" ||
+      operation.request_id !== requestId ||
+      operation.room_id !== normalizedRoomId ||
+      operation.operation !== "settings"
+    ) {
+      return this.getSnapshot();
+    }
     const updated = applyRoomSettingChange(settings, change);
     this.snapshot.state.domain.room_management = {
       selected_room_id: normalizedRoomId,
@@ -3368,6 +3426,15 @@ class BrowserFakeApi implements DesktopApi {
 
     await Promise.resolve();
 
+    const operation = this.snapshot.state.domain.room_management.operation;
+    if (
+      operation.kind !== "pending" ||
+      operation.request_id !== requestId ||
+      operation.room_id !== normalizedRoomId ||
+      operation.operation !== "moderation"
+    ) {
+      return this.getSnapshot();
+    }
     const updatedSettings =
       action === "unban"
         ? settings
@@ -3428,6 +3495,15 @@ class BrowserFakeApi implements DesktopApi {
 
     await Promise.resolve();
 
+    const operation = this.snapshot.state.domain.room_management.operation;
+    if (
+      operation.kind !== "pending" ||
+      operation.request_id !== requestId ||
+      operation.room_id !== normalizedRoomId ||
+      operation.operation !== "roles"
+    ) {
+      return this.getSnapshot();
+    }
     const updatedSettings = {
       ...settings,
       members: settings.members.map((member) =>
@@ -3910,6 +3986,12 @@ class BrowserFakeApi implements DesktopApi {
 
     await Promise.resolve();
 
+    if (
+      this.snapshot.state.domain.activity.kind !== "opening" ||
+      this.snapshot.state.domain.activity.request_id !== requestId
+    ) {
+      return this.getSnapshot();
+    }
     const streams = createActivityStreams(
       false,
       this.snapshot.state.domain.profile.users,
@@ -4027,6 +4109,14 @@ class BrowserFakeApi implements DesktopApi {
 
     await Promise.resolve();
 
+    const activity = this.snapshot.state.domain.activity;
+    if (
+      activity.kind !== "open" ||
+      activity.mark_read.kind !== "pending" ||
+      activity.mark_read.request_id !== requestId
+    ) {
+      return this.getSnapshot();
+    }
     if (target.kind === "all") {
       this.snapshot.state.domain.activity.unread = {
         rows: [],

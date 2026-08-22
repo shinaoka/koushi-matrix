@@ -2781,3 +2781,111 @@ describe("BrowserFakeApi prepared upload lifecycle", () => {
     ]);
   });
 });
+
+describe("BrowserFakeApi async completion fences", () => {
+  async function expectSignedOut(result: Promise<DesktopSnapshot>) {
+    const signedOut = await createBrowserFakeApi({ session: "signedOut" }).getSnapshot();
+    const snapshot = await result;
+    expect(snapshot.state.domain.session).toEqual({ kind: "signedOut" });
+    expect(resetSessionViewProjection(snapshot)).toEqual(resetSessionViewProjection(signedOut));
+    expect(snapshot.state.domain.profile).toEqual(signedOut.state.domain.profile);
+    expect(snapshot.state.domain.rooms).toEqual([]);
+    expect(snapshot.state.domain.directory).toEqual(signedOut.state.domain.directory);
+    expect(snapshot.state.domain.room_management).toEqual(signedOut.state.domain.room_management);
+    expect(snapshot.state.domain.activity).toEqual(signedOut.state.domain.activity);
+    return snapshot;
+  }
+
+  test.each([
+    ["probeLocalEncryptionHealth", async () => {}, (api: ReturnType<typeof createBrowserFakeApi>) => api.probeLocalEncryptionHealth()],
+    ["setLocalUserAlias", async () => {}, (api: ReturnType<typeof createBrowserFakeApi>) => api.setLocalUserAlias("@alias:example.invalid", "Alias")],
+    ["ignoreUser", async () => {}, (api: ReturnType<typeof createBrowserFakeApi>) => api.ignoreUser("@ignored:example.invalid")],
+    ["queryDirectory", async () => {}, (api: ReturnType<typeof createBrowserFakeApi>) => api.queryDirectory({ term: "synthetic", server_name: null, limit: 10, since: null })],
+    ["previewJoinTarget", async () => {}, (api: ReturnType<typeof createBrowserFakeApi>) => api.previewJoinTarget("#synthetic:example.invalid")],
+    ["joinDirectoryRoom", async (api: ReturnType<typeof createBrowserFakeApi>) => {
+      await api.previewJoinTarget("#synthetic:example.invalid");
+    }, (api: ReturnType<typeof createBrowserFakeApi>) => api.joinDirectoryRoom("#synthetic:example.invalid")],
+    ["updateRoomSetting", async (api: ReturnType<typeof createBrowserFakeApi>) => {
+      await api.loadRoomSettings("!room-alpha:example.invalid");
+    }, (api: ReturnType<typeof createBrowserFakeApi>) => api.updateRoomSetting("!room-alpha:example.invalid", { name: "Renamed" })],
+    ["moderateRoomMember", async (api: ReturnType<typeof createBrowserFakeApi>) => {
+      await api.loadRoomSettings("!room-alpha:example.invalid");
+    }, (api: ReturnType<typeof createBrowserFakeApi>) => api.moderateRoomMember("!room-alpha:example.invalid", "@member:example.invalid", "kick")],
+    ["updateRoomMemberRole", async (api: ReturnType<typeof createBrowserFakeApi>) => {
+      await api.loadRoomSettings("!room-alpha:example.invalid");
+    }, (api: ReturnType<typeof createBrowserFakeApi>) => api.updateRoomMemberRole("!room-alpha:example.invalid", "@member:example.invalid", 50)],
+    ["openActivity", async () => {}, (api: ReturnType<typeof createBrowserFakeApi>) => api.openActivity()],
+    ["markActivityRead", async (api: ReturnType<typeof createBrowserFakeApi>) => {
+      await api.openActivity();
+    }, (api: ReturnType<typeof createBrowserFakeApi>) => api.markActivityRead({ kind: "all" })]
+  ] as const)("does not apply stale %s completion after logout", async (_name, prepare, start) => {
+    const api = createBrowserFakeApi();
+    await prepare(api);
+    const pending = start(api);
+    await api.logout();
+    await expectSignedOut(pending);
+  });
+
+  test.each(["completeOidcLogin", "submitLogin", "switchAccount", "changeHomeserver", "logout"] as const)(
+    "alias completion is fenced by %s",
+    async (operation) => {
+      const api = createBrowserFakeApi();
+      const sessions = operation === "switchAccount" ? await api.listSavedSessions() : [];
+      const pending = api.setLocalUserAlias("@alias:example.invalid", "Alias");
+      if (operation === "completeOidcLogin") await api.completeOidcLogin("https://example.invalid", "callback");
+      if (operation === "submitLogin") await api.submitLogin("https://example.invalid", "user", "password", "device", "linux");
+      if (operation === "switchAccount") await api.switchAccount(sessions[1]!);
+      if (operation === "changeHomeserver") await api.changeHomeserver();
+      if (operation === "logout") await api.logout();
+      const snapshot = await pending;
+      expect(snapshot.state.domain.profile.local_aliases).toEqual({});
+      expect(snapshot.state.domain.profile.local_alias_update).toEqual({ kind: "idle" });
+    }
+  );
+
+  test("resetLocalData settles before a stale alias continuation", async () => {
+    const api = createBrowserFakeApi();
+    const reset = api.resetLocalData();
+    const alias = api.setLocalUserAlias("@alias:example.invalid", "Alias");
+    await reset;
+    const snapshot = await alias;
+    expect(snapshot.state.domain.session).toEqual({ kind: "signedOut" });
+    expect(snapshot.state.domain.profile.local_aliases).toEqual({});
+    expect(snapshot.state.domain.profile.local_alias_update).toEqual({ kind: "idle" });
+  });
+
+  test("unignore completion cannot settle a newer account operation", async () => {
+    const userId = "@ignored:example.invalid";
+    const api = createBrowserFakeApi();
+    await api.ignoreUser(userId);
+    const stale = api.unignoreUser(userId);
+    const replacement = api.completeOidcLogin("https://example.invalid", "callback");
+    const current = api.ignoreUser(userId);
+    await replacement;
+
+    const staleSnapshot = await stale;
+    expect(staleSnapshot.state.domain.profile.ignored_user_update.kind).toBe("saving");
+    const currentSnapshot = await current;
+    expect(currentSnapshot.state.domain.profile.ignored_user_ids).toEqual([userId]);
+    expect(currentSnapshot.state.domain.profile.ignored_user_update).toEqual({ kind: "idle" });
+  });
+
+  test("resetLocalData cannot overwrite a ready OIDC replacement", async () => {
+    const api = createBrowserFakeApi();
+    const reset = api.resetLocalData();
+    await api.completeOidcLogin("https://example.invalid", "callback");
+    const snapshot = await reset;
+    expect(snapshot.state.domain.session.kind).toBe("ready");
+  });
+
+  test("directory query A is superseded by query B", async () => {
+    const api = createBrowserFakeApi();
+    const query = { term: "synthetic", server_name: null, limit: 10, since: null };
+    const first = api.queryDirectory(query);
+    const second = api.queryDirectory({ ...query, term: "newer" });
+    const stale = await first;
+    expect(stale.state.domain.directory.query).toMatchObject({ kind: "querying", query: { term: "newer" } });
+    const current = await second;
+    expect(current.state.domain.directory.query).toMatchObject({ kind: "results", query: { term: "newer" } });
+  });
+});
