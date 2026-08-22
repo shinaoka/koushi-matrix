@@ -995,7 +995,6 @@ fn persist_close_window_state_if_ready<R: tauri::Runtime>(
     Ok(())
 }
 
- (refactor(desktop): extract Tauri menu adapter)
 /// Spawn the CoreEvent forwarding task. This task owns a dedicated connection
 /// (second `attach()`) so it can loop on `recv_event` without blocking command
 /// dispatch.
