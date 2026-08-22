@@ -57,6 +57,13 @@ The leaf keeps the exact `#[cfg(test)]\nmod tests` marker. The lag source test r
 
 Run focused forwarding/wire baseline/post x3, full Tauri, IPC/generated contracts, full local matrix, design/full-diff review, latest-main integration, CI7/7 and #551 evidence.
 
+## Implementation evidence
+
+- Immutable baseline core-event9/9 x3; post-move9/9 x3; full Tauri150/1 ignored plus keyring5 and IPC/generated contracts green.
+- Exactness verifier: production constants/types/functions+Drop exact; tests8 exact; lag test only documented two-source deltas; parent definitions0; state/setup/run/registry183 and generated artifact exact; no glob.
+- Metrics (`wc -l` newline count): parent3,519→1,337 lines; leaf2,181 (mostly exhaustive wire contract); combined3,518 (-1 line / +554 bytes). Content-line indexing including each file's final unterminated line reports1,338 +2,182 =3,520 (+1), reconciling the reviewer count.
+- Post-implementation full-diff review: `reviewer-flash` `Correct-to-merge`; no blocking findings. Full matrix pending.
+
 ## Gates
 
 - `reviewer-flash` fresh design verdict: `Correct-to-implement`; two-source blocker and all import/assertion precision findings incorporated.
