@@ -1691,6 +1691,12 @@ class BrowserFakeApi implements DesktopApi {
       return this.getSnapshot();
     }
 
+    const outgoingRoomId = this.snapshot.state.ui.navigation.active_room_id;
+    if (outgoingRoomId && outgoingRoomId !== roomId) {
+      this.clearPreparedUploadBytes({ kind: "main", room_id: outgoingRoomId });
+      this.snapshot.state.ui.timeline.staged_uploads = [];
+    }
+
     this.rememberActiveRoomForCurrentSpace();
     if (!selectedRoom.is_dm) {
       const activeSpaceContainsSelectedRoom = Boolean(
@@ -4574,6 +4580,10 @@ class BrowserFakeApi implements DesktopApi {
 
 
   private clearActiveRoomSelection(): void {
+    const outgoingRoomId = this.snapshot.state.ui.navigation.active_room_id;
+    if (outgoingRoomId) {
+      this.clearPreparedUploadBytes({ kind: "main", room_id: outgoingRoomId });
+    }
     const openThreadRoomId =
       this.snapshot.state.ui.thread.kind === "open" ? this.snapshot.state.ui.thread.room_id : null;
     if (openThreadRoomId) this.clearPreparedThreadUploadBytesForRoom(openThreadRoomId);

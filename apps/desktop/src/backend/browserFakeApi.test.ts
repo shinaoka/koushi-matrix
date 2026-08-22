@@ -2969,7 +2969,19 @@ describe("BrowserFakeApi prepared upload lifecycle", () => {
 
   async function stageMain(api: ReturnType<typeof createBrowserFakeApi>, stagedId: string, bytes = [1, 2, 3]) {
     await api.selectRoom(roomId);
-    await api.stageUploadBytes({ kind: "main", room_id: roomId }, [item(stagedId, bytes)]);
+    return api.stageUploadBytes({ kind: "main", room_id: roomId }, [item(stagedId, bytes)]);
+  }
+
+  function firstPreparedVariantId(snapshot: DesktopSnapshot): string {
+    const staged = snapshot.state.ui.timeline.staged_uploads[0];
+    if (!staged || staged.preparation.kind !== "ready") {
+      throw new Error("expected ready staged upload");
+    }
+    const variant = staged.preparation.variants[0];
+    if (!variant) {
+      throw new Error("expected prepared upload variant");
+    }
+    return variant.variant_id;
   }
 
   async function stageThread(
@@ -3046,14 +3058,59 @@ describe("BrowserFakeApi prepared upload lifecycle", () => {
     await expect(api.preparedUploadPreview({ kind: "thread", room_id: roomId, root_event_id: root }, "navigation-upload", "original-keep")).resolves.toEqual([]);
   });
 
-  test("room removal clears main prepared bytes", async () => {
+  test("selecting another room clears main staged metadata and prepared bytes", async () => {
     const api = createBrowserFakeApi();
     const target = { kind: "main" as const, room_id: roomId };
-    await stageMain(api, "removed");
-    await api.leaveRoom(roomId);
+    const staged = await stageMain(api, "cross-room");
+    const variantId = firstPreparedVariantId(staged);
 
-    await expect(api.preparedUploadPreview(target, "removed", "original-keep")).resolves.toEqual([]);
+    const selected = await api.selectRoom(otherRoomId);
+
+    expect(selected.state.ui.timeline.staged_uploads).toEqual([]);
+    await expect(api.preparedUploadPreview(target, "cross-room", variantId)).resolves.toEqual([]);
   });
+
+  test("reselecting the same room preserves main staged metadata and prepared bytes", async () => {
+    const api = createBrowserFakeApi();
+    const target = { kind: "main" as const, room_id: roomId };
+    const staged = await stageMain(api, "same-room");
+    const variantId = firstPreparedVariantId(staged);
+
+    const selected = await api.selectRoom(roomId);
+
+    expect(selected.state.ui.timeline.staged_uploads).toEqual(staged.state.ui.timeline.staged_uploads);
+    await expect(api.preparedUploadPreview(target, "same-room", variantId)).resolves.toEqual([1, 2, 3]);
+  });
+
+  test("selecting Home clears main staging", async () => {
+    const api = createBrowserFakeApi();
+    const target = { kind: "main" as const, room_id: roomId };
+    const staged = await stageMain(api, "space-transition");
+    const variantId = firstPreparedVariantId(staged);
+
+    const selected = await api.selectSpace(null);
+
+    expect(selected.state.ui.navigation.active_room_id).toBeNull();
+    expect(selected.state.ui.timeline.staged_uploads).toEqual([]);
+    await expect(
+      api.preparedUploadPreview(target, "space-transition", variantId)
+    ).resolves.toEqual([]);
+  });
+
+  test.each(["leaveRoom", "forgetRoom"] as const)(
+    "%s clears active room staged metadata and prepared bytes",
+    async (operation) => {
+      const api = createBrowserFakeApi();
+      const target = { kind: "main" as const, room_id: roomId };
+      const staged = await stageMain(api, operation);
+      const variantId = firstPreparedVariantId(staged);
+      const removed =
+        operation === "leaveRoom" ? await api.leaveRoom(roomId) : await api.forgetRoom(roomId);
+
+      expect(removed.state.ui.timeline.staged_uploads).toEqual([]);
+      await expect(api.preparedUploadPreview(target, operation, variantId)).resolves.toEqual([]);
+    }
+  );
 
   test.each([
     "completeOidcLogin",

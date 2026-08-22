@@ -22,11 +22,19 @@ Public APIs only; no private map/snapshot mutation.
 
 1. RED cross-room: stage ready metadata/bytes in Alpha, select Planning, assert Planning has no Alpha staged metadata and Alpha's captured prepared variant preview is empty.
 2. GREEN preservation: same-room Alpha reselection retains the exact staged metadata and prepared preview bytes.
-3. RED transition-to-none: stage Alpha, select a Space with no remembered room, assert active timeline is empty and Alpha preview bytes are gone.
+3. RED transition-to-none: stage Alpha, select Home with `selectSpace(null)`, assert active timeline is empty and Alpha preview bytes are gone.
 4. Room-removal interaction: stage Alpha, leave/forget Alpha, assert both metadata and preview bytes are gone.
 5. Run exact focused tests at least three times.
 
 The test obtains a real `variant_id` from the public staged-upload projection and queries it through public `preparedUploadPreview`.
+
+## Implementation evidence
+
+- Immutable-production public RED: cross-room and Home transition tests failed; same-room and leave/forget preservation/interaction cases passed.
+- Final focused GREEN: 5/5 x3; browser fake143 + client25; typecheck/lint/source/diff checks green.
+- Deterministic verifier: only `selectRoom` and `clearActiveRoomSelection` changed; 205 method signatures, 15 fields, and exports exact; tests use no private snapshot access.
+- Post-implementation full-diff review: `reviewer-flash` `Correct-to-merge`; no blocking findings.
+- Final local matrix: Vitest1,429, Playwright248, workspace all-targets, Tauri149/1 ignored plus keyring5, Headless Core QA130, wasm state/search, typecheck/lint/build, SDK/docs, Tauri/domain/IPC boundaries, secret/release/version, rustfmt, `cargo deny`, `cargo machete`, source/diff checks green without reruns.
 
 ## Implementation
 
@@ -35,6 +43,6 @@ Use one local `outgoingRoomId` in each existing transition owner and the existin
 ## Gates
 
 - `reviewer-flash` design verdict: `Correct-to-implement`; no blockers. The accepted A→B→A fake-vs-Rust staging divergence and unrelated scheduled/media projection asymmetry are explicitly recorded above.
-- Public immutable-baseline RED/GREEN plus deterministic method/signature/field/export checks.
-- `reviewer-flash` full-diff `Correct-to-merge`.
-- Full local matrix, CI 7/7, latest-main confirmation, merge, #651/#551 evidence, cleanup.
+- Public immutable-baseline RED/GREEN plus deterministic method/signature/field/export checks passed.
+- `reviewer-flash` full-diff verdict: `Correct-to-merge`; no blocking findings.
+- Full local matrix passed; PR CI, latest-main confirmation, merge, #651/#551 evidence, and cleanup remain.
