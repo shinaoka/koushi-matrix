@@ -24,7 +24,7 @@ Decisions: **keep**, **derive/delete**, **migrate leaf**, or **investigate**. A 
 | `TimelineView.tsx::pendingKeyRequests`, `keyRequestEpochRef`, `keyRequestToast` | Mounted key/account; reset on timeline-key change and Rust terminal DTO | **Renderer presentation/investigate**, not product admission. Rust owns `DecryptRetryController::admit`, `begin_decrypt_retry`, `handle_request_room_key`, and `TimelineActor.key_request_states`. | Frontend Set suppresses pre-projection duplicate dispatch and handles delayed rejection/toast; Rust already coalesces same event/generation and owns terminal state. | **Keep for now / investigate.** No proven Rust semantic gap; do not migrate merely because it is a Set. |
 | `TimelineView.tsx` avatar relevance/request/retry refs, App `requestedMemberAvatarMxcsRef`/`memberAvatarRetryCountsRef`, and `domain/avatarThumbnails.ts` | Mounted virtual/member window/key; clears with key/reset | **Renderer presentation** around a Rust-owned download command/cache. Relevance is DOM-window-specific. | Two-attempt request fence, retry release on typed event/failure, one shared teardown per surface. | **Keep.** #551 audit found no non-overlapping owner API. |
 | `TimelineView.tsx` backfill epochs/evaluation/ref fences | Mounted key; cancels with projection/layout reset | **Renderer presentation** for when geometry warrants asking. Rust owns pagination operation/end state and SDK task. | Prevents repeated DOM-triggered requests until layout/projection settles; no Matrix history semantics synthesized. | **Keep.** Revisit only with a whole viewport-controller redesign. |
-| `App.tsx::latestTextOperationQueueRef` / `applyLatestTextSnapshot`, using `domain/latestAsyncResult.ts::createLatestAsyncOperationQueue` | Page lifetime, keyed async text operations | Candidate duplicate semantic sequencer; Rust equivalence is unproven for the queue's full-snapshot alias/invite/caption/mention workloads. | Latest-started promise result alone may apply; older result discarded before `setSnapshot`. Owner survives view changes. | **Migrate-leaf candidate 1 (Wave C).** Verify Rust revision/generation equivalence, then delete/derive the TS sequencer rather than adding another Rust abstraction. |
+| `App.tsx::latestTextMutationQueueRef` / `applyLatestTextMutationSnapshot`, using `domain/latestAsyncResult.ts::createLatestMutationOperationQueue` | Page lifetime, keyed text mutations | **Partial migration.** Alias and main/thread caption mutations still require renderer serialization; invite and mention queries no longer use this queue. | Alias/caption A/B/A and invalidation retain latest-wins mutation admission; invite/mention dispatch every typed query and admit only Rust/appStore snapshots by their existing destination/request/generation fences. | **Migrate-leaf candidate 1 (Wave C, partial shipped).** Keep only the mutation queue; the invite/mention query semantic owner is now Rust request/generation state plus the monotone appStore fence. |
 | `App.tsx` room/space settings/navigation/member request refs | Page lifetime; manually incremented on navigation/close | **Renderer presentation / transport fence** around async command responses. Rust request IDs, demand generations and StateDelta ordering are authoritative. | Delayed promise result is ignored when local request ref/selection no longer matches. | **Candidate 3: investigate derive/delete.** Prove generation admission covers each path before removing; #582 may change Space-member fields and remains unmerged. |
 | `App.tsx` search debounce timer and query drafts | Dialog/view lifetime | **Renderer presentation** (typing draft and debounce of user intent). Rust owns search request/result correlation and crawler. | Timer clears on query/view changes; no durable retry or result semantics. | **Keep.** |
 | `App.tsx` `pendingRoomLeave`, leave/confirm/dialog state, widths, pointer listeners, focus timers | Overlay/gesture lifetime | **Renderer presentation**. Matrix membership and operation state stay Rust-owned. | Explicit cancel/unmount cleanup; in-flight guard prevents accidental repeated UI intent. | **Keep.** Accessibility basics remain frontend-owned. |
@@ -61,12 +61,13 @@ Room-key `pendingKeyRequests` is excluded from this list until a semantic gap is
 
 ## Ranked disjoint leaf candidates
 
-### 1. Retire `latestTextOperationQueueRef` (recommended Wave C leaf)
+### 1. Retire invite/mention query admission from the latest-text queue (Wave C leaf, partial)
 
-- **Value:** removes a second “which async result wins” semantic owner from App.
-- **Proof required:** delayed A/B/A composer/alias/text command responses, account/target replacement, Rust revision rejection and full-snapshot/StateDelta generation ordering. Temporarily remove the queue to capture RED if a real gap exists; if Rust already covers every case, unchanged tests remain green and the task is a reviewed deletion/equivalence migration.
-- **Scope:** `App.tsx`, `domain/latestAsyncResult.ts` if unused, focused App/composer tests; no new dependency or Rust abstraction.
-- **Disjointness:** #659 changes room-list reducer admission; #608 auth invalidation diagnostics/copy; #559 read-state local/server boundaries; #570 Activity/redaction/thread convergence. None share this text-response queue.
+- **Value:** removes the second “which async result wins” semantic owner from App for invite and mention queries while preserving the queue where it serializes unversioned mutations.
+- **Proof required:** delayed invite and main/thread mention A/B/A dispatch, adversarial settlement, explicit monotone nonzero snapshot generations, rendered final projection, and account/room/dialog replacement fences. Alias/caption A/B/A serialization and invalidation stay green.
+- **Scope:** `App.tsx`, `domain/latestAsyncResult.ts`, focused App/latestAsync/appStore tests, and this inventory/plan; no new dependency, Rust/Tauri API, fake semantic, or Rust abstraction.
+- **Current result:** invite target search and main/thread mention query admission are migrated to existing Rust request/generation state plus `appStore`; alias and main/thread caption mutation serialization remain renderer-owned pending a separate reviewed Rust contract.
+- **Disjointness:** #659 changes room-list reducer admission; #608 auth invalidation diagnostics/copy; #559 read-state local/server boundaries; #570 Activity/redaction/thread convergence. None share this query leaf.
 
 ### 2. Move projection/repair ACK retry policy to a reliable transport owner
 
@@ -94,7 +95,7 @@ Low priority: consolidate duplicate QA error listeners after a behavioral boot-e
 - #559: split local viewed boundary from server-confirmed read state and bound persistent retry/outbox behavior.
 - #570: redacted/edit convergence in Activity/unread/thread/conversation projections.
 
-The recommended latest-text leaf touches none of those owners.
+The shipped invite/mention query leaf touches none of those owners; alias/caption mutation serialization remains the separate retained owner in App.
 
 ## #552 acceptance status
 
@@ -103,13 +104,13 @@ The recommended latest-text leaf touches none of those owners.
 | Publish evidence-based inventory/classification | **Complete in this document** after merge. |
 | Identify already-correct Rust-owned/projection-only paths | **Complete** above. |
 | Identify duplicated Rust/TS semantics | **Complete as candidates**, each still needs task-level proof. |
-| Migrate selected high-value leaf owners incrementally | **Remaining**; candidate 1 scheduled for Wave C. |
-| One documented semantic owner per migrated subsystem | **Remaining per migration**; current correct paths documented. |
-| Async Rust owners have cancellation/awaited settlement where required | **Partially shipped** via #550/#551 audits; remaining candidates require task proof. |
-| Remove corresponding TS semantic state after cutover | **Remaining**; candidate 1 targets deletion. |
+| Migrate selected high-value leaf owners incrementally | **Partial:** invite target and main/thread mention query admission migrated; alias/caption mutation queue remains for a separately reviewed leaf. |
+| One documented semantic owner per migrated subsystem | **Complete for invite/mention queries:** Rust request/generation state plus `appStore` snapshot generation; mutation fields retain their explicit renderer queue owner. |
+| Async Rust owners have cancellation/awaited settlement where required | **Partially shipped** via #550/#551 audits; this leaf changes only App query dispatch and uses existing Rust ownership. |
+| Remove corresponding TS semantic state after cutover | **Partial:** invite/mention keys and invalidation are removed from the mutation queue; alias/caption keys remain intentionally. |
 | Frontend cleanup primarily renderer-local | **Current invariant**, verified for kept rows. |
-| Preserve Tauri command/event compatibility unless separately reviewed | **Required for every future leaf**; inventory changes none. |
-| Focused transition/teardown/projection-equivalence tests | **Required per migration**; inventory is documentation-only. |
+| Preserve Tauri command/event compatibility unless separately reviewed | **Complete for this leaf:** no Rust/Tauri command or DTO changes. |
+| Focused transition/teardown/projection-equivalence tests | **Complete for this leaf:** deterministic deferred App tests cover invite/main/thread queries, monotone snapshots, adversarial settlement, and replacements. |
 | Compatible with Tauri UI and future native Rust renderer | **Current architecture supports it**; duplicate semantic owners remain the epic work. |
 
 #552 stays open. One inventory and one future leaf do not satisfy the migration epic.

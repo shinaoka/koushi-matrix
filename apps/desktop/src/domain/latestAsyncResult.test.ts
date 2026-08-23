@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  createLatestAsyncOperationQueue,
+  createLatestMutationOperationQueue,
   createLatestAsyncResultGate
 } from "./latestAsyncResult";
 
@@ -39,9 +39,9 @@ describe("latest async result gate", () => {
   });
 });
 
-describe("latest async operation queue", () => {
+describe("latest mutation operation queue", () => {
   it("serializes one logical field and skips superseded pending writes", async () => {
-    const queue = createLatestAsyncOperationQueue<string>();
+    const queue = createLatestMutationOperationQueue<string>();
     const calls: string[] = [];
     let resolveFirst!: (value: string) => void;
     let resolveLatest!: (value: string) => void;
@@ -75,7 +75,7 @@ describe("latest async operation queue", () => {
   });
 
   it("runs independent logical fields concurrently", async () => {
-    const queue = createLatestAsyncOperationQueue<string>();
+    const queue = createLatestMutationOperationQueue<string>();
     const calls: string[] = [];
 
     const caption = queue.run("caption", async () => {
@@ -95,7 +95,7 @@ describe("latest async operation queue", () => {
   });
 
   it("invalidates an active operation result", async () => {
-    const queue = createLatestAsyncOperationQueue<string>();
+    const queue = createLatestMutationOperationQueue<string>();
     let resolveOperation!: (value: string) => void;
     const operation = queue.run(
       "caption",

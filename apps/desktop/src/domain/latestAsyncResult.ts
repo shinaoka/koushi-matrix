@@ -8,15 +8,15 @@ export interface LatestAsyncResultGate<Key> {
   invalidate(key: Key): void;
 }
 
-export type LatestAsyncOperationResult<Value> =
+export type LatestMutationOperationResult<Value> =
   | { kind: "applied"; value: Value }
   | { kind: "superseded" };
 
-export interface LatestAsyncOperationQueue<Key> {
+export interface LatestMutationOperationQueue<Key> {
   run<Value>(
     key: Key,
     operation: () => Promise<Value>
-  ): Promise<LatestAsyncOperationResult<Value>>;
+  ): Promise<LatestMutationOperationResult<Value>>;
   invalidate(key: Key): void;
 }
 
@@ -44,7 +44,7 @@ export function createLatestAsyncResultGate<Key>(): LatestAsyncResultGate<Key> {
   };
 }
 
-export function createLatestAsyncOperationQueue<Key>(): LatestAsyncOperationQueue<Key> {
+export function createLatestMutationOperationQueue<Key>(): LatestMutationOperationQueue<Key> {
   const gate = createLatestAsyncResultGate<Key>();
   const tails = new Map<Key, Promise<void>>();
 
@@ -52,7 +52,7 @@ export function createLatestAsyncOperationQueue<Key>(): LatestAsyncOperationQueu
     async run<Value>(key: Key, operation: () => Promise<Value>) {
       const token = gate.begin(key);
       const previous = tails.get(key) ?? Promise.resolve();
-      const task = previous.then(async (): Promise<LatestAsyncOperationResult<Value>> => {
+      const task = previous.then(async (): Promise<LatestMutationOperationResult<Value>> => {
         if (!token.isCurrent()) {
           return { kind: "superseded" };
         }

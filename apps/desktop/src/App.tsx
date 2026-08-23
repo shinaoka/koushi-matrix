@@ -181,7 +181,7 @@ import type {
   PinnedEventNavigation
 } from "./domain/types";
 import { stageAttachmentFiles } from "./domain/attachmentIngestion";
-import { createLatestAsyncOperationQueue } from "./domain/latestAsyncResult";
+import { createLatestMutationOperationQueue } from "./domain/latestAsyncResult";
 import { createOrderedEventBatcher } from "./domain/orderedEventBatcher";
 import { SNAPSHOT_SCHEMA_VERSION } from "./domain/types";
 import {
@@ -800,13 +800,13 @@ export function App() {
     setSchemaMismatchVersion(null);
     setAppStoreSnapshot(next);
   }, [diagnosticLogBuffer]);
-  const latestTextOperationQueueRef = useRef(createLatestAsyncOperationQueue<string>());
+  const latestTextMutationQueueRef = useRef(createLatestMutationOperationQueue<string>());
 
-  async function applyLatestTextSnapshot(
+  async function applyLatestTextMutationSnapshot(
     key: string,
     operation: () => Promise<DesktopSnapshot>
   ): Promise<void> {
-    const result = await latestTextOperationQueueRef.current.run(key, operation);
+    const result = await latestTextMutationQueueRef.current.run(key, operation);
     if (result.kind === "applied") {
       setSnapshot(result.value);
     }
@@ -2325,7 +2325,7 @@ export function App() {
   }
 
   async function setLocalUserAlias(userId: string, alias: string | null) {
-    await applyLatestTextSnapshot(`alias:${userId}`, () => api.setLocalUserAlias(userId, alias));
+    await applyLatestTextMutationSnapshot(`alias:${userId}`, () => api.setLocalUserAlias(userId, alias));
   }
 
   async function ignoreUser(userId: string) {
@@ -3210,9 +3210,6 @@ export function App() {
   }
 
   async function closeInviteUserDialog() {
-    if (inviteUserDialog) {
-      latestTextOperationQueueRef.current.invalidate(`invite:${inviteUserDialog.roomId}`);
-    }
     setInviteUserDialog(null);
     setInviteUserDialogVisible(false);
     setInviteUserDraftQuery("");
@@ -3256,12 +3253,7 @@ export function App() {
     if (!dialog) {
       return;
     }
-    const result = await latestTextOperationQueueRef.current.run(
-      `invite:${dialog.roomId}`,
-      () => api.searchInviteTargets(dialog.roomId, value)
-    );
-    if (result.kind === "superseded") return;
-    const nextSnapshot = result.value;
+    const nextSnapshot = await api.searchInviteTargets(dialog.roomId, value);
     setSnapshot(nextSnapshot);
   }
 
@@ -3521,7 +3513,7 @@ export function App() {
     if (!reserveComposerAcceptedRevision(admitted, draftRevision)) return;
     const localRevisionAtSubmission = mainComposerOverlayRef.current?.revision;
     for (const item of uploads) {
-      latestTextOperationQueueRef.current.invalidate(
+      latestTextMutationQueueRef.current.invalidate(
         `caption:main:${roomId}:${item.staged_id}`
       );
     }
@@ -3907,7 +3899,7 @@ export function App() {
   async function updateStagedUploadCaption(stagedId: string, caption: string): Promise<void> {
     const roomId = snapshot?.state.ui.timeline.room_id;
     if (!roomId) return;
-    await applyLatestTextSnapshot(`caption:main:${roomId}:${stagedId}`, () =>
+    await applyLatestTextMutationSnapshot(`caption:main:${roomId}:${stagedId}`, () =>
       api.updateStagedUploadCaption(
         { kind: "main", room_id: roomId },
         stagedId,
@@ -3964,7 +3956,7 @@ export function App() {
       return;
     }
     for (const item of snapshot?.state.ui.timeline.staged_uploads ?? []) {
-      latestTextOperationQueueRef.current.invalidate(`caption:main:${roomId}:${item.staged_id}`);
+      latestTextMutationQueueRef.current.invalidate(`caption:main:${roomId}:${item.staged_id}`);
     }
     setSnapshot(await api.clearUploadStaging({ kind: "main", room_id: roomId }));
   }
@@ -4216,7 +4208,7 @@ export function App() {
     if (!reserveComposerAcceptedRevision(admitted, draftRevision)) return;
     const localRevisionAtSubmission = threadComposerOverlayRef.current?.revision ?? null;
     for (const item of uploads) {
-      latestTextOperationQueueRef.current.invalidate(
+      latestTextMutationQueueRef.current.invalidate(
         `caption:thread:${roomId}:${rootEventId}:${item.staged_id}`
       );
     }
@@ -4377,7 +4369,7 @@ export function App() {
       thread.root_event_id === rootEventId
     ) {
       for (const item of thread.staged_uploads ?? []) {
-        latestTextOperationQueueRef.current.invalidate(
+        latestTextMutationQueueRef.current.invalidate(
           `caption:thread:${roomId}:${rootEventId}:${item.staged_id}`
         );
       }
@@ -4397,7 +4389,7 @@ export function App() {
     stagedId: string,
     caption: string
   ) {
-    await applyLatestTextSnapshot(`caption:thread:${roomId}:${rootEventId}:${stagedId}`, () =>
+    await applyLatestTextMutationSnapshot(`caption:thread:${roomId}:${rootEventId}:${stagedId}`, () =>
       api.updateStagedUploadCaption(
         { kind: "thread", room_id: roomId, root_event_id: rootEventId },
         stagedId,
@@ -5710,10 +5702,10 @@ export function App() {
             }}
             onMentionQueryChange={(roomId, query) => {
               if (query !== null) {
-                void applyLatestTextSnapshot(`mention-main:${roomId}`, async () => {
+                void (async () => {
                   await api.queryMentionCandidates(roomId, "main", query);
-                  return api.getSnapshot();
-                });
+                  setSnapshot(await api.getSnapshot());
+                })();
               }
             }}
             onOpenThread={openThread}
@@ -5991,10 +5983,10 @@ export function App() {
           }
           onThreadMentionQueryChange={(roomId, query) => {
             if (query !== null) {
-              void applyLatestTextSnapshot(`mention-thread:${roomId}`, async () => {
+              void (async () => {
                 await api.queryMentionCandidates(roomId, "thread", query);
-                return api.getSnapshot();
-              });
+                setSnapshot(await api.getSnapshot());
+              })();
             }
           }}
           onThreadAttachFiles={(roomId, rootEventId, files) => {
