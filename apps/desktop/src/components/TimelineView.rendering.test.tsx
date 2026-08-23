@@ -29,6 +29,7 @@ function latestEventSummary(
 ): RoomLatestEventSummary {
   return {
     event_id: "$event:example.invalid",
+    is_redacted: false,
     relation_type: null,
     relation_event_id: null,
     sender_id: null,
@@ -53,6 +54,7 @@ describe("TimelineView", () => {
 
   it.each([
     ["ordinary event", latestEventSummary(), "$event:example.invalid"],
+    ["redacted event", latestEventSummary({ is_redacted: true }), null],
     [
       "message edit",
       latestEventSummary({ relation_type: "m.replace", relation_event_id: "$target:example.invalid" }),

@@ -18,8 +18,9 @@ use super::participants::{
     qa_data_dir, retain_or_cleanup_e2ee_callers_after_stage,
 };
 use super::registry::{
-    DEVICE_A, DEVICE_B, QaConfig, QaScenario, QaStage, THREAD_REPLY_BODY, TimelineStressConfig,
-    scenario_report, should_run_focused_send_queue_route, should_run_normal_secondary_participant,
+    DEVICE_A, DEVICE_B, EVENT_TIMEOUT, QaConfig, QaScenario, QaStage, THREAD_REPLY_BODY,
+    TimelineStressConfig, scenario_report, should_run_focused_send_queue_route,
+    should_run_normal_secondary_participant,
 };
 use super::scenario_identity::{
     run_credential_health_stage, run_e2ee_trust_stage, run_encryption_debug_stage,
@@ -45,10 +46,33 @@ use super::scenario_timeline::{
     wait_for_timeline_navigation,
 };
 use super::{
-    AccountCommand, AuthSecret, ComposerDocument, CoreCommand, CoreFailure, CoreRuntime,
-    PaginationDirection, ReplyQuoteState, RoomCommand, SyncCommand, TimelineCommand, TimelineKey,
-    TimelineKind, TimelineUnreadPosition, TimelineViewportObservation,
+    AccountCommand, AppCommand, AppState, AuthSecret, ComposerDocument, CoreCommand,
+    CoreConnection, CoreFailure, CoreRuntime, PaginationDirection, ReplyQuoteState, RoomCommand,
+    SyncCommand, TimelineCommand, TimelineKey, TimelineKind, TimelineUnreadPosition,
+    TimelineViewportObservation,
 };
+
+async fn wait_for_redact_edit_snapshot(
+    conn: &mut CoreConnection,
+    label: &str,
+    predicate: impl Fn(&AppState) -> bool,
+) -> Result<(), String> {
+    if predicate(&conn.snapshot()) {
+        return Ok(());
+    }
+    tokio::time::timeout(EVENT_TIMEOUT, async {
+        loop {
+            conn.recv_event()
+                .await
+                .map_err(|error| format!("{label}: event stream failed: {error:?}"))?;
+            if predicate(&conn.snapshot()) {
+                return Ok(());
+            }
+        }
+    })
+    .await
+    .map_err(|_| format!("{label}: timed out waiting for authoritative snapshot"))?
+}
 
 pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, String> {
     if scenario == QaScenario::Safety {
@@ -1137,6 +1161,19 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
         "edit search msg diff",
     )
     .await?;
+    if scenario.should_run_stage(QaStage::RedactEditConvergence) {
+        wait_for_redact_edit_snapshot(&mut conn_a, "edited room latest", |snapshot| {
+            snapshot.rooms.iter().any(|room| {
+                room.room_id == room_id
+                    && room.latest_event.as_ref().is_some_and(|latest| {
+                        latest.event_id == search_event_id
+                            && !latest.is_redacted
+                            && latest.preview.as_deref() == Some(EDITED_BODY)
+                    })
+            })
+        })
+        .await?;
+    }
 
     // Poll until new text is found.
     poll_search_until_found(
@@ -1176,6 +1213,51 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
     .await?;
     println!("search_redact=ok");
     println!("edit_redact_search=ok");
+
+    if scenario.should_run_stage(QaStage::RedactEditConvergence) {
+        let redact_latest_id = conn_a.next_request_id();
+        conn_a
+            .command(CoreCommand::Timeline(TimelineCommand::Redact {
+                request_id: redact_latest_id,
+                key: key_a_search.clone(),
+                event_id: search_event_id.clone(),
+            }))
+            .await
+            .map_err(|e| format!("submit redact latest convergence msg: {e}"))?;
+        wait_for_redact_diff(
+            &mut conn_a,
+            &key_a_search,
+            redact_latest_id,
+            "redact latest convergence msg",
+        )
+        .await?;
+
+        let open_activity_id = conn_a.next_request_id();
+        conn_a
+            .command(CoreCommand::App(AppCommand::OpenActivity {
+                request_id: open_activity_id,
+            }))
+            .await
+            .map_err(|e| format!("submit convergence Activity open: {e}"))?;
+        wait_for_redact_edit_snapshot(&mut conn_a, "redact/edit convergence", |snapshot| {
+            let room_latest_converged = snapshot.rooms.iter().any(|room| {
+                room.room_id == room_id
+                    && room.latest_event.as_ref().is_some_and(|latest| {
+                        latest.event_id != search_event_id && !latest.is_redacted
+                    })
+            });
+            let activity_converged = matches!(
+                &snapshot.activity,
+                koushi_state::ActivityState::Open { recent, unread, .. }
+                    if recent.rows.iter().chain(&unread.rows).all(|row| {
+                        row.event_id.as_deref() != Some(search_event_id.as_str())
+                    })
+            );
+            room_latest_converged && activity_converged
+        })
+        .await?;
+        println!("redact_edit_convergence=ok");
+    }
 
     if scenario.should_run_stage(QaStage::SearchCrawler) {
         run_search_crawler_stage(&mut conn_a, &account_key_a, &room_id).await?;

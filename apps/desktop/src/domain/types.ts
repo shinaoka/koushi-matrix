@@ -956,6 +956,7 @@ export interface ConversationActivity {
 
 export interface RoomLatestEventSummary {
   event_id: string;
+  is_redacted: boolean;
   relation_type?: string | null;
   relation_event_id?: string | null;
   sender_id: string | null;

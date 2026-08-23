@@ -422,6 +422,7 @@ mod tests {
             sender_avatar: None,
             preview: Some(private_message.to_owned()),
             timestamp_ms: 42,
+            is_redacted: false,
         });
         reduce_with_unread_diagnostics(
             &mut state,

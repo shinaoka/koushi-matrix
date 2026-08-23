@@ -108,6 +108,7 @@ pub struct MatrixRoomLatestEventSummary {
     pub is_reply: bool,
     pub has_thread_summary: bool,
     pub has_reactions: bool,
+    pub is_redacted: bool,
 }
 
 pub(super) struct SdkUnreadTrace<'a> {
@@ -2619,10 +2620,19 @@ fn read_marker_matches_latest(
     latest_event: &Option<MatrixRoomLatestEventSummary>,
     read_marker_event_id: &Option<String>,
 ) -> bool {
-    latest_event
-        .as_ref()
-        .map(|event| event.event_id.as_str())
-        .is_some_and(|latest_event_id| read_marker_event_id.as_deref() == Some(latest_event_id))
+    latest_event.as_ref().is_some_and(|event| {
+        !event.is_redacted
+            && !event.event_id.trim().is_empty()
+            && matches!(
+                event.event_type.as_deref(),
+                Some("m.room.message" | "m.room.encrypted")
+            )
+            && !matches!(
+                event.relation_type.as_deref(),
+                Some("m.replace" | "m.annotation")
+            )
+            && read_marker_event_id.as_deref() == Some(event.event_id.as_str())
+    })
 }
 
 async fn matrix_room_fully_read_event_id(room: &matrix_sdk::Room) -> Option<String> {
@@ -2692,6 +2702,223 @@ fn matrix_timeline_event_relation(
     (relation_type, relation_event_id)
 }
 
+async fn matrix_room_latest_remote_event_projection(
+    room: &matrix_sdk::Room,
+    timeline_event: matrix_sdk::deserialized_responses::TimelineEvent,
+    cached_conversation_activity: Option<MatrixConversationActivity>,
+) -> (
+    Option<MatrixRoomLatestEventSummary>,
+    Option<MatrixConversationActivity>,
+) {
+    let is_redacted = matrix_timeline_event_is_redacted(&timeline_event);
+    let replacement_target = {
+        let (relation_type, relation_event_id) = matrix_timeline_event_relation(&timeline_event);
+        (relation_type.as_deref() == Some("m.replace")).then_some(relation_event_id)
+    };
+
+    let (identity_event, preview_content, facts_content) = if is_redacted {
+        let content =
+            matrix_sdk_ui::timeline::TimelineItemContent::from_event(room, timeline_event.clone())
+                .await;
+        (timeline_event, content.clone(), content)
+    } else if let Some(relation_event_id) = replacement_target.flatten() {
+        let Some(original_event) =
+            matrix_room_event_in_memory_by_id(room, &relation_event_id).await
+        else {
+            return (None, cached_conversation_activity);
+        };
+        if matrix_timeline_event_is_redacted(&original_event) {
+            return (None, cached_conversation_activity);
+        }
+        let original_event_type = matrix_timeline_event_type(&original_event);
+        let (original_relation_type, _) = matrix_timeline_event_relation(&original_event);
+        if matrix_conversation_activity_source(
+            original_event_type.as_deref().unwrap_or_default(),
+            original_relation_type.as_deref(),
+        )
+        .is_none()
+        {
+            return (None, cached_conversation_activity);
+        }
+
+        let facts_content =
+            matrix_sdk_ui::timeline::TimelineItemContent::from_event(room, original_event.clone())
+                .await;
+        let preview_content =
+            matrix_sdk_ui::timeline::TimelineItemContent::from_event(room, timeline_event.clone())
+                .await;
+        (original_event, preview_content, facts_content)
+    } else {
+        let content =
+            matrix_sdk_ui::timeline::TimelineItemContent::from_event(room, timeline_event.clone())
+                .await;
+        (timeline_event, content.clone(), content)
+    };
+
+    let Some(event_id) = identity_event
+        .event_id()
+        .map(|event_id| event_id.to_string())
+    else {
+        return (None, cached_conversation_activity);
+    };
+    let sender = identity_event.sender();
+    let timestamp_ms = identity_event
+        .timestamp()
+        .map(|timestamp| u64::from(timestamp.get()))
+        .unwrap_or(0);
+    let event_type = matrix_timeline_event_type(&identity_event);
+    let (relation_type, relation_event_id) = matrix_timeline_event_relation(&identity_event);
+    let content_converted = facts_content.is_some();
+    let is_threaded = facts_content
+        .as_ref()
+        .is_some_and(|content| content.thread_root().is_some());
+    let is_reply = facts_content
+        .as_ref()
+        .is_some_and(|content| content.in_reply_to().is_some());
+    let has_thread_summary = facts_content
+        .as_ref()
+        .is_some_and(|content| content.thread_summary().is_some());
+    let has_reactions = facts_content
+        .as_ref()
+        .and_then(|content| content.reactions())
+        .is_some_and(|reactions| !reactions.is_empty());
+    let (sender_label, sender_avatar_mxc_uri) = match sender.as_ref() {
+        Some(sender) => matrix_room_member_display(room, sender).await,
+        None => (None, None),
+    };
+    let conversation_activity = if is_redacted {
+        None
+    } else {
+        matrix_conversation_activity_source(
+            event_type.as_deref().unwrap_or_default(),
+            relation_type.as_deref(),
+        )
+        .map(|source| MatrixConversationActivity {
+            timestamp_ms,
+            source,
+        })
+    };
+    let latest_event = MatrixRoomLatestEventSummary {
+        event_id,
+        sender_id: sender.map(|sender| sender.to_string()),
+        sender_label,
+        sender_avatar_mxc_uri,
+        preview: (!is_redacted)
+            .then(|| {
+                preview_content
+                    .as_ref()
+                    .and_then(matrix_latest_event_preview)
+            })
+            .flatten(),
+        timestamp_ms,
+        event_type,
+        relation_type,
+        relation_event_id,
+        content_converted,
+        is_threaded,
+        is_reply,
+        has_thread_summary,
+        has_reactions,
+        is_redacted,
+    };
+    (
+        Some(latest_event),
+        newest_conversation_activity(cached_conversation_activity, conversation_activity),
+    )
+}
+
+async fn matrix_room_event_in_memory_by_id(
+    room: &matrix_sdk::Room,
+    event_id: &str,
+) -> Option<matrix_sdk::deserialized_responses::TimelineEvent> {
+    let (event_cache, _drop_handles) = room.event_cache().await.ok()?;
+    event_cache
+        .rfind_map_event_in_memory_by(|event| {
+            event
+                .event_id()
+                .as_deref()
+                .is_some_and(|candidate| candidate.as_str() == event_id)
+                .then(|| event.clone())
+        })
+        .await
+        .ok()
+        .flatten()
+}
+
+fn matrix_local_latest_event_relation_type(
+    content: &matrix_sdk::store::SerializableEventContent,
+) -> Option<String> {
+    let (raw_content, _) = content.raw();
+    raw_content
+        .get_field::<serde_json::Value>("m.relates_to")
+        .ok()
+        .flatten()
+        .and_then(|relates_to| {
+            relates_to
+                .get("rel_type")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    relates_to
+                        .get("m.in_reply_to")
+                        .and_then(|reply| reply.get("event_id"))
+                        .is_some()
+                        .then(|| "m.in_reply_to".to_owned())
+                })
+        })
+}
+
+fn matrix_local_latest_event_projection(
+    event_id: Option<&str>,
+    value: &matrix_sdk::latest_events::LocalLatestEventValue,
+    sender_id: Option<String>,
+    cached_conversation_activity: Option<MatrixConversationActivity>,
+) -> (
+    Option<MatrixRoomLatestEventSummary>,
+    Option<MatrixConversationActivity>,
+) {
+    let (raw_content, event_type) = value.content.raw();
+    let relation_type = matrix_local_latest_event_relation_type(&value.content);
+    if relation_type.as_deref() == Some("m.replace") {
+        return (None, cached_conversation_activity);
+    }
+    let timestamp_ms = u64::from(value.timestamp.get());
+    let conversation_activity =
+        matrix_conversation_activity_source(event_type, relation_type.as_deref()).map(|source| {
+            MatrixConversationActivity {
+                timestamp_ms,
+                source,
+            }
+        });
+    let Some(event_id) = event_id else {
+        return (
+            None,
+            newest_conversation_activity(cached_conversation_activity, conversation_activity),
+        );
+    };
+    let latest_event = MatrixRoomLatestEventSummary {
+        event_id: event_id.to_owned(),
+        sender_id: sender_id.clone(),
+        sender_label: sender_id,
+        sender_avatar_mxc_uri: None,
+        preview: matrix_local_latest_event_preview(&value.content),
+        timestamp_ms,
+        event_type: Some(event_type.to_owned()),
+        relation_type,
+        relation_event_id: None,
+        content_converted: false,
+        is_threaded: false,
+        is_reply: false,
+        has_thread_summary: false,
+        has_reactions: false,
+        is_redacted: false,
+    };
+    (
+        Some(latest_event),
+        newest_conversation_activity(cached_conversation_activity, conversation_activity),
+    )
+}
+
 async fn matrix_room_latest_event_projection(
     room: &matrix_sdk::Room,
 ) -> (
@@ -2707,141 +2934,27 @@ async fn matrix_room_latest_event_projection(
     let latest_event = room.latest_event();
     match latest_event {
         matrix_sdk::latest_events::LatestEventValue::Remote(timeline_event) => {
-            let Some(event_id) = timeline_event
-                .event_id()
-                .map(|event_id| event_id.to_string())
-            else {
-                return (None, cached_conversation_activity);
-            };
-            let sender = timeline_event.sender();
-            let timestamp_ms = timeline_event
-                .timestamp()
-                .map(|timestamp| u64::from(timestamp.get()))
-                .unwrap_or(0);
-            let event_type = matrix_timeline_event_type(&timeline_event);
-            let (relation_type, relation_event_id) =
-                matrix_timeline_event_relation(&timeline_event);
-            let content =
-                matrix_sdk_ui::timeline::TimelineItemContent::from_event(room, timeline_event)
-                    .await;
-            let content_converted = content.is_some();
-            let is_threaded = content
-                .as_ref()
-                .is_some_and(|content| content.thread_root().is_some());
-            let is_reply = content
-                .as_ref()
-                .is_some_and(|content| content.in_reply_to().is_some());
-            let has_thread_summary = content
-                .as_ref()
-                .is_some_and(|content| content.thread_summary().is_some());
-            let has_reactions = content
-                .as_ref()
-                .and_then(|content| content.reactions())
-                .is_some_and(|reactions| !reactions.is_empty());
-            let (sender_label, sender_avatar_mxc_uri) = match sender.as_ref() {
-                Some(sender) => matrix_room_member_display(room, sender).await,
-                None => (None, None),
-            };
-            let conversation_activity = matrix_conversation_activity_source(
-                event_type.as_deref().unwrap_or_default(),
-                relation_type.as_deref(),
+            matrix_room_latest_remote_event_projection(
+                room,
+                timeline_event,
+                cached_conversation_activity,
             )
-            .map(|source| MatrixConversationActivity {
-                timestamp_ms,
-                source,
-            });
-            let latest_event = MatrixRoomLatestEventSummary {
-                event_id,
-                sender_id: sender.map(|sender| sender.to_string()),
-                sender_label,
-                sender_avatar_mxc_uri,
-                preview: content.as_ref().and_then(matrix_latest_event_preview),
-                timestamp_ms,
-                event_type,
-                relation_type,
-                relation_event_id,
-                content_converted,
-                is_threaded,
-                is_reply,
-                has_thread_summary,
-                has_reactions,
-            };
-            (
-                Some(latest_event),
-                newest_conversation_activity(cached_conversation_activity, conversation_activity),
-            )
+            .await
         }
         matrix_sdk::latest_events::LatestEventValue::LocalHasBeenSent { event_id, value } => {
-            let sender_id = room.client().user_id().map(|user_id| user_id.to_string());
-            let (raw_content, event_type) = value.content.raw();
-            let relation_type = raw_content
-                .get_field::<serde_json::Value>("m.relates_to")
-                .ok()
-                .flatten()
-                .and_then(|relates_to| {
-                    relates_to
-                        .get("rel_type")
-                        .and_then(serde_json::Value::as_str)
-                        .map(ToOwned::to_owned)
-                        .or_else(|| {
-                            relates_to
-                                .get("m.in_reply_to")
-                                .and_then(|reply| reply.get("event_id"))
-                                .is_some()
-                                .then(|| "m.in_reply_to".to_owned())
-                        })
-                });
-            let timestamp_ms = u64::from(value.timestamp.get());
-            let conversation_activity =
-                matrix_conversation_activity_source(event_type, relation_type.as_deref()).map(
-                    |source| MatrixConversationActivity {
-                        timestamp_ms,
-                        source,
-                    },
-                );
-            let latest_event = MatrixRoomLatestEventSummary {
-                event_id: event_id.to_string(),
-                sender_id: sender_id.clone(),
-                sender_label: sender_id,
-                sender_avatar_mxc_uri: None,
-                preview: matrix_local_latest_event_preview(&value.content),
-                timestamp_ms,
-                event_type: Some(event_type.to_owned()),
-                relation_type,
-                relation_event_id: None,
-                content_converted: false,
-                is_threaded: false,
-                is_reply: false,
-                has_thread_summary: false,
-                has_reactions: false,
-            };
-            (
-                Some(latest_event),
-                newest_conversation_activity(cached_conversation_activity, conversation_activity),
+            matrix_local_latest_event_projection(
+                Some(event_id.as_str()),
+                &value,
+                room.client().user_id().map(|user_id| user_id.to_string()),
+                cached_conversation_activity,
             )
         }
         matrix_sdk::latest_events::LatestEventValue::LocalIsSending(value) => {
-            let (raw_content, event_type) = value.content.raw();
-            let relation_type = raw_content
-                .get_field::<serde_json::Value>("m.relates_to")
-                .ok()
-                .flatten()
-                .and_then(|relates_to| {
-                    relates_to
-                        .get("rel_type")
-                        .and_then(serde_json::Value::as_str)
-                        .map(ToOwned::to_owned)
-                });
-            let local_activity =
-                matrix_conversation_activity_source(event_type, relation_type.as_deref()).map(
-                    |source| MatrixConversationActivity {
-                        timestamp_ms: u64::from(value.timestamp.get()),
-                        source,
-                    },
-                );
-            (
+            matrix_local_latest_event_projection(
                 None,
-                newest_conversation_activity(cached_conversation_activity, local_activity),
+                &value,
+                room.client().user_id().map(|user_id| user_id.to_string()),
+                cached_conversation_activity,
             )
         }
         matrix_sdk::latest_events::LatestEventValue::None
@@ -2849,6 +2962,23 @@ async fn matrix_room_latest_event_projection(
         | matrix_sdk::latest_events::LatestEventValue::LocalCannotBeSent(_) => {
             (None, cached_conversation_activity)
         }
+    }
+}
+
+fn matrix_timeline_event_is_redacted(
+    timeline_event: &matrix_sdk::deserialized_responses::TimelineEvent,
+) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Unsigned {
+        redacted_because: Option<serde_json::Value>,
+    }
+
+    match timeline_event.raw().get_field::<Unsigned>("unsigned") {
+        Ok(Some(unsigned)) => unsigned.redacted_because.is_some(),
+        Ok(None) => false,
+        // A malformed unsigned block cannot be trusted as a display/read
+        // anchor; fail closed without logging the private event.
+        Err(_) => true,
     }
 }
 
@@ -2866,6 +2996,9 @@ async fn matrix_room_cached_conversation_activity(
 fn matrix_conversation_activity_from_timeline_event(
     timeline_event: &matrix_sdk::deserialized_responses::TimelineEvent,
 ) -> Option<MatrixConversationActivity> {
+    if matrix_timeline_event_is_redacted(timeline_event) {
+        return None;
+    }
     let event_type = matrix_timeline_event_type(timeline_event)?;
     let (relation_type, _) = matrix_timeline_event_relation(timeline_event);
     let source = matrix_conversation_activity_source(&event_type, relation_type.as_deref())?;
@@ -3056,9 +3189,11 @@ mod tests {
     use super::{
         MatrixConversationActivity, MatrixConversationActivitySource, MatrixRoomTagInfo,
         MatrixRoomTags, SdkUnreadTrace, SpaceMemberLookupStatus, classify_space_member_ids,
-        matrix_conversation_activity_source, matrix_room_list_room_from_counts,
-        newest_conversation_activity, people_scope_diagnostic_event,
-        space_members_scope_diagnostic_event, trace_sdk_unread_snapshot,
+        matrix_conversation_activity_from_timeline_event, matrix_conversation_activity_source,
+        matrix_room_latest_event_projection, matrix_room_list_room_from_counts,
+        matrix_timeline_event_is_redacted, newest_conversation_activity,
+        people_scope_diagnostic_event, space_members_scope_diagnostic_event,
+        trace_sdk_unread_snapshot,
     };
 
     use koushi_diagnostics::DiagnosticValue;
@@ -3124,6 +3259,133 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn redacted_raw_latest_is_classified_without_private_diagnostics() {
+        let event = matrix_sdk::deserialized_responses::TimelineEvent::from_plaintext(
+            matrix_sdk::ruma::serde::Raw::from_json_string(
+                serde_json::json!({
+                    "content": {"body": "redacted body", "msgtype": "m.text"},
+                    "event_id": "$redacted:example.invalid",
+                    "origin_server_ts": 42,
+                    "sender": "@sender:example.invalid",
+                    "type": "m.room.message",
+                    "unsigned": {"redacted_because": {"type": "m.room.redaction"}}
+                })
+                .to_string(),
+            )
+            .expect("redacted synthetic timeline event"),
+        );
+
+        assert!(matrix_timeline_event_is_redacted(&event));
+    }
+
+    #[test]
+    fn malformed_unsigned_latest_fails_closed_as_redacted() {
+        let event = matrix_sdk::deserialized_responses::TimelineEvent::from_plaintext(
+            matrix_sdk::ruma::serde::Raw::from_json_string(
+                serde_json::json!({
+                    "content": {"body": "private body", "msgtype": "m.text"},
+                    "event_id": "$private:example.invalid",
+                    "origin_server_ts": 42,
+                    "sender": "@private:example.invalid",
+                    "type": "m.room.message",
+                    "unsigned": "malformed"
+                })
+                .to_string(),
+            )
+            .expect("malformed unsigned synthetic timeline event"),
+        );
+
+        assert!(matrix_timeline_event_is_redacted(&event));
+        assert!(matrix_conversation_activity_from_timeline_event(&event).is_none());
+    }
+
+    #[test]
+    fn redacted_cached_latest_does_not_create_conversation_activity() {
+        let event = matrix_sdk::deserialized_responses::TimelineEvent::from_plaintext(
+            matrix_sdk::ruma::serde::Raw::from_json_string(
+                serde_json::json!({
+                    "content": {"body": "redacted body", "msgtype": "m.text"},
+                    "event_id": "$redacted:example.invalid",
+                    "origin_server_ts": 42,
+                    "sender": "@sender:example.invalid",
+                    "type": "m.room.message",
+                    "unsigned": {"redacted_because": {"type": "m.room.redaction"}}
+                })
+                .to_string(),
+            )
+            .expect("redacted synthetic timeline event"),
+        );
+
+        assert!(matrix_conversation_activity_from_timeline_event(&event).is_none());
+    }
+
+    #[tokio::test]
+    async fn remote_replacement_latest_keeps_original_identity_and_order() {
+        use matrix_sdk::ruma::{event_id, room_id, user_id};
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+        use matrix_sdk_test::{JoinedRoomBuilder, event_factory::EventFactory};
+
+        let room_id = room_id!("!room:example.invalid");
+        let sender = user_id!("@sender:example.invalid");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        client
+            .event_cache()
+            .subscribe()
+            .expect("event cache subscription");
+
+        let original_factory = EventFactory::new().room(room_id).sender(sender);
+        let replacement_factory = EventFactory::new().room(room_id).sender(sender);
+        let original = original_factory
+            .server_ts(42)
+            .text_msg("before")
+            .event_id(event_id!("$original:example.invalid"))
+            .into_raw_sync();
+        let replacement = replacement_factory
+            .server_ts(99)
+            .text_msg("fallback edit body")
+            .event_id(event_id!("$edit:example.invalid"))
+            .edit(
+                event_id!("$original:example.invalid"),
+                matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(
+                    "after",
+                )
+                .into(),
+            )
+            .into_raw_sync();
+
+        let room = server
+            .sync_room(&client, JoinedRoomBuilder::new(room_id))
+            .await;
+        let mut latest_events = client
+            .latest_events()
+            .await
+            .listen_and_subscribe_to_room(room_id)
+            .await
+            .expect("latest event subscription")
+            .expect("latest event stream");
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(room_id).add_timeline_bulk(vec![original, replacement]),
+            )
+            .await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), latest_events.next())
+            .await
+            .expect("latest event update must be event-driven");
+
+        let (latest, activity) = matrix_room_latest_event_projection(&room).await;
+        let latest = latest.expect("latest replacement projection");
+        assert_eq!(latest.event_id, "$original:example.invalid");
+        assert_eq!(latest.sender_id.as_deref(), Some("@sender:example.invalid"));
+        assert_eq!(latest.timestamp_ms, 42);
+        assert_eq!(latest.relation_type, None);
+        assert_eq!(latest.relation_event_id, None);
+        assert_eq!(latest.preview.as_deref(), Some("after"));
+        assert_eq!(activity.map(|activity| activity.timestamp_ms), Some(42));
+    }
+
     #[test]
     fn conversation_activity_keeps_the_newest_cache_or_local_candidate() {
         let cached = super::MatrixConversationActivity {
@@ -3632,6 +3894,7 @@ mod tests {
             is_reply: false,
             has_thread_summary: false,
             has_reactions: false,
+            is_redacted: false,
         });
         trace_sdk_unread_snapshot(SdkUnreadTrace {
             unread_messages: 2,
@@ -3681,8 +3944,39 @@ mod tests {
             is_reply: false,
             has_thread_summary: false,
             has_reactions: false,
+            is_redacted: false,
         }
     }
+    #[test]
+    fn room_list_room_from_counts_rejects_redacted_latest_as_read_marker_target() {
+        let mut latest = test_latest_event("$latest:example.invalid");
+        latest.is_redacted = true;
+        let room = matrix_room_list_room_from_counts(
+            "!room:example.invalid".to_owned(),
+            "Room".to_owned(),
+            None,
+            false,
+            Vec::new(),
+            MatrixRoomTags::default(),
+            2,
+            1,
+            2,
+            false,
+            Some(42),
+            None,
+            Some(latest),
+            Some("$latest:example.invalid".to_owned()),
+            None,
+            vec![],
+            false,
+            2,
+        );
+
+        assert_eq!(room.unread_count, 2);
+        assert_eq!(room.notification_count, 2);
+        assert_eq!(room.highlight_count, 1);
+    }
+
     #[test]
     fn room_list_room_from_counts_suppresses_stale_unread_when_fully_read_matches_latest_event() {
         let room = matrix_room_list_room_from_counts(

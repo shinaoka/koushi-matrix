@@ -203,6 +203,26 @@ describe("desktop release scripts", () => {
     );
   });
 
+  test("redact/edit convergence QA is registered with its closed token", () => {
+    const registry = readFileSync(
+      new URL("../../../../crates/koushi-core/src/bin/headless_core_qa/registry.rs", import.meta.url),
+      "utf8"
+    );
+    const runner = readFileSync(
+      new URL("../../../../scripts/desktop-headless-local-qa.mjs", import.meta.url),
+      "utf8"
+    );
+    const qaLanes = readFileSync(
+      new URL("../../../../docs/agents/qa-lanes.md", import.meta.url),
+      "utf8"
+    );
+
+    expect(registry).toContain("RedactEditConvergence");
+    expect(registry).toContain('"redact_edit_convergence"');
+    expect(runner).toContain("scenario redact_edit_convergence");
+    expect(qaLanes).toContain("redact_edit_convergence=ok");
+  });
+
   test("headless basic operations docs list the default real space_compat tokens", () => {
     const docs = readFileSync(
       new URL("../../../../docs/qa/headless-basic-operations.md", import.meta.url),

@@ -151,6 +151,17 @@ function readySnapshot(
       parent_space_ids: [SPACE_ID],
       dm_space_ids: [],
       is_encrypted: false,
+      latest_event: {
+        event_id: SEED_EVENT_ID,
+        is_redacted: false,
+        relation_type: null,
+        relation_event_id: null,
+        sender_id: USER_ID,
+        sender_label: "Harness User",
+        sender_avatar: null,
+        preview: "Seed message for reply target",
+        timestamp_ms: 1_800_000_000_000
+      },
       joined_members: 8
     }
   ];

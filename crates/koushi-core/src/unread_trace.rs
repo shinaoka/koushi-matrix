@@ -211,6 +211,7 @@ mod tests {
                 sender_avatar: None,
                 preview: Some("private body".to_owned()),
                 timestamp_ms: 42,
+                is_redacted: false,
             }),
             parent_space_ids: Vec::new(),
             dm_space_ids: Vec::new(),

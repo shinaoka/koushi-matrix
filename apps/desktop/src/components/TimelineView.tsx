@@ -238,7 +238,7 @@ export type { TimelineForwardDestination } from "../domain/projectionTypes";
 export function roomLatestDisplayEventId(
   summary: RoomLatestEventSummary | null | undefined
 ): string | null {
-  if (!summary) {
+  if (!summary || summary.is_redacted) {
     return null;
   }
   if (summary.relation_type) {

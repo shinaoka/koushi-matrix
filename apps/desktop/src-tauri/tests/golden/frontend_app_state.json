@@ -528,7 +528,17 @@
           "is_dm": false,
           "is_encrypted": true,
           "joined_members": 4,
-          "latest_event": null,
+          "latest_event": {
+            "event_id": "$fixture-latest:example.invalid",
+            "is_redacted": false,
+            "preview": "Fixture latest message",
+            "relation_event_id": null,
+            "relation_type": null,
+            "sender_avatar": null,
+            "sender_id": "@other:example.invalid",
+            "sender_label": "Other Fixture",
+            "timestamp_ms": 1000000
+          },
           "marked_unread": false,
           "notification_count": 2,
           "original_display_label": "Fixture Room",
@@ -542,6 +552,40 @@
             "low_priority": null
           },
           "unread_count": 3
+        },
+        {
+          "avatar": null,
+          "conversation_activity": null,
+          "display_label": "Redacted Fixture Room",
+          "display_name": "Redacted Fixture Room",
+          "dm_space_ids": [],
+          "dm_user_ids": [],
+          "highlight_count": 0,
+          "is_dm": false,
+          "is_encrypted": false,
+          "joined_members": 2,
+          "latest_event": {
+            "event_id": "$fixture-redacted:example.invalid",
+            "is_redacted": true,
+            "preview": null,
+            "relation_event_id": null,
+            "relation_type": null,
+            "sender_avatar": null,
+            "sender_id": "@other:example.invalid",
+            "sender_label": "Other Fixture",
+            "timestamp_ms": 900000
+          },
+          "marked_unread": false,
+          "notification_count": 0,
+          "original_display_label": "Redacted Fixture Room",
+          "parent_space_ids": [],
+          "recency_stamp": 900000,
+          "room_id": "!redacted-room:example.invalid",
+          "tags": {
+            "favourite": null,
+            "low_priority": null
+          },
+          "unread_count": 0
         }
       ],
       "search": {

@@ -496,6 +496,7 @@ describe("Sidebar", () => {
     statusNewer.conversation_activity = null;
     statusNewer.latest_event = {
       event_id: "$status-newer:example.invalid",
+      is_redacted: false,
       sender_id: "@sender:example.invalid",
       sender_label: "Sender",
       sender_avatar: null,
@@ -509,6 +510,7 @@ describe("Sidebar", () => {
     };
     messageNewer.latest_event = {
       event_id: "$message-newer:example.invalid",
+      is_redacted: false,
       sender_id: "@sender:example.invalid",
       sender_label: "Sender",
       sender_avatar: null,

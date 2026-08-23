@@ -149,6 +149,7 @@ pub(super) enum QaScenario {
     LiveSignals,
     Thread,
     EditRedactSearch,
+    RedactEditConvergence,
     SearchCrawler,
     ScheduledSend,
     SendQueue,
@@ -185,6 +186,7 @@ pub(super) enum QaStage {
     LiveSignals,
     Thread,
     EditRedactSearch,
+    RedactEditConvergence,
     SearchCrawler,
     ScheduledSend,
     SendQueue,
@@ -260,6 +262,7 @@ impl QaScenario {
             "live_signals" => Ok(Self::LiveSignals),
             "thread" => Ok(Self::Thread),
             "edit_redact_search" => Ok(Self::EditRedactSearch),
+            "redact_edit_convergence" => Ok(Self::RedactEditConvergence),
             "search_crawler" => Ok(Self::SearchCrawler),
             "scheduled_send" => Ok(Self::ScheduledSend),
             "send_queue" => Ok(Self::SendQueue),
@@ -267,7 +270,7 @@ impl QaScenario {
             "link_preview" => Ok(Self::LinkPreview),
             "cache_restore" => Ok(Self::CacheRestore),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, session_status, credential_health, native_attention, encryption_debug, e2ee_trust, device_cleanup, invites_dm, room_space, directory, room_management, room_people_projection, timeline, timeline_reconnect, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, search_crawler, scheduled_send, restore_cleanup, link_preview, cache_restore; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, session_status, credential_health, native_attention, encryption_debug, e2ee_trust, device_cleanup, invites_dm, room_space, directory, room_management, room_people_projection, timeline, timeline_reconnect, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, redact_edit_convergence, search_crawler, scheduled_send, restore_cleanup, link_preview, cache_restore; got {other}"
             )),
         }
     }
@@ -413,6 +416,16 @@ impl QaScenario {
                     | QaStage::RoomSpace
                     | QaStage::Timeline
                     | QaStage::EditRedactSearch
+            ),
+            Self::RedactEditConvergence => matches!(
+                stage,
+                QaStage::Safety
+                    | QaStage::LoginSync
+                    | QaStage::RoomSpace
+                    | QaStage::Timeline
+                    | QaStage::Thread
+                    | QaStage::EditRedactSearch
+                    | QaStage::RedactEditConvergence
             ),
             Self::SearchCrawler => matches!(
                 stage,
@@ -612,6 +625,7 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "thread_paginate=end_reached",
         ],
         QaStage::EditRedactSearch => &["edit_redact_search=ok"],
+        QaStage::RedactEditConvergence => &["redact_edit_convergence=ok"],
         QaStage::SearchCrawler => &[
             "crawl_backfill=ok",
             "crawl_no_media_bytes=ok",
@@ -848,6 +862,15 @@ pub(super) fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::Timeline,
             QaStage::EditRedactSearch,
         ],
+        QaScenario::RedactEditConvergence => vec![
+            QaStage::Safety,
+            QaStage::LoginSync,
+            QaStage::RoomSpace,
+            QaStage::Timeline,
+            QaStage::Thread,
+            QaStage::EditRedactSearch,
+            QaStage::RedactEditConvergence,
+        ],
         QaScenario::SearchCrawler => vec![
             QaStage::Safety,
             QaStage::LoginSync,
@@ -941,6 +964,7 @@ pub(super) fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static st
         | QaScenario::LiveSignals
         | QaScenario::Thread
         | QaScenario::EditRedactSearch
+        | QaScenario::RedactEditConvergence
         | QaScenario::SearchCrawler
         | QaScenario::ScheduledSend
         | QaScenario::SendQueue

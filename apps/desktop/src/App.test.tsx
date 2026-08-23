@@ -1529,8 +1529,8 @@ describe("desktop integration source guards", () => {
 
     expect(actionStart).toBeGreaterThanOrEqual(0);
     expect(actionSource).toContain("fully_read_event_id");
-    expect(actionSource).toContain("room?.latest_event?.event_id");
-    expect(actionSource.indexOf("room?.latest_event?.event_id")).toBeLessThan(
+    expect(actionSource).toContain("roomLatestDisplayEventId(room?.latest_event)");
+    expect(actionSource.indexOf("roomLatestDisplayEventId(room?.latest_event)")).toBeLessThan(
       actionSource.indexOf("fully_read_event_id")
     );
     expect(actionSource).toContain("eventId.trim().length > 0");

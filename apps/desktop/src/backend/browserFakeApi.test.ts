@@ -3008,6 +3008,102 @@ describe("BrowserFakeApi settings preview", () => {
     ).toBe(false);
   });
 
+  test("default room latest fixtures carry explicit redaction facts", async () => {
+    const snapshot = await createBrowserFakeApi().getSnapshot();
+    const latestEvents = snapshot.state.domain.rooms
+      .map((room) => room.latest_event)
+      .filter((event): event is NonNullable<typeof event> => event !== null && event !== undefined);
+
+    expect(latestEvents.some((event) => event.is_redacted === false)).toBe(true);
+    expect(latestEvents.some((event) => event.is_redacted === true)).toBe(true);
+  });
+
+  test("edit and redact commands do not repair installed Activity or thread projections", async () => {
+    const api = createBrowserFakeApi();
+    const mutable = api as unknown as { snapshot: DesktopSnapshot };
+    const roomId = "!room-alpha:example.invalid";
+    const eventId = "$alpha-update";
+    const latestEvent = {
+      event_id: eventId,
+      is_redacted: false,
+      relation_type: null,
+      relation_event_id: null,
+      sender_id: "@sender:example.invalid",
+      sender_label: "Sender",
+      sender_avatar: null,
+      preview: "authoritative preview",
+      timestamp_ms: 1_800_000_000_100
+    };
+    const activity = {
+      kind: "open" as const,
+      active_tab: "recent" as const,
+      recent: {
+        rows: [
+          {
+            kind: "event" as const,
+            room_id: roomId,
+            event_id: eventId,
+            thread_root_event_id: null,
+            sender_id: "@sender:example.invalid",
+            sender_label: "Sender",
+            sender_avatar: null,
+            room_label: "synthetic-room",
+            preview: "authoritative preview",
+            timestamp_ms: latestEvent.timestamp_ms,
+            unread: true,
+            highlight: false,
+            context_label: "synthetic-room"
+          }
+        ],
+        next_batch: null,
+        resolution: { kind: "idle" as const }
+      },
+      unread: {
+        rows: [],
+        next_batch: null,
+        resolution: { kind: "idle" as const }
+      },
+      mark_read: { kind: "idle" as const }
+    };
+    const threads = {
+      kind: "open" as const,
+      room_id: roomId,
+      request_id: 1,
+      items: [
+        {
+          room_id: roomId,
+          root_event_id: eventId,
+          root_sender: "@sender:example.invalid",
+          root_sender_label: "Sender",
+          root_body_preview: "root",
+          root_timestamp_ms: latestEvent.timestamp_ms,
+          latest_event_id: "$thread-reply:example.invalid",
+          latest_sender: "@reply:example.invalid",
+          latest_sender_label: "Reply",
+          latest_body_preview: "reply",
+          latest_timestamp_ms: latestEvent.timestamp_ms + 1,
+          reply_count: 1
+        }
+      ],
+      is_paginating: false,
+      end_reached: true
+    };
+    const room = mutable.snapshot.state.domain.rooms.find((candidate) => candidate.room_id === roomId);
+    if (!room) throw new Error("expected browser fake room");
+    room.latest_event = latestEvent;
+    mutable.snapshot.state.domain.activity = activity;
+    mutable.snapshot.state.ui.threads_list = threads;
+    const installed = structuredClone({ activity, threads, latestEvent });
+
+    await api.editMessage(roomId, eventId, documentFromText("locally edited"));
+    const afterEdit = await api.redactMessage(roomId, eventId);
+
+    expect(afterEdit.state.domain.activity).toEqual(installed.activity);
+    expect(afterEdit.state.ui.threads_list).toEqual(installed.threads);
+    expect(afterEdit.state.domain.rooms.find((candidate) => candidate.room_id === roomId)?.latest_event)
+      .toEqual(installed.latestEvent);
+  });
+
   test("editing an attachment caption keeps the attachment", async () => {
     // Core edits a media event's caption in place, so the attachment survives
     // the edit (issue #328). A fake that cleared it here would hide the bug.

@@ -418,6 +418,7 @@ async fn activity_recent_includes_room_list_latest_event_for_unopened_read_dm() 
         sender_avatar: None,
         preview: Some("already read but never opened".to_owned()),
         timestamp_ms: 120,
+        is_redacted: false,
     });
 
     runtime

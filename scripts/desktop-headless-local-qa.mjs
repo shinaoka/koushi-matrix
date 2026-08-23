@@ -29,7 +29,9 @@ import {
 import {
   assertNoLocalPaths,
   assertNoMatrixIdentifiers,
-  assertNoRawSdkErrors
+  assertNoRawSdkErrors,
+  assertRequiredTokens,
+  requiredTokensForHeadlessScenario
 } from "./lib/qa-token-contract.mjs";
 import { writeValidatedQaOutputFiles } from "./lib/qa-output-artifacts.mjs";
 import { assertSdkSubmoduleSynced } from "./lib/sdk-submodule-status.mjs";
@@ -62,6 +64,7 @@ const checks = [
   "scenario live_signals",
   "scenario thread",
   "scenario edit_redact_search",
+  "scenario redact_edit_convergence",
   "scenario search_crawler",
   "scenario scheduled_send",
   "scenario send_queue",
@@ -152,6 +155,9 @@ async function run() {
   }
   if (scenarios.includes("timeline_stress") && !runCoreQa) {
     throw new Error("--scenario=timeline_stress requires --core because it validates Core state");
+  }
+  if (scenarios.includes("redact_edit_convergence") && !runCoreQa) {
+    throw new Error("--scenario=redact_edit_convergence requires --core because it validates Core state");
   }
   if (fixtureRunOption !== undefined) {
     if (scenarios.length !== 1 || scenarios[0] !== "timeline_stress") {
@@ -438,6 +444,10 @@ function runCoreHeadlessQa({
     throw new Error(
       `headless core QA (${qaLabel}) failed for ${serverKind} with status ${result.status ?? "unknown"}; child output omitted after private-data validation`
     );
+  }
+  const requiredTokens = requiredTokensForHeadlessScenario(scenario);
+  if (requiredTokens.length > 0) {
+    assertRequiredTokens(result.stdout, requiredTokens, `headless core QA ${scenario}`);
   }
   return result.stdout;
 }

@@ -87,6 +87,7 @@ binary.
 | `live_signals` | receipts, read markers, typing, presence | `read_receipt=ok`, `fully_read=ok`, `typing=ok`, `presence=ok`, `live_signals=ok` |
 | `thread` | thread projection | — |
 | `edit_redact_search` | edit, redact, search | — |
+| `redact_edit_convergence` | redaction/edit room-latest, Activity, unread/navigation, and thread convergence across restored snapshots | `redact_edit_convergence=ok` |
 | `search_crawler` | crawler-fed search index | — |
 | `scheduled_send` | schedule, reschedule, cancel, fire | `scheduled_capability=local_fallback`, `scheduled_create=ok`, `scheduled_reschedule=ok`, `scheduled_cancel=ok`, `scheduled_fire=ok` |
 | `send_queue` | retry/cancel across injected offline failure (`--features qa-bin`) | — |

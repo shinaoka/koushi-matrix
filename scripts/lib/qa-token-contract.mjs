@@ -10,6 +10,10 @@
  * vocabulary of status values is accepted so prose can never be mistaken for a
  * token.
  */
+export const HEADLESS_LOCAL_QA_SCENARIO_TOKENS = Object.freeze({
+  redact_edit_convergence: Object.freeze(["redact_edit_convergence=ok"])
+});
+
 export function tokensFromOutput(output) {
   return new Set(
     String(output)
@@ -18,6 +22,10 @@ export function tokensFromOutput(output) {
         /^[a-z0-9_]+=(ok|running|created|not_found|completed|partial)$/.test(token)
       )
   );
+}
+
+export function requiredTokensForHeadlessScenario(scenario) {
+  return HEADLESS_LOCAL_QA_SCENARIO_TOKENS[scenario] ?? [];
 }
 
 /**

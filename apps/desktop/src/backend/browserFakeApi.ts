@@ -5852,6 +5852,17 @@ const rooms: RoomSummary[] = [
     unread_count: 8,
     recency_stamp: 100,
     conversation_activity: { timestamp_ms: 100, source: "message" },
+    latest_event: {
+      event_id: "$alpha-latest:example.invalid",
+      is_redacted: false,
+      relation_type: null,
+      relation_event_id: null,
+      sender_id: "@member-1:example.invalid",
+      sender_label: "Member 1",
+      sender_avatar: null,
+      preview: "Synthetic latest message",
+      timestamp_ms: 100
+    },
     parent_space_ids: ["!space-alpha:example.invalid"],
     dm_space_ids: [],
     is_encrypted: false
@@ -5916,6 +5927,17 @@ const rooms: RoomSummary[] = [
     unread_count: 0,
     recency_stamp: 60,
     conversation_activity: null,
+    latest_event: {
+      event_id: "$dm-redacted-latest:example.invalid",
+      is_redacted: true,
+      relation_type: null,
+      relation_event_id: null,
+      sender_id: "@member-2:example.invalid",
+      sender_label: "Member 2",
+      sender_avatar: null,
+      preview: null,
+      timestamp_ms: 60
+    },
     parent_space_ids: [],
     dm_space_ids: [],
     is_encrypted: false

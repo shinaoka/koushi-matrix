@@ -85,6 +85,7 @@ fn latest_message(event_id: &str, timestamp_ms: u64) -> RoomLatestEventSummary {
         sender_avatar: None,
         preview: Some("latest message".to_owned()),
         timestamp_ms,
+        is_redacted: false,
     }
 }
 

@@ -1172,6 +1172,7 @@ function roomSummaryWithLatestMessage(
         : { timestamp_ms: conversationTimestampMs, source: "message" },
     latest_event: {
       event_id: `$${roomId.replace(/^!/, "")}`,
+      is_redacted: false,
       sender_id: "@sender:example.invalid",
       sender_label: "Sender",
       sender_avatar: null,

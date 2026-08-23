@@ -640,6 +640,9 @@ describe("desktop release scripts", () => {
     expect(source.match(/writeValidatedQaOutputFiles\(\{/g)).toHaveLength(2);
     expect(source).toContain('label: "sdk"');
     expect(source).toContain("label: `core-${qaLabel}`");
-    expect(source.match(/validate: \(output\) =>\s*assertQaOutputIsPrivate/g)).toHaveLength(2);
+    expect(source.match(/validate: \(output\) =>/g)).toHaveLength(2);
+    expect(source.match(/assertQaOutputIsPrivate\(/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    expect(source).toContain("requiredTokensForHeadlessScenario(scenario)");
+    expect(source).toContain("assertRequiredTokens(result.stdout");
   });
 });

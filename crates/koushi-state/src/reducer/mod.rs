@@ -3058,6 +3058,7 @@ mod tests {
             sender_avatar: None,
             preview: Some("body".to_owned()),
             timestamp_ms,
+            is_redacted: false,
         }
     }
 

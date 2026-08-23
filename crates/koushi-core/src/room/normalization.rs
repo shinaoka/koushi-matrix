@@ -97,6 +97,7 @@ pub(super) fn normalize_rooms(snapshot: &koushi_sdk::MatrixRoomListSnapshot) -> 
                         sender_avatar: avatar_from_mxc_uri(event.sender_avatar_mxc_uri.as_deref()),
                         preview: event.preview.clone(),
                         timestamp_ms: event.timestamp_ms,
+                        is_redacted: event.is_redacted,
                     }
                 }),
                 parent_space_ids: normalize_room_parent_space_ids(snapshot, room),
@@ -242,7 +243,7 @@ mod tests {
 
     use koushi_sdk::{
         MatrixConversationActivity, MatrixConversationActivitySource, MatrixInvitePreview,
-        MatrixRoomTagInfo,
+        MatrixRoomLatestEventSummary, MatrixRoomTagInfo,
     };
     use koushi_sdk::{
         MatrixRoomListRoom, MatrixRoomListSnapshot, MatrixRoomListSpace, MatrixRoomTags,
@@ -287,6 +288,56 @@ mod tests {
                 timestamp_ms: 42,
                 source: koushi_state::ConversationActivitySource::EncryptedMessage,
             })
+        );
+    }
+
+    #[test]
+    fn normalize_rooms_preserves_latest_redaction_fact() {
+        let snapshot = MatrixRoomListSnapshot {
+            rooms: vec![MatrixRoomListRoom {
+                room_id: "!room:example.test".to_owned(),
+                display_name: "Room".to_owned(),
+                avatar_mxc_uri: None,
+                is_dm: false,
+                dm_user_ids: Vec::new(),
+                tags: MatrixRoomTags::default(),
+                unread_count: 0,
+                notification_count: 0,
+                highlight_count: 0,
+                marked_unread: false,
+                recency_stamp: None,
+                conversation_activity: None,
+                latest_event: Some(MatrixRoomLatestEventSummary {
+                    event_id: "$redacted:example.test".to_owned(),
+                    sender_id: None,
+                    sender_label: None,
+                    sender_avatar_mxc_uri: None,
+                    preview: Some("deleted".to_owned()),
+                    timestamp_ms: 42,
+                    event_type: Some("m.room.message".to_owned()),
+                    relation_type: None,
+                    relation_event_id: None,
+                    content_converted: true,
+                    is_threaded: false,
+                    is_reply: false,
+                    has_thread_summary: false,
+                    has_reactions: false,
+                    is_redacted: true,
+                }),
+                parent_space_ids: Vec::new(),
+                is_encrypted: false,
+                joined_members: 1,
+            }],
+            ..MatrixRoomListSnapshot::default()
+        };
+
+        let rooms = normalize_rooms(&snapshot);
+
+        assert!(
+            rooms[0]
+                .latest_event
+                .as_ref()
+                .is_some_and(|event| event.is_redacted)
         );
     }
 

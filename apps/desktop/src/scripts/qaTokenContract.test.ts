@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import {
   assertNoMatrixIdentifiers,
   assertRequiredTokens,
+  requiredTokensForHeadlessScenario,
   tokensFromOutput
 } from "../../../../scripts/lib/qa-token-contract.mjs";
 
@@ -17,6 +18,19 @@ describe("qa token contract", () => {
     // counts and backend names are not status tokens
     expect(tokens.has("rooms=5")).toBe(false);
     expect(tokens.has("sync_backend=SyncService")).toBe(false);
+  });
+
+  test("registers the redaction/edit convergence token", () => {
+    expect(requiredTokensForHeadlessScenario("redact_edit_convergence")).toEqual([
+      "redact_edit_convergence=ok"
+    ]);
+    expect(() =>
+      assertRequiredTokens(
+        "redact_edit_convergence=ok",
+        requiredTokensForHeadlessScenario("redact_edit_convergence"),
+        "redact_edit_convergence"
+      )
+    ).not.toThrow();
   });
 
   test("assertRequiredTokens throws naming the missing tokens", () => {

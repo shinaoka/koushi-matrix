@@ -160,6 +160,8 @@ pub struct RoomLatestEventSummary {
     #[serde(default)]
     pub preview: Option<String>,
     pub timestamp_ms: u64,
+    #[serde(default)]
+    pub is_redacted: bool,
 }
 
 impl fmt::Debug for RoomLatestEventSummary {
@@ -189,6 +191,7 @@ impl fmt::Debug for RoomLatestEventSummary {
             )
             .field("preview", &self.preview.as_ref().map(|_| "Preview(..)"))
             .field("timestamp_ms", &self.timestamp_ms)
+            .field("is_redacted", &self.is_redacted)
             .finish()
     }
 }
@@ -389,5 +392,45 @@ fn private_safe_room_display_name(room_display_name: String) -> String {
         "Room".to_owned()
     } else {
         room_display_name
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RoomLatestEventSummary;
+    use serde_json::json;
+
+    #[test]
+    fn room_latest_event_summary_defaults_redaction_and_keeps_debug_private() {
+        let restored: RoomLatestEventSummary = serde_json::from_value(json!({
+            "event_id": "$event:example.invalid",
+            "timestamp_ms": 42,
+        }))
+        .expect("legacy room latest summary");
+        assert!(!restored.is_redacted);
+
+        let summary = RoomLatestEventSummary {
+            event_id: "$private-event:example.invalid".to_owned(),
+            relation_type: None,
+            relation_event_id: None,
+            sender_id: Some("@private-sender:example.invalid".to_owned()),
+            sender_label: Some("Private Sender".to_owned()),
+            sender_avatar: None,
+            preview: Some("private body".to_owned()),
+            timestamp_ms: 42,
+            is_redacted: true,
+        };
+        let debug = format!("{summary:?}");
+
+        assert!(debug.contains("is_redacted"));
+        assert!(debug.contains("true"));
+        for private_value in [
+            "$private-event:example.invalid",
+            "@private-sender:example.invalid",
+            "Private Sender",
+            "private body",
+        ] {
+            assert!(!debug.contains(private_value));
+        }
     }
 }

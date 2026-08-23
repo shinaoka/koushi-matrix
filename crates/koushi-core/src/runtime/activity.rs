@@ -77,14 +77,15 @@ pub(super) struct ActivityMarkReadResult {
 }
 
 fn activity_latest_display_event_id(latest: &RoomLatestEventSummary) -> Option<&str> {
-    match latest.relation_type.as_deref() {
-        Some("m.replace") => latest
-            .relation_event_id
-            .as_deref()
-            .filter(|event_id| !event_id.trim().is_empty()),
-        Some("m.annotation") => None,
-        _ => Some(latest.event_id.as_str()),
+    if latest.is_redacted
+        || matches!(
+            latest.relation_type.as_deref(),
+            Some("m.replace" | "m.annotation")
+        )
+    {
+        return None;
     }
+    (!latest.event_id.trim().is_empty()).then_some(latest.event_id.as_str())
 }
 
 impl ActivityProjection {
@@ -538,7 +539,8 @@ impl ActivityProjection {
                         ActivityRowKind::RoomUnread => rooms_by_id
                             .get(row.room_id.as_str())
                             .and_then(|room| room.latest_event.as_ref())
-                            .map(|event| event.event_id.clone()),
+                            .and_then(activity_latest_display_event_id)
+                            .map(str::to_owned),
                     };
                     if let Some(event_id) = event_id {
                         latest_by_room
@@ -851,6 +853,7 @@ impl ActivityProjection {
             let timestamp_ms = room
                 .latest_event
                 .as_ref()
+                .filter(|event| activity_latest_display_event_id(event).is_some())
                 .map(|event| event.timestamp_ms)
                 .or_else(|| {
                     room.conversation_activity
@@ -1110,7 +1113,8 @@ mod tests {
     use super::super::tests::unread_diagnostic_room;
     use super::*;
     use koushi_state::{
-        RoomNotificationModeOperation, RoomNotificationSettings, RoomTags, UserProfile,
+        ConversationActivity, ConversationActivitySource, RoomNotificationModeOperation,
+        RoomNotificationSettings, RoomTags, UserProfile,
     };
     use std::collections::BTreeSet;
 
@@ -1251,6 +1255,7 @@ mod tests {
                 sender_avatar: None,
                 preview: Some("body".to_owned()),
                 timestamp_ms: 42,
+                is_redacted: false,
             }),
             parent_space_ids: Vec::new(),
             dm_space_ids: Vec::new(),
@@ -1600,6 +1605,7 @@ mod tests {
                 sender_avatar: None,
                 preview: Some("body".to_owned()),
                 timestamp_ms: 42,
+                is_redacted: false,
             }),
             parent_space_ids: Vec::new(),
             dm_space_ids: Vec::new(),
@@ -1665,6 +1671,7 @@ mod tests {
                 sender_avatar: None,
                 preview: Some("body".to_owned()),
                 timestamp_ms: 42,
+                is_redacted: false,
             }),
             parent_space_ids: vec!["!space:example.invalid".to_owned()],
             dm_space_ids: Vec::new(),
@@ -1722,6 +1729,7 @@ mod tests {
                 sender_avatar: None,
                 preview: Some("edited body".to_owned()),
                 timestamp_ms: 42,
+                is_redacted: false,
             }),
             parent_space_ids: Vec::new(),
             dm_space_ids: Vec::new(),
@@ -1732,18 +1740,17 @@ mod tests {
         state.rooms[0].notification_count = 1;
 
         let mut fallback_projection = ActivityProjection::default();
-        let (_recent, unread_before_clear, _excluded) = fallback_projection.snapshot(&state);
+        let (_recent, unread_without_canonical, _excluded) = fallback_projection.snapshot(&state);
         assert_eq!(
-            unread_before_clear.rows[0].event_id.as_deref(),
-            Some(original_event_id)
+            unread_without_canonical.rows[0].kind,
+            ActivityRowKind::RoomUnread
         );
-        fallback_projection
-            .cleared_event_ids
-            .insert(original_event_id.to_owned());
-        let (_recent, unread_after_clear, _excluded) = fallback_projection.snapshot(&state);
+        assert_eq!(unread_without_canonical.rows[0].event_id, None);
         assert!(
-            unread_after_clear.rows.is_empty(),
-            "clearing the canonical original event must keep an edited fallback row read"
+            fallback_projection
+                .fully_read_marker_updates(&state, &ActivityMarkReadTarget::All)
+                .is_empty(),
+            "a defensive m.replace latest must not invent a fully-read target"
         );
 
         let mut projection = ActivityProjection::default();
@@ -1774,6 +1781,50 @@ mod tests {
     }
 
     #[test]
+    fn room_unread_placeholder_guards_latest_identity_and_timestamp() {
+        let latest = |relation_type: Option<&str>, is_redacted: bool| RoomLatestEventSummary {
+            event_id: "$latest:example.invalid".to_owned(),
+            relation_type: relation_type.map(ToOwned::to_owned),
+            relation_event_id: Some("$target:example.invalid".to_owned()),
+            sender_id: Some("@sender:example.invalid".to_owned()),
+            sender_label: Some("Sender".to_owned()),
+            sender_avatar: None,
+            preview: Some("body".to_owned()),
+            timestamp_ms: 99,
+            is_redacted,
+        };
+
+        for (relation_type, is_redacted) in [(None, true), (Some("m.replace"), false)] {
+            let mut state = AppState::default();
+            let mut room = super::super::tests::unread_diagnostic_room("!room:example.invalid");
+            room.unread_count = 1;
+            room.notification_count = 1;
+            room.highlight_count = 0;
+            room.marked_unread = false;
+            room.conversation_activity = Some(ConversationActivity {
+                timestamp_ms: 37,
+                source: ConversationActivitySource::Message,
+            });
+            room.latest_event = Some(latest(relation_type, is_redacted));
+            state.rooms = vec![room];
+
+            let mut projection = ActivityProjection::default();
+            let (_recent, unread, _excluded) = projection.snapshot(&state);
+            let placeholder = unread
+                .rows
+                .first()
+                .expect("guarded room unread placeholder");
+            assert_eq!(placeholder.kind, ActivityRowKind::RoomUnread);
+            assert_eq!(placeholder.timestamp_ms, 37);
+            assert!(
+                projection
+                    .fully_read_marker_updates(&state, &ActivityMarkReadTarget::All)
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
     fn activity_projection_does_not_append_annotation_latest_event() {
         let mut state = AppState::default();
         state.rooms = vec![RoomSummary {
@@ -1800,6 +1851,7 @@ mod tests {
                 sender_avatar: None,
                 preview: None,
                 timestamp_ms: 42,
+                is_redacted: false,
             }),
             parent_space_ids: Vec::new(),
             dm_space_ids: Vec::new(),

@@ -117,6 +117,48 @@ fn rejects_unknown_scenario_names() {
 }
 
 #[test]
+fn redact_edit_convergence_is_registered_with_private_safe_final_token() {
+    let scenario = QaScenario::from_env_value("redact_edit_convergence")
+        .expect("redact/edit convergence scenario should be accepted");
+    assert!(scenario.suppress_matrix_identifiers());
+    assert_eq!(
+        stages_for_scenario(scenario),
+        [
+            QaStage::Safety,
+            QaStage::LoginSync,
+            QaStage::RoomSpace,
+            QaStage::Timeline,
+            QaStage::Thread,
+            QaStage::EditRedactSearch,
+            QaStage::RedactEditConvergence,
+        ]
+    );
+    assert_eq!(
+        final_tokens_for_scenario(scenario),
+        [
+            "safety=ok",
+            "login_sync=ok",
+            "room_space=ok",
+            "timeline=ok",
+            "timeline_nav=ok",
+            "hide_redacted=ok",
+            "thread_canonical=ok",
+            "thread_summary=ok",
+            "thread_recv=ok",
+            "thread_paginate=end_reached",
+            "edit_redact_search=ok",
+            "redact_edit_convergence=ok",
+            "restore_cleanup=ok",
+        ]
+    );
+    let report = scenario_report("local", scenario);
+    assert!(report.contains("redact_edit_convergence=ok"));
+    assert!(!report.contains('@'));
+    assert!(!report.contains('!'));
+    assert!(!report.contains('$'));
+}
+
+#[test]
 fn supported_scenarios_are_allowed_by_preflight() {
     for scenario in [
         QaScenario::Safety,
