@@ -156,6 +156,7 @@ pub(super) enum QaScenario {
     RestoreCleanup,
     LinkPreview,
     CacheRestore,
+    ReadStateConvergence,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -193,6 +194,7 @@ pub(super) enum QaStage {
     RestoreCleanup,
     LinkPreview,
     CacheRestore,
+    ReadStateConvergence,
 }
 
 /// Refuse to run against the OS keychain. Debug and qa-bin release builds both
@@ -269,8 +271,9 @@ impl QaScenario {
             "restore_cleanup" => Ok(Self::RestoreCleanup),
             "link_preview" => Ok(Self::LinkPreview),
             "cache_restore" => Ok(Self::CacheRestore),
+            "read_state_convergence" => Ok(Self::ReadStateConvergence),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, session_status, credential_health, native_attention, encryption_debug, e2ee_trust, device_cleanup, invites_dm, room_space, directory, room_management, room_people_projection, timeline, timeline_reconnect, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, redact_edit_convergence, search_crawler, scheduled_send, restore_cleanup, link_preview, cache_restore; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, session_status, credential_health, native_attention, encryption_debug, e2ee_trust, device_cleanup, invites_dm, room_space, directory, room_management, room_people_projection, timeline, timeline_reconnect, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, redact_edit_convergence, search_crawler, scheduled_send, restore_cleanup, link_preview, cache_restore, read_state_convergence; got {other}"
             )),
         }
     }
@@ -279,7 +282,10 @@ impl QaScenario {
         match self {
             Self::All => !matches!(
                 stage,
-                QaStage::TimelineReconnect | QaStage::TimelineStress | QaStage::DeviceCleanup
+                QaStage::TimelineReconnect
+                    | QaStage::TimelineStress
+                    | QaStage::DeviceCleanup
+                    | QaStage::ReadStateConvergence
             ),
             Self::Safety => matches!(stage, QaStage::Safety),
             Self::LoginSync => matches!(stage, QaStage::Safety | QaStage::LoginSync),
@@ -467,6 +473,9 @@ impl QaScenario {
                     | QaStage::LinkPreview
             ),
             Self::CacheRestore => matches!(stage, QaStage::Safety | QaStage::CacheRestore),
+            Self::ReadStateConvergence => {
+                matches!(stage, QaStage::Safety | QaStage::ReadStateConvergence)
+            }
         }
     }
 
@@ -655,6 +664,7 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "link_preview_hide=ok",
         ],
         QaStage::CacheRestore => &["cache_restore=ok"],
+        QaStage::ReadStateConvergence => &["read_state_convergence=ok"],
     }
 }
 
@@ -904,6 +914,9 @@ pub(super) fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::LinkPreview,
         ],
         QaScenario::CacheRestore => vec![QaStage::Safety, QaStage::CacheRestore],
+        QaScenario::ReadStateConvergence => {
+            vec![QaStage::Safety, QaStage::ReadStateConvergence]
+        }
         QaScenario::All => vec![
             QaStage::Safety,
             QaStage::LoginSync,
@@ -983,7 +996,8 @@ pub(super) fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static st
         | QaScenario::DeviceCleanup
         | QaScenario::GateRestore
         | QaScenario::GateNegative
-        | QaScenario::GateNoProof => stages_for_scenario(scenario)
+        | QaScenario::GateNoProof
+        | QaScenario::ReadStateConvergence => stages_for_scenario(scenario)
             .into_iter()
             .flat_map(|stage| tokens_for_stage(stage).iter().copied())
             .collect(),
@@ -1042,6 +1056,20 @@ impl QaConfig {
             format!("{ENV_USER_C} is required for the invites_dm dm_space_scope check")
         })?;
         Ok(format!("@{}:{}", user_c, self.server_name))
+    }
+
+    pub(super) fn with_homeserver(&self, homeserver: String) -> Self {
+        Self {
+            homeserver,
+            server_name: self.server_name.clone(),
+            server_kind: self.server_kind.clone(),
+            user_a: self.user_a.clone(),
+            password_a: self.password_a.clone(),
+            user_b: self.user_b.clone(),
+            password_b: self.password_b.clone(),
+            user_c: self.user_c.clone(),
+            allow_identity_reset: self.allow_identity_reset,
+        }
     }
 }
 

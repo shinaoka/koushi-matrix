@@ -106,6 +106,10 @@ fn parses_all_scenarios_from_env_value_including_directory() {
         QaScenario::from_env_value("timeline_stress").unwrap(),
         QaScenario::TimelineStress
     );
+    assert_eq!(
+        QaScenario::from_env_value("read_state_convergence").unwrap(),
+        QaScenario::ReadStateConvergence
+    );
 }
 
 #[test]
@@ -159,6 +163,24 @@ fn redact_edit_convergence_is_registered_with_private_safe_final_token() {
 }
 
 #[test]
+fn read_state_convergence_is_registered_with_private_safe_final_token() {
+    let scenario = QaScenario::ReadStateConvergence;
+    assert_eq!(
+        stages_for_scenario(scenario),
+        [QaStage::Safety, QaStage::ReadStateConvergence]
+    );
+    assert_eq!(
+        final_tokens_for_scenario(scenario),
+        ["safety=ok", "read_state_convergence=ok"]
+    );
+    let report = scenario_report("local", scenario);
+    assert!(report.contains("read_state_convergence=ok"));
+    assert!(!report.contains('@'));
+    assert!(!report.contains('!'));
+    assert!(!report.contains('$'));
+}
+
+#[test]
 fn supported_scenarios_are_allowed_by_preflight() {
     for scenario in [
         QaScenario::Safety,
@@ -185,6 +207,7 @@ fn supported_scenarios_are_allowed_by_preflight() {
         QaScenario::RestoreCleanup,
         QaScenario::E2eeTrust,
         QaScenario::LinkPreview,
+        QaScenario::ReadStateConvergence,
     ] {
         scenario_preflight_error(scenario).unwrap();
     }
@@ -240,6 +263,7 @@ fn all_core_qa_scenarios_suppress_matrix_identifiers() {
         QaScenario::SendQueue,
         QaScenario::RestoreCleanup,
         QaScenario::LinkPreview,
+        QaScenario::ReadStateConvergence,
     ] {
         assert!(
             scenario.suppress_matrix_identifiers(),

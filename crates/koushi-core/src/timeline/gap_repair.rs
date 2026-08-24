@@ -140,7 +140,8 @@ impl TimelineManagerActor {
         if service_epoch != self.room_subscription_service_epoch {
             return;
         }
-        self.wake_desired_reads_for_room(checkpoint.room_id(), ReadRetrySource::Checkpoint);
+        self.wake_desired_reads_for_room(checkpoint.room_id(), ReadRetrySource::Checkpoint)
+            .await;
         let matching_keys = self
             .timelines
             .iter()

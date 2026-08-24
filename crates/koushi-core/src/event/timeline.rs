@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 use super::timeline_projection_own_user_id;
-use crate::failure::TimelineFailureKind;
+use crate::failure::{ReadStateFailureKind, TimelineFailureKind};
 use crate::ids::{RequestId, TimelineBatchId, TimelineGeneration, TimelineKey};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -457,6 +457,15 @@ pub struct TimelineGapPosition {
     pub id: TimelineGapId,
     pub before_item_index: usize,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TimelineReadStateSync {
+    Synced,
+    Pending,
+    Failed { kind: ReadStateFailureKind },
+    NotRequested,
+}
+
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TimelineNavigationSnapshot {
     pub read_marker_event_id: Option<String>,
@@ -466,6 +475,9 @@ pub struct TimelineNavigationSnapshot {
     pub unread_position: TimelineUnreadPosition,
     pub newer_event_count: u64,
     pub can_jump_to_bottom: bool,
+    pub local_viewed_event_id: Option<String>,
+    pub server_confirmed_read_event_id: Option<String>,
+    pub read_state_sync: TimelineReadStateSync,
 }
 impl fmt::Debug for TimelineNavigationSnapshot {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -486,6 +498,18 @@ impl fmt::Debug for TimelineNavigationSnapshot {
                 "first_unread_event_id",
                 &self.first_unread_event_id.as_ref().map(|_| "EventId(..)"),
             )
+            .field(
+                "local_viewed_event_id",
+                &self.local_viewed_event_id.as_ref().map(|_| "EventId(..)"),
+            )
+            .field(
+                "server_confirmed_read_event_id",
+                &self
+                    .server_confirmed_read_event_id
+                    .as_ref()
+                    .map(|_| "EventId(..)"),
+            )
+            .field("read_state_sync", &self.read_state_sync)
             .field("unread_event_count", &self.unread_event_count)
             .field("unread_position", &self.unread_position)
             .field("newer_event_count", &self.newer_event_count)

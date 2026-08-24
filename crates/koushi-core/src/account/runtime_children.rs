@@ -377,6 +377,7 @@ impl AccountActor {
             read_session_generation,
             restored_read_state,
             read_persistence,
+            self.send_read_receipts,
             self.action_tx.clone(),
             self.event_tx.clone(),
             search_index_tx,

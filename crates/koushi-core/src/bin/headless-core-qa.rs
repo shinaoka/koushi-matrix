@@ -57,7 +57,7 @@ use koushi_core::event::{
     LinkPreviewState, LiveSignalsEvent, LocalEncryptionEvent, PaginationDirection, PaginationState,
     RoomEvent, SearchEvent, SyncEvent, TimelineAnchorRestoreStatus, TimelineDiff, TimelineEvent,
     TimelineGapId, TimelineGapPosition, TimelineItem, TimelineItemId, TimelineMessageActions,
-    TimelineSendState, TimelineUnreadPosition, TimelineViewportObservation,
+    TimelineReadStateSync, TimelineSendState, TimelineUnreadPosition, TimelineViewportObservation,
 };
 use koushi_core::failure::{CoreFailure, RoomFailureKind};
 use koushi_core::ids::{AccountKey, RequestId, TimelineKey, TimelineKind};
@@ -102,6 +102,8 @@ mod participants;
 mod registry;
 #[path = "headless_core_qa/scenarios/identity.rs"]
 mod scenario_identity;
+#[path = "headless_core_qa/scenarios/read_state.rs"]
+mod scenario_read_state;
 #[path = "headless_core_qa/scenarios/rooms.rs"]
 mod scenario_rooms;
 #[path = "headless_core_qa/scenarios/search.rs"]

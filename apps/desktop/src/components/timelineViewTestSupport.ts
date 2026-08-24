@@ -1,6 +1,10 @@
 import { vi } from "vitest";
 
-import { roomTimelineKey, type TimelineItem } from "../domain/coreEvents";
+import {
+  roomTimelineKey,
+  type TimelineItem,
+  type TimelineReadStateSync
+} from "../domain/coreEvents";
 import type { TimelineTransport } from "./TimelineView";
 
 export const KEY = roomTimelineKey("@alice:example.invalid", "!room:example.invalid");
@@ -79,6 +83,9 @@ export function navigationSnapshot(overrides: Partial<{
   unread_position: "none" | "aboveViewport" | "insideViewport" | "belowViewport" | "unknown";
   newer_event_count: number;
   can_jump_to_bottom: boolean;
+  local_viewed_event_id: string | null;
+  server_confirmed_read_event_id: string | null;
+  read_state_sync: TimelineReadStateSync;
 }> = {}) {
   return {
     read_marker_event_id: null,
@@ -88,6 +95,9 @@ export function navigationSnapshot(overrides: Partial<{
     unread_position: "none" as const,
     newer_event_count: 0,
     can_jump_to_bottom: false,
+    local_viewed_event_id: null,
+    server_confirmed_read_event_id: null,
+    read_state_sync: "synced" as const,
     ...overrides
   };
 }

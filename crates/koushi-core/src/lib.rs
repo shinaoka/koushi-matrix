@@ -66,12 +66,13 @@ pub use event::{
     RoomKeyReshareOutcome, SearchEvent, SearchResultItem, SyncEvent, TimelineDiff, TimelineEvent,
     TimelineGapId, TimelineGapPosition, TimelineItem, TimelineItemId, TimelineMedia,
     TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineMessageKind,
-    TimelineNavigationSnapshot, TimelineResyncReason, TimelineSendFailureReason, TimelineSendState,
-    TimelineSpoilerSpan, TimelineUnreadPosition, TimelineViewportObservation,
+    TimelineNavigationSnapshot, TimelineReadStateSync, TimelineResyncReason,
+    TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan, TimelineUnreadPosition,
+    TimelineViewportObservation,
 };
 pub use failure::{
-    CoreFailure, LoginFailureKind, ProfileFailureKind, RecoveryFailureKind, RoomFailureKind,
-    SearchFailureKind, SyncFailureKind, TimelineFailureKind,
+    CoreFailure, LoginFailureKind, ProfileFailureKind, ReadStateFailureKind, RecoveryFailureKind,
+    RoomFailureKind, SearchFailureKind, SyncFailureKind, TimelineFailureKind,
 };
 pub use ids::{
     AccountKey, RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration, TimelineKey,

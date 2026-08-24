@@ -21,7 +21,7 @@ afterEach(() => {
 
 describe("TimelineView", () => {
 
-  it("marks the latest visible room event as read even when bottom pixels are not exact", async () => {
+  it("reports the latest visible room event without sending read state from the view", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const sendReadReceipt = vi.fn().mockResolvedValue(undefined);
     const setFullyRead = vi.fn().mockResolvedValue(undefined);
@@ -87,29 +87,24 @@ describe("TimelineView", () => {
       fireEvent.scroll(timeline);
 
       await waitFor(() => {
-        expect(sendReadReceipt).toHaveBeenCalledWith(
+        expect(observeViewport).toHaveBeenCalledWith(
           "!room:example.invalid",
-          "$latest:example.invalid"
+          "$older:example.invalid",
+          "$latest:example.invalid",
+          [],
+          true,
+          null
         );
       });
-      expect(setFullyRead).toHaveBeenCalledWith(
-        "!room:example.invalid",
-        "$latest:example.invalid"
-      );
-      expect(observeViewport).toHaveBeenCalledWith(
-        "!room:example.invalid",
-        "$older:example.invalid",
-        "$latest:example.invalid",
-        [],
-        true
-      );
+      expect(sendReadReceipt).not.toHaveBeenCalled();
+      expect(setFullyRead).not.toHaveBeenCalled();
     } finally {
       rectSpy.mockRestore();
     }
   });
 
 
-  it("marks the latest visible thread event with a threaded read receipt", async () => {
+  it("reports the latest visible thread event without sending read state from the view", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const threadKey = threadTimelineKey(
       "@alice:example.invalid",
@@ -176,22 +171,86 @@ describe("TimelineView", () => {
       fireEvent.scroll(timeline);
 
       await waitFor(() => {
-        expect(sendReadReceipt).toHaveBeenCalledWith(
-          "!room:example.invalid",
-          "$thread-reply:example.invalid",
-          "$root:example.invalid"
-        );
+        expect(sendReadReceipt).not.toHaveBeenCalled();
+        expect(setFullyRead).not.toHaveBeenCalled();
       });
-      expect(setFullyRead).toHaveBeenCalledWith(
+      expect(observeViewport).toHaveBeenCalledWith(
         "!room:example.invalid",
-        "$thread-reply:example.invalid"
+        "$thread-reply:example.invalid",
+        "$thread-reply:example.invalid",
+        [],
+        true,
+        "$root:example.invalid"
       );
-      expect(observeViewport).not.toHaveBeenCalled();
     } finally {
       rectSpy.mockRestore();
     }
   });
 
+
+  it("renders pending and failed read-state status from Rust snapshots", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    const snapshot = {
+      read_marker_event_id: "$server:example.invalid",
+      read_marker_display_event_id: "$local:example.invalid",
+      first_unread_event_id: null,
+      unread_event_count: 0,
+      unread_position: "none" as const,
+      newer_event_count: 0,
+      can_jump_to_bottom: false,
+      local_viewed_event_id: "$local:example.invalid",
+      server_confirmed_read_event_id: "$server:example.invalid"
+    };
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          NavigationUpdated: {
+            key: KEY,
+            snapshot: { ...snapshot, read_state_sync: "pending" }
+          }
+        }
+      });
+    });
+    expect(
+      (await screen.findByTestId("timeline-read-state-status")).textContent
+    ).toContain("Syncing read state");
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          NavigationUpdated: {
+            key: KEY,
+            snapshot: {
+              ...snapshot,
+              read_state_sync: { failed: { kind: "timeout" } }
+            }
+          }
+        }
+      });
+    });
+    expect(
+      (await screen.findByTestId("timeline-read-state-status")).textContent
+    ).toContain("Read state not synced");
+    expect(screen.getByTestId("timeline-read-state-status").textContent).toContain("timed out");
+  });
 
   it("renders read receipts as a compact avatar stack without an inline text label", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
@@ -504,6 +563,9 @@ describe("TimelineView", () => {
               newer_event_count: 2,
               read_marker_display_event_id: "$virtual-2:example.invalid",
               read_marker_event_id: "$virtual-2:example.invalid",
+              local_viewed_event_id: "$virtual-2:example.invalid",
+              server_confirmed_read_event_id: "$virtual-2:example.invalid",
+              read_state_sync: "synced",
               unread_event_count: 3,
               unread_position: "belowViewport"
             }
@@ -748,6 +810,9 @@ describe("TimelineView", () => {
             read_marker_event_id: "$other:example.invalid",
             read_marker_display_event_id: "$own2:example.invalid",
             first_unread_event_id: null,
+            local_viewed_event_id: "$own2:example.invalid",
+            server_confirmed_read_event_id: "$other:example.invalid",
+            read_state_sync: "synced",
             unread_event_count: 0,
             unread_position: "none",
             newer_event_count: 0,
@@ -808,6 +873,9 @@ describe("TimelineView", () => {
             read_marker_event_id: "$own1:example.invalid",
             read_marker_display_event_id: "$own2:example.invalid",
             first_unread_event_id: null,
+            local_viewed_event_id: "$own2:example.invalid",
+            server_confirmed_read_event_id: "$own1:example.invalid",
+            read_state_sync: "synced",
             unread_event_count: 0,
             unread_position: "none",
             newer_event_count: 0,
@@ -865,6 +933,9 @@ describe("TimelineView", () => {
             read_marker_event_id: "$other:example.invalid",
             read_marker_display_event_id: null,
             first_unread_event_id: "$unread:example.invalid",
+            local_viewed_event_id: null,
+            server_confirmed_read_event_id: "$other:example.invalid",
+            read_state_sync: "pending",
             unread_event_count: 1,
             unread_position: "insideViewport",
             newer_event_count: 0,

@@ -582,7 +582,8 @@ impl TimelineManagerActor {
         room_list_service: Arc<matrix_sdk_ui::room_list_service::RoomListService>,
         core_generation: u64,
     ) {
-        self.wake_all_desired_reads(ReadRetrySource::Reconnect);
+        self.wake_all_desired_reads(ReadRetrySource::Reconnect)
+            .await;
         self.room_subscription_service_epoch =
             self.room_subscription_service_epoch.wrapping_add(1).max(1);
         let service_epoch = self.room_subscription_service_epoch;

@@ -10,11 +10,13 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub(crate) const READ_STATE_CANDIDATE_LIMIT: usize = 8;
+pub(crate) use crate::failure::ReadStateFailureKind;
+
 pub(crate) const READ_STATE_WAITER_LIMIT: usize = 32;
 pub(crate) const READ_STATE_OUTBOX_ENTRY_LIMIT: usize = 128;
+const READ_STATE_LEGACY_CANDIDATE_LIMIT: usize = 8;
 
-#[derive(Clone, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub(crate) enum ReadStateKey {
     PublicUnthreaded {
         room_id: String,
@@ -31,7 +33,7 @@ pub(crate) enum ReadStateKey {
 #[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct ReadPersistenceEntry {
     key: ReadStateKey,
-    event_ids: Vec<String>,
+    event_id: String,
 }
 
 impl ReadPersistenceEntry {
@@ -40,7 +42,11 @@ impl ReadPersistenceEntry {
     }
 
     pub(crate) fn event_ids(&self) -> &[String] {
-        self.event_ids.as_slice()
+        std::slice::from_ref(&self.event_id)
+    }
+
+    pub(crate) fn event_id(&self) -> &str {
+        self.event_id.as_str()
     }
 }
 
@@ -49,7 +55,7 @@ impl fmt::Debug for ReadPersistenceEntry {
         formatter
             .debug_struct("ReadPersistenceEntry")
             .field("key", &self.key)
-            .field("candidate_count", &self.event_ids.len())
+            .field("candidate_count", &1_usize)
             .finish()
     }
 }
@@ -65,7 +71,7 @@ impl ReadPersistenceSnapshot {
     }
 
     pub(crate) fn candidate_count(&self) -> usize {
-        self.entries.iter().map(|entry| entry.event_ids.len()).sum()
+        self.entries.len()
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -74,6 +80,48 @@ impl ReadPersistenceSnapshot {
 
     pub(crate) fn entries(&self) -> &[ReadPersistenceEntry] {
         self.entries.as_slice()
+    }
+
+    pub(crate) fn apply_receipt_policy(&mut self, send_read_receipts: bool) -> bool {
+        if send_read_receipts {
+            return false;
+        }
+        let before = self.entries.len();
+        self.entries.retain(|entry| {
+            matches!(
+                &entry.key,
+                ReadStateKey::FullyReadAndPrivateUnthreaded { .. }
+            )
+        });
+        self.entries.len() != before
+    }
+
+    pub(crate) fn from_legacy_entries(entries: Vec<(ReadStateKey, Vec<String>)>) -> Option<Self> {
+        if entries.len() > READ_STATE_OUTBOX_ENTRY_LIMIT {
+            return None;
+        }
+        let mut keys = HashMap::with_capacity(entries.len());
+        for (key, event_ids) in entries {
+            if event_ids.is_empty()
+                || event_ids.len() > READ_STATE_LEGACY_CANDIDATE_LIMIT
+                || event_ids.iter().any(String::is_empty)
+                || event_ids
+                    .iter()
+                    .enumerate()
+                    .any(|(index, event_id)| event_ids[..index].contains(event_id))
+                || keys.contains_key(&key)
+            {
+                return None;
+            }
+            let event_id = event_ids.last()?.clone();
+            keys.insert(key, event_id);
+        }
+        Some(Self {
+            entries: keys
+                .into_iter()
+                .map(|(key, event_id)| ReadPersistenceEntry { key, event_id })
+                .collect(),
+        })
     }
 }
 
@@ -327,9 +375,36 @@ pub(crate) enum ReadWakeResult {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ReadNetworkFailure {
+    pub(crate) kind: ReadStateFailureKind,
+    pub(crate) retry_after: Option<std::time::Duration>,
+}
+
+impl ReadNetworkFailure {
+    pub(crate) const fn new(kind: ReadStateFailureKind) -> Self {
+        Self {
+            kind,
+            retry_after: None,
+        }
+    }
+
+    pub(crate) const fn with_retry_after(
+        kind: ReadStateFailureKind,
+        retry_after: std::time::Duration,
+    ) -> Self {
+        Self {
+            kind,
+            retry_after: Some(retry_after),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ReadNetworkOutcome {
     Succeeded,
-    Failed,
+    Failed(ReadNetworkFailure),
+    /// Kept as a distinct completion for retry diagnostics; the typed failure
+    /// exposed to the engine is still `Timeout`.
     TimedOut,
 }
 
@@ -338,6 +413,7 @@ pub(crate) enum ReadCompletionDisposition {
     Succeeded,
     Failed,
     TimedOut,
+    Cancelled,
     StaleDiscarded,
 }
 
@@ -385,11 +461,13 @@ pub(crate) enum ReadCompletionDiagnostic {
         settled_waiter_count: usize,
         remaining_candidate_count: usize,
         remaining_waiter_count: usize,
+        failure_kind: ReadStateFailureKind,
     },
     TimedOut {
         settled_waiter_count: usize,
         remaining_candidate_count: usize,
         remaining_waiter_count: usize,
+        failure_kind: ReadStateFailureKind,
     },
     StaleDiscarded {
         remaining_candidate_count: usize,
@@ -403,6 +481,7 @@ pub(crate) struct ReadCompletionResult {
     settlements: Vec<ReadWaiterSettlement>,
     remaining_candidate_count: usize,
     remaining_waiter_count: usize,
+    failure_kind: Option<ReadStateFailureKind>,
 }
 
 pub(crate) struct ReadAuthoritativeConfirmation {
@@ -442,6 +521,10 @@ impl ReadCompletionResult {
         self.settlements.as_slice()
     }
 
+    pub(crate) fn failure_kind(&self) -> Option<ReadStateFailureKind> {
+        self.failure_kind
+    }
+
     pub(crate) fn diagnostic(&self) -> ReadCompletionDiagnostic {
         let settled_waiter_count = self.settlements.len();
         match self.disposition {
@@ -454,9 +537,15 @@ impl ReadCompletionResult {
                 settled_waiter_count,
                 remaining_candidate_count: self.remaining_candidate_count,
                 remaining_waiter_count: self.remaining_waiter_count,
+                failure_kind: self.failure_kind.unwrap_or(ReadStateFailureKind::Sdk),
             },
             ReadCompletionDisposition::TimedOut => ReadCompletionDiagnostic::TimedOut {
                 settled_waiter_count,
+                remaining_candidate_count: self.remaining_candidate_count,
+                remaining_waiter_count: self.remaining_waiter_count,
+                failure_kind: self.failure_kind.unwrap_or(ReadStateFailureKind::Timeout),
+            },
+            ReadCompletionDisposition::Cancelled => ReadCompletionDiagnostic::StaleDiscarded {
                 remaining_candidate_count: self.remaining_candidate_count,
                 remaining_waiter_count: self.remaining_waiter_count,
             },
@@ -480,8 +569,12 @@ struct ActiveReadOperation {
 
 #[derive(Default)]
 struct ReadKeyState {
-    candidates: Vec<ReadCandidate>,
+    desired: Option<ReadCandidate>,
     active: Option<ActiveReadOperation>,
+    /// The last failure belongs only to the current desired target. Replacing
+    /// that target clears it; retrying the same target retains it for the
+    /// closed diagnostic/status projection.
+    last_failure: Option<ReadNetworkFailure>,
 }
 
 pub(crate) struct ReadStateEngine {
@@ -516,31 +609,18 @@ impl ReadStateEngine {
         }
         let mut keys = HashMap::with_capacity(snapshot.entries.len());
         for entry in snapshot.entries {
-            if entry.event_ids.is_empty()
-                || entry.event_ids.len() > READ_STATE_CANDIDATE_LIMIT
-                || keys.contains_key(&entry.key)
-            {
+            if entry.event_id.is_empty() || keys.contains_key(&entry.key) {
                 return None;
-            }
-            let mut candidates = Vec::with_capacity(entry.event_ids.len());
-            for event_id in entry.event_ids {
-                if event_id.is_empty()
-                    || candidates
-                        .iter()
-                        .any(|candidate: &ReadCandidate| candidate.target.event_id == event_id)
-                {
-                    return None;
-                }
-                candidates.push(ReadCandidate {
-                    target: ReadTarget::new(event_id),
-                    waiters: Vec::new(),
-                });
             }
             keys.insert(
                 entry.key,
                 ReadKeyState {
-                    candidates,
+                    desired: Some(ReadCandidate {
+                        target: ReadTarget::new(entry.event_id),
+                        waiters: Vec::new(),
+                    }),
                     active: None,
+                    last_failure: None,
                 },
             );
         }
@@ -556,14 +636,9 @@ impl ReadStateEngine {
             .keys
             .iter()
             .filter_map(|(key, state)| {
-                let event_ids = state
-                    .candidates
-                    .iter()
-                    .map(|candidate| candidate.target.event_id.clone())
-                    .collect::<Vec<_>>();
-                (!event_ids.is_empty()).then(|| ReadPersistenceEntry {
+                state.desired.as_ref().map(|desired| ReadPersistenceEntry {
                     key: key.clone(),
-                    event_ids,
+                    event_id: desired.target.event_id.clone(),
                 })
             })
             .take(READ_STATE_OUTBOX_ENTRY_LIMIT)
@@ -584,12 +659,11 @@ impl ReadStateEngine {
         if !self.keys.contains_key(&key) && self.keys.len() >= READ_STATE_OUTBOX_ENTRY_LIMIT {
             return self.rejected_admission(&key, ReadAdmissionRejection::CandidateCapacity);
         }
-
         let state = self.keys.entry(key).or_default();
         if state
-            .candidates
-            .iter()
-            .any(|candidate| candidate.waiters.contains(&waiter))
+            .desired
+            .as_ref()
+            .is_some_and(|candidate| candidate.waiters.contains(&waiter))
         {
             return admission_result(
                 ReadAdmissionStatus::Rejected(ReadAdmissionRejection::DuplicateWaiter),
@@ -605,37 +679,87 @@ impl ReadStateEngine {
             );
         }
 
-        let coalesces_without_capacity = state.candidates.iter().any(|candidate| {
-            candidate.target.event_id == target.event_id
-                || dominates(&candidate.target, &target)
-                || dominates(&target, &candidate.target)
-        });
-        if state.candidates.len() >= READ_STATE_CANDIDATE_LIMIT && !coalesces_without_capacity {
-            return admission_result(
-                ReadAdmissionStatus::Rejected(ReadAdmissionRejection::CandidateCapacity),
-                None,
-                state,
-            );
+        let (status, superseded_operation) = match state.desired.as_mut() {
+            None => {
+                state.desired = Some(ReadCandidate {
+                    target,
+                    waiters: vec![waiter],
+                });
+                (ReadAdmissionStatus::Accepted, None)
+            }
+            Some(desired) if desired.target.event_id == target.event_id => {
+                desired.target.position =
+                    preferred_same_event_position(desired.target.position, target.position);
+                desired.waiters.push(waiter);
+                (ReadAdmissionStatus::Coalesced, None)
+            }
+            Some(desired) if dominates(&desired.target, &target) => {
+                desired.waiters.push(waiter);
+                (ReadAdmissionStatus::Coalesced, None)
+            }
+            Some(desired) => {
+                let old_event_id = desired.target.event_id.clone();
+                let mut waiters = std::mem::take(&mut desired.waiters);
+                waiters.push(waiter);
+                desired.target = target;
+                desired.waiters = waiters;
+                state.last_failure = None;
+                let superseded = state
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.event_id == old_event_id)
+                    .then(|| state.active.as_ref().map(|active| active.fence))
+                    .flatten();
+                (ReadAdmissionStatus::Accepted, superseded)
+            }
+        };
+
+        admission_result(status, superseded_operation, state)
+    }
+
+    pub(crate) fn admit_background(
+        &mut self,
+        session_generation: u64,
+        key: ReadStateKey,
+        target: ReadTarget,
+    ) -> ReadAdmissionResult {
+        if session_generation != self.session_generation {
+            return self.rejected_admission(&key, ReadAdmissionRejection::StaleSession);
         }
-
-        let coalesced = state.candidates.iter().any(|candidate| {
-            candidate.target.event_id == target.event_id || dominates(&candidate.target, &target)
-        });
-        state.candidates.push(ReadCandidate {
-            target,
-            waiters: vec![waiter],
-        });
-        let superseded_operation = coalesce_candidates(state);
-
-        admission_result(
-            if coalesced {
-                ReadAdmissionStatus::Coalesced
-            } else {
-                ReadAdmissionStatus::Accepted
-            },
-            superseded_operation,
-            state,
-        )
+        if !self.keys.contains_key(&key) && self.keys.len() >= READ_STATE_OUTBOX_ENTRY_LIMIT {
+            return self.rejected_admission(&key, ReadAdmissionRejection::CandidateCapacity);
+        }
+        let state = self.keys.entry(key).or_default();
+        let (status, superseded_operation) = match state.desired.as_mut() {
+            None => {
+                state.desired = Some(ReadCandidate {
+                    target,
+                    waiters: Vec::new(),
+                });
+                (ReadAdmissionStatus::Accepted, None)
+            }
+            Some(desired) if desired.target.event_id == target.event_id => {
+                desired.target.position =
+                    preferred_same_event_position(desired.target.position, target.position);
+                (ReadAdmissionStatus::Coalesced, None)
+            }
+            Some(desired) if dominates(&desired.target, &target) => {
+                (ReadAdmissionStatus::Coalesced, None)
+            }
+            Some(desired) => {
+                let old_event_id = desired.target.event_id.clone();
+                desired.target = target;
+                state.last_failure = None;
+                let superseded = state
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.event_id == old_event_id)
+                    .then(|| state.active.as_ref().map(|active| active.fence))
+                    .flatten();
+                (ReadAdmissionStatus::Accepted, superseded)
+            }
+        };
+        admission_result(status, superseded_operation, state)
     }
 
     pub(crate) fn observe_position(
@@ -662,20 +786,24 @@ impl ReadStateEngine {
                 waiter_count: 0,
             };
         };
-        let Some(candidate) = state
-            .candidates
-            .iter_mut()
-            .find(|candidate| candidate.target.event_id == event_id)
-        else {
+        let Some(desired) = state.desired.as_mut() else {
             return ReadEvidenceResult {
                 status: ReadEvidenceStatus::UnknownTarget,
                 superseded_operation: None,
-                candidate_count: state.candidates.len(),
-                waiter_count: waiter_count(state),
+                candidate_count: 0,
+                waiter_count: 0,
             };
         };
+        if desired.target.event_id != event_id {
+            return ReadEvidenceResult {
+                status: ReadEvidenceStatus::UnknownTarget,
+                superseded_operation: None,
+                candidate_count: 1,
+                waiter_count: waiter_count(state),
+            };
+        }
 
-        if candidate
+        if desired
             .target
             .position
             .is_some_and(|known| evidence_is_older(evidence, known))
@@ -683,17 +811,16 @@ impl ReadStateEngine {
             return ReadEvidenceResult {
                 status: ReadEvidenceStatus::IgnoredOlderEvidence,
                 superseded_operation: None,
-                candidate_count: state.candidates.len(),
+                candidate_count: 1,
                 waiter_count: waiter_count(state),
             };
         }
 
-        candidate.target.position = Some(evidence);
-        let superseded_operation = coalesce_candidates(state);
+        desired.target.position = Some(evidence);
         ReadEvidenceResult {
             status: ReadEvidenceStatus::Updated,
-            superseded_operation,
-            candidate_count: state.candidates.len(),
+            superseded_operation: None,
+            candidate_count: 1,
             waiter_count: waiter_count(state),
         }
     }
@@ -705,20 +832,10 @@ impl ReadStateEngine {
         if state.active.is_some() {
             return ReadWakeResult::AlreadyActive;
         }
-        // Prefer a visible command waiter over restored/background intent.
-        // Within the same class the newest admitted target wins; failed
-        // candidates are rotated below so unordered restored targets cannot
-        // starve one another indefinitely.
-        let Some(candidate) = state
-            .candidates
-            .iter()
-            .rev()
-            .find(|candidate| !candidate.waiters.is_empty())
-            .or_else(|| state.candidates.last())
-        else {
+        let Some(desired) = state.desired.as_ref() else {
             return ReadWakeResult::NoDesired;
         };
-        let target = candidate.target.clone();
+        let target = desired.target.clone();
         let Some(operation_generation) = self.operation_generation.checked_add(1) else {
             return ReadWakeResult::OperationGenerationExhausted;
         };
@@ -754,72 +871,138 @@ impl ReadStateEngine {
                 settlements: Vec::new(),
                 remaining_candidate_count: 0,
                 remaining_waiter_count: 0,
+                failure_kind: None,
             };
         };
-        let matches_active = state
-            .active
-            .as_ref()
-            .is_some_and(|active| active.fence == fence);
-        if !matches_active {
-            return completion_result(ReadCompletionDisposition::StaleDiscarded, Vec::new(), state);
-        }
-        let active = state
-            .active
-            .take()
-            .expect("matching read operation must remain active");
-        let Some(active_index) = state
-            .candidates
-            .iter()
-            .position(|candidate| candidate.target.event_id == active.event_id)
-        else {
-            return completion_result(ReadCompletionDisposition::StaleDiscarded, Vec::new(), state);
+        let Some(active) = state.active.take() else {
+            return completion_result(
+                ReadCompletionDisposition::StaleDiscarded,
+                Vec::new(),
+                state,
+                None,
+            );
         };
+        if active.fence != fence {
+            state.active = Some(active);
+            return completion_result(
+                ReadCompletionDisposition::StaleDiscarded,
+                Vec::new(),
+                state,
+                None,
+            );
+        }
 
-        let (disposition, settlements) = match outcome {
-            ReadNetworkOutcome::Succeeded => {
-                let confirmed = state.candidates[active_index].target.clone();
-                let mut settled_waiters = Vec::new();
-                let mut index = 0;
-                while index < state.candidates.len() {
-                    if same_target_or_dominated(&confirmed, &state.candidates[index].target) {
-                        let candidate = state.candidates.remove(index);
-                        settled_waiters.extend(candidate.waiters.into_iter().map(|waiter| {
-                            ReadWaiterSettlement {
-                                waiter,
-                                terminal: ReadWaiterTerminal::Converged,
-                            }
-                        }));
-                    } else {
-                        index += 1;
-                    }
-                }
-                (ReadCompletionDisposition::Succeeded, settled_waiters)
+        let active_matches_desired = state
+            .desired
+            .as_ref()
+            .is_some_and(|desired| desired.target.event_id == active.event_id);
+        if !active_matches_desired {
+            let result = completion_result(
+                ReadCompletionDisposition::StaleDiscarded,
+                Vec::new(),
+                state,
+                None,
+            );
+            if state.desired.is_none() {
+                self.keys.remove(key);
             }
-            ReadNetworkOutcome::Failed | ReadNetworkOutcome::TimedOut => {
-                let terminal = match outcome {
-                    ReadNetworkOutcome::Failed => ReadWaiterTerminal::Failed,
-                    ReadNetworkOutcome::TimedOut => ReadWaiterTerminal::TimedOut,
-                    ReadNetworkOutcome::Succeeded => unreachable!(),
-                };
-                let settlements = state.candidates[active_index]
+            return result;
+        }
+
+        let (disposition, settlements, failure_kind) = match outcome {
+            ReadNetworkOutcome::Succeeded => {
+                let candidate = state.desired.take().expect("desired target remains active");
+                state.last_failure = None;
+                let settlements = candidate
                     .waiters
-                    .drain(..)
-                    .map(|waiter| ReadWaiterSettlement { waiter, terminal })
+                    .into_iter()
+                    .map(|waiter| ReadWaiterSettlement {
+                        waiter,
+                        terminal: ReadWaiterTerminal::Converged,
+                    })
                     .collect();
-                let failed = state.candidates.remove(active_index);
-                state.candidates.insert(0, failed);
+                (ReadCompletionDisposition::Succeeded, settlements, None)
+            }
+            ReadNetworkOutcome::Failed(failure) => {
+                state.last_failure = Some(failure);
+                let waiters = state
+                    .desired
+                    .as_mut()
+                    .map(|desired| std::mem::take(&mut desired.waiters))
+                    .unwrap_or_default();
+                let settlements = waiters
+                    .into_iter()
+                    .map(|waiter| ReadWaiterSettlement {
+                        waiter,
+                        terminal: ReadWaiterTerminal::Failed,
+                    })
+                    .collect();
                 (
-                    match outcome {
-                        ReadNetworkOutcome::Failed => ReadCompletionDisposition::Failed,
-                        ReadNetworkOutcome::TimedOut => ReadCompletionDisposition::TimedOut,
-                        ReadNetworkOutcome::Succeeded => unreachable!(),
-                    },
+                    ReadCompletionDisposition::Failed,
                     settlements,
+                    Some(failure.kind),
+                )
+            }
+            ReadNetworkOutcome::TimedOut => {
+                let failure = ReadNetworkFailure::new(ReadStateFailureKind::Timeout);
+                state.last_failure = Some(failure);
+                let waiters = state
+                    .desired
+                    .as_mut()
+                    .map(|desired| std::mem::take(&mut desired.waiters))
+                    .unwrap_or_default();
+                let settlements = waiters
+                    .into_iter()
+                    .map(|waiter| ReadWaiterSettlement {
+                        waiter,
+                        terminal: ReadWaiterTerminal::TimedOut,
+                    })
+                    .collect();
+                (
+                    ReadCompletionDisposition::TimedOut,
+                    settlements,
+                    Some(failure.kind),
                 )
             }
         };
-        let result = completion_result(disposition, settlements, state);
-        if state.candidates.is_empty() {
+        let result = completion_result(disposition, settlements, state, failure_kind);
+        if state.desired.is_none() {
+            self.keys.remove(key);
+        }
+        result
+    }
+
+    pub(crate) fn complete_cancelled(
+        &mut self,
+        key: &ReadStateKey,
+        fence: ReadOperationFence,
+    ) -> ReadCompletionResult {
+        if fence.session_generation != self.session_generation {
+            return self.stale_completion(key);
+        }
+        let Some(state) = self.keys.get_mut(key) else {
+            return self.stale_completion(key);
+        };
+        if state
+            .active
+            .as_ref()
+            .is_none_or(|active| active.fence != fence)
+        {
+            return completion_result(
+                ReadCompletionDisposition::StaleDiscarded,
+                Vec::new(),
+                state,
+                None,
+            );
+        }
+        state.active = None;
+        let result = completion_result(
+            ReadCompletionDisposition::Cancelled,
+            Vec::new(),
+            state,
+            None,
+        );
+        if state.desired.is_none() {
             self.keys.remove(key);
         }
         result
@@ -844,32 +1027,30 @@ impl ReadStateEngine {
             };
         };
 
-        let active_is_satisfied = state.active.as_ref().is_some_and(|active| {
-            state
-                .candidates
-                .iter()
-                .find(|candidate| candidate.target.event_id == active.event_id)
-                .is_some_and(|candidate| same_target_or_dominated(&confirmed, &candidate.target))
-        });
-        let superseded_operation = active_is_satisfied
-            .then(|| state.active.take().map(|active| active.fence))
+        let desired_is_satisfied = state
+            .desired
+            .as_ref()
+            .is_some_and(|desired| same_target_or_dominated(&confirmed, &desired.target));
+        let superseded_operation = desired_is_satisfied
+            .then(|| state.active.as_ref().map(|active| active.fence))
             .flatten();
-        let mut settlements = Vec::new();
-        let mut index = 0;
-        while index < state.candidates.len() {
-            if same_target_or_dominated(&confirmed, &state.candidates[index].target) {
-                let candidate = state.candidates.remove(index);
-                settlements.extend(candidate.waiters.into_iter().map(|waiter| {
-                    ReadWaiterSettlement {
-                        waiter,
-                        terminal: ReadWaiterTerminal::Converged,
-                    }
-                }));
-            } else {
-                index += 1;
-            }
-        }
-        if state.candidates.is_empty() {
+        let settlements = if desired_is_satisfied {
+            state.last_failure = None;
+            state
+                .desired
+                .take()
+                .expect("satisfied desired target")
+                .waiters
+                .into_iter()
+                .map(|waiter| ReadWaiterSettlement {
+                    waiter,
+                    terminal: ReadWaiterTerminal::Converged,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if state.desired.is_none() && state.active.is_none() {
             self.keys.remove(key);
         }
         ReadAuthoritativeConfirmation {
@@ -879,7 +1060,11 @@ impl ReadStateEngine {
     }
 
     pub(crate) fn candidate_count(&self, key: &ReadStateKey) -> usize {
-        self.keys.get(key).map_or(0, |state| state.candidates.len())
+        usize::from(
+            self.keys
+                .get(key)
+                .is_some_and(|state| state.desired.is_some()),
+        )
     }
 
     pub(crate) fn waiter_count(&self, key: &ReadStateKey) -> usize {
@@ -900,12 +1085,45 @@ impl ReadStateEngine {
     }
 
     pub(crate) fn has_candidate(&self, key: &ReadStateKey, event_id: &str) -> bool {
-        self.keys.get(key).is_some_and(|state| {
-            state
-                .candidates
-                .iter()
-                .any(|candidate| candidate.target.event_id == event_id)
-        })
+        self.keys
+            .get(key)
+            .and_then(|state| state.desired.as_ref())
+            .is_some_and(|desired| desired.target.event_id == event_id)
+    }
+
+    pub(crate) fn desired_target(&self, key: &ReadStateKey) -> Option<&ReadTarget> {
+        self.keys
+            .get(key)
+            .and_then(|state| state.desired.as_ref())
+            .map(|desired| &desired.target)
+    }
+
+    pub(crate) fn last_failure(&self, key: &ReadStateKey) -> Option<ReadNetworkFailure> {
+        self.keys.get(key).and_then(|state| state.last_failure)
+    }
+
+    /// Retire one automatic key at actor/session teardown. The caller cancels
+    /// the returned active fence before dropping the worker; no late completion
+    /// can recreate the removed key.
+    pub(crate) fn retire(&mut self, key: &ReadStateKey) -> Option<ReadOperationFence> {
+        self.keys
+            .remove(key)
+            .and_then(|state| state.active.map(|active| active.fence))
+    }
+
+    pub(crate) fn retire_with_waiters(
+        &mut self,
+        key: &ReadStateKey,
+    ) -> (Option<ReadOperationFence>, Vec<ReadWaiterId>) {
+        let Some(state) = self.keys.remove(key) else {
+            return (None, Vec::new());
+        };
+        let active = state.active.map(|active| active.fence);
+        let waiters = state
+            .desired
+            .map(|desired| desired.waiters)
+            .unwrap_or_default();
+        (active, waiters)
     }
 
     fn rejected_admission(
@@ -929,12 +1147,13 @@ impl ReadStateEngine {
             settlements: Vec::new(),
             remaining_candidate_count,
             remaining_waiter_count,
+            failure_kind: None,
         }
     }
 
     fn counts(&self, key: &ReadStateKey) -> (usize, usize) {
         self.keys.get(key).map_or((0, 0), |state| {
-            (state.candidates.len(), waiter_count(state))
+            (usize::from(state.desired.is_some()), waiter_count(state))
         })
     }
 }
@@ -947,7 +1166,7 @@ fn admission_result(
     ReadAdmissionResult {
         status,
         superseded_operation,
-        candidate_count: state.candidates.len(),
+        candidate_count: usize::from(state.desired.is_some()),
         waiter_count: waiter_count(state),
     }
 }
@@ -956,21 +1175,22 @@ fn completion_result(
     disposition: ReadCompletionDisposition,
     settlements: Vec<ReadWaiterSettlement>,
     state: &ReadKeyState,
+    failure_kind: Option<ReadStateFailureKind>,
 ) -> ReadCompletionResult {
     ReadCompletionResult {
         disposition,
         settlements,
-        remaining_candidate_count: state.candidates.len(),
+        remaining_candidate_count: usize::from(state.desired.is_some()),
         remaining_waiter_count: waiter_count(state),
+        failure_kind,
     }
 }
 
 fn waiter_count(state: &ReadKeyState) -> usize {
     state
-        .candidates
-        .iter()
-        .map(|candidate| candidate.waiters.len())
-        .sum()
+        .desired
+        .as_ref()
+        .map_or(0, |desired| desired.waiters.len())
 }
 
 fn dominates(left: &ReadTarget, right: &ReadTarget) -> bool {
@@ -1005,72 +1225,15 @@ fn preferred_same_event_position(
     }
 }
 
-fn coalesce_candidates(state: &mut ReadKeyState) -> Option<ReadOperationFence> {
-    let mut superseded_operation = None;
-    loop {
-        let mut pair = None;
-        'search: for left_index in 0..state.candidates.len() {
-            for right_index in (left_index + 1)..state.candidates.len() {
-                let left = &state.candidates[left_index].target;
-                let right = &state.candidates[right_index].target;
-                if left.event_id == right.event_id {
-                    pair = Some((left_index, right_index, true));
-                    break 'search;
-                }
-                if dominates(left, right) {
-                    pair = Some((left_index, right_index, false));
-                    break 'search;
-                }
-                if dominates(right, left) {
-                    pair = Some((right_index, left_index, false));
-                    break 'search;
-                }
-            }
-        }
-
-        let Some((winner_index, loser_index, same_event)) = pair else {
-            break;
-        };
-        let winner_event_id = state.candidates[winner_index].target.event_id.clone();
-        let loser_event_id = state.candidates[loser_index].target.event_id.clone();
-        let merged_position = same_event.then(|| {
-            preferred_same_event_position(
-                state.candidates[winner_index].target.position,
-                state.candidates[loser_index].target.position,
-            )
-        });
-        let loser = state.candidates.remove(loser_index);
-        let adjusted_winner_index = if loser_index < winner_index {
-            winner_index - 1
-        } else {
-            winner_index
-        };
-        let winner = &mut state.candidates[adjusted_winner_index];
-        if let Some(position) = merged_position {
-            winner.target.position = position;
-        }
-        winner.waiters.extend(loser.waiters);
-
-        let active_is_loser = state
-            .active
-            .as_ref()
-            .is_some_and(|active| active.event_id == loser_event_id);
-        if active_is_loser && winner_event_id != loser_event_id {
-            superseded_operation = state.active.take().map(|active| active.fence);
-        }
-    }
-    superseded_operation
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
 
     use super::{
-        READ_STATE_CANDIDATE_LIMIT, READ_STATE_WAITER_LIMIT, ReadAdmissionRejection,
-        ReadAdmissionStatus, ReadCompletionDisposition, ReadNetworkOutcome, ReadOperationFence,
-        ReadPositionEvidence, ReadStateEngine, ReadStateKey, ReadTarget, ReadWaiterId,
-        ReadWaiterTerminal, ReadWakeResult,
+        READ_STATE_OUTBOX_ENTRY_LIMIT, READ_STATE_WAITER_LIMIT, ReadAdmissionRejection,
+        ReadAdmissionStatus, ReadCompletionDisposition, ReadNetworkFailure, ReadNetworkOutcome,
+        ReadOperationFence, ReadPositionEvidence, ReadStateEngine, ReadStateFailureKind,
+        ReadStateKey, ReadTarget, ReadWaiterId, ReadWaiterTerminal, ReadWakeResult,
     };
 
     const SESSION: u64 = 7;
@@ -1110,6 +1273,10 @@ mod tests {
 
     fn waiter(value: u64) -> ReadWaiterId {
         ReadWaiterId::new(value)
+    }
+
+    fn failed() -> ReadNetworkOutcome {
+        ReadNetworkOutcome::Failed(ReadNetworkFailure::new(ReadStateFailureKind::Sdk))
     }
 
     #[test]
@@ -1159,7 +1326,7 @@ mod tests {
     }
 
     #[test]
-    fn unordered_candidates_remain_distinct_until_position_evidence_orders_them() {
+    fn unordered_latest_admission_is_the_only_desired_target() {
         let key = public("synthetic-room");
         let mut engine = ReadStateEngine::new(SESSION);
         engine.admit(
@@ -1175,35 +1342,9 @@ mod tests {
             waiter(2),
         );
 
-        assert_eq!(engine.candidate_count(&key), 2);
-
-        let first = engine.observe_position(
-            SESSION,
-            &key,
-            "synthetic-event-a",
-            ReadPositionEvidence {
-                generation: 4,
-                rank: 20,
-            },
-        );
-        let second = engine.observe_position(
-            SESSION,
-            &key,
-            "synthetic-event-b",
-            ReadPositionEvidence {
-                generation: 4,
-                rank: 21,
-            },
-        );
-
-        assert!(first.updated());
-        assert_eq!(first.status(), super::ReadEvidenceStatus::Updated);
-        assert_eq!(first.superseded_operation(), None);
-        assert!(second.updated());
-        assert_eq!(second.candidate_count(), 1);
-        assert_eq!(second.waiter_count(), 2);
         assert_eq!(engine.candidate_count(&key), 1);
         assert_eq!(engine.waiter_count(&key), 2);
+        assert!(!engine.has_candidate(&key, "synthetic-event-a"));
         assert!(engine.has_candidate(&key, "synthetic-event-b"));
     }
 
@@ -1239,7 +1380,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_unordered_background_candidate_rotates_to_the_next_candidate() {
+    fn failed_unordered_background_target_is_retained_for_retry() {
         let key = public("synthetic-room");
         let mut seed = ReadStateEngine::new(SESSION);
         seed.admit(
@@ -1255,22 +1396,16 @@ mod tests {
             waiter(2),
         );
         let mut engine = ReadStateEngine::restore(SESSION, seed.persistence_snapshot())
-            .expect("restore valid background candidates");
+            .expect("restore valid background target");
 
         let ReadWakeResult::Start(first) = engine.wake(&key) else {
-            panic!("first background candidate must start");
+            panic!("background target must start");
         };
         assert_eq!(first.target().event_id(), "synthetic-background-b");
-        engine.complete(&key, first.fence(), ReadNetworkOutcome::Failed);
+        engine.complete(&key, first.fence(), failed());
 
-        let ReadWakeResult::Start(second) = engine.wake(&key) else {
-            panic!("second background candidate must start");
-        };
-        assert_eq!(
-            second.target().event_id(),
-            "synthetic-background-a",
-            "one failing unordered restored target must not starve its peer"
-        );
+        assert_eq!(engine.candidate_count(&key), 1);
+        assert!(engine.has_candidate(&key, "synthetic-background-b"));
     }
 
     #[test]
@@ -1290,18 +1425,19 @@ mod tests {
             waiter(2),
         );
 
-        assert_eq!(engine.candidate_count(&key), 2);
+        assert_eq!(engine.candidate_count(&key), 1);
+        assert!(engine.has_candidate(&key, "synthetic-event-b"));
     }
 
     #[test]
-    fn candidate_limit_rejects_the_ninth_unordered_target_without_eviction() {
-        let key = public("synthetic-room");
+    fn key_limit_rejects_the_129th_key_without_eviction() {
         let mut engine = ReadStateEngine::new(SESSION);
-        for index in 0..READ_STATE_CANDIDATE_LIMIT {
+        for index in 0..READ_STATE_OUTBOX_ENTRY_LIMIT {
+            let key = public(&format!("synthetic-room-{index}"));
             let result = engine.admit(
                 SESSION,
-                key.clone(),
-                unordered(&format!("synthetic-event-{index}")),
+                key,
+                unordered("synthetic-event"),
                 waiter(index as u64),
             );
             assert_ne!(
@@ -1312,21 +1448,19 @@ mod tests {
 
         let rejected = engine.admit(
             SESSION,
-            key.clone(),
+            public("synthetic-room-over-capacity"),
             unordered("synthetic-event-over-capacity"),
-            waiter(100),
+            waiter(1000),
         );
 
         assert_eq!(
             rejected.status(),
             ReadAdmissionStatus::Rejected(ReadAdmissionRejection::CandidateCapacity)
         );
-        assert_eq!(engine.candidate_count(&key), READ_STATE_CANDIDATE_LIMIT);
-        assert_eq!(engine.waiter_count(&key), READ_STATE_CANDIDATE_LIMIT);
-        for index in 0..READ_STATE_CANDIDATE_LIMIT {
-            assert!(engine.has_candidate(&key, &format!("synthetic-event-{index}")));
-        }
-        assert!(!engine.has_candidate(&key, "synthetic-event-over-capacity"));
+        assert_eq!(
+            engine.persistence_snapshot().entry_count(),
+            READ_STATE_OUTBOX_ENTRY_LIMIT
+        );
     }
 
     #[test]
@@ -1400,7 +1534,7 @@ mod tests {
         assert_eq!(engine.candidate_count(&key), 1);
         assert_eq!(engine.waiter_count(&key), 2);
         assert!(engine.has_candidate(&key, "synthetic-event-new"));
-        assert_eq!(engine.active_operation(&key), None);
+        assert_eq!(engine.active_operation(&key), Some(old_operation.fence()));
 
         let stale = engine.complete(&key, old_operation.fence(), ReadNetworkOutcome::Succeeded);
         assert_eq!(
@@ -1451,7 +1585,7 @@ mod tests {
             ReadWakeResult::Start(operation) => operation,
             other => panic!("expected a retry start, got {other:?}"),
         };
-        let failed = engine.complete(&key, second.fence(), ReadNetworkOutcome::Failed);
+        let failed = engine.complete(&key, second.fence(), failed());
 
         assert_eq!(failed.disposition(), ReadCompletionDisposition::Failed);
         assert!(failed.settlements().is_empty());
@@ -1625,12 +1759,47 @@ mod tests {
         assert_eq!(restored.waiter_count(&thread_key), 0);
         assert_eq!(
             match restored.keys.get(&public_key) {
-                Some(state) => state.candidates[0].target.position(),
+                Some(state) => state
+                    .desired
+                    .as_ref()
+                    .expect("restored desired target")
+                    .target
+                    .position(),
                 None => panic!("public desired target must restore"),
             },
             None,
             "the actor-owned position index is never serialized"
         );
+    }
+
+    #[test]
+    fn persisted_receipt_policy_filters_public_and_thread_but_keeps_private_fully_read() {
+        let public_key = public("policy-room");
+        let thread_key = thread("policy-room", "policy-root");
+        let fully_read_key = fully_read("policy-room");
+        let mut engine = ReadStateEngine::new(SESSION);
+        for (index, key) in [
+            public_key.clone(),
+            thread_key.clone(),
+            fully_read_key.clone(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            engine.admit(
+                SESSION,
+                key,
+                unordered(&format!("policy-event-{index}")),
+                waiter(index as u64),
+            );
+        }
+
+        let mut snapshot = engine.persistence_snapshot();
+        assert!(snapshot.apply_receipt_policy(false));
+        assert_eq!(snapshot.entry_count(), 1);
+        assert_eq!(snapshot.entries()[0].key(), &fully_read_key);
+        assert!(!snapshot.apply_receipt_policy(false));
+        assert!(!snapshot.apply_receipt_policy(true));
     }
 
     #[test]
@@ -1672,7 +1841,7 @@ mod tests {
                 .all(|settlement| settlement.terminal() == ReadWaiterTerminal::Converged)
         );
         assert_eq!(engine.candidate_count(&key), 0);
-        assert_eq!(engine.active_operation(&key), None);
+        assert_eq!(engine.active_operation(&key), Some(operation.fence()));
 
         let stale = engine.complete(&key, operation.fence(), ReadNetworkOutcome::Succeeded);
         assert_eq!(
@@ -1702,5 +1871,74 @@ mod tests {
             assert!(!rendered.contains("secret-room"));
             assert!(!rendered.contains("secret-event"));
         }
+    }
+
+    #[test]
+    fn unordered_latest_admission_replaces_the_older_desired_target() {
+        let key = public("synthetic-room");
+        let mut engine = ReadStateEngine::new(SESSION);
+        engine.admit(
+            SESSION,
+            key.clone(),
+            unordered("synthetic-event-a"),
+            waiter(1),
+        );
+        engine.admit(
+            SESSION,
+            key.clone(),
+            unordered("synthetic-event-b"),
+            waiter(2),
+        );
+
+        assert_eq!(engine.candidate_count(&key), 1);
+        assert_eq!(engine.waiter_count(&key), 2);
+        assert!(!engine.has_candidate(&key, "synthetic-event-a"));
+        assert!(engine.has_candidate(&key, "synthetic-event-b"));
+    }
+
+    #[test]
+    fn persistence_snapshot_writes_only_the_newest_unordered_target() {
+        let key = public("synthetic-room");
+        let mut engine = ReadStateEngine::new(SESSION);
+        engine.admit(
+            SESSION,
+            key.clone(),
+            unordered("synthetic-event-a"),
+            waiter(1),
+        );
+        engine.admit(SESSION, key, unordered("synthetic-event-b"), waiter(2));
+
+        let snapshot = engine.persistence_snapshot();
+        assert_eq!(snapshot.candidate_count(), 1);
+        assert_eq!(snapshot.entries()[0].event_ids(), ["synthetic-event-b"]);
+    }
+
+    #[test]
+    fn failed_latest_target_is_retained_without_replaying_an_older_target() {
+        let key = public("synthetic-room");
+        let mut engine = ReadStateEngine::new(SESSION);
+        engine.admit(
+            SESSION,
+            key.clone(),
+            unordered("synthetic-event-a"),
+            waiter(1),
+        );
+        engine.admit(
+            SESSION,
+            key.clone(),
+            unordered("synthetic-event-b"),
+            waiter(2),
+        );
+
+        let operation = match engine.wake(&key) {
+            ReadWakeResult::Start(operation) => operation,
+            other => panic!("expected a start, got {other:?}"),
+        };
+        assert_eq!(operation.target().event_id(), "synthetic-event-b");
+        engine.complete(&key, operation.fence(), failed());
+
+        assert_eq!(engine.candidate_count(&key), 1);
+        assert!(engine.has_candidate(&key, "synthetic-event-b"));
+        assert!(!engine.has_candidate(&key, "synthetic-event-a"));
     }
 }

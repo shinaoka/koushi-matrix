@@ -94,6 +94,7 @@ binary.
 | `restore_cleanup` | session restore and logout cleanup | — |
 | `link_preview` | link preview projection | — |
 | `cache_restore` | deep-history anchor restored from cache within a bounded number of backward-paginate cycles while the network is blocked | — |
+| `read_state_convergence` | local viewed boundary advances while receipt/read-marker writes are held or failed, then converges through the bounded Rust dispatcher | `read_state_convergence=ok` |
 
 Key-backup scope: `joined_room_restore=ok` is the #30 MVP proof token for
 recovery-secret import plus currently joined-room key hydration. It is not proof

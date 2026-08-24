@@ -807,7 +807,7 @@ test("room media gallery opens a viewer from Rust-owned gallery projection", asy
   await expect(viewer).toHaveCount(0);
 });
 
-test("live signals render from Rust state and dispatch read/typing commands", async ({
+test("live signals render from Rust state and dispatch only viewport/typing commands", async ({
   page
 }) => {
   await gotoReadyShell(page);
@@ -889,21 +889,19 @@ test("live signals render from Rust state and dispatch read/typing commands", as
   await expect(page.locator(".typing-indicator")).not.toContainText(
     "@typing-user:example.invalid"
   );
-  await expect.poll(() => invocationCount(page, "send_read_receipt")).toBe(1);
-  await expect.poll(() => invocationCount(page, "set_fully_read")).toBe(1);
   await expect
-    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("send_read_receipt")[0]?.args))
-    .toEqual({
+    .poll(async () =>
+      page.evaluate(
+        () => window.__harness.invocationsOf("observe_timeline_viewport").at(-1)?.args
+      )
+    )
+    .toMatchObject({
       roomId: HARNESS_ROOM_ID,
-      eventId: LIVE_SIGNALS_EVENT_ID,
-      threadRootEventId: undefined
+      lastVisibleEventId: LIVE_SIGNALS_EVENT_ID,
+      atBottom: true
     });
-  await expect
-    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("set_fully_read")[0]?.args))
-    .toEqual({
-      roomId: HARNESS_ROOM_ID,
-      eventId: LIVE_SIGNALS_EVENT_ID
-    });
+  expect(await invocationCount(page, "send_read_receipt")).toBe(0);
+  expect(await invocationCount(page, "set_fully_read")).toBe(0);
 
   await page.evaluate(() => window.__harness.clearInvocations());
   await page.getByRole("textbox", { name: "Message composer" }).fill("Typing signal");

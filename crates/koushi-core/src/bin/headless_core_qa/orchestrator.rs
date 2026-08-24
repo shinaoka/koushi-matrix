@@ -27,6 +27,7 @@ use super::scenario_identity::{
     run_gate_negative_stage, run_gate_no_proof_stage, run_gate_restore_stage,
     run_native_attention_stage, run_provisional_device_cleanup_qa, run_session_status_stage,
 };
+use super::scenario_read_state::run_read_state_convergence_scenario;
 use super::scenario_rooms::{
     run_directory_stage, run_invites_dm_stage, run_room_management_stage,
     run_room_people_projection_stage, wait_for_pin_event_completed, wait_for_pinned_state,
@@ -89,6 +90,11 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
     if scenario == QaScenario::TimelineReconnect {
         println!("safety=ok");
         run_timeline_reconnect_scenario(&config).await?;
+        return Ok(scenario_report(&config.server_kind, scenario));
+    }
+    if scenario == QaScenario::ReadStateConvergence {
+        println!("safety=ok");
+        run_read_state_convergence_scenario(&config).await?;
         return Ok(scenario_report(&config.server_kind, scenario));
     }
     if scenario == QaScenario::GateNoProof {

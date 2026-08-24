@@ -983,6 +983,7 @@ mod tests {
             activity_resolution_task: None,
             data_dir: data_dir_path,
             link_preview_policy: LinkPreviewContext::default(),
+            send_read_receipts: true,
             pending_oidc_login: None,
             oidc_completion_override: None,
             search_actor: None,

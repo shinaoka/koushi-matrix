@@ -105,8 +105,6 @@ import type {
   SessionStatusRefreshTrigger,
   SettingsPatch,
   PresenceKind,
-  LiveEventReceiptSummary,
-  LiveReadReceipt,
   MentionSurface,
   OidcAuthorization,
   SpaceNavigationSelection,
@@ -2300,30 +2298,18 @@ class BrowserFakeApi implements DesktopApi {
     eventId: string,
     threadRootEventId?: string | null
   ): Promise<void> {
+    // The fake is a transport boundary, not a second read-state reducer. A
+    // Rust-shaped snapshot/event must install receipt state before the fake
+    // exposes it to the UI.
+    void roomId;
+    void eventId;
     void threadRootEventId;
-    const session = this.snapshot.state.domain.session;
-    if (!this.isReady() || !session.user_id || eventId.trim().length === 0) {
-      return;
-    }
-    const roomSignals = ensureRoomLiveSignals(this.snapshot, roomId);
-    const existing = roomSignals.receipts_by_event[eventId]?.readers ?? [];
-    roomSignals.receipts_by_event[eventId] = projectReceiptSummary([
-      ...existing.filter((receipt) => receipt.user_id !== session.user_id),
-      {
-        user_id: session.user_id,
-        display_name: this.snapshot.state.domain.profile.own.display_name,
-        original_display_label: this.snapshot.state.domain.profile.own.display_name?.trim() || session.user_id,
-        avatar: this.snapshot.state.domain.profile.own.avatar,
-        timestamp_ms: Date.now()
-      }
-    ]);
   }
 
   async setFullyRead(roomId: string, eventId: string): Promise<void> {
-    if (!this.isReady() || eventId.trim().length === 0) {
-      return;
-    }
-    ensureRoomLiveSignals(this.snapshot, roomId).fully_read_event_id = eventId;
+    // See sendReadReceipt: never repair the installed snapshot locally.
+    void roomId;
+    void eventId;
   }
 
   async setTyping(roomId: string, isTyping: boolean): Promise<void> {
@@ -5438,19 +5424,6 @@ function ensureRoomLiveSignals(
     typing_users: []
   };
   return snapshot.state.domain.live_signals.rooms[roomId];
-}
-
-function projectReceiptSummary(receipts: LiveReadReceipt[]): LiveEventReceiptSummary {
-  const readers = [...receipts].sort((left, right) => {
-    const byTimestamp = (right.timestamp_ms ?? 0) - (left.timestamp_ms ?? 0);
-    return byTimestamp || left.user_id.localeCompare(right.user_id);
-  });
-  const totalCount = readers.length;
-  return {
-    readers,
-    total_count: totalCount,
-    overflow_count: 0
-  };
 }
 
 function initialSession(options: BrowserFakeApiOptions): BrowserFakeApiOptions["session"] {

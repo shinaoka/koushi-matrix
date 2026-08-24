@@ -150,6 +150,9 @@ pub(crate) enum AccountMessage {
     SyncCommand(SyncCommand),
     RoomCommand(RoomCommand),
     TimelineCommand(TimelineCommand),
+    ReadStatePolicyChanged {
+        send_read_receipts: bool,
+    },
     TimelineCommandWithComposerFormatting {
         command: TimelineCommand,
         formatting_options: koushi_state::ComposerFormattingOptions,
@@ -802,6 +805,8 @@ pub struct AccountActor {
     /// Latest link-preview policy snapshot from AppState, kept current so a
     /// newly-created session-scoped timeline manager starts with the right policy.
     pub(super) link_preview_policy: LinkPreviewContext,
+    /// Latest Rust-owned receipt policy, replayed into each replacement manager.
+    pub(super) send_read_receipts: bool,
     /// SearchActor handle (Phase 6). Present only when a store-backed session
     /// exists. Created at the same time as SyncActor; stopped in the ordered
     /// shutdown between timelines and sync (canon Async rule 12 step 3).
@@ -911,6 +916,7 @@ impl AccountActor {
             event_tx,
             initial_link_preview_policy,
             composer_draft_leases,
+            true,
             crate::SlidingSyncDiagnostics::default(),
         )
     }
@@ -921,6 +927,7 @@ impl AccountActor {
         event_tx: broadcast::Sender<CoreEvent>,
         initial_link_preview_policy: LinkPreviewContext,
         composer_draft_leases: Arc<ComposerDraftLeaseRegistry>,
+        initial_send_read_receipts: bool,
         sliding_sync_diagnostics: crate::SlidingSyncDiagnostics,
     ) -> AccountActorHandle {
         // AppActor forwards every Room/Timeline/Sync command here via send().await;
@@ -1030,6 +1037,7 @@ impl AccountActor {
             activity_resolution_task: None,
             data_dir,
             link_preview_policy: initial_link_preview_policy,
+            send_read_receipts: initial_send_read_receipts,
             search_actor: None,
             threads_list_actor: None,
             recovery_observer: None,
@@ -1153,6 +1161,16 @@ impl AccountActor {
                 }
                 AccountMessage::TimelineCommand(timeline_command) => {
                     self.route_timeline_command(timeline_command).await;
+                }
+                AccountMessage::ReadStatePolicyChanged { send_read_receipts } => {
+                    self.send_read_receipts = send_read_receipts;
+                    let _ = self
+                        .timeline_manager
+                        .set_read_state_policy(
+                            self.read_persistence_session_generation,
+                            send_read_receipts,
+                        )
+                        .await;
                 }
                 AccountMessage::TimelineCommandWithComposerFormatting {
                     command,

@@ -70,6 +70,7 @@ pub(super) fn record_read_admission(key: &ReadStateKey, diagnostic: ReadAdmissio
         waiter_count,
         superseded_operation_count,
         None,
+        None,
     );
 }
 
@@ -338,7 +339,7 @@ fn room_key_reshare_target_token(target: MatrixRoomKeyReshareTarget) -> &'static
 }
 
 pub(super) fn record_read_completion(key: &ReadStateKey, diagnostic: ReadCompletionDiagnostic) {
-    let (outcome, settled, candidates, waiters) = match diagnostic {
+    let (outcome, settled, candidates, waiters, failure_kind) = match diagnostic {
         ReadCompletionDiagnostic::Succeeded {
             settled_waiter_count,
             remaining_candidate_count,
@@ -348,26 +349,31 @@ pub(super) fn record_read_completion(key: &ReadStateKey, diagnostic: ReadComplet
             settled_waiter_count,
             remaining_candidate_count,
             remaining_waiter_count,
+            None,
         ),
         ReadCompletionDiagnostic::Failed {
             settled_waiter_count,
             remaining_candidate_count,
             remaining_waiter_count,
+            failure_kind,
         } => (
             "failed",
             settled_waiter_count,
             remaining_candidate_count,
             remaining_waiter_count,
+            Some(failure_kind),
         ),
         ReadCompletionDiagnostic::TimedOut {
             settled_waiter_count,
             remaining_candidate_count,
             remaining_waiter_count,
+            failure_kind,
         } => (
             "timed_out",
             settled_waiter_count,
             remaining_candidate_count,
             remaining_waiter_count,
+            Some(failure_kind),
         ),
         ReadCompletionDiagnostic::StaleDiscarded {
             remaining_candidate_count,
@@ -377,6 +383,7 @@ pub(super) fn record_read_completion(key: &ReadStateKey, diagnostic: ReadComplet
             0,
             remaining_candidate_count,
             remaining_waiter_count,
+            None,
         ),
     };
     record_read_state_diagnostic(
@@ -387,6 +394,37 @@ pub(super) fn record_read_completion(key: &ReadStateKey, diagnostic: ReadComplet
         waiters,
         settled,
         None,
+        failure_kind,
+    );
+}
+
+pub(super) fn record_read_retry_scheduled(
+    key: &ReadStateKey,
+    attempt: u32,
+    queued_count: usize,
+    active_count: usize,
+    delay: std::time::Duration,
+) {
+    let delay_bucket = match delay.as_secs() {
+        0 => "subsecond",
+        1..=4 => "1_4s",
+        5..=29 => "5_29s",
+        30..=59 => "30_59s",
+        _ => "ge_60s",
+    };
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(DiagnosticLevel::Error, "core.read_state", "retry_scheduled")
+            .field(DiagnosticField::token("kind", read_state_kind_token(key)))
+            .field(DiagnosticField::count("attempt", u64::from(attempt)))
+            .field(DiagnosticField::count(
+                "queued_count",
+                queued_count.try_into().unwrap_or(u64::MAX),
+            ))
+            .field(DiagnosticField::count(
+                "active_count",
+                active_count.try_into().unwrap_or(u64::MAX),
+            ))
+            .field(DiagnosticField::token("delay_bucket", delay_bucket)),
     );
 }
 
@@ -404,6 +442,7 @@ pub(super) fn record_read_retry(
         waiter_count,
         0,
         Some(source.token()),
+        None,
     );
 }
 
@@ -415,8 +454,14 @@ fn record_read_state_diagnostic(
     waiter_count: usize,
     related_count: usize,
     source: Option<&'static str>,
+    failure_kind: Option<crate::failure::ReadStateFailureKind>,
 ) {
-    let mut event = DiagnosticEvent::new(DiagnosticLevel::Debug, "core.read_state", stage)
+    let level = if failure_kind.is_some() {
+        DiagnosticLevel::Error
+    } else {
+        DiagnosticLevel::Debug
+    };
+    let mut event = DiagnosticEvent::new(level, "core.read_state", stage)
         .field(DiagnosticField::token("kind", read_state_kind_token(key)))
         .field(DiagnosticField::token("outcome", outcome))
         .field(DiagnosticField::count(
@@ -433,6 +478,9 @@ fn record_read_state_diagnostic(
         ));
     if let Some(source) = source {
         event = event.field(DiagnosticField::token("source", source));
+    }
+    if let Some(failure_kind) = failure_kind {
+        event = event.field(DiagnosticField::token("failure_kind", failure_kind.token()));
     }
     koushi_diagnostics::record(event);
 }

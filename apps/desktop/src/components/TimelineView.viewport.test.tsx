@@ -1511,6 +1511,9 @@ describe("TimelineView", () => {
             snapshot: {
               read_marker_event_id: "$sent:example.invalid",
               read_marker_display_event_id: "$sent:example.invalid",
+              local_viewed_event_id: "$sent:example.invalid",
+              server_confirmed_read_event_id: "$sent:example.invalid",
+              read_state_sync: "synced",
               first_unread_event_id: null,
               unread_event_count: 0,
               unread_position: "none",
@@ -1722,6 +1725,9 @@ describe("TimelineView", () => {
             snapshot: {
               read_marker_event_id: "$sent:example.invalid",
               read_marker_display_event_id: "$sent:example.invalid",
+              local_viewed_event_id: "$sent:example.invalid",
+              server_confirmed_read_event_id: "$sent:example.invalid",
+              read_state_sync: "synced",
               first_unread_event_id: null,
               unread_event_count: 0,
               unread_position: "none",

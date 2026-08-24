@@ -83,6 +83,21 @@ export type TimelineFailureKind =
   | "Sdk"
   | "QueueOverflow";
 
+export type ReadStateFailureKind =
+  | "timeout"
+  | "transport"
+  | "rate_limited"
+  | "authentication"
+  | "server"
+  | "capacity"
+  | "sdk";
+
+export type TimelineReadStateSync =
+  | "synced"
+  | "pending"
+  | { failed: { kind: ReadStateFailureKind } }
+  | "notRequested";
+
 export type TimelineResyncReason =
   | "QueueOverflow"
   | "SubscriptionRestarted"
@@ -378,6 +393,9 @@ export interface TimelineNavigationSnapshot {
   unread_position: TimelineUnreadPosition;
   newer_event_count: number;
   can_jump_to_bottom: boolean;
+  local_viewed_event_id: string | null;
+  server_confirmed_read_event_id: string | null;
+  read_state_sync: TimelineReadStateSync;
 }
 
 export type TimelineAnchorRestoreStatus =

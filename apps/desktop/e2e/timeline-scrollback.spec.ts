@@ -745,6 +745,9 @@ test("virtualized navigation hides the first-unread control after variable-heigh
             snapshot: {
               read_marker_event_id: "$vh099",
               read_marker_display_event_id: "$vh099",
+              local_viewed_event_id: "$vh099",
+              server_confirmed_read_event_id: "$vh099",
+              read_state_sync: "synced",
               first_unread_event_id: "$vh100",
               unread_event_count: 1,
               unread_position: "aboveViewport",
@@ -1678,6 +1681,9 @@ test("timeline navigation keeps the unread marker and bottom control independent
             snapshot: {
               read_marker_event_id: "$m24",
               read_marker_display_event_id: "$m24",
+              local_viewed_event_id: "$m24",
+              server_confirmed_read_event_id: "$m24",
+              read_state_sync: "synced",
               first_unread_event_id: "$m25",
               unread_event_count: 3,
               unread_position: "belowViewport",
@@ -1706,7 +1712,7 @@ test("timeline navigation keeps the unread marker and bottom control independent
     .toBeLessThanOrEqual(ANCHOR_PIXEL_TOLERANCE);
 });
 
-test("scrolling to bottom marks the latest readable event", async ({ page }) => {
+test("scrolling to bottom reports the latest readable event to Rust", async ({ page }) => {
   await page.goto("/harness.html?autoLoadOlderMessages=true");
   await page.waitForSelector("[data-testid=timeline-view]");
   await pushInitialTimelineItems(page, 40);
@@ -1733,12 +1739,17 @@ test("scrolling to bottom marks the latest readable event", async ({ page }) => 
 
   await expect
     .poll(() =>
-      page.evaluate(() => window.__harness.invocationsOf("set_fully_read").at(-1)?.args)
+      page.evaluate(
+        () => window.__harness.invocationsOf("observe_timeline_viewport").at(-1)?.args
+      )
     )
-    .toEqual({
+    .toMatchObject({
       roomId: ROOM_ID,
-      eventId: "$m39"
+      lastVisibleEventId: "$m39",
+      atBottom: true
     });
+  expect(await page.evaluate(() => window.__harness.invocationsOf("send_read_receipt").length)).toBe(0);
+  expect(await page.evaluate(() => window.__harness.invocationsOf("set_fully_read").length)).toBe(0);
 });
 
 test("timeline header omits date jump and keeps the latest control", async ({ page }) => {

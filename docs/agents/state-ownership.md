@@ -213,6 +213,39 @@ carry tokens and counts only. The full prohibited list is in
   semantics in the UI, because `Timeline::toggle_reaction` is only an internal
   Rust delegation detail behind the typed boundary.
 
+## Local viewed and server-confirmed read state
+
+`TimelineActor` owns the verified local viewed boundary for Room and Thread
+windows. It accepts only an at-bottom viewport observation whose last visible
+canonical event is the latest eligible readable item, has exact actor-generation
+and position-index evidence, and is not obscured by a visible gap. It emits the
+local boundary immediately; it never calls receipt or read-marker IPC.
+
+`TimelineManagerActor` owns the bounded automatic read-intent correlation map
+and the four-slot dispatcher. Room boundaries require the private fully-read /
+read-receipt bundle and, when `SettingsValues.notifications.send_read_receipts`
+is enabled, the public receipt. Thread boundaries require only the matching
+thread receipt when that policy is enabled. Focused timelines never create
+automatic intent. Settings changes travel from the Rust settings projection
+through `AccountActor` to a session-generation-fenced manager control update;
+React cannot change this policy locally.
+
+`TimelineNavigationSnapshot.read_marker_event_id` and unread counts remain the
+server-confirmed boundary. `local_viewed_event_id` and
+`read_marker_display_event_id` may advance while the write is pending or failed.
+`read_state_sync` is the Rust status (`pending`, coarse `failed`, `synced`, or
+`notRequested`) rendered by `TimelineView` as an accessible status; pending or
+failed state never clears badges/counts. Browser Fake receipt methods are
+transport no-ops: only an installed Rust-shaped snapshot/event may change its
+read state.
+
+Focused checks:
+
+```bash
+cargo test -p koushi-core --lib read_state::tests::
+npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-state.test.tsx
+```
+
 ## Room-subscription residency
 
 - `TimelineManagerActor` is the only Koushi owner that mutates the live

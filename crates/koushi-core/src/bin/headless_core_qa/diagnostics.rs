@@ -5,6 +5,7 @@ use super::{
 };
 use crate::ToSocketAddrs;
 use crate::thread;
+use std::sync::Condvar;
 
 pub(super) fn verification_event_stream_error(
     label: &str,
@@ -512,6 +513,7 @@ pub(super) struct QaTcpProxy {
     running: Arc<AtomicBool>,
     active_streams: Arc<Mutex<Vec<TcpStream>>>,
     messages_control: Arc<Mutex<QaMessagesProxyControl>>,
+    read_state_control: Arc<(Mutex<QaReadStateProxyControl>, Condvar)>,
     accept_thread: Option<JoinHandle<()>>,
 }
 
@@ -519,6 +521,7 @@ pub(super) struct QaTcpProxy {
 enum QaProxyRequestKind {
     RoomSend,
     RoomMessages,
+    ReadState,
     Other,
 }
 
@@ -728,6 +731,38 @@ struct QaMessagesProxyControl {
     canned_page: Option<QaCannedMessagesPage>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum QaReadStateProxyMode {
+    Forward,
+    Hold,
+    FailClosed,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct QaReadStateProxyObservation {
+    pub(super) request_count: usize,
+    pub(super) held_request_count: usize,
+    pub(super) forwarded_count: usize,
+    pub(super) completed_count: usize,
+    pub(super) max_inflight: usize,
+}
+
+struct QaReadStateProxyControl {
+    mode: QaReadStateProxyMode,
+    observation: QaReadStateProxyObservation,
+    inflight: usize,
+}
+
+impl Default for QaReadStateProxyControl {
+    fn default() -> Self {
+        Self {
+            mode: QaReadStateProxyMode::Forward,
+            observation: QaReadStateProxyObservation::default(),
+            inflight: 0,
+        }
+    }
+}
+
 impl QaTcpProxy {
     pub(super) fn start(target_homeserver: &str) -> Result<Self, String> {
         let target = parse_http_homeserver_addr(target_homeserver)?;
@@ -745,6 +780,10 @@ impl QaTcpProxy {
         let running = Arc::new(AtomicBool::new(true));
         let active_streams = Arc::new(Mutex::new(Vec::new()));
         let messages_control = Arc::new(Mutex::new(QaMessagesProxyControl::default()));
+        let read_state_control = Arc::new((
+            Mutex::new(QaReadStateProxyControl::default()),
+            Condvar::new(),
+        ));
 
         let thread_enabled = enabled.clone();
         let thread_room_send_forwarded = room_send_forwarded.clone();
@@ -752,6 +791,7 @@ impl QaTcpProxy {
         let thread_running = running.clone();
         let thread_streams = active_streams.clone();
         let thread_messages_control = messages_control.clone();
+        let thread_read_state_control = read_state_control.clone();
         let accept_thread = thread::spawn(move || {
             while thread_running.load(Ordering::SeqCst) {
                 match listener.accept() {
@@ -765,6 +805,7 @@ impl QaTcpProxy {
                             target,
                             thread_streams.clone(),
                             thread_messages_control.clone(),
+                            thread_read_state_control.clone(),
                             thread_room_send_forwarded.clone(),
                             thread_room_send_responses_completed.clone(),
                         );
@@ -789,6 +830,7 @@ impl QaTcpProxy {
             running,
             active_streams,
             messages_control,
+            read_state_control,
             accept_thread: Some(accept_thread),
         })
     }
@@ -891,10 +933,59 @@ impl QaTcpProxy {
             .map(|control| control.state.observation)
             .map_err(|_| "timeline messages proxy state lock was poisoned".to_owned())
     }
+
+    pub(super) fn set_read_state_proxy_mode(&self, mode: QaReadStateProxyMode) {
+        let (state, wake) = &*self.read_state_control;
+        if let Ok(mut state) = state.lock() {
+            state.mode = mode;
+            wake.notify_all();
+        }
+    }
+
+    pub(super) fn hold_read_state_writes(&self) {
+        self.set_read_state_proxy_mode(QaReadStateProxyMode::Hold);
+    }
+
+    pub(super) fn fail_read_state_writes(&self) {
+        self.set_read_state_proxy_mode(QaReadStateProxyMode::FailClosed);
+    }
+
+    pub(super) fn release_read_state_writes(&self) {
+        self.set_read_state_proxy_mode(QaReadStateProxyMode::Forward);
+    }
+
+    pub(super) fn read_state_observation(&self) -> Result<QaReadStateProxyObservation, String> {
+        self.read_state_control
+            .0
+            .lock()
+            .map(|state| state.observation)
+            .map_err(|_| "read-state proxy state lock was poisoned".to_owned())
+    }
+
+    pub(super) fn wait_for_held_read_state_writes(
+        &self,
+        minimum: usize,
+        timeout: Duration,
+    ) -> Result<QaReadStateProxyObservation, String> {
+        let (state_lock, wake) = &*self.read_state_control;
+        let state = state_lock
+            .lock()
+            .map_err(|_| "read-state proxy state lock was poisoned".to_owned())?;
+        let (state, _) = wake
+            .wait_timeout_while(state, timeout, |state| {
+                state.observation.held_request_count < minimum
+            })
+            .map_err(|_| "read-state proxy wait lock was poisoned".to_owned())?;
+        if state.observation.held_request_count < minimum {
+            return Err("read-state proxy held-write evidence timed out".to_owned());
+        }
+        Ok(state.observation)
+    }
 }
 
 impl Drop for QaTcpProxy {
     fn drop(&mut self) {
+        self.set_read_state_proxy_mode(QaReadStateProxyMode::Forward);
         self.running.store(false, Ordering::SeqCst);
         shutdown_active_streams(&self.active_streams);
         let _ = TcpStream::connect(self.listen_addr);
@@ -924,6 +1015,7 @@ fn spawn_proxy_pair(
     target: SocketAddr,
     active_streams: Arc<Mutex<Vec<TcpStream>>>,
     messages_control: Arc<Mutex<QaMessagesProxyControl>>,
+    read_state_control: Arc<(Mutex<QaReadStateProxyControl>, Condvar)>,
     room_send_forwarded: Arc<AtomicUsize>,
     room_send_responses_completed: Arc<AtomicUsize>,
 ) {
@@ -933,6 +1025,7 @@ fn spawn_proxy_pair(
             target,
             active_streams,
             messages_control,
+            read_state_control,
             room_send_forwarded,
             room_send_responses_completed,
         );
@@ -945,6 +1038,7 @@ fn proxy_single_http_request(
     target: SocketAddr,
     active_streams: Arc<Mutex<Vec<TcpStream>>>,
     messages_control: Arc<Mutex<QaMessagesProxyControl>>,
+    read_state_control: Arc<(Mutex<QaReadStateProxyControl>, Condvar)>,
     room_send_forwarded: Arc<AtomicUsize>,
     room_send_responses_completed: Arc<AtomicUsize>,
 ) -> io::Result<()> {
@@ -982,10 +1076,17 @@ fn proxy_single_http_request(
     }
 
     let request_kind = qa_proxy_request_kind(&request_head)?;
-    let action = qa_messages_proxy_action(&messages_control, request_kind, &request_head)?
+    let action = qa_read_state_proxy_action(&read_state_control, request_kind)?
+        .or(qa_messages_proxy_action(
+            &messages_control,
+            request_kind,
+            &request_head,
+        )?)
         .unwrap_or(QaProxyRequestAction::Forward);
     let count_forwarded_room_send =
         request_kind == QaProxyRequestKind::RoomSend && action == QaProxyRequestAction::Forward;
+    let count_forwarded_read_state =
+        request_kind == QaProxyRequestKind::ReadState && action == QaProxyRequestAction::Forward;
     match action {
         QaProxyRequestAction::Forward => {}
         QaProxyRequestAction::FailClosed => {
@@ -1019,7 +1120,50 @@ fn proxy_single_http_request(
     if count_forwarded_room_send {
         room_send_responses_completed.fetch_add(1, Ordering::SeqCst);
     }
+    if count_forwarded_read_state {
+        qa_read_state_proxy_completed(&read_state_control);
+    }
     Ok(())
+}
+
+fn qa_read_state_proxy_action(
+    control: &Arc<(Mutex<QaReadStateProxyControl>, Condvar)>,
+    request_kind: QaProxyRequestKind,
+) -> io::Result<Option<QaProxyRequestAction>> {
+    if request_kind != QaProxyRequestKind::ReadState {
+        return Ok(None);
+    }
+    let (state_lock, wake) = &**control;
+    let mut state = state_lock
+        .lock()
+        .map_err(|_| io::Error::other("QA read-state proxy state lock was poisoned"))?;
+    state.observation.request_count = state.observation.request_count.saturating_add(1);
+    while state.mode == QaReadStateProxyMode::Hold {
+        state.observation.held_request_count =
+            state.observation.held_request_count.saturating_add(1);
+        wake.notify_all();
+        state = wake
+            .wait(state)
+            .map_err(|_| io::Error::other("QA read-state proxy wait failed"))?;
+    }
+    match state.mode {
+        QaReadStateProxyMode::Forward => {
+            state.observation.forwarded_count = state.observation.forwarded_count.saturating_add(1);
+            state.inflight = state.inflight.saturating_add(1);
+            state.observation.max_inflight = state.observation.max_inflight.max(state.inflight);
+            Ok(Some(QaProxyRequestAction::Forward))
+        }
+        QaReadStateProxyMode::FailClosed => Ok(Some(QaProxyRequestAction::FailClosed)),
+        QaReadStateProxyMode::Hold => unreachable!("hold is drained before action selection"),
+    }
+}
+
+fn qa_read_state_proxy_completed(control: &Arc<(Mutex<QaReadStateProxyControl>, Condvar)>) {
+    let (state_lock, _) = &**control;
+    if let Ok(mut state) = state_lock.lock() {
+        state.inflight = state.inflight.saturating_sub(1);
+        state.observation.completed_count = state.observation.completed_count.saturating_add(1);
+    }
 }
 
 fn qa_proxy_request_kind(request: &[u8]) -> io::Result<QaProxyRequestKind> {
@@ -1061,6 +1205,13 @@ fn qa_proxy_request_kind(request: &[u8]) -> io::Result<QaProxyRequestKind> {
                 && path.ends_with("/messages") =>
         {
             QaProxyRequestKind::RoomMessages
+        }
+        (_, path)
+            if path.starts_with("/_matrix/client/")
+                && path.contains("/rooms/")
+                && (path.contains("/receipt/") || path.ends_with("/read_markers")) =>
+        {
+            QaProxyRequestKind::ReadState
         }
         _ => QaProxyRequestKind::Other,
     })

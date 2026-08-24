@@ -134,7 +134,8 @@ CoreEventPayload,
 TimelineItem,
 TimelineKey,
 TimelineMessageSource,
-TimelineNavigationSnapshot
+TimelineNavigationSnapshot,
+TimelineReadStateSync
 } from "../domain/coreEvents";
 import {
 timelineItemDomId,
@@ -590,7 +591,6 @@ export const TimelineView = memo(function TimelineView({
     (trigger: TimelineBackfillEvaluationTrigger, genuineUserScroll?: boolean) => void
   >(() => undefined);
   const lastBackfillEvaluationDiagnosticSignatureRef = useRef<string | null>(null);
-  const readSignalEventRef = useRef<string | null>(null);
   const lastViewportObservationRef = useRef<string | null>(null);
   const autoReturnToLiveIdentityRef = useRef<string | null>(null);
   const autoReturnToLiveKeyRef = useRef<string | null>(null);
@@ -624,16 +624,16 @@ export const TimelineView = memo(function TimelineView({
   const roomReentryAnchorAgeRef = useRef<TimelineSessionAnchorAgeBucket>("none");
   const roomReentryDiagnosticKeyRef = useRef<string | null>(null);
   const roomTimelineRoomId = "Room" in timelineKey.kind ? timelineKey.kind.Room.room_id : null;
-  const focusedTimelineTargetEventId =
-    "Focused" in timelineKey.kind ? timelineKey.kind.Focused.event_id : null;
-  const readSignalRoomId =
+  const viewportTimelineRoomId =
     "Room" in timelineKey.kind
       ? timelineKey.kind.Room.room_id
       : "Thread" in timelineKey.kind
         ? timelineKey.kind.Thread.room_id
         : null;
-  const readSignalThreadRootEventId =
+  const viewportThreadRootEventId =
     "Thread" in timelineKey.kind ? timelineKey.kind.Thread.root_event_id : null;
+  const focusedTimelineTargetEventId =
+    "Focused" in timelineKey.kind ? timelineKey.kind.Focused.event_id : null;
   const items = getItems(store, timelineKey);
   // Issue #460: immediate acknowledgment on the user's "Request keys and
   // retry" click: a toast + a local pending marker, until Rust publishes a
@@ -1606,7 +1606,6 @@ export const TimelineView = memo(function TimelineView({
     setNavigationSnapshot(null);
     setViewportAtBottom(false);
     lastViewportObservationRef.current = null;
-    readSignalEventRef.current = null;
     downloadedEventIdsRef.current = new Set();
     requestedImagePreviewEventIdsRef.current = new Set();
     relevantAvatarMxcsRef.current = new Set();
@@ -2284,28 +2283,14 @@ export const TimelineView = memo(function TimelineView({
     forwardDestinations.length > 0
       ? forwardDestinations
       : [{ room_id: roomId, display_name: roomId }];
-  const sendReadSignalsForEvent = useCallback(
-    (eventId: string) => {
-      const signalKey = `${roomId}\u0000${readSignalThreadRootEventId ?? ""}\u0000${eventId}`;
-      if (readSignalEventRef.current === signalKey) {
-        return;
-      }
-      readSignalEventRef.current = signalKey;
-      const sendReadReceipt =
-        readSignalThreadRootEventId === null
-          ? transport.sendReadReceipt(roomId, eventId)
-          : transport.sendReadReceipt(roomId, eventId, readSignalThreadRootEventId);
-      void sendReadReceipt.catch(() => undefined);
-      void transport.setFullyRead(roomId, eventId).catch(() => undefined);
-    },
-    [readSignalThreadRootEventId, roomId, transport]
-  );
   const reportViewportObservation = useCallback(() => {
     const observeViewport = transport.observeViewport;
-    const canObserveRoomViewport = Boolean(observeViewport && roomTimelineRoomId === roomId);
-    const canSendReadSignals = readSignalRoomId === roomId;
-    const canComputeLocalViewport = focusedTimelineTargetEventId !== null;
-    if (!canObserveRoomViewport && !canSendReadSignals && !canComputeLocalViewport) {
+    const canObserveTimelineViewport = Boolean(
+      observeViewport && viewportTimelineRoomId === roomId
+    );
+    const canComputeLocalViewport =
+      focusedTimelineTargetEventId !== null || (isAnchored && onReturnToLive !== undefined);
+    if (!canObserveTimelineViewport && !canComputeLocalViewport) {
       return;
     }
     const container = containerRef.current;
@@ -2328,14 +2313,12 @@ export const TimelineView = memo(function TimelineView({
     setViewportAtBottom((current) =>
       current === effectiveAtBottom ? current : effectiveAtBottom
     );
-    if (canSendReadSignals && effectiveAtBottom && latestReadableEventId) {
-      sendReadSignalsForEvent(latestReadableEventId);
-    }
-    if (!canObserveRoomViewport || !observeViewport) {
+    if (!canObserveTimelineViewport || !observeViewport) {
       return;
     }
     const signature = [
       roomId,
+      viewportThreadRootEventId ?? "",
       visible.firstVisibleEventId ?? "",
       visible.lastVisibleEventId ?? "",
       visible.visibleGapIds
@@ -2352,17 +2335,19 @@ export const TimelineView = memo(function TimelineView({
         visible.firstVisibleEventId,
         visible.lastVisibleEventId,
         visible.visibleGapIds,
-        effectiveAtBottom
+        effectiveAtBottom,
+        viewportThreadRootEventId
       )
       .catch(() => undefined);
   }, [
     focusedTimelineTargetEventId,
+    isAnchored,
     latestReadableEventId,
-    readSignalRoomId,
+    onReturnToLive,
     roomId,
-    roomTimelineRoomId,
-    sendReadSignalsForEvent,
-    transport
+    transport,
+    viewportThreadRootEventId,
+    viewportTimelineRoomId
   ]);
 
   useEffect(() => {
@@ -2405,23 +2390,6 @@ export const TimelineView = memo(function TimelineView({
     reportViewportObservation,
     timelineKeyHash,
     updateViewportMetrics
-  ]);
-
-  useEffect(() => {
-    if (!latestReadableEventId || readSignalRoomId !== roomId) {
-      return;
-    }
-    const container = containerRef.current;
-    if (!container || !viewportAtBottom || !isScrolledToBottom(container)) {
-      return;
-    }
-    sendReadSignalsForEvent(latestReadableEventId);
-  }, [
-    latestReadableEventId,
-    readSignalRoomId,
-    roomId,
-    sendReadSignalsForEvent,
-    viewportAtBottom
   ]);
 
   useLayoutEffect(() => {
@@ -3518,6 +3486,9 @@ export const TimelineView = memo(function TimelineView({
     navigationSnapshot?.read_marker_event_id ??
     roomSignals?.fully_read_event_id ??
     null;
+  const readStateStatusMessage = navigationSnapshot
+    ? readStateStatusMessageForSync(navigationSnapshot.read_state_sync)
+    : null;
 
   return (
     <ProjectionSnapshotBoundary
@@ -3593,6 +3564,19 @@ export const TimelineView = memo(function TimelineView({
       {presentationContext !== "thread" && !suppressPaginationUi && endReached ? (
         <div className="timeline-start" data-testid="timeline-start">
           {t("timeline.conversationStart")}
+        </div>
+      ) : null}
+      {readStateStatusMessage ? (
+        <div
+          className="timeline-read-state-status"
+          data-testid="timeline-read-state-status"
+          data-read-state-sync={
+            navigationSnapshot ? readStateSyncToken(navigationSnapshot.read_state_sync) : undefined
+          }
+          role="status"
+          aria-live="polite"
+        >
+          {readStateStatusMessage}
         </div>
       ) : null}
       {notSentTransactionIds.length > 0 ? (
@@ -3834,6 +3818,33 @@ export const TimelineView = memo(function TimelineView({
     </ProjectionSnapshotBoundary>
   );
 });
+
+function readStateSyncToken(sync: TimelineReadStateSync): string {
+  if (typeof sync === "string") {
+    return sync;
+  }
+  return "failed";
+}
+
+function readStateStatusMessageForSync(sync: TimelineReadStateSync): string | null {
+  if (sync === "pending") {
+    return t("timeline.readStateSyncing");
+  }
+  if (sync === "synced" || sync === "notRequested") {
+    return null;
+  }
+  const reason = sync.failed.kind;
+  const reasonMessage = {
+    authentication: "timeline.readStateReasonAuthentication",
+    rate_limited: "timeline.readStateReasonRateLimited",
+    timeout: "timeline.readStateReasonTimeout",
+    transport: "timeline.readStateReasonTransport",
+    server: "timeline.readStateReasonServer",
+    capacity: "timeline.readStateReasonCapacity",
+    sdk: "timeline.readStateReasonSdk"
+  } as const;
+  return `${t("timeline.readStateNotSynced")}: ${t(reasonMessage[reason])}`;
+}
 
 function timelineAvatarMxcsForItems(
   items: readonly TimelineItem[],

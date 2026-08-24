@@ -199,6 +199,11 @@ pub(crate) enum TimelineMessage {
         read_key: ReadStateKey,
         event_id: Option<String>,
     },
+    LocalReadBoundaryObserved {
+        key: TimelineKey,
+        actor_generation: u64,
+        target: crate::read_state::ReadTarget,
+    },
     RoomKeyReshareCompleted {
         key: TimelineKey,
         actor_generation: u64,
@@ -230,7 +235,14 @@ pub struct TimelineManagerHandle {
 }
 
 pub(super) enum TimelineManagerControl {
-    Shutdown { acknowledged: oneshot::Sender<()> },
+    ReadStatePolicyChanged {
+        session_generation: u64,
+        send_read_receipts: bool,
+        acknowledged: oneshot::Sender<()>,
+    },
+    Shutdown {
+        acknowledged: oneshot::Sender<()>,
+    },
 }
 
 impl TimelineManagerHandle {
@@ -262,6 +274,27 @@ impl TimelineManagerHandle {
     #[cfg(feature = "test-hooks")]
     pub(crate) fn residency_gate_snapshot_for_testing(&self) -> (bool, usize) {
         self.residency.gate_snapshot()
+    }
+
+    pub(crate) async fn set_read_state_policy(
+        &self,
+        session_generation: u64,
+        send_read_receipts: bool,
+    ) -> bool {
+        let (acknowledged, acknowledgement) = oneshot::channel();
+        if self
+            .control_tx
+            .send(TimelineManagerControl::ReadStatePolicyChanged {
+                session_generation,
+                send_read_receipts,
+                acknowledged,
+            })
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        acknowledgement.await.is_ok()
     }
 
     pub(crate) async fn shutdown(&self) -> bool {
@@ -449,6 +482,7 @@ impl TimelineManagerActor {
         read_session_generation: u64,
         restored_read_state: ReadPersistenceSnapshot,
         read_persistence: ReadPersistenceIngress,
+        send_read_receipts: bool,
         action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
         search_index_tx: mpsc::Sender<SearchIndexMessage>,
@@ -496,6 +530,7 @@ impl TimelineManagerActor {
                 read_session_generation,
                 restored_read_state,
                 read_persistence,
+                send_read_receipts,
             ),
             action_tx,
             event_tx,
@@ -549,12 +584,25 @@ impl TimelineManagerActor {
                     }
                 } => {
                     match control {
+                        Some(TimelineManagerControl::ReadStatePolicyChanged {
+                            session_generation,
+                            send_read_receipts,
+                            acknowledged,
+                        }) => {
+                            self.handle_read_state_policy_changed(
+                                session_generation,
+                                send_read_receipts,
+                            )
+                            .await;
+                            let _ = acknowledged.send(());
+                            continue;
+                        }
                         Some(TimelineManagerControl::Shutdown { acknowledged }) => {
                             shutdown_acknowledgement = Some(acknowledged);
+                            break;
                         }
-                        None => {}
+                        None => break,
                     }
-                    break;
                 }
                 projection = receive_navigation_projection(
                     &mut self.navigation_projection_rx
@@ -772,6 +820,14 @@ impl TimelineManagerActor {
                         event_id,
                     )
                     .await;
+                }
+                TimelineMessage::LocalReadBoundaryObserved {
+                    key,
+                    actor_generation,
+                    target,
+                } => {
+                    self.handle_local_read_boundary_observed(key, actor_generation, target)
+                        .await;
                 }
                 TimelineMessage::RoomKeyReshareCompleted {
                     key,
@@ -991,6 +1047,9 @@ impl TimelineManagerActor {
                         .await;
                 }
                 let removed_actor = self.timelines.remove(&key);
+                if removed_actor.is_some() {
+                    self.read_workers.remove_local_read_correlation(&key);
+                }
                 // Release the actor-resource lease only when an actor was
                 // actually removed. Session residency is intentionally
                 // independent and is never removed by unsubscribe.
@@ -1429,7 +1488,8 @@ impl TimelineManagerActor {
                 event_id,
             } => {
                 trace_timeline_route("manager_received", "send_read_receipt", request_id, &key);
-                self.route_read_command(request_id, key, event_id, ReadCommandKind::Receipt);
+                self.route_read_command(request_id, key, event_id, ReadCommandKind::Receipt)
+                    .await;
             }
             TimelineCommand::SetFullyRead {
                 request_id,
@@ -1437,7 +1497,8 @@ impl TimelineManagerActor {
                 event_id,
             } => {
                 trace_timeline_route("manager_received", "set_fully_read", request_id, &key);
-                self.route_read_command(request_id, key, event_id, ReadCommandKind::FullyRead);
+                self.route_read_command(request_id, key, event_id, ReadCommandKind::FullyRead)
+                    .await;
             }
             TimelineCommand::SetTyping {
                 request_id,
@@ -1821,6 +1882,7 @@ impl TimelineManagerActor {
             timeline,
             session.clone(),
             request_id,
+            self.read_workers.send_read_receipts_enabled(),
             self.action_tx.clone(),
             self.event_tx.clone(),
             self.search_index_tx.clone(),

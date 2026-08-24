@@ -992,6 +992,15 @@ export type MessageId =
   | "timeline.readBy"
   | "timeline.readReceiptOverflow"
   | "timeline.readMarker"
+  | "timeline.readStateSyncing"
+  | "timeline.readStateNotSynced"
+  | "timeline.readStateReasonAuthentication"
+  | "timeline.readStateReasonRateLimited"
+  | "timeline.readStateReasonTimeout"
+  | "timeline.readStateReasonTransport"
+  | "timeline.readStateReasonServer"
+  | "timeline.readStateReasonCapacity"
+  | "timeline.readStateReasonSdk"
   | "timeline.unreadMarker"
   | "timeline.jumpToFirstUnread"
   | "timeline.jumpToBottom"
@@ -2339,6 +2348,15 @@ const en: Catalog = {
   "timeline.readBy": "Read by {count}",
   "timeline.readReceiptOverflow": "{count} more",
   "timeline.readMarker": "Read up to here",
+  "timeline.readStateSyncing": "Syncing read state",
+  "timeline.readStateNotSynced": "Read state not synced",
+  "timeline.readStateReasonAuthentication": "authentication required",
+  "timeline.readStateReasonRateLimited": "rate limited",
+  "timeline.readStateReasonTimeout": "timed out",
+  "timeline.readStateReasonTransport": "connection failed",
+  "timeline.readStateReasonServer": "server failed",
+  "timeline.readStateReasonCapacity": "too many pending read updates",
+  "timeline.readStateReasonSdk": "local client error",
   "timeline.unreadMarker": "Unread messages",
   "timeline.jumpToFirstUnread": "Jump to first unread, {count} unread",
   "timeline.jumpToBottom": "Jump to bottom, {count} new messages",
@@ -3571,6 +3589,15 @@ const ja: Catalog = {
   "timeline.readBy": "{count} 人が既読",
   "timeline.readReceiptOverflow": "他 {count} 人",
   "timeline.readMarker": "ここまで既読",
+  "timeline.readStateSyncing": "既読状態を同期中",
+  "timeline.readStateNotSynced": "既読状態を同期できません",
+  "timeline.readStateReasonAuthentication": "認証が必要です",
+  "timeline.readStateReasonRateLimited": "送信制限中です",
+  "timeline.readStateReasonTimeout": "時間切れです",
+  "timeline.readStateReasonTransport": "接続に失敗しました",
+  "timeline.readStateReasonServer": "サーバーエラーです",
+  "timeline.readStateReasonCapacity": "未送信の既読更新が多すぎます",
+  "timeline.readStateReasonSdk": "クライアントエラーです",
   "timeline.unreadMarker": "未読メッセージ",
   "timeline.jumpToFirstUnread": "最初の未読へ移動、未読 {count} 件",
   "timeline.jumpToBottom": "最新へ移動、新着 {count} 件",

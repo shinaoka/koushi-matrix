@@ -367,7 +367,8 @@ describe("TimelineView", () => {
           "$thread-root:example.invalid",
           "$thread-root:example.invalid",
           [fullRangeGapId],
-          false
+          false,
+          null
         );
       });
       const gap = screen.getByTestId("timeline-gap-row");
@@ -399,7 +400,8 @@ describe("TimelineView", () => {
           "$thread-reply:example.invalid",
           "$thread-reply:example.invalid",
           [fullRangeGapId],
-          false
+          false,
+          null
         );
       });
     } finally {
@@ -529,7 +531,8 @@ describe("TimelineView", () => {
           "$persisted-thread-root:example.invalid",
           "$persisted-thread-root:example.invalid",
           [gapId],
-          false
+          false,
+          null
         );
       });
       const gap = screen.getByTestId("timeline-gap-row");
@@ -585,7 +588,8 @@ describe("TimelineView", () => {
           "$persisted-live:example.invalid",
           "$persisted-live:example.invalid",
           [],
-          true
+          true,
+          null
         );
         expect(acknowledgeRenderedBatch).toHaveBeenCalledWith(KEY, 0, 1, 31, 6);
       });
@@ -622,7 +626,8 @@ describe("TimelineView", () => {
           "$persisted-thread-reply:example.invalid",
           "$persisted-thread-reply:example.invalid",
           [],
-          false
+          false,
+          null
         );
       });
 
@@ -659,7 +664,8 @@ describe("TimelineView", () => {
           "$other-room-event:example.invalid",
           "$other-room-event:example.invalid",
           [],
-          true
+          true,
+          null
         );
       });
       expect(screen.queryByTestId("timeline-gap-row")).toBeNull();

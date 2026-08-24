@@ -543,6 +543,51 @@ Generate one exact full-diff artifact, obtain mandatory user-approved
 push, open a PR closing #559, wait for current-head CI 7/7, merge, verify ancestry
 and issue closure, then remove only disposable artifacts and the clean worktree.
 
+## Implementation evidence
+
+### RED before production wiring
+
+Added only deterministic pure-engine behavioral checks to
+`crates/koushi-core/src/read_state.rs` before changing production code. The
+focused command was:
+
+```text
+RTK_DISABLED=1 cargo test -p koushi-core --lib read_state::tests:: -- --nocapture
+```
+
+Actual result: exit `101`; 60 tests ran, 57 passed, and 3 failed:
+
+- `read_state::tests::failed_latest_target_is_retained_without_replaying_an_older_target`
+- `read_state::tests::persistence_snapshot_writes_only_the_newest_unordered_target`
+- `read_state::tests::unordered_latest_admission_replaces_the_older_desired_target`
+
+All three failed because the current engine retained two unordered targets
+(`left: 2`, expected `right: 1`). This is the recorded RED proving the
+multi-target/unordered retention defect before production wiring.
+
+### GREEN and complete validation
+
+The unchanged engine check is GREEN. Focused final matrices are GREEN: combined
+read-state filters 73/73, timeline read-state 44/44, V1/V2 store 10/10,
+frontend read-state/Fake/viewport 199/199, and QA binary 132/132. The matrices
+pin one desired target, 20-key four-slot FIFO fairness, cancellation slot
+retention, exact retry-after/due tokens, stale B→new C fencing, bounded actor
+correlations, restored public/private pending→confirmed projection, truthful
+capacity failure, and crash-safe V1→V2 migration/cleanup.
+
+Complete final gates are GREEN: Core lib 1,074/1,074 (8 ignored), Rust workspace
+2,508/2,508 (12 ignored), Tauri 174/174 (1 ignored), wasm state/search, Vitest
+1,494/1,494, typecheck, lint/IME/agent docs, production build, secret scan,
+Tauri/domain boundaries, SDK submodule, rustfmt, and diff checks. Browser-headless
+is 262/262 with no App unhandled-error signature; its assertions require only
+typed viewport observation and prove React emits no automatic receipt or
+fully-read command. The event-driven `read_state_convergence` lane is GREEN on
+tuwunel, synapse, and `--server=both`: a remote event advances the local
+boundary, the proxy holds/fails only read endpoints while sync continues, 100
+viewport checkpoints do not bypass backoff, a real runtime shutdown/restore
+loads the V2 outbox, and the bounded newest retry converges before the fixed
+`read_state_convergence=ok` token.
+
 ## Review record
 
 - Advisory panel attempt: incomplete; `reviewer-flash` returned an invalid panel
@@ -559,13 +604,50 @@ and issue closure, then remove only disposable artifacts and the clean worktree.
 - Advisory `reviewer-gpt` Round 2: `Correct-to-seek-mandatory-review`; every
   Round 1 blocker was verified fixed. This is non-authorizing.
 - Mandatory user-approved substitute `reviewer-flash`: `Correct-to-merge` at
-  `2035054de0355c59ff3080bd0b0557937656ca26`; implementation remains blocked
-  until #570 merges and this branch is rebased. The review confirmed the V2
+  `2035054de0355c59ff3080bd0b0557937656ca26`; after #570 merged, the exact
+  rebased design at `3f33b6b145c1f39a219c05d3609caf13c458d15c` was revalidated
+  `Correct-to-merge` before implementation. The review confirmed the V2
   migration order, exact correlations, four-slot fairness, typed failures,
   restart-before-drain QA, and complete ownership/gate scope. Its two
   non-blocking observations are pinned by existing requirements: the compatibility
   read-marker field must equal server-confirmed state, and correlations are
   capped by 128 active read keys and removed with actor/session retirement.
+- Implementation advisory Round 1 found missing dispatcher/correlation and V1
+  migration matrices, restored-outbox projection, obsolete normative docs, and
+  six boundedness/diagnostic/QA gaps. All were fixed. Round 2 verified those
+  fixes and found one stale fully-read B completion could still reach the actor
+  after desired C replaced it; actor apply and server confirmation now require
+  the still-current desired target, with a deterministic regression test.
+- Mandatory exact Round 1 reviewed the full 7,686-line artifact and found two
+  Important and three Minor gaps. Persisted receipt privacy now seeds every
+  AccountActor before session/manager spawn; Room and Thread viewport IPC carry
+  an optional typed thread root; stale completion immediately refills its FIFO
+  slot; unprovable restored state projects pending without a divider; and actor
+  retirement now retires/cancels its keys and persistence. Focused and complete
+  matrices above are GREEN after all five fixes.
+- Mandatory exact Round 2 verified those five fixes and found one further
+  Important privacy gap: disabling public/thread receipts removed memory state
+  but did not persist the reduced outbox. Policy changes now publish immediately,
+  and the policy test proves disable → persisted empty snapshot → synthetic
+  restart emits zero public/thread writes.
+- Mandatory exact Round 3 found the crash-window/V1 variant of the same privacy
+  issue: restore scheduled legacy public/thread keys before policy reconciliation.
+  Restore now filters those keys before building reconciliation state, persists
+  the filtered snapshot, and the sole enqueue path also refuses them while
+  privacy is off; fully-read/private Room work remains. Pure snapshot and stale
+  nonempty-restart tests pin both layers.
+- Mandatory exact Round 4 verified the restore filter and found one Minor: an
+  explicit receipt command could enter the engine while privacy was off but the
+  enqueue defense would leave its waiter pending forever. Admission now returns
+  a typed `Forbidden` terminal before waiter allocation; focused and Core-full
+  tests are GREEN.
+- Mandatory exact Round 5 found the flip-off counterpart: already-admitted
+  explicit waiters could be orphaned when the background key was removed.
+  Privacy disable now retires every public/thread desired key independently of
+  local correlations, cancels its active operation, removes queue/retry state,
+  emits one `Forbidden` terminal per waiter, and persists the result. The
+  mid-flight toggle test proves cancellation, one terminal, empty waiter/outbox,
+  and no network request. Final exact re-review remains pending.
 
 ## Acceptance mapping
 
@@ -582,4 +664,5 @@ and issue closure, then remove only disposable artifacts and the clean worktree.
 | newest-only restart retry | V2 normalized outbox restore; explicit conservative V1 migration |
 | privacy-safe diagnostics | Error-level closed classifier + secret scans |
 
-Implementation remains blocked on merged #570 and the mandatory design verdict.
+Implementation and complete local validation are finished; merge remains
+blocked only on the mandatory exact full-diff verdict and current-head CI.

@@ -637,25 +637,42 @@ navigation lifecycle above:
 ```mermaid
 stateDiagram-v2
     [*] --> ReadIdle
-    ReadIdle --> ReadDesired: receipt/fully-read intent admitted
-    ReadDesired --> ReadInFlight: connectivity wake / newest candidate
+    ReadIdle --> ReadDesired: explicit command or eligible live-edge observation
+    ReadDesired --> ReadQueued: one newest target per read key
+    ReadQueued --> ReadInFlight: FIFO dispatcher slot [active < 4]
     ReadInFlight --> ReadConverged: SDK success or authoritative sync proof
-    ReadInFlight --> ReadDesired: timeout/network failure / retain desired
-    ReadDesired --> ReadDesired: newer provable target / coalesce
-    ReadDesired --> ReadDesired: unordered target / retain bounded candidate
+    ReadInFlight --> ReadBackoff: typed failure / retain newest target
+    ReadBackoff --> ReadQueued: exact due token
+    ReadDesired --> ReadDesired: newer target replaces / dominated waiters transfer
+    ReadQueued --> ReadDesired: newer target cancels older operation
     ReadInFlight --> StaleReadDiscarded: old session/actor/operation completion
-    StaleReadDiscarded --> ReadDesired: latest desired retained
+    StaleReadDiscarded --> ReadDesired: current desired retained
 ```
 
-The private keys are room-wide public unthreaded read, per-root threaded read,
-and the atomic fully-read plus private-unthreaded receipt bundle. Focused and
-room timelines share the room-wide public key. Candidate and waiter capacity
-rejects new admission explicitly; existing desired state is never evicted.
-Command waiters settle independently from the retained desired state, so a
-timeout may report failure while later reconnect/sync still converges the
-newest target. Persistence, retries, and completion publication are fenced by
-session and operation generation and expose only private-data-free diagnostic
-stage/count tokens.
+Rust keeps the local viewed boundary separate from server-confirmed read state.
+Only a current Room or Thread actor may admit an at-bottom, gap-free, latest
+attention-eligible event with exact position and actor-generation evidence.
+Room observations require the atomic fully-read/private-unthreaded key and, when
+receipt privacy permits, the room-wide public key. Thread observations require
+only their per-root threaded key; Focused timelines never originate automatic
+read intent. React renders `pending`/`failed`/`synced`/`notRequested` and the
+Rust-derived divider but sends no viewport-derived receipt commands.
+
+Each private read key retains one desired target and at most 32 explicit
+waiters. The manager keeps at most 128 actor-scoped correlations and retires
+them with the actor, account, or session. A four-slot FIFO dispatcher owns all
+network starts; cancellation keeps its slot until the exact cancelled
+completion. Failed keys leave the ready queue during exponential capped
+backoff, and only their current due token may re-enqueue them, so healthy peers
+cannot starve. Command waiters may report a terminal failure while the retained
+newest target continues toward convergence.
+
+The encrypted V2 outbox stores one event ID per key. V1 vectors migrate
+conservatively using their last stored item; V2 is atomically written before V1
+is removed, malformed V1 remains for diagnosis/retry, and a valid V2 wins over
+and cleans a leftover V1. Persistence, retry, correlation, actor projection,
+and completion are fenced by session, actor, target, and operation identity.
+Diagnostics expose only closed stage/failure/count/delay-bucket fields.
 
 ## Room Tags
 

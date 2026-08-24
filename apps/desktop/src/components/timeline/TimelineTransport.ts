@@ -96,7 +96,8 @@ export interface TimelineTransport {
     firstVisibleEventId: string | null,
     lastVisibleEventId: string | null,
     visibleGapIds: TimelineGapId[],
-    atBottom: boolean
+    atBottom: boolean,
+    threadRootEventId: string | null
   ): Promise<void>;
   /** Persist the current room-local read/scroll anchor. */
   updateScrollAnchor?(roomId: string, anchor: TimelineScrollAnchor): Promise<void>;

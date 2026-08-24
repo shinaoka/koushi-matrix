@@ -212,10 +212,21 @@ pub(super) fn build_observe_timeline_viewport_command(
     last_visible_event_id: Option<String>,
     visible_gap_ids: Vec<TimelineGapId>,
     at_bottom: bool,
+    thread_root_event_id: Option<String>,
 ) -> CoreCommand {
+    let key = match thread_root_event_id {
+        Some(root_event_id) => TimelineKey {
+            account_key,
+            kind: TimelineKind::Thread {
+                room_id,
+                root_event_id,
+            },
+        },
+        None => build_timeline_key(account_key, room_id),
+    };
     CoreCommand::Timeline(TimelineCommand::ObserveViewport {
         request_id,
-        key: build_timeline_key(account_key, room_id),
+        key,
         observation: TimelineViewportObservation {
             first_visible_event_id,
             last_visible_event_id,

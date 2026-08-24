@@ -15,7 +15,7 @@ use crate::event::{
     CoreEvent, PaginationDirection, PaginationState, ThreadRootProjectionDto,
     ThreadRootProjectionSourceDto, ThreadRootProjectionStateDto, TimelineAnchorRestoreStatus,
     TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineNavigationSnapshot,
-    TimelineUnreadPosition, TimelineViewportObservation,
+    TimelineReadStateSync, TimelineUnreadPosition, TimelineViewportObservation,
 };
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
@@ -2135,9 +2135,14 @@ impl TimelineActor {
         )
     }
     pub(super) fn emit_navigation_if_changed(&mut self) {
-        let snapshot = derive_timeline_navigation_snapshot(
+        let snapshot = derive_timeline_navigation_snapshot_with_read_state(
             &self.navigation_items,
             self.fully_read_event_id.as_deref(),
+            self.server_confirmed_read_event_id.as_deref(),
+            self.local_viewed_boundary
+                .as_ref()
+                .map(|boundary| boundary.event_id.as_str()),
+            self.read_state_sync,
             &self.viewport_observation,
             self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
         );
@@ -2178,9 +2183,14 @@ impl TimelineActor {
         &mut self,
         terminal: Option<(RequestId, TimelineAnchorRestoreStatus)>,
     ) -> Option<bool> {
-        let navigation_snapshot = derive_timeline_navigation_snapshot(
+        let navigation_snapshot = derive_timeline_navigation_snapshot_with_read_state(
             &self.navigation_items,
             self.fully_read_event_id.as_deref(),
+            self.server_confirmed_read_event_id.as_deref(),
+            self.local_viewed_boundary
+                .as_ref()
+                .map(|boundary| boundary.event_id.as_str()),
+            self.read_state_sync,
             &self.viewport_observation,
             self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
         );
@@ -2372,17 +2382,49 @@ pub(super) fn derive_timeline_navigation_snapshot(
     observation: &TimelineViewportObservation,
     own_user_id: Option<&str>,
 ) -> TimelineNavigationSnapshot {
+    derive_timeline_navigation_snapshot_with_read_state(
+        items,
+        fully_read_event_id,
+        fully_read_event_id,
+        None,
+        TimelineReadStateSync::Synced,
+        observation,
+        own_user_id,
+    )
+}
+
+pub(super) fn derive_timeline_navigation_snapshot_with_read_state(
+    items: &[TimelineItem],
+    fully_read_event_id: Option<&str>,
+    server_confirmed_read_event_id: Option<&str>,
+    local_viewed_event_id: Option<&str>,
+    read_state_sync: TimelineReadStateSync,
+    observation: &TimelineViewportObservation,
+    own_user_id: Option<&str>,
+) -> TimelineNavigationSnapshot {
+    let server_confirmed_read_event_id = server_confirmed_read_event_id
+        .or(fully_read_event_id)
+        .map(ToOwned::to_owned);
+    let local_viewed_event_id = local_viewed_event_id.map(ToOwned::to_owned);
+    let local_viewed_is_canonical = local_viewed_event_id
+        .as_deref()
+        .is_some_and(|event_id| item_index_for_event_id(items, event_id).is_some());
     let mut snapshot = TimelineNavigationSnapshot {
-        read_marker_event_id: fully_read_event_id.map(ToOwned::to_owned),
-        read_marker_display_event_id: None,
+        read_marker_event_id: server_confirmed_read_event_id.clone(),
+        read_marker_display_event_id: local_viewed_is_canonical
+            .then(|| local_viewed_event_id.clone())
+            .flatten(),
         first_unread_event_id: None,
         unread_event_count: 0,
         unread_position: TimelineUnreadPosition::None,
         newer_event_count: 0,
         can_jump_to_bottom: false,
+        local_viewed_event_id,
+        server_confirmed_read_event_id: server_confirmed_read_event_id.clone(),
+        read_state_sync,
     };
 
-    let Some(read_marker_event_id) = fully_read_event_id else {
+    let Some(read_marker_event_id) = server_confirmed_read_event_id.as_deref() else {
         return snapshot;
     };
     let Some(read_marker_index) = item_index_for_event_id(items, read_marker_event_id) else {
@@ -2412,13 +2454,15 @@ pub(super) fn derive_timeline_navigation_snapshot(
     // No remote unread events after the marker. Advance the display anchor to the
     // current user's latest visible own message at or after the marker so the
     // "Read up to here" separator is rendered after it, not before.
-    snapshot.read_marker_display_event_id = items
-        .iter()
-        .enumerate()
-        .skip(read_marker_index)
-        .filter(|(_, item)| is_own_visible_event(item, own_user_id))
-        .last()
-        .and_then(|(_, item)| timeline_item_event_id(item).map(ToOwned::to_owned));
+    if snapshot.read_marker_display_event_id.is_none() {
+        snapshot.read_marker_display_event_id = items
+            .iter()
+            .enumerate()
+            .skip(read_marker_index)
+            .filter(|(_, item)| is_own_visible_event(item, own_user_id))
+            .last()
+            .and_then(|(_, item)| timeline_item_event_id(item).map(ToOwned::to_owned));
+    }
     snapshot
 }
 
@@ -2726,7 +2770,8 @@ mod tests {
     use crate::command::TimelineCommand;
     use crate::event::{
         CoreEvent, PaginationDirection, PaginationState, ThreadSummaryDto, TimelineEvent,
-        TimelineFormattedBody, TimelineItemId, TimelineUnreadPosition, TimelineViewportObservation,
+        TimelineFormattedBody, TimelineItemId, TimelineReadStateSync, TimelineUnreadPosition,
+        TimelineViewportObservation,
     };
     use crate::executor;
     use crate::failure::{CoreFailure, TimelineFailureKind};
@@ -2779,6 +2824,7 @@ mod tests {
         ROOM_REPLAY_INITIAL_ITEMS_MAX, TimelineActorGenerationGate,
         acquire_pagination_permit_and_emit_paginating, activity_row_from_timeline_item,
         backward_pagination_changed_oldest_edge, derive_timeline_navigation_snapshot,
+        derive_timeline_navigation_snapshot_with_read_state,
         projection_acknowledgement_for_current_items, receive_navigation_projection,
         replay_initial_items_window, should_hydrate_empty_initial_room_timeline,
         timeline_unread_consistency_diagnostic_event,
@@ -4002,6 +4048,7 @@ mod tests {
             timeline,
             session,
             projection_request_id,
+            true,
             manager.action_tx.clone(),
             manager.event_tx.clone(),
             None,
@@ -4321,6 +4368,7 @@ mod tests {
                 timeline,
                 session,
                 fake_rid(38_001),
+                true,
                 action_tx,
                 event_tx,
                 None,
@@ -4557,6 +4605,46 @@ mod tests {
             TimelineUnreadPosition::InsideViewport
         );
         assert_eq!(snapshot.newer_event_count, 0);
+    }
+
+    #[test]
+    fn timeline_navigation_separates_local_viewed_and_server_confirmed_boundaries() {
+        let items = vec![
+            timeline_item("$server:test", Some("server"), "@alice:test", false),
+            timeline_item("$local:test", Some("local"), "@alice:test", false),
+        ];
+        let snapshot = derive_timeline_navigation_snapshot_with_read_state(
+            &items,
+            Some("$server:test"),
+            Some("$server:test"),
+            Some("$local:test"),
+            TimelineReadStateSync::Pending,
+            &TimelineViewportObservation {
+                first_visible_event_id: Some("$local:test".to_owned()),
+                last_visible_event_id: Some("$local:test".to_owned()),
+                visible_gap_ids: Vec::new(),
+                at_bottom: true,
+            },
+            Some("@me:test"),
+        );
+
+        assert_eq!(
+            snapshot.local_viewed_event_id.as_deref(),
+            Some("$local:test")
+        );
+        assert_eq!(
+            snapshot.server_confirmed_read_event_id.as_deref(),
+            Some("$server:test")
+        );
+        assert_eq!(
+            snapshot.read_marker_event_id.as_deref(),
+            Some("$server:test")
+        );
+        assert_eq!(
+            snapshot.read_marker_display_event_id.as_deref(),
+            Some("$local:test")
+        );
+        assert_eq!(snapshot.read_state_sync, TimelineReadStateSync::Pending);
     }
 
     #[test]

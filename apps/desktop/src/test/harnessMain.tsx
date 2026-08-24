@@ -257,13 +257,21 @@ const transport: TimelineTransport = {
   hideLinkPreview(roomId, eventId) {
     return ipc.invoke("hide_link_preview", { roomId, eventId });
   },
-  observeViewport(roomId, firstVisibleEventId, lastVisibleEventId, visibleGapIds, atBottom) {
+  observeViewport(
+    roomId,
+    firstVisibleEventId,
+    lastVisibleEventId,
+    visibleGapIds,
+    atBottom,
+    threadRootEventId
+  ) {
     return ipc.invoke("observe_timeline_viewport", {
       roomId,
       firstVisibleEventId,
       lastVisibleEventId,
       visibleGapIds,
-      atBottom
+      atBottom,
+      threadRootEventId
     });
   },
   openAtTimestamp(roomId, timestampMs) {

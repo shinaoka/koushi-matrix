@@ -342,6 +342,7 @@ pub async fn observe_timeline_viewport(
     last_visible_event_id: Option<String>,
     visible_gap_ids: Vec<TimelineGapId>,
     at_bottom: bool,
+    thread_root_event_id: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<(), String> {
@@ -357,6 +358,7 @@ pub async fn observe_timeline_viewport(
             last_visible_event_id,
             visible_gap_ids,
             at_bottom,
+            thread_root_event_id,
         ),
     )
     .await?;
@@ -1151,6 +1153,7 @@ mod tests {
                 ordinal: 2,
             }],
             false,
+            None,
         );
         let debug = format!("{command:?}");
         assert!(!debug.contains("!room:example.org"), "{debug}");
@@ -1190,6 +1193,30 @@ mod tests {
     }
 
     #[test]
+    fn observe_timeline_viewport_routes_thread_identity() {
+        let command = build_observe_timeline_viewport_command(
+            fake_request_id(43),
+            AccountKey("@alice:example.org".to_owned()),
+            "!room:example.org".to_owned(),
+            Some("$reply".to_owned()),
+            Some("$reply".to_owned()),
+            Vec::new(),
+            true,
+            Some("$root".to_owned()),
+        );
+        let CoreCommand::Timeline(TimelineCommand::ObserveViewport { key, .. }) = command else {
+            panic!("expected observe viewport command");
+        };
+        assert_eq!(
+            key.kind,
+            koushi_core::TimelineKind::Thread {
+                room_id: "!room:example.org".to_owned(),
+                root_event_id: "$root".to_owned(),
+            }
+        );
+    }
+
+    #[test]
     fn observe_timeline_viewport_parses_full_range_topology_revision() {
         let visible_gap_ids: Vec<koushi_core::TimelineGapId> =
             serde_json::from_value(serde_json::json!([{
@@ -1206,6 +1233,7 @@ mod tests {
             None,
             visible_gap_ids,
             false,
+            None,
         );
 
         let CoreCommand::Timeline(TimelineCommand::ObserveViewport { observation, .. }) = command

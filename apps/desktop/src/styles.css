@@ -3846,6 +3846,13 @@ button:disabled {
   font-style: italic;
 }
 
+.timeline-read-state-status {
+  margin-block: 4px;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  text-align: center;
+}
+
 .read-marker {
   display: flex;
   align-items: center;

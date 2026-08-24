@@ -411,6 +411,10 @@ impl ComposerDraftIoBarrierForTesting {
     }
 }
 
+fn initial_send_read_receipts(state: &AppState) -> bool {
+    state.settings.values.notifications.send_read_receipts
+}
+
 impl CoreRuntime {
     /// Start the runtime. Must be called within an async runtime context.
     pub fn start() -> Self {
@@ -527,6 +531,7 @@ impl CoreRuntime {
             event_tx.clone(),
             crate::link_preview::LinkPreviewContext::from_settings(&initial_state.settings.values),
             Arc::clone(&composer_draft_leases),
+            initial_send_read_receipts(&initial_state),
             sliding_sync_diagnostics.clone(),
         );
 
@@ -3776,6 +3781,12 @@ impl AppActor {
         }
         if *ui_event == UiEvent::SettingsChanged {
             self.emit_timeline_display_policy_update();
+            let _ = self
+                .account_actor
+                .send(crate::account::AccountMessage::ReadStatePolicyChanged {
+                    send_read_receipts: self.state.settings.values.notifications.send_read_receipts,
+                })
+                .await;
             self.broadcast_link_preview_policy().await;
         }
         if *ui_event == UiEvent::LinkPreviewSettingsChanged {
@@ -4342,6 +4353,15 @@ mod tests {
         DisplaySettings, RoomSummary, RoomTags, SessionInfo, SettingsPatch, SpaceMemberEntry,
         SpaceMemberMembership, SpaceMembersProjection, UserProfile,
     };
+
+    #[test]
+    fn persisted_read_receipt_policy_seeds_account_runtime_before_session_spawn() {
+        let mut state = AppState::default();
+        state.settings.values.notifications.send_read_receipts = false;
+        assert!(!initial_send_read_receipts(&state));
+        state.settings.values.notifications.send_read_receipts = true;
+        assert!(initial_send_read_receipts(&state));
+    }
 
     fn closed_forward_space_member_entry(
         user_id: &str,

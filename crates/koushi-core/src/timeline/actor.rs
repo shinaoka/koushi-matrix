@@ -25,7 +25,7 @@ use crate::command::MediaDownloadSelection;
 use crate::event::TimelineAnchorRestoreStatus;
 use crate::event::{
     CoreEvent, LinkPreview, PaginationDirection, TimelineDiff, TimelineItem, TimelineItemId,
-    TimelineNavigationSnapshot, TimelineResyncReason, TimelineSendState,
+    TimelineNavigationSnapshot, TimelineReadStateSync, TimelineResyncReason, TimelineSendState,
     TimelineViewportObservation,
 };
 use crate::executor;
@@ -57,7 +57,7 @@ use super::gap_repair::{
 };
 use super::item_projection::{
     ReceiptObservationTarget, apply_ignored_sender_suppression, apply_link_previews_to_item,
-    cache_sdk_item_media_source, emit_receipt_observation_actions,
+    cache_sdk_item_media_source, emit_receipt_observation_actions, is_attention_eligible_event,
     live_event_receipts_from_sdk_items, remember_local_echo, sdk_item_to_timeline_item,
     thread_auto_requestable_event_id, timeline_room_id, withheld_update_should_publish,
 };
@@ -265,6 +265,14 @@ pub(super) enum TimelineActorMessage {
         event_id: String,
         acknowledged: oneshot::Sender<bool>,
     },
+    ReadStateProjection {
+        local_viewed_event_id: Option<String>,
+        server_confirmed_read_event_id: Option<String>,
+        sync: TimelineReadStateSync,
+    },
+    ReadStatePolicyChanged {
+        send_read_receipts: bool,
+    },
     SetTyping {
         request_id: RequestId,
         is_typing: bool,
@@ -361,6 +369,14 @@ pub(super) enum TimelineActorControl {
         event_id: String,
         acknowledged: oneshot::Sender<bool>,
     },
+    ReadStateProjection {
+        local_viewed_event_id: Option<String>,
+        server_confirmed_read_event_id: Option<String>,
+        sync: TimelineReadStateSync,
+    },
+    ReadStatePolicyChanged {
+        send_read_receipts: bool,
+    },
     BeginGapRepairDemand,
     EndGapRepairDemand,
 }
@@ -445,6 +461,18 @@ impl From<TimelineActorControl> for TimelineActorMessage {
                 event_id,
                 acknowledged,
             },
+            TimelineActorControl::ReadStateProjection {
+                local_viewed_event_id,
+                server_confirmed_read_event_id,
+                sync,
+            } => Self::ReadStateProjection {
+                local_viewed_event_id,
+                server_confirmed_read_event_id,
+                sync,
+            },
+            TimelineActorControl::ReadStatePolicyChanged { send_read_receipts } => {
+                Self::ReadStatePolicyChanged { send_read_receipts }
+            }
             TimelineActorControl::BeginGapRepairDemand => Self::BeginGapRepairDemand,
             TimelineActorControl::EndGapRepairDemand => Self::EndGapRepairDemand,
         }
@@ -653,6 +681,11 @@ impl Drop for TimelineActorHandle {
     }
 }
 
+pub(super) struct LocalViewedBoundary {
+    pub(super) event_id: String,
+    pub(super) position: crate::read_state::ReadPositionEvidence,
+}
+
 pub(super) struct TimelineActor {
     pub(super) key: TimelineKey,
     pub(super) timeline: Arc<Timeline>,
@@ -718,6 +751,10 @@ pub(super) struct TimelineActor {
     pub(super) display_projection: DisplayProjectionState,
     pub(super) media_gallery_items: Vec<TimelineMediaGalleryItem>,
     pub(super) fully_read_event_id: Option<String>,
+    pub(super) server_confirmed_read_event_id: Option<String>,
+    pub(super) local_viewed_boundary: Option<LocalViewedBoundary>,
+    pub(super) read_state_sync: TimelineReadStateSync,
+    pub(super) send_read_receipts: bool,
     pub(super) viewport_observation: TimelineViewportObservation,
     pub(super) last_navigation_snapshot: Option<TimelineNavigationSnapshot>,
     pub(super) ignored_user_ids: std::collections::BTreeSet<String>,
@@ -885,6 +922,7 @@ impl TimelineActor {
         timeline: Arc<Timeline>,
         session: Arc<MatrixClientSession>,
         subscribe_request_id: RequestId,
+        send_read_receipts: bool,
         action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
         search_index_tx: Option<mpsc::Sender<crate::search::SearchIndexMessage>>,
@@ -1310,6 +1348,12 @@ impl TimelineActor {
             }
         }
 
+        let initial_server_confirmed_read_event_id = match &key.kind {
+            TimelineKind::Thread { .. } => initial_read_receipt_event_id.clone(),
+            TimelineKind::Room { .. } | TimelineKind::Focused { .. } => {
+                initial_fully_read_event_id.clone()
+            }
+        };
         let thread_attention = ThreadAttentionTracker::hydrate(
             &key,
             &navigation_items,
@@ -1378,6 +1422,10 @@ impl TimelineActor {
             display_projection,
             media_gallery_items: initial_media_gallery_items,
             fully_read_event_id: initial_fully_read_event_id,
+            server_confirmed_read_event_id: initial_server_confirmed_read_event_id,
+            local_viewed_boundary: None,
+            read_state_sync: TimelineReadStateSync::Synced,
+            send_read_receipts,
             viewport_observation: TimelineViewportObservation::default(),
             last_navigation_snapshot: None,
             ignored_user_ids,
@@ -1782,6 +1830,16 @@ impl TimelineActor {
             }
             TimelineActorMessage::ObserveViewport { observation } => {
                 self.viewport_observation = observation;
+                if let Some(target) = self.observe_local_viewed_boundary() {
+                    let _ = self
+                        .manager_tx
+                        .send(TimelineMessage::LocalReadBoundaryObserved {
+                            key: self.key.clone(),
+                            actor_generation: self.actor_generation,
+                            target,
+                        })
+                        .await;
+                }
                 self.maybe_fetch_visible_reply_details();
                 self.emit_navigation_if_changed();
                 let viewport_range = self.viewport_item_range();
@@ -2044,6 +2102,24 @@ impl TimelineActor {
             } => {
                 let applied = self.handle_read_success(kind, event_id).await;
                 let _ = acknowledged.send(applied);
+            }
+            TimelineActorMessage::ReadStateProjection {
+                local_viewed_event_id,
+                server_confirmed_read_event_id,
+                sync,
+            } => {
+                self.handle_read_state_projection(
+                    local_viewed_event_id,
+                    server_confirmed_read_event_id,
+                    sync,
+                );
+            }
+            TimelineActorMessage::ReadStatePolicyChanged { send_read_receipts } => {
+                self.send_read_receipts = send_read_receipts;
+                if !send_read_receipts && matches!(self.key.kind, TimelineKind::Thread { .. }) {
+                    self.read_state_sync = TimelineReadStateSync::NotRequested;
+                    self.emit_navigation_if_changed();
+                }
             }
             TimelineActorMessage::SetTyping {
                 request_id,

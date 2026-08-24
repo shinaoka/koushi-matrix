@@ -1457,6 +1457,9 @@
           "newer_event_count": 3,
           "read_marker_display_event_id": "$read:example.test",
           "read_marker_event_id": "$read:example.test",
+          "local_viewed_event_id": "$read:example.test",
+          "server_confirmed_read_event_id": "$read:example.test",
+          "read_state_sync": "synced",
           "unread_event_count": 2,
           "unread_position": "belowViewport"
         }

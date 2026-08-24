@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -14,26 +14,29 @@ use matrix_sdk::ruma::events::receipt::ReceiptThread;
 use matrix_sdk_ui::timeline::TimelineItem as SdkTimelineItem;
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::event::{CoreEvent, LiveSignalsEvent};
+use crate::event::{CoreEvent, LiveSignalsEvent, TimelineReadStateSync};
 use crate::executor;
-use crate::failure::{CoreFailure, TimelineFailureKind};
+use crate::failure::{CoreFailure, ReadStateFailureKind, TimelineFailureKind};
 use crate::ids::{RequestId, TimelineKey, TimelineKind};
 use crate::read_state::{
-    ReadAdmissionStatus, ReadCompletionDisposition, ReadNetworkOutcome, ReadOperation,
-    ReadOperationFence, ReadPersistenceSnapshot, ReadStateEngine, ReadStateKey, ReadTarget,
-    ReadWaiterId, ReadWaiterTerminal, ReadWakeResult,
+    ReadAdmissionStatus, ReadCompletionDisposition, ReadNetworkFailure, ReadNetworkOutcome,
+    ReadOperation, ReadOperationFence, ReadPersistenceSnapshot, ReadStateEngine, ReadStateKey,
+    ReadTarget, ReadWaiterId, ReadWaiterTerminal, ReadWakeResult,
 };
 
 // BEGIN GENERATED SIBLING IMPORTS
 use super::actor::{
     TimelineActor, TimelineActorControl, TimelineActorHandle, TimelineActorMessage,
+    TimelinePositionIndex,
 };
 use super::diagnostics::{
     private_read_receipt_event_id_from_room_for_fully_read, read_state_key_for_command,
     read_state_room_id, record_read_admission, record_read_completion, record_read_retry,
-    timeline_key_matches_read_state_key,
+    record_read_retry_scheduled, timeline_key_matches_read_state_key,
 };
-use super::item_projection::{collect_live_event_receipts_from_diff, timeline_room_id};
+use super::item_projection::{
+    collect_live_event_receipts_from_diff, is_attention_eligible_event, timeline_room_id,
+};
 use super::manager::{TimelineManagerActor, TimelineMessage};
 use super::navigation::{derive_timeline_navigation_snapshot, record_timeline_unread_consistency};
 use super::outbound_send::newest_provable_receipt_event_id;
@@ -44,6 +47,7 @@ const READ_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
 const READ_RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
 
 const READ_RETRY_MAX_DELAY: Duration = Duration::from_secs(60);
+pub(super) const MAX_CONCURRENT_READ_WRITES: usize = 4;
 
 #[derive(Clone)]
 pub(crate) struct ReadPersistenceIngress {
@@ -155,6 +159,14 @@ pub(super) struct ReadCommandWaiter {
     kind: ReadCommandKind,
 }
 
+struct LocalReadCorrelation {
+    actor_generation: u64,
+    local_target: ReadTarget,
+    server_confirmed_read_event_id: Option<String>,
+    required_keys: std::collections::BTreeMap<ReadStateKey, ReadTarget>,
+    admission_failure: Option<ReadStateFailureKind>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ReadActorApplyKind {
     ThreadReceipt,
@@ -224,6 +236,11 @@ pub(super) struct ReadWorkerSupervisor {
     retry_epoch: Arc<()>,
     retry_serial: u64,
     scheduled_retries: HashMap<ReadStateKey, (ReadRetryToken, oneshot::Sender<()>)>,
+    ready: VecDeque<ReadStateKey>,
+    queued: HashSet<ReadStateKey>,
+    dispatch_failures: Vec<(ReadStateKey, crate::read_state::ReadCompletionResult)>,
+    local_read_correlations: HashMap<TimelineKey, LocalReadCorrelation>,
+    send_read_receipts: bool,
     reconciliation_pending: HashSet<ReadStateKey>,
     persistence: Option<ReadPersistenceIngress>,
     save_generation: u64,
@@ -250,6 +267,11 @@ impl ReadWorkerSupervisor {
             retry_epoch: Arc::new(()),
             retry_serial: 0,
             scheduled_retries: HashMap::new(),
+            ready: VecDeque::new(),
+            queued: HashSet::new(),
+            dispatch_failures: Vec::new(),
+            local_read_correlations: HashMap::new(),
+            send_read_receipts: true,
             reconciliation_pending: HashSet::new(),
             persistence: None,
             save_generation: 0,
@@ -263,9 +285,11 @@ impl ReadWorkerSupervisor {
     pub(super) fn matrix(
         session: Arc<MatrixClientSession>,
         session_generation: u64,
-        restored: ReadPersistenceSnapshot,
+        mut restored: ReadPersistenceSnapshot,
         persistence: ReadPersistenceIngress,
+        send_read_receipts: bool,
     ) -> Self {
+        let policy_removed_entries = restored.apply_receipt_policy(send_read_receipts);
         let reconciliation_pending = restored
             .entries()
             .iter()
@@ -288,10 +312,18 @@ impl ReadWorkerSupervisor {
             retry_epoch: Arc::new(()),
             retry_serial: 0,
             scheduled_retries: HashMap::new(),
+            ready: VecDeque::new(),
+            queued: HashSet::new(),
+            dispatch_failures: Vec::new(),
+            local_read_correlations: HashMap::new(),
+            send_read_receipts,
             reconciliation_pending,
             persistence: Some(persistence),
             save_generation: 0,
         };
+        if policy_removed_entries {
+            supervisor.publish_persistence();
+        }
         for key in supervisor.reconciliation_pending.clone() {
             supervisor.schedule_retry(&key);
         }
@@ -347,6 +379,11 @@ impl ReadWorkerSupervisor {
             retry_epoch: Arc::new(()),
             retry_serial: 0,
             scheduled_retries: HashMap::new(),
+            ready: VecDeque::new(),
+            queued: HashSet::new(),
+            dispatch_failures: Vec::new(),
+            local_read_correlations: HashMap::new(),
+            send_read_receipts: true,
             reconciliation_pending,
             persistence: Some(persistence),
             save_generation: 0,
@@ -385,7 +422,7 @@ impl ReadWorkerSupervisor {
                     operation,
                     outcome: match outcome {
                         Ok(Ok(())) => ReadNetworkOutcome::Succeeded,
-                        Ok(Err(())) => ReadNetworkOutcome::Failed,
+                        Ok(Err(failure)) => ReadNetworkOutcome::Failed(failure),
                         Err(_) => ReadNetworkOutcome::TimedOut,
                     },
                 },
@@ -417,6 +454,64 @@ impl ReadWorkerSupervisor {
         }));
     }
 
+    fn enqueue_key(&mut self, key: ReadStateKey) {
+        if !self.send_read_receipts
+            && matches!(
+                &key,
+                ReadStateKey::PublicUnthreaded { .. } | ReadStateKey::ThreadRead { .. }
+            )
+        {
+            return;
+        }
+        if self.reconciliation_pending.contains(&key)
+            || self.scheduled_retries.contains_key(&key)
+            || self.state.active_operation(&key).is_some()
+            || self.state.candidate_count(&key) == 0
+        {
+            return;
+        }
+        if self.queued.insert(key.clone()) {
+            self.ready.push_back(key);
+        }
+    }
+
+    /// The sole path that turns a desired key into an active operation. The
+    /// queue is FIFO and the engine's active state is retained until the exact
+    /// network/actor/cancel completion arrives, so cancellation cannot exceed
+    /// the four-slot cap.
+    fn dispatch_ready_reads(&mut self) {
+        while self.state.active_operation_count() < MAX_CONCURRENT_READ_WRITES {
+            let Some(key) = self.ready.pop_front() else {
+                break;
+            };
+            self.queued.remove(&key);
+            if self.reconciliation_pending.contains(&key)
+                || self.scheduled_retries.contains_key(&key)
+                || self.state.active_operation(&key).is_some()
+                || self.state.candidate_count(&key) == 0
+            {
+                continue;
+            }
+            let ReadWakeResult::Start(operation) = self.state.wake(&key) else {
+                continue;
+            };
+            if !self.spawn_network(operation.clone()) {
+                let completion = self.state.complete(
+                    operation.key(),
+                    operation.fence(),
+                    ReadNetworkOutcome::Failed(ReadNetworkFailure::new(ReadStateFailureKind::Sdk)),
+                );
+                self.dispatch_failures.push((key, completion));
+            }
+        }
+    }
+
+    fn take_dispatch_failures(
+        &mut self,
+    ) -> Vec<(ReadStateKey, crate::read_state::ReadCompletionResult)> {
+        std::mem::take(&mut self.dispatch_failures)
+    }
+
     fn cancel(&mut self, fence: ReadOperationFence) {
         if let Some(cancel) = self.cancellations.remove(&fence) {
             let _ = cancel.send(());
@@ -434,9 +529,25 @@ impl ReadWorkerSupervisor {
             return;
         }
         let attempt = self.retry_attempts.entry(key.clone()).or_default();
-        let delay =
-            read_retry_delay_for_attempt(self.retry_base_delay, self.retry_max_delay, *attempt);
-        *attempt = attempt.saturating_add(1);
+        let retry_after = self
+            .state
+            .last_failure(key)
+            .and_then(|failure| failure.retry_after);
+        let delay = read_retry_delay_for_attempt_with_retry_after(
+            self.retry_base_delay,
+            self.retry_max_delay,
+            *attempt,
+            retry_after,
+        );
+        let attempt_number = attempt.saturating_add(1);
+        *attempt = attempt_number;
+        record_read_retry_scheduled(
+            key,
+            attempt_number,
+            self.queued.len(),
+            self.state.active_operation_count(),
+            delay,
+        );
         self.retry_serial = match self.retry_serial.checked_add(1) {
             Some(serial) => serial,
             None => {
@@ -533,7 +644,84 @@ impl ReadWorkerSupervisor {
         }
         self.tasks = FuturesUnordered::new();
         self.retry_tasks = FuturesUnordered::new();
+        self.ready.clear();
+        self.queued.clear();
+        self.dispatch_failures.clear();
         self.retry_attempts.clear();
+        self.local_read_correlations.clear();
+    }
+
+    fn remove_background_key(&mut self, key: &ReadStateKey) -> Vec<ReadWaiterId> {
+        let (active, waiters) = self.state.retire_with_waiters(key);
+        if let Some(fence) = active {
+            self.cancel(fence);
+        }
+        self.invalidate_retry(key);
+        self.retry_attempts.remove(key);
+        self.queued.remove(key);
+        self.ready.retain(|queued| queued != key);
+        self.reconciliation_pending.remove(key);
+        waiters
+    }
+
+    fn local_read_sync(&self, correlation: &LocalReadCorrelation) -> TimelineReadStateSync {
+        if correlation.required_keys.is_empty() {
+            return TimelineReadStateSync::NotRequested;
+        }
+
+        let mut pending = false;
+        let mut desired = false;
+        let mut failure = correlation.admission_failure;
+        for key in correlation.required_keys.keys() {
+            desired |= self.state.candidate_count(key) != 0;
+            if let Some(candidate_failure) = self.state.last_failure(key) {
+                failure = Some(select_read_failure(failure, candidate_failure.kind));
+            }
+            pending |= self.state.active_operation(key).is_some()
+                || self.queued.contains(key)
+                || self.reconciliation_pending.contains(key);
+        }
+        if pending {
+            TimelineReadStateSync::Pending
+        } else if let Some(kind) = failure {
+            TimelineReadStateSync::Failed { kind }
+        } else if desired
+            || correlation
+                .required_keys
+                .keys()
+                .any(|key| self.scheduled_retries.contains_key(key))
+        {
+            TimelineReadStateSync::Pending
+        } else {
+            TimelineReadStateSync::Synced
+        }
+    }
+
+    pub(super) fn remove_local_read_correlation(&mut self, key: &TimelineKey) {
+        let Some(correlation) = self.local_read_correlations.remove(key) else {
+            return;
+        };
+        for read_key in correlation.required_keys.keys() {
+            if let Some(active) = self.state.retire(read_key) {
+                self.cancel(active);
+            }
+            self.queued.remove(read_key);
+            self.ready.retain(|queued| queued != read_key);
+            self.invalidate_retry(read_key);
+            self.reconciliation_pending.remove(read_key);
+            self.retry_attempts.remove(read_key);
+        }
+        self.publish_persistence();
+        self.dispatch_ready_reads();
+    }
+
+    pub(super) fn send_read_receipts_enabled(&self) -> bool {
+        self.send_read_receipts
+    }
+
+    #[cfg(test)]
+    fn local_read_correlation_count(&self) -> usize {
+        self.local_read_correlations.len()
     }
 
     #[cfg(test)]
@@ -547,8 +735,47 @@ impl ReadWorkerSupervisor {
 }
 
 fn read_retry_delay_for_attempt(base: Duration, cap: Duration, attempt: u32) -> Duration {
+    read_retry_delay_for_attempt_with_retry_after(base, cap, attempt, None)
+}
+
+fn select_read_failure(
+    current: Option<ReadStateFailureKind>,
+    candidate: ReadStateFailureKind,
+) -> ReadStateFailureKind {
+    fn priority(kind: ReadStateFailureKind) -> u8 {
+        match kind {
+            ReadStateFailureKind::Authentication => 5,
+            ReadStateFailureKind::RateLimited => 4,
+            ReadStateFailureKind::Timeout => 3,
+            ReadStateFailureKind::Transport => 2,
+            ReadStateFailureKind::Server => 1,
+            ReadStateFailureKind::Capacity => 1,
+            ReadStateFailureKind::Sdk => 0,
+        }
+    }
+
+    current.map_or(candidate, |current| {
+        if priority(candidate) > priority(current) {
+            candidate
+        } else {
+            current
+        }
+    })
+}
+
+fn read_retry_delay_for_attempt_with_retry_after(
+    base: Duration,
+    cap: Duration,
+    attempt: u32,
+    retry_after: Option<Duration>,
+) -> Duration {
     let multiplier = 1_u32.checked_shl(attempt.min(31)).unwrap_or(u32::MAX);
-    base.saturating_mul(multiplier).min(cap)
+    let exponential = base.saturating_mul(multiplier).min(cap);
+    match retry_after {
+        Some(server_delay) if server_delay > cap => server_delay,
+        Some(server_delay) => exponential.max(server_delay),
+        None => exponential,
+    }
 }
 
 impl Drop for ReadWorkerSupervisor {
@@ -560,7 +787,7 @@ impl Drop for ReadWorkerSupervisor {
 async fn perform_read_network_operation(
     network: ReadNetworkContext,
     operation: &ReadOperation,
-) -> Result<(), ()> {
+) -> Result<(), ReadNetworkFailure> {
     match network {
         ReadNetworkContext::Matrix(session) => {
             let room_id = matrix_sdk::ruma::RoomId::parse(match operation.key() {
@@ -568,40 +795,43 @@ async fn perform_read_network_operation(
                 | ReadStateKey::ThreadRead { room_id, .. }
                 | ReadStateKey::FullyReadAndPrivateUnthreaded { room_id } => room_id.as_str(),
             })
-            .map_err(|_| ())?;
-            let event_id =
-                matrix_sdk::ruma::EventId::parse(operation.target().event_id()).map_err(|_| ())?;
-            let room = session.client().get_room(&room_id).ok_or(())?;
+            .map_err(|_| ReadNetworkFailure::new(ReadStateFailureKind::Sdk))?;
+            let event_id = matrix_sdk::ruma::EventId::parse(operation.target().event_id())
+                .map_err(|_| ReadNetworkFailure::new(ReadStateFailureKind::Sdk))?;
+            let room = session
+                .client()
+                .get_room(&room_id)
+                .ok_or_else(|| ReadNetworkFailure::new(ReadStateFailureKind::Sdk))?;
             match operation.key() {
                 ReadStateKey::PublicUnthreaded { .. } => room
                     .send_multiple_receipts(Receipts::new().public_read_receipt(event_id))
                     .await
-                    .map_err(|_| ()),
+                    .map_err(|error| classify_read_network_error(&error)),
                 ReadStateKey::ThreadRead { root_event_id, .. } => {
-                    let root_event_id =
-                        matrix_sdk::ruma::EventId::parse(root_event_id).map_err(|_| ())?;
+                    let root_event_id = matrix_sdk::ruma::EventId::parse(root_event_id)
+                        .map_err(|_| ReadNetworkFailure::new(ReadStateFailureKind::Sdk))?;
                     room.send_single_receipt(
                         SendReceiptType::Read,
                         ReceiptThread::Thread(root_event_id),
                         event_id,
                     )
                     .await
-                    .map_err(|_| ())
+                    .map_err(|error| classify_read_network_error(&error))
                 }
                 ReadStateKey::FullyReadAndPrivateUnthreaded { .. } => {
                     let private_event_id = private_read_receipt_event_id_from_room_for_fully_read(
                         &room,
                         operation.target().event_id(),
                     );
-                    let private_event_id =
-                        matrix_sdk::ruma::EventId::parse(private_event_id).map_err(|_| ())?;
+                    let private_event_id = matrix_sdk::ruma::EventId::parse(private_event_id)
+                        .map_err(|_| ReadNetworkFailure::new(ReadStateFailureKind::Sdk))?;
                     room.send_multiple_receipts(
                         Receipts::new()
                             .fully_read_marker(event_id)
                             .private_read_receipt(private_event_id),
                     )
                     .await
-                    .map_err(|_| ())
+                    .map_err(|error| classify_read_network_error(&error))
                 }
             }
         }
@@ -613,14 +843,84 @@ async fn perform_read_network_operation(
                     operation: operation.clone(),
                     response,
                 })
-                .map_err(|_| ())?;
-            outcome.await.unwrap_or(Err(()))
+                .map_err(|_| ReadNetworkFailure::new(ReadStateFailureKind::Transport))?;
+            match outcome.await.unwrap_or(Err(())) {
+                Ok(()) => Ok(()),
+                Err(()) => Err(ReadNetworkFailure::new(ReadStateFailureKind::Sdk)),
+            }
         }
     }
 }
 
+fn classify_read_network_error(error: &matrix_sdk::Error) -> ReadNetworkFailure {
+    match error {
+        matrix_sdk::Error::Timeout => ReadNetworkFailure::new(ReadStateFailureKind::Timeout),
+        matrix_sdk::Error::AuthenticationRequired => {
+            ReadNetworkFailure::new(ReadStateFailureKind::Authentication)
+        }
+        matrix_sdk::Error::Http(http_error) => classify_http_error(http_error),
+        _ => ReadNetworkFailure::new(ReadStateFailureKind::Sdk),
+    }
+}
+
+fn classify_http_error(error: &matrix_sdk::HttpError) -> ReadNetworkFailure {
+    use matrix_sdk::ruma::api::error::{ErrorKind, RetryAfter};
+
+    if let Some(kind) = error.client_api_error_kind() {
+        return match kind {
+            ErrorKind::LimitExceeded(limit) => ReadNetworkFailure {
+                kind: ReadStateFailureKind::RateLimited,
+                retry_after: limit
+                    .retry_after
+                    .as_ref()
+                    .and_then(|retry_after| match retry_after {
+                        RetryAfter::Delay(duration) => Some(*duration),
+                        RetryAfter::DateTime(_) => None,
+                    }),
+            },
+            ErrorKind::MissingToken
+            | ErrorKind::UnknownToken { .. }
+            | ErrorKind::Unauthorized
+            | ErrorKind::Forbidden => ReadNetworkFailure::new(ReadStateFailureKind::Authentication),
+            _ => {
+                let status = error
+                    .as_client_api_error()
+                    .map(|api_error| api_error.status_code.as_u16());
+                if status.is_some_and(|status| (500..=599).contains(&status)) {
+                    ReadNetworkFailure::new(ReadStateFailureKind::Server)
+                } else {
+                    ReadNetworkFailure::new(ReadStateFailureKind::Sdk)
+                }
+            }
+        };
+    }
+
+    match error {
+        matrix_sdk::HttpError::Reqwest(error) if error.is_timeout() => {
+            ReadNetworkFailure::new(ReadStateFailureKind::Timeout)
+        }
+        matrix_sdk::HttpError::Reqwest(error)
+            if error.status().is_some_and(|status| status.as_u16() == 429) =>
+        {
+            ReadNetworkFailure::new(ReadStateFailureKind::RateLimited)
+        }
+        matrix_sdk::HttpError::Reqwest(error)
+            if error
+                .status()
+                .is_some_and(|status| status.is_server_error()) =>
+        {
+            ReadNetworkFailure::new(ReadStateFailureKind::Server)
+        }
+        matrix_sdk::HttpError::Reqwest(_) => {
+            ReadNetworkFailure::new(ReadStateFailureKind::Transport)
+        }
+        matrix_sdk::HttpError::Cached(error) => classify_http_error(error),
+        _ => ReadNetworkFailure::new(ReadStateFailureKind::Sdk),
+    }
+}
+
 impl TimelineManagerActor {
-    pub(super) fn route_read_command(
+    pub(super) async fn route_read_command(
         &mut self,
         request_id: RequestId,
         key: TimelineKey,
@@ -658,6 +958,20 @@ impl TimelineManagerActor {
         }
 
         let read_key = read_state_key_for_command(&key, kind);
+        if !self.read_workers.send_read_receipts
+            && matches!(
+                &read_key,
+                ReadStateKey::PublicUnthreaded { .. } | ReadStateKey::ThreadRead { .. }
+            )
+        {
+            self.emit_failure(
+                request_id,
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Forbidden,
+                },
+            );
+            return;
+        }
         let target = match handle.read_position(&event_id) {
             Some(position) => ReadTarget::with_position(event_id.clone(), position),
             None => ReadTarget::new(event_id.clone()),
@@ -704,59 +1018,35 @@ impl TimelineManagerActor {
             self.read_workers.cancel(superseded);
         }
         self.read_workers.publish_persistence();
-        self.wake_read_operation(&read_key);
+        self.wake_read_operation(&read_key).await;
     }
-    fn wake_read_operation(&mut self, key: &ReadStateKey) {
+
+    async fn wake_read_operation(&mut self, key: &ReadStateKey) {
         if self.read_workers.reconciliation_pending(key) {
             self.read_workers.schedule_retry(key);
             return;
         }
-        match self.read_workers.state.wake(key) {
-            ReadWakeResult::Start(operation) => {
-                if !self.read_workers.spawn_network(operation.clone()) {
-                    let completion = self.read_workers.state.complete(
-                        operation.key(),
-                        operation.fence(),
-                        ReadNetworkOutcome::Failed,
-                    );
-                    for settlement in completion.settlements() {
-                        if let Some(waiter) = self.read_workers.waiters.remove(&settlement.waiter())
-                        {
-                            self.emit_failure(
-                                waiter.request_id,
-                                CoreFailure::TimelineOperationFailed {
-                                    kind: TimelineFailureKind::Sdk,
-                                },
-                            );
-                        }
-                    }
-                }
+        self.read_workers.enqueue_key(key.clone());
+        self.read_workers.dispatch_ready_reads();
+        self.drain_read_dispatch_failures().await;
+    }
+
+    async fn drain_read_dispatch_failures(&mut self) {
+        for (key, completion) in self.read_workers.take_dispatch_failures() {
+            record_read_completion(&key, completion.diagnostic());
+            self.settle_read_waiters(completion.settlements().to_vec())
+                .await;
+            if matches!(
+                completion.disposition(),
+                ReadCompletionDisposition::Failed | ReadCompletionDisposition::TimedOut
+            ) {
+                self.read_workers.schedule_retry(&key);
             }
-            ReadWakeResult::AlreadyActive | ReadWakeResult::NoDesired => {}
-            ReadWakeResult::OperationGenerationExhausted => {
-                let waiter_ids = self
-                    .read_workers
-                    .waiters
-                    .iter()
-                    .filter_map(|(waiter_id, waiter)| {
-                        (read_state_key_for_command(&waiter.key, waiter.kind) == *key)
-                            .then_some(*waiter_id)
-                    })
-                    .collect::<Vec<_>>();
-                for waiter_id in waiter_ids {
-                    if let Some(waiter) = self.read_workers.waiters.remove(&waiter_id) {
-                        self.emit_failure(
-                            waiter.request_id,
-                            CoreFailure::TimelineOperationFailed {
-                                kind: TimelineFailureKind::QueueOverflow,
-                            },
-                        );
-                    }
-                }
-            }
+            self.read_workers.publish_persistence();
         }
     }
-    pub(super) fn wake_all_desired_reads(&mut self, source: ReadRetrySource) {
+
+    pub(super) async fn wake_all_desired_reads(&mut self, source: ReadRetrySource) {
         for key in self.read_workers.desired_keys() {
             record_read_retry(
                 &key,
@@ -768,11 +1058,14 @@ impl TimelineManagerActor {
                 self.read_workers.schedule_retry(&key);
                 continue;
             }
-            self.read_workers.invalidate_retry(&key);
-            self.wake_read_operation(&key);
+            self.wake_read_operation(&key).await;
         }
     }
-    pub(super) fn wake_desired_reads_for_room(&mut self, room_id: &str, source: ReadRetrySource) {
+    pub(super) async fn wake_desired_reads_for_room(
+        &mut self,
+        room_id: &str,
+        source: ReadRetrySource,
+    ) {
         let keys = self
             .read_workers
             .desired_keys()
@@ -790,8 +1083,7 @@ impl TimelineManagerActor {
                 self.read_workers.schedule_retry(&key);
                 continue;
             }
-            self.read_workers.invalidate_retry(&key);
-            self.wake_read_operation(&key);
+            self.wake_read_operation(&key).await;
         }
     }
     pub(super) async fn handle_authoritative_read_state_observed(
@@ -813,6 +1105,25 @@ impl TimelineManagerActor {
         {
             return;
         }
+        self.ensure_restored_local_read_correlation(
+            timeline_key,
+            actor_generation,
+            &position_index,
+        );
+        self.update_local_server_confirmation(
+            timeline_key,
+            actor_generation,
+            &read_key,
+            event_id.as_deref(),
+        );
+        self.project_unproven_restored_pending(
+            timeline_key,
+            actor_generation,
+            &position_index,
+            &read_key,
+            event_id.as_deref(),
+        )
+        .await;
         let restored_entries = self.read_workers.state.persistence_snapshot();
         if let Some(entry) = restored_entries
             .entries()
@@ -840,7 +1151,8 @@ impl TimelineManagerActor {
                 self.read_workers.state.waiter_count(&read_key),
             );
             self.read_workers.invalidate_retry(&read_key);
-            self.wake_read_operation(&read_key);
+            self.wake_read_operation(&read_key).await;
+            self.project_local_read_correlation(timeline_key).await;
             return;
         };
         let confirmed_position = position_index.evidence(&event_id);
@@ -889,9 +1201,10 @@ impl TimelineManagerActor {
                 self.read_workers.state.waiter_count(&read_key),
             );
             self.read_workers.invalidate_retry(&read_key);
-            self.wake_read_operation(&read_key);
+            self.wake_read_operation(&read_key).await;
         }
         self.read_workers.publish_persistence();
+        self.project_local_read_correlation(timeline_key).await;
     }
     pub(super) async fn handle_read_worker_completion(&mut self, completion: ReadWorkerCompletion) {
         self.read_workers.finish(&completion);
@@ -909,26 +1222,38 @@ impl TimelineManagerActor {
                         self.read_workers.state.candidate_count(&key),
                         self.read_workers.state.waiter_count(&key),
                     );
-                    self.wake_read_operation(&key);
+                    self.wake_read_operation(&key).await;
                 }
             }
             ReadWorkerCompletion::Cancelled { operation } => {
-                self.settle_read_operation(operation, ReadNetworkOutcome::Failed)
-                    .await;
+                self.settle_cancelled_read_operation(operation).await;
             }
             ReadWorkerCompletion::Network { operation, outcome } => {
                 if outcome == ReadNetworkOutcome::Succeeded
                     && self.read_workers.state.active_operation(operation.key())
                         == Some(operation.fence())
                 {
+                    if !self
+                        .read_workers
+                        .state
+                        .has_candidate(operation.key(), operation.target().event_id())
+                    {
+                        self.settle_read_operation(operation, outcome).await;
+                        return;
+                    }
                     match operation.key() {
                         ReadStateKey::PublicUnthreaded { .. } => {
                             let actor_is_current = self
                                 .read_timeline_key_for_operation(&operation)
                                 .is_some_and(|key| self.timelines.contains_key(&key));
                             if !actor_is_current {
-                                self.settle_read_operation(operation, ReadNetworkOutcome::Failed)
-                                    .await;
+                                self.settle_read_operation(
+                                    operation,
+                                    ReadNetworkOutcome::Failed(ReadNetworkFailure::new(
+                                        ReadStateFailureKind::Sdk,
+                                    )),
+                                )
+                                .await;
                                 return;
                             }
                         }
@@ -937,8 +1262,13 @@ impl TimelineManagerActor {
                             if self.spawn_read_actor_apply(operation.clone()) {
                                 return;
                             }
-                            self.settle_read_operation(operation, ReadNetworkOutcome::Failed)
-                                .await;
+                            self.settle_read_operation(
+                                operation,
+                                ReadNetworkOutcome::Failed(ReadNetworkFailure::new(
+                                    ReadStateFailureKind::Sdk,
+                                )),
+                            )
+                            .await;
                             return;
                         }
                     }
@@ -951,7 +1281,9 @@ impl TimelineManagerActor {
                     if applied {
                         ReadNetworkOutcome::Succeeded
                     } else {
-                        ReadNetworkOutcome::Failed
+                        ReadNetworkOutcome::Failed(ReadNetworkFailure::new(
+                            ReadStateFailureKind::Sdk,
+                        ))
                     },
                 )
                 .await;
@@ -1001,12 +1333,32 @@ impl TimelineManagerActor {
                 .then(|| waiter.key.clone())
             })
             .or_else(|| {
+                self.read_workers
+                    .local_read_correlations
+                    .keys()
+                    .find(|key| timeline_key_matches_read_state_key(key, operation.key()))
+                    .cloned()
+            })
+            .or_else(|| {
                 self.timelines
                     .keys()
                     .find(|key| timeline_key_matches_read_state_key(key, operation.key()))
                     .cloned()
             })
     }
+    async fn settle_cancelled_read_operation(&mut self, operation: ReadOperation) {
+        let read_key = operation.key().clone();
+        let completion = self
+            .read_workers
+            .state
+            .complete_cancelled(&read_key, operation.fence());
+        record_read_completion(&read_key, completion.diagnostic());
+        if completion.disposition() == ReadCompletionDisposition::Cancelled {
+            self.wake_read_operation(&read_key).await;
+            self.read_workers.publish_persistence();
+        }
+    }
+
     async fn settle_read_operation(
         &mut self,
         operation: ReadOperation,
@@ -1017,22 +1369,46 @@ impl TimelineManagerActor {
             .read_workers
             .state
             .complete(&read_key, operation.fence(), outcome);
-        record_read_completion(&read_key, completion.diagnostic());
         let disposition = completion.disposition();
+        if disposition == ReadCompletionDisposition::Succeeded {
+            if let Some(timeline_key) = self.read_timeline_key_for_operation(&operation) {
+                let actor_generation = self
+                    .read_workers
+                    .local_read_correlations
+                    .get(&timeline_key)
+                    .map_or(0, |correlation| correlation.actor_generation);
+                self.update_local_server_confirmation(
+                    &timeline_key,
+                    actor_generation,
+                    &read_key,
+                    Some(operation.target().event_id()),
+                );
+            }
+        }
+        record_read_completion(&read_key, completion.diagnostic());
         let settlements = completion.settlements().to_vec();
         self.settle_read_waiters(settlements).await;
         match disposition {
             ReadCompletionDisposition::Succeeded => {
                 self.read_workers.reset_retry(&read_key);
-                self.wake_read_operation(&read_key);
+                self.wake_read_operation(&read_key).await;
             }
             ReadCompletionDisposition::Failed | ReadCompletionDisposition::TimedOut => {
                 self.read_workers.schedule_retry(&read_key);
             }
-            ReadCompletionDisposition::StaleDiscarded => {}
+            ReadCompletionDisposition::StaleDiscarded => {
+                self.wake_read_operation(&read_key).await;
+            }
+            ReadCompletionDisposition::Cancelled => {}
         }
-        if disposition != ReadCompletionDisposition::StaleDiscarded {
+        if !matches!(
+            disposition,
+            ReadCompletionDisposition::StaleDiscarded | ReadCompletionDisposition::Cancelled
+        ) {
             self.read_workers.publish_persistence();
+        }
+        if let Some(timeline_key) = self.read_timeline_key_for_operation(&operation) {
+            self.project_local_read_correlation(&timeline_key).await;
         }
     }
     async fn settle_read_waiters(
@@ -1090,9 +1466,534 @@ impl TimelineManagerActor {
             }
         }
     }
+    fn local_server_confirmation_key(timeline_key: &TimelineKey, read_key: &ReadStateKey) -> bool {
+        match &timeline_key.kind {
+            TimelineKind::Room { room_id } => {
+                matches!(
+                    read_key,
+                    ReadStateKey::FullyReadAndPrivateUnthreaded { room_id: key_room }
+                        if key_room == room_id
+                )
+            }
+            TimelineKind::Thread { room_id, .. } => {
+                matches!(
+                    read_key,
+                    ReadStateKey::ThreadRead { room_id: key_room, .. }
+                        if key_room == room_id
+                )
+            }
+            TimelineKind::Focused { .. } => false,
+        }
+    }
+
+    async fn project_unproven_restored_pending(
+        &mut self,
+        timeline_key: &TimelineKey,
+        actor_generation: u64,
+        position_index: &TimelinePositionIndex,
+        read_key: &ReadStateKey,
+        authoritative_event_id: Option<&str>,
+    ) {
+        if self
+            .read_workers
+            .local_read_correlations
+            .contains_key(timeline_key)
+        {
+            return;
+        }
+        let snapshot = self.read_workers.state.persistence_snapshot();
+        let unproven = snapshot
+            .entries()
+            .iter()
+            .find(|entry| entry.key() == read_key)
+            .is_some_and(|entry| {
+                entry
+                    .event_ids()
+                    .iter()
+                    .any(|event_id| position_index.evidence(event_id).is_none())
+            });
+        if !unproven {
+            return;
+        }
+        let Some(handle) = self.timelines.get(timeline_key) else {
+            return;
+        };
+        if handle
+            .read_position_index()
+            .is_none_or(|index| index.actor_generation() != actor_generation)
+        {
+            return;
+        }
+        let server_confirmed_read_event_id =
+            Self::local_server_confirmation_key(timeline_key, read_key)
+                .then(|| authoritative_event_id.map(ToOwned::to_owned))
+                .flatten();
+        let _ = handle
+            .send_control(TimelineActorControl::ReadStateProjection {
+                local_viewed_event_id: None,
+                server_confirmed_read_event_id,
+                sync: TimelineReadStateSync::Pending,
+            })
+            .await;
+    }
+
+    fn ensure_restored_local_read_correlation(
+        &mut self,
+        timeline_key: &TimelineKey,
+        actor_generation: u64,
+        position_index: &TimelinePositionIndex,
+    ) {
+        if self
+            .read_workers
+            .local_read_correlations
+            .contains_key(timeline_key)
+            || self.read_workers.local_read_correlations.len()
+                >= crate::read_state::READ_STATE_OUTBOX_ENTRY_LIMIT
+        {
+            return;
+        }
+
+        let snapshot = self.read_workers.state.persistence_snapshot();
+        let mut required_keys = std::collections::BTreeMap::new();
+        let mut local_target: Option<ReadTarget> = None;
+        for entry in snapshot.entries() {
+            let eligible = match (&timeline_key.kind, entry.key()) {
+                (
+                    TimelineKind::Room { room_id },
+                    ReadStateKey::PublicUnthreaded { room_id: key_room },
+                ) => self.read_workers.send_read_receipts && room_id == key_room,
+                (
+                    TimelineKind::Room { room_id },
+                    ReadStateKey::FullyReadAndPrivateUnthreaded { room_id: key_room },
+                ) => room_id == key_room,
+                (
+                    TimelineKind::Thread {
+                        room_id,
+                        root_event_id,
+                    },
+                    ReadStateKey::ThreadRead {
+                        room_id: key_room,
+                        root_event_id: key_root,
+                    },
+                ) => {
+                    self.read_workers.send_read_receipts
+                        && room_id == key_room
+                        && root_event_id == key_root
+                }
+                _ => false,
+            };
+            if !eligible {
+                continue;
+            }
+            let Some(event_id) = entry.event_ids().first() else {
+                continue;
+            };
+            let Some(position) = position_index.evidence(event_id) else {
+                continue;
+            };
+            let target = ReadTarget::with_position(event_id.clone(), position);
+            if local_target
+                .as_ref()
+                .and_then(ReadTarget::position)
+                .is_none_or(|current| position.rank > current.rank)
+            {
+                local_target = Some(target.clone());
+            }
+            required_keys.insert(entry.key().clone(), target);
+        }
+        let Some(local_target) = local_target else {
+            return;
+        };
+        self.read_workers.local_read_correlations.insert(
+            timeline_key.clone(),
+            LocalReadCorrelation {
+                actor_generation,
+                local_target,
+                server_confirmed_read_event_id: None,
+                required_keys,
+                admission_failure: None,
+            },
+        );
+    }
+
+    async fn project_local_read_correlation(&mut self, key: &TimelineKey) {
+        let Some((actor_generation, local_viewed_event_id, server_confirmed_read_event_id, sync)) =
+            self.read_workers
+                .local_read_correlations
+                .get(key)
+                .map(|correlation| {
+                    (
+                        correlation.actor_generation,
+                        correlation.local_target.event_id().to_owned(),
+                        correlation.server_confirmed_read_event_id.clone(),
+                        self.read_workers.local_read_sync(correlation),
+                    )
+                })
+        else {
+            return;
+        };
+        let Some(handle) = self.timelines.get(key) else {
+            self.read_workers.local_read_correlations.remove(key);
+            return;
+        };
+        if handle
+            .read_position_index()
+            .is_none_or(|index| index.actor_generation() != actor_generation)
+        {
+            return;
+        }
+        let _ = handle
+            .send_control(TimelineActorControl::ReadStateProjection {
+                local_viewed_event_id: Some(local_viewed_event_id),
+                server_confirmed_read_event_id,
+                sync,
+            })
+            .await;
+    }
+
+    fn update_local_server_confirmation(
+        &mut self,
+        timeline_key: &TimelineKey,
+        actor_generation: u64,
+        read_key: &ReadStateKey,
+        event_id: Option<&str>,
+    ) {
+        if !Self::local_server_confirmation_key(timeline_key, read_key) {
+            return;
+        }
+        let Some(correlation) = self
+            .read_workers
+            .local_read_correlations
+            .get_mut(timeline_key)
+        else {
+            return;
+        };
+        if correlation.actor_generation == actor_generation
+            && correlation.required_keys.contains_key(read_key)
+            && event_id.is_some()
+        {
+            correlation.server_confirmed_read_event_id = event_id.map(ToOwned::to_owned);
+        }
+    }
+
+    pub(super) async fn handle_local_read_boundary_observed(
+        &mut self,
+        key: TimelineKey,
+        actor_generation: u64,
+        target: ReadTarget,
+    ) {
+        if !matches!(
+            key.kind,
+            TimelineKind::Room { .. } | TimelineKind::Thread { .. }
+        ) {
+            return;
+        }
+        let Some(position_index) = self
+            .timelines
+            .get(&key)
+            .and_then(TimelineActorHandle::read_position_index)
+        else {
+            return;
+        };
+        let Some(position) = target.position() else {
+            return;
+        };
+        if position_index.actor_generation() != actor_generation
+            || position_index.evidence(target.event_id()) != Some(position)
+        {
+            return;
+        }
+
+        if !self.read_workers.local_read_correlations.contains_key(&key)
+            && self.read_workers.local_read_correlations.len()
+                >= crate::read_state::READ_STATE_OUTBOX_ENTRY_LIMIT
+        {
+            return;
+        }
+        let previous_server_confirmed_read_event_id = self
+            .read_workers
+            .local_read_correlations
+            .get(&key)
+            .filter(|correlation| correlation.actor_generation == actor_generation)
+            .and_then(|correlation| correlation.server_confirmed_read_event_id.clone());
+        let mut required_keys = std::collections::BTreeMap::new();
+        match &key.kind {
+            TimelineKind::Room { room_id } => {
+                if self.read_workers.send_read_receipts {
+                    required_keys.insert(
+                        ReadStateKey::PublicUnthreaded {
+                            room_id: room_id.clone(),
+                        },
+                        target.clone(),
+                    );
+                }
+                required_keys.insert(
+                    ReadStateKey::FullyReadAndPrivateUnthreaded {
+                        room_id: room_id.clone(),
+                    },
+                    target.clone(),
+                );
+            }
+            TimelineKind::Thread {
+                room_id,
+                root_event_id,
+            } if self.read_workers.send_read_receipts => {
+                required_keys.insert(
+                    ReadStateKey::ThreadRead {
+                        room_id: room_id.clone(),
+                        root_event_id: root_event_id.clone(),
+                    },
+                    target.clone(),
+                );
+            }
+            TimelineKind::Thread { .. } => {}
+            TimelineKind::Focused { .. } => return,
+        }
+
+        let mut admission_failure = None;
+        let session_generation = self.read_workers.state.session_generation();
+        let required = required_keys
+            .iter()
+            .map(|(read_key, read_target)| (read_key.clone(), read_target.clone()))
+            .collect::<Vec<_>>();
+        for (read_key, read_target) in &required {
+            let admission = self.read_workers.state.admit_background(
+                session_generation,
+                read_key.clone(),
+                read_target.clone(),
+            );
+            record_read_admission(read_key, admission.diagnostic());
+            if let Some(superseded) = admission.superseded_operation() {
+                self.read_workers.cancel(superseded);
+            }
+            if matches!(admission.status(), ReadAdmissionStatus::Rejected(_)) {
+                admission_failure = Some(ReadStateFailureKind::Capacity);
+            }
+        }
+        self.read_workers.local_read_correlations.insert(
+            key.clone(),
+            LocalReadCorrelation {
+                actor_generation,
+                local_target: target,
+                server_confirmed_read_event_id: previous_server_confirmed_read_event_id,
+                required_keys,
+                admission_failure,
+            },
+        );
+        self.read_workers.publish_persistence();
+        self.project_local_read_correlation(&key).await;
+        for (read_key, _) in required {
+            self.wake_read_operation(&read_key).await;
+        }
+        self.project_local_read_correlation(&key).await;
+    }
+
+    pub(super) async fn handle_read_state_policy_changed(
+        &mut self,
+        session_generation: u64,
+        send_read_receipts: bool,
+    ) {
+        if self.read_workers.state.session_generation() != session_generation {
+            return;
+        }
+        self.read_workers.send_read_receipts = send_read_receipts;
+        if !send_read_receipts {
+            let blocked_keys = self
+                .read_workers
+                .desired_keys()
+                .into_iter()
+                .filter(|key| {
+                    matches!(
+                        key,
+                        ReadStateKey::PublicUnthreaded { .. } | ReadStateKey::ThreadRead { .. }
+                    )
+                })
+                .collect::<Vec<_>>();
+            for blocked_key in blocked_keys {
+                for waiter_id in self.read_workers.remove_background_key(&blocked_key) {
+                    if let Some(waiter) = self.read_workers.waiters.remove(&waiter_id) {
+                        self.emit_failure(
+                            waiter.request_id,
+                            CoreFailure::TimelineOperationFailed {
+                                kind: TimelineFailureKind::Forbidden,
+                            },
+                        );
+                    }
+                }
+            }
+            self.read_workers.publish_persistence();
+        }
+        let keys = self
+            .read_workers
+            .local_read_correlations
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in &keys {
+            let toggle_key = match &key.kind {
+                TimelineKind::Room { room_id } => Some(ReadStateKey::PublicUnthreaded {
+                    room_id: room_id.clone(),
+                }),
+                TimelineKind::Thread {
+                    room_id,
+                    root_event_id,
+                } => Some(ReadStateKey::ThreadRead {
+                    room_id: room_id.clone(),
+                    root_event_id: root_event_id.clone(),
+                }),
+                TimelineKind::Focused { .. } => None,
+            };
+            let Some(toggle_key) = toggle_key else {
+                continue;
+            };
+            if send_read_receipts {
+                let target = self
+                    .read_workers
+                    .local_read_correlations
+                    .get(key)
+                    .map(|correlation| correlation.local_target.clone());
+                if let Some(target) = target {
+                    let mut should_admit = false;
+                    if let Some(correlation) =
+                        self.read_workers.local_read_correlations.get_mut(key)
+                    {
+                        should_admit = correlation
+                            .required_keys
+                            .insert(toggle_key.clone(), target.clone())
+                            .is_none();
+                        correlation.admission_failure = None;
+                    }
+                    if should_admit {
+                        let admission = self.read_workers.state.admit_background(
+                            session_generation,
+                            toggle_key.clone(),
+                            target,
+                        );
+                        record_read_admission(&toggle_key, admission.diagnostic());
+                        if let Some(superseded) = admission.superseded_operation() {
+                            self.read_workers.cancel(superseded);
+                        }
+                        if matches!(admission.status(), ReadAdmissionStatus::Rejected(_)) {
+                            if let Some(correlation) =
+                                self.read_workers.local_read_correlations.get_mut(key)
+                            {
+                                correlation.admission_failure =
+                                    Some(ReadStateFailureKind::Capacity);
+                            }
+                        }
+                    }
+                }
+            } else if let Some(correlation) = self.read_workers.local_read_correlations.get_mut(key)
+            {
+                correlation.required_keys.remove(&toggle_key);
+                correlation.admission_failure = None;
+            }
+            self.read_workers.publish_persistence();
+            if let Some(handle) = self.timelines.get(key) {
+                let _ = handle
+                    .send_control(TimelineActorControl::ReadStatePolicyChanged {
+                        send_read_receipts,
+                    })
+                    .await;
+            }
+            self.project_local_read_correlation(key).await;
+            if let Some(correlation) = self.read_workers.local_read_correlations.get(key) {
+                let required = correlation
+                    .required_keys
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for read_key in required {
+                    self.wake_read_operation(&read_key).await;
+                }
+            }
+            self.project_local_read_correlation(key).await;
+        }
+    }
 }
 
 impl TimelineActor {
+    pub(super) fn observe_local_viewed_boundary(&mut self) -> Option<ReadTarget> {
+        if !matches!(
+            self.key.kind,
+            TimelineKind::Room { .. } | TimelineKind::Thread { .. }
+        ) || !self.viewport_observation.at_bottom
+        {
+            return None;
+        }
+        let last_visible_event_id = self.viewport_observation.last_visible_event_id.as_deref()?;
+        let (target_index, target_item) = self
+            .navigation_items
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, item)| is_attention_eligible_event(item))?;
+        let crate::event::TimelineItemId::Event { event_id } = &target_item.id else {
+            return None;
+        };
+        if event_id != last_visible_event_id {
+            return None;
+        }
+        for visible_gap_id in &self.viewport_observation.visible_gap_ids {
+            let Some((gap_index, _)) = self
+                .gap_repair
+                .projected_gaps
+                .iter()
+                .find(|(_, gap)| gap.id == *visible_gap_id)
+            else {
+                return None;
+            };
+            if *gap_index >= target_index {
+                return None;
+            }
+        }
+        let position = self.position_tx.borrow().evidence(event_id)?;
+        let event_id = event_id.clone();
+        if self.local_viewed_boundary.as_ref().is_some_and(|boundary| {
+            boundary.event_id == event_id
+                || (boundary.position.generation == position.generation
+                    && boundary.position.rank >= position.rank)
+        }) {
+            return None;
+        }
+        self.local_viewed_boundary = Some(crate::timeline::actor::LocalViewedBoundary {
+            event_id: event_id.clone(),
+            position,
+        });
+        self.read_state_sync =
+            if matches!(self.key.kind, TimelineKind::Thread { .. }) && !self.send_read_receipts {
+                TimelineReadStateSync::NotRequested
+            } else {
+                TimelineReadStateSync::Pending
+            };
+        self.emit_navigation_if_changed();
+        Some(ReadTarget::with_position(event_id, position))
+    }
+
+    pub(super) fn handle_read_state_projection(
+        &mut self,
+        local_viewed_event_id: Option<String>,
+        server_confirmed_read_event_id: Option<String>,
+        sync: TimelineReadStateSync,
+    ) {
+        if let Some(event_id) = local_viewed_event_id
+            && let Some(position) = self.position_tx.borrow().evidence(&event_id)
+            && self.local_viewed_boundary.as_ref().is_none_or(|boundary| {
+                boundary.event_id != event_id
+                    && (boundary.position.generation != position.generation
+                        || boundary.position.rank < position.rank)
+            })
+        {
+            self.local_viewed_boundary =
+                Some(crate::timeline::actor::LocalViewedBoundary { event_id, position });
+        }
+        if server_confirmed_read_event_id.is_some() {
+            self.server_confirmed_read_event_id = server_confirmed_read_event_id;
+        }
+        self.read_state_sync = sync;
+        self.emit_navigation_if_changed();
+    }
+
     pub(super) async fn handle_read_success(
         &mut self,
         kind: ReadActorApplyKind,
@@ -1112,7 +2013,7 @@ impl TimelineActor {
                 if let Some(action) = self.thread_attention.acknowledge(
                     &self.key,
                     &self.navigation_items,
-                    authoritative_event_id,
+                    authoritative_event_id.clone(),
                 ) && !self.emit_action_reliable(action).await
                 {
                     return false;
@@ -1132,6 +2033,8 @@ impl TimelineActor {
                     &snapshot,
                     &self.thread_attention,
                 );
+                self.server_confirmed_read_event_id = Some(authoritative_event_id);
+                self.emit_navigation_if_changed();
                 true
             }
             ReadActorApplyKind::FullyRead => {
@@ -1147,7 +2050,8 @@ impl TimelineActor {
                 {
                     return false;
                 }
-                self.fully_read_event_id = Some(event_id);
+                self.fully_read_event_id = Some(event_id.clone());
+                self.server_confirmed_read_event_id = Some(event_id);
                 self.emit_navigation_if_changed();
                 true
             }
@@ -1306,12 +2210,12 @@ mod tests {
     use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
     use crate::command::TimelineCommand;
-    use crate::event::{CoreEvent, LiveSignalsEvent};
+    use crate::event::{CoreEvent, LiveSignalsEvent, TimelineReadStateSync};
     use crate::executor;
-    use crate::failure::{CoreFailure, TimelineFailureKind};
+    use crate::failure::{CoreFailure, ReadStateFailureKind, TimelineFailureKind};
     #[cfg(any(test, feature = "test-hooks"))]
     use crate::ids::AccountKey;
-    use crate::ids::TimelineKey;
+    use crate::ids::{TimelineKey, TimelineKind};
 
     use crate::read_state::{
         ReadPersistenceSnapshot, ReadStateEngine, ReadStateKey, ReadTarget, ReadWaiterId,
@@ -1333,8 +2237,9 @@ mod tests {
 
     use super::super::relay::koushi_timeline_builder;
     use super::{
-        ReadActorApplyKind, ReadCommandKind, ReadPersistenceIngress, ReadRetrySource,
-        ReadWorkerCompletion, ReadWorkerSupervisor, read_retry_delay_for_attempt,
+        MAX_CONCURRENT_READ_WRITES, ReadActorApplyKind, ReadCommandKind, ReadNetworkFailure,
+        ReadNetworkOutcome, ReadPersistenceIngress, ReadRetrySource, ReadWorkerCompletion,
+        ReadWorkerSupervisor, read_retry_delay_for_attempt,
     };
 
     use super::super::test_support::{
@@ -1484,17 +2389,815 @@ mod tests {
         );
     }
 
-    fn restored_public_read_snapshot(room_id: &str, event_id: &str) -> ReadPersistenceSnapshot {
+    fn restored_read_snapshot(key: ReadStateKey, event_id: &str) -> ReadPersistenceSnapshot {
         let mut engine = ReadStateEngine::new(7);
         engine.admit(
             7,
-            ReadStateKey::PublicUnthreaded {
-                room_id: room_id.to_owned(),
-            },
+            key,
             ReadTarget::new(event_id.to_owned()),
             ReadWaiterId::new(1),
         );
         engine.persistence_snapshot()
+    }
+
+    fn restored_public_read_snapshot(room_id: &str, event_id: &str) -> ReadPersistenceSnapshot {
+        restored_read_snapshot(
+            ReadStateKey::PublicUnthreaded {
+                room_id: room_id.to_owned(),
+            },
+            event_id,
+        )
+    }
+
+    #[tokio::test]
+    async fn twenty_read_keys_never_exceed_four_concurrent_writes() {
+        let (network_tx, mut network_rx) = mpsc::unbounded_channel();
+        let mut supervisor = ReadWorkerSupervisor::synthetic(network_tx, Duration::from_secs(30));
+        let keys = (0..20)
+            .map(|index| ReadStateKey::PublicUnthreaded {
+                room_id: format!("!dispatcher-{index}:example.invalid"),
+            })
+            .collect::<Vec<_>>();
+        for (index, key) in keys.iter().enumerate() {
+            supervisor.state.admit_background(
+                1,
+                key.clone(),
+                ReadTarget::new(format!("$dispatcher-{index}:example.invalid")),
+            );
+            supervisor.enqueue_key(key.clone());
+        }
+        supervisor.dispatch_ready_reads();
+
+        let mut started = Vec::new();
+        for expected in 0..keys.len() {
+            assert!(supervisor.state.active_operation_count() <= MAX_CONCURRENT_READ_WRITES);
+            let request = next_synthetic_request(&mut supervisor, &mut network_rx).await;
+            started.push(request.operation.target().event_id().to_owned());
+            let operation = request.operation.clone();
+            request
+                .response
+                .send(Ok(()))
+                .expect("release dispatcher slot");
+            let _completion = supervisor.tasks.next().await.expect("write completion");
+            supervisor.state.complete(
+                operation.key(),
+                operation.fence(),
+                ReadNetworkOutcome::Succeeded,
+            );
+            supervisor.dispatch_ready_reads();
+            if expected < keys.len() - 1 {
+                assert!(supervisor.state.active_operation_count() <= MAX_CONCURRENT_READ_WRITES);
+            }
+        }
+
+        assert_eq!(started.len(), 20);
+        assert_eq!(supervisor.state.active_operation_count(), 0);
+        assert_eq!(started[0], "$dispatcher-0:example.invalid");
+        assert_eq!(started[19], "$dispatcher-19:example.invalid");
+    }
+
+    #[test]
+    fn synchronous_dispatch_failures_are_all_retained_for_settlement() {
+        let (network_tx, network_rx) = mpsc::unbounded_channel();
+        drop(network_rx);
+        let mut supervisor = ReadWorkerSupervisor::synthetic(network_tx, Duration::from_secs(30));
+        supervisor.network = None;
+        for index in 0..20 {
+            let key = ReadStateKey::PublicUnthreaded {
+                room_id: format!("!dispatch-failure-{index}:example.invalid"),
+            };
+            supervisor.state.admit_background(
+                1,
+                key.clone(),
+                ReadTarget::new(format!("$dispatch-failure-{index}:example.invalid")),
+            );
+            supervisor.enqueue_key(key);
+        }
+
+        supervisor.dispatch_ready_reads();
+
+        assert_eq!(supervisor.take_dispatch_failures().len(), 20);
+        assert_eq!(
+            supervisor.state.persistence_snapshot().candidate_count(),
+            20
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fifo_peers_start_before_a_failed_key_retries() {
+        let (network_tx, mut network_rx) = mpsc::unbounded_channel();
+        let mut supervisor = ReadWorkerSupervisor::synthetic_with_retry(
+            network_tx,
+            Duration::from_secs(30),
+            Duration::from_secs(1),
+            Duration::from_secs(60),
+        );
+        let keys = (0..6)
+            .map(|index| ReadStateKey::PublicUnthreaded {
+                room_id: format!("!fair-{index}:example.invalid"),
+            })
+            .collect::<Vec<_>>();
+        for (index, key) in keys.iter().enumerate() {
+            supervisor.state.admit_background(
+                1,
+                key.clone(),
+                ReadTarget::new(format!("$fair-{index}:example.invalid")),
+            );
+            supervisor.enqueue_key(key.clone());
+        }
+        supervisor.dispatch_ready_reads();
+
+        let mut initial = Vec::new();
+        for _ in 0..4 {
+            initial.push(next_synthetic_request(&mut supervisor, &mut network_rx).await);
+        }
+        let failed_index = initial
+            .iter()
+            .position(|request| request.operation.target().event_id() == "$fair-0:example.invalid")
+            .expect("first FIFO key is active");
+        let failed_request = initial.remove(failed_index);
+        let failed = failed_request.operation.clone();
+        failed_request
+            .response
+            .send(Err(()))
+            .expect("fail first FIFO request");
+        let _completion = supervisor.tasks.next().await.expect("failed completion");
+        supervisor.state.complete(
+            failed.key(),
+            failed.fence(),
+            ReadNetworkOutcome::Failed(ReadNetworkFailure::new(ReadStateFailureKind::Sdk)),
+        );
+        supervisor.schedule_retry(&keys[0]);
+        supervisor.dispatch_ready_reads();
+
+        let peer = next_synthetic_request(&mut supervisor, &mut network_rx).await;
+        assert_eq!(
+            peer.operation.target().event_id(),
+            "$fair-4:example.invalid"
+        );
+        let peer_operation = peer.operation.clone();
+        peer.response.send(Ok(())).expect("complete queued peer");
+        let _completion = supervisor.tasks.next().await.expect("peer completion");
+        supervisor.state.complete(
+            peer_operation.key(),
+            peer_operation.fence(),
+            ReadNetworkOutcome::Succeeded,
+        );
+        supervisor.dispatch_ready_reads();
+
+        let peer = next_synthetic_request(&mut supervisor, &mut network_rx).await;
+        assert_eq!(
+            peer.operation.target().event_id(),
+            "$fair-5:example.invalid"
+        );
+        let peer_operation = peer.operation.clone();
+        peer.response
+            .send(Ok(()))
+            .expect("complete second queued peer");
+        let _completion = supervisor
+            .tasks
+            .next()
+            .await
+            .expect("second peer completion");
+        supervisor.state.complete(
+            peer_operation.key(),
+            peer_operation.fence(),
+            ReadNetworkOutcome::Succeeded,
+        );
+        supervisor.dispatch_ready_reads();
+
+        for peer in initial {
+            let peer_operation = peer.operation.clone();
+            peer.response.send(Ok(())).expect("complete initial peer");
+            let _completion = supervisor
+                .tasks
+                .next()
+                .await
+                .expect("initial peer completion");
+            supervisor.state.complete(
+                peer_operation.key(),
+                peer_operation.fence(),
+                ReadNetworkOutcome::Succeeded,
+            );
+            supervisor.dispatch_ready_reads();
+        }
+
+        assert!(supervisor.retry_tasks.next().now_or_never().is_none());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let retry = supervisor.retry_tasks.next().await.expect("due FIFO retry");
+        let ReadWorkerCompletion::RetryWake {
+            key,
+            generation,
+            cancelled: false,
+        } = retry
+        else {
+            panic!("expected due retry wake");
+        };
+        assert!(supervisor.accept_retry_wake(&key, generation));
+        supervisor.enqueue_key(key);
+        supervisor.dispatch_ready_reads();
+        let retried = next_synthetic_request(&mut supervisor, &mut network_rx).await;
+        assert_eq!(
+            retried.operation.target().event_id(),
+            "$fair-0:example.invalid"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_limit_retry_after_is_the_exact_dispatch_delay() {
+        let key = ReadStateKey::PublicUnthreaded {
+            room_id: "!retry-after:example.invalid".to_owned(),
+        };
+        let (network_tx, mut network_rx) = mpsc::unbounded_channel();
+        let mut supervisor = ReadWorkerSupervisor::synthetic_with_retry(
+            network_tx,
+            Duration::from_secs(30),
+            Duration::from_secs(1),
+            Duration::from_secs(60),
+        );
+        supervisor.state.admit_background(
+            1,
+            key.clone(),
+            ReadTarget::new("$retry-after:example.invalid".to_owned()),
+        );
+        supervisor.enqueue_key(key.clone());
+        supervisor.dispatch_ready_reads();
+        let request = next_synthetic_request(&mut supervisor, &mut network_rx).await;
+        let operation = request.operation.clone();
+        request
+            .response
+            .send(Err(()))
+            .expect("fail retry-after request");
+        let _completion = supervisor
+            .tasks
+            .next()
+            .await
+            .expect("retry-after completion");
+        supervisor.state.complete(
+            operation.key(),
+            operation.fence(),
+            ReadNetworkOutcome::Failed(ReadNetworkFailure::with_retry_after(
+                ReadStateFailureKind::RateLimited,
+                Duration::from_secs(7),
+            )),
+        );
+        supervisor.schedule_retry(&key);
+
+        tokio::time::advance(Duration::from_secs(6) + Duration::from_millis(999)).await;
+        assert!(supervisor.retry_tasks.next().now_or_never().is_none());
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let retry = supervisor
+            .retry_tasks
+            .next()
+            .await
+            .expect("exact retry-after wake");
+        let ReadWorkerCompletion::RetryWake {
+            key: retry_key,
+            generation,
+            cancelled: false,
+        } = retry
+        else {
+            panic!("expected retry-after wake");
+        };
+        assert_eq!(retry_key, key);
+        assert!(supervisor.accept_retry_wake(&key, generation));
+        supervisor.enqueue_key(key);
+        supervisor.dispatch_ready_reads();
+        let retry = next_synthetic_request(&mut supervisor, &mut network_rx).await;
+        assert_eq!(
+            retry.operation.target().event_id(),
+            "$retry-after:example.invalid"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_keeps_a_dispatch_slot_until_cancelled_completion() {
+        let (network_tx, mut network_rx) = mpsc::unbounded_channel();
+        let mut supervisor = ReadWorkerSupervisor::synthetic(network_tx, Duration::from_secs(30));
+        let keys = (0..5)
+            .map(|index| ReadStateKey::PublicUnthreaded {
+                room_id: format!("!cancel-slot-{index}:example.invalid"),
+            })
+            .collect::<Vec<_>>();
+        for (index, key) in keys.iter().enumerate() {
+            supervisor.state.admit_background(
+                1,
+                key.clone(),
+                ReadTarget::new(format!("$cancel-slot-{index}:example.invalid")),
+            );
+            supervisor.enqueue_key(key.clone());
+        }
+        supervisor.dispatch_ready_reads();
+        let mut first_four = Vec::new();
+        for _ in 0..4 {
+            first_four.push(next_synthetic_request(&mut supervisor, &mut network_rx).await);
+        }
+        let cancelled = first_four[0].operation.clone();
+        supervisor.cancel(cancelled.fence());
+        supervisor.dispatch_ready_reads();
+        assert_eq!(supervisor.state.active_operation_count(), 4);
+        assert!(network_rx.try_recv().is_err());
+
+        let cancellation = supervisor.tasks.next().await.expect("cancelled completion");
+        assert!(matches!(
+            cancellation,
+            ReadWorkerCompletion::Cancelled { ref operation }
+                if operation.fence() == cancelled.fence()
+        ));
+        supervisor
+            .state
+            .complete_cancelled(&keys[0], cancelled.fence());
+        supervisor.dispatch_ready_reads();
+        let next = next_synthetic_request(&mut supervisor, &mut network_rx).await;
+        assert_eq!(
+            next.operation.target().event_id(),
+            "$cancel-slot-4:example.invalid"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_read_correlation_projects_lifecycle_and_fences_stale_b_before_new_c() {
+        let key = room_key();
+        let (actor_handle, mut control_rx) =
+            actor_handle_with_positions(7, [("$local-b:test", 2), ("$local-c:test", 3)]);
+        let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), actor_handle)]));
+        let (read_network_tx, mut read_network_rx) = mpsc::unbounded_channel();
+        manager.read_workers =
+            ReadWorkerSupervisor::synthetic(read_network_tx, Duration::from_secs(30));
+
+        manager
+            .handle_local_read_boundary_observed(
+                key.clone(),
+                7,
+                ReadTarget::with_position(
+                    "$local-b:test".to_owned(),
+                    crate::read_state::ReadPositionEvidence {
+                        generation: 7_u128 << 64,
+                        rank: 2,
+                    },
+                ),
+            )
+            .await;
+        assert_eq!(manager.read_workers.local_read_correlation_count(), 1);
+        assert_eq!(
+            manager.read_workers.local_read_sync(
+                manager
+                    .read_workers
+                    .local_read_correlations
+                    .get(&key)
+                    .expect("local B correlation")
+            ),
+            TimelineReadStateSync::Pending
+        );
+        let _public_b =
+            next_synthetic_request(&mut manager.read_workers, &mut read_network_rx).await;
+        let fully_b = next_synthetic_request(&mut manager.read_workers, &mut read_network_rx).await;
+
+        manager
+            .handle_local_read_boundary_observed(
+                key.clone(),
+                7,
+                ReadTarget::with_position(
+                    "$local-c:test".to_owned(),
+                    crate::read_state::ReadPositionEvidence {
+                        generation: 7_u128 << 64,
+                        rank: 3,
+                    },
+                ),
+            )
+            .await;
+        let stale_operation = fully_b.operation.clone();
+        manager
+            .handle_read_worker_completion(ReadWorkerCompletion::Network {
+                operation: stale_operation,
+                outcome: ReadNetworkOutcome::Succeeded,
+            })
+            .await;
+        let correlation = manager
+            .read_workers
+            .local_read_correlations
+            .get(&key)
+            .expect("new C correlation");
+        assert_eq!(correlation.local_target.event_id(), "$local-c:test");
+        assert_eq!(correlation.server_confirmed_read_event_id, None);
+        assert!(
+            manager
+                .read_workers
+                .state
+                .has_candidate(fully_b.operation.key(), "$local-c:test")
+        );
+        assert!(
+            manager
+                .read_workers
+                .state
+                .active_operation(fully_b.operation.key())
+                .is_some(),
+            "stale completion must refill its dispatcher slot with desired C"
+        );
+        let replacement = loop {
+            tokio::select! {
+                request = read_network_rx.recv() => {
+                    break request.expect("replacement C synthetic request");
+                }
+                completion = manager.read_workers.tasks.next() => {
+                    manager
+                        .handle_read_worker_completion(
+                            completion.expect("cancelled B completion before replacement C"),
+                        )
+                        .await;
+                }
+            }
+        };
+        assert_eq!(replacement.operation.target().event_id(), "$local-c:test");
+
+        while let Ok(control) = control_rx.try_recv() {
+            assert!(
+                !matches!(control, TimelineActorControl::ApplyReadSuccess { .. }),
+                "stale B success must not reach the actor after desired C replaces it"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn local_read_correlation_reports_failed_then_synced_and_capacity_truthfully() {
+        let key = room_key();
+        let (actor_handle, mut control_rx) = actor_handle_with_positions(7, [("$local-b:test", 2)]);
+        let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), actor_handle)]));
+        let (read_network_tx, mut read_network_rx) = mpsc::unbounded_channel();
+        manager.read_workers = ReadWorkerSupervisor::synthetic_with_retry(
+            read_network_tx,
+            Duration::from_secs(30),
+            Duration::from_secs(1),
+            Duration::from_secs(60),
+        );
+        manager
+            .handle_local_read_boundary_observed(
+                key.clone(),
+                7,
+                ReadTarget::with_position(
+                    "$local-b:test".to_owned(),
+                    crate::read_state::ReadPositionEvidence {
+                        generation: 7_u128 << 64,
+                        rank: 2,
+                    },
+                ),
+            )
+            .await;
+        let mut failed_requests = Vec::new();
+        for _ in 0..2 {
+            failed_requests.push(
+                next_synthetic_request(&mut manager.read_workers, &mut read_network_rx).await,
+            );
+        }
+        for request in failed_requests {
+            let operation = request.operation.clone();
+            request.response.send(Err(())).expect("fail local read");
+            let _completion = manager
+                .read_workers
+                .tasks
+                .next()
+                .await
+                .expect("failed read");
+            manager
+                .handle_read_worker_completion(ReadWorkerCompletion::Network {
+                    operation,
+                    outcome: ReadNetworkOutcome::Failed(ReadNetworkFailure::new(
+                        ReadStateFailureKind::Transport,
+                    )),
+                })
+                .await;
+        }
+        let correlation = manager
+            .read_workers
+            .local_read_correlations
+            .get(&key)
+            .expect("failed local correlation");
+        assert_eq!(
+            manager.read_workers.local_read_sync(correlation),
+            TimelineReadStateSync::Failed {
+                kind: ReadStateFailureKind::Transport
+            }
+        );
+
+        assert!(
+            manager
+                .read_workers
+                .retry_tasks
+                .next()
+                .now_or_never()
+                .is_none()
+        );
+        tokio::time::advance(Duration::from_secs(1)).await;
+        for _ in 0..2 {
+            let wake = manager
+                .read_workers
+                .retry_tasks
+                .next()
+                .await
+                .expect("local retry wake");
+            manager.handle_read_worker_completion(wake).await;
+        }
+        let mut successful_requests = Vec::new();
+        for _ in 0..2 {
+            successful_requests.push(
+                next_synthetic_request(&mut manager.read_workers, &mut read_network_rx).await,
+            );
+        }
+        for request in successful_requests {
+            let operation = request.operation.clone();
+            request
+                .response
+                .send(Ok(()))
+                .expect("successful local read");
+            let completion = manager
+                .read_workers
+                .tasks
+                .next()
+                .await
+                .expect("retry completion");
+            assert_eq!(completion.fence(), Some(operation.fence()));
+            assert_eq!(
+                manager.read_workers.state.active_operation(operation.key()),
+                Some(operation.fence())
+            );
+            if matches!(
+                operation.key(),
+                ReadStateKey::FullyReadAndPrivateUnthreaded { .. }
+            ) {
+                assert_eq!(
+                    manager.read_timeline_key_for_operation(&operation),
+                    Some(key.clone())
+                );
+            }
+            manager.handle_read_worker_completion(completion).await;
+            if matches!(
+                operation.key(),
+                ReadStateKey::FullyReadAndPrivateUnthreaded { .. }
+            ) {
+                let acknowledge = async {
+                    loop {
+                        match control_rx.recv().await.expect("fully-read apply control") {
+                            TimelineActorControl::ApplyReadSuccess { acknowledged, .. } => {
+                                acknowledged
+                                    .send(true)
+                                    .expect("acknowledge fully-read apply");
+                                break;
+                            }
+                            TimelineActorControl::ReadStateProjection { .. } => {}
+                            TimelineActorControl::ReadStatePolicyChanged { .. } => {}
+                            TimelineActorControl::ReplayInitialItems { .. }
+                            | TimelineActorControl::StartLiveTailRefresh { .. }
+                            | TimelineActorControl::CancelLiveTailNetwork { .. }
+                            | TimelineActorControl::BeginGapRepairDemand
+                            | TimelineActorControl::EndGapRepairDemand => {}
+                        }
+                    }
+                };
+                let (apply_completion, ()) =
+                    tokio::join!(manager.read_workers.tasks.next(), acknowledge);
+                manager
+                    .handle_read_worker_completion(
+                        apply_completion.expect("fully-read apply completion"),
+                    )
+                    .await;
+            }
+        }
+        let correlation = manager
+            .read_workers
+            .local_read_correlations
+            .get(&key)
+            .expect("synced local correlation");
+        assert_eq!(
+            manager.read_workers.local_read_sync(correlation),
+            TimelineReadStateSync::Synced
+        );
+        assert_eq!(
+            correlation.server_confirmed_read_event_id.as_deref(),
+            Some("$local-b:test")
+        );
+
+        let capacity_key = TimelineKey::room(
+            AccountKey("@capacity:example.invalid".to_owned()),
+            "!capacity-room:example.invalid",
+        );
+        let (capacity_actor, _capacity_controls) =
+            actor_handle_with_positions(8, [("$capacity:test", 1)]);
+        let mut capacity_manager =
+            live_tail_test_manager(HashMap::from([(capacity_key.clone(), capacity_actor)]));
+        let (capacity_tx, _capacity_rx) = mpsc::unbounded_channel();
+        capacity_manager.read_workers =
+            ReadWorkerSupervisor::synthetic(capacity_tx, Duration::from_secs(30));
+        for index in 0..crate::read_state::READ_STATE_OUTBOX_ENTRY_LIMIT {
+            capacity_manager.read_workers.state.admit_background(
+                1,
+                ReadStateKey::PublicUnthreaded {
+                    room_id: format!("!capacity-fill-{index}:example.invalid"),
+                },
+                ReadTarget::new(format!("$capacity-fill-{index}:example.invalid")),
+            );
+        }
+        capacity_manager
+            .handle_local_read_boundary_observed(
+                capacity_key.clone(),
+                8,
+                ReadTarget::with_position(
+                    "$capacity:test".to_owned(),
+                    crate::read_state::ReadPositionEvidence {
+                        generation: 8_u128 << 64,
+                        rank: 1,
+                    },
+                ),
+            )
+            .await;
+        let capacity_correlation = capacity_manager
+            .read_workers
+            .local_read_correlations
+            .get(&capacity_key)
+            .expect("capacity admission keeps correlation");
+        assert_eq!(
+            capacity_manager.read_workers.local_read_correlation_count(),
+            1
+        );
+        assert_eq!(
+            capacity_manager
+                .read_workers
+                .local_read_sync(capacity_correlation),
+            TimelineReadStateSync::Failed {
+                kind: ReadStateFailureKind::Capacity
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn thread_read_policy_toggle_preserves_local_correlation_and_not_requested_state() {
+        let room_id = "!policy-room:example.invalid";
+        let key = TimelineKey {
+            account_key: AccountKey("@policy:example.invalid".to_owned()),
+            kind: TimelineKind::Thread {
+                room_id: room_id.to_owned(),
+                root_event_id: "$policy-root:example.invalid".to_owned(),
+            },
+        };
+        let (actor_handle, _control_rx) = actor_handle_with_positions(9, [("$policy:test", 4)]);
+        let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), actor_handle)]));
+        let (read_network_tx, _read_network_rx) = mpsc::unbounded_channel();
+        manager.read_workers =
+            ReadWorkerSupervisor::synthetic(read_network_tx, Duration::from_secs(30));
+        let (persistence, mut persistence_rx) = ReadPersistenceIngress::channel();
+        manager.read_workers.persistence = Some(persistence);
+        manager
+            .handle_local_read_boundary_observed(
+                key.clone(),
+                9,
+                ReadTarget::with_position(
+                    "$policy:test".to_owned(),
+                    crate::read_state::ReadPositionEvidence {
+                        generation: 9_u128 << 64,
+                        rank: 4,
+                    },
+                ),
+            )
+            .await;
+        assert_eq!(manager.read_workers.local_read_correlation_count(), 1);
+        assert_eq!(
+            manager.read_workers.local_read_sync(
+                manager
+                    .read_workers
+                    .local_read_correlations
+                    .get(&key)
+                    .expect("thread policy correlation")
+            ),
+            TimelineReadStateSync::Pending
+        );
+
+        let _ = persistence_rx.borrow_and_update();
+        manager.handle_read_state_policy_changed(1, false).await;
+        persistence_rx
+            .changed()
+            .await
+            .expect("privacy disable publishes the reduced outbox");
+        let disabled_snapshot = persistence_rx
+            .borrow_and_update()
+            .as_ref()
+            .expect("privacy disable persistence request")
+            .snapshot()
+            .clone();
+        assert!(disabled_snapshot.is_empty());
+        let (restored_network_tx, mut restored_network_rx) = mpsc::unbounded_channel();
+        let (restored_persistence, _restored_persistence_rx) = ReadPersistenceIngress::channel();
+        let mut restored = ReadWorkerSupervisor::synthetic_restored(
+            restored_network_tx,
+            disabled_snapshot,
+            restored_persistence,
+        );
+        restored.send_read_receipts = false;
+        restored.dispatch_ready_reads();
+        assert!(restored_network_rx.try_recv().is_err());
+
+        let stale_snapshot = restored_public_read_snapshot(room_id, "$stale-policy:test");
+        let (stale_network_tx, mut stale_network_rx) = mpsc::unbounded_channel();
+        let mut stale_supervisor =
+            ReadWorkerSupervisor::synthetic(stale_network_tx, Duration::from_secs(30));
+        stale_supervisor.state = ReadStateEngine::restore(1, stale_snapshot)
+            .expect("stale privacy snapshot restores for defense-in-depth check");
+        stale_supervisor.send_read_receipts = false;
+        for read_key in stale_supervisor.desired_keys() {
+            stale_supervisor.enqueue_key(read_key);
+        }
+        stale_supervisor.dispatch_ready_reads();
+        assert!(stale_network_rx.try_recv().is_err());
+
+        assert_eq!(
+            manager.read_workers.local_read_sync(
+                manager
+                    .read_workers
+                    .local_read_correlations
+                    .get(&key)
+                    .expect("disabled thread policy correlation")
+            ),
+            TimelineReadStateSync::NotRequested
+        );
+        assert_eq!(manager.read_workers.local_read_correlation_count(), 1);
+
+        manager.handle_read_state_policy_changed(1, true).await;
+        assert_eq!(
+            manager.read_workers.local_read_sync(
+                manager
+                    .read_workers
+                    .local_read_correlations
+                    .get(&key)
+                    .expect("re-enabled thread policy correlation")
+            ),
+            TimelineReadStateSync::Pending
+        );
+    }
+
+    #[tokio::test]
+    async fn actor_retirement_retires_its_read_keys_and_persistence() {
+        let key = room_key();
+        let (actor_handle, _control_rx) = actor_handle_with_positions(10, [("$retired:test", 1)]);
+        let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), actor_handle)]));
+        let (read_network_tx, _read_network_rx) = mpsc::unbounded_channel();
+        manager.read_workers =
+            ReadWorkerSupervisor::synthetic(read_network_tx, Duration::from_secs(30));
+        manager
+            .handle_local_read_boundary_observed(
+                key.clone(),
+                10,
+                ReadTarget::with_position(
+                    "$retired:test".to_owned(),
+                    crate::read_state::ReadPositionEvidence {
+                        generation: 10_u128 << 64,
+                        rank: 1,
+                    },
+                ),
+            )
+            .await;
+        assert!(!manager.read_workers.state.persistence_snapshot().is_empty());
+
+        manager.read_workers.remove_local_read_correlation(&key);
+
+        assert_eq!(manager.read_workers.local_read_correlation_count(), 0);
+        assert!(manager.read_workers.state.persistence_snapshot().is_empty());
+        assert_eq!(manager.read_workers.state.active_operation_count(), 0);
+    }
+
+    async fn next_synthetic_request(
+        supervisor: &mut ReadWorkerSupervisor,
+        receiver: &mut mpsc::UnboundedReceiver<super::SyntheticReadNetworkRequest>,
+    ) -> super::SyntheticReadNetworkRequest {
+        let mut completion = Box::pin(supervisor.tasks.next());
+        tokio::select! {
+            request = receiver.recv() => request.expect("synthetic read request"),
+            _ = &mut completion => panic!("synthetic worker completed before request was observed"),
+        }
+    }
+
+    fn actor_handle_with_positions(
+        actor_generation: u64,
+        positions: impl IntoIterator<Item = (&'static str, u64)>,
+    ) -> (TimelineActorHandle, mpsc::Receiver<TimelineActorControl>) {
+        let (tx, _rx) = mpsc::channel(1);
+        let (control_tx, control_rx) = mpsc::channel(32);
+        let (_position_tx, position_rx) = watch::channel(Arc::new(TimelinePositionIndex {
+            generation: u128::from(actor_generation) << 64,
+            ranks: positions
+                .into_iter()
+                .map(|(event_id, rank)| (event_id.to_owned(), rank))
+                .collect(),
+        }));
+        (
+            TimelineActorHandle {
+                tx,
+                control_tx: Some(control_tx),
+                position_rx: Some(position_rx),
+                task: None,
+                auxiliary_tasks: Vec::new(),
+                subscription_generation: None,
+                enqueue_context: None,
+            },
+            control_rx,
+        )
     }
 
     #[tokio::test]
@@ -1504,7 +3207,7 @@ mod tests {
             room_id: key.room_id().to_owned(),
         };
         let (ordinary_tx, _ordinary_rx) = mpsc::channel(1);
-        let (control_tx, _control_rx) = mpsc::channel(1);
+        let (control_tx, mut control_rx) = mpsc::channel(8);
         let (_position_tx, position_rx) = watch::channel(Arc::new(TimelinePositionIndex {
             generation: u128::from(7_u64) << 64,
             ranks: HashMap::from([("$desired:test".to_owned(), 5)]),
@@ -1527,13 +3230,23 @@ mod tests {
             persistence,
         );
 
-        manager.wake_all_desired_reads(ReadRetrySource::Reconnect);
+        manager
+            .wake_all_desired_reads(ReadRetrySource::Reconnect)
+            .await;
         assert!(manager.read_workers.tasks.is_empty());
         assert!(read_network_rx.try_recv().is_err());
 
         manager
             .handle_authoritative_read_state_observed(&key, 7, read_key, None)
             .await;
+        assert!(matches!(
+            control_rx.recv().await,
+            Some(TimelineActorControl::ReadStateProjection {
+                local_viewed_event_id: Some(event_id),
+                server_confirmed_read_event_id: None,
+                sync: TimelineReadStateSync::Pending,
+            }) if event_id == "$desired:test"
+        ));
         let responder = async {
             let retry = read_network_rx
                 .recv()
@@ -1558,6 +3271,107 @@ mod tests {
                 .snapshot()
                 .is_empty()
         );
+        assert!(matches!(
+            control_rx.recv().await,
+            Some(TimelineActorControl::ReadStateProjection {
+                local_viewed_event_id: Some(local),
+                server_confirmed_read_event_id: None,
+                sync: TimelineReadStateSync::Synced,
+            }) if local == "$desired:test"
+        ));
+    }
+
+    #[tokio::test]
+    async fn restored_fully_read_projects_pending_then_server_confirmed_after_apply() {
+        let key = room_key();
+        let read_key = ReadStateKey::FullyReadAndPrivateUnthreaded {
+            room_id: key.room_id().to_owned(),
+        };
+        let (actor_handle, mut control_rx) =
+            actor_handle_with_positions(7, [("$restored-fully:test", 5)]);
+        let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), actor_handle)]));
+        let (read_network_tx, mut read_network_rx) = mpsc::unbounded_channel();
+        let (persistence, mut persistence_rx) = ReadPersistenceIngress::channel();
+        manager.read_workers = ReadWorkerSupervisor::synthetic_restored(
+            read_network_tx,
+            restored_read_snapshot(read_key.clone(), "$restored-fully:test"),
+            persistence,
+        );
+
+        manager
+            .handle_authoritative_read_state_observed(&key, 7, read_key, None)
+            .await;
+        assert!(matches!(
+            control_rx.recv().await,
+            Some(TimelineActorControl::ReadStateProjection {
+                local_viewed_event_id: Some(event_id),
+                server_confirmed_read_event_id: None,
+                sync: TimelineReadStateSync::Pending,
+            }) if event_id == "$restored-fully:test"
+        ));
+
+        let responder = async {
+            let request = read_network_rx.recv().await.expect("restored retry starts");
+            request
+                .response
+                .send(Ok(()))
+                .expect("restored retry succeeds");
+        };
+        let (network_completion, ()) = tokio::join!(manager.read_workers.tasks.next(), responder);
+        manager
+            .handle_read_worker_completion(network_completion.expect("network completion"))
+            .await;
+
+        let acknowledge = async {
+            loop {
+                match control_rx.recv().await.expect("actor apply control") {
+                    TimelineActorControl::ApplyReadSuccess {
+                        kind: ReadActorApplyKind::FullyRead,
+                        event_id,
+                        acknowledged,
+                    } => {
+                        assert_eq!(event_id, "$restored-fully:test");
+                        acknowledged.send(true).expect("acknowledge actor apply");
+                        break;
+                    }
+                    TimelineActorControl::ReadStateProjection { .. } => {}
+                    TimelineActorControl::ReadStatePolicyChanged { .. } => {}
+                    TimelineActorControl::ReplayInitialItems { .. }
+                    | TimelineActorControl::StartLiveTailRefresh { .. }
+                    | TimelineActorControl::CancelLiveTailNetwork { .. }
+                    | TimelineActorControl::BeginGapRepairDemand
+                    | TimelineActorControl::EndGapRepairDemand => {}
+                    TimelineActorControl::ApplyReadSuccess { .. } => {
+                        panic!("unexpected actor apply kind")
+                    }
+                }
+            }
+        };
+        let (apply_completion, ()) = tokio::join!(manager.read_workers.tasks.next(), acknowledge);
+        manager
+            .handle_read_worker_completion(apply_completion.expect("actor apply completion"))
+            .await;
+
+        persistence_rx
+            .changed()
+            .await
+            .expect("successful restore publishes empty outbox");
+        assert!(
+            persistence_rx
+                .borrow_and_update()
+                .as_ref()
+                .expect("persistence request")
+                .snapshot()
+                .is_empty()
+        );
+        assert!(matches!(
+            control_rx.recv().await,
+            Some(TimelineActorControl::ReadStateProjection {
+                local_viewed_event_id: Some(local),
+                server_confirmed_read_event_id: Some(server),
+                sync: TimelineReadStateSync::Synced,
+            }) if local == "$restored-fully:test" && server == "$restored-fully:test"
+        ));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1590,13 +3404,17 @@ mod tests {
             persistence,
         );
 
-        manager.wake_all_desired_reads(ReadRetrySource::Reconnect);
-        manager.route_read_command(
-            fake_rid(29_601),
-            key,
-            "$new-waiter:test".to_owned(),
-            ReadCommandKind::Receipt,
-        );
+        manager
+            .wake_all_desired_reads(ReadRetrySource::Reconnect)
+            .await;
+        manager
+            .route_read_command(
+                fake_rid(29_601),
+                key,
+                "$new-waiter:test".to_owned(),
+                ReadCommandKind::Receipt,
+            )
+            .await;
 
         assert!(
             manager
@@ -1848,7 +3666,7 @@ mod tests {
             ReadWaiterId::new(2),
         );
         let (ordinary_tx, _ordinary_rx) = mpsc::channel(1);
-        let (control_tx, _control_rx) = mpsc::channel(1);
+        let (control_tx, mut control_rx) = mpsc::channel(1);
         let (_position_tx, position_rx) = watch::channel(Arc::new(TimelinePositionIndex {
             generation: u128::from(7_u64) << 64,
             ranks: HashMap::from([
@@ -1887,6 +3705,14 @@ mod tests {
         assert!(manager.read_workers.reconciliation_pending(&read_key));
         assert!(manager.read_workers.tasks.is_empty());
         assert!(read_network_rx.try_recv().is_err());
+        assert!(matches!(
+            control_rx.recv().await,
+            Some(TimelineActorControl::ReadStateProjection {
+                local_viewed_event_id: None,
+                sync: TimelineReadStateSync::Pending,
+                ..
+            })
+        ));
     }
 
     #[tokio::test]
@@ -2374,9 +4200,61 @@ mod tests {
         manager
             .timelines
             .insert(key.clone(), test_timeline_actor_handle());
+        manager.read_workers.send_read_receipts = false;
+        manager
+            .handle_command(TimelineCommand::SendReadReceipt {
+                request_id: fake_rid(28_491),
+                key: key.clone(),
+                event_id: "$event:test".to_owned(),
+            })
+            .await;
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::OperationFailed {
+                failure: CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Forbidden,
+                },
+                ..
+            })
+        ));
+        assert!(manager.read_workers.waiters.is_empty());
+        assert!(manager.read_workers.tasks.is_empty());
+
+        manager.read_workers.send_read_receipts = true;
+        let flip_request_id = fake_rid(28_492);
+        manager
+            .handle_command(TimelineCommand::SendReadReceipt {
+                request_id: flip_request_id,
+                key: key.clone(),
+                event_id: "$event:test".to_owned(),
+            })
+            .await;
+        assert_eq!(manager.read_workers.waiters.len(), 1);
+        manager.handle_read_state_policy_changed(1, false).await;
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::OperationFailed {
+                request_id,
+                failure: CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Forbidden,
+                },
+            }) if request_id == flip_request_id
+        ));
+        assert!(manager.read_workers.waiters.is_empty());
+        assert!(manager.read_workers.state.persistence_snapshot().is_empty());
+        let cancelled = manager
+            .read_workers
+            .tasks
+            .next()
+            .await
+            .expect("policy flip cancels the admitted worker");
+        manager.handle_read_worker_completion(cancelled).await;
+        assert!(event_rx.try_recv().is_err());
+        assert!(read_network_rx.try_recv().is_err());
+
         manager
             .handle_command(TimelineCommand::SetFullyRead {
-                request_id: fake_rid(28_491),
+                request_id: fake_rid(28_493),
                 key,
                 event_id: "not-an-event-id".to_owned(),
             })
@@ -2506,7 +4384,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn sync_restart_wakes_failed_read_immediately_and_invalidates_backoff() {
+    async fn sync_restart_preserves_failed_read_backoff_until_its_due_token() {
         let key = room_key();
         let request_id = fake_rid(28_493);
         let (event_tx, mut event_rx) = broadcast::channel(4);
@@ -2544,26 +4422,30 @@ mod tests {
             }) if failed == request_id
         ));
 
-        manager.wake_all_desired_reads(ReadRetrySource::Reconnect);
+        manager
+            .wake_all_desired_reads(ReadRetrySource::Reconnect)
+            .await;
+        assert!(
+            read_network_rx.try_recv().is_err(),
+            "reconnect must not bypass the scheduled backoff"
+        );
+        tokio::time::advance(Duration::from_secs(30)).await;
+        let retry_wake = manager
+            .read_workers
+            .retry_tasks
+            .next()
+            .await
+            .expect("exact due token");
+        manager.handle_read_worker_completion(retry_wake).await;
         let responder = async {
-            let retry = read_network_rx
-                .recv()
-                .await
-                .expect("sync restart must wake desired read without waiting for backoff");
-            retry.response.send(Ok(())).expect("restart retry succeeds");
+            let retry = read_network_rx.recv().await.expect("due retry");
+            retry.response.send(Ok(())).expect("retry succeeds");
         };
         let (completion, ()) = tokio::join!(manager.read_workers.tasks.next(), responder);
         manager
-            .handle_read_worker_completion(completion.expect("restart retry completion"))
+            .handle_read_worker_completion(completion.expect("retry completion"))
             .await;
         tokio::time::advance(Duration::from_secs(60)).await;
-        while let Some(completion) = manager.read_workers.tasks.next().now_or_never().flatten() {
-            manager.handle_read_worker_completion(completion).await;
-        }
-        assert!(
-            read_network_rx.try_recv().is_err(),
-            "invalidated backoff must not start a duplicate retry"
-        );
         assert!(
             event_rx.try_recv().is_err(),
             "restart retry must not emit a second user terminal"
@@ -2571,7 +4453,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn room_subscription_checkpoint_wakes_failed_read_immediately() {
+    async fn room_subscription_checkpoint_preserves_failed_read_backoff() {
         let key = room_key();
         let request_id = fake_rid(28_494);
         let (event_tx, mut event_rx) = broadcast::channel(4);
@@ -2604,12 +4486,23 @@ mod tests {
             .await;
         assert!(event_rx.try_recv().is_ok());
 
-        manager.wake_desired_reads_for_room(key.room_id(), ReadRetrySource::Checkpoint);
+        manager
+            .wake_desired_reads_for_room(key.room_id(), ReadRetrySource::Checkpoint)
+            .await;
+        assert!(
+            read_network_rx.try_recv().is_err(),
+            "checkpoint must not bypass the scheduled backoff"
+        );
+        tokio::time::advance(Duration::from_secs(30)).await;
+        let retry_wake = manager
+            .read_workers
+            .retry_tasks
+            .next()
+            .await
+            .expect("exact checkpoint retry token");
+        manager.handle_read_worker_completion(retry_wake).await;
         let responder = async {
-            let retry = read_network_rx
-                .recv()
-                .await
-                .expect("checkpoint must wake desired read");
+            let retry = read_network_rx.recv().await.expect("due checkpoint retry");
             retry
                 .response
                 .send(Ok(()))

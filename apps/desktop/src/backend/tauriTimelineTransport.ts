@@ -142,14 +142,16 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
         firstVisibleEventId: string | null,
         lastVisibleEventId: string | null,
         visibleGapIds: TimelineGapId[],
-        atBottom: boolean
+        atBottom: boolean,
+        threadRootEventId: string | null
       ) {
         await invoke("observe_timeline_viewport", {
           roomId,
           firstVisibleEventId,
           lastVisibleEventId,
           visibleGapIds,
-          atBottom
+          atBottom,
+          threadRootEventId
         });
       },
       async updateScrollAnchor(roomId: string, anchor: TimelineScrollAnchor) {

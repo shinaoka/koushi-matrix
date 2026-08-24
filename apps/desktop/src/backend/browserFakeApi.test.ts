@@ -1771,7 +1771,7 @@ describe("BrowserFakeApi settings preview", () => {
     ]);
   });
 
-  test("preserves all read-receipt readers when adding the current user", async () => {
+  test("does not repair installed read state from receipt commands", async () => {
     const api = createBrowserFakeApi();
     const eventId = "$receipt-target:example.invalid";
     const existingReaders: LiveReadReceipt[] = [
@@ -1800,10 +1800,18 @@ describe("BrowserFakeApi settings preview", () => {
       updated.state.domain.live_signals.rooms["!room-alpha:example.invalid"]?.receipts_by_event[
         eventId
       ];
-    expect(summary?.total_count).toBe(4);
+    expect(summary?.readers).toEqual(existingReaders);
+    expect(summary?.total_count).toBe(existingReaders.length);
     expect(summary?.overflow_count).toBe(0);
-    expect(summary?.readers).toHaveLength(4);
-    expect(summary?.readers.map((reader) => reader.user_id)).toContain("@demo-user:example.invalid");
+
+    const beforeFullyRead = updated.state.domain.live_signals.rooms[
+      "!room-alpha:example.invalid"
+    ]?.fully_read_event_id;
+    await api.setFullyRead("!room-alpha:example.invalid", eventId);
+    const afterFullyRead = (await api.getSnapshot()).state.domain.live_signals.rooms[
+      "!room-alpha:example.invalid"
+    ]?.fully_read_event_id;
+    expect(afterFullyRead).toBe(beforeFullyRead);
   });
 
   test("resolves composer key actions from the Rust-shaped settings snapshot", async () => {

@@ -77,6 +77,32 @@ pub enum RoomFailureKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadStateFailureKind {
+    Timeout,
+    Transport,
+    RateLimited,
+    Authentication,
+    Server,
+    Capacity,
+    Sdk,
+}
+
+impl ReadStateFailureKind {
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::Transport => "transport",
+            Self::RateLimited => "rate_limited",
+            Self::Authentication => "authentication",
+            Self::Server => "server",
+            Self::Capacity => "capacity",
+            Self::Sdk => "sdk",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TimelineFailureKind {
     InvalidDirection,
     InvalidReactionTarget,
