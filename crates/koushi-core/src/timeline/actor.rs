@@ -102,6 +102,13 @@ use super::thread_projection::ThreadAttentionBatchProvenance;
 
 const TIMELINE_ACTOR_CONTROL_QUEUE_CAPACITY: usize = 16;
 
+fn should_fetch_members(kind: &TimelineKind) -> bool {
+    matches!(
+        kind,
+        TimelineKind::Room { .. } | TimelineKind::Focused { .. }
+    )
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ThreadSummaryProjectionWake {
     pub(super) root_event_id: String,
@@ -1435,6 +1442,12 @@ impl TimelineActor {
             diff_stream,
             initial_items,
         )));
+        if should_fetch_members(&key.kind) {
+            let timeline = Arc::clone(&timeline);
+            auxiliary_tasks.push(executor::spawn(async move {
+                timeline.fetch_members().await;
+            }));
+        }
 
         // Spawn the send queue monitor task: forwards RoomSendQueueUpdate to actor.
         let room_id_str = match &key.kind {
@@ -2559,7 +2572,7 @@ mod tests {
     use super::super::test_support::fake_rid;
     use super::{
         ThreadSummaryProjectionIngress, ThreadSummaryProjectionWake, TimelineActorControl,
-        TimelineActorHandle, TimelineActorMessage,
+        TimelineActorHandle, TimelineActorMessage, should_fetch_members,
     };
 
     struct DropFlag(Arc<AtomicBool>);
@@ -2568,6 +2581,21 @@ mod tests {
         fn drop(&mut self) {
             self.0.store(false, Ordering::SeqCst);
         }
+    }
+
+    #[test]
+    fn room_and_focused_timelines_fetch_members_but_threads_reuse_room_state() {
+        assert!(should_fetch_members(&crate::ids::TimelineKind::Room {
+            room_id: "!room:example.org".to_owned(),
+        }));
+        assert!(should_fetch_members(&crate::ids::TimelineKind::Focused {
+            room_id: "!room:example.org".to_owned(),
+            event_id: "$event:example.org".to_owned(),
+        }));
+        assert!(!should_fetch_members(&crate::ids::TimelineKind::Thread {
+            room_id: "!room:example.org".to_owned(),
+            root_event_id: "$root:example.org".to_owned(),
+        }));
     }
 
     #[test]

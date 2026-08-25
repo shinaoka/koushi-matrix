@@ -65,6 +65,32 @@ that Room and Focused hydrate while Thread does not.
 - real `timeline_basic` or the closest existing both-server timeline lane must
   assert a pre-join historical sender label without a live repair event.
 
+## Implementation evidence
+
+- RED: `room_actor_hydrates_a_historical_sender_without_a_live_event` timed out
+  after two seconds because no `/members` request or profile Set occurred
+  (`/tmp/issue688-red.log`, exit 101).
+- GREEN: the unchanged test observed initial `sender_label = None`, exactly one
+  mocked `/members` request, then an ordinary Set for the same event with
+  `sender_label = "Carol"`, without a live Carol event.
+- Core lib: 1,092 passed / 8 ignored. Workspace all-targets: 2,568 passed /
+  13 ignored. QA binary: 133 passed. Wasm, Tauri check, frontend typecheck,
+  lint, 1,497 Vitest tests, build, SDK/diagnostic/docs checks, cargo-deny, and
+  diff checks passed.
+- The existing `timeline` real-runtime lane passed on both tuwunel and synapse.
+  The exact missing-profile transition remains in the deterministic Matrix mock:
+  reproducing the same pre-join lazy-member condition in the broad scenario
+  would add three-party/history fixture machinery without exercising a new
+  product boundary.
+- Independent `reviewer-flash` review traced subscription/relay ordering,
+  buffered delivery, auxiliary-task teardown, scope, test assertions, and docs,
+  and returned `Correct-to-merge`. It noted only the nonblocking pre-existing
+  direct-thread-deep-link case; the selected Room/Focused policy intentionally
+  matches Element X Android.
+- `cargo machete --with-metadata` reports the repository's pre-existing unused
+  dependency baseline identically on `origin/main`; this diff changes no
+  manifest or dependency.
+
 ## Stop conditions
 
 Do not add a Koushi profile cache, per-row lookup, frontend inference, SDK

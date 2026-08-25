@@ -3980,6 +3980,150 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn room_actor_hydrates_a_historical_sender_without_a_live_event() {
+        use matrix_sdk::ruma::events::room::member::MembershipState;
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+        use matrix_sdk_test::{ALICE, CAROL, JoinedRoomBuilder, event_factory::EventFactory};
+
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        client
+            .event_cache()
+            .subscribe()
+            .expect("event cache subscription");
+        let sdk_room_id = matrix_sdk::ruma::room_id!("!historical-profile:example.org");
+        let event_id = matrix_sdk::ruma::event_id!("$historical-profile:example.org");
+        let room = server.sync_joined_room(&client, sdk_room_id).await;
+        let factory = EventFactory::new().room(sdk_room_id);
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(sdk_room_id).add_timeline_event(
+                    factory
+                        .text_msg("historical")
+                        .sender(&CAROL)
+                        .event_id(event_id)
+                        .into_raw_sync(),
+                ),
+            )
+            .await;
+        server
+            .mock_get_members()
+            .ok(vec![
+                factory
+                    .member(&ALICE)
+                    .membership(MembershipState::Join)
+                    .into_raw(),
+                factory
+                    .member(&CAROL)
+                    .display_name("Carol")
+                    .membership(MembershipState::Join)
+                    .into_raw(),
+            ])
+            .expect(1)
+            .named("historical-profile-members")
+            .mount()
+            .await;
+
+        let timeline = Arc::new(
+            koushi_timeline_builder(
+                &room,
+                TimelineFocus::Live {
+                    hide_threaded_events: false,
+                },
+            )
+            .build()
+            .await
+            .expect("room timeline"),
+        );
+        let session = Arc::new(MatrixClientSession::from_client_for_testing(
+            client,
+            SessionInfo {
+                homeserver: "http://example.invalid".to_owned(),
+                user_id: ALICE.to_string(),
+                device_id: "DEVICE".to_owned(),
+                authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+            },
+        ));
+        let key = TimelineKey::room(AccountKey(ALICE.to_string()), sdk_room_id.to_string());
+        let mut manager = live_tail_test_manager(HashMap::new());
+        let (action_tx, mut action_rx) = mpsc::channel(8);
+        manager.action_tx = action_tx;
+        let _action_drain =
+            executor::spawn(async move { while action_rx.recv().await.is_some() {} });
+        let mut event_rx = manager.event_tx.subscribe();
+        let actor_generation = manager
+            .timeline_actor_generations
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
+        let _actor = TimelineActor::spawn(
+            key.clone(),
+            timeline,
+            session,
+            fake_rid(68),
+            true,
+            manager.action_tx.clone(),
+            manager.event_tx.clone(),
+            None,
+            Default::default(),
+            None,
+            LinkPreviewContext::default(),
+            manager.account_work.clone(),
+            Arc::clone(&manager.thread_root_projection_service),
+            Arc::clone(&manager.replay_known_thread_root_projections),
+            Arc::clone(&manager.timeline_actor_generations),
+            actor_generation,
+            None,
+            Default::default(),
+            manager.terminal_ingress.clone(),
+            manager.msg_tx.clone(),
+        )
+        .await;
+
+        let hydrated = executor::timeout(Duration::from_secs(2), async {
+            let mut saw_unavailable_initial = false;
+            loop {
+                match event_rx.recv().await.expect("timeline event") {
+                    CoreEvent::Timeline(TimelineEvent::InitialItems {
+                        key: event_key,
+                        items,
+                        ..
+                    }) if event_key == key => {
+                        let item = items
+                            .iter()
+                            .find(|item| timeline_item_event_id(item) == Some(event_id.as_str()))
+                            .expect("historical initial item");
+                        assert_eq!(item.sender_label, None);
+                        saw_unavailable_initial = true;
+                    }
+                    CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                        key: event_key,
+                        diffs,
+                        ..
+                    }) if event_key == key && saw_unavailable_initial => {
+                        if let Some(item) = diffs.iter().find_map(|diff| match diff {
+                            crate::event::TimelineDiff::Set { item, .. }
+                                if timeline_item_event_id(item) == Some(event_id.as_str()) =>
+                            {
+                                Some(item)
+                            }
+                            _ => None,
+                        }) && item.sender_label.as_deref() == Some("Carol")
+                        {
+                            break true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("member hydration must settle through an ordinary timeline diff");
+        assert!(hydrated);
+    }
+
+    #[tokio::test]
     async fn live_tail_restore_actor_flush_hands_completion_to_manager_once() {
         use matrix_sdk::test_utils::mocks::{MatrixMockServer, RoomMessagesResponseTemplate};
         use matrix_sdk_test::{ALICE, JoinedRoomBuilder, event_factory::EventFactory};
