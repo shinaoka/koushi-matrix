@@ -282,3 +282,19 @@ remove disposable artifacts, and leave the worktree clean.
 | replay/restart equality | focused replay test + real QA restore |
 | render-only TypeScript | deleted inference helpers + supplied-summary test |
 | diagnostics | closed-token/ordinal privacy test |
+
+## Design review record
+
+- Mandatory `reviewer-flash` Round 1 on design commit `39c7433`: `Not
+  correct-to-merge`. It found a manager↔Room bounded-mailbox ABBA risk, an
+  undefined redaction rollback through the live-activity floor, and missing
+  exact eligibility/current-Room routing statements.
+- The design moved manager→Room delivery to an actor-owned bounded latest-wins
+  watch, made redacted/removal observations retire the matching live floor,
+  reused matching-thread eligibility, and specified exact source/current-Room
+  generation validation and replacement recovery.
+- Mandatory `reviewer-flash` Round 2 on amended design commit `f0d5879`:
+  **Correct-to-merge**. It traced the watch against the biased actor loop, the
+  service bounds/revision fences, redaction rollback, TypeScript deletion,
+  diagnostics, RED matrix, QA token, and every #678 acceptance row; no finding
+  of any severity remained. Implementation is authorized under this design.
