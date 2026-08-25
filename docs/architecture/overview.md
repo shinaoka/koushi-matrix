@@ -5,7 +5,7 @@ Dated specs and plans under `docs/superpowers/` are implementation guides
 toward this document and must not contradict it. Amend this document first
 when a design change is needed, then update or supersede the affected specs.
 
-Last amended: 2026-08-23.
+Last amended: 2026-08-25.
 
 The evidence-based classification of remaining frontend-owned resources and
 semantic migration candidates is maintained in
@@ -595,6 +595,16 @@ identity, sender/body/timestamp fields, `in_reply_to_event_id`,
 `ThreadSummaryDto` contains `reply_count`, `latest_sender`,
 `latest_body_preview`, and `latest_timestamp_ms`; the `latest_*` fields are
 `None` when the SDK has not loaded the latest event details.
+
+A session-scoped Core thread-summary projection reconciles SDK/event-cache
+aggregates with accepted live reply activity once per `(room_id,
+root_event_id)`. The same checked activity/summary revisions and aggregate
+produce canonical Room roots, Thread/Focused root presentations, and hydrated
+off-window roots. A newer accepted live reply cannot be regressed by an older
+bundled SDK summary; edits retain reply identity/count, redactions select the
+previous renderable reply or clear latest details, and replay/restart rebuilds
+the same result from the SDK event cache. React renders this DTO and never
+infers or repairs its fields from visible replies.
 
 The runtime assigns each attached consumer a `RuntimeConnectionId`; the
 attached connection allocates a monotonically increasing `sequence` within that

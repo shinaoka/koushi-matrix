@@ -373,6 +373,13 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   produced by `compose_sidebar`; `WorkspaceRail` may render the snapshot
   attributes but must not recompute child-room unread/highlight state.
 - Timeline thread chips render the Rust-projected row `thread_summary` DTO.
+  One session-scoped Core projection reconciles the SDK/event-cache aggregate
+  with accepted live activity for canonical, Thread/Focused, and hydrated
+  off-window roots. React must not fill null fields, choose between a bundled
+  summary and visible replies, retain an expected latest reply, or repair a
+  stale non-null summary. Replay/restart rehydrates the same Core projection
+  from the SDK event cache; no frontend or first-party plaintext summary store
+  exists.
   Pane-level thread attention is Rust-owned `AppState.thread_attention`; React
   may render the DTO but must not scan visible thread rows or row chips to derive
   indicator counts. The core producer uses the authoritative own threaded receipt

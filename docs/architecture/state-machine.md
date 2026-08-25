@@ -8,7 +8,7 @@ fixture/demo backend contract mentioned below is historical (dev/demo only).
 The state-transition diagrams in this document are normative and must track the
 reducer; see [Maintenance Contract](#maintenance-contract).
 
-Date: 2026-08-16
+Date: 2026-08-25
 
 ## Contract
 
@@ -1241,6 +1241,52 @@ stateDiagram-v2
   timeline suppresses only the conversation-start marker and root reply-summary
   chip; the room timeline retains that chip and formats its Rust-projected
   latest-reply timestamp.
+
+Thread-summary presentation has one session-scoped Core owner. Its private
+revision lifecycle is independent from pane-level unread attention:
+
+```mermaid
+stateDiagram-v2
+    [*] --> SummaryUnknown
+    SummaryUnknown --> SummaryPending: canonical SDK summary or live reply observed
+    SummaryPending --> SummaryPending: newer activity / activity_revision++ + summary_revision++
+    SummaryPending --> SummaryReady: exact event-cache aggregate completion
+    SummaryReady --> SummaryPending: live reply/edit/redaction/rehydration / summary_revision++
+    SummaryPending --> StaleSummaryDiscarded: older actor/activity/summary completion
+    StaleSummaryDiscarded --> SummaryPending: newest desired refresh retained
+    SummaryReady --> SummaryReady: duplicate/replay / no-op
+    SummaryReady --> SummaryRemoved: authoritative count zero / clear latest fields
+    SummaryRemoved --> SummaryPending: later eligible activity
+    SummaryPending --> [*]: Room actor/session retirement
+    SummaryReady --> [*]: Room actor/session retirement
+    SummaryRemoved --> [*]: Room actor/session retirement
+```
+
+- The key is account/session + room + root. The SDK event cache remains Matrix
+  history authority; Core retains only the bounded presentation record already
+  used for off-window root hydration.
+- A canonical root and an off-window hydrated root consume the same accepted
+  aggregate. A canonical SDK `Set` is overlaid with the current accepted
+  aggregate before publication, so an older bundled summary cannot regress it.
+- A live Thread actor observation wakes the exact current Room actor through an
+  actor-owned bounded latest-wins watch, not an awaited manager-to-actor mailbox
+  send. The manager therefore keeps draining while the Room actor schedules
+  aggregate work, avoiding a bounded-mailbox cycle. Exact actor, activity, and
+  summary revisions fence replacement, unsubscribe, replay, and delayed
+  completion. A missing Room actor means no visible room-root surface; normal
+  initial subscription rehydrates from the SDK cache.
+- Renderable observations use the existing stable matching-thread eligibility;
+  transaction echoes and other roots are excluded. Redacted rows and pre/post
+  removals carry an explicit invalidation observation that retires the live
+  activity floor before the SDK aggregate is compared.
+- Same-identity edits may repair preview/label without changing count. Latest
+  redaction therefore selects the prior renderable reply or clears latest
+  details at count zero instead of freezing the invalidated live event.
+  Duplicate/replayed inputs are idempotent.
+- React receives the resulting `ThreadSummaryDto` as render data. It does not
+  infer latest activity, count, edit, redaction, or fallback fields from visible
+  rows.
+
 - Pane-level thread attention is Rust-owned `AppState.thread_attention`. It is
   initialized when a thread is opened, receives counts only for the currently
   open room/root event pair, and is cleared when the thread closes or navigation
