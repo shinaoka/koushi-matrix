@@ -194,6 +194,20 @@ needed for runnable checks, then capture behavioral RED:
 The checks must fail by assertion against current behavior, not by compile error.
 The same checks must pass unchanged after wiring.
 
+## Implementation evidence
+
+### Behavioral RED before production wiring (2026-08-25)
+
+The approved design was recorded before these checks. Only tests changed; no
+production path was wired.
+
+- `cargo test -p koushi-core --lib canonical_root_with_live_reply_schedules_authoritative_summary_refresh`: **RED** (exit 101), 0 passed / 1 failed / 1,083 filtered. A canonical root (`missing_activities=[]`) emitted no `StartAggregateRefresh`.
+- `cargo test -p koushi-core --lib newer_live_activity_floors_a_lagging_sdk_aggregate_without_double_counting`: **RED** (exit 101), 0 passed / 1 failed / 1,083 filtered. The lagging A/count1 aggregate replaced accepted live B instead of projecting B/count2.
+- `npm --prefix apps/desktop run test -- --run src/domain/timelineStore.test.ts`: **RED** (exit 1), 75 passed / 1 failed. TypeScript filled all null Rust summary fields from the visible reply.
+
+Logs: `/tmp/issue678-red-canonical.log`, `/tmp/issue678-red-floor.log`, and
+`/tmp/issue678-red-ts.log`. The unchanged assertions are the GREEN gate.
+
 ## Required focused semantics
 
 Add or retain tests for:

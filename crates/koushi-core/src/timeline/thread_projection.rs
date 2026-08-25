@@ -3518,6 +3518,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn canonical_root_with_live_reply_schedules_authoritative_summary_refresh() {
+        let key = room_key();
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = generations.activate_after_quiescence(&key).await.generation;
+        let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        let replay_registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let activity = ThreadRootProjectionActivity {
+            room_id: key.room_id().to_owned(),
+            root_event_id: "$root:test".to_owned(),
+            activity_event_id: "$reply-b:test".to_owned(),
+            activity_timestamp_ms: Some(200),
+            activity_sender: Some("@b:test".to_owned()),
+            activity_sender_label: Some("B".to_owned()),
+            activity_body_preview: Some("new reply".to_owned()),
+        };
+        let (action_tx, mut action_rx) = mpsc::channel(2);
+        let (manager_tx, mut manager_rx) = mpsc::channel(2);
+        let (event_tx, _) = broadcast::channel(8);
+
+        assert!(
+            commit_prepared_thread_root_hydration_for_generation(
+                &service,
+                &replay_registry,
+                &generations,
+                &action_tx,
+                &manager_tx,
+                &event_tx,
+                &key,
+                actor_generation,
+                None,
+                PreparedThreadRootHydration {
+                    activities_by_root: HashMap::from([(
+                        activity.root_event_id.clone(),
+                        activity.clone(),
+                    )]),
+                    // The root is already canonical, so no root hydration fetch
+                    // is needed; its live reply still requires an aggregate refresh.
+                    missing_activities: Vec::new(),
+                },
+            )
+            .await
+        );
+        assert!(matches!(
+            action_rx.recv().await,
+            Some(actions) if matches!(
+                actions.as_slice(),
+                [AppAction::ThreadRootProjectionsReconciled { .. }]
+            )
+        ));
+        assert!(matches!(
+            manager_rx.try_recv(),
+            Ok(TimelineMessage::StartAggregateRefresh {
+                actor_generation: generation,
+                refreshes,
+                ..
+            }) if generation == actor_generation
+                && refreshes.len() == 1
+                && refreshes[0].activity == activity
+                && refreshes[0].root_active
+                && !refreshes[0].hydrate_root
+        ));
+    }
+
+    #[tokio::test]
     async fn actor_owner_generation_remains_monotonic_across_manager_gate_recreation() {
         let key = focused_key();
         let first_gate = TimelineActorGenerationGate::default();

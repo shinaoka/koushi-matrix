@@ -1430,6 +1430,89 @@ mod tests {
     }
 
     #[test]
+    fn newer_live_activity_floors_a_lagging_sdk_aggregate_without_double_counting() {
+        let mut service = ThreadRootProjectionService::default();
+        let activity_a = ThreadRootProjectionActivity {
+            room_id: "!room:example.invalid".to_owned(),
+            root_event_id: "$root:example.invalid".to_owned(),
+            activity_event_id: "$reply-a:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(100),
+            activity_sender: Some("@a:example.invalid".to_owned()),
+            activity_sender_label: Some("A".to_owned()),
+            activity_body_preview: Some("A".to_owned()),
+        };
+        assert!(matches!(
+            service.observe(activity_a.clone()),
+            ThreadRootProjectionDecision::StartFetch(_)
+        ));
+        let refresh_a = service
+            .schedule_aggregate_refresh(
+                &activity_a,
+                AggregateRefreshCause::InitialHydration,
+                true,
+                false,
+            )
+            .expect("initial aggregate refresh");
+        assert!(matches!(
+            service.complete_refresh(
+                &refresh_a,
+                Ok(ThreadRootProjectionRefreshResult::Aggregate(
+                    super::AuthoritativeThreadAggregate {
+                        reply_count: 1,
+                        latest_event_id: Some(activity_a.activity_event_id.clone()),
+                        latest_sender: activity_a.activity_sender.clone(),
+                        latest_sender_label: activity_a.activity_sender_label.clone(),
+                        latest_body_preview: activity_a.activity_body_preview.clone(),
+                        latest_timestamp_ms: activity_a.activity_timestamp_ms,
+                    }
+                )),
+            ),
+            super::ThreadRootProjectionCompletion::Updated(_)
+        ));
+
+        let activity_b = ThreadRootProjectionActivity {
+            activity_event_id: "$reply-b:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(200),
+            activity_sender: Some("@b:example.invalid".to_owned()),
+            activity_sender_label: Some("B".to_owned()),
+            activity_body_preview: Some("B".to_owned()),
+            ..activity_a.clone()
+        };
+        assert!(matches!(
+            service.observe(activity_b.clone()),
+            ThreadRootProjectionDecision::ActivityUpdated(_)
+        ));
+        let refresh_b = service
+            .schedule_aggregate_refresh(
+                &activity_b,
+                AggregateRefreshCause::SelectedActivity,
+                true,
+                false,
+            )
+            .expect("live aggregate refresh");
+        let completion = service.complete_refresh(
+            &refresh_b,
+            Ok(ThreadRootProjectionRefreshResult::Aggregate(
+                super::AuthoritativeThreadAggregate {
+                    reply_count: 1,
+                    latest_event_id: Some(activity_a.activity_event_id),
+                    latest_sender: activity_a.activity_sender,
+                    latest_sender_label: activity_a.activity_sender_label,
+                    latest_body_preview: activity_a.activity_body_preview,
+                    latest_timestamp_ms: activity_a.activity_timestamp_ms,
+                },
+            )),
+        );
+        assert!(matches!(
+            completion,
+            super::ThreadRootProjectionCompletion::Updated(record)
+                if record.aggregate.reply_count == 2
+                    && record.aggregate.latest_event_id.as_deref()
+                        == Some("$reply-b:example.invalid")
+        ));
+    }
+
+    #[test]
     fn aggregate_refresh_reconciles_count_two_to_one_to_zero() {
         let mut service = ThreadRootProjectionService::default();
         let activity_b = ThreadRootProjectionActivity {

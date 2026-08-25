@@ -1777,7 +1777,7 @@ describe("timeline store — generation handling", () => {
     }
   });
 
-  test("display projection derives a thread summary from a visible reply when SDK summary lacks latest event details", () => {
+  test("display projection leaves a Rust-supplied thread summary unchanged when visible replies contain more detail", () => {
     const root = {
       ...makeMsg("$root", "root"),
       timestamp_ms: 1_800_000_000_000,
@@ -1801,16 +1801,7 @@ describe("timeline store — generation handling", () => {
     const rows = projectTimelineDisplayRows([root, reply], KEY, LATEST_REPLY);
     const projectedRoot = rows.find((row) => row.row_id === "thread-root:$root");
 
-    expect(projectedRoot?.activity_event_id).toBe("$reply");
-    expect(projectedRoot?.display_timestamp_ms).toBe(reply.timestamp_ms);
-    expect(projectedRoot?.item.thread_summary).toEqual({
-      reply_count: 1,
-      latest_event_id: "$reply",
-      latest_sender: "@reply:example.invalid",
-      latest_sender_label: "Reply Alias",
-      latest_body_preview: "visible reply",
-      latest_timestamp_ms: reply.timestamp_ms
-    });
+    expect(projectedRoot?.item.thread_summary).toEqual(root.thread_summary);
     expect(rows.some((row) => row.row_id === "$reply")).toBe(false);
   });
 });
