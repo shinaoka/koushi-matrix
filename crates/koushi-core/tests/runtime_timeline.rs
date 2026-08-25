@@ -1239,7 +1239,7 @@ async fn revision_commands_fail_while_composer_load_failed() {
 }
 
 #[tokio::test]
-async fn lock_unlock_retries_repaired_composer_payload() {
+async fn verification_gate_reentry_retries_repaired_composer_payload() {
     let _serial = CORRUPT_COMPOSER_LOAD_TEST_LOCK.lock().await;
     let _diagnostic_lock = koushi_diagnostics::test_support::lock();
     let mut fixture = CorruptComposerLoadFixture::prepare().await.start().await;
@@ -1250,7 +1250,13 @@ async fn lock_unlock_retries_repaired_composer_payload() {
         .inject_actions(vec![AppAction::SessionLocked])
         .await;
     wait_for_state_event(&mut fixture.connection, |state| {
-        matches!(state.session, SessionState::Locked(_))
+        matches!(
+            state.session,
+            SessionState::Provisional {
+                phase: koushi_state::ProvisionalPhase::DiscoveringMethods,
+                ..
+            }
+        )
     })
     .await;
     let mut repaired_load = fixture

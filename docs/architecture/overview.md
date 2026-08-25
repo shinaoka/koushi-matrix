@@ -460,11 +460,18 @@ Ready, while normal sync health and offline/reconnect behavior belong to the
 Ready shell. The provisional runtime must not start normal
 Sync/Room/Timeline/Search actors,
 publish room or attention projections, restore drafts/navigation/scheduled
-sends, or authorize ordinary commands. Provisional credentials are not
-persisted; a process restart returns to `SignedOut`. Rejection performs
-best-effort server logout and deletes account-local keyed stores. A later
-non-Verified observation locks a Ready session, stops normal children, and
-clears session views before the main shell can remain usable.
+sends, or authorize ordinary commands. Initial provisional credentials are not persisted; a process restart returns
+to `SignedOut`. Rejection performs best-effort server logout and deletes
+account-local keyed stores. A later authoritative `Unverified` observation on a
+Ready session atomically re-enters the actionable verification gate, stops
+normal children, clears session views, and then starts the restricted crypto
+lane; the already-persisted Ready session is retained. A later authoritative
+`Unknown` observation performs the same fail-closed quarantine but remains in a
+retryable checking state and starts neither verification-method discovery nor
+destructive cleanup. `Locked` is reserved for authentication/session
+invalidation. Current-session diagnostics use this same three-state SDK signal
+as their sole verification verdict; cross-signing, own-identity, sync, and
+backup facts remain supplemental.
 
 **Provisional-device cleanup invariant.** A failed or unavailable verification
 method never deletes a device or local data automatically. The verification

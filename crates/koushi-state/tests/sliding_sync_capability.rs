@@ -344,7 +344,7 @@ fn blocking_preserves_local_identity_and_positive_support_evidence() {
         ..AppState::default()
     };
     start_restore_attempt(&mut state, REQUEST_ID, Some(evidence.clone()));
-    state.session_lock_reason = Some(SessionLockReason::DeviceTrust);
+    state.session_lock_reason = Some(SessionLockReason::UnknownToken { soft_logout: false });
 
     complete(
         &mut state,

@@ -6,10 +6,10 @@ use koushi_state::{
     AppAction, AppEffect, AppState, ComposerSubmissionTarget, ComposerSubmissionTerminalOutcome,
     CurrentDeviceTrustState, CurrentSessionStatusDetails, CurrentSessionStatusFailureKind,
     NativeAttentionCandidate, NativeAttentionCapabilities, NativeAttentionCapability,
-    NativeAttentionState, NativeAttentionSummary, NavigationState, RoomAttentionKind, RoomSummary,
-    RoomTags, SearchScope, SearchState, SessionLockReason, SessionState, SpaceSummary,
-    SubmissionId, SyncState, ThreadAttentionState, ThreadPaneState, TimelinePaneState, UiEvent,
-    reduce,
+    NativeAttentionState, NativeAttentionSummary, NavigationState, ProvisionalPhase,
+    RoomAttentionKind, RoomSummary, RoomTags, SearchScope, SearchState, SessionLockReason,
+    SessionState, SpaceSummary, SubmissionId, SyncState, ThreadAttentionState, ThreadPaneState,
+    TimelinePaneState, UiEvent, reduce,
 };
 
 #[test]
@@ -324,23 +324,27 @@ fn authentication_invalidation_locks_ready_with_closed_reason_and_preserves_soft
 }
 
 #[test]
-fn ordinary_session_lock_records_device_trust_reason() {
+fn session_locked_reenters_the_actionable_verification_gate() {
     let mut state = AppState {
         session: SessionState::Ready(session_info()),
         ..AppState::default()
     };
     reduce(&mut state, AppAction::SessionLocked);
     assert_eq!(
-        state.session_lock_reason,
-        Some(SessionLockReason::DeviceTrust)
+        state.session,
+        SessionState::Provisional {
+            info: session_info(),
+            phase: ProvisionalPhase::DiscoveringMethods,
+        }
     );
+    assert_eq!(state.session_lock_reason, None);
 }
 
 #[test]
 fn stale_authentication_invalidation_is_whole_state_inert() {
     let mut state = AppState {
         session: SessionState::Locked(session_info()),
-        session_lock_reason: Some(SessionLockReason::DeviceTrust),
+        session_lock_reason: Some(SessionLockReason::UnknownToken { soft_logout: false }),
         ..AppState::default()
     };
     let before = state.clone();
@@ -355,30 +359,28 @@ fn stale_authentication_invalidation_is_whole_state_inert() {
 }
 
 #[test]
-fn unlocking_or_logout_clears_session_lock_reason() {
-    let mut unlocked = AppState {
+fn verified_trust_does_not_unlock_authentication_lock_and_logout_clears_reason() {
+    let mut locked = AppState {
         session: SessionState::Locked(session_info()),
         session_lock_reason: Some(SessionLockReason::UnknownToken { soft_logout: true }),
         ..AppState::default()
     };
-    reduce(
-        &mut unlocked,
-        AppAction::AuthoritativeDeviceTrustChanged {
-            generation: 0,
-            transition_id: 0,
-            trust: CurrentDeviceTrustState::Verified,
-        },
+    let before = locked.clone();
+    assert!(
+        reduce(
+            &mut locked,
+            AppAction::AuthoritativeDeviceTrustChanged {
+                generation: 0,
+                transition_id: 0,
+                trust: CurrentDeviceTrustState::Verified,
+            },
+        )
+        .is_empty()
     );
-    assert_eq!(unlocked.session, SessionState::Ready(session_info()));
-    assert_eq!(unlocked.session_lock_reason, None);
+    assert_eq!(locked, before);
 
-    let mut logged_out = AppState {
-        session: SessionState::Ready(session_info()),
-        session_lock_reason: Some(SessionLockReason::DeviceTrust),
-        ..AppState::default()
-    };
-    reduce(&mut logged_out, AppAction::LogoutRequested);
-    assert_eq!(logged_out.session_lock_reason, None);
+    reduce(&mut locked, AppAction::LogoutRequested);
+    assert_eq!(locked.session_lock_reason, None);
 }
 
 #[test]
@@ -397,7 +399,13 @@ fn session_locked_stops_sync_and_clears_session_views() {
 
     let effects = reduce(&mut state, AppAction::SessionLocked);
 
-    assert_eq!(state.session, SessionState::Locked(session_info()));
+    assert_eq!(
+        state.session,
+        SessionState::Provisional {
+            info: session_info(),
+            phase: ProvisionalPhase::DiscoveringMethods,
+        }
+    );
     assert_eq!(state.sync, SyncState::Stopped);
     assert!(state.spaces.is_empty());
     assert_eq!(
@@ -544,27 +552,48 @@ fn switch_account_clears_session_scoped_workflows_and_crawler_state() {
 
 #[test]
 fn trust_loss_resets_status_and_visible_views_once_with_ordered_effects() {
-    let actions = [
-        AppAction::CurrentDeviceTrustChanged(CurrentDeviceTrustState::Unverified),
-        AppAction::CurrentDeviceTrustChanged(CurrentDeviceTrustState::Unknown),
-        AppAction::AuthoritativeDeviceTrustChanged {
-            generation: 7,
-            transition_id: 9,
-            trust: CurrentDeviceTrustState::Unverified,
-        },
-        AppAction::AuthoritativeDeviceTrustChanged {
-            generation: 8,
-            transition_id: 10,
-            trust: CurrentDeviceTrustState::Unknown,
-        },
-        AppAction::SessionLocked,
+    let cases = [
+        (
+            AppAction::CurrentDeviceTrustChanged(CurrentDeviceTrustState::Unverified),
+            ProvisionalPhase::DiscoveringMethods,
+        ),
+        (
+            AppAction::CurrentDeviceTrustChanged(CurrentDeviceTrustState::Unknown),
+            ProvisionalPhase::RecheckingTrust { failure: None },
+        ),
+        (
+            AppAction::AuthoritativeDeviceTrustChanged {
+                generation: 7,
+                transition_id: 9,
+                trust: CurrentDeviceTrustState::Unverified,
+            },
+            ProvisionalPhase::DiscoveringMethods,
+        ),
+        (
+            AppAction::AuthoritativeDeviceTrustChanged {
+                generation: 8,
+                transition_id: 10,
+                trust: CurrentDeviceTrustState::Unknown,
+            },
+            ProvisionalPhase::RecheckingTrust { failure: None },
+        ),
+        (
+            AppAction::SessionLocked,
+            ProvisionalPhase::DiscoveringMethods,
+        ),
     ];
 
-    for action in actions {
+    for (action, phase) in cases {
         let mut state = visible_session_views_state();
         let effects = reduce(&mut state, action);
 
-        assert!(matches!(state.session, SessionState::Locked(_)));
+        assert_eq!(
+            state.session,
+            SessionState::Provisional {
+                info: session_info(),
+                phase,
+            }
+        );
         assert_eq!(state.sync, SyncState::Stopped);
         assert_eq!(
             state.current_session_status,
@@ -597,6 +626,7 @@ fn trust_loss_resets_status_and_visible_views_once_with_ordered_effects() {
             "STALE".to_owned(),
             koushi_state::SessionAuthenticationMethod::Unknown,
             koushi_state::CurrentSessionSyncState::Running,
+            CurrentDeviceTrustState::Verified,
             true,
             koushi_state::OwnIdentityVerification::Verified,
             koushi_state::CurrentSessionBackupState::Ready,
@@ -668,6 +698,7 @@ fn verified_observation_and_non_ready_trust_loss_are_inert_for_status() {
             "DEVICE".to_owned(),
             koushi_state::SessionAuthenticationMethod::Unknown,
             koushi_state::CurrentSessionSyncState::Running,
+            CurrentDeviceTrustState::Verified,
             true,
             koushi_state::OwnIdentityVerification::Verified,
             koushi_state::CurrentSessionBackupState::Ready,

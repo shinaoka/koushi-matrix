@@ -89,6 +89,7 @@ stateDiagram-v2
     Authenticating --> Provisional: AuthenticatedSessionInstalled
     Authenticating --> SignedOut: LoginFailed
     Provisional --> AwaitingVerification: TrustUnverified / method discovery settled
+    Provisional --> Provisional: TrustUnknown / remain retryable without method discovery or cleanup
     Provisional --> Ready: AuthoritativeDeviceTrustChanged(Verified)
     AwaitingVerification --> Verifying: VerificationMethodSubmitted / clear prior failure
     AwaitingVerification --> Rejecting: RejectSession / no proof
@@ -96,7 +97,8 @@ stateDiagram-v2
     Verifying --> Ready: AuthoritativeDeviceTrustChanged(Verified)
     Verifying --> Rejecting: RejectSession
     Rejecting --> SignedOut: ProvisionalSessionDiscarded
-    Ready --> Locked: CurrentDeviceTrustChanged(non-Verified) / SessionLocked [DeviceTrust]
+    Ready --> Provisional: CurrentDeviceTrustChanged(Unverified) / SessionLocked [DiscoveringMethods]
+    Ready --> Provisional: CurrentDeviceTrustChanged(Unknown) [RecheckingTrust]
     Ready --> Locked: SessionAuthenticationInvalidated [UnknownToken + soft_logout]
     Ready --> CapabilityBlocked: Revalidation Unsupported(matching epoch + request)
     Ready --> LoggingOut: LogoutRequested
@@ -105,16 +107,18 @@ stateDiagram-v2
     LoggingOut --> SignedOut: LogoutFinished
 ```
 
-`session_lock_reason` is an optional, separate Rust-owned lock projection.
-E2EE trust loss records `DeviceTrust`; the Matrix SDK session-change observer
-records `UnknownToken { soft_logout }` through a distinct action. UnknownToken
-renders authentication-expired/sign-out copy and is never inferred from a
-trust-query failure. The representation permits `Locked + None` for restored
-legacy/manual state, while `CapabilityBlocked` is a distinct session variant;
-therefore `session_lock_reason` is not an iff indicator for
-`SessionState::Locked` and the reducer must not synthesize a reason. Unlock,
-restore, logout, account switch/reset, and either
-`Locked → CapabilityBlocked` path clear a recorded reason. Structured
+`session_lock_reason` is an optional, separate Rust-owned authentication-lock
+projection. Current-device trust loss never enters `Locked`: authoritative
+`Unverified` re-enters the actionable verification gate, while `Unknown`
+re-enters retryable trust checking without method discovery or destructive
+cleanup. The Matrix SDK session-change observer records
+`UnknownToken { soft_logout }`; it renders authentication-expired/sign-out copy
+and is never inferred from a trust-query failure. The representation permits
+`Locked + None` for restored legacy/manual authentication state, while
+`CapabilityBlocked` is a distinct session variant; therefore
+`session_lock_reason` is not an iff indicator for `SessionState::Locked` and the
+reducer must not synthesize a reason. Restore, logout, account switch/reset, and
+either `Locked → CapabilityBlocked` path clear a recorded reason. Structured
 diagnostics keep SDK recheck failure classification (`authentication`,
 `network`, `server`, or `sdk`) separate from `core.account` UnknownToken
 receipt/admission, correlated by trust generation where available and without
@@ -266,7 +270,13 @@ stateDiagram-v2
   skips that lane; later Verified cancels and joins it before the Ready
   projection. Normal SyncActor ownership begins only after the Ready projection
   acknowledgement, so restricted and normal classic-sync token owners never
-  overlap. Unknown and Unverified trust remain fail closed.
+  overlap. A live Ready-session transition to Unverified or Unknown first
+  projects the matching non-Ready gate, then stops and joins normal children
+  before starting restricted sync. Unverified discovers verification methods;
+  Unknown remains retryable and starts neither method discovery nor cleanup.
+  Initial provisional credentials remain unpersisted, while a Ready session
+  re-entering the gate retains its already-persisted session. Both states remain
+  fail closed.
 - Ready is a trust/admission state, not a successful-sync state. Starting,
   reconnecting, failed, and offline normal sync remain in the Ready shell and
   use its normal status/restart affordances; they do not reopen or flash the
@@ -324,10 +334,12 @@ stateDiagram-v2
 ```
 
 - Only a Ready session admits a refresh, and only one refresh may be active.
-- `Ready.details.verification` is Rust-owned and is `Verified` only when the
-  current device is owner-cross-signed and the own identity is verified.
-  Sync and key-backup facts stay explicit and do not independently change that
-  verdict.
+- `Ready.details.verification` is the app-owned three-state mapping of the same
+  SDK current-device `VerificationState` used by admission. It is never derived
+  from cross-signing, own-identity, backup, or sync facts. Those facts remain
+  explicit supplemental diagnostics and do not form a second verification
+  verdict. A refresh that observes non-Verified trust routes through the
+  session gate and cannot publish Ready-session diagnostics.
 - A matching failure replaces prior successful details with a coarse `Failed`
   state. Identifiers and raw SDK errors are excluded from generic diagnostics
   and redacted from custom `Debug`.
@@ -357,17 +369,19 @@ replacement generation, or actor cancellation clears any partial proof pair.
 Explicit stop reaches `Stopped` and never auto-restarts. Stale generation
 success/failure/drop observations are inert.
 
-Logout, lock, account switch, rejection, and recovery-required transitions
-atomically clear navigation, room lists, the main timeline, thread pane, focused
-context, search state, search crawler status, invite workflow, and basic
-operation pendings. Additional UI events are emitted only for projections that
-were visible/non-default, including `InviteWorkflowChanged` and
-`FocusedContextChanged`; the pre-existing unconditional `RoomListChanged` and
-selected-room `TimelineChanged` remain in the fixed cleanup order. Every admitted Ready →
-Locked path (`SessionLocked`, current trust loss, or authoritative trust loss)
+Logout, authentication lock, trust-gate re-entry, account switch, rejection,
+and recovery-required transitions atomically clear navigation, room lists, the
+main timeline, thread pane, focused context, search state, search crawler status,
+invite workflow, and basic operation pendings. Additional UI events are emitted
+only for projections that were visible/non-default, including
+`InviteWorkflowChanged` and `FocusedContextChanged`; the pre-existing
+unconditional `RoomListChanged` and selected-room `TimelineChanged` remain in
+the fixed cleanup order. Every admitted Ready exit caused by `SessionLocked`,
+current trust loss, authoritative trust loss, or authentication invalidation
 also resets `current_session_status` to Idle in that same reducer action. A
-duplicate trust-loss/lock observation outside Ready is inert and cannot reset a
-newer status projection.
+duplicate trust observation outside Ready is inert unless it advances a current
+Unknown gate to Unverified discovery or a current gate to Verified promotion;
+stale status work cannot revive the cleared projection.
 
 `SessionLocked` and `LogoutRequested` emit `AppEffect::StopSync`; the core
 runtime must execute it through the canonical sync actor command path.

@@ -2,9 +2,9 @@ use koushi_state::{
     AppAction, AppState, INVITE_ALREADY_IN_SPACE_MESSAGE, InviteDestination, InviteDestinationKind,
     InviteDestinationResult, InviteDestinationResultKind, InviteHistoryReadiness,
     InviteOperationState, InviteScopeSelection, InviteSelectedTarget, InviteTargetCandidateStatus,
-    InviteWorkflowState, OperationFailureKind, RoomHistoryVisibility, RoomJoinRule,
-    RoomManagementOperationState, RoomMemberRole, RoomMemberSummary, RoomPermissionFacts,
-    RoomSettingsSnapshot, RoomSummary, RoomTags, SessionInfo, SessionState,
+    InviteWorkflowState, OperationFailureKind, ProvisionalPhase, RoomHistoryVisibility,
+    RoomJoinRule, RoomManagementOperationState, RoomMemberRole, RoomMemberSummary,
+    RoomPermissionFacts, RoomSettingsSnapshot, RoomSummary, RoomTags, SessionInfo, SessionState,
     SlidingSyncCapabilityFailureKind, SpaceSummary, UserProfile, VerificationAccountKind,
     VerificationGateState, VerificationMethod, reduce,
 };
@@ -1348,21 +1348,27 @@ fn invite_capability_blocked_pending_owner_can_settle_by_correlation() {
 }
 
 #[test]
-fn invite_pending_cleanup_serializes_lock_logout_and_switch_before_late_settlement() {
-    let mut locked = state_with_pending();
-    reduce(&mut locked, AppAction::SessionLocked);
-    assert_eq!(locked.session, SessionState::Locked(session_info()));
-    assert_eq!(locked.invite_workflow, InviteWorkflowState::default());
-    let locked_after_cleanup = locked.clone();
+fn invite_pending_cleanup_serializes_gate_logout_and_switch_before_late_settlement() {
+    let mut gated = state_with_pending();
+    reduce(&mut gated, AppAction::SessionLocked);
+    assert_eq!(
+        gated.session,
+        SessionState::Provisional {
+            info: session_info(),
+            phase: ProvisionalPhase::DiscoveringMethods,
+        }
+    );
+    assert_eq!(gated.invite_workflow, InviteWorkflowState::default());
+    let gated_after_cleanup = gated.clone();
     assert_inert(
-        &mut locked,
+        &mut gated,
         AppAction::InviteBatchCompleted {
             request_id: 41,
             room_id: ROOM_A.to_owned(),
             results: vec![room_result(ALICE)],
         },
     );
-    assert_eq!(locked, locked_after_cleanup);
+    assert_eq!(gated, gated_after_cleanup);
 
     let mut logging_out = state_with_pending();
     reduce(&mut logging_out, AppAction::LogoutRequested);

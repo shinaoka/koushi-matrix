@@ -404,17 +404,23 @@ async fn ready_session_routes_past_appactor_session_gate() {
 }
 
 #[tokio::test]
-async fn actor_projected_session_lock_actions_execute_stop_sync_effect() {
-    for action in [
-        AppAction::SessionLocked,
-        AppAction::SessionAuthenticationInvalidated { soft_logout: true },
-        AppAction::SessionAuthenticationInvalidated { soft_logout: false },
+async fn actor_projected_session_gate_and_authentication_lock_execute_stop_sync_effect() {
+    for (action, authentication_locked) in [
+        (AppAction::SessionLocked, false),
+        (
+            AppAction::SessionAuthenticationInvalidated { soft_logout: true },
+            true,
+        ),
+        (
+            AppAction::SessionAuthenticationInvalidated { soft_logout: false },
+            true,
+        ),
     ] {
-        assert_projected_session_lock_stops_sync(action).await;
+        assert_projected_session_exit_stops_sync(action, authentication_locked).await;
     }
 }
 
-async fn assert_projected_session_lock_stops_sync(action: AppAction) {
+async fn assert_projected_session_exit_stops_sync(action: AppAction, authentication_locked: bool) {
     let runtime = CoreRuntime::start();
     let mut connection = runtime.attach();
 
@@ -428,7 +434,17 @@ async fn assert_projected_session_lock_stops_sync(action: AppAction) {
 
     runtime.inject_actions(vec![action]).await;
     wait_for_state(&mut connection, |state| {
-        matches!(state.session, SessionState::Locked(_))
+        if authentication_locked {
+            matches!(state.session, SessionState::Locked(_))
+        } else {
+            matches!(
+                state.session,
+                SessionState::Provisional {
+                    phase: koushi_state::ProvisionalPhase::DiscoveringMethods,
+                    ..
+                }
+            )
+        }
     })
     .await;
 
@@ -436,10 +452,10 @@ async fn assert_projected_session_lock_stops_sync(action: AppAction) {
         next_session_required_failure(&mut connection).await
     })
     .await
-    .expect("session lock must execute AppEffect::StopSync through AccountActor");
+    .expect("session exit must execute AppEffect::StopSync through AccountActor");
     assert_ne!(
         start_failure, stop_failure,
-        "lock should produce a distinct stop-sync routing attempt"
+        "session exit should produce a distinct stop-sync routing attempt"
     );
 
     drop(connection);
@@ -472,6 +488,7 @@ async fn authoritative_trust_loss_publishes_one_atomic_reset_delta_after_setup_q
                 "DEVICE".to_owned(),
                 koushi_state::SessionAuthenticationMethod::Unknown,
                 CurrentSessionSyncState::Running,
+                CurrentDeviceTrustState::Verified,
                 true,
                 OwnIdentityVerification::Verified,
                 CurrentSessionBackupState::Ready,
@@ -537,7 +554,10 @@ async fn authoritative_trust_loss_publishes_one_atomic_reset_delta_after_setup_q
 
     assert!(matches!(
         delta.changed.session.as_ref(),
-        Some(SessionState::Locked(_))
+        Some(SessionState::Provisional {
+            phase: koushi_state::ProvisionalPhase::DiscoveringMethods,
+            ..
+        })
     ));
     assert_eq!(
         delta.changed.current_session_status.as_ref(),

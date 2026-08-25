@@ -85,6 +85,7 @@ pub(super) fn visible_session_views_state() -> AppState {
                 "DEVICE".to_owned(),
                 koushi_state::SessionAuthenticationMethod::Unknown,
                 CurrentSessionSyncState::Running,
+                koushi_state::CurrentDeviceTrustState::Verified,
                 true,
                 OwnIdentityVerification::Verified,
                 CurrentSessionBackupState::Ready,

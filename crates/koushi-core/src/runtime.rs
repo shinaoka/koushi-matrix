@@ -6617,9 +6617,15 @@ mod tests {
 
         trust_tx
             .send(koushi_state::CurrentDeviceTrustState::Unverified)
-            .expect("lock update");
-        wait_for_runtime_session(&runtime, "trust revocation lock", |session| {
-            matches!(session, SessionState::Locked(_))
+            .expect("verification-gate update");
+        wait_for_runtime_session(&runtime, "trust revocation gate", |session| {
+            matches!(
+                session,
+                SessionState::Provisional {
+                    phase: koushi_state::ProvisionalPhase::DiscoveringMethods,
+                    ..
+                }
+            )
         })
         .await;
         assert_eq!(
@@ -6630,7 +6636,7 @@ mod tests {
         while tokens.len() < 11 {
             tokens.push(probe_rx.recv().await.expect("stop token"));
         }
-        assert_eq!(tokens[0], "lock_projection_ack");
+        assert_eq!(tokens[0], "gate_projection_ack");
         assert!(!tokens.contains(&"provisional_encryption_sync_terminated"));
         assert!(tokens.contains(&"stop_sync_actor"));
         assert!(tokens.contains(&"stop_timeline_manager"));
@@ -6647,6 +6653,10 @@ mod tests {
         assert_eq!(
             inspect_runtime_children(&runtime).await,
             (true, true, true, true)
+        );
+        assert_eq!(
+            probe_rx.recv().await,
+            Some("provisional_encryption_sync_terminated")
         );
         assert_eq!(probe_rx.recv().await, Some("ready_projection_ack"));
 

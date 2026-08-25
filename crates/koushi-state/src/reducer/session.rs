@@ -140,8 +140,11 @@ pub(crate) fn handle_current_device_trust_changed(
     if matches!(state.session, SessionState::Ready(_)) {
         return match trust {
             CurrentDeviceTrustState::Verified => Vec::new(),
-            CurrentDeviceTrustState::Unknown | CurrentDeviceTrustState::Unverified => {
-                handle_session_locked(state)
+            CurrentDeviceTrustState::Unverified => {
+                gate_ready_session(state, ProvisionalPhase::DiscoveringMethods)
+            }
+            CurrentDeviceTrustState::Unknown => {
+                gate_ready_session(state, ProvisionalPhase::RecheckingTrust { failure: None })
             }
         };
     }
@@ -180,13 +183,9 @@ pub(crate) fn handle_current_device_trust_changed(
         CurrentDeviceTrustState::Unknown => {
             state.session = SessionState::Provisional {
                 info,
-                phase: ProvisionalPhase::RecheckingTrust {
-                    failure: Some(VerificationGateFailureKind::Sdk),
-                },
+                phase: ProvisionalPhase::RecheckingTrust { failure: None },
             };
-            state.device_cleanup = DeviceCleanupState::Offered {
-                reason: DeviceCleanupOfferReason::RecoveryFailed,
-            };
+            state.device_cleanup = DeviceCleanupState::Idle;
             vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
         }
     }
@@ -196,21 +195,6 @@ pub(crate) fn handle_authoritative_device_trust_changed(
     state: &mut AppState,
     trust: CurrentDeviceTrustState,
 ) -> Vec<AppEffect> {
-    if let SessionState::Locked(info) = &state.session
-        && trust == CurrentDeviceTrustState::Verified
-    {
-        let info = info.clone();
-        state.session = SessionState::Ready(info);
-        state.session_lock_reason = None;
-        state.secure_backup_gate = crate::state::SecureBackupGateState::Checking;
-        state.sync = SyncState::Starting;
-        return vec![
-            AppEffect::StartSync,
-            AppEffect::InspectSecureBackup,
-            AppEffect::EmitUiEvent(UiEvent::SessionChanged),
-        ];
-    }
-
     let mut effects = handle_current_device_trust_changed(state, trust);
     if trust == CurrentDeviceTrustState::Verified {
         effects.retain(|effect| !matches!(effect, AppEffect::PersistSession(_)));
@@ -259,9 +243,7 @@ pub(crate) fn handle_verification_method_discovery_failed(
             failure: Some(kind),
         },
     };
-    state.device_cleanup = DeviceCleanupState::Offered {
-        reason: DeviceCleanupOfferReason::RecoveryFailed,
-    };
+    state.device_cleanup = DeviceCleanupState::Idle;
     vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
 }
 
@@ -829,6 +811,27 @@ pub(crate) fn handle_session_persistence_failed(
     vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
 }
 
+fn gate_ready_session(state: &mut AppState, phase: ProvisionalPhase) -> Vec<AppEffect> {
+    if let SessionState::Ready(info) = &state.session {
+        let submission_registry = state.timeline.submission_registry.clone();
+        state.session = SessionState::Provisional {
+            info: info.clone(),
+            phase,
+        };
+        state.session_lock_reason = None;
+        state.device_cleanup = DeviceCleanupState::Idle;
+        state.sync = SyncState::Stopped;
+        let mut effects = vec![
+            AppEffect::StopSync,
+            AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+        ];
+        effects.extend(clear_session_views(state));
+        state.timeline.submission_registry = submission_registry;
+        return effects;
+    }
+    Vec::new()
+}
+
 fn lock_ready_session(state: &mut AppState, reason: SessionLockReason) -> Vec<AppEffect> {
     if let SessionState::Ready(info) = &state.session {
         let submission_registry = state.timeline.submission_registry.clone();
@@ -847,7 +850,7 @@ fn lock_ready_session(state: &mut AppState, reason: SessionLockReason) -> Vec<Ap
 }
 
 pub(crate) fn handle_session_locked(state: &mut AppState) -> Vec<AppEffect> {
-    lock_ready_session(state, SessionLockReason::DeviceTrust)
+    gate_ready_session(state, ProvisionalPhase::DiscoveringMethods)
 }
 
 pub(crate) fn handle_session_authentication_invalidated(

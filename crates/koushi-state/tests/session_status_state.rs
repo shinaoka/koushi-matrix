@@ -1,8 +1,8 @@
 use koushi_state::{
     AppAction, AppEffect, AppState, CurrentDeviceTrustState, CurrentSessionBackupState,
     CurrentSessionStatusDetails, CurrentSessionStatusFailureKind, CurrentSessionStatusState,
-    CurrentSessionSyncState, CurrentSessionVerification, OwnIdentityVerification,
-    SessionAuthenticationMethod, SessionInfo, SessionState, SessionStatusRefreshTrigger, reduce,
+    CurrentSessionSyncState, OwnIdentityVerification, SessionAuthenticationMethod, SessionInfo,
+    SessionState, SessionStatusRefreshTrigger, reduce,
 };
 
 fn ready_state() -> AppState {
@@ -26,6 +26,7 @@ fn details(
         "DEVICE".to_owned(),
         SessionAuthenticationMethod::OAuth,
         CurrentSessionSyncState::Running,
+        CurrentDeviceTrustState::Verified,
         is_cross_signed_by_owner,
         own_identity,
         CurrentSessionBackupState::Ready,
@@ -111,18 +112,29 @@ fn correlated_completion_settles_ready_and_derives_verified_once_in_rust() {
         panic!("expected ready status");
     };
     assert_eq!(*request_id, 7);
-    assert_eq!(details.verification, CurrentSessionVerification::Verified);
+    assert_eq!(details.verification, CurrentDeviceTrustState::Verified);
 }
 
 #[test]
-fn either_missing_trust_fact_derives_unverified() {
-    assert_eq!(
-        details(false, OwnIdentityVerification::Verified).verification,
-        CurrentSessionVerification::Unverified
-    );
+fn supplemental_identity_facts_do_not_override_authoritative_device_verification() {
     assert_eq!(
         details(true, OwnIdentityVerification::Unverified).verification,
-        CurrentSessionVerification::Unverified
+        CurrentDeviceTrustState::Verified
+    );
+    assert_eq!(
+        CurrentSessionStatusDetails::new(
+            None,
+            "DEVICE".to_owned(),
+            SessionAuthenticationMethod::Unknown,
+            CurrentSessionSyncState::Running,
+            CurrentDeviceTrustState::Unknown,
+            true,
+            OwnIdentityVerification::Verified,
+            CurrentSessionBackupState::Ready,
+            1_235,
+        )
+        .verification,
+        CurrentDeviceTrustState::Unknown
     );
 }
 
@@ -205,6 +217,7 @@ fn trust_loss_clears_status_and_late_completions_stay_idle() {
         "DEVICE".to_owned(),
         SessionAuthenticationMethod::Unknown,
         CurrentSessionSyncState::Running,
+        CurrentDeviceTrustState::Verified,
         true,
         OwnIdentityVerification::Verified,
         CurrentSessionBackupState::Ready,

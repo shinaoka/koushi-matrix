@@ -71,8 +71,9 @@ use super::trust_gate::{
     current_device_trust_recheck_failure_token, first_provisional_encryption_sync_is_current,
     method_discovery_is_current, own_user_sas_recheck_is_current,
     record_verification_admission_event, record_verification_method_discovery_event,
-    retry_should_restart_method_discovery, unknown_verification_gate, verification_admission_event,
-    verification_gate_failure_token, verification_method_discovery_event,
+    retry_should_restart_method_discovery, should_discover_verification_methods,
+    verification_admission_event, verification_gate_failure_token,
+    verification_method_discovery_event,
 };
 use super::verification::{
     INCOMING_VERIFICATION_FLOW_ID_BASE, IncomingVerificationObservation, PendingSasVerification,
@@ -729,6 +730,7 @@ pub struct AccountActor {
     pub(super) pending_recovery_completion: Option<PendingRecoveryCompletion>,
     pub(super) recovery_trust_settlement_task: Option<crate::executor::JoinHandle<()>>,
     pub(super) provisional_encryption_sync: Option<crate::executor::JoinHandle<()>>,
+    pub(super) provisional_encryption_sync_ready: bool,
     pub(super) encryption_sync_permit: koushi_sdk::EncryptionSyncPermitOwner,
     pub(super) pending_ready_events: Vec<CoreEvent>,
     pub(super) pending_trust_transition: Option<PendingTrustTransition>,
@@ -994,6 +996,7 @@ impl AccountActor {
             pending_recovery_completion: None,
             recovery_trust_settlement_task: None,
             provisional_encryption_sync: None,
+            provisional_encryption_sync_ready: false,
             encryption_sync_permit: koushi_sdk::new_encryption_sync_permit_owner(),
             pending_ready_events: Vec::new(),
             pending_trust_transition: None,
@@ -1498,12 +1501,26 @@ impl AccountActor {
                         self.session.is_some(),
                         self.session_promoted,
                     ) {
-                        if succeeded {
+                        self.provisional_encryption_sync_ready = succeeded;
+                        let trust = self
+                            .session
+                            .as_ref()
+                            .map(|session| session.current_device_trust())
+                            .unwrap_or(koushi_state::CurrentDeviceTrustState::Unknown);
+                        if succeeded && should_discover_verification_methods(trust) {
                             self.discover_verification_methods(generation).await;
+                        } else if succeeded
+                            && trust == koushi_state::CurrentDeviceTrustState::Verified
+                        {
+                            self.handle_current_device_trust(generation, trust).await;
+                        } else if trust == koushi_state::CurrentDeviceTrustState::Unknown {
+                            self.request_authoritative_trust_recheck();
                         } else {
-                            self.send_actions(vec![AppAction::VerificationMethodsDiscovered(
-                                unknown_verification_gate(),
-                            )])
+                            self.verification_method_discovery_failed = true;
+                            self.send_actions(vec![AppAction::VerificationMethodDiscoveryFailed {
+                                generation,
+                                kind: koushi_state::VerificationGateFailureKind::Sdk,
+                            }])
                             .await;
                         }
                     }

@@ -344,10 +344,7 @@ function trustOverallStatus(
 ): { label: string; tone: TrustTone } {
   if (currentSessionStatus.status === "ready") {
     const details = currentSessionStatus.details;
-    return details.verification === "verified" &&
-      details.is_cross_signed_by_owner &&
-      details.own_identity_verification === "verified" &&
-      details.key_backup === "ready"
+    return details.verification === "verified"
       ? { label: t("sessionStatus.verified"), tone: "good" }
       : { label: t("trust.statusNeedsAttention"), tone: "warning" };
   }

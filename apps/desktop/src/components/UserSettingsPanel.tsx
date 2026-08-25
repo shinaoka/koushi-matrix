@@ -755,9 +755,10 @@ function AccountSwitcherSection({
 }
 
 function currentSessionVerificationLabel(
-  state: "verified" | "unverified" | undefined
+  state: "verified" | "unverified" | "unknown" | undefined
 ): string {
   if (state === undefined) return t("sessionStatus.unavailable");
+  if (state === "unknown") return t("trust.statusUnknown");
   return state === "verified" ? t("sessionStatus.verified") : t("sessionStatus.unverified");
 }
 

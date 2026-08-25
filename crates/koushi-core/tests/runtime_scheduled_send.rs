@@ -450,7 +450,7 @@ async fn local_fallback_scheduled_sends_persist_and_load_on_restart() {
 }
 
 #[tokio::test]
-async fn local_fallback_scheduled_sends_survive_a_session_lock() {
+async fn local_fallback_scheduled_sends_survive_verification_gate_reentry() {
     let data_dir = tempfile::tempdir().expect("data dir");
     let credential_dir = tempfile::tempdir().expect("credential dir");
     let send_at_ms = future_epoch_ms(Duration::from_secs(120));
@@ -486,8 +486,13 @@ async fn local_fallback_scheduled_sends_survive_a_session_lock() {
 
         runtime.inject_actions(vec![AppAction::SessionLocked]).await;
         wait_for_state(&mut conn, |state| {
-            matches!(state.session, SessionState::Locked(_))
-                && state.scheduled_sends.items.is_empty()
+            matches!(
+                state.session,
+                SessionState::Provisional {
+                    phase: koushi_state::ProvisionalPhase::DiscoveringMethods,
+                    ..
+                }
+            ) && state.scheduled_sends.items.is_empty()
         })
         .await;
     }

@@ -98,7 +98,7 @@ pub(super) enum TrustLifecycleDecision {
     IgnoreStale,
     StayGated,
     Promote,
-    Lock,
+    Gate,
     AlreadyReady,
 }
 
@@ -132,7 +132,7 @@ fn trust_projection_ack_matches(
         && pending.transition_id == transition_id
         && match pending.decision {
             TrustLifecycleDecision::Promote => ready && !locked,
-            TrustLifecycleDecision::Lock => locked && !ready,
+            TrustLifecycleDecision::Gate => !ready && !locked,
             _ => false,
         }
 }
@@ -201,7 +201,7 @@ fn trust_lifecycle_decision(
         if matches!(trust, koushi_state::CurrentDeviceTrustState::Verified) {
             TrustLifecycleDecision::AlreadyReady
         } else {
-            TrustLifecycleDecision::Lock
+            TrustLifecycleDecision::Gate
         }
     } else if matches!(trust, koushi_state::CurrentDeviceTrustState::Verified) {
         TrustLifecycleDecision::Promote
@@ -239,6 +239,7 @@ fn current_session_status_completion_action(
                     info.device_id.clone(),
                     info.authentication_method,
                     sync_state,
+                    inspection.verification,
                     inspection.is_cross_signed_by_owner,
                     inspection.own_identity_verification,
                     inspection.key_backup,
@@ -254,6 +255,18 @@ fn current_session_status_completion_action(
     })
 }
 
+fn current_session_status_observed_non_verified_trust(
+    result: &Result<
+        koushi_sdk::MatrixCurrentSessionInspection,
+        koushi_state::CurrentSessionStatusFailureKind,
+    >,
+) -> Option<koushi_state::CurrentDeviceTrustState> {
+    result.as_ref().ok().and_then(|inspection| {
+        (inspection.verification != koushi_state::CurrentDeviceTrustState::Verified)
+            .then_some(inspection.verification)
+    })
+}
+
 fn current_session_status_settled_event(action: &AppAction, elapsed: Duration) -> DiagnosticEvent {
     let event =
         DiagnosticEvent::new(DiagnosticLevel::Debug, "session_status", "refresh_settled").field(
@@ -265,8 +278,9 @@ fn current_session_status_settled_event(action: &AppAction, elapsed: Duration) -
             .field(DiagnosticField::token(
                 "verdict",
                 match details.verification {
-                    koushi_state::CurrentSessionVerification::Verified => "verified",
-                    koushi_state::CurrentSessionVerification::Unverified => "unverified",
+                    koushi_state::CurrentDeviceTrustState::Verified => "verified",
+                    koushi_state::CurrentDeviceTrustState::Unverified => "unverified",
+                    koushi_state::CurrentDeviceTrustState::Unknown => "unknown",
                 },
             )),
         AppAction::CurrentSessionStatusRefreshFailed { kind, .. } => {
@@ -363,6 +377,7 @@ pub(super) fn active_own_user_sas_flow_for_provisional_encryption_sync(
         .flatten()
 }
 
+#[cfg(test)]
 pub(super) fn unknown_verification_gate() -> koushi_state::VerificationGateState {
     koushi_state::VerificationGateState {
         methods: Vec::new(),
@@ -371,13 +386,10 @@ pub(super) fn unknown_verification_gate() -> koushi_state::VerificationGateState
     }
 }
 
-#[cfg(test)]
-fn should_discover_verification_methods(trust: koushi_state::CurrentDeviceTrustState) -> bool {
-    matches!(
-        trust,
-        koushi_state::CurrentDeviceTrustState::Unknown
-            | koushi_state::CurrentDeviceTrustState::Unverified
-    )
+pub(super) fn should_discover_verification_methods(
+    trust: koushi_state::CurrentDeviceTrustState,
+) -> bool {
+    trust == koushi_state::CurrentDeviceTrustState::Unverified
 }
 
 async fn run_recovery_state_observation<S>(
@@ -731,6 +743,16 @@ impl AccountActor {
             koushi_state::CurrentSessionStatusFailureKind,
         >,
     ) {
+        if self.current_session_status_request == Some(request_id)
+            && self.trust_generation == generation
+            && self.session_promoted
+            && let Some(trust) = current_session_status_observed_non_verified_trust(&result)
+        {
+            self.current_session_status_request = None;
+            self.current_session_status_task = None;
+            self.handle_current_device_trust(generation, trust).await;
+            return;
+        }
         let checked_at_ms = current_epoch_ms();
         let Some(action) = current_session_status_completion_action(
             self.current_session_status_request,
@@ -773,6 +795,7 @@ impl AccountActor {
         ) {
             return;
         }
+        self.provisional_encryption_sync_ready = false;
         record_verification_admission_event(verification_admission_event(
             "provisional_encryption_sync_started",
             generation,
@@ -868,6 +891,7 @@ impl AccountActor {
     }
 
     pub(super) async fn stop_provisional_encryption_sync(&mut self) {
+        self.provisional_encryption_sync_ready = false;
         if let Some(task) = self.provisional_encryption_sync.take() {
             task.abort();
             let _ = task.await;
@@ -892,6 +916,13 @@ impl AccountActor {
             TrustLifecycleDecision::StayGated => {
                 self.cancel_pending_trust_promotion().await;
                 let transition_id = self.next_trust_transition_id();
+                if self.provisional_encryption_sync_ready {
+                    self.pending_trust_transition = Some(PendingTrustTransition {
+                        generation,
+                        transition_id,
+                        decision: TrustLifecycleDecision::Gate,
+                    });
+                }
                 self.send_actions(vec![AppAction::AuthoritativeDeviceTrustChanged {
                     generation,
                     transition_id,
@@ -905,13 +936,23 @@ impl AccountActor {
                 }
                 return;
             }
-            TrustLifecycleDecision::Lock => {
-                let transition_id = self.next_trust_transition_id();
-                self.pending_trust_transition = Some(PendingTrustTransition {
-                    generation,
-                    transition_id,
-                    decision: TrustLifecycleDecision::Lock,
-                });
+            TrustLifecycleDecision::Gate => {
+                let transition_id = match self.pending_trust_transition.as_ref() {
+                    Some(PendingTrustTransition {
+                        generation: pending_generation,
+                        transition_id,
+                        decision: TrustLifecycleDecision::Gate,
+                    }) if *pending_generation == generation => *transition_id,
+                    _ => {
+                        let transition_id = self.next_trust_transition_id();
+                        self.pending_trust_transition = Some(PendingTrustTransition {
+                            generation,
+                            transition_id,
+                            decision: TrustLifecycleDecision::Gate,
+                        });
+                        transition_id
+                    }
+                };
                 self.send_actions(vec![AppAction::AuthoritativeDeviceTrustChanged {
                     generation,
                     transition_id,
@@ -1088,11 +1129,19 @@ impl AccountActor {
         let decision = pending.decision;
         self.pending_trust_transition = None;
         self.trust_recheck_pending = false;
-        if decision == TrustLifecycleDecision::Lock {
-            self.record_lifecycle_probe("lock_projection_ack");
-            self.stop_provisional_encryption_sync().await;
+        if decision == TrustLifecycleDecision::Gate {
+            self.record_lifecycle_probe("gate_projection_ack");
             self.stop_normal_runtime_children().await;
             self.session_promoted = false;
+            if let Some(session) = self.session.clone() {
+                self.start_provisional_encryption_sync(session.clone(), generation, transition_id);
+                if self.provisional_encryption_sync_ready
+                    && session.current_device_trust()
+                        == koushi_state::CurrentDeviceTrustState::Unverified
+                {
+                    self.discover_verification_methods(generation).await;
+                }
+            }
             return;
         }
         self.record_lifecycle_probe("ready_projection_ack");
@@ -1162,12 +1211,13 @@ mod tests {
         PendingTrustTransition, TrustLifecycleDecision, VerificationMethodDiscoveryResult,
         active_own_user_sas_flow_for_provisional_encryption_sync,
         begin_provisional_encryption_sync_cursor_attempt, current_session_status_completion_action,
-        current_session_status_settled_event, first_provisional_encryption_sync_is_current,
-        method_discovery_is_current, own_user_sas_recheck_is_current,
-        record_verification_admission_event, record_verification_method_discovery_event,
-        recovery_sync_should_resume, retry_should_restart_method_discovery,
-        run_recovery_state_observation, should_discover_verification_methods,
-        trust_lifecycle_decision, trust_projection_ack_matches, unknown_verification_gate,
+        current_session_status_observed_non_verified_trust, current_session_status_settled_event,
+        first_provisional_encryption_sync_is_current, method_discovery_is_current,
+        own_user_sas_recheck_is_current, record_verification_admission_event,
+        record_verification_method_discovery_event, recovery_sync_should_resume,
+        retry_should_restart_method_discovery, run_recovery_state_observation,
+        should_discover_verification_methods, trust_lifecycle_decision,
+        trust_projection_ack_matches, unknown_verification_gate,
         verification_method_discovery_event, wait_for_verification_method_discovery,
     };
     use crate::account::actor::AccountMessage;
@@ -1197,6 +1247,7 @@ mod tests {
     fn verified_session_inspection() -> koushi_sdk::MatrixCurrentSessionInspection {
         koushi_sdk::MatrixCurrentSessionInspection {
             device_display_name: Some("Private Device Name".to_owned()),
+            verification: koushi_state::CurrentDeviceTrustState::Verified,
             is_cross_signed_by_owner: true,
             own_identity_verification: koushi_state::OwnIdentityVerification::Verified,
             key_backup: koushi_state::CurrentSessionBackupState::Ready,
@@ -1267,6 +1318,25 @@ mod tests {
     }
 
     #[test]
+    fn session_status_non_verified_observation_routes_to_the_trust_gate() {
+        for trust in [
+            koushi_state::CurrentDeviceTrustState::Unknown,
+            koushi_state::CurrentDeviceTrustState::Unverified,
+        ] {
+            let mut inspection = verified_session_inspection();
+            inspection.verification = trust;
+            assert_eq!(
+                current_session_status_observed_non_verified_trust(&Ok(inspection)),
+                Some(trust)
+            );
+        }
+        assert_eq!(
+            current_session_status_observed_non_verified_trust(&Ok(verified_session_inspection())),
+            None
+        );
+    }
+
+    #[test]
     fn session_status_sdk_failure_projects_coarse_failed_action() {
         let info = session_status_info();
         assert_eq!(
@@ -1321,7 +1391,7 @@ mod tests {
         );
         assert_eq!(
             details.verification,
-            koushi_state::CurrentSessionVerification::Verified
+            koushi_state::CurrentDeviceTrustState::Verified
         );
     }
 
@@ -1576,8 +1646,8 @@ mod tests {
     }
 
     #[test]
-    fn unknown_trust_discovers_methods_without_becoming_verified() {
-        assert!(should_discover_verification_methods(
+    fn unknown_trust_does_not_discover_verification_methods() {
+        assert!(!should_discover_verification_methods(
             koushi_state::CurrentDeviceTrustState::Unknown
         ));
         assert!(should_discover_verification_methods(
@@ -1724,12 +1794,70 @@ mod tests {
         );
         assert_eq!(
             trust_lifecycle_decision(5, 5, true, Unverified),
-            TrustLifecycleDecision::Lock
+            TrustLifecycleDecision::Gate
         );
         assert_eq!(
             trust_lifecycle_decision(5, 5, true, Unknown),
-            TrustLifecycleDecision::Lock
+            TrustLifecycleDecision::Gate
         );
+    }
+
+    #[tokio::test]
+    async fn duplicate_gate_observations_reuse_one_projection_transition() {
+        let (handle, mut action_rx) = login_gated_actor().await;
+        consume_initial_unknown_trust_projection(&mut action_rx).await;
+        handle
+            .send(AccountMessage::CurrentDeviceTrustChanged {
+                generation: 2,
+                trust: koushi_state::CurrentDeviceTrustState::Verified,
+            })
+            .await;
+        acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+
+        for _ in 0..2 {
+            handle
+                .send(AccountMessage::CurrentDeviceTrustChanged {
+                    generation: 2,
+                    trust: koushi_state::CurrentDeviceTrustState::Unverified,
+                })
+                .await;
+        }
+        let mut transitions = Vec::new();
+        while transitions.len() < 2 {
+            let actions = action_rx.recv().await.expect("gate projection action");
+            if let [
+                AppAction::AuthoritativeDeviceTrustChanged {
+                    generation,
+                    transition_id,
+                    trust: koushi_state::CurrentDeviceTrustState::Unverified,
+                },
+            ] = actions.as_slice()
+            {
+                transitions.push((*generation, *transition_id));
+            }
+        }
+        assert_eq!(transitions[0], transitions[1]);
+        assert!(
+            handle
+                .send(AccountMessage::TrustProjectionApplied {
+                    generation: transitions[0].0,
+                    transition_id: transitions[0].1,
+                    ready: false,
+                    locked: false,
+                })
+                .await
+        );
+        executor::timeout(Duration::from_secs(1), async {
+            loop {
+                if inspect_session_runtime(&handle).await == (true, false, false, true) {
+                    break;
+                }
+                executor::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("one gated acknowledgement must stop normal children");
+        let _ = handle.send(AccountMessage::Shutdown).await;
     }
 
     #[tokio::test]

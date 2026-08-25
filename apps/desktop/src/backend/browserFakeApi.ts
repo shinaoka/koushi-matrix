@@ -5314,7 +5314,7 @@ function createLockedSnapshot(
     ...savedSessions[0],
     kind: "locked"
   };
-  snapshot.state.domain.session_lock_reason = { kind: "deviceTrust" };
+  snapshot.state.domain.session_lock_reason = { kind: "unknownToken", soft_logout: false };
   return snapshot;
 }
 

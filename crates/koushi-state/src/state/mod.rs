@@ -68,8 +68,8 @@ pub use session::{
 };
 pub use session_status::{
     CurrentSessionBackupState, CurrentSessionStatusDetails, CurrentSessionStatusFailureKind,
-    CurrentSessionStatusState, CurrentSessionSyncState, CurrentSessionVerification,
-    OwnIdentityVerification, SessionStatusRefreshTrigger,
+    CurrentSessionStatusState, CurrentSessionSyncState, OwnIdentityVerification,
+    SessionStatusRefreshTrigger,
 };
 pub use sliding_sync::{
     SlidingSyncAdmission, SlidingSyncAdmissionKind, SlidingSyncAdmissionSource,

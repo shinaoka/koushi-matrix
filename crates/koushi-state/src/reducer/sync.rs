@@ -1,6 +1,6 @@
 use crate::{
     effect::{AppEffect, UiEvent},
-    state::{AppError, AppState, SessionLockReason, SessionState, SyncLifecycleStatus, SyncState},
+    state::{AppError, AppState, SessionState, SyncLifecycleStatus, SyncState},
 };
 
 use super::{current_session_info, is_session_ready};
@@ -69,7 +69,7 @@ pub(crate) fn handle_sync_failed(state: &mut AppState, reason: String) -> Vec<Ap
     if auth_failure {
         if let Some(info) = current_session_info(state) {
             state.session = SessionState::Locked(info);
-            state.session_lock_reason = Some(SessionLockReason::DeviceTrust);
+            state.session_lock_reason = None;
         }
         state.errors.push(AppError {
             code: "sync_auth_required".to_owned(),

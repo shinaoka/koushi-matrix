@@ -108,9 +108,16 @@ describe("SessionVerificationGate interactions", () => {
     }
   );
 
-  test("keeps device-trust lock copy for the separate lock reason", async () => {
-    const snapshot = await createBrowserFakeApi({ session: "locked" }).getSnapshot();
-    snapshot.state.domain.session_lock_reason = { kind: "deviceTrust" };
+  test("keeps unknown trust retryable without offering verification or cleanup", async () => {
+    const snapshot = await createBrowserFakeApi({ session: "needsRecovery" }).getSnapshot();
+    snapshot.state.domain.session = {
+      kind: "provisional",
+      user_id: "@u:example.invalid",
+      homeserver: "https://example.invalid",
+      device_id: "D",
+      phase: { kind: "recheckingTrust" }
+    };
+    snapshot.state.domain.device_cleanup = { kind: "idle" };
 
     render(
       <SessionVerificationGate
@@ -120,7 +127,8 @@ describe("SessionVerificationGate interactions", () => {
       />
     );
 
-    expect(screen.getByText("This session must be verified again.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /verify|recovery|remove/i })).toBeNull();
     expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
   });
 
@@ -252,7 +260,7 @@ describe("SessionVerificationGate interactions", () => {
     expect(screen.queryByRole("button", { name: "Verify with another device" })).toBeNull();
   });
 
-  test.each(provisionalPhaseCases)("renders provisional phase %j without a stale retry action", async (phase, copy) => {
+  test.each(provisionalPhaseCases)("renders provisional phase %j with retry only while rechecking", async (phase, copy) => {
     const snapshot = await createBrowserFakeApi({ session: "needsRecovery" }).getSnapshot();
     snapshot.state.domain.session = {
       kind: "provisional",
@@ -271,7 +279,11 @@ describe("SessionVerificationGate interactions", () => {
     );
 
     expect(screen.getByText(copy)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    if (copy === "Finishing sign-in…") {
+      expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    } else {
+      expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    }
   });
 
   test("uses checking-trust copy for both the landmark and heading", async () => {
@@ -826,6 +838,6 @@ describe("SessionVerificationGate interactions", () => {
     const failedMarkup = renderGate(failed);
     expect(failedMarkup).toContain("Finishing sign-in…");
     expect(failedMarkup).toContain('role="alert"');
-    expect(failedMarkup).not.toContain("Retry");
+    expect(failedMarkup).toContain("Retry");
   });
 });

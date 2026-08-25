@@ -948,6 +948,7 @@ mod tests {
             pending_recovery_completion: None,
             recovery_trust_settlement_task: None,
             provisional_encryption_sync: None,
+            provisional_encryption_sync_ready: false,
             encryption_sync_permit: koushi_sdk::new_encryption_sync_permit_owner(),
             pending_ready_events: Vec::new(),
             pending_trust_transition: None,

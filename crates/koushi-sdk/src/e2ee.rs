@@ -143,6 +143,7 @@ fn record_current_device_trust_recheck_finished(
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MatrixCurrentSessionInspection {
     pub device_display_name: Option<String>,
+    pub verification: CurrentDeviceTrustState,
     pub is_cross_signed_by_owner: bool,
     pub own_identity_verification: OwnIdentityVerification,
     pub key_backup: CurrentSessionBackupState,
@@ -156,6 +157,7 @@ impl std::fmt::Debug for MatrixCurrentSessionInspection {
                 "device_display_name",
                 &self.device_display_name.as_ref().map(|_| "DeviceName(..)"),
             )
+            .field("verification", &self.verification)
             .field("is_cross_signed_by_owner", &self.is_cross_signed_by_owner)
             .field("own_identity_verification", &self.own_identity_verification)
             .field("key_backup", &self.key_backup)
@@ -1845,14 +1847,18 @@ pub async fn list_devices(
     for device in response.devices {
         let device_id = device.device_id.clone();
         let is_current = device_id.as_str() == session.info.device_id;
-        let verified = match session
-            .client()
-            .encryption()
-            .get_device(&user_id, &device_id)
-            .await
-        {
-            Ok(Some(crypto_device)) => crypto_device.is_verified_with_cross_signing(),
-            Ok(None) | Err(_) => false,
+        let verified = if is_current {
+            session.current_device_trust() == CurrentDeviceTrustState::Verified
+        } else {
+            match session
+                .client()
+                .encryption()
+                .get_device(&user_id, &device_id)
+                .await
+            {
+                Ok(Some(crypto_device)) => crypto_device.is_verified_with_cross_signing(),
+                Ok(None) | Err(_) => false,
+            }
         };
         let inactive = device
             .last_seen_ts
@@ -4009,6 +4015,7 @@ impl MatrixClientSession {
         &self,
     ) -> Result<MatrixCurrentSessionInspection, MatrixCurrentSessionInspectionError> {
         let client = self.client();
+        let verification = client.encryption().verification_state();
         let user_id = client
             .user_id()
             .ok_or(MatrixCurrentSessionInspectionError::Unavailable)?;
@@ -4056,6 +4063,7 @@ impl MatrixClientSession {
 
         Ok(MatrixCurrentSessionInspection {
             device_display_name: current_device.display_name,
+            verification: map_sdk_verification_state(verification.get()),
             is_cross_signed_by_owner,
             own_identity_verification,
             key_backup: classify_current_session_backup(local_backup_state, server_probe),
@@ -4308,9 +4316,9 @@ mod current_session_status_tests {
     };
 
     use super::{
-        CurrentSessionBackupState, MatrixClientSession, MatrixCurrentSessionInspectionError,
-        MatrixDeviceNameOutcome, OwnIdentityVerification, SessionInfo,
-        classify_current_session_backup, classify_own_identity_verification,
+        CurrentDeviceTrustState, CurrentSessionBackupState, MatrixClientSession,
+        MatrixCurrentSessionInspectionError, MatrixDeviceNameOutcome, OwnIdentityVerification,
+        SessionInfo, classify_current_session_backup, classify_own_identity_verification,
         ensure_device_display_name,
     };
 
@@ -4507,6 +4515,11 @@ mod current_session_status_tests {
             .await
             .expect("authoritative inspection");
 
+        assert_eq!(
+            session.current_device_trust(),
+            CurrentDeviceTrustState::Verified,
+            "the SDK current-device verdict is authoritative even while own-identity verification is supplemental"
+        );
         assert!(status.is_cross_signed_by_owner);
         assert_eq!(
             status.own_identity_verification,

@@ -1915,6 +1915,7 @@ mod tests {
                 session_info.device_id.clone(),
                 koushi_state::SessionAuthenticationMethod::OAuth,
                 koushi_state::CurrentSessionSyncState::Running,
+                koushi_state::CurrentDeviceTrustState::Verified,
                 true,
                 koushi_state::OwnIdentityVerification::Verified,
                 koushi_state::CurrentSessionBackupState::Ready,

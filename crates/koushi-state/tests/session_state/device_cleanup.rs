@@ -72,7 +72,7 @@ fn device_cleanup_is_offered_when_recovery_task_fails() {
 }
 
 #[test]
-fn device_cleanup_is_offered_when_authoritative_trust_preparation_fails() {
+fn unknown_trust_remains_retryable_without_offering_device_cleanup() {
     let mut state = AppState {
         session: SessionState::Provisional {
             info: session_info(),
@@ -89,18 +89,11 @@ fn device_cleanup_is_offered_when_authoritative_trust_preparation_fails() {
     assert!(matches!(
         state.session,
         SessionState::Provisional {
-            phase: ProvisionalPhase::RecheckingTrust {
-                failure: Some(VerificationGateFailureKind::Sdk)
-            },
+            phase: ProvisionalPhase::RecheckingTrust { failure: None },
             ..
         }
     ));
-    assert_eq!(
-        state.device_cleanup,
-        DeviceCleanupState::Offered {
-            reason: DeviceCleanupOfferReason::RecoveryFailed,
-        }
-    );
+    assert_eq!(state.device_cleanup, DeviceCleanupState::Idle);
 }
 
 #[test]

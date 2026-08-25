@@ -100,12 +100,7 @@ fn verification_method_discovery_failure_is_retryable_and_phase_scoped() {
         effects,
         vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
     );
-    assert_eq!(
-        discovering.device_cleanup,
-        DeviceCleanupState::Offered {
-            reason: DeviceCleanupOfferReason::RecoveryFailed,
-        }
-    );
+    assert_eq!(discovering.device_cleanup, DeviceCleanupState::Idle);
 
     let effects = reduce(
         &mut discovering,
@@ -161,7 +156,7 @@ fn verification_method_discovery_failure_is_retryable_and_phase_scoped() {
 }
 
 #[test]
-fn only_authoritative_verified_promotes_and_trust_loss_locks_and_clears() {
+fn only_authoritative_verified_promotes_and_unverified_reenters_the_gate() {
     let mut gated = AppState {
         session: SessionState::Verifying {
             info: session_info(),
@@ -187,7 +182,13 @@ fn only_authoritative_verified_promotes_and_trust_loss_locks_and_clears() {
         &mut ready,
         AppAction::CurrentDeviceTrustChanged(CurrentDeviceTrustState::Unverified),
     );
-    assert_eq!(ready.session, SessionState::Locked(session_info()));
+    assert_eq!(
+        ready.session,
+        SessionState::Provisional {
+            info: session_info(),
+            phase: ProvisionalPhase::DiscoveringMethods,
+        }
+    );
     assert_eq!(ready.sync, SyncState::Stopped);
     assert_session_scoped_workflows_cleared(&ready);
     assert!(effects.contains(&AppEffect::StopSync));
@@ -252,14 +253,14 @@ fn authoritative_verified_promotion_requests_sync_after_actor_ack() {
 }
 
 #[test]
-fn authoritative_verified_repromotes_locked_session_without_replaying_actor_owned_effects() {
-    let info = session_info();
+fn authoritative_verified_does_not_unlock_an_authentication_locked_session() {
     let mut state = AppState {
-        session: SessionState::Locked(info.clone()),
+        session: SessionState::Locked(session_info()),
         secure_backup_gate: SecureBackupGateState::Ready,
         sync: SyncState::Stopped,
         ..AppState::default()
     };
+    let before = state.clone();
 
     let effects = reduce(
         &mut state,
@@ -270,17 +271,8 @@ fn authoritative_verified_repromotes_locked_session_without_replaying_actor_owne
         },
     );
 
-    assert_eq!(state.session, SessionState::Ready(info));
-    assert_eq!(state.sync, SyncState::Starting);
-    assert_eq!(state.secure_backup_gate, SecureBackupGateState::Checking);
-    assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::SessionChanged)));
-    assert!(effects.contains(&AppEffect::StartSync));
-    assert!(effects.contains(&AppEffect::InspectSecureBackup));
-    assert!(
-        !effects
-            .iter()
-            .any(|effect| matches!(effect, AppEffect::PersistSession(_)))
-    );
+    assert!(effects.is_empty());
+    assert_eq!(state, before);
 }
 
 #[test]

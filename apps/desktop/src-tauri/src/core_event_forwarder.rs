@@ -1921,6 +1921,7 @@ mod tests {
                 "CONTRACTDEVICE".to_owned(),
                 SessionAuthenticationMethod::OAuth,
                 CurrentSessionSyncState::Running,
+                koushi_state::CurrentDeviceTrustState::Verified,
                 true,
                 OwnIdentityVerification::Verified,
                 CurrentSessionBackupState::Ready,

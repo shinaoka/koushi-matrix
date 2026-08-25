@@ -562,9 +562,7 @@ type SessionAccountState<K extends string> = ExactSessionState<
   "homeserver" | "user_id" | "device_id"
 >;
 
-export type SessionLockReason =
-  | { kind: "deviceTrust" }
-  | { kind: "unknownToken"; soft_logout: boolean };
+export type SessionLockReason = { kind: "unknownToken"; soft_logout: boolean };
 
 export type SessionState =
   | ExactSessionState<"signedOut">
@@ -604,7 +602,7 @@ export type SessionAuthenticationMethod = "password" | "sso" | "oauth" | "token"
 export type CurrentSessionSyncState = "stopped" | "starting" | "running" | "error";
 export type OwnIdentityVerification = "missing" | "unverified" | "verified";
 export type CurrentSessionBackupState = "ready" | "disabled" | "unknown";
-export type CurrentSessionVerification = "verified" | "unverified";
+export type CurrentSessionVerification = "verified" | "unverified" | "unknown";
 export type CurrentSessionStatusFailureKind = "sdk" | "timed_out" | "unavailable";
 
 export interface CurrentSessionStatusDetails {

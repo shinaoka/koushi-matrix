@@ -7,7 +7,7 @@ build gates. AGENTS.md remains the operational how-to (permissions, install
 caveats, recovery steps); durable rules discovered there are promoted to
 REPOSITORY_RULES.md or this document.
 
-Last amended: 2026-08-21.
+Last amended: 2026-08-25.
 
 ## Design Simplicity
 
@@ -261,8 +261,14 @@ Rules:
    Matrix command may be exposed. Restricted crypto sync is internal and may
    process only trust-discovery, recovery, device-list/key-query, and to-device
    verification traffic. Recovery/SAS/bootstrap UI completion never substitutes
-   for the authoritative trust observation. Provisional credentials are not
-   persisted; rejection/logout erases local keyed stores and attempts server
+   for the authoritative trust observation. Authoritative Unverified always
+   presents an actionable verification gate, including after a live Ready
+   session loses trust. Authoritative Unknown remains quarantined and retryable
+   but must not be labeled Unverified, start verification-method discovery, or
+   offer destructive cleanup. Current-device trust changes never enter the
+   authentication-only `Locked` state. Initial provisional credentials are not
+   persisted; Ready-session trust-gate re-entry retains the already-persisted
+   session. Rejection/logout erases local keyed stores and attempts server
    logout before projecting `SignedOut`.
    Gate method/target discovery exposes no additional raw device identifiers;
    current-device SAS selection uses actor-owned opaque handles. A generated

@@ -2,7 +2,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use super::SessionAuthenticationMethod;
+use super::{CurrentDeviceTrustState, SessionAuthenticationMethod};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -38,13 +38,6 @@ pub enum CurrentSessionBackupState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CurrentSessionVerification {
-    Verified,
-    Unverified,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum CurrentSessionStatusFailureKind {
     Sdk,
     TimedOut,
@@ -60,7 +53,7 @@ pub struct CurrentSessionStatusDetails {
     pub is_cross_signed_by_owner: bool,
     pub own_identity_verification: OwnIdentityVerification,
     pub key_backup: CurrentSessionBackupState,
-    pub verification: CurrentSessionVerification,
+    pub verification: CurrentDeviceTrustState,
     pub checked_at_ms: u64,
 }
 
@@ -71,18 +64,12 @@ impl CurrentSessionStatusDetails {
         device_id: String,
         authentication_method: SessionAuthenticationMethod,
         sync_state: CurrentSessionSyncState,
+        verification: CurrentDeviceTrustState,
         is_cross_signed_by_owner: bool,
         own_identity_verification: OwnIdentityVerification,
         key_backup: CurrentSessionBackupState,
         checked_at_ms: u64,
     ) -> Self {
-        let verification = if is_cross_signed_by_owner
-            && own_identity_verification == OwnIdentityVerification::Verified
-        {
-            CurrentSessionVerification::Verified
-        } else {
-            CurrentSessionVerification::Unverified
-        };
         Self {
             device_display_name,
             device_id,

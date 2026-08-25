@@ -661,7 +661,8 @@ function sessionSyncLabel(state: string): string {
   }
 }
 
-function verificationLabel(state: "verified" | "unverified"): string {
+function verificationLabel(state: "verified" | "unverified" | "unknown"): string {
+  if (state === "unknown") return t("trust.statusUnknown");
   return state === "verified"
     ? t("sessionStatus.verified")
     : t("sessionStatus.unverified");

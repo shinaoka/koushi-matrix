@@ -319,7 +319,7 @@ describe("UserSettingsPanel", () => {
             authentication_method: "password",
             sync_state: "running",
             is_cross_signed_by_owner: true,
-            own_identity_verification: "verified",
+            own_identity_verification: "unverified",
             key_backup: "ready",
             verification: "verified",
             checked_at_ms: 1_787_665_620_000
@@ -347,8 +347,10 @@ describe("UserSettingsPanel", () => {
 
     expect(markup).toContain("Koushi on macOS");
     expect(markup).toContain("Cross-signed");
-    expect(markup).toContain("Identity verified");
+    expect(markup).toContain("Identity unverified");
     expect(markup).toContain("Ready");
+    expect(markup).toContain("Verified");
+    expect(markup).not.toContain("Needs attention");
     expect(markup).not.toContain("0 devices");
     expect(markup).not.toContain("No devices");
 

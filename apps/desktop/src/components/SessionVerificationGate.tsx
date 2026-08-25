@@ -43,6 +43,7 @@ type SecureBackupOperationKind = "recovery" | "setup" | "reenable" | "retry";
 export interface SessionVerificationGateOperations {
   startOwnUserSas: () => Promise<DesktopSnapshot>;
   submitRecovery: (secret: string) => Promise<DesktopSnapshot>;
+  retryCurrentDeviceTrustDiscovery?: () => Promise<DesktopSnapshot>;
   startDeviceCleanup?: () => Promise<DesktopSnapshot>;
   submitDeviceCleanupUia?: (flowId: number, password: string) => Promise<DesktopSnapshot>;
   eraseLocalDataAnyway?: () => Promise<DesktopSnapshot>;
@@ -63,6 +64,7 @@ export interface SessionVerificationGateOperations {
 const defaultSessionVerificationGateOperations: SessionVerificationGateOperations = {
   startOwnUserSas: () => api.startOwnUserSas(),
   submitRecovery: (secret) => api.submitRecovery(secret),
+  retryCurrentDeviceTrustDiscovery: () => api.retryCurrentDeviceTrustDiscovery(),
   startDeviceCleanup: () => api.startDeviceCleanup(),
   submitDeviceCleanupUia: (flowId, password) =>
     api.submitDeviceCleanupUia(flowId, password),
@@ -489,6 +491,15 @@ export function SessionVerificationGate({
       </div>
     )}
     {discovering && <p>{t("gate.discovering")}</p>}
+    {rechecking && <button
+      className="dialog-button is-primary"
+      type="button"
+      disabled={gateOperation !== null}
+      onClick={() => void run(
+        "recovery",
+        operations.retryCurrentDeviceTrustDiscovery ?? (() => api.retryCurrentDeviceTrustDiscovery())
+      )}
+    >{t("gate.retry")}</button>}
     {session.kind === "rejecting" && <p>{t("gate.rejecting")}</p>}
     {authenticationInvalidated ? (
       <p>{t("gate.sessionExpiredCopy")}</p>
