@@ -44,8 +44,9 @@ use super::thread_projection::{
     JAVASCRIPT_SAFE_INTEGER_MAX, ReplayKnownDisplayContext, ReplayKnownThreadRootProjection,
     ReplayKnownThreadRootProjectionRegistry, ReplayKnownThreadRootProjectionUpdate,
     ThreadAttentionObservation, ThreadAttentionTracker,
-    known_thread_root_projections_for_display_context, replay_known_candidates_for_display_items,
-    replay_known_timeline_events_with_hydration_handoffs,
+    known_thread_root_projections_for_display_context, overlay_thread_summary_item,
+    replay_known_candidates_for_display_items,
+    replay_known_timeline_events_with_hydration_handoffs, seed_thread_summary_item,
 };
 // END GENERATED SIBLING IMPORTS
 
@@ -853,6 +854,13 @@ fn emit_initial_items_and_reconcile_replay_known_with_lease_after_initial<F>(
     let mut registry = registry
         .lock()
         .expect("replay-known root registry lock must not be poisoned");
+    for item in &items {
+        seed_thread_summary_item(thread_root_projection_service, key, item);
+    }
+    let items = items
+        .into_iter()
+        .map(|item| overlay_thread_summary_item(thread_root_projection_service, key, &item))
+        .collect();
     let replay_known_update = registry.replace(key, replay_known_candidates);
     emit_timeline_events_with_lease(event_tx, lease, prefix_events);
     emit_timeline_events_with_lease(
@@ -3108,6 +3116,8 @@ mod tests {
         TimelineActorHandle {
             tx,
             control_tx: None,
+            thread_summary_projection:
+                crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
             position_rx: None,
             task: Some(task),
             auxiliary_tasks: Vec::new(),
@@ -3149,6 +3159,8 @@ mod tests {
         TimelineActorHandle {
             tx,
             control_tx: None,
+            thread_summary_projection:
+                crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
             position_rx: None,
             task: Some(task),
             auxiliary_tasks: Vec::new(),
@@ -3195,6 +3207,8 @@ mod tests {
         TimelineActorHandle {
             tx,
             control_tx: None,
+            thread_summary_projection:
+                crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
             position_rx: None,
             task: Some(task),
             auxiliary_tasks: Vec::new(),
@@ -3212,6 +3226,8 @@ mod tests {
         let actor_handle = TimelineActorHandle {
             tx: actor_tx,
             control_tx: None,
+            thread_summary_projection:
+                crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
             position_rx: None,
             task: None,
             auxiliary_tasks: Vec::new(),
@@ -3253,6 +3269,8 @@ mod tests {
         let actor_handle = TimelineActorHandle {
             tx: actor_tx,
             control_tx: Some(control_tx),
+            thread_summary_projection:
+                crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
             position_rx: None,
             task: None,
             auxiliary_tasks: Vec::new(),
@@ -3286,6 +3304,8 @@ mod tests {
         let actor_handle = TimelineActorHandle {
             tx: actor_tx,
             control_tx: None,
+            thread_summary_projection:
+                crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
             position_rx: None,
             task: None,
             auxiliary_tasks: Vec::new(),
@@ -3361,6 +3381,8 @@ mod tests {
         let actor_handle = TimelineActorHandle {
             tx: actor_tx,
             control_tx: None,
+            thread_summary_projection:
+                crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
             position_rx: None,
             task: None,
             auxiliary_tasks: Vec::new(),

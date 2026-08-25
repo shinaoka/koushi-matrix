@@ -3190,6 +3190,8 @@ mod tests {
             TimelineActorHandle {
                 tx,
                 control_tx: Some(control_tx),
+                thread_summary_projection:
+                    crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
                 position_rx: Some(position_rx),
                 task: None,
                 auxiliary_tasks: Vec::new(),
@@ -3215,6 +3217,8 @@ mod tests {
         let actor_handle = TimelineActorHandle {
             tx: ordinary_tx,
             control_tx: Some(control_tx),
+            thread_summary_projection:
+                crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
             position_rx: Some(position_rx),
             task: None,
             auxiliary_tasks: Vec::new(),
@@ -3389,6 +3393,8 @@ mod tests {
         let actor_handle = TimelineActorHandle {
             tx: ordinary_tx,
             control_tx: Some(control_tx),
+            thread_summary_projection:
+                crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
             position_rx: Some(position_rx),
             task: None,
             auxiliary_tasks: Vec::new(),
@@ -3606,6 +3612,8 @@ mod tests {
         let actor_handle = TimelineActorHandle {
             tx: ordinary_tx,
             control_tx: Some(control_tx),
+            thread_summary_projection:
+                crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
             position_rx: Some(position_rx),
             task: None,
             auxiliary_tasks: Vec::new(),
@@ -3677,6 +3685,8 @@ mod tests {
         let actor_handle = TimelineActorHandle {
             tx: ordinary_tx,
             control_tx: Some(control_tx),
+            thread_summary_projection:
+                crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
             position_rx: Some(position_rx),
             task: None,
             auxiliary_tasks: Vec::new(),
@@ -3729,6 +3739,8 @@ mod tests {
         let actor_handle = TimelineActorHandle {
             tx: ordinary_tx,
             control_tx: Some(control_tx),
+            thread_summary_projection:
+                crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
             position_rx: Some(position_rx),
             task: None,
             auxiliary_tasks: Vec::new(),
@@ -3802,6 +3814,8 @@ mod tests {
         let actor_handle = TimelineActorHandle {
             tx: ordinary_tx,
             control_tx: Some(control_tx),
+            thread_summary_projection:
+                crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
             position_rx: Some(position_rx),
             task: None,
             auxiliary_tasks: Vec::new(),
@@ -3901,6 +3915,8 @@ mod tests {
         let actor_handle = TimelineActorHandle {
             tx: ordinary_tx,
             control_tx: Some(control_tx),
+            thread_summary_projection:
+                crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
             position_rx: None,
             task: None,
             auxiliary_tasks: Vec::new(),
@@ -3985,6 +4001,8 @@ mod tests {
         let actor_handle = TimelineActorHandle {
             tx: ordinary_tx,
             control_tx: Some(control_tx),
+            thread_summary_projection:
+                crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
             position_rx: None,
             task: None,
             auxiliary_tasks: Vec::new(),
@@ -4074,6 +4092,8 @@ mod tests {
         let actor_handle = TimelineActorHandle {
             tx: ordinary_tx,
             control_tx: Some(control_tx),
+            thread_summary_projection:
+                crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
             position_rx: None,
             task: None,
             auxiliary_tasks: Vec::new(),

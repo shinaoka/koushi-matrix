@@ -152,11 +152,13 @@ fn redact_edit_convergence_is_registered_with_private_safe_final_token() {
             "thread_paginate=end_reached",
             "edit_redact_search=ok",
             "redact_edit_convergence=ok",
+            "thread_summary_convergence=ok",
             "restore_cleanup=ok",
         ]
     );
     let report = scenario_report("local", scenario);
     assert!(report.contains("redact_edit_convergence=ok"));
+    assert!(report.contains("thread_summary_convergence=ok"));
     assert!(!report.contains('@'));
     assert!(!report.contains('!'));
     assert!(!report.contains('$'));

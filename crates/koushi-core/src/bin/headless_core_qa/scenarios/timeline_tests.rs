@@ -699,8 +699,12 @@ fn room_thread_assertion_requires_canonical_reply_and_root_summary() {
 
 #[test]
 fn room_thread_summary_observer_waits_for_late_summary_diff() {
-    let mut observer =
-        RoomThreadSummaryObserver::new("Phase 11 QA thread reply from B", "$root:test");
+    let mut observer = RoomThreadSummaryObserver::new(
+        "Phase 11 QA thread reply from B",
+        "$reply:test",
+        1,
+        "$root:test",
+    );
     let root_without_summary =
         synthetic_timeline_item("$root:test", Some("root message"), None, None, None);
 
@@ -734,9 +738,65 @@ fn room_thread_summary_observer_waits_for_late_summary_diff() {
 }
 
 #[test]
-fn room_thread_summary_observer_accepts_canonical_thread_reply() {
+fn room_thread_summary_observer_rejects_stale_non_null_summary_until_rust_advances_it() {
     let mut observer =
-        RoomThreadSummaryObserver::new("Phase 11 QA thread reply from B", "$root:test");
+        RoomThreadSummaryObserver::new("new live reply", "$reply-b:test", 2, "$root:test");
+    let stale_root = synthetic_timeline_item(
+        "$root:test",
+        Some("root message"),
+        None,
+        None,
+        Some(ThreadSummaryDto {
+            reply_count: 1,
+            latest_event_id: Some("$reply-a:test".to_owned()),
+            latest_sender: None,
+            latest_sender_label: None,
+            latest_body_preview: Some("old reply".to_owned()),
+            latest_timestamp_ms: Some(100),
+        }),
+    );
+    let live_reply = synthetic_timeline_item(
+        "$reply-b:test",
+        Some("new live reply"),
+        Some("$root:test"),
+        Some("$root:test"),
+        None,
+    );
+    assert!(!observer.observe_items(&[stale_root]).unwrap());
+    assert!(!observer.observe_items(&[live_reply]).unwrap());
+
+    let current_root = synthetic_timeline_item(
+        "$root:test",
+        Some("root message"),
+        None,
+        None,
+        Some(ThreadSummaryDto {
+            reply_count: 2,
+            latest_event_id: Some("$reply-b:test".to_owned()),
+            latest_sender: None,
+            latest_sender_label: None,
+            latest_body_preview: Some("new live reply".to_owned()),
+            latest_timestamp_ms: Some(200),
+        }),
+    );
+    assert!(
+        observer
+            .observe_diffs(&[TimelineDiff::Set {
+                index: 0,
+                item: current_root,
+            }])
+            .unwrap()
+    );
+}
+
+#[test]
+fn room_thread_summary_observer_accepts_canonical_thread_reply() {
+    let mut observer = RoomThreadSummaryObserver::new(
+        "Phase 11 QA thread reply from B",
+        "$reply:test",
+        1,
+        "$root:test",
+    );
     let canonical_reply = synthetic_timeline_item(
         "$reply:test",
         Some("Phase 11 QA thread reply from B"),

@@ -3741,6 +3741,8 @@ mod tests {
                 TimelineActorHandle {
                     tx: actor_tx,
                     control_tx: None,
+                    thread_summary_projection:
+                        crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
                     position_rx: None,
                     task: Some(child),
                     auxiliary_tasks: Vec::new(),
@@ -5343,6 +5345,8 @@ mod tests {
             TimelineActorHandle {
                 tx: actor_tx,
                 control_tx: None,
+                thread_summary_projection:
+                    crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
                 position_rx: None,
                 task: Some(actor_task),
                 auxiliary_tasks: Vec::new(),

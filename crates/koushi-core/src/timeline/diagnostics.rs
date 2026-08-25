@@ -855,6 +855,47 @@ pub(super) fn record_subscription_reconcile(
     koushi_diagnostics::record(event);
 }
 
+pub(crate) fn record_thread_summary_reconciliation(
+    (room_ordinal, root_ordinal): (u64, u64),
+    source: &'static str,
+    identity_relation: &'static str,
+    decision: &'static str,
+    merge_reason: &'static str,
+    count_before: u32,
+    count_after: u32,
+    dto_changed: bool,
+) {
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Info, "core.thread_summary", "reconciled")
+            .field(DiagnosticField::ordinal_alias(
+                "room_ordinal",
+                "room",
+                room_ordinal,
+            ))
+            .field(DiagnosticField::ordinal_alias(
+                "root_ordinal",
+                "root",
+                root_ordinal,
+            ))
+            .field(DiagnosticField::token("source", source))
+            .field(DiagnosticField::token(
+                "identity_relation",
+                identity_relation,
+            ))
+            .field(DiagnosticField::token("decision", decision))
+            .field(DiagnosticField::token("merge_reason", merge_reason))
+            .field(DiagnosticField::count(
+                "count_before",
+                u64::from(count_before),
+            ))
+            .field(DiagnosticField::count(
+                "count_after",
+                u64::from(count_after),
+            ))
+            .field(DiagnosticField::boolean("dto_changed", dto_changed)),
+    );
+}
+
 pub(super) fn record_thread_projection(
     key: &TimelineKey,
     actor_generation: u64,
@@ -2163,11 +2204,11 @@ mod tests {
     };
     use super::{
         event_cache_diff_batch_diagnostic_event, event_cache_item_diagnostic_event,
-        record_read_retry, record_thread_projection, timeline_diff_batch_diagnostic_event,
-        trace_event_cache_diff_without_item, trace_event_cache_diffs,
-        trace_timeline_actor_operation, trace_timeline_actor_scan, trace_timeline_diffs,
-        trace_timeline_items, trace_timeline_link_preview, trace_timeline_paginate,
-        trace_timeline_route,
+        record_read_retry, record_thread_projection, record_thread_summary_reconciliation,
+        timeline_diff_batch_diagnostic_event, trace_event_cache_diff_without_item,
+        trace_event_cache_diffs, trace_timeline_actor_operation, trace_timeline_actor_scan,
+        trace_timeline_diffs, trace_timeline_items, trace_timeline_link_preview,
+        trace_timeline_paginate, trace_timeline_route,
     };
 
     #[test]
@@ -2558,6 +2599,85 @@ mod tests {
         }
     }
 
+    #[test]
+    fn thread_summary_diagnostic_is_closed_and_private_data_free() {
+        let _diagnostic_lock = koushi_diagnostics::test_support::lock();
+        let baseline = koushi_diagnostics::test_support::detail_snapshot()
+            .records
+            .len();
+        for (source, relation, decision) in [
+            ("rehydration", "missing", "advance"),
+            ("live_reply", "different", "advance"),
+            ("edit", "same", "repair"),
+            ("redaction", "different", "remove"),
+            ("sdk_summary", "missing", "no_op"),
+        ] {
+            record_thread_summary_reconciliation(
+                (7, 9),
+                source,
+                relation,
+                decision,
+                "normal",
+                1,
+                2,
+                true,
+            );
+        }
+
+        let records = koushi_diagnostics::test_support::detail_snapshot().records;
+        let events = records[baseline..]
+            .iter()
+            .filter(|record| {
+                record.event.source == "core.thread_summary" && record.event.stage == "reconciled"
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(events.len(), 5);
+        for record in events {
+            let event = &record.event;
+            let keys = event
+                .fields
+                .iter()
+                .map(|field| field.key)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                keys,
+                vec![
+                    "room_ordinal",
+                    "root_ordinal",
+                    "source",
+                    "identity_relation",
+                    "decision",
+                    "merge_reason",
+                    "count_before",
+                    "count_after",
+                    "dto_changed",
+                ]
+            );
+            let serialized = serde_json::to_string(event).expect("diagnostic serializes");
+            for private_value in [
+                "!private-room:example.invalid",
+                "$private-root:example.invalid",
+                "$private-reply:example.invalid",
+                "@private:example.invalid",
+                "private label",
+                "private body",
+            ] {
+                assert!(
+                    !serialized.contains(private_value),
+                    "leaked {private_value}"
+                );
+            }
+            assert!(event.fields.iter().any(|field| {
+                field.key == "room_ordinal"
+                    && matches!(
+                        &field.value,
+                        DiagnosticValue::OrdinalAlias { kind, ordinal }
+                            if *kind == "room" && *ordinal == 7
+                    )
+            }));
+        }
+    }
+
     #[tokio::test]
     async fn subscribe_replay_path_records_subscribed_done_stage() {
         let _diagnostic_lock = koushi_diagnostics::test_support::lock();
@@ -2590,6 +2710,8 @@ mod tests {
                 TimelineActorHandle {
                     tx: actor_tx,
                     control_tx: None,
+                    thread_summary_projection:
+                        crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
                     position_rx: None,
                     task: Some(actor_task),
                     auxiliary_tasks: Vec::new(),
@@ -2796,6 +2918,8 @@ mod tests {
                 TimelineActorHandle {
                     tx: actor_tx,
                     control_tx: None,
+                    thread_summary_projection:
+                        crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
                     position_rx: None,
                     task: Some(actor_task),
                     auxiliary_tasks: Vec::new(),

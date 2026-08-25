@@ -66,6 +66,7 @@ use super::residency::{
 use super::room_key_recovery::RoomKeyReshareCompletion;
 use super::thread_projection::{
     ReplayKnownThreadRootProjectionRegistry, ThreadRootProjectionFetchRegistry,
+    ThreadSummaryActivityObservation,
 };
 // END GENERATED SIBLING IMPORTS
 
@@ -192,6 +193,14 @@ pub(crate) enum TimelineMessage {
         actor_generation: u64,
         refresh: AggregateRefresh,
         result: Result<ThreadRootProjectionRefreshResult, OperationFailureKind>,
+    },
+    /// Reliable observation from a current Thread actor. The manager routes
+    /// the projection to the exact current Room actor without awaiting its
+    /// ordinary mailbox.
+    ThreadSummaryActivityObserved {
+        key: TimelineKey,
+        actor_generation: u64,
+        observation: ThreadSummaryActivityObservation,
     },
     AuthoritativeReadStateObserved {
         key: TimelineKey,
@@ -806,6 +815,17 @@ impl TimelineManagerActor {
                 } => {
                     self.handle_aggregate_refresh_finished(key, actor_generation, refresh, result)
                         .await;
+                }
+                TimelineMessage::ThreadSummaryActivityObserved {
+                    key,
+                    actor_generation,
+                    observation,
+                } => {
+                    self.handle_thread_summary_activity_observed(
+                        key,
+                        actor_generation,
+                        observation,
+                    );
                 }
                 TimelineMessage::AuthoritativeReadStateObserved {
                     key,

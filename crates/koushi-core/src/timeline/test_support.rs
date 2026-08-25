@@ -111,6 +111,9 @@ pub(super) fn test_timeline_actor_handle() -> TimelineActorHandle {
     TimelineActorHandle {
         tx,
         control_tx: None,
+        thread_summary_projection: crate::timeline::actor::ThreadSummaryProjectionIngress::channel(
+        )
+        .0,
         position_rx: None,
         task: Some(task),
         auxiliary_tasks: Vec::new(),
@@ -145,6 +148,9 @@ pub(super) fn gap_demand_test_actor_handle(
     TimelineActorHandle {
         tx,
         control_tx: None,
+        thread_summary_projection: crate::timeline::actor::ThreadSummaryProjectionIngress::channel(
+        )
+        .0,
         position_rx: None,
         task: Some(task),
         auxiliary_tasks: Vec::new(),

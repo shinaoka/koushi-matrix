@@ -31,8 +31,8 @@ use super::diagnostics::{
     trace_timeline_items,
 };
 use super::display_projection::{
-    DisplayProjectionContext, DisplayProjectionState, commit_sdk_batch_for_generation,
-    timeline_diffs_include_prepend,
+    DisplayProjectionContext, DisplayProjectionState, apply_timeline_diffs_to_items,
+    commit_sdk_batch_for_generation, timeline_diffs_include_prepend,
 };
 use super::gap_repair::{
     TimelineGapRepairTrigger, observe_causal_projection, post_diff_gap_inspection_trigger,
@@ -56,8 +56,9 @@ use super::outbound_send::thread_activity_observed_action_for_batch;
 use super::room_key_recovery::{decrypt_retry_diff_settlement, decrypt_retry_settlement_operation};
 use super::thread_projection::{
     ReplayKnownThreadRootProjectionRegistry, ThreadAttentionBatchProvenance,
-    ThreadAttentionObservation, gap_repair_projections_from_sdk_diffs,
-    replay_known_candidates_for_display_items,
+    ThreadAttentionObservation, gap_repair_projections_from_sdk_diffs, overlay_thread_summary_diff,
+    replay_known_candidates_for_display_items, seed_thread_summary_diff,
+    thread_summary_affected_root_event_ids,
 };
 // END GENERATED SIBLING IMPORTS
 
@@ -404,7 +405,6 @@ impl TimelineActor {
                 _ => {}
             }
         }
-        trace_timeline_diffs("diff_batch", &self.key, &core_diffs);
         let receipts_action = Self::live_receipts_action_from_sdk_diffs(&self.key, &sdk_diffs);
         let search_messages = sdk_diffs
             .iter()
@@ -412,6 +412,7 @@ impl TimelineActor {
             .collect::<Vec<_>>();
         let restore_diff_is_relevant = timeline_diffs_include_prepend(&core_diffs);
         let restore_active = self.restore_anchor.is_some();
+        let previous_navigation_items = self.navigation_items.clone();
         let display_context = DisplayProjectionContext::for_timeline(
             &self.key.kind,
             &self.viewport_observation,
@@ -432,6 +433,30 @@ impl TimelineActor {
         {
             return;
         }
+        // Seed the accepted newer SDK summary before overlaying the existing
+        // service value. Holding this lease makes the shared service mutation
+        // and emitted batch one replacement-fenced commit; no await occurs.
+        let Some(thread_summary_commit_lease) = self
+            .timeline_actor_generations
+            .try_acquire(&self.key, self.actor_generation)
+        else {
+            return;
+        };
+        let mut raw_navigation_items = previous_navigation_items.clone();
+        apply_timeline_diffs_to_items(&mut raw_navigation_items, &core_diffs);
+        let mut thread_summary_affected_roots = thread_summary_affected_root_event_ids(
+            &self.key,
+            &previous_navigation_items,
+            &raw_navigation_items,
+        );
+        for diff in &core_diffs {
+            seed_thread_summary_diff(&self.thread_root_projection_service, &self.key, diff);
+        }
+        for diff in &mut core_diffs {
+            overlay_thread_summary_diff(&self.thread_root_projection_service, &self.key, diff);
+        }
+        trace_timeline_diffs("diff_batch", &self.key, &core_diffs);
+
         let Some((emitted, emitted_batch_id)) = commit_sdk_batch_for_generation(
             &self.timeline_actor_generations,
             &self.key,
@@ -488,10 +513,18 @@ impl TimelineActor {
                 (emitted, emitted_batch_id)
             },
         ) else {
+            drop(thread_summary_commit_lease);
             drop(activity_commit_lease);
             drop(activity_permit);
             return;
         };
+        drop(thread_summary_commit_lease);
+
+        thread_summary_affected_roots.extend(thread_summary_affected_root_event_ids(
+            &self.key,
+            &previous_navigation_items,
+            &self.navigation_items,
+        ));
 
         if let Some(activity_permit) = activity_permit {
             activity_permit.send(vec![
@@ -500,6 +533,18 @@ impl TimelineActor {
             ]);
         }
         drop(activity_commit_lease);
+
+        if emitted
+            && matches!(self.key.kind, TimelineKind::Thread { .. })
+            && !self
+                .publish_thread_summary_window_observations(
+                    &previous_navigation_items,
+                    &self.navigation_items,
+                )
+                .await
+        {
+            return;
+        }
 
         if let Some(AppAction::LiveRoomReceiptsUpdated {
             room_id,
@@ -696,7 +741,8 @@ impl TimelineActor {
                         return;
                     }
                 }
-                self.maybe_hydrate_missing_thread_roots().await;
+                self.maybe_hydrate_missing_thread_roots(Some(thread_summary_affected_roots))
+                    .await;
             } else {
                 for projection in gap_repair_projections {
                     let correlation = match projection.operation.domain {

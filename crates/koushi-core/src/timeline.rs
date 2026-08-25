@@ -67,6 +67,8 @@ mod test_source;
 mod test_support;
 mod thread_projection;
 
+pub(crate) use diagnostics::record_thread_summary_reconciliation;
+
 #[cfg(test)]
 #[allow(unused_imports)] // Preserve the baseline cfg-test flat path.
 pub(crate) use composer::build_room_message_content_from_composer_document;

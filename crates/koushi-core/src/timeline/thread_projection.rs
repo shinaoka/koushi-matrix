@@ -32,7 +32,7 @@ use crate::threads_list::{
 };
 
 // BEGIN GENERATED SIBLING IMPORTS
-use super::actor::TimelineActor;
+use super::actor::{ThreadSummaryProjectionWake, TimelineActor};
 use super::item_projection::{
     MessageProjection, eligible_activity_preview, is_attention_eligible_event,
     link_ranges_for_message_projection, message_projection_from_msgtype,
@@ -378,6 +378,117 @@ impl TimelineManagerActor {
         }
     }
 
+    pub(super) fn handle_thread_summary_activity_observed(
+        &mut self,
+        source_key: TimelineKey,
+        actor_generation: u64,
+        observation: ThreadSummaryActivityObservation,
+    ) {
+        let TimelineKind::Thread {
+            room_id,
+            root_event_id,
+        } = &source_key.kind
+        else {
+            return;
+        };
+        if self
+            .timeline_actor_generations
+            .current_generation(&source_key)
+            != Some(actor_generation)
+            || !self.timelines.contains_key(&source_key)
+        {
+            return;
+        }
+        let room_key = TimelineKey::room(source_key.account_key.clone(), room_id.clone());
+        let Some(room_actor_generation) = self
+            .timeline_actor_generations
+            .current_generation(&room_key)
+        else {
+            return;
+        };
+        if !self.timelines.contains_key(&room_key) {
+            return;
+        }
+        let mut refreshes = Vec::new();
+        {
+            let mut service = self
+                .thread_root_projection_service
+                .lock()
+                .expect("thread-root projection service lock must not be poisoned");
+            match observation {
+                ThreadSummaryActivityObservation::Activity(activity)
+                    if activity.root_event_id == *root_event_id =>
+                {
+                    let decision = service.observe_live_activity(activity.clone());
+                    let should_refresh = matches!(
+                        decision,
+                        ThreadRootProjectionDecision::StartFetch(_)
+                            | ThreadRootProjectionDecision::ActivityUpdated(_)
+                    );
+                    if should_refresh {
+                        let activity_active = service.activity_active(room_id, root_event_id);
+                        let canonical_root_active =
+                            service.canonical_root_active(room_id, root_event_id);
+                        if let Some(refresh) = service
+                            .schedule_aggregate_refresh_with_canonical_root(
+                                &activity,
+                                AggregateRefreshCause::SelectedActivity,
+                                activity_active,
+                                canonical_root_active,
+                                false,
+                            )
+                        {
+                            refreshes.push(refresh);
+                        }
+                    }
+                }
+                ThreadSummaryActivityObservation::Invalidated {
+                    root_event_id: invalidated_root_event_id,
+                    activity_event_id,
+                } if invalidated_root_event_id == *root_event_id => {
+                    let invalidated = service.invalidate_live_activity(
+                        room_id,
+                        root_event_id,
+                        &activity_event_id,
+                    );
+                    if invalidated
+                        && let Some(activity) = service.activity_for_root(room_id, root_event_id)
+                    {
+                        let activity_active = service.activity_active(room_id, root_event_id);
+                        let canonical_root_active =
+                            service.canonical_root_active(room_id, root_event_id);
+                        if let Some(refresh) = service
+                            .schedule_aggregate_refresh_with_canonical_root(
+                                &activity,
+                                AggregateRefreshCause::Removal,
+                                activity_active,
+                                canonical_root_active,
+                                false,
+                            )
+                        {
+                            refreshes.push(refresh);
+                        }
+                    }
+                }
+                _ => return,
+            }
+        }
+        let own_user_id = self
+            .session
+            .as_ref()
+            .and_then(|session| session.client().user_id().map(ToOwned::to_owned));
+        // Application travels through the Room actor's watch sender, never
+        // through `TimelineActorHandle::send`.
+        for refresh in refreshes {
+            self.start_aggregate_worker(
+                &room_key,
+                room_actor_generation,
+                own_user_id.clone(),
+                refresh,
+            );
+        }
+    }
+
     fn start_aggregate_worker(
         &mut self,
         key: &TimelineKey,
@@ -436,9 +547,6 @@ impl TimelineManagerActor {
         {
             return;
         }
-        let Ok(action_permit) = self.action_tx.clone().reserve_owned().await else {
-            return;
-        };
         let Some(lease) = self
             .timeline_actor_generations
             .try_acquire(&key, actor_generation)
@@ -452,15 +560,45 @@ impl TimelineManagerActor {
             .complete_refresh(&refresh, result);
         match completion {
             crate::threads_list::ThreadRootProjectionCompletion::Updated(record) => {
-                action_permit.send(vec![thread_root_projection_action_from_record(&record)]);
-                let _ = emit_hydration_terminal_unless_replay_owned(
-                    &self.event_tx,
-                    &self.replay_known_thread_root_projections,
-                    &key,
-                    thread_root_projection_dto_from_record(&record),
-                );
+                let wake = ThreadSummaryProjectionWake {
+                    root_event_id: record.activity.root_event_id.clone(),
+                    activity_revision: record.activity_revision,
+                    summary_revision: record.summary_revision,
+                };
+                for (timeline_key, actor) in &self.timelines {
+                    let presents_root = match &timeline_key.kind {
+                        TimelineKind::Room { .. } => true,
+                        TimelineKind::Thread { root_event_id, .. } => {
+                            root_event_id == &wake.root_event_id
+                        }
+                        TimelineKind::Focused { event_id, .. } => event_id == &wake.root_event_id,
+                    };
+                    if presents_root
+                        && timeline_key.account_key == key.account_key
+                        && timeline_key.room_id() == key.room_id()
+                    {
+                        actor.thread_summary_projection().publish(wake.clone());
+                    }
+                }
+                if !refresh.canonical_root_active {
+                    let Ok(action_permit) = self.action_tx.clone().reserve_owned().await else {
+                        drop(lease);
+                        return;
+                    };
+                    action_permit.send(vec![thread_root_projection_action_from_record(&record)]);
+                    let _ = emit_hydration_terminal_unless_replay_owned(
+                        &self.event_tx,
+                        &self.replay_known_thread_root_projections,
+                        &key,
+                        thread_root_projection_dto_from_record(&record),
+                    );
+                }
             }
             crate::threads_list::ThreadRootProjectionCompletion::Cleared(activity) => {
+                let Ok(action_permit) = self.action_tx.clone().reserve_owned().await else {
+                    drop(lease);
+                    return;
+                };
                 action_permit.send(vec![AppAction::ThreadRootProjectionCleared {
                     room_id: activity.room_id.clone(),
                     root_event_id: activity.root_event_id.clone(),
@@ -479,9 +617,7 @@ impl TimelineManagerActor {
                     },
                 );
             }
-            crate::threads_list::ThreadRootProjectionCompletion::Ignored => {
-                drop(action_permit);
-            }
+            crate::threads_list::ThreadRootProjectionCompletion::Ignored => {}
         }
         drop(lease);
     }
@@ -667,6 +803,11 @@ fn hydration_projection_event(
 struct PreparedThreadRootHydration {
     activities_by_root: HashMap<String, ThreadRootProjectionActivity>,
     missing_activities: Vec<ThreadRootProjectionActivity>,
+    canonical_root_event_ids: HashSet<String>,
+    redacted_activity_event_ids: HashSet<String>,
+    /// `None` refreshes the full bounded initial/reprojection window. A live
+    /// batch supplies only roots whose canonical root/reply items changed.
+    refresh_root_event_ids: Option<HashSet<String>>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -687,12 +828,17 @@ async fn commit_prepared_thread_root_hydration_for_generation(
         .into_iter()
         .map(|activity| (activity.root_event_id.clone(), activity))
         .collect::<HashMap<_, _>>();
+    let current_activities = prepared.activities_by_root;
+    let canonical_root_event_ids = prepared.canonical_root_event_ids;
+    let redacted_activity_event_ids = prepared.redacted_activity_event_ids;
+    let refresh_root_event_ids = prepared.refresh_root_event_ids;
     let previous_tracked_activities = service
         .lock()
         .expect("thread-root projection service lock must not be poisoned")
         .active_activities(key.room_id());
-    let manager_capacity_needed =
-        !current_missing_activities.is_empty() || !previous_tracked_activities.is_empty();
+    let manager_capacity_needed = !current_activities.is_empty()
+        || !current_missing_activities.is_empty()
+        || !previous_tracked_activities.is_empty();
     let refresh_permit = if manager_capacity_needed {
         let Ok(permit) = manager_tx.clone().reserve_owned().await else {
             return false;
@@ -713,8 +859,7 @@ async fn commit_prepared_thread_root_hydration_for_generation(
     };
     let mut actions = vec![AppAction::ThreadRootProjectionsReconciled {
         room_id: key.room_id().to_owned(),
-        activities: prepared
-            .activities_by_root
+        activities: current_activities
             .values()
             .map(|activity| ThreadRootProjectionActivityState {
                 root_event_id: activity.root_event_id.clone(),
@@ -729,42 +874,60 @@ async fn commit_prepared_thread_root_hydration_for_generation(
     let mut service_guard = service
         .lock()
         .expect("thread-root projection service lock must not be poisoned");
+    service_guard.set_canonical_root_event_ids(key.room_id(), &canonical_root_event_ids);
     let mut affected_root_event_ids = previous_tracked_activities
         .keys()
         .cloned()
         .collect::<HashSet<_>>();
     affected_root_event_ids.extend(current_missing_activities.keys().cloned());
+    for (root_event_id, previous_activity) in &previous_tracked_activities {
+        if redacted_activity_event_ids.contains(&previous_activity.activity_event_id) {
+            service_guard.invalidate_live_activity(
+                key.room_id(),
+                root_event_id,
+                &previous_activity.activity_event_id,
+            );
+        }
+    }
     let changed_root_event_ids = service_guard.reconcile_room_activities_with_affected(
         key.room_id(),
-        &current_missing_activities,
+        &current_activities,
         &affected_root_event_ids,
     );
-    for activity in current_missing_activities.values() {
+    for activity in current_activities.values() {
         let was_tracked = previous_tracked_activities.contains_key(&activity.root_event_id);
         let decision = service_guard.observe(activity.clone());
         match decision {
             ThreadRootProjectionDecision::StartFetch(activity) => {
-                actions.push(AppAction::ThreadRootProjectionObserved {
-                    room_id: activity.room_id.clone(),
-                    root_event_id: activity.root_event_id.clone(),
-                    activity_event_id: activity.activity_event_id.clone(),
-                    activity_timestamp_ms: activity.activity_timestamp_ms,
-                });
-                events.push(hydration_projection_event(
-                    key,
-                    thread_root_projection_pending_dto(&activity),
-                ));
+                let canonical_root_active =
+                    canonical_root_event_ids.contains(&activity.root_event_id);
+                if !canonical_root_active {
+                    actions.push(AppAction::ThreadRootProjectionObserved {
+                        room_id: activity.room_id.clone(),
+                        root_event_id: activity.root_event_id.clone(),
+                        activity_event_id: activity.activity_event_id.clone(),
+                        activity_timestamp_ms: activity.activity_timestamp_ms,
+                    });
+                    events.push(hydration_projection_event(
+                        key,
+                        thread_root_projection_pending_dto(&activity),
+                    ));
+                }
             }
             ThreadRootProjectionDecision::ActivityUpdated(record)
             | ThreadRootProjectionDecision::Existing(record) => {
-                actions.push(thread_root_projection_action_from_record(&record));
-                if record.is_pending() {
-                    events.push(hydration_projection_event(
-                        key,
-                        thread_root_projection_dto_from_record(&record),
-                    ));
-                } else {
-                    terminal_projections.push(thread_root_projection_dto_from_record(&record));
+                let canonical_root_active =
+                    canonical_root_event_ids.contains(&activity.root_event_id);
+                if !canonical_root_active {
+                    actions.push(thread_root_projection_action_from_record(&record));
+                    if record.is_pending() {
+                        events.push(hydration_projection_event(
+                            key,
+                            thread_root_projection_dto_from_record(&record),
+                        ));
+                    } else {
+                        terminal_projections.push(thread_root_projection_dto_from_record(&record));
+                    }
                 }
             }
             ThreadRootProjectionDecision::Retired => continue,
@@ -776,20 +939,42 @@ async fn commit_prepared_thread_root_hydration_for_generation(
         } else {
             AggregateRefreshCause::CanonicalBatch
         };
-        if let Some(refresh) =
-            service_guard.schedule_aggregate_refresh(activity, cause, true, false)
+        let canonical_root_active = canonical_root_event_ids.contains(&activity.root_event_id);
+        let should_refresh = !was_tracked
+            || refresh_root_event_ids
+                .as_ref()
+                .is_none_or(|roots| roots.contains(&activity.root_event_id));
+        if should_refresh
+            && let Some(refresh) = service_guard.schedule_aggregate_refresh_with_canonical_root(
+                activity,
+                cause,
+                true,
+                canonical_root_active,
+                false,
+            )
         {
             refreshes.push(refresh);
         }
     }
     for (root_event_id, activity) in &previous_tracked_activities {
-        if current_missing_activities.contains_key(root_event_id) {
+        if current_activities.contains_key(root_event_id)
+            || refresh_root_event_ids
+                .as_ref()
+                .is_some_and(|roots| !roots.contains(root_event_id))
+        {
             continue;
         }
-        if let Some(refresh) = service_guard.schedule_aggregate_refresh(
+        let canonical_root_active = canonical_root_event_ids.contains(root_event_id);
+        let cause = if canonical_root_active {
+            AggregateRefreshCause::CanonicalBatch
+        } else {
+            AggregateRefreshCause::Removal
+        };
+        if let Some(refresh) = service_guard.schedule_aggregate_refresh_with_canonical_root(
             activity,
-            AggregateRefreshCause::Removal,
+            cause,
             false,
+            canonical_root_active,
             false,
         ) {
             refreshes.push(refresh);
@@ -841,7 +1026,97 @@ fn thread_root_projection_action_from_record(record: &ThreadRootProjectionRecord
     }
 }
 
-fn thread_root_item_with_authoritative_aggregate(
+pub(super) fn seed_thread_summary_item(
+    service: &Arc<Mutex<ThreadRootProjectionService>>,
+    key: &TimelineKey,
+    item: &TimelineItem,
+) {
+    if !matches!(key.kind, TimelineKind::Room { .. }) {
+        return;
+    }
+    let TimelineItemId::Event { event_id } = &item.id else {
+        return;
+    };
+    if item.thread_root.is_some() {
+        return;
+    }
+    let Some(summary) = item.thread_summary.as_ref() else {
+        return;
+    };
+    service
+        .lock()
+        .expect("thread-root projection service lock must not be poisoned")
+        .seed_canonical_summary(key.room_id(), event_id, summary);
+}
+
+pub(super) fn seed_thread_summary_diff(
+    service: &Arc<Mutex<ThreadRootProjectionService>>,
+    key: &TimelineKey,
+    diff: &crate::event::TimelineDiff,
+) {
+    match diff {
+        crate::event::TimelineDiff::PushFront { item }
+        | crate::event::TimelineDiff::PushBack { item }
+        | crate::event::TimelineDiff::Insert { item, .. }
+        | crate::event::TimelineDiff::Set { item, .. } => {
+            seed_thread_summary_item(service, key, item);
+        }
+        crate::event::TimelineDiff::Reset { items } => {
+            for item in items {
+                seed_thread_summary_item(service, key, item);
+            }
+        }
+        crate::event::TimelineDiff::Remove { .. }
+        | crate::event::TimelineDiff::Truncate { .. }
+        | crate::event::TimelineDiff::Clear => {}
+    }
+}
+
+pub(super) fn overlay_thread_summary_item(
+    service: &Arc<Mutex<ThreadRootProjectionService>>,
+    key: &TimelineKey,
+    item: &TimelineItem,
+) -> TimelineItem {
+    let TimelineItemId::Event { event_id } = &item.id else {
+        return item.clone();
+    };
+    if item.thread_root.is_some() {
+        return item.clone();
+    }
+    let Some(aggregate) = service
+        .lock()
+        .expect("thread-root projection service lock must not be poisoned")
+        .current_aggregate(key.room_id(), event_id)
+    else {
+        return item.clone();
+    };
+    thread_root_item_with_authoritative_aggregate(item, &aggregate)
+}
+
+pub(super) fn overlay_thread_summary_diff(
+    service: &Arc<Mutex<ThreadRootProjectionService>>,
+    key: &TimelineKey,
+    diff: &mut crate::event::TimelineDiff,
+) {
+    match diff {
+        crate::event::TimelineDiff::PushFront { item }
+        | crate::event::TimelineDiff::PushBack { item }
+        | crate::event::TimelineDiff::Insert { item, .. }
+        | crate::event::TimelineDiff::Set { item, .. } => {
+            *item = overlay_thread_summary_item(service, key, item);
+        }
+        crate::event::TimelineDiff::Reset { items } => {
+            for item in items {
+                *item = overlay_thread_summary_item(service, key, item);
+            }
+        }
+        crate::event::TimelineDiff::Remove { .. }
+        | crate::event::TimelineDiff::Truncate { .. }
+        | crate::event::TimelineDiff::Clear => {}
+    }
+}
+
+pub(super) fn thread_root_item_with_authoritative_aggregate(
     item: &TimelineItem,
     aggregate: &crate::threads_list::AuthoritativeThreadAggregate,
 ) -> TimelineItem {
@@ -958,6 +1233,128 @@ fn thread_root_projection_activity_from_item(
         activity_sender_label: item.sender_label.clone(),
         activity_body_preview: thread_root_activity_preview(item),
     })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum ThreadSummaryActivityObservation {
+    Activity(ThreadRootProjectionActivity),
+    Invalidated {
+        root_event_id: String,
+        activity_event_id: String,
+    },
+}
+
+pub(super) fn thread_summary_affected_root_event_ids(
+    key: &TimelineKey,
+    before: &[TimelineItem],
+    after: &[TimelineItem],
+) -> HashSet<String> {
+    if !matches!(key.kind, TimelineKind::Room { .. }) {
+        return HashSet::new();
+    }
+    let collect = |items: &[TimelineItem]| {
+        items
+            .iter()
+            .filter_map(|item| {
+                let event_id = timeline_item_event_id(item)?.to_owned();
+                let root_event_id = item
+                    .thread_root
+                    .as_deref()
+                    .filter(|root| !root.trim().is_empty())
+                    .map(str::to_owned)
+                    .or_else(|| item.thread_summary.as_ref().map(|_| event_id.clone()))?;
+                Some((event_id, (root_event_id, item.clone())))
+            })
+            .collect::<HashMap<_, _>>()
+    };
+    let before_by_event = collect(before);
+    let after_by_event = collect(after);
+    let mut affected = HashSet::new();
+    for event_id in before_by_event.keys().chain(after_by_event.keys()) {
+        let before = before_by_event.get(event_id);
+        let after = after_by_event.get(event_id);
+        if before == after {
+            continue;
+        }
+        if let Some((root_event_id, _)) = before {
+            affected.insert(root_event_id.clone());
+        }
+        if let Some((root_event_id, _)) = after {
+            affected.insert(root_event_id.clone());
+        }
+    }
+    affected
+}
+
+pub(super) fn thread_summary_observations_for_windows(
+    key: &TimelineKey,
+    before: &[TimelineItem],
+    after: &[TimelineItem],
+) -> Vec<ThreadSummaryActivityObservation> {
+    let TimelineKind::Thread { root_event_id, .. } = &key.kind else {
+        return Vec::new();
+    };
+    let collect = |items: &[TimelineItem]| {
+        items
+            .iter()
+            .filter_map(|item| thread_root_projection_activity_from_item(key.room_id(), item))
+            .filter(|activity| activity.root_event_id == *root_event_id)
+            .map(|activity| (activity.activity_event_id.clone(), activity))
+            .collect::<HashMap<_, _>>()
+    };
+    let before_by_event = collect(before);
+    let after_by_event = collect(after);
+    let after_items_by_event = after
+        .iter()
+        .filter_map(|item| Some((timeline_item_event_id(item)?.to_owned(), item)))
+        .collect::<HashMap<_, _>>();
+    let mut observations = Vec::new();
+    for activity in after_by_event.values() {
+        if before_by_event
+            .get(&activity.activity_event_id)
+            .is_none_or(|previous| previous != activity)
+        {
+            observations.push(ThreadSummaryActivityObservation::Activity(activity.clone()));
+        }
+    }
+    for activity in before_by_event.values() {
+        if !after_by_event.contains_key(&activity.activity_event_id)
+            && after_items_by_event
+                .get(&activity.activity_event_id)
+                .is_some_and(|item| item.is_redacted)
+        {
+            observations.push(ThreadSummaryActivityObservation::Invalidated {
+                root_event_id: activity.root_event_id.clone(),
+                activity_event_id: activity.activity_event_id.clone(),
+            });
+        }
+    }
+    observations.sort_by(|left, right| {
+        let left_key = match left {
+            ThreadSummaryActivityObservation::Activity(activity) => (
+                1u8,
+                activity.root_event_id.as_str(),
+                activity.activity_event_id.as_str(),
+            ),
+            ThreadSummaryActivityObservation::Invalidated {
+                root_event_id,
+                activity_event_id,
+            } => (0u8, root_event_id.as_str(), activity_event_id.as_str()),
+        };
+        let right_key = match right {
+            ThreadSummaryActivityObservation::Activity(activity) => (
+                1u8,
+                activity.root_event_id.as_str(),
+                activity.activity_event_id.as_str(),
+            ),
+            ThreadSummaryActivityObservation::Invalidated {
+                root_event_id,
+                activity_event_id,
+            } => (0u8, root_event_id.as_str(), activity_event_id.as_str()),
+        };
+        left_key.cmp(&right_key)
+    });
+    observations
 }
 
 /// The exact Room items currently represented by the bounded display replay.
@@ -1902,7 +2299,10 @@ impl TimelineActor {
     /// SDK item window. The projection service is deliberately out-of-band:
     /// this method never creates a VectorDiff, calls Room pagination, or
     /// asks the viewport/anchor path to materialize an event.
-    pub(super) async fn maybe_hydrate_missing_thread_roots(&mut self) {
+    pub(super) async fn maybe_hydrate_missing_thread_roots(
+        &mut self,
+        refresh_root_event_ids: Option<HashSet<String>>,
+    ) {
         if !matches!(self.key.kind, TimelineKind::Room { .. }) {
             return;
         }
@@ -1925,6 +2325,20 @@ impl TimelineActor {
             .filter(|activity| !self.timeline_contains_event_id(&activity.root_event_id))
             .cloned()
             .collect();
+        let canonical_root_event_ids = self
+            .navigation_items
+            .iter()
+            .filter(|item| item.thread_root.is_none() && item.thread_summary.is_some())
+            .filter_map(timeline_item_event_id)
+            .map(ToOwned::to_owned)
+            .collect();
+        let redacted_activity_event_ids = self
+            .navigation_items
+            .iter()
+            .filter(|item| item.is_redacted)
+            .filter_map(timeline_item_event_id)
+            .map(ToOwned::to_owned)
+            .collect();
         let _ = commit_prepared_thread_root_hydration_for_generation(
             &self.thread_root_projection_service,
             &self.replay_known_thread_root_projections,
@@ -1938,6 +2352,9 @@ impl TimelineActor {
             PreparedThreadRootHydration {
                 activities_by_root,
                 missing_activities,
+                canonical_root_event_ids,
+                redacted_activity_event_ids,
+                refresh_root_event_ids,
             },
         )
         .await;
@@ -1948,7 +2365,7 @@ impl TimelineActor {
 mod tests {
     use super::super::test_source::item_body;
 
-    use std::collections::{BTreeMap, BTreeSet, HashMap};
+    use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
     use std::future::Future;
 
     use std::pin::Pin;
@@ -1989,7 +2406,10 @@ mod tests {
 
     use matrix_sdk::ruma::{OwnedUserId, uint};
 
-    use super::super::actor::emit_app_action_reliable;
+    use super::super::actor::{
+        ThreadSummaryProjectionIngress, TimelineActorHandle, TimelineActorMessage,
+        emit_app_action_reliable,
+    };
     use super::super::display_projection::{
         DisplayProjectionState, apply_non_sdk_item_set_diffs_to_display_items,
         apply_timeline_diffs_to_items,
@@ -2031,7 +2451,8 @@ mod tests {
         ThreadAttentionTracker, ThreadRootProjectionFetchRegistry,
         commit_prepared_thread_root_hydration_for_generation,
         emit_hydration_terminal_unless_replay_owned, emit_replay_known_root_projection_update,
-        known_thread_root_projections_for_replay, reaction_groups_from_cached_relation_events,
+        known_thread_root_projections_for_replay, overlay_thread_summary_diff,
+        reaction_groups_from_cached_relation_events,
         reconcile_replay_known_root_projections_after_navigation_update,
         refresh_replay_known_root_projections,
         refresh_replay_known_root_projections_with_display_context, replay_known_timeline_events,
@@ -2039,6 +2460,7 @@ mod tests {
         thread_attention_observation_from_event_origin,
         thread_root_item_with_authoritative_aggregate, thread_root_projection_activity_from_item,
         thread_root_projection_dto_from_record, thread_root_projection_item_from_raw,
+        thread_summary_affected_root_event_ids,
     };
 
     async fn assert_pending_on_first_poll<F: Future>(
@@ -3376,6 +3798,9 @@ mod tests {
                         // reserve one atomic batch rather than deadlocking on
                         // unpublished per-fetch permits.
                         missing_activities: vec![activity, second_activity],
+                        canonical_root_event_ids: HashSet::new(),
+                        redacted_activity_event_ids: HashSet::new(),
+                        refresh_root_event_ids: None,
                     },
                 )
                 .await
@@ -3461,6 +3886,9 @@ mod tests {
                     activity.clone(),
                 )]),
                 missing_activities: vec![activity.clone()],
+                canonical_root_event_ids: HashSet::new(),
+                redacted_activity_event_ids: HashSet::new(),
+                refresh_root_event_ids: None,
             },
         ));
         assert_pending_on_first_poll(hydration.as_mut(), "hydration reservation").await;
@@ -3517,6 +3945,142 @@ mod tests {
         );
     }
 
+    #[test]
+    fn thread_and_focused_items_do_not_claim_room_canonical_summary_ownership() {
+        let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        let mut root = timeline_item("$root:test", Some("root"), "@root:test", false);
+        root.thread_summary = Some(ThreadSummaryDto {
+            reply_count: 1,
+            latest_event_id: Some("$reply:test".to_owned()),
+            latest_sender: None,
+            latest_sender_label: None,
+            latest_body_preview: Some("reply".to_owned()),
+            latest_timestamp_ms: Some(100),
+        });
+        super::seed_thread_summary_item(&service, &thread_key(), &root);
+        assert!(
+            service
+                .lock()
+                .expect("service lock")
+                .current_aggregate("!r:test", "$root:test")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn room_batches_refresh_only_roots_with_changed_root_or_reply_items() {
+        let key = room_key();
+        let mut root = timeline_item("$root:test", Some("root"), "@root:test", false);
+        root.thread_summary = Some(ThreadSummaryDto {
+            reply_count: 1,
+            latest_event_id: Some("$reply-a:test".to_owned()),
+            latest_sender: Some("@a:test".to_owned()),
+            latest_sender_label: Some("A".to_owned()),
+            latest_body_preview: Some("A".to_owned()),
+            latest_timestamp_ms: Some(100),
+        });
+        let mut reply_a = timeline_item("$reply-a:test", Some("A"), "@a:test", false);
+        reply_a.thread_root = Some("$root:test".to_owned());
+        reply_a.timestamp_ms = Some(100);
+        let unrelated_before = timeline_item("$other:test", Some("before"), "@o:test", false);
+        let unrelated_after = timeline_item("$other:test", Some("after"), "@o:test", false);
+        assert!(
+            thread_summary_affected_root_event_ids(
+                &key,
+                &[root.clone(), reply_a.clone(), unrelated_before],
+                &[root.clone(), reply_a.clone(), unrelated_after],
+            )
+            .is_empty(),
+            "an unrelated message Set must not query every thread aggregate"
+        );
+
+        let mut reply_b = timeline_item("$reply-b:test", Some("B"), "@b:test", false);
+        reply_b.thread_root = Some("$root:test".to_owned());
+        reply_b.timestamp_ms = Some(200);
+        assert_eq!(
+            thread_summary_affected_root_event_ids(
+                &key,
+                &[root.clone(), reply_a.clone()],
+                &[root.clone(), reply_a, reply_b.clone()],
+            ),
+            HashSet::from(["$root:test".to_owned()])
+        );
+        reply_b.is_redacted = true;
+        assert_eq!(
+            thread_summary_affected_root_event_ids(
+                &key,
+                &[
+                    root.clone(),
+                    thread_reply_item("$reply-b:test", "@b:test", "$root:test")
+                ],
+                &[root, reply_b],
+            ),
+            HashSet::from(["$root:test".to_owned()])
+        );
+    }
+
+    #[tokio::test]
+    async fn unrelated_room_batch_does_not_refresh_a_canonical_root_without_reply_row() {
+        let key = room_key();
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = generations.activate_after_quiescence(&key).await.generation;
+        let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        service
+            .lock()
+            .expect("service lock")
+            .seed_canonical_summary(
+                key.room_id(),
+                "$root:test",
+                &ThreadSummaryDto {
+                    reply_count: 1,
+                    latest_event_id: Some("$reply:test".to_owned()),
+                    latest_sender: None,
+                    latest_sender_label: None,
+                    latest_body_preview: Some("reply".to_owned()),
+                    latest_timestamp_ms: Some(100),
+                },
+            );
+        let replay_registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let (action_tx, mut action_rx) = mpsc::channel(2);
+        let (manager_tx, mut manager_rx) = mpsc::channel(2);
+        let (event_tx, _) = broadcast::channel(8);
+
+        assert!(
+            commit_prepared_thread_root_hydration_for_generation(
+                &service,
+                &replay_registry,
+                &generations,
+                &action_tx,
+                &manager_tx,
+                &event_tx,
+                &key,
+                actor_generation,
+                None,
+                PreparedThreadRootHydration {
+                    activities_by_root: HashMap::new(),
+                    missing_activities: Vec::new(),
+                    canonical_root_event_ids: HashSet::from(["$root:test".to_owned()]),
+                    redacted_activity_event_ids: HashSet::new(),
+                    refresh_root_event_ids: Some(HashSet::new()),
+                },
+            )
+            .await
+        );
+        assert!(matches!(
+            action_rx.recv().await,
+            Some(actions) if matches!(
+                actions.as_slice(),
+                [AppAction::ThreadRootProjectionsReconciled { .. }]
+            )
+        ));
+        assert!(
+            manager_rx.try_recv().is_err(),
+            "an unrelated batch must not abort and respawn aggregate work"
+        );
+    }
+
     #[tokio::test]
     async fn canonical_root_with_live_reply_schedules_authoritative_summary_refresh() {
         let key = room_key();
@@ -3558,6 +4122,9 @@ mod tests {
                     // The root is already canonical, so no root hydration fetch
                     // is needed; its live reply still requires an aggregate refresh.
                     missing_activities: Vec::new(),
+                    canonical_root_event_ids: HashSet::from([activity.root_event_id.clone()]),
+                    redacted_activity_event_ids: HashSet::new(),
+                    refresh_root_event_ids: None,
                 },
             )
             .await
@@ -3581,6 +4148,329 @@ mod tests {
                 && refreshes[0].root_active
                 && !refreshes[0].hydrate_root
         ));
+    }
+
+    #[test]
+    fn newer_sdk_summary_is_detected_before_overlay_and_repaired_by_exact_aggregate() {
+        let key = room_key();
+        let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        let mut root_a = timeline_item("$root:test", Some("root"), "@root:test", false);
+        root_a.thread_summary = Some(ThreadSummaryDto {
+            reply_count: 1,
+            latest_event_id: Some("$reply-a:test".to_owned()),
+            latest_sender: Some("@a:test".to_owned()),
+            latest_sender_label: Some("A".to_owned()),
+            latest_body_preview: Some("A".to_owned()),
+            latest_timestamp_ms: Some(100),
+        });
+        super::seed_thread_summary_item(&service, &key, &root_a);
+
+        let mut root_b = root_a.clone();
+        root_b.thread_summary = Some(ThreadSummaryDto {
+            reply_count: 2,
+            latest_event_id: Some("$reply-b:test".to_owned()),
+            latest_sender: Some("@b:test".to_owned()),
+            latest_sender_label: Some("B".to_owned()),
+            latest_body_preview: Some("B".to_owned()),
+            latest_timestamp_ms: Some(200),
+        });
+        let raw_diff = TimelineDiff::Set {
+            index: 0,
+            item: root_b.clone(),
+        };
+        let mut raw_after = vec![root_a.clone()];
+        apply_timeline_diffs_to_items(&mut raw_after, std::slice::from_ref(&raw_diff));
+        assert_eq!(
+            thread_summary_affected_root_event_ids(&key, &[root_a.clone()], &raw_after),
+            HashSet::from(["$root:test".to_owned()])
+        );
+
+        // The bundled identity is provisional (it may be an edit event), so
+        // overlay retains A until the exact event-cache aggregate validates B.
+        super::seed_thread_summary_diff(&service, &key, &raw_diff);
+        let mut overlaid_diff = raw_diff;
+        overlay_thread_summary_diff(&service, &key, &mut overlaid_diff);
+        let TimelineDiff::Set { item, .. } = &overlaid_diff else {
+            panic!("expected root Set")
+        };
+        assert_eq!(
+            item.thread_summary
+                .as_ref()
+                .and_then(|summary| summary.latest_event_id.as_deref()),
+            Some("$reply-a:test")
+        );
+
+        let activity = service
+            .lock()
+            .expect("service lock")
+            .activity_for_root(key.room_id(), "$root:test")
+            .expect("tracked root");
+        let refresh = service
+            .lock()
+            .expect("service lock")
+            .schedule_aggregate_refresh_with_canonical_root(
+                &activity,
+                AggregateRefreshCause::CanonicalBatch,
+                true,
+                true,
+                false,
+            )
+            .expect("aggregate refresh");
+        assert!(matches!(
+            service.lock().expect("service lock").complete_refresh(
+                &refresh,
+                Ok(
+                    crate::threads_list::ThreadRootProjectionRefreshResult::Aggregate(
+                        AuthoritativeThreadAggregate {
+                            reply_count: 2,
+                            latest_event_id: Some("$reply-b:test".to_owned()),
+                            latest_sender: Some("@b:test".to_owned()),
+                            latest_sender_label: Some("B".to_owned()),
+                            latest_body_preview: Some("B".to_owned()),
+                            latest_timestamp_ms: Some(200),
+                        },
+                    )
+                ),
+            ),
+            crate::threads_list::ThreadRootProjectionCompletion::Updated(_)
+        ));
+        let mut validated_diff = TimelineDiff::Set {
+            index: 0,
+            item: root_b,
+        };
+        overlay_thread_summary_diff(&service, &key, &mut validated_diff);
+        let TimelineDiff::Set { item, .. } = validated_diff else {
+            panic!("expected validated root Set")
+        };
+        assert_eq!(
+            item.thread_summary
+                .as_ref()
+                .and_then(|summary| summary.latest_event_id.as_deref()),
+            Some("$reply-b:test")
+        );
+        assert_eq!(
+            item.thread_summary
+                .as_ref()
+                .map(|summary| summary.reply_count),
+            Some(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn accepted_canonical_aggregate_emits_an_authoritative_set_and_overlays_stale_sdk_input()
+    {
+        let key = room_key();
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = generations.activate_after_quiescence(&key).await.generation;
+        let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        let replay_registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let activity = ThreadRootProjectionActivity {
+            room_id: key.room_id().to_owned(),
+            root_event_id: "$root:test".to_owned(),
+            activity_event_id: "$reply-b:test".to_owned(),
+            activity_timestamp_ms: Some(200),
+            activity_sender: Some("@b:test".to_owned()),
+            activity_sender_label: Some("B".to_owned()),
+            activity_body_preview: Some("B".to_owned()),
+        };
+        let mut root = timeline_item("$root:test", Some("root"), "@root:test", false);
+        root.thread_summary = Some(ThreadSummaryDto {
+            reply_count: 1,
+            latest_event_id: Some("$reply-a:test".to_owned()),
+            latest_sender: Some("@a:test".to_owned()),
+            latest_sender_label: Some("A".to_owned()),
+            latest_body_preview: Some("A".to_owned()),
+            latest_timestamp_ms: Some(100),
+        });
+        let aggregate_b = AuthoritativeThreadAggregate {
+            reply_count: 2,
+            latest_event_id: Some(activity.activity_event_id.clone()),
+            latest_sender: activity.activity_sender.clone(),
+            latest_sender_label: activity.activity_sender_label.clone(),
+            latest_body_preview: activity.activity_body_preview.clone(),
+            latest_timestamp_ms: activity.activity_timestamp_ms,
+        };
+        {
+            let mut service_guard = service.lock().expect("service lock");
+            assert!(matches!(
+                service_guard.observe(activity.clone()),
+                ThreadRootProjectionDecision::StartFetch(_)
+            ));
+            service_guard.set_canonical_root_event_ids(
+                key.room_id(),
+                &HashSet::from([activity.root_event_id.clone()]),
+            );
+            let refresh = service_guard
+                .schedule_aggregate_refresh_with_canonical_root(
+                    &activity,
+                    AggregateRefreshCause::SelectedActivity,
+                    true,
+                    true,
+                    false,
+                )
+                .expect("canonical aggregate refresh");
+            assert!(matches!(
+                service_guard.complete_refresh(
+                    &refresh,
+                    Ok(
+                        crate::threads_list::ThreadRootProjectionRefreshResult::Aggregate(
+                            aggregate_b.clone(),
+                        )
+                    ),
+                ),
+                crate::threads_list::ThreadRootProjectionCompletion::Updated(_)
+            ));
+        }
+
+        let mut stale_sdk_set = TimelineDiff::Set {
+            index: 0,
+            item: root.clone(),
+        };
+        overlay_thread_summary_diff(&service, &key, &mut stale_sdk_set);
+        let TimelineDiff::Set { item, .. } = &stale_sdk_set else {
+            panic!("expected a Set diff");
+        };
+        assert_eq!(
+            item.thread_summary.as_ref().unwrap().latest_event_id,
+            aggregate_b.latest_event_id
+        );
+        assert_eq!(
+            item.thread_summary.as_ref().unwrap().latest_body_preview,
+            aggregate_b.latest_body_preview
+        );
+
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        let mut display_projection =
+            DisplayProjectionState::from_canonical_window(std::slice::from_ref(&root), 0..1);
+        assert!(
+            emit_non_sdk_item_sets_and_reconcile_replay_known_for_generation(
+                &event_tx,
+                &replay_registry,
+                &service,
+                &generations,
+                &key,
+                actor_generation,
+                TimelineGeneration(0),
+                TimelineBatchId(0),
+                vec![stale_sdk_set],
+                std::slice::from_ref(&root),
+                &mut display_projection,
+            )
+        );
+        let event = event_rx.recv().await.expect("canonical Set event");
+        let CoreEvent::Timeline(TimelineEvent::ItemsUpdated { diffs, .. }) = event else {
+            panic!("expected canonical ItemsUpdated event");
+        };
+        let [TimelineDiff::Set { item, .. }] = diffs.as_slice() else {
+            panic!("expected one canonical Set diff");
+        };
+        assert_eq!(item.thread_summary.as_ref().unwrap().reply_count, 2);
+        assert_eq!(
+            item.thread_summary
+                .as_ref()
+                .unwrap()
+                .latest_event_id
+                .as_deref(),
+            Some("$reply-b:test")
+        );
+    }
+
+    #[tokio::test]
+    async fn canonical_completion_bypasses_a_full_room_mailbox_via_projection_watch() {
+        let key = room_key();
+        let (actor_tx, _actor_rx) = mpsc::channel(1);
+        actor_tx
+            .try_send(TimelineActorMessage::OwnReadReceiptChanged)
+            .expect("fill ordinary Room actor mailbox");
+        let (projection, projection_rx) = ThreadSummaryProjectionIngress::channel();
+        let mut manager = live_tail_test_manager(HashMap::from([(
+            key.clone(),
+            TimelineActorHandle {
+                tx: actor_tx,
+                control_tx: None,
+                thread_summary_projection: projection,
+                position_rx: None,
+                task: None,
+                auxiliary_tasks: Vec::new(),
+                subscription_generation: None,
+                enqueue_context: None,
+            },
+        )]));
+        let actor_generation = manager
+            .timeline_actor_generations
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
+        let activity = ThreadRootProjectionActivity {
+            room_id: key.room_id().to_owned(),
+            root_event_id: "$root:test".to_owned(),
+            activity_event_id: "$reply-b:test".to_owned(),
+            activity_timestamp_ms: Some(200),
+            activity_sender: Some("@b:test".to_owned()),
+            activity_sender_label: Some("B".to_owned()),
+            activity_body_preview: Some("B".to_owned()),
+        };
+        let refresh = {
+            let mut service = manager
+                .thread_root_projection_service
+                .lock()
+                .expect("service lock");
+            assert!(matches!(
+                service.observe(activity.clone()),
+                ThreadRootProjectionDecision::StartFetch(_)
+            ));
+            service.set_canonical_root_event_ids(
+                key.room_id(),
+                &HashSet::from([activity.root_event_id.clone()]),
+            );
+            service
+                .schedule_aggregate_refresh_with_canonical_root(
+                    &activity,
+                    AggregateRefreshCause::SelectedActivity,
+                    true,
+                    true,
+                    false,
+                )
+                .expect("canonical refresh")
+        };
+        manager.thread_root_projection_fetches.insert(
+            activity.room_id.clone(),
+            activity.root_event_id.clone(),
+            actor_generation,
+            Some(refresh.summary_revision),
+            executor::spawn(async { std::future::pending::<()>().await }),
+        );
+
+        executor::timeout(
+            Duration::from_millis(100),
+            manager.handle_aggregate_refresh_finished(
+                key,
+                actor_generation,
+                refresh,
+                Ok(
+                    crate::threads_list::ThreadRootProjectionRefreshResult::Aggregate(
+                        AuthoritativeThreadAggregate {
+                            reply_count: 2,
+                            latest_event_id: Some(activity.activity_event_id.clone()),
+                            latest_sender: activity.activity_sender.clone(),
+                            latest_sender_label: activity.activity_sender_label.clone(),
+                            latest_body_preview: activity.activity_body_preview.clone(),
+                            latest_timestamp_ms: activity.activity_timestamp_ms,
+                        },
+                    ),
+                ),
+            ),
+        )
+        .await
+        .expect("manager must not wait for ordinary Room actor capacity");
+        let pending = projection_rx.borrow();
+        let wake = pending
+            .get(&activity.root_event_id)
+            .expect("accepted canonical completion wake");
+        assert_eq!(wake.activity_revision, 1);
+        assert_eq!(wake.summary_revision, 1);
     }
 
     #[tokio::test]
@@ -5550,7 +6440,7 @@ mod tests {
         );
         assert!(
             diff_handler
-                .find("self.maybe_hydrate_missing_thread_roots().await")
+                .find("self.maybe_hydrate_missing_thread_roots(")
                 .zip(diff_handler.find(diff_commit))
                 .is_some_and(|(hydration, commit)| commit < hydration),
             "the canonical ItemsUpdated group must reach the store before hydration emits Pending"

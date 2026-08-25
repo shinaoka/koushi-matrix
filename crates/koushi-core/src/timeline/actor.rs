@@ -1,6 +1,6 @@
 #[cfg(test)]
 use std::collections::BTreeSet;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
@@ -71,6 +71,7 @@ use super::navigation::{
     PaginationCompletion, RestoreTimelineAnchorState, TimelineActorGenerationGate,
     TimelineProjectionAcknowledgement, activity_rows_from_timeline_items,
     emit_initial_items_and_reconcile_replay_known_for_generation,
+    emit_non_sdk_item_sets_and_reconcile_replay_known_for_generation,
     emit_timeline_events_for_generation, projection_acknowledgement_for_current_items,
     send_generation_fenced, should_hydrate_empty_initial_room_timeline,
 };
@@ -90,7 +91,8 @@ use super::room_key_recovery::{
 };
 use super::thread_projection::{
     ReplayKnownThreadRootProjectionRegistry, ThreadAttentionCounters, ThreadAttentionTracker,
-    replay_known_candidates_for_display_items,
+    replay_known_candidates_for_display_items, thread_root_item_with_authoritative_aggregate,
+    thread_summary_observations_for_windows,
 };
 // END GENERATED SIBLING IMPORTS
 #[cfg(test)]
@@ -99,6 +101,60 @@ use super::gap_repair::TestGapRepairCompletionPause;
 use super::thread_projection::ThreadAttentionBatchProvenance;
 
 const TIMELINE_ACTOR_CONTROL_QUEUE_CAPACITY: usize = 16;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ThreadSummaryProjectionWake {
+    pub(super) root_event_id: String,
+    pub(super) activity_revision: u64,
+    pub(super) summary_revision: u64,
+}
+
+#[derive(Clone)]
+pub(super) struct ThreadSummaryProjectionIngress {
+    tx: watch::Sender<BTreeMap<String, ThreadSummaryProjectionWake>>,
+}
+
+impl ThreadSummaryProjectionIngress {
+    pub(super) fn channel() -> (
+        Self,
+        watch::Receiver<BTreeMap<String, ThreadSummaryProjectionWake>>,
+    ) {
+        let (tx, rx) = watch::channel(BTreeMap::new());
+        (Self { tx }, rx)
+    }
+
+    /// Latest-wins, bounded publication. The watch value remains owned until
+    /// the Room actor atomically drains it, so manager publication never waits
+    /// for the ordinary actor mailbox.
+    pub(super) fn publish(&self, wake: ThreadSummaryProjectionWake) {
+        self.tx.send_modify(|pending| {
+            assert!(
+                pending.contains_key(&wake.root_event_id)
+                    || pending.len() < crate::threads_list::THREAD_SUMMARY_PROJECTION_MAX_ROOTS,
+                "thread-summary projection wake slots exceeded"
+            );
+            pending.insert(wake.root_event_id.clone(), wake);
+        });
+    }
+
+    fn drain(
+        &self,
+        receiver: &mut watch::Receiver<BTreeMap<String, ThreadSummaryProjectionWake>>,
+    ) -> Vec<ThreadSummaryProjectionWake> {
+        let mut drained = BTreeMap::new();
+        loop {
+            self.tx.send_modify(|pending| drained.append(pending));
+            // Mark the clear (or a racing publication) observed. If a publisher
+            // won before this borrow, the non-empty check loops and drains it;
+            // if it wins after the check, `changed()` remains ready.
+            receiver.borrow_and_update();
+            if self.tx.borrow().is_empty() {
+                break;
+            }
+        }
+        drained.into_values().collect()
+    }
+}
 
 pub(super) enum TimelineActorMessage {
     RoomSubscriptionCheckpoint(MatrixRoomSubscriptionCheckpoint),
@@ -530,6 +586,7 @@ pub(super) async fn emit_app_action_reliable(
 pub(super) struct TimelineActorHandle {
     pub(super) tx: mpsc::Sender<TimelineActorMessage>,
     pub(super) control_tx: Option<mpsc::Sender<TimelineActorControl>>,
+    pub(super) thread_summary_projection: ThreadSummaryProjectionIngress,
     pub(super) position_rx: Option<watch::Receiver<Arc<TimelinePositionIndex>>>,
     pub(super) task: Option<executor::JoinHandle<()>>,
     pub(super) auxiliary_tasks: Vec<executor::JoinHandle<()>>,
@@ -581,6 +638,10 @@ impl TimelinePositionIndex {
 }
 
 impl TimelineActorHandle {
+    pub(super) fn thread_summary_projection(&self) -> &ThreadSummaryProjectionIngress {
+        &self.thread_summary_projection
+    }
+
     pub(super) async fn send(&self, msg: TimelineActorMessage) -> bool {
         self.tx.send(msg).await.is_ok()
     }
@@ -767,6 +828,8 @@ pub(super) struct TimelineActor {
     /// Manager-owned bounded hydration state shared by replacement Room
     /// actors. This is not a `Timeline` and cannot paginate.
     pub(super) thread_root_projection_service: Arc<Mutex<ThreadRootProjectionService>>,
+    pub(super) thread_summary_projection: ThreadSummaryProjectionIngress,
+    thread_summary_projection_rx: watch::Receiver<BTreeMap<String, ThreadSummaryProjectionWake>>,
     /// Manager-owned lifecycle registry for ready snapshots copied from a
     /// bounded replay. It owns no SDK handle and cannot fetch or paginate.
     pub(super) replay_known_thread_root_projections:
@@ -897,6 +960,82 @@ impl Drop for TimelineActor {
 }
 
 impl TimelineActor {
+    fn drain_thread_summary_projection_wakes(&mut self) {
+        for wake in self
+            .thread_summary_projection
+            .drain(&mut self.thread_summary_projection_rx)
+        {
+            let Some(aggregate) = self
+                .thread_root_projection_service
+                .lock()
+                .expect("thread-root projection service lock must not be poisoned")
+                .aggregate_at_revision(
+                    self.key.room_id(),
+                    &wake.root_event_id,
+                    wake.activity_revision,
+                    wake.summary_revision,
+                )
+            else {
+                continue;
+            };
+            let Some((index, current)) =
+                self.navigation_items.iter().enumerate().find(|(_, item)| {
+                    matches!(
+                        &item.id,
+                        TimelineItemId::Event { event_id }
+                            if event_id == &wake.root_event_id && item.thread_root.is_none()
+                    )
+                })
+            else {
+                continue;
+            };
+            let next = thread_root_item_with_authoritative_aggregate(current, &aggregate);
+            if *current == next {
+                continue;
+            }
+            self.navigation_items[index] = next.clone();
+            let batch_id = self.next_batch_id;
+            if emit_non_sdk_item_sets_and_reconcile_replay_known_for_generation(
+                &self.event_tx,
+                &self.replay_known_thread_root_projections,
+                &self.thread_root_projection_service,
+                &self.timeline_actor_generations,
+                &self.key,
+                self.actor_generation,
+                self.generation,
+                batch_id,
+                vec![TimelineDiff::Set { index, item: next }],
+                &self.navigation_items,
+                &mut self.display_projection,
+            ) {
+                self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
+                self.emit_navigation_if_changed();
+            }
+        }
+    }
+
+    pub(super) async fn publish_thread_summary_window_observations(
+        &self,
+        before: &[TimelineItem],
+        after: &[TimelineItem],
+    ) -> bool {
+        for observation in thread_summary_observations_for_windows(&self.key, before, after) {
+            if self
+                .manager_tx
+                .send(TimelineMessage::ThreadSummaryActivityObserved {
+                    key: self.key.clone(),
+                    actor_generation: self.actor_generation,
+                    observation,
+                })
+                .await
+                .is_err()
+            {
+                return false;
+            }
+        }
+        true
+    }
+
     async fn publish_current_canonical_activity(&self) {
         let Some(activity_permit) =
             reserve_canonical_activity_action(&self.action_tx, &self.key).await
@@ -1092,6 +1231,8 @@ impl TimelineActor {
         let (actor_tx, actor_rx) = mpsc::channel(256);
         let (actor_control_tx, actor_control_rx) =
             mpsc::channel(TIMELINE_ACTOR_CONTROL_QUEUE_CAPACITY);
+        let (thread_summary_projection, thread_summary_projection_rx) =
+            ThreadSummaryProjectionIngress::channel();
         let (actor_cleanup_tx, actor_cleanup_rx) = TimelineActorCleanupIngress::channel();
         let (relay_control_tx, relay_control_rx) = mpsc::channel(1);
         let (relay_data_tx, relay_data_rx) = mpsc::channel(256);
@@ -1433,6 +1574,8 @@ impl TimelineActor {
             link_preview_fetches: HashMap::new(),
             reply_detail_fetches: HashMap::new(),
             thread_root_projection_service,
+            thread_summary_projection: thread_summary_projection.clone(),
+            thread_summary_projection_rx,
             replay_known_thread_root_projections,
             timeline_actor_generations,
             actor_generation,
@@ -1481,7 +1624,7 @@ impl TimelineActor {
         actor
             .forward_initial_items_to_search(initial_sdk_items.iter().cloned())
             .await;
-        actor.maybe_hydrate_missing_thread_roots().await;
+        actor.maybe_hydrate_missing_thread_roots(None).await;
         // Issue #460: automatic one-shot key requests for Thread timelines at
         // subscription time — existing UTD rows are delivered as InitialItems,
         // not as diffs, so the diff-batch scanner never sees them. The actor
@@ -1501,6 +1644,7 @@ impl TimelineActor {
         TimelineActorHandle {
             tx: actor_tx,
             control_tx: Some(actor_control_tx),
+            thread_summary_projection,
             position_rx: Some(position_rx),
             task: Some(task),
             auxiliary_tasks,
@@ -1513,6 +1657,12 @@ impl TimelineActor {
         // manager. Publishing through the manager mailbox while construction
         // is still awaited can self-deadlock when that bounded mailbox is full.
         self.publish_authoritative_read_state().await;
+        if matches!(self.key.kind, TimelineKind::Thread { .. }) {
+            let initial_items = self.navigation_items.clone();
+            let _ = self
+                .publish_thread_summary_window_observations(&[], &initial_items)
+                .await;
+        }
         let initial_trigger = if self.gap_repair.has_live_edge_target() {
             TimelineGapRepairTrigger::LiveEdge
         } else {
@@ -1527,8 +1677,15 @@ impl TimelineActor {
                 let pending = std::mem::take(&mut self.pending_auto_key_requests);
                 self.dispatch_auto_key_requests(pending);
             }
+            self.drain_thread_summary_projection_wakes();
             tokio::select! {
                 biased;
+                summary_projection = self.thread_summary_projection_rx.changed() => {
+                    if summary_projection.is_err() {
+                        break;
+                    }
+                    self.drain_thread_summary_projection_wakes();
+                }
                 cleanup = self.cleanup_rx.changed() => {
                     if cleanup.is_err() {
                         break;
@@ -2304,7 +2461,7 @@ impl TimelineActor {
         }
         if self.hydrate_after_restore_flush && self.restore_anchor.is_none() {
             self.hydrate_after_restore_flush = false;
-            self.maybe_hydrate_missing_thread_roots().await;
+            self.maybe_hydrate_missing_thread_roots(None).await;
         }
     }
     pub(super) fn emit(&self, event: CoreEvent) {
@@ -2400,7 +2557,10 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     use super::super::test_support::fake_rid;
-    use super::{TimelineActorControl, TimelineActorHandle, TimelineActorMessage};
+    use super::{
+        ThreadSummaryProjectionIngress, ThreadSummaryProjectionWake, TimelineActorControl,
+        TimelineActorHandle, TimelineActorMessage,
+    };
 
     struct DropFlag(Arc<AtomicBool>);
 
@@ -2408,6 +2568,68 @@ mod tests {
         fn drop(&mut self) {
             self.0.store(false, Ordering::SeqCst);
         }
+    }
+
+    #[test]
+    fn thread_summary_projection_watch_is_bounded_and_latest_wins() {
+        let (ingress, mut receiver) = ThreadSummaryProjectionIngress::channel();
+        for index in 0..crate::threads_list::THREAD_SUMMARY_PROJECTION_MAX_ROOTS {
+            ingress.publish(ThreadSummaryProjectionWake {
+                root_event_id: format!("$root-{index}"),
+                activity_revision: 1,
+                summary_revision: 1,
+            });
+        }
+        assert_eq!(
+            receiver.borrow().len(),
+            crate::threads_list::THREAD_SUMMARY_PROJECTION_MAX_ROOTS
+        );
+
+        ingress.publish(ThreadSummaryProjectionWake {
+            root_event_id: "$root-0".to_owned(),
+            activity_revision: 2,
+            summary_revision: 3,
+        });
+        assert_eq!(
+            receiver.borrow().len(),
+            crate::threads_list::THREAD_SUMMARY_PROJECTION_MAX_ROOTS
+        );
+        assert_eq!(receiver.borrow()["$root-0"].summary_revision, 3);
+
+        let drained = ingress.drain(&mut receiver);
+        assert_eq!(
+            drained.len(),
+            crate::threads_list::THREAD_SUMMARY_PROJECTION_MAX_ROOTS
+        );
+        assert!(receiver.borrow().is_empty());
+        assert!(
+            !receiver
+                .has_changed()
+                .expect("projection sender remains live"),
+            "draining must acknowledge the clear instead of spinning the biased select"
+        );
+
+        // A publication racing the actor's next select belongs to the new
+        // watch value rather than the atomically drained batch.
+        ingress.publish(ThreadSummaryProjectionWake {
+            root_event_id: "$root-new".to_owned(),
+            activity_revision: 4,
+            summary_revision: 5,
+        });
+        assert_eq!(receiver.borrow().len(), 1);
+        assert_eq!(ingress.drain(&mut receiver)[0].root_event_id, "$root-new");
+    }
+
+    #[test]
+    fn replaced_thread_summary_projection_watch_drops_old_values() {
+        let (ingress, receiver) = ThreadSummaryProjectionIngress::channel();
+        ingress.publish(ThreadSummaryProjectionWake {
+            root_event_id: "$old-root".to_owned(),
+            activity_revision: 1,
+            summary_revision: 1,
+        });
+        drop(ingress);
+        assert!(receiver.has_changed().is_err());
     }
 
     #[tokio::test]
@@ -2439,6 +2661,8 @@ mod tests {
         let handle = TimelineActorHandle {
             tx,
             control_tx: None,
+            thread_summary_projection:
+                crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
             position_rx: None,
             task: Some(actor_task),
             auxiliary_tasks: vec![auxiliary_task],
@@ -2468,6 +2692,8 @@ mod tests {
         let handle = TimelineActorHandle {
             tx,
             control_tx: Some(control_tx),
+            thread_summary_projection:
+                crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
             position_rx: None,
             task: None,
             auxiliary_tasks: Vec::new(),

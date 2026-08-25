@@ -319,6 +319,8 @@ impl TimelineManagerActor {
         TimelineActorHandle {
             tx,
             control_tx: None,
+            thread_summary_projection:
+                crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
             position_rx: None,
             task: Some(task),
             auxiliary_tasks: Vec::new(),
@@ -1160,6 +1162,8 @@ mod tests {
             TimelineActorHandle {
                 tx,
                 control_tx: None,
+                thread_summary_projection:
+                    crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
                 position_rx: None,
                 task: None,
                 auxiliary_tasks: Vec::new(),
@@ -1205,6 +1209,8 @@ mod tests {
         TimelineActorHandle {
             tx,
             control_tx: None,
+            thread_summary_projection:
+                crate::timeline::actor::ThreadSummaryProjectionIngress::channel().0,
             position_rx: None,
             task: None,
             auxiliary_tasks: Vec::new(),

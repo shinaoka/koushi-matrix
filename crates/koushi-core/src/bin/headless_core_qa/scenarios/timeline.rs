@@ -1,5 +1,7 @@
 use super::cleanup::cleanup_logged_in_runtime;
-use super::diagnostics::{QaCannedTimelineEvent, QaTcpProxy};
+use super::diagnostics::{
+    QaCannedTimelineEvent, QaTcpProxy, diagnostic_count_field, diagnostic_token_field,
+};
 use super::event_wait::{
     QaEventDeadline, SendQueueLocalEcho, cancel_send_queue_item, find_timeline_item_with_body,
     retry_send_queue_item, send_text_expect_local_echo, start_sync_for_qa, stop_sync_for_qa,
@@ -5285,24 +5287,84 @@ fn timeline_item_has_thread_summary_reply(item: &TimelineItem, root_event_id: &s
         && item
             .thread_summary
             .as_ref()
-            .map(|summary| summary.reply_count >= 1)
-            .unwrap_or(false)
+            .is_some_and(|summary| summary.reply_count >= 1)
+}
+
+fn thread_summary_reconciliation_diagnostic() -> String {
+    let diagnostics = koushi_diagnostics::snapshot();
+    let sequence = diagnostics
+        .records
+        .iter()
+        .rev()
+        .map(|record| &record.event)
+        .filter(|event| event.source == "core.thread_summary")
+        .take(8)
+        .map(|event| {
+            format!(
+                "{}:{}:{}:{}>{}",
+                diagnostic_token_field(event, "source").unwrap_or("missing"),
+                diagnostic_token_field(event, "decision").unwrap_or("missing"),
+                diagnostic_token_field(event, "merge_reason").unwrap_or("missing"),
+                diagnostic_count_field(event, "count_before").unwrap_or(0),
+                diagnostic_count_field(event, "count_after").unwrap_or(0),
+            )
+        })
+        .collect::<Vec<_>>();
+    if sequence.is_empty() {
+        "reconciliation=none".to_owned()
+    } else {
+        format!("reconciliation={}", sequence.join(","))
+    }
+}
+
+fn observe_thread_panel_item(
+    item: &TimelineItem,
+    expected_thread_body: &str,
+    root_event_id: &str,
+    saw_thread_panel: &mut bool,
+) -> Result<(), String> {
+    if timeline_item_body_contains(item, expected_thread_body) {
+        assert_thread_reply_relation(item, root_event_id).map_err(|_| {
+            "thread_summary failed: Thread panel relation did not match root".to_owned()
+        })?;
+        *saw_thread_panel = true;
+    }
+    Ok(())
 }
 
 struct RoomThreadSummaryObserver<'a> {
     expected_thread_body: &'a str,
+    expected_latest_event_id: &'a str,
+    expected_reply_count: u32,
     root_event_id: &'a str,
     saw_canonical_reply: bool,
     saw_summary: bool,
+    saw_root_summary: bool,
+    observed_reply_count: Option<u32>,
+    latest_identity_matches: bool,
+    latest_body_matches: bool,
+    summary_count_sequence: Vec<u32>,
 }
 
 impl<'a> RoomThreadSummaryObserver<'a> {
-    fn new(expected_thread_body: &'a str, root_event_id: &'a str) -> Self {
+    fn new(
+        expected_thread_body: &'a str,
+        expected_latest_event_id: &'a str,
+        expected_reply_count: u32,
+        root_event_id: &'a str,
+    ) -> Self {
         Self {
             expected_thread_body,
+            expected_latest_event_id,
+            expected_reply_count,
             root_event_id,
             saw_canonical_reply: false,
             saw_summary: false,
+            saw_root_summary: false,
+            observed_reply_count: None,
+            latest_identity_matches: false,
+            latest_body_matches: false,
+            summary_count_sequence: Vec::new(),
         }
     }
 
@@ -5313,12 +5375,49 @@ impl<'a> RoomThreadSummaryObserver<'a> {
             })?;
             self.saw_canonical_reply = true;
         }
-        self.saw_summary |= timeline_item_has_thread_summary_reply(item, self.root_event_id);
+        if timeline_item_event_id(item) == Some(self.root_event_id)
+            && let Some(summary) = item.thread_summary.as_ref()
+        {
+            self.saw_root_summary = true;
+            self.observed_reply_count = Some(summary.reply_count);
+            if self.summary_count_sequence.last() != Some(&summary.reply_count)
+                && self.summary_count_sequence.len() < 8
+            {
+                self.summary_count_sequence.push(summary.reply_count);
+            }
+            self.latest_identity_matches =
+                summary.latest_event_id.as_deref() == Some(self.expected_latest_event_id);
+            self.latest_body_matches = summary
+                .latest_body_preview
+                .as_deref()
+                .is_some_and(|body| body.contains(self.expected_thread_body));
+            self.saw_summary |= summary.reply_count == self.expected_reply_count
+                && self.latest_identity_matches
+                && self.latest_body_matches;
+        }
         Ok(())
     }
 
     fn is_complete(&self) -> bool {
         self.saw_canonical_reply && self.saw_summary
+    }
+
+    fn summary_is_complete(&self) -> bool {
+        self.saw_summary
+    }
+
+    fn diagnostic(&self) -> String {
+        format!(
+            "canonical_reply={} root_summary={} reply_count={} expected_count={} latest_matches={} body_matches={} count_sequence={:?}",
+            self.saw_canonical_reply,
+            self.saw_root_summary,
+            self.observed_reply_count
+                .map_or_else(|| "none".to_owned(), |count| count.to_string()),
+            self.expected_reply_count,
+            self.latest_identity_matches,
+            self.latest_body_matches,
+            self.summary_count_sequence,
+        )
     }
 
     fn observe_items(&mut self, items: &[TimelineItem]) -> Result<bool, String> {
@@ -5339,10 +5438,17 @@ pub(super) async fn wait_for_room_timeline_thread_summary(
     key: &TimelineKey,
     initial_items: &[TimelineItem],
     expected_thread_body: &str,
+    expected_latest_event_id: &str,
+    expected_reply_count: u32,
     root_event_id: &str,
     label: &str,
 ) -> Result<(), String> {
-    let mut observer = RoomThreadSummaryObserver::new(expected_thread_body, root_event_id);
+    let mut observer = RoomThreadSummaryObserver::new(
+        expected_thread_body,
+        expected_latest_event_id,
+        expected_reply_count,
+        root_event_id,
+    );
     if observer.observe_items(initial_items)? {
         return Ok(());
     }
@@ -5388,14 +5494,119 @@ pub(super) async fn wait_for_room_timeline_thread_summary(
     }
 }
 
+pub(super) async fn wait_for_thread_panel_and_room_summary(
+    conn: &mut CoreConnection,
+    room_key: &TimelineKey,
+    room_initial_items: &[TimelineItem],
+    thread_key: &TimelineKey,
+    thread_initial_items: &[TimelineItem],
+    expected_thread_body: &str,
+    expected_latest_event_id: &str,
+    expected_reply_count: u32,
+    root_event_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    let mut room_observer = RoomThreadSummaryObserver::new(
+        expected_thread_body,
+        expected_latest_event_id,
+        expected_reply_count,
+        root_event_id,
+    );
+    room_observer.observe_items(room_initial_items)?;
+    let mut saw_thread_panel = false;
+    for item in thread_initial_items {
+        observe_thread_panel_item(
+            item,
+            expected_thread_body,
+            root_event_id,
+            &mut saw_thread_panel,
+        )?;
+    }
+    if saw_thread_panel && room_observer.summary_is_complete() {
+        return Ok(());
+    }
+
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(format!(
+                "thread_summary failed: Thread panel and Room summary did not converge (thread_panel={} room_summary={} {} {})",
+                saw_thread_panel,
+                room_observer.summary_is_complete(),
+                room_observer.diagnostic(),
+                thread_summary_reconciliation_diagnostic(),
+            ));
+        }
+        let event =
+            tokio::time::timeout(deadline.saturating_duration_since(now), conn.recv_event())
+                .await
+                .map_err(|_| {
+                    format!(
+                        "thread_summary failed: Thread panel and Room summary did not converge (thread_panel={} room_summary={} {} {})",
+                        saw_thread_panel,
+                        room_observer.summary_is_complete(),
+                        room_observer.diagnostic(),
+                        thread_summary_reconciliation_diagnostic(),
+                    )
+                })?
+                .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+        match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems { key, items, .. })
+                if key == *thread_key =>
+            {
+                for item in &items {
+                    observe_thread_panel_item(
+                        item,
+                        expected_thread_body,
+                        root_event_id,
+                        &mut saw_thread_panel,
+                    )?;
+                }
+            }
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated { key, diffs, .. })
+                if key == *thread_key =>
+            {
+                visit_timeline_diff_items(&diffs, |item| {
+                    observe_thread_panel_item(
+                        item,
+                        expected_thread_body,
+                        root_event_id,
+                        &mut saw_thread_panel,
+                    )
+                })?;
+            }
+            CoreEvent::Timeline(TimelineEvent::InitialItems { key, items, .. })
+                if key == *room_key =>
+            {
+                room_observer.observe_items(&items)?;
+            }
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated { key, diffs, .. })
+                if key == *room_key =>
+            {
+                room_observer.observe_diffs(&diffs)?;
+            }
+            _ => {}
+        }
+        if saw_thread_panel && room_observer.summary_is_complete() {
+            return Ok(());
+        }
+    }
+}
+
 #[allow(dead_code)]
 fn assert_room_timeline_exposes_canonical_reply_and_summarizes_root(
     items: &[TimelineItem],
     expected_thread_body: &str,
     root_event_id: &str,
 ) -> Result<(), String> {
-    let mut observer = RoomThreadSummaryObserver::new(expected_thread_body, root_event_id);
-    if !observer.observe_items(items)? {
+    let saw_reply = items
+        .iter()
+        .any(|item| timeline_item_body_contains(item, expected_thread_body));
+    let saw_summary = items
+        .iter()
+        .any(|item| timeline_item_has_thread_summary_reply(item, root_event_id));
+    if !saw_reply || !saw_summary {
         return Err(
             "thread_canonical failed: root summary and canonical reply were not both observed"
                 .to_owned(),

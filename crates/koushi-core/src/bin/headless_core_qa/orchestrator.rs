@@ -43,8 +43,8 @@ use super::scenario_timeline::{
     run_live_signals_stage, run_media_stage, run_scheduled_send_stage, run_send_queue_stage,
     run_timeline_reconnect_scenario, run_timeline_stress_replay_stage, run_timeline_stress_stage,
     thread_initial_items_need_paginate_backfill, wait_for_edit_diff, wait_for_redact_diff,
-    wait_for_room_timeline_thread_summary, wait_for_thread_reply_item,
-    wait_for_timeline_navigation,
+    wait_for_room_timeline_thread_summary, wait_for_thread_panel_and_room_summary,
+    wait_for_thread_reply_item, wait_for_timeline_navigation,
 };
 use super::{
     AccountCommand, AppCommand, AppState, AuthSecret, ComposerDocument, CoreCommand,
@@ -858,6 +858,7 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
         run_link_preview_stage(&mut conn_a, &mut conn_b, &key_a, &key_b).await?;
     }
 
+    let mut thread_summary_restore_expectation: Option<(String, String, u32)> = None;
     if scenario.should_run_stage(QaStage::Thread) {
         // -------------------------------------------------------------------
         // --- Phase 5c: Thread timeline QA ---
@@ -902,7 +903,7 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
             .await
             .map_err(|e| format!("submit B thread reply: {e}"))?;
 
-        let (_thread_b_echo_txn, _thread_b_reply_event_id) = wait_for_send_completed(
+        let (_thread_b_echo_txn, thread_b_reply_event_id) = wait_for_send_completed(
             &mut conn_b,
             send_b_thread_reply_id,
             &thread_key_b,
@@ -931,6 +932,8 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
             &key_a,
             &refreshed_room_items,
             THREAD_REPLY_BODY,
+            &thread_b_reply_event_id,
+            1,
             &event1_id,
             "wait for A room live thread summary",
         )
@@ -980,6 +983,110 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
         };
         assert_thread_reply_relation(&thread_item, &event1_id)?;
         println!("thread_recv=ok");
+
+        if scenario.should_run_stage(QaStage::RedactEditConvergence) {
+            const LIVE_THREAD_BODY: &str = "Phase 11 QA live thread reply B";
+            const EDITED_LIVE_THREAD_BODY: &str = "Phase 11 QA live thread reply B edited";
+            let live_send_id = conn_b.next_request_id();
+            conn_b
+                .command(CoreCommand::Timeline(TimelineCommand::SendReply {
+                    request_id: live_send_id,
+                    key: thread_key_b.clone(),
+                    transaction_id: "qa-thread-summary-live-b".to_owned(),
+                    in_reply_to_event_id: event1_id.clone(),
+                    document: ComposerDocument::from_plain_text(LIVE_THREAD_BODY),
+                }))
+                .await
+                .map_err(|e| format!("submit live thread-summary reply: {e}"))?;
+            let (_, live_reply_event_id) = wait_for_send_completed(
+                &mut conn_b,
+                live_send_id,
+                &thread_key_b,
+                "live thread-summary reply completed",
+            )
+            .await?;
+            wait_for_thread_panel_and_room_summary(
+                &mut conn_a,
+                &key_a,
+                &refreshed_room_items,
+                &thread_key_a,
+                &thread_initial_items,
+                LIVE_THREAD_BODY,
+                &live_reply_event_id,
+                2,
+                &event1_id,
+                "live thread summary",
+            )
+            .await?;
+
+            let edit_live_id = conn_b.next_request_id();
+            conn_b
+                .command(CoreCommand::Timeline(TimelineCommand::EditText {
+                    request_id: edit_live_id,
+                    key: thread_key_b.clone(),
+                    event_id: live_reply_event_id.clone(),
+                    document: ComposerDocument::from_plain_text(EDITED_LIVE_THREAD_BODY),
+                }))
+                .await
+                .map_err(|e| format!("submit live thread-summary edit: {e}"))?;
+            wait_for_edit_diff(
+                &mut conn_b,
+                &thread_key_b,
+                edit_live_id,
+                &live_reply_event_id,
+                EDITED_LIVE_THREAD_BODY,
+                "live thread-summary edit",
+            )
+            .await?;
+            wait_for_thread_panel_and_room_summary(
+                &mut conn_a,
+                &key_a,
+                &refreshed_room_items,
+                &thread_key_a,
+                &thread_initial_items,
+                EDITED_LIVE_THREAD_BODY,
+                &live_reply_event_id,
+                2,
+                &event1_id,
+                "edited live thread summary",
+            )
+            .await?;
+
+            let redact_live_id = conn_b.next_request_id();
+            conn_b
+                .command(CoreCommand::Timeline(TimelineCommand::Redact {
+                    request_id: redact_live_id,
+                    key: thread_key_b.clone(),
+                    event_id: live_reply_event_id,
+                }))
+                .await
+                .map_err(|e| format!("submit live thread-summary redaction: {e}"))?;
+            wait_for_redact_diff(
+                &mut conn_b,
+                &thread_key_b,
+                redact_live_id,
+                "live thread-summary redaction",
+            )
+            .await?;
+            wait_for_thread_panel_and_room_summary(
+                &mut conn_a,
+                &key_a,
+                &refreshed_room_items,
+                &thread_key_a,
+                &thread_initial_items,
+                THREAD_REPLY_BODY,
+                &thread_b_reply_event_id,
+                1,
+                &event1_id,
+                "redacted live thread summary",
+            )
+            .await?;
+            thread_summary_restore_expectation = Some((
+                thread_b_reply_event_id.clone(),
+                THREAD_REPLY_BODY.to_owned(),
+                1,
+            ));
+        }
 
         let thread_paginate_id = conn_a.next_request_id();
         conn_a
@@ -1350,6 +1457,39 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
 
     wait_for_session_restored(&mut conn_a2, restore_a_id, &account_key_a, "restore A").await?;
     wait_for_ready_snapshot(&mut conn_a2, "restored session A Ready").await?;
+
+    if let Some((latest_event_id, latest_body, reply_count)) =
+        thread_summary_restore_expectation.as_ref()
+    {
+        let restored_room_key = TimelineKey::room(account_key_a.clone(), room_id.clone());
+        let restored_subscribe_id = conn_a2.next_request_id();
+        conn_a2
+            .command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+                request_id: restored_subscribe_id,
+                key: restored_room_key.clone(),
+            }))
+            .await
+            .map_err(|e| format!("submit restored thread-summary room: {e}"))?;
+        let restored_items = wait_for_initial_items(
+            &mut conn_a2,
+            &restored_room_key,
+            restored_subscribe_id,
+            "restored thread-summary room",
+        )
+        .await?;
+        wait_for_room_timeline_thread_summary(
+            &mut conn_a2,
+            &restored_room_key,
+            &restored_items,
+            latest_body,
+            latest_event_id,
+            *reply_count,
+            &event1_id,
+            "restored thread summary",
+        )
+        .await?;
+        println!("thread_summary_convergence=ok");
+    }
 
     let logout_a_id = conn_a2.next_request_id();
     conn_a2

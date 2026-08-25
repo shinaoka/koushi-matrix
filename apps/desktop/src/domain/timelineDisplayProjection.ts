@@ -176,7 +176,7 @@ function projectLatestReplyRoomRows(
   const rootIds = new Set<string>();
 
   for (const entry of entries) {
-    const root = asThreadRoot(entry, entries);
+    const root = asThreadRoot(entry);
     if (root === null) {
       continue;
     }
@@ -554,7 +554,7 @@ function insertSummaryFallbackRows(
 ): TimelineDisplayRow[] {
   const originalIndexByRowId = new Map<string, number>();
   for (const entry of entries) {
-    const root = asThreadRoot(entry, entries);
+    const root = asThreadRoot(entry);
     const rowId = root === null ? timelineItemDomId(entry.item.id) : `thread-root:${root.eventId}`;
     originalIndexByRowId.set(rowId, entry.index);
   }
@@ -654,10 +654,7 @@ function dateDividerRow(timestampMs: number, ordinal: number): TimelineDisplayRo
   };
 }
 
-function asThreadRoot(
-  entry: CanonicalEntry,
-  entries: readonly CanonicalEntry[]
-): ThreadRoot | null {
+function asThreadRoot(entry: CanonicalEntry): ThreadRoot | null {
   if (!hasThreadSummaryRoot(entry.item, entry.eventId) || entry.eventId === null) {
     return null;
   }
@@ -665,104 +662,11 @@ function asThreadRoot(
   if (summary === null) {
     return null;
   }
-  const inferred = inferLatestReplyFromVisibleItems(entry.eventId, summary.latest_event_id, entries);
-  const latestEventId = nonEmptyTrimmedEventId(summary.latest_event_id) ?? inferred?.eventId ?? null;
-  const latestTimestampMs = summary.latest_timestamp_ms ?? inferred?.timestampMs ?? null;
   return {
     ...entry,
-    item: inferred ? threadRootItemWithInferredSummary(entry.item, inferred) : entry.item,
     eventId: entry.eventId,
-    latestEventId,
-    latestTimestampMs
-  };
-}
-
-type InferredThreadReply = {
-  eventId: string;
-  sender: string | null;
-  senderLabel: string | null;
-  bodyPreview: string | null;
-  timestampMs: number | null;
-  index: number;
-};
-
-function inferLatestReplyFromVisibleItems(
-  rootEventId: string,
-  preferredLatestEventId: string | null,
-  entries: readonly CanonicalEntry[]
-): InferredThreadReply | null {
-  const preferred = nonEmptyTrimmedEventId(preferredLatestEventId);
-  const replies = entries.flatMap((entry): InferredThreadReply[] => {
-    if (entry.eventId === null || entry.item.thread_root !== rootEventId) {
-      return [];
-    }
-    return [
-      {
-        eventId: entry.eventId,
-        sender: entry.item.sender,
-        senderLabel: entry.item.sender_label?.trim() || null,
-        bodyPreview: entry.item.body,
-        timestampMs: finiteTimestamp(entry.item.timestamp_ms),
-        index: entry.index
-      }
-    ];
-  });
-  if (replies.length === 0) {
-    return null;
-  }
-  if (preferred !== null) {
-    return replies.find((reply) => reply.eventId === preferred) ?? null;
-  }
-  return replies.sort(compareInferredThreadReplies)[0] ?? null;
-}
-
-function compareInferredThreadReplies(
-  left: InferredThreadReply,
-  right: InferredThreadReply
-): number {
-  return (
-    (right.timestampMs ?? 0) - (left.timestampMs ?? 0) ||
-    right.index - left.index ||
-    right.eventId.localeCompare(left.eventId)
-  );
-}
-
-function threadRootItemWithInferredSummary(
-  item: TimelineItem,
-  inferred: InferredThreadReply
-): TimelineItem {
-  const summary = item.thread_summary;
-  if (summary === null) {
-    return item;
-  }
-  const nextSummary = { ...summary };
-  let changed = false;
-  if (nextSummary.latest_event_id == null) {
-    nextSummary.latest_event_id = inferred.eventId;
-    changed = true;
-  }
-  if (nextSummary.latest_sender == null && inferred.sender !== null) {
-    nextSummary.latest_sender = inferred.sender;
-    changed = true;
-  }
-  if (nextSummary.latest_sender_label == null && inferred.senderLabel !== null) {
-    nextSummary.latest_sender_label = inferred.senderLabel;
-    changed = true;
-  }
-  if (nextSummary.latest_body_preview == null && inferred.bodyPreview !== null) {
-    nextSummary.latest_body_preview = inferred.bodyPreview;
-    changed = true;
-  }
-  if (nextSummary.latest_timestamp_ms == null && inferred.timestampMs !== null) {
-    nextSummary.latest_timestamp_ms = inferred.timestampMs;
-    changed = true;
-  }
-  if (!changed) {
-    return item;
-  }
-  return {
-    ...item,
-    thread_summary: nextSummary
+    latestEventId: nonEmptyTrimmedEventId(summary.latest_event_id),
+    latestTimestampMs: summary.latest_timestamp_ms
   };
 }
 

@@ -22,11 +22,12 @@ describe("qa token contract", () => {
 
   test("registers the redaction/edit convergence token", () => {
     expect(requiredTokensForHeadlessScenario("redact_edit_convergence")).toEqual([
-      "redact_edit_convergence=ok"
+      "redact_edit_convergence=ok",
+      "thread_summary_convergence=ok"
     ]);
     expect(() =>
       assertRequiredTokens(
-        "redact_edit_convergence=ok",
+        "redact_edit_convergence=ok thread_summary_convergence=ok",
         requiredTokensForHeadlessScenario("redact_edit_convergence"),
         "redact_edit_convergence"
       )

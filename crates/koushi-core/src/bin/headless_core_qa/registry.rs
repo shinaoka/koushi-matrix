@@ -634,7 +634,10 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "thread_paginate=end_reached",
         ],
         QaStage::EditRedactSearch => &["edit_redact_search=ok"],
-        QaStage::RedactEditConvergence => &["redact_edit_convergence=ok"],
+        QaStage::RedactEditConvergence => &[
+            "redact_edit_convergence=ok",
+            "thread_summary_convergence=ok",
+        ],
         QaStage::SearchCrawler => &[
             "crawl_backfill=ok",
             "crawl_no_media_bytes=ok",

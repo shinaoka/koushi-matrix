@@ -1093,7 +1093,9 @@ fn record_display_projection_reset_fallback() {
     );
 }
 
-#[cfg(test)]
+/// Applies an SDK/Core diff batch to a canonical item copy. Production uses
+/// this before summary overlay to retain the raw affected-root evidence; tests
+/// also use it as the compact desktop-model oracle.
 pub(super) fn apply_timeline_diffs_to_items(items: &mut Vec<TimelineItem>, diffs: &[TimelineDiff]) {
     for diff in diffs {
         match diff {

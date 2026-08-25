@@ -11,7 +11,10 @@
  * token.
  */
 export const HEADLESS_LOCAL_QA_SCENARIO_TOKENS = Object.freeze({
-  redact_edit_convergence: Object.freeze(["redact_edit_convergence=ok"]),
+  redact_edit_convergence: Object.freeze([
+    "redact_edit_convergence=ok",
+    "thread_summary_convergence=ok"
+  ]),
   read_state_convergence: Object.freeze(["read_state_convergence=ok"])
 });
 

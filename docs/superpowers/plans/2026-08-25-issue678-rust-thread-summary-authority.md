@@ -208,6 +208,41 @@ production path was wired.
 Logs: `/tmp/issue678-red-canonical.log`, `/tmp/issue678-red-floor.log`, and
 `/tmp/issue678-red-ts.log`. The unchanged assertions are the GREEN gate.
 
+### Integrated GREEN before exact review (2026-08-25)
+
+- The three unchanged RED checks are GREEN. Focused Core thread-summary service,
+  canonical application, affected-root filtering, revision, redaction rollback,
+  diagnostic, manager-mailbox/watch, and replay suites pass; the complete Core
+  lib is **1,093 passed / 8 ignored**.
+- `ThreadRootProjectionService` now seeds a canonical bundled summary before
+  publication, retains a newer live floor across stale SDK/event-cache inputs,
+  requires an independently matching event-cache aggregate before a non-explicit
+  rollback, and treats bounded-window disappearance as non-authoritative. The
+  real QA lane exposed and fixed both count1-on-live-B and transient-removal
+  regressions rather than weakening its exact count assertion.
+- TypeScript no longer contains any visible-reply summary inference. Focused
+  timeline/store/token tests are GREEN; full Vitest is **1,494/1,494**,
+  typecheck/lint/build/secret and boundary checks pass, and Playwright is
+  **262/262** without an App unhandled-error signature.
+- Rust CI-shaped gates are GREEN: workspace all-targets **2,524 passed / 12 ignored**,
+  Tauri **174 passed / 1 ignored**, state/search wasm check, QA binary
+  **133/133**, rustfmt, SDK submodule, diagnostic-isolation, agents/docs,
+  cargo-deny, cargo-machete, and diff checks. One default-parallel all-targets
+  rerun exposed the two unrelated SDK global-mock probe tests racing each other;
+  both tests passed individually and the complete all-targets matrix passed with
+  one test thread. The ordinary CI-shaped workspace command was already GREEN,
+  and current-head CI remains the authoritative default-parallel gate.
+- The unchanged event-driven `redact_edit_convergence` lane passed separately on
+  tuwunel and synapse and finally through `--server=both`. It proves old A →
+  live B/count2 on the already-open Room and Thread surfaces, same-ID edit/count2,
+  B redaction → A/count1, real runtime shutdown/restore equality, and emits both
+  `redact_edit_convergence=ok` and `thread_summary_convergence=ok` with
+  private-data validation.
+- Linux cannot execute the macOS-only cargo lane; the cross-platform Tauri crate
+  check is GREEN locally and current-head macOS CI remains a mandatory merge
+  gate. Exact full-diff review, final post-review reruns, PR CI, and merge remain
+  pending.
+
 ## Required focused semantics
 
 Add or retain tests for:
@@ -312,3 +347,37 @@ remove disposable artifacts, and leave the worktree clean.
   service bounds/revision fences, redaction rollback, TypeScript deletion,
   diagnostics, RED matrix, QA token, and every #678 acceptance row; no finding
   of any severity remained. Implementation is authorized under this design.
+- Mandatory exact implementation Round 1 on artifact SHA-256 `7b330fda…`:
+  `Not correct-to-merge`. It found that Room diffs overlaid the retained service
+  value before recording a newer raw SDK root summary, which could hide the raw
+  affected-root evidence and skip the validating aggregate refresh; it also
+  found that a confirmed provisional bundled-summary rollback was mislabeled as
+  `redaction` diagnostics.
+- The accepted-batch lease now derives affected roots from the raw pre-overlay
+  window, records the provisional bundled summary, overlays only afterward, and
+  validates any newer identity through the exact event-cache aggregate. A
+  focused opposite-direction regression proves A remains displayed only until
+  the exact aggregate validates B, after which B/count2 is emitted. Confirmed
+  bundled rollback diagnostics remain `sdk_summary`; only explicit invalidation
+  or authoritative disappearance is `redaction`. Core/full workspace and the
+  unchanged both-server QA matrix are GREEN after the fixes.
+- Mandatory exact implementation Round 2 on artifact SHA-256 `2e2c35b3…`:
+  `Not correct-to-merge`. It found a leading-aggregate case where a later live
+  observation could count the already-included reply again, and an unfiltered
+  no-reply-row loop that refreshed every tracked canonical root on unrelated
+  batches while labeling the work as redaction.
+- `update_live_activity_floor` now detects when the exact accepted aggregate
+  already contains the observed event and keeps its count unchanged. The
+  no-reply-row loop obeys the same affected-root filter and uses
+  `CanonicalBatch` for a still-present root; only an inactive noncanonical root
+  uses `Removal`. Focused regressions prove no +1 recount and no unrelated
+  worker churn. Raw provisional SDK candidates remain separately validated, and
+  full Core/workspace plus the unchanged both-server QA matrix are GREEN.
+- Mandatory exact implementation Round 3 on artifact SHA-256 `b5c013e8…`:
+  **Correct-to-merge**. The reviewer traced the full artifact, both prior-round
+  fixes, count arithmetic, raw/effective diff parity, revision/watch/lease
+  ownership, cleanup, diagnostics, TypeScript deletion, and QA restore proof;
+  no finding requiring change remained. Two nonblocking observations were
+  recorded: Matrix deletion is represented by redaction in the supported
+  contract, and summary-only Sets do not need a position-index refresh because
+  item ordering is unchanged. Final submitted-state identity audit remains.

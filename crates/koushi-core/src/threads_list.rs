@@ -18,9 +18,12 @@ use matrix_sdk_ui::timeline::thread_list_service::{
 use matrix_sdk_ui::timeline::{ThreadListPaginationState, ThreadListService, TimelineDetails};
 use tokio::sync::{broadcast, mpsc};
 
-use crate::event::{CoreEvent, ThreadsListEvent, TimelineItem};
+use crate::event::{CoreEvent, ThreadSummaryDto, ThreadsListEvent, TimelineItem};
 use crate::executor;
 use crate::ids::RequestId;
+use crate::timeline::record_thread_summary_reconciliation;
+
+pub(crate) const THREAD_SUMMARY_PROJECTION_MAX_ROOTS: usize = 120;
 
 const THREADS_LIST_SHUTDOWN_SEND_TIMEOUT: Duration = Duration::from_secs(1);
 const THREADS_LIST_SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -64,7 +67,10 @@ pub(crate) struct AggregateRefresh {
     pub activity_revision: u64,
     pub summary_revision: u64,
     pub cause: AggregateRefreshCause,
+    /// The reply activity still belongs to the bounded Room window.
     pub root_active: bool,
+    /// The canonical root item is present in the bounded Room window.
+    pub canonical_root_active: bool,
     pub hydrate_root: bool,
 }
 
@@ -125,8 +131,16 @@ pub(crate) enum ThreadRootProjectionDecision {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum ThreadRootProjectionAttempt {
     Pending,
+    /// A canonical Room root needs the shared aggregate, but not a root fetch.
+    Canonical,
     Ready(TimelineItem),
     Failed(OperationFailureKind),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LiveActivityFloor {
+    activity: ThreadRootProjectionActivity,
+    reply_count: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -137,6 +151,9 @@ pub(crate) struct ThreadRootProjectionRecord {
     pub summary_revision: u64,
     aggregate_refresh: Option<AggregateRefresh>,
     aggregate_failure: Option<OperationFailureKind>,
+    live_activity_floor: Option<LiveActivityFloor>,
+    pending_rollback: Option<AuthoritativeThreadAggregate>,
+    invalidated_activity: Option<(String, Option<u64>)>,
     pub retired: bool,
     attempt: ThreadRootProjectionAttempt,
 }
@@ -145,14 +162,18 @@ impl ThreadRootProjectionRecord {
     pub(crate) fn item(&self) -> Option<&TimelineItem> {
         match &self.attempt {
             ThreadRootProjectionAttempt::Ready(item) => Some(item),
-            ThreadRootProjectionAttempt::Pending | ThreadRootProjectionAttempt::Failed(_) => None,
+            ThreadRootProjectionAttempt::Pending
+            | ThreadRootProjectionAttempt::Canonical
+            | ThreadRootProjectionAttempt::Failed(_) => None,
         }
     }
 
     pub(crate) fn failure_kind(&self) -> Option<OperationFailureKind> {
         self.aggregate_failure.or_else(|| match self.attempt {
             ThreadRootProjectionAttempt::Failed(kind) => Some(kind),
-            ThreadRootProjectionAttempt::Pending | ThreadRootProjectionAttempt::Ready(_) => None,
+            ThreadRootProjectionAttempt::Pending
+            | ThreadRootProjectionAttempt::Canonical
+            | ThreadRootProjectionAttempt::Ready(_) => None,
         })
     }
 
@@ -180,9 +201,126 @@ impl ThreadRootProjectionRecord {
 pub(crate) struct ThreadRootProjectionService {
     attempts: HashMap<(String, String), ThreadRootProjectionRecord>,
     active_root_event_ids: HashMap<String, HashSet<String>>,
+    canonical_root_event_ids: HashMap<String, HashSet<String>>,
+    diagnostic_ordinals: ThreadSummaryDiagnosticOrdinals,
+}
+
+#[derive(Default)]
+struct ThreadSummaryDiagnosticOrdinals {
+    rooms: HashMap<String, u64>,
+    roots: HashMap<(String, String), u64>,
+    next_room: u64,
+    next_root: u64,
+}
+
+impl ThreadSummaryDiagnosticOrdinals {
+    fn ordinals(&mut self, activity: &ThreadRootProjectionActivity) -> (u64, u64) {
+        if !self.rooms.contains_key(&activity.room_id) {
+            let ordinal = self.next_room;
+            self.next_room = self.next_room.saturating_add(1);
+            self.rooms.insert(activity.room_id.clone(), ordinal);
+        }
+        let root_key = (activity.room_id.clone(), activity.root_event_id.clone());
+        if !self.roots.contains_key(&root_key) {
+            let ordinal = self.next_root;
+            self.next_root = self.next_root.saturating_add(1);
+            self.roots.insert(root_key.clone(), ordinal);
+        }
+        (self.rooms[&activity.room_id], self.roots[&root_key])
+    }
+
+    fn remove_root(&mut self, room_id: &str, root_event_id: &str) {
+        self.roots
+            .remove(&(room_id.to_owned(), root_event_id.to_owned()));
+    }
+
+    fn clear_room(&mut self, room_id: &str) {
+        self.rooms.remove(room_id);
+        self.roots
+            .retain(|(entry_room_id, _), _| entry_room_id != room_id);
+    }
 }
 
 impl ThreadRootProjectionService {
+    pub(crate) fn seed_canonical_summary(
+        &mut self,
+        room_id: &str,
+        root_event_id: &str,
+        summary: &ThreadSummaryDto,
+    ) {
+        let Some(latest_event_id) = summary
+            .latest_event_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|event_id| !event_id.is_empty())
+        else {
+            return;
+        };
+        let activity = ThreadRootProjectionActivity {
+            room_id: room_id.to_owned(),
+            root_event_id: root_event_id.to_owned(),
+            activity_event_id: latest_event_id.to_owned(),
+            activity_timestamp_ms: summary.latest_timestamp_ms,
+            activity_sender: summary.latest_sender.clone(),
+            activity_sender_label: summary.latest_sender_label.clone(),
+            activity_body_preview: summary.latest_body_preview.clone(),
+        };
+        let aggregate = AuthoritativeThreadAggregate {
+            reply_count: summary.reply_count,
+            latest_event_id: Some(latest_event_id.to_owned()),
+            latest_sender: summary.latest_sender.clone(),
+            latest_sender_label: summary.latest_sender_label.clone(),
+            latest_body_preview: summary.latest_body_preview.clone(),
+            latest_timestamp_ms: summary.latest_timestamp_ms,
+        };
+        self.canonical_root_event_ids
+            .entry(room_id.to_owned())
+            .or_default()
+            .insert(root_event_id.to_owned());
+        let key = (room_id.to_owned(), root_event_id.to_owned());
+        if let Some(record) = self.attempts.get_mut(&key) {
+            if record.retired {
+                return;
+            }
+            if aggregate.reply_count < effective_aggregate(record).reply_count {
+                // Bundled roots are provisional: an edit can expose its
+                // replacement event identity and transient count. Only an
+                // independently matching event-cache aggregate may roll the
+                // accepted projection backward.
+                record.pending_rollback = Some(aggregate);
+            }
+            if matches!(record.attempt, ThreadRootProjectionAttempt::Pending) {
+                record.attempt = ThreadRootProjectionAttempt::Canonical;
+            }
+            return;
+        }
+        if self
+            .attempts
+            .keys()
+            .filter(|(entry_room_id, _)| entry_room_id == room_id)
+            .count()
+            >= THREAD_SUMMARY_PROJECTION_MAX_ROOTS
+        {
+            return;
+        }
+        self.attempts.insert(
+            key,
+            ThreadRootProjectionRecord {
+                activity,
+                aggregate,
+                activity_revision: 1,
+                summary_revision: 0,
+                aggregate_refresh: None,
+                aggregate_failure: None,
+                live_activity_floor: None,
+                pending_rollback: None,
+                invalidated_activity: None,
+                retired: false,
+                attempt: ThreadRootProjectionAttempt::Canonical,
+            },
+        );
+    }
+
     pub(crate) fn observe(
         &mut self,
         activity: ThreadRootProjectionActivity,
@@ -192,18 +330,48 @@ impl ThreadRootProjectionService {
             if record.retired {
                 return ThreadRootProjectionDecision::Retired;
             }
-            if activity_is_newer(&activity, &record.activity) {
+            if activity != record.activity {
+                let newer = activity_is_newer(&activity, &record.activity);
+                let invalidated_latest = record
+                    .invalidated_activity
+                    .as_ref()
+                    .is_some_and(|(event_id, _)| event_id == &record.activity.activity_event_id);
+                if !newer && !invalidated_latest {
+                    // A bounded Room/Thread window can temporarily omit the
+                    // accepted latest reply. Only an explicit invalidation or
+                    // an independently confirmed aggregate rollback may move
+                    // the projection backwards.
+                    return ThreadRootProjectionDecision::Existing(record.clone());
+                }
                 if record.activity_revision == u64::MAX {
                     record.retired = true;
                     record.aggregate_refresh = None;
                     return ThreadRootProjectionDecision::Retired;
                 }
+                let previous = record.activity.clone();
                 record.activity_revision += 1;
-                record.activity = activity;
+                record.activity = activity.clone();
                 record.aggregate_failure = None;
+                record.pending_rollback = None;
+                if newer {
+                    update_live_activity_floor(record, activity, &previous);
+                } else {
+                    record.live_activity_floor = None;
+                }
                 return ThreadRootProjectionDecision::ActivityUpdated(record.clone());
             }
             return ThreadRootProjectionDecision::Existing(record.clone());
+        }
+        if self
+            .attempts
+            .keys()
+            .filter(|(room_id, _)| room_id == &activity.room_id)
+            .count()
+            >= THREAD_SUMMARY_PROJECTION_MAX_ROOTS
+        {
+            // The Room window and its projection wake share this bound. A
+            // root beyond it has no bounded canonical presentation slot.
+            return ThreadRootProjectionDecision::Retired;
         }
         self.attempts.insert(
             key,
@@ -214,6 +382,12 @@ impl ThreadRootProjectionService {
                 summary_revision: 0,
                 aggregate_refresh: None,
                 aggregate_failure: None,
+                live_activity_floor: Some(LiveActivityFloor {
+                    activity: activity.clone(),
+                    reply_count: 1,
+                }),
+                pending_rollback: None,
+                invalidated_activity: None,
                 retired: false,
                 attempt: ThreadRootProjectionAttempt::Pending,
             },
@@ -221,11 +395,85 @@ impl ThreadRootProjectionService {
         ThreadRootProjectionDecision::StartFetch(activity)
     }
 
+    /// Apply an observation from the exact Thread timeline. Older activity is
+    /// ignored while the current latest live floor is still valid; after a
+    /// matching invalidation, the exact SDK aggregate may select the older
+    /// reply again.
+    pub(crate) fn observe_live_activity(
+        &mut self,
+        activity: ThreadRootProjectionActivity,
+    ) -> ThreadRootProjectionDecision {
+        let key = (activity.room_id.clone(), activity.root_event_id.clone());
+        let Some(record) = self.attempts.get(&key) else {
+            return self.observe(activity);
+        };
+        if record.retired || activity == record.activity {
+            return self.observe(activity);
+        }
+        let aggregate_matches = record.live_activity_floor.is_none()
+            && record.aggregate.latest_event_id.as_deref()
+                == Some(activity.activity_event_id.as_str());
+        let invalidated_latest = record
+            .invalidated_activity
+            .as_ref()
+            .is_some_and(|(event_id, _)| event_id == &record.activity.activity_event_id);
+        if !activity_is_newer(&activity, &record.activity)
+            && !invalidated_latest
+            && !aggregate_matches
+        {
+            return ThreadRootProjectionDecision::Existing(record.clone());
+        }
+        if invalidated_latest || aggregate_matches {
+            let Some(record) = self.attempts.get_mut(&key) else {
+                return ThreadRootProjectionDecision::Retired;
+            };
+            if record.activity_revision == u64::MAX {
+                record.retired = true;
+                record.aggregate_refresh = None;
+                return ThreadRootProjectionDecision::Retired;
+            }
+            let previous = record.activity.clone();
+            let newer = activity_is_newer(&activity, &previous);
+            record.activity_revision += 1;
+            record.activity = activity.clone();
+            record.aggregate_failure = None;
+            record.pending_rollback = None;
+            if newer {
+                update_live_activity_floor(record, activity, &previous);
+            } else {
+                record.live_activity_floor = None;
+            }
+            return ThreadRootProjectionDecision::ActivityUpdated(record.clone());
+        }
+        self.observe(activity)
+    }
+
     pub(crate) fn schedule_aggregate_refresh(
         &mut self,
         activity: &ThreadRootProjectionActivity,
         cause: AggregateRefreshCause,
         root_active: bool,
+        advance_activity_revision: bool,
+    ) -> Option<AggregateRefresh> {
+        let canonical_root_active = self
+            .canonical_root_event_ids
+            .get(&activity.room_id)
+            .is_some_and(|roots| roots.contains(&activity.root_event_id));
+        self.schedule_aggregate_refresh_with_canonical_root(
+            activity,
+            cause,
+            root_active,
+            canonical_root_active,
+            advance_activity_revision,
+        )
+    }
+
+    pub(crate) fn schedule_aggregate_refresh_with_canonical_root(
+        &mut self,
+        activity: &ThreadRootProjectionActivity,
+        cause: AggregateRefreshCause,
+        root_active: bool,
+        canonical_root_active: bool,
         advance_activity_revision: bool,
     ) -> Option<AggregateRefresh> {
         let key = (activity.room_id.clone(), activity.root_event_id.clone());
@@ -249,13 +497,22 @@ impl ThreadRootProjectionService {
         record.summary_revision += 1;
         record.activity = activity.clone();
         record.aggregate_failure = None;
+        if canonical_root_active {
+            if matches!(record.attempt, ThreadRootProjectionAttempt::Pending) {
+                record.attempt = ThreadRootProjectionAttempt::Canonical;
+            }
+        } else if matches!(record.attempt, ThreadRootProjectionAttempt::Canonical) {
+            record.attempt = ThreadRootProjectionAttempt::Pending;
+        }
         let refresh = AggregateRefresh {
             activity: record.activity.clone(),
             activity_revision: record.activity_revision,
             summary_revision: record.summary_revision,
             cause,
             root_active,
-            hydrate_root: matches!(record.attempt, ThreadRootProjectionAttempt::Pending),
+            canonical_root_active,
+            hydrate_root: !canonical_root_active
+                && matches!(record.attempt, ThreadRootProjectionAttempt::Pending),
         };
         record.aggregate_refresh = Some(refresh.clone());
         Some(refresh)
@@ -280,55 +537,118 @@ impl ThreadRootProjectionService {
             refresh.activity.room_id.clone(),
             refresh.activity.root_event_id.clone(),
         );
-        let Some(record) = self.attempts.get_mut(&key) else {
+        let valid = self.attempts.get(&key).is_some_and(|record| {
+            !record.retired
+                && record.activity_revision == refresh.activity_revision
+                && record.summary_revision == refresh.summary_revision
+                && record.aggregate_refresh.as_ref() == Some(refresh)
+        });
+        if !valid {
             return ThreadRootProjectionCompletion::Ignored;
+        }
+        let ordinals = self.diagnostic_ordinals.ordinals(&refresh.activity);
+        let before;
+        let candidate;
+        let after;
+        let activity;
+        let mut remove = false;
+        let mut merge_reason = "failure";
+        let completion = {
+            let record = self
+                .attempts
+                .get_mut(&key)
+                .expect("validated thread-root projection record");
+            before = record.aggregate.clone();
+            record.aggregate_refresh = None;
+            match result {
+                Ok(ThreadRootProjectionRefreshResult::Hydrated { item, aggregate }) => {
+                    candidate = Some(aggregate.clone());
+                    record.attempt = ThreadRootProjectionAttempt::Ready(item);
+                    merge_reason = merge_aggregate(
+                        record,
+                        aggregate,
+                        refresh.cause.is_disappearance()
+                            && !refresh.root_active
+                            && !refresh.canonical_root_active,
+                    );
+                    record.aggregate_failure = None;
+                }
+                Ok(ThreadRootProjectionRefreshResult::Aggregate(aggregate)) => {
+                    candidate = Some(aggregate.clone());
+                    merge_reason = merge_aggregate(
+                        record,
+                        aggregate,
+                        refresh.cause.is_disappearance()
+                            && !refresh.root_active
+                            && !refresh.canonical_root_active,
+                    );
+                    record.aggregate_failure = None;
+                }
+                Err(failure_kind) => {
+                    candidate = None;
+                    if !refresh.root_active
+                        && !refresh.canonical_root_active
+                        && refresh.cause.is_disappearance()
+                    {
+                        remove = true;
+                    } else {
+                        record.aggregate_failure = Some(failure_kind);
+                    }
+                }
+            }
+            activity = record.activity.clone();
+            after = record.aggregate.clone();
+            if remove {
+                ThreadRootProjectionCompletion::Cleared(activity.clone())
+            } else if after.reply_count == 0
+                && !refresh.root_active
+                && !refresh.canonical_root_active
+            {
+                remove = true;
+                ThreadRootProjectionCompletion::Cleared(activity.clone())
+            } else {
+                ThreadRootProjectionCompletion::Updated(record.clone())
+            }
         };
-        if record.retired
-            || record.activity_revision != refresh.activity_revision
-            || record.summary_revision != refresh.summary_revision
-            || record.aggregate_refresh.as_ref() != Some(refresh)
+
+        if remove {
+            self.attempts.remove(&key);
+            self.diagnostic_ordinals
+                .remove_root(&activity.room_id, &activity.root_event_id);
+            self.cleanup_empty_room_tracking(&activity.room_id);
+        }
+
+        let candidate = candidate.as_ref();
+        let relation = latest_identity_relation(
+            before.latest_event_id.as_deref(),
+            candidate.and_then(|candidate| candidate.latest_event_id.as_deref()),
+        );
+        let source = thread_summary_source(refresh, &before, candidate, merge_reason);
+        let decision = if remove
+            || ((source == "redaction" || merge_reason == "rollback_confirmed")
+                && after.reply_count < before.reply_count)
         {
-            return ThreadRootProjectionCompletion::Ignored;
-        }
-        record.aggregate_refresh = None;
-        match result {
-            Ok(ThreadRootProjectionRefreshResult::Hydrated { item, aggregate }) => {
-                record.attempt = ThreadRootProjectionAttempt::Ready(item);
-                record.aggregate = aggregate;
-                record.aggregate_failure = None;
-                if record.aggregate.reply_count == 0 && !refresh.root_active {
-                    let activity = record.activity.clone();
-                    self.attempts.remove(&key);
-                    self.cleanup_empty_room_tracking(&activity.room_id);
-                    ThreadRootProjectionCompletion::Cleared(activity)
-                } else {
-                    ThreadRootProjectionCompletion::Updated(record.clone())
-                }
-            }
-            Ok(ThreadRootProjectionRefreshResult::Aggregate(aggregate)) => {
-                record.aggregate = aggregate;
-                record.aggregate_failure = None;
-                if record.aggregate.reply_count == 0 && !refresh.root_active {
-                    let activity = record.activity.clone();
-                    self.attempts.remove(&key);
-                    self.cleanup_empty_room_tracking(&activity.room_id);
-                    ThreadRootProjectionCompletion::Cleared(activity)
-                } else {
-                    ThreadRootProjectionCompletion::Updated(record.clone())
-                }
-            }
-            Err(failure_kind) => {
-                if !refresh.root_active && refresh.cause.is_disappearance() {
-                    let activity = record.activity.clone();
-                    self.attempts.remove(&key);
-                    self.cleanup_empty_room_tracking(&activity.room_id);
-                    ThreadRootProjectionCompletion::Cleared(activity)
-                } else {
-                    record.aggregate_failure = Some(failure_kind);
-                    ThreadRootProjectionCompletion::Updated(record.clone())
-                }
-            }
-        }
+            "remove"
+        } else if candidate.is_some_and(|candidate| *candidate != after) && before == after {
+            "retain"
+        } else if before == after {
+            "no_op"
+        } else if before.latest_event_id != after.latest_event_id {
+            "advance"
+        } else {
+            "repair"
+        };
+        record_thread_summary_reconciliation(
+            ordinals,
+            source,
+            relation,
+            decision,
+            merge_reason,
+            before.reply_count,
+            after.reply_count,
+            before != after,
+        );
+        completion
     }
 
     /// Keep only projection data that still has a representation in the
@@ -362,6 +682,14 @@ impl ThreadRootProjectionService {
                     || record.is_pending()
                     || record.retired
             });
+        self.diagnostic_ordinals
+            .roots
+            .retain(|(entry_room_id, root_event_id), _| {
+                entry_room_id != room_id
+                    || self
+                        .attempts
+                        .contains_key(&(room_id.to_owned(), root_event_id.clone()))
+            });
         self.cleanup_empty_room_tracking(room_id);
     }
 
@@ -388,20 +716,130 @@ impl ThreadRootProjectionService {
                 .attempts
                 .get_mut(&(room_id.to_owned(), root_event_id.clone()))
             {
-                if activity_is_newer(activity, &record.activity) {
+                if activity != &record.activity {
+                    let newer = activity_is_newer(activity, &record.activity);
+                    let invalidated_latest =
+                        record
+                            .invalidated_activity
+                            .as_ref()
+                            .is_some_and(|(event_id, _)| {
+                                event_id == &record.activity.activity_event_id
+                            });
+                    if !newer && !invalidated_latest {
+                        continue;
+                    }
                     if record.activity_revision == u64::MAX {
                         record.retired = true;
                         record.aggregate_refresh = None;
                     } else {
+                        let previous = record.activity.clone();
                         record.activity_revision += 1;
                         record.activity = activity.clone();
                         record.aggregate_failure = None;
+                        record.pending_rollback = None;
+                        if newer {
+                            update_live_activity_floor(record, activity.clone(), &previous);
+                        } else {
+                            record.live_activity_floor = None;
+                        }
                         changed.insert(root_event_id.clone());
                     }
                 }
             }
         }
         changed
+    }
+
+    pub(crate) fn set_canonical_root_event_ids(
+        &mut self,
+        room_id: &str,
+        root_event_ids: &HashSet<String>,
+    ) {
+        self.canonical_root_event_ids
+            .insert(room_id.to_owned(), root_event_ids.clone());
+    }
+
+    pub(crate) fn canonical_root_active(&self, room_id: &str, root_event_id: &str) -> bool {
+        self.canonical_root_event_ids
+            .get(room_id)
+            .is_some_and(|roots| roots.contains(root_event_id))
+    }
+
+    pub(crate) fn activity_active(&self, room_id: &str, root_event_id: &str) -> bool {
+        self.active_root_event_ids
+            .get(room_id)
+            .is_some_and(|roots| roots.contains(root_event_id))
+    }
+
+    pub(crate) fn activity_for_root(
+        &self,
+        room_id: &str,
+        root_event_id: &str,
+    ) -> Option<ThreadRootProjectionActivity> {
+        self.attempts
+            .get(&(room_id.to_owned(), root_event_id.to_owned()))
+            .filter(|record| !record.retired)
+            .map(|record| record.activity.clone())
+    }
+
+    pub(crate) fn invalidate_live_activity(
+        &mut self,
+        room_id: &str,
+        root_event_id: &str,
+        activity_event_id: &str,
+    ) -> bool {
+        let Some(record) = self
+            .attempts
+            .get_mut(&(room_id.to_owned(), root_event_id.to_owned()))
+        else {
+            return false;
+        };
+        let invalidates_latest = record
+            .live_activity_floor
+            .as_ref()
+            .is_some_and(|floor| floor.activity.activity_event_id == activity_event_id)
+            || record.activity.activity_event_id == activity_event_id
+            || record.aggregate.latest_event_id.as_deref() == Some(activity_event_id);
+        if !invalidates_latest {
+            return false;
+        }
+        record.live_activity_floor = None;
+        record.pending_rollback = None;
+        record.invalidated_activity = Some((
+            activity_event_id.to_owned(),
+            record.activity.activity_timestamp_ms,
+        ));
+        true
+    }
+
+    pub(crate) fn current_aggregate(
+        &self,
+        room_id: &str,
+        root_event_id: &str,
+    ) -> Option<AuthoritativeThreadAggregate> {
+        self.attempts
+            .get(&(room_id.to_owned(), root_event_id.to_owned()))
+            .filter(|record| !record.retired)
+            .map(effective_aggregate)
+    }
+
+    pub(crate) fn aggregate_at_revision(
+        &self,
+        room_id: &str,
+        root_event_id: &str,
+        activity_revision: u64,
+        summary_revision: u64,
+    ) -> Option<AuthoritativeThreadAggregate> {
+        self.attempts
+            .get(&(room_id.to_owned(), root_event_id.to_owned()))
+            .filter(|record| {
+                !record.retired
+                    && record.activity_revision == activity_revision
+                    && record.summary_revision == summary_revision
+                    && record.aggregate_refresh.is_none()
+                    && !record.is_hydration_pending()
+            })
+            .map(effective_aggregate)
     }
 
     pub(crate) fn active_activities(
@@ -422,6 +860,8 @@ impl ThreadRootProjectionService {
     /// before a later actor for the same room can be created.
     pub(crate) fn clear_room(&mut self, room_id: &str) -> Vec<ThreadRootProjectionRecord> {
         self.active_root_event_ids.remove(room_id);
+        self.canonical_root_event_ids.remove(room_id);
+        self.diagnostic_ordinals.clear_room(room_id);
         let keys = self
             .attempts
             .keys()
@@ -516,13 +956,262 @@ impl ThreadRootProjectionService {
     }
 }
 
-/// Effective-content equality, not timestamp/ID ordering, is the activity
-/// revision boundary. Same-ID/same-timestamp edits are therefore changes.
+/// Same-ID edits are newer activity, while a different older reply must not
+/// replace the accepted latest live activity.
 pub(crate) fn activity_is_newer(
     candidate: &ThreadRootProjectionActivity,
     existing: &ThreadRootProjectionActivity,
 ) -> bool {
-    candidate != existing
+    if candidate == existing {
+        return false;
+    }
+    if candidate.activity_event_id == existing.activity_event_id {
+        return true;
+    }
+    match (
+        candidate.activity_timestamp_ms,
+        existing.activity_timestamp_ms,
+    ) {
+        (Some(candidate), Some(existing)) if candidate != existing => candidate > existing,
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => candidate.activity_event_id > existing.activity_event_id,
+        (Some(_), Some(_)) => candidate.activity_event_id > existing.activity_event_id,
+    }
+}
+
+fn update_live_activity_floor(
+    record: &mut ThreadRootProjectionRecord,
+    activity: ThreadRootProjectionActivity,
+    previous: &ThreadRootProjectionActivity,
+) {
+    // A newer renderable activity supersedes any rollback intent for the
+    // previously invalidated latest event.
+    if record
+        .invalidated_activity
+        .as_ref()
+        .is_none_or(|(event_id, _)| event_id != &activity.activity_event_id)
+    {
+        record.invalidated_activity = None;
+    }
+    let base_count = record.aggregate.reply_count;
+    let floor_count = record
+        .live_activity_floor
+        .as_ref()
+        .map(|floor| floor.reply_count)
+        .unwrap_or(0);
+    let aggregate_already_includes_activity =
+        record.aggregate.latest_event_id.as_deref() == Some(activity.activity_event_id.as_str());
+    let reply_count = if aggregate_already_includes_activity
+        || activity.activity_event_id == previous.activity_event_id
+    {
+        floor_count.max(base_count).max(1)
+    } else {
+        floor_count
+            .saturating_add(1)
+            .max(base_count.saturating_add(1))
+            .max(1)
+    };
+    record.live_activity_floor = Some(LiveActivityFloor {
+        activity,
+        reply_count,
+    });
+}
+
+fn effective_aggregate(record: &ThreadRootProjectionRecord) -> AuthoritativeThreadAggregate {
+    let mut aggregate = record.aggregate.clone();
+    if let Some(floor) = &record.live_activity_floor {
+        merge_floor_into_aggregate(&mut aggregate, floor);
+    }
+    aggregate
+}
+
+fn merge_aggregate(
+    record: &mut ThreadRootProjectionRecord,
+    candidate: AuthoritativeThreadAggregate,
+    force_disappearance: bool,
+) -> &'static str {
+    let rollback_confirmed = record.pending_rollback.take().is_some_and(|pending| {
+        pending.reply_count == candidate.reply_count
+            && pending.latest_event_id == candidate.latest_event_id
+            && pending.latest_timestamp_ms == candidate.latest_timestamp_ms
+    });
+    let (invalidation_confirmed, invalidation_superseded) =
+        record.invalidated_activity.as_ref().map_or(
+            (false, false),
+            |(invalidated_event_id, invalidated_timestamp)| {
+                if candidate.latest_event_id.as_deref() == Some(invalidated_event_id.as_str()) {
+                    return (false, false);
+                }
+                let candidate_is_newer =
+                    match (candidate.latest_timestamp_ms, *invalidated_timestamp) {
+                        (Some(candidate), Some(invalidated)) if candidate != invalidated => {
+                            candidate > invalidated
+                        }
+                        (Some(_), None) => true,
+                        (None, Some(_)) => false,
+                        (None, None) | (Some(_), Some(_)) => candidate
+                            .latest_event_id
+                            .as_deref()
+                            .is_some_and(|candidate| candidate > invalidated_event_id.as_str()),
+                    };
+                (!candidate_is_newer, candidate_is_newer)
+            },
+        );
+    let force = force_disappearance || invalidation_confirmed || rollback_confirmed;
+    if invalidation_confirmed || invalidation_superseded {
+        record.invalidated_activity = None;
+    }
+    if (rollback_confirmed || invalidation_confirmed)
+        && let Some(event_id) = candidate.latest_event_id.as_ref()
+    {
+        let rollback_activity = ThreadRootProjectionActivity {
+            room_id: record.activity.room_id.clone(),
+            root_event_id: record.activity.root_event_id.clone(),
+            activity_event_id: event_id.clone(),
+            activity_timestamp_ms: candidate.latest_timestamp_ms,
+            activity_sender: candidate.latest_sender.clone(),
+            activity_sender_label: candidate.latest_sender_label.clone(),
+            activity_body_preview: candidate.latest_body_preview.clone(),
+        };
+        if rollback_activity != record.activity {
+            if record.activity_revision == u64::MAX {
+                record.retired = true;
+                record.aggregate_refresh = None;
+            } else {
+                record.activity_revision += 1;
+                record.activity = rollback_activity;
+            }
+        }
+    }
+    let floor = record.live_activity_floor.clone();
+    let mut aggregate = if force {
+        candidate
+    } else {
+        merge_sdk_aggregate(&record.aggregate, &candidate)
+    };
+    if let Some(floor) = floor {
+        if force {
+            // An explicit redaction/removal restores the exact SDK aggregate,
+            // including a zero-count result, instead of retaining the floor.
+            record.live_activity_floor = None;
+        } else if aggregate_latest_is_at_least(&aggregate, &floor.activity) {
+            aggregate.reply_count = aggregate.reply_count.max(floor.reply_count);
+            record.live_activity_floor = None;
+        } else {
+            merge_floor_into_aggregate(&mut aggregate, &floor);
+            record.live_activity_floor = Some(floor);
+        }
+    }
+    record.aggregate = aggregate;
+    if rollback_confirmed {
+        "rollback_confirmed"
+    } else if force {
+        "invalidation"
+    } else {
+        "normal"
+    }
+}
+
+fn merge_floor_into_aggregate(
+    aggregate: &mut AuthoritativeThreadAggregate,
+    floor: &LiveActivityFloor,
+) {
+    aggregate.reply_count = aggregate.reply_count.max(floor.reply_count);
+    aggregate.latest_event_id = Some(floor.activity.activity_event_id.clone());
+    aggregate.latest_sender = floor.activity.activity_sender.clone();
+    aggregate.latest_sender_label = floor.activity.activity_sender_label.clone();
+    aggregate.latest_body_preview = floor.activity.activity_body_preview.clone();
+    aggregate.latest_timestamp_ms = floor.activity.activity_timestamp_ms;
+}
+
+fn merge_sdk_aggregate(
+    previous: &AuthoritativeThreadAggregate,
+    candidate: &AuthoritativeThreadAggregate,
+) -> AuthoritativeThreadAggregate {
+    let Some(candidate_event_id) = candidate.latest_event_id.as_deref() else {
+        let mut retained = previous.clone();
+        retained.reply_count = retained.reply_count.max(candidate.reply_count);
+        return retained;
+    };
+    let Some(previous_event_id) = previous.latest_event_id.as_deref() else {
+        return candidate.clone();
+    };
+    if candidate_event_id == previous_event_id {
+        let mut repaired = candidate.clone();
+        repaired.reply_count = repaired.reply_count.max(previous.reply_count);
+        return repaired;
+    }
+    let candidate_is_newer = match (candidate.latest_timestamp_ms, previous.latest_timestamp_ms) {
+        (Some(candidate), Some(previous)) if candidate != previous => candidate > previous,
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => candidate_event_id > previous_event_id,
+        (Some(_), Some(_)) => candidate_event_id > previous_event_id,
+    };
+    if candidate_is_newer {
+        let mut advanced = candidate.clone();
+        advanced.reply_count = advanced.reply_count.max(previous.reply_count);
+        advanced
+    } else {
+        previous.clone()
+    }
+}
+
+fn aggregate_latest_is_at_least(
+    aggregate: &AuthoritativeThreadAggregate,
+    activity: &ThreadRootProjectionActivity,
+) -> bool {
+    let Some(event_id) = aggregate.latest_event_id.as_deref() else {
+        return false;
+    };
+    if event_id == activity.activity_event_id {
+        return true;
+    }
+    match (
+        aggregate.latest_timestamp_ms,
+        activity.activity_timestamp_ms,
+    ) {
+        (Some(aggregate), Some(activity)) if aggregate != activity => aggregate > activity,
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => event_id > activity.activity_event_id.as_str(),
+        (Some(_), Some(_)) => event_id > activity.activity_event_id.as_str(),
+    }
+}
+
+fn latest_identity_relation(previous: Option<&str>, candidate: Option<&str>) -> &'static str {
+    match (previous, candidate) {
+        (None, None) => "missing",
+        (Some(previous), Some(candidate)) if previous == candidate => "same",
+        _ => "different",
+    }
+}
+
+fn thread_summary_source(
+    refresh: &AggregateRefresh,
+    previous: &AuthoritativeThreadAggregate,
+    candidate: Option<&AuthoritativeThreadAggregate>,
+    merge_reason: &'static str,
+) -> &'static str {
+    match refresh.cause {
+        AggregateRefreshCause::InitialHydration => "rehydration",
+        AggregateRefreshCause::SelectedActivity => {
+            let candidate_event_id =
+                candidate.and_then(|candidate| candidate.latest_event_id.as_deref());
+            if candidate_event_id == Some(refresh.activity.activity_event_id.as_str())
+                && previous.latest_event_id.as_deref()
+                    == Some(refresh.activity.activity_event_id.as_str())
+            {
+                "edit"
+            } else {
+                "live_reply"
+            }
+        }
+        AggregateRefreshCause::CanonicalBatch if merge_reason == "invalidation" => "redaction",
+        AggregateRefreshCause::CanonicalBatch => "sdk_summary",
+        AggregateRefreshCause::Removal => "redaction",
+    }
 }
 
 /// Messages routed to a `ThreadsListActor`.
@@ -1100,11 +1789,12 @@ mod tests {
     use matrix_sdk_ui::timeline::{Profile, TimelineDetails};
     use tokio::sync::{mpsc, oneshot};
 
-    use crate::event::{TimelineItem, TimelineItemId, TimelineMessageActions};
+    use crate::event::{ThreadSummaryDto, TimelineItem, TimelineItemId, TimelineMessageActions};
 
     use super::{
-        ActiveSubscription, AggregateRefreshCause, OperationFailureKind, SubscriptionTasks,
-        ThreadRootProjectionActivity, ThreadRootProjectionDecision,
+        ActiveSubscription, AggregateRefreshCause, AuthoritativeThreadAggregate,
+        OperationFailureKind, SubscriptionTasks, THREAD_SUMMARY_PROJECTION_MAX_ROOTS,
+        ThreadRootProjectionActivity, ThreadRootProjectionCompletion, ThreadRootProjectionDecision,
         ThreadRootProjectionRefreshResult, ThreadRootProjectionService,
         authoritative_thread_aggregate_from_sdk,
     };
@@ -1192,6 +1882,43 @@ mod tests {
             actions: TimelineMessageActions::default(),
             send_state: None,
         }
+    }
+
+    #[test]
+    fn thread_summary_projection_service_is_bounded_to_120_roots_per_room() {
+        let mut service = ThreadRootProjectionService::default();
+        for index in 0..THREAD_SUMMARY_PROJECTION_MAX_ROOTS {
+            let activity = ThreadRootProjectionActivity {
+                room_id: "!room:example.invalid".to_owned(),
+                root_event_id: format!("$root-{index}:example.invalid"),
+                activity_event_id: format!("$reply-{index}:example.invalid"),
+                activity_timestamp_ms: Some(index as u64),
+                activity_sender: None,
+                activity_sender_label: None,
+                activity_body_preview: None,
+            };
+            assert!(matches!(
+                service.observe(activity),
+                ThreadRootProjectionDecision::StartFetch(_)
+            ));
+        }
+        let extra = ThreadRootProjectionActivity {
+            room_id: "!room:example.invalid".to_owned(),
+            root_event_id: "$root-extra:example.invalid".to_owned(),
+            activity_event_id: "$reply-extra:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(121),
+            activity_sender: None,
+            activity_sender_label: None,
+            activity_body_preview: None,
+        };
+        assert_eq!(
+            service.observe(extra),
+            ThreadRootProjectionDecision::Retired
+        );
+        assert_eq!(
+            service.active_activities("!room:example.invalid").len(),
+            THREAD_SUMMARY_PROJECTION_MAX_ROOTS
+        );
     }
 
     #[test]
@@ -1430,6 +2157,155 @@ mod tests {
     }
 
     #[test]
+    fn canonical_sdk_summary_is_provisional_until_live_observation_or_refresh() {
+        let mut service = ThreadRootProjectionService::default();
+        service.seed_canonical_summary(
+            "!room:example.invalid",
+            "$root:example.invalid",
+            &ThreadSummaryDto {
+                reply_count: 1,
+                latest_event_id: Some("$reply-a:example.invalid".to_owned()),
+                latest_sender: Some("@a:example.invalid".to_owned()),
+                latest_sender_label: Some("A".to_owned()),
+                latest_body_preview: Some("A".to_owned()),
+                latest_timestamp_ms: Some(100),
+            },
+        );
+        let activity_b = ThreadRootProjectionActivity {
+            room_id: "!room:example.invalid".to_owned(),
+            root_event_id: "$root:example.invalid".to_owned(),
+            activity_event_id: "$reply-b:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(200),
+            activity_sender: Some("@b:example.invalid".to_owned()),
+            activity_sender_label: Some("B".to_owned()),
+            activity_body_preview: Some("B".to_owned()),
+        };
+        service.seed_canonical_summary(
+            "!room:example.invalid",
+            "$root:example.invalid",
+            &ThreadSummaryDto {
+                reply_count: 1,
+                latest_event_id: Some(activity_b.activity_event_id.clone()),
+                latest_sender: activity_b.activity_sender.clone(),
+                latest_sender_label: activity_b.activity_sender_label.clone(),
+                latest_body_preview: activity_b.activity_body_preview.clone(),
+                latest_timestamp_ms: activity_b.activity_timestamp_ms,
+            },
+        );
+        let provisional = service
+            .current_aggregate("!room:example.invalid", "$root:example.invalid")
+            .expect("retained accepted aggregate");
+        assert_eq!(provisional.reply_count, 1);
+        assert_eq!(
+            provisional.latest_event_id.as_deref(),
+            Some("$reply-a:example.invalid")
+        );
+        assert!(matches!(
+            service.observe_live_activity(activity_b.clone()),
+            ThreadRootProjectionDecision::ActivityUpdated(_)
+        ));
+        let live = service
+            .current_aggregate("!room:example.invalid", "$root:example.invalid")
+            .expect("live floor");
+        assert_eq!(live.reply_count, 2);
+        assert_eq!(
+            live.latest_event_id.as_deref(),
+            Some("$reply-b:example.invalid")
+        );
+        let refresh = service
+            .schedule_aggregate_refresh_with_canonical_root(
+                &activity_b,
+                AggregateRefreshCause::SelectedActivity,
+                true,
+                true,
+                false,
+            )
+            .expect("live aggregate refresh");
+        let completion = service.complete_refresh(
+            &refresh,
+            Ok(ThreadRootProjectionRefreshResult::Aggregate(
+                AuthoritativeThreadAggregate {
+                    reply_count: 1,
+                    latest_event_id: Some("$reply-a:example.invalid".to_owned()),
+                    latest_sender: Some("@a:example.invalid".to_owned()),
+                    latest_sender_label: Some("A".to_owned()),
+                    latest_body_preview: Some("A".to_owned()),
+                    latest_timestamp_ms: Some(100),
+                },
+            )),
+        );
+        assert!(matches!(
+            completion,
+            ThreadRootProjectionCompletion::Updated(record)
+                if record.aggregate.reply_count == 2
+                    && record.aggregate.latest_event_id.as_deref()
+                        == Some("$reply-b:example.invalid")
+        ));
+    }
+
+    #[test]
+    fn live_observation_does_not_recount_an_activity_already_in_exact_aggregate() {
+        let mut service = ThreadRootProjectionService::default();
+        let activity_a = ThreadRootProjectionActivity {
+            room_id: "!room:example.invalid".to_owned(),
+            root_event_id: "$root:example.invalid".to_owned(),
+            activity_event_id: "$reply-a:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(100),
+            activity_sender: Some("@a:example.invalid".to_owned()),
+            activity_sender_label: Some("A".to_owned()),
+            activity_body_preview: Some("A".to_owned()),
+        };
+        assert!(matches!(
+            service.observe(activity_a.clone()),
+            ThreadRootProjectionDecision::StartFetch(_)
+        ));
+        let refresh_a = service
+            .schedule_aggregate_refresh(
+                &activity_a,
+                AggregateRefreshCause::InitialHydration,
+                true,
+                false,
+            )
+            .expect("initial aggregate refresh");
+        let activity_b = ThreadRootProjectionActivity {
+            activity_event_id: "$reply-b:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(200),
+            activity_sender: Some("@b:example.invalid".to_owned()),
+            activity_sender_label: Some("B".to_owned()),
+            activity_body_preview: Some("B".to_owned()),
+            ..activity_a
+        };
+        assert!(matches!(
+            service.complete_refresh(
+                &refresh_a,
+                Ok(ThreadRootProjectionRefreshResult::Aggregate(
+                    AuthoritativeThreadAggregate {
+                        reply_count: 2,
+                        latest_event_id: Some(activity_b.activity_event_id.clone()),
+                        latest_sender: activity_b.activity_sender.clone(),
+                        latest_sender_label: activity_b.activity_sender_label.clone(),
+                        latest_body_preview: activity_b.activity_body_preview.clone(),
+                        latest_timestamp_ms: activity_b.activity_timestamp_ms,
+                    },
+                )),
+            ),
+            ThreadRootProjectionCompletion::Updated(_)
+        ));
+        assert!(matches!(
+            service.observe_live_activity(activity_b.clone()),
+            ThreadRootProjectionDecision::ActivityUpdated(_)
+        ));
+        let aggregate = service
+            .current_aggregate("!room:example.invalid", "$root:example.invalid")
+            .expect("accepted aggregate");
+        assert_eq!(aggregate.reply_count, 2);
+        assert_eq!(
+            aggregate.latest_event_id.as_deref(),
+            Some("$reply-b:example.invalid")
+        );
+    }
+
+    #[test]
     fn newer_live_activity_floors_a_lagging_sdk_aggregate_without_double_counting() {
         let mut service = ThreadRootProjectionService::default();
         let activity_a = ThreadRootProjectionActivity {
@@ -1513,6 +2389,219 @@ mod tests {
     }
 
     #[test]
+    fn older_bundled_summary_rolls_back_only_after_event_cache_confirmation() {
+        let mut service = ThreadRootProjectionService::default();
+        let summary_a = ThreadSummaryDto {
+            reply_count: 1,
+            latest_event_id: Some("$reply-a:example.invalid".to_owned()),
+            latest_sender: Some("@a:example.invalid".to_owned()),
+            latest_sender_label: Some("A".to_owned()),
+            latest_body_preview: Some("A".to_owned()),
+            latest_timestamp_ms: Some(100),
+        };
+        service.seed_canonical_summary(
+            "!room:example.invalid",
+            "$root:example.invalid",
+            &summary_a,
+        );
+        let activity_b = ThreadRootProjectionActivity {
+            room_id: "!room:example.invalid".to_owned(),
+            root_event_id: "$root:example.invalid".to_owned(),
+            activity_event_id: "$reply-b:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(200),
+            activity_sender: Some("@b:example.invalid".to_owned()),
+            activity_sender_label: Some("B".to_owned()),
+            activity_body_preview: Some("B".to_owned()),
+        };
+        service.seed_canonical_summary(
+            "!room:example.invalid",
+            "$root:example.invalid",
+            &ThreadSummaryDto {
+                reply_count: 1,
+                latest_event_id: Some(activity_b.activity_event_id.clone()),
+                latest_sender: activity_b.activity_sender.clone(),
+                latest_sender_label: activity_b.activity_sender_label.clone(),
+                latest_body_preview: activity_b.activity_body_preview.clone(),
+                latest_timestamp_ms: activity_b.activity_timestamp_ms,
+            },
+        );
+        assert!(matches!(
+            service.observe_live_activity(activity_b.clone()),
+            ThreadRootProjectionDecision::ActivityUpdated(_)
+        ));
+        assert_eq!(
+            service
+                .current_aggregate("!room:example.invalid", "$root:example.invalid")
+                .expect("live summary")
+                .reply_count,
+            2
+        );
+
+        // The older bundled root alone is not enough to regress B.
+        service.seed_canonical_summary(
+            "!room:example.invalid",
+            "$root:example.invalid",
+            &summary_a,
+        );
+        assert_eq!(
+            service
+                .current_aggregate("!room:example.invalid", "$root:example.invalid")
+                .expect("retained live summary")
+                .latest_event_id
+                .as_deref(),
+            Some("$reply-b:example.invalid")
+        );
+        let refresh = service
+            .schedule_aggregate_refresh_with_canonical_root(
+                &activity_b,
+                AggregateRefreshCause::CanonicalBatch,
+                true,
+                true,
+                false,
+            )
+            .expect("rollback confirmation refresh");
+        let completion = service.complete_refresh(
+            &refresh,
+            Ok(ThreadRootProjectionRefreshResult::Aggregate(
+                AuthoritativeThreadAggregate {
+                    reply_count: summary_a.reply_count,
+                    latest_event_id: summary_a.latest_event_id,
+                    latest_sender: summary_a.latest_sender,
+                    latest_sender_label: summary_a.latest_sender_label,
+                    latest_body_preview: summary_a.latest_body_preview,
+                    latest_timestamp_ms: summary_a.latest_timestamp_ms,
+                },
+            )),
+        );
+        assert!(matches!(
+            completion,
+            ThreadRootProjectionCompletion::Updated(record)
+                if record.aggregate.reply_count == 1
+                    && record.aggregate.latest_event_id.as_deref()
+                        == Some("$reply-a:example.invalid")
+        ));
+    }
+
+    #[test]
+    fn redaction_retires_live_floor_and_restores_exact_sdk_aggregate() {
+        let mut service = ThreadRootProjectionService::default();
+        let activity_a = ThreadRootProjectionActivity {
+            room_id: "!room:example.invalid".to_owned(),
+            root_event_id: "$root:example.invalid".to_owned(),
+            activity_event_id: "$reply-a:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(100),
+            activity_sender: Some("@a:example.invalid".to_owned()),
+            activity_sender_label: Some("A".to_owned()),
+            activity_body_preview: Some("A".to_owned()),
+        };
+        assert!(matches!(
+            service.observe(activity_a.clone()),
+            ThreadRootProjectionDecision::StartFetch(_)
+        ));
+        let initial = service
+            .schedule_aggregate_refresh(
+                &activity_a,
+                AggregateRefreshCause::InitialHydration,
+                true,
+                false,
+            )
+            .expect("initial aggregate refresh");
+        service.complete_refresh(
+            &initial,
+            Ok(ThreadRootProjectionRefreshResult::Aggregate(
+                AuthoritativeThreadAggregate {
+                    reply_count: 1,
+                    latest_event_id: Some(activity_a.activity_event_id.clone()),
+                    latest_sender: activity_a.activity_sender.clone(),
+                    latest_sender_label: activity_a.activity_sender_label.clone(),
+                    latest_body_preview: activity_a.activity_body_preview.clone(),
+                    latest_timestamp_ms: activity_a.activity_timestamp_ms,
+                },
+            )),
+        );
+
+        let activity_b = ThreadRootProjectionActivity {
+            activity_event_id: "$reply-b:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(200),
+            activity_sender: Some("@b:example.invalid".to_owned()),
+            activity_sender_label: Some("B".to_owned()),
+            activity_body_preview: Some("B".to_owned()),
+            ..activity_a.clone()
+        };
+        assert!(matches!(
+            service.observe(activity_b.clone()),
+            ThreadRootProjectionDecision::ActivityUpdated(_)
+        ));
+        let refresh_b = service
+            .schedule_aggregate_refresh(
+                &activity_b,
+                AggregateRefreshCause::SelectedActivity,
+                true,
+                false,
+            )
+            .expect("live aggregate refresh");
+        service.complete_refresh(
+            &refresh_b,
+            Ok(ThreadRootProjectionRefreshResult::Aggregate(
+                AuthoritativeThreadAggregate {
+                    reply_count: 2,
+                    latest_event_id: Some(activity_b.activity_event_id.clone()),
+                    latest_sender: activity_b.activity_sender.clone(),
+                    latest_sender_label: activity_b.activity_sender_label.clone(),
+                    latest_body_preview: activity_b.activity_body_preview.clone(),
+                    latest_timestamp_ms: activity_b.activity_timestamp_ms,
+                },
+            )),
+        );
+
+        let older_edit = ThreadRootProjectionActivity {
+            activity_body_preview: Some("A edited".to_owned()),
+            ..activity_a.clone()
+        };
+        assert!(matches!(
+            service.observe_live_activity(older_edit.clone()),
+            ThreadRootProjectionDecision::Existing(_)
+        ));
+
+        assert!(service.invalidate_live_activity(
+            &activity_b.room_id,
+            &activity_b.root_event_id,
+            &activity_b.activity_event_id,
+        ));
+        let removal = service
+            .schedule_aggregate_refresh(&activity_b, AggregateRefreshCause::Removal, true, false)
+            .expect("redaction aggregate refresh");
+        assert!(matches!(
+            service.complete_refresh(
+                &removal,
+                Ok(ThreadRootProjectionRefreshResult::Aggregate(
+                    AuthoritativeThreadAggregate {
+                        reply_count: 1,
+                        latest_event_id: Some(activity_a.activity_event_id.clone()),
+                        latest_sender: activity_a.activity_sender.clone(),
+                        latest_sender_label: activity_a.activity_sender_label.clone(),
+                        latest_body_preview: activity_a.activity_body_preview.clone(),
+                        latest_timestamp_ms: activity_a.activity_timestamp_ms,
+                    },
+                )),
+            ),
+            ThreadRootProjectionCompletion::Updated(_)
+        ));
+        assert_eq!(
+            service
+                .current_aggregate(&activity_a.room_id, &activity_a.root_event_id)
+                .expect("restored aggregate")
+                .latest_event_id
+                .as_deref(),
+            Some("$reply-a:example.invalid")
+        );
+        assert!(matches!(
+            service.observe_live_activity(older_edit),
+            ThreadRootProjectionDecision::ActivityUpdated(_)
+        ));
+    }
+
+    #[test]
     fn aggregate_refresh_reconciles_count_two_to_one_to_zero() {
         let mut service = ThreadRootProjectionService::default();
         let activity_b = ThreadRootProjectionActivity {
@@ -1561,6 +2650,11 @@ mod tests {
             activity_body_preview: Some("A".to_owned()),
             ..activity_b.clone()
         };
+        assert!(service.invalidate_live_activity(
+            &activity_b.room_id,
+            &activity_b.root_event_id,
+            &activity_b.activity_event_id,
+        ));
         assert!(matches!(
             service.observe(activity_a.clone()),
             ThreadRootProjectionDecision::ActivityUpdated(_)
@@ -1716,6 +2810,7 @@ mod tests {
         assert!(matches!(
             service.observe(ThreadRootProjectionActivity {
                 activity_event_id: "$new-reply:example.invalid".to_owned(),
+                activity_timestamp_ms: Some(200),
                 ..activity.clone()
             }),
             ThreadRootProjectionDecision::Retired
@@ -1834,8 +2929,13 @@ mod tests {
                 }
             }
 
-            // The newest reply is no longer canonical. Reconciliation, rather
-            // than observe(), is allowed to move the representative backward.
+            // An explicit redaction/removal authorizes the representative to
+            // move backward; ordinary bounded-window disappearance does not.
+            assert!(service.invalidate_live_activity(
+                &newer.room_id,
+                &newer.root_event_id,
+                &newer.activity_event_id,
+            ));
             service.reconcile_room_activities(
                 &older.room_id,
                 &HashMap::from([(older.root_event_id.clone(), older.clone())]),
