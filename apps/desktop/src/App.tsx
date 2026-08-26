@@ -2238,7 +2238,11 @@ export function App() {
   async function startOidcLogin() {
     setIsBusy(true);
     try {
-      const authorization = await api.startOidcLogin(loginHomeserver);
+      const activeHomeserver =
+        snapshot?.state.domain.session.kind === "locked"
+          ? snapshot.state.domain.session.homeserver
+          : loginHomeserver;
+      const authorization = await api.startOidcLogin(activeHomeserver);
       await openExternalHttpUrl(authorization.authorization_url);
     } finally {
       setIsBusy(false);

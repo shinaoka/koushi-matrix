@@ -27,6 +27,24 @@ struct NotifyFirstSlidingSync {
     request_count: Arc<AtomicUsize>,
 }
 
+#[derive(Clone)]
+struct EchoRequestedLoginDevice;
+
+impl Respond for EchoRequestedLoginDevice {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: serde_json::Value =
+            serde_json::from_slice(&request.body).expect("login request JSON");
+        let device_id = body["device_id"]
+            .as_str()
+            .expect("fresh login requests its generated device id");
+        ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "synthetic-access-token",
+            "device_id": device_id,
+            "user_id": "@provisional-owner:localhost"
+        }))
+    }
+}
+
 impl Respond for NotifyFirstSlidingSync {
     fn respond(&self, _request: &Request) -> ResponseTemplate {
         let request_index = self.request_count.fetch_add(1, Ordering::AcqRel);
@@ -60,7 +78,12 @@ async fn provisional_verification_hands_one_encryption_sync_owner_to_normal_runt
         .ok()
         .mount()
         .await;
-    server.mock_login().ok().mock_once().mount().await;
+    Mock::given(method("POST"))
+        .and(path("/_matrix/client/v3/login"))
+        .respond_with(EchoRequestedLoginDevice)
+        .expect(1)
+        .mount(&server.server())
+        .await;
     let (first_request_tx, first_request_rx) = tokio::sync::oneshot::channel();
     Mock::given(method("POST"))
         .and(path(

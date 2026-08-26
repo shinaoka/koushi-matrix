@@ -94,6 +94,23 @@ const INVITED_ROOM_ID: &str = "!invited:localhost";
 const EXPECTED_JOINED_ROOMS: usize = 20;
 
 #[derive(Clone)]
+struct EchoRequestedLoginDevice;
+
+impl Respond for EchoRequestedLoginDevice {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).expect("login request JSON");
+        let device_id = body["device_id"]
+            .as_str()
+            .expect("fresh login generated device id");
+        ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "synthetic-access-token",
+            "device_id": device_id,
+            "user_id": "@runtime-room-list:localhost"
+        }))
+    }
+}
+
+#[derive(Clone)]
 struct RuntimeSlidingSyncResponder {
     room_list_requests: Arc<AtomicUsize>,
     encryption_requests: Arc<AtomicUsize>,
@@ -234,7 +251,12 @@ async fn normal_runtime_waits_for_full_all_rooms_reconciliation_and_reuses_one_s
         .ok()
         .mount()
         .await;
-    server.mock_login().ok().mock_once().mount().await;
+    Mock::given(method("POST"))
+        .and(path("/_matrix/client/v3/login"))
+        .respond_with(EchoRequestedLoginDevice)
+        .expect(1)
+        .mount(&server.server())
+        .await;
 
     let room_list_requests = Arc::new(AtomicUsize::new(0));
     let encryption_requests = Arc::new(AtomicUsize::new(0));

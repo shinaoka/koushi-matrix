@@ -130,6 +130,7 @@ pub(super) enum QaScenario {
     NativeAttention,
     EncryptionDebug,
     E2eeTrust,
+    E2eeLoginStore,
     DeviceCleanup,
     GateRestore,
     GateNegative,
@@ -168,6 +169,7 @@ pub(super) enum QaStage {
     NativeAttention,
     EncryptionDebug,
     E2eeTrust,
+    E2eeLoginStore,
     DeviceCleanup,
     GateRestore,
     GateNegative,
@@ -245,6 +247,7 @@ impl QaScenario {
             "native_attention" => Ok(Self::NativeAttention),
             "encryption_debug" => Ok(Self::EncryptionDebug),
             "e2ee_trust" => Ok(Self::E2eeTrust),
+            "e2ee_login_store" => Ok(Self::E2eeLoginStore),
             "device_cleanup" => Ok(Self::DeviceCleanup),
             "gate_restore" => Ok(Self::GateRestore),
             "gate_negative" => Ok(Self::GateNegative),
@@ -273,7 +276,7 @@ impl QaScenario {
             "cache_restore" => Ok(Self::CacheRestore),
             "read_state_convergence" => Ok(Self::ReadStateConvergence),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, session_status, credential_health, native_attention, encryption_debug, e2ee_trust, device_cleanup, invites_dm, room_space, directory, room_management, room_people_projection, timeline, timeline_reconnect, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, redact_edit_convergence, search_crawler, scheduled_send, restore_cleanup, link_preview, cache_restore, read_state_convergence; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, session_status, credential_health, native_attention, encryption_debug, e2ee_trust, e2ee_login_store, device_cleanup, invites_dm, room_space, directory, room_management, room_people_projection, timeline, timeline_reconnect, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, redact_edit_convergence, search_crawler, scheduled_send, restore_cleanup, link_preview, cache_restore, read_state_convergence; got {other}"
             )),
         }
     }
@@ -314,6 +317,10 @@ impl QaScenario {
                     QaStage::Safety | QaStage::LoginSync | QaStage::E2eeTrust
                 )
             }
+            Self::E2eeLoginStore => matches!(
+                stage,
+                QaStage::Safety | QaStage::LoginSync | QaStage::E2eeLoginStore
+            ),
             Self::DeviceCleanup => matches!(
                 stage,
                 QaStage::Safety | QaStage::LoginSync | QaStage::DeviceCleanup
@@ -527,6 +534,16 @@ pub(super) fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "e2ee_unverified_peer_send_nonblocking=ok",
             "e2ee_blocked_device_withheld=ok",
             "e2ee_trust=ok",
+        ],
+        QaStage::E2eeLoginStore => &[
+            "e2ee_login_store_fresh_offline_index0=ok",
+            "e2ee_login_store_restore_offline_index0=ok",
+            "e2ee_login_store_restart_offline_index0=ok",
+            "e2ee_login_store_reauth_offline_index0=ok",
+            "e2ee_login_store_online_index0=ok",
+            "e2ee_login_store_group_index0=ok",
+            "e2ee_login_store_identity_stable=ok",
+            "e2ee_login_store=ok",
         ],
         QaStage::DeviceCleanup => &[
             "device_cleanup_remote_first=ok",
@@ -785,6 +802,9 @@ pub(super) fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
         QaScenario::E2eeTrust => {
             vec![QaStage::Safety, QaStage::LoginSync, QaStage::E2eeTrust]
         }
+        QaScenario::E2eeLoginStore => {
+            vec![QaStage::Safety, QaStage::LoginSync, QaStage::E2eeLoginStore]
+        }
         QaScenario::DeviceCleanup => {
             vec![QaStage::Safety, QaStage::LoginSync, QaStage::DeviceCleanup]
         }
@@ -961,6 +981,11 @@ pub(super) fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static st
             tokens.dedup();
             tokens
         }
+        QaScenario::E2eeLoginStore => {
+            let mut tokens = vec!["safety=ok"];
+            tokens.extend(tokens_for_stage(QaStage::E2eeLoginStore));
+            tokens
+        }
         QaScenario::RoomSpace
         | QaScenario::Directory
         | QaScenario::RoomManagement
@@ -1033,7 +1058,7 @@ pub(super) struct QaConfig {
     pub(super) password_a: String,
     pub(super) user_b: String,
     pub(super) password_b: String,
-    user_c: Option<String>,
+    pub(super) user_c: Option<String>,
     /// Identity reset changes cross-signing identity for the account. Keep it
     /// opt-in so real-account QA cannot accidentally invalidate other devices.
     pub(super) allow_identity_reset: bool,

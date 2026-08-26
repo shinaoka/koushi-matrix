@@ -8,22 +8,39 @@ use chacha20poly1305::{
     ChaCha20Poly1305, Key, Nonce,
     aead::{Aead, KeyInit, OsRng, rand_core::RngCore},
 };
-use koushi_key::{CredentialVaultMasterKey, SavedSessionIndex, SessionKeyId};
+use koushi_key::{CredentialVaultMasterKey, LocalStoreId, SavedSessionIndex, SessionKeyId};
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
 const CREDENTIAL_VAULT_FILE_MAGIC: &[u8] = b"KOUSHI-CREDENTIAL-VAULT-V1\0";
 const CREDENTIAL_VAULT_NONCE_LEN: usize = 12;
-const CREDENTIAL_VAULT_VERSION: u8 = 1;
+const CREDENTIAL_VAULT_VERSION: u8 = 2;
 const CREDENTIAL_VAULT_MAX_BYTES: usize = 16 * 1024 * 1024;
 const CREDENTIAL_VAULT_TAG_LEN: usize = 16;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct CredentialVaultData {
     last_session: Option<SessionKeyId>,
     saved_sessions: Vec<SessionKeyId>,
     entries: Vec<CredentialVaultEntry>,
     legacy_cleanup_pending: Vec<SessionKeyId>,
+    pending_logins: Vec<PendingLoginRecord>,
+    local_store_migration: Option<LocalStoreMigrationRecord>,
+    payload_version: u8,
+}
+
+impl Default for CredentialVaultData {
+    fn default() -> Self {
+        Self {
+            last_session: None,
+            saved_sessions: Vec::new(),
+            entries: Vec::new(),
+            legacy_cleanup_pending: Vec::new(),
+            pending_logins: Vec::new(),
+            local_store_migration: None,
+            payload_version: CREDENTIAL_VAULT_VERSION,
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -31,6 +48,8 @@ struct CredentialVaultEntry {
     key_id: SessionKeyId,
     matrix_session: Option<String>,
     local_unlock_secret: Option<String>,
+    #[serde(default)]
+    local_store_id: Option<LocalStoreId>,
 }
 
 impl Drop for CredentialVaultEntry {
@@ -44,6 +63,52 @@ impl Drop for CredentialVaultEntry {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct PendingLoginRecord {
+    pub(crate) allocation_id: LocalStoreId,
+    pub(crate) slot: u8,
+    pub(crate) attempt_generation: u64,
+    pub(crate) normalized_homeserver: String,
+    pub(crate) auth_method: String,
+    pub(crate) device_id: String,
+    pub(crate) local_store_id: LocalStoreId,
+    /// Storage form of the local unlock secret. It is encrypted in the OS
+    /// vault and is only exposed to the journal owner while materializing a
+    /// binding.
+    pub(crate) binding_secret: String,
+    pub(crate) state: PendingLoginState,
+    pub(crate) final_session_key_id: Option<SessionKeyId>,
+}
+
+impl Drop for PendingLoginRecord {
+    fn drop(&mut self) {
+        self.binding_secret.zeroize();
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct LocalStoreMigrationRecord {
+    pub(crate) key_id: SessionKeyId,
+    pub(crate) local_store_id: LocalStoreId,
+    #[serde(default)]
+    pub(crate) state: LocalStoreMigrationState,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize, Debug, Default, Eq, PartialEq)]
+pub(crate) enum LocalStoreMigrationState {
+    #[default]
+    Marked,
+    Renamed,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize, Debug, Eq, PartialEq)]
+pub(crate) enum PendingLoginState {
+    PreAuth,
+    BoundTokenless,
+    Abandoning,
+    Persisted,
+}
+
 #[derive(Serialize, Deserialize)]
 struct CredentialVaultPayload {
     version: u8,
@@ -52,6 +117,10 @@ struct CredentialVaultPayload {
     entries: Vec<CredentialVaultEntry>,
     #[serde(default)]
     legacy_cleanup_pending: Vec<SessionKeyId>,
+    #[serde(default)]
+    pending_logins: Vec<PendingLoginRecord>,
+    #[serde(default)]
+    local_store_migration: Option<LocalStoreMigrationRecord>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -141,6 +210,53 @@ impl CredentialVaultData {
         }
     }
 
+    pub(crate) fn local_store_id(&self, key_id: &SessionKeyId) -> Option<&LocalStoreId> {
+        self.entry(key_id)
+            .and_then(|entry| entry.local_store_id.as_ref())
+    }
+
+    pub(crate) fn upsert_local_store_id(&mut self, key_id: SessionKeyId, store_id: LocalStoreId) {
+        self.entry_mut(key_id).local_store_id = Some(store_id);
+    }
+
+    pub(crate) fn delete_local_store_id(&mut self, key_id: &SessionKeyId) {
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|entry| &entry.key_id == key_id)
+        {
+            entry.local_store_id = None;
+        }
+    }
+
+    pub(crate) fn payload_version(&self) -> u8 {
+        self.payload_version
+    }
+
+    pub(crate) fn mark_current_version(&mut self) {
+        self.payload_version = CREDENTIAL_VAULT_VERSION;
+    }
+
+    pub(crate) fn pending_logins(&self) -> &[PendingLoginRecord] {
+        &self.pending_logins
+    }
+
+    pub(crate) fn pending_logins_mut(&mut self) -> &mut Vec<PendingLoginRecord> {
+        &mut self.pending_logins
+    }
+
+    pub(crate) fn local_store_migration(&self) -> Option<&LocalStoreMigrationRecord> {
+        self.local_store_migration.as_ref()
+    }
+
+    pub(crate) fn set_local_store_migration(&mut self, migration: LocalStoreMigrationRecord) {
+        self.local_store_migration = Some(migration);
+    }
+
+    pub(crate) fn clear_local_store_migration(&mut self) -> bool {
+        self.local_store_migration.take().is_some()
+    }
+
     pub(crate) fn legacy_cleanup_pending(&self) -> &[SessionKeyId] {
         &self.legacy_cleanup_pending
     }
@@ -165,6 +281,7 @@ impl CredentialVaultData {
             key_id,
             matrix_session: None,
             local_unlock_secret: None,
+            local_store_id: None,
         });
         self.entries.last_mut().expect("entry was inserted")
     }
@@ -181,6 +298,12 @@ impl fmt::Debug for CredentialVaultData {
                 "legacy_cleanup_pending_count",
                 &self.legacy_cleanup_pending.len(),
             )
+            .field("pending_login_count", &self.pending_logins.len())
+            .field(
+                "has_local_store_migration",
+                &self.local_store_migration.is_some(),
+            )
+            .field("payload_version", &self.payload_version)
             .finish()
     }
 }
@@ -221,21 +344,35 @@ impl CredentialVaultFile {
         data: &CredentialVaultData,
         fail_before_persist: bool,
     ) -> Result<(), CredentialVaultError> {
-        let payload = encrypt_payload(master_key, data)?;
+        let payload = encrypt_payload(master_key, data, CREDENTIAL_VAULT_VERSION)?;
         atomic_replace_file(&self.path, &payload, fail_before_persist)
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn store_version_for_test(
+        &self,
+        master_key: &CredentialVaultMasterKey,
+        data: &CredentialVaultData,
+        version: u8,
+    ) -> Result<(), CredentialVaultError> {
+        let payload = encrypt_payload(master_key, data, version)?;
+        atomic_replace_file(&self.path, &payload, false)
     }
 }
 
 fn encrypt_payload(
     master_key: &CredentialVaultMasterKey,
     data: &CredentialVaultData,
+    version: u8,
 ) -> Result<Vec<u8>, CredentialVaultError> {
     let payload = CredentialVaultPayload {
-        version: CREDENTIAL_VAULT_VERSION,
+        version,
         last_session: data.last_session.clone(),
         saved_sessions: data.saved_sessions.clone(),
         entries: data.entries.clone(),
         legacy_cleanup_pending: data.legacy_cleanup_pending.clone(),
+        pending_logins: data.pending_logins.clone(),
+        local_store_migration: data.local_store_migration.clone(),
     };
     let plaintext =
         Zeroizing::new(serde_json::to_vec(&payload).map_err(|_| CredentialVaultError::Corrupt)?);
@@ -285,7 +422,7 @@ fn decrypt_payload(
     );
     let payload: CredentialVaultPayload =
         serde_json::from_slice(&plaintext).map_err(|_| CredentialVaultError::Corrupt)?;
-    if payload.version != CREDENTIAL_VAULT_VERSION {
+    if !matches!(payload.version, 1 | CREDENTIAL_VAULT_VERSION) {
         return Err(CredentialVaultError::Corrupt);
     }
     Ok(CredentialVaultData {
@@ -293,6 +430,9 @@ fn decrypt_payload(
         saved_sessions: payload.saved_sessions,
         entries: payload.entries,
         legacy_cleanup_pending: payload.legacy_cleanup_pending,
+        pending_logins: payload.pending_logins,
+        local_store_migration: payload.local_store_migration,
+        payload_version: payload.version,
     })
 }
 

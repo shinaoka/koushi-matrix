@@ -922,6 +922,27 @@ pub(crate) fn handle_soft_logout_reauth_requested(
     vec![AppEffect::EmitUiEvent(UiEvent::SoftLogoutReauthChanged)]
 }
 
+pub(crate) fn handle_soft_logout_reauth_session_installed(
+    state: &mut AppState,
+    request_id: u64,
+    info: crate::state::SessionInfo,
+) -> Vec<AppEffect> {
+    if !matches!(
+        state.soft_logout_reauth,
+        SoftLogoutReauthState::Authenticating { request_id: active } if active == request_id
+    ) || !matches!(state.session, SessionState::Locked(_))
+    {
+        return Vec::new();
+    }
+    state.session_lock_reason = None;
+    state.session = SessionState::Provisional {
+        info,
+        phase: ProvisionalPhase::CheckingTrust,
+    };
+    state.sync = SyncState::Stopped;
+    vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
+}
+
 pub(crate) fn handle_soft_logout_reauth_succeeded(
     state: &mut AppState,
     request_id: u64,

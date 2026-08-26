@@ -3206,6 +3206,7 @@ dependencies = [
  "eyeball-im",
  "futures-util",
  "koushi-diagnostics",
+ "koushi-sdk",
  "koushi-state",
  "matrix-sdk",
  "matrix-sdk-base",

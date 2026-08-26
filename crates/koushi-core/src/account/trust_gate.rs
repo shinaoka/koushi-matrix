@@ -592,6 +592,10 @@ impl AccountActor {
         let trust_at_promotion = session.current_device_trust();
         self.start_session_change_observer(session.clone());
         self.session_promoted = true;
+        record(
+            DiagnosticEvent::new(DiagnosticLevel::Info, "core.session_promotion", "changed")
+                .field(DiagnosticField::token("state", "promoted")),
+        );
         self.start_secure_backup_observer(session.clone());
         for event in std::mem::take(&mut self.pending_ready_events) {
             self.emit(event);
@@ -1132,6 +1136,10 @@ impl AccountActor {
         self.pending_trust_transition = None;
         self.trust_recheck_pending = false;
         if decision == TrustLifecycleDecision::Gate {
+            record(
+                DiagnosticEvent::new(DiagnosticLevel::Warn, "core.session_promotion", "changed")
+                    .field(DiagnosticField::token("state", "gated")),
+            );
             self.record_lifecycle_probe("gate_projection_ack");
             self.stop_normal_runtime_children().await;
             self.session_promoted = false;
@@ -1168,6 +1176,10 @@ impl AccountActor {
         self.start_recovery_observer(session.clone());
         self.start_session_change_observer(session.clone());
         self.session_promoted = true;
+        record(
+            DiagnosticEvent::new(DiagnosticLevel::Info, "core.session_promotion", "changed")
+                .field(DiagnosticField::token("state", "promoted")),
+        );
         self.start_secure_backup_observer(session.clone());
         for event in std::mem::take(&mut self.pending_ready_events) {
             self.emit(event);

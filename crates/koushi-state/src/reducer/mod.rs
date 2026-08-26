@@ -404,6 +404,9 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::SoftLogoutReauthSucceeded { request_id } => {
             session::handle_soft_logout_reauth_succeeded(state, request_id)
         }
+        AppAction::SoftLogoutReauthSessionInstalled { request_id, info } => {
+            session::handle_soft_logout_reauth_session_installed(state, request_id, info)
+        }
         AppAction::SoftLogoutReauthFailed { request_id, kind } => {
             session::handle_soft_logout_reauth_failed(state, request_id, kind)
         }

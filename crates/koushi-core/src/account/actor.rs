@@ -57,7 +57,8 @@ use super::recovery_backup::{
     PendingRecoveryCompletion, PendingRecoveryTask, secure_backup_monitor_wakeup_is_current,
 };
 use super::session_lifecycle::{
-    PendingOidcFlow, PendingSessionTeardown, SessionChangeObservation, SessionInvalidationReason,
+    LockedSessionRecord, PendingOidcFlow, PendingSessionTeardown, SessionChangeObservation,
+    SessionInvalidationReason,
 };
 use super::sliding_sync::{
     PendingSlidingSyncAdmission, PendingSlidingSyncRetry, StoredSlidingSyncAdmissionContext,
@@ -704,6 +705,7 @@ pub struct AccountActor {
     pub(super) session: Option<Arc<MatrixClientSession>>,
     /// Session key for credential store operations.
     pub(super) session_key_id: Option<SessionKeyId>,
+    pub(super) locked_session_record: Option<LockedSessionRecord>,
     pub(super) composer_draft_leases: Arc<ComposerDraftLeaseRegistry>,
     pub(super) provisional_persistable: Option<PersistableMatrixSession>,
     pub(super) sliding_sync_positive_evidence: Option<SlidingSyncPositiveEvidence>,
@@ -976,6 +978,7 @@ impl AccountActor {
         let actor = AccountActor {
             session: None,
             session_key_id: None,
+            locked_session_record: None,
             composer_draft_leases,
             provisional_persistable: None,
             sliding_sync_positive_evidence: None,

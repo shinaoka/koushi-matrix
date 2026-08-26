@@ -65,10 +65,16 @@ pub enum PendingOidcLogin {
     OAuth {
         client: matrix_sdk::Client,
         homeserver: String,
+        requested_device_id: Option<String>,
+        reused_saved_device: bool,
+        saved_identity: Option<crate::login_store::SavedCryptoStoreIdentity>,
     },
     Sso {
         client: matrix_sdk::Client,
         homeserver: String,
+        requested_device_id: Option<String>,
+        reused_saved_device: bool,
+        saved_identity: Option<crate::login_store::SavedCryptoStoreIdentity>,
     },
 }
 
@@ -211,6 +217,8 @@ pub enum LoginDiscoveryError {
 pub enum PasswordLoginError {
     #[error(transparent)]
     InvalidHomeserver(#[from] LoginDiscoveryError),
+    #[error("saved crypto store preflight refused: {0:?}")]
+    SavedCryptoStore(crate::SavedCryptoStorePreflight),
     #[error("password login runtime failed: {0}")]
     Runtime(String),
     #[error("password login failed: {0}")]
@@ -358,12 +366,77 @@ pub async fn login_with_password_with_store(
     request: &LoginRequest,
     store_config: Option<&MatrixClientStoreConfig>,
 ) -> Result<MatrixClientSession, PasswordLoginError> {
+    login_with_password_on_store(request, store_config, None, false).await
+}
+
+/// Authenticate on the supplied persistent store, optionally reusing its
+/// existing Matrix device. A requested device is never retried as a fresh
+/// device after local or server identity refusal.
+pub async fn login_with_password_with_store_and_device(
+    request: &LoginRequest,
+    store_config: Option<&MatrixClientStoreConfig>,
+    requested_device_id: Option<&str>,
+) -> Result<MatrixClientSession, PasswordLoginError> {
+    login_with_password_on_store(request, store_config, requested_device_id, true).await
+}
+
+/// Authenticate a newly allocated device on its already-journaled persistent
+/// store. The missing crypto database is expected here; SDK activation creates
+/// it for this fresh identity.
+pub async fn login_with_password_with_new_device(
+    request: &LoginRequest,
+    store_config: &MatrixClientStoreConfig,
+    device_id: &str,
+) -> Result<MatrixClientSession, PasswordLoginError> {
+    let resumes_existing_identity = store_config.crypto_database_path().is_file();
+    login_with_password_on_store(
+        request,
+        Some(store_config),
+        Some(device_id),
+        resumes_existing_identity,
+    )
+    .await
+}
+
+async fn login_with_password_on_store(
+    request: &LoginRequest,
+    store_config: Option<&MatrixClientStoreConfig>,
+    requested_device_id: Option<&str>,
+    preflight_saved_store: bool,
+) -> Result<MatrixClientSession, PasswordLoginError> {
     let homeserver = Homeserver::parse(&request.homeserver)?;
+    let saved_identity = if preflight_saved_store {
+        let device_id = requested_device_id.ok_or(PasswordLoginError::SavedCryptoStore(
+            crate::SavedCryptoStorePreflight::Missing,
+        ))?;
+        let store_config = store_config.ok_or(PasswordLoginError::SavedCryptoStore(
+            crate::SavedCryptoStorePreflight::Missing,
+        ))?;
+        let expected_user_id = request
+            .username
+            .starts_with('@')
+            .then_some(request.username.as_str());
+        Some(
+            crate::login_store::load_saved_crypto_store_identity(
+                store_config,
+                expected_user_id,
+                Some(device_id),
+            )
+            .await
+            .map_err(PasswordLoginError::SavedCryptoStore)?,
+        )
+    } else {
+        None
+    };
+
     let client = build_client(&homeserver, store_config).await?;
 
     let mut login = client
         .matrix_auth()
         .login_username(&request.username, request.password.expose_secret());
+    if let Some(device_id) = requested_device_id {
+        login = login.device_id(device_id);
+    }
     if let Some(device_display_name) = request.device_display_name.as_deref() {
         login = login.initial_device_display_name(device_display_name);
     }
@@ -372,6 +445,26 @@ pub async fn login_with_password_with_store(
         .send()
         .await
         .map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
+    if requested_device_id.is_some_and(|expected| response.device_id.as_str() != expected)
+        || request.username.starts_with('@') && response.user_id.as_str() != request.username
+    {
+        return Err(PasswordLoginError::SavedCryptoStore(
+            crate::SavedCryptoStorePreflight::IdentityMismatch,
+        ));
+    }
+    if let Some(saved_identity) = saved_identity.as_ref()
+        && crate::login_store::compare_server_device_keys_with_saved_identity(
+            &client,
+            saved_identity,
+        )
+        .await
+            != crate::LocalServerDeviceKeyComparison::Match
+    {
+        return Err(PasswordLoginError::SavedCryptoStore(
+            crate::SavedCryptoStorePreflight::IdentityMismatch,
+        ));
+    }
+
     let user_id = response.user_id.to_string();
     let device_id = response.device_id.to_string();
     client
@@ -391,56 +484,54 @@ pub async fn login_with_password_with_store(
     })
 }
 
-/// Re-authenticate an existing soft-logged-out session with the same device id.
-/// The returned storeless session must be persisted and restored into the
-/// existing per-account store by the caller so crypto/cached data is preserved.
-pub async fn login_with_existing_device(
-    homeserver: &str,
-    user_id: &str,
-    device_id: &str,
-    password: &AuthSecret,
-) -> Result<MatrixClientSession, PasswordLoginError> {
-    let homeserver = Homeserver::parse(homeserver)?;
-    let client = build_client(&homeserver, None).await?;
-
-    let response = client
-        .matrix_auth()
-        .login_username(user_id, password.expose_secret())
-        .device_id(device_id)
-        .send()
-        .await
-        .map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
-    client
-        .send_queue()
-        .require_secure_backup_for_encrypted_sends(false);
-    let diagnostic_counters = install_room_key_diagnostic_observer(&client).await;
-
-    Ok(MatrixClientSession {
-        client,
-        diagnostic_counters,
-        info: SessionInfo {
-            homeserver: homeserver.normalized(),
-            user_id: response.user_id.to_string(),
-            device_id: response.device_id.to_string(),
-            authentication_method: koushi_state::SessionAuthenticationMethod::Password,
-        },
-    })
-}
-
 pub async fn start_oidc_login(
     homeserver: &str,
     redirect_uri: &str,
 ) -> Result<(PendingOidcLogin, OidcAuthorization), PasswordLoginError> {
+    start_oidc_login_with_store(homeserver, redirect_uri, None, None, false).await
+}
+
+/// Start OAuth/SSO on one persistent client. The pending value owns that same
+/// client through callback completion; no second memory client is created.
+pub async fn start_oidc_login_with_store(
+    homeserver: &str,
+    redirect_uri: &str,
+    store_config: Option<&MatrixClientStoreConfig>,
+    requested_device_id: Option<&str>,
+    reuse_saved_device: bool,
+) -> Result<(PendingOidcLogin, OidcAuthorization), PasswordLoginError> {
     let homeserver = Homeserver::parse(homeserver)?;
+    let verify_existing_identity = reuse_saved_device
+        || store_config.is_some_and(|config| config.crypto_database_path().is_file());
+    let saved_identity = if verify_existing_identity {
+        let device_id = requested_device_id.ok_or(PasswordLoginError::SavedCryptoStore(
+            crate::SavedCryptoStorePreflight::Missing,
+        ))?;
+        let store_config = store_config.ok_or(PasswordLoginError::SavedCryptoStore(
+            crate::SavedCryptoStorePreflight::Missing,
+        ))?;
+        Some(
+            crate::login_store::load_saved_crypto_store_identity(
+                store_config,
+                None,
+                Some(device_id),
+            )
+            .await
+            .map_err(PasswordLoginError::SavedCryptoStore)?,
+        )
+    } else {
+        None
+    };
     let redirect_uri =
         Url::parse(redirect_uri).map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
-    let client = build_client(&homeserver, None).await?;
+    let client = build_client(&homeserver, store_config).await?;
+    let requested_device_id = requested_device_id.map(str::to_owned);
 
     match client
         .oauth()
         .login(
             redirect_uri.clone(),
-            None,
+            requested_device_id.as_deref().map(Into::into),
             Some(oidc_client_registration_data(redirect_uri.clone())),
             None,
         )
@@ -451,6 +542,9 @@ pub async fn start_oidc_login(
             PendingOidcLogin::OAuth {
                 client,
                 homeserver: homeserver.normalized(),
+                requested_device_id,
+                reused_saved_device: verify_existing_identity,
+                saved_identity,
             },
             OidcAuthorization {
                 authorization_url: authorization.url.to_string(),
@@ -467,6 +561,9 @@ pub async fn start_oidc_login(
                 PendingOidcLogin::Sso {
                     client,
                     homeserver: homeserver.normalized(),
+                    requested_device_id,
+                    reused_saved_device: verify_existing_identity,
+                    saved_identity,
                 },
                 OidcAuthorization {
                     authorization_url,
@@ -483,8 +580,21 @@ pub async fn finish_oidc_login(
 ) -> Result<MatrixClientSession, PasswordLoginError> {
     let callback_url =
         Url::parse(callback_url).map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
-    let (client, homeserver, authentication_method) = match pending {
-        PendingOidcLogin::OAuth { client, homeserver } => {
+    let (
+        client,
+        homeserver,
+        authentication_method,
+        requested_device_id,
+        reused_saved_device,
+        saved_identity,
+    ) = match pending {
+        PendingOidcLogin::OAuth {
+            client,
+            homeserver,
+            requested_device_id,
+            reused_saved_device,
+            saved_identity,
+        } => {
             client
                 .oauth()
                 .finish_login(callback_url.into())
@@ -494,15 +604,28 @@ pub async fn finish_oidc_login(
                 client,
                 homeserver,
                 koushi_state::SessionAuthenticationMethod::OAuth,
+                requested_device_id,
+                reused_saved_device,
+                saved_identity,
             )
         }
-        PendingOidcLogin::Sso { client, homeserver } => {
-            client
+        PendingOidcLogin::Sso {
+            client,
+            homeserver,
+            requested_device_id,
+            reused_saved_device,
+            saved_identity,
+        } => {
+            let mut login = client
                 .matrix_auth()
                 .login_with_sso_callback(UrlOrQuery::Url(callback_url))
                 .map_err(|error| PasswordLoginError::Sdk(error.to_string()))?
                 .initial_device_display_name("Koushi")
-                .request_refresh_token()
+                .request_refresh_token();
+            if let Some(device_id) = requested_device_id.as_deref() {
+                login = login.device_id(device_id);
+            }
+            login
                 .send()
                 .await
                 .map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
@@ -510,6 +633,9 @@ pub async fn finish_oidc_login(
                 client,
                 homeserver,
                 koushi_state::SessionAuthenticationMethod::Sso,
+                requested_device_id,
+                reused_saved_device,
+                saved_identity,
             )
         }
     };
@@ -522,6 +648,33 @@ pub async fn finish_oidc_login(
         .device_id()
         .ok_or(PasswordLoginError::MissingSession)?
         .to_string();
+    if requested_device_id
+        .as_deref()
+        .is_some_and(|expected| device_id != expected)
+    {
+        return Err(PasswordLoginError::SavedCryptoStore(
+            crate::SavedCryptoStorePreflight::IdentityMismatch,
+        ));
+    }
+    if reused_saved_device {
+        let saved_identity =
+            saved_identity
+                .as_ref()
+                .ok_or(PasswordLoginError::SavedCryptoStore(
+                    crate::SavedCryptoStorePreflight::Missing,
+                ))?;
+        if crate::login_store::compare_server_device_keys_with_saved_identity(
+            &client,
+            saved_identity,
+        )
+        .await
+            != crate::LocalServerDeviceKeyComparison::Match
+        {
+            return Err(PasswordLoginError::SavedCryptoStore(
+                crate::SavedCryptoStorePreflight::IdentityMismatch,
+            ));
+        }
+    }
     client
         .send_queue()
         .require_secure_backup_for_encrypted_sends(false);

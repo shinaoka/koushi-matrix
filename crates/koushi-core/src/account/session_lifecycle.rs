@@ -8,7 +8,7 @@ use std::{
 
 use futures_util::StreamExt;
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
-use koushi_key::{SessionKeyId, StoredMatrixSession};
+use koushi_key::{LocalStoreId, SessionKeyId, StoredMatrixSession};
 use koushi_sdk::{MatrixClientSession, PendingOidcLogin, PersistableMatrixSession};
 use koushi_state::{
     AppAction, AuthFailureKind, LoginAttemptId, LoginRequest, SessionInfo, SlidingSyncAdmission,
@@ -20,7 +20,10 @@ use crate::executor;
 use crate::failure::{CoreFailure, LoginFailureKind};
 use crate::ids::{AccountKey, RequestId};
 use crate::startup_trace::{self, StartupPhase};
-use crate::store::{account_key_from_info, session_key_id_from_info};
+use crate::store::{
+    AccountStoreConfig, PendingLoginCleanupEvidence, account_key_from_info,
+    session_key_id_from_info,
+};
 
 use super::actor::{AccountActor, AccountMessage, trace_account_request, trace_restore};
 use super::sliding_sync::PendingSlidingSyncAdmission;
@@ -141,18 +144,26 @@ pub(super) enum SessionTeardownContinuation {
     },
 }
 
+pub(super) struct LockedSessionRecord {
+    pub(super) info: SessionInfo,
+    pub(super) key_id: SessionKeyId,
+    pub(super) persistable: PersistableMatrixSession,
+    pub(super) binding: Option<AccountStoreConfig>,
+}
+
 pub(super) enum PendingOidcFlow {
-    Sdk(PendingOidcLogin),
-    #[cfg(test)]
-    Synthetic {
-        homeserver: String,
+    Sdk {
+        pending: PendingOidcLogin,
+        allocation: Option<(LocalStoreId, u64)>,
     },
+    #[cfg(test)]
+    Synthetic { homeserver: String },
 }
 
 impl PendingOidcFlow {
     fn homeserver(&self) -> &str {
         match self {
-            Self::Sdk(pending) => pending.homeserver(),
+            Self::Sdk { pending, .. } => pending.homeserver(),
             #[cfg(test)]
             Self::Synthetic { homeserver } => homeserver,
         }
@@ -265,7 +276,9 @@ fn classify_login_error(error: &koushi_sdk::PasswordLoginError) -> LoginFailureK
         }
         PasswordLoginError::Runtime(_) => LoginFailureKind::Server,
         PasswordLoginError::MissingSession => LoginFailureKind::Server,
-        PasswordLoginError::Serialization(_) => LoginFailureKind::Store,
+        PasswordLoginError::Serialization(_) | PasswordLoginError::SavedCryptoStore(_) => {
+            LoginFailureKind::Store
+        }
     }
 }
 
@@ -281,6 +294,25 @@ fn login_discovery_failure_kind(error: &koushi_sdk::LoginDiscoveryError) -> Auth
         koushi_sdk::LoginDiscoveryError::InvalidHomeserver(_)
         | koushi_sdk::LoginDiscoveryError::UnsupportedHomeserverScheme
         | koushi_sdk::LoginDiscoveryError::InsecureHomeserverScheme => AuthFailureKind::Unsupported,
+    }
+}
+
+fn fresh_login_cleanup_evidence(
+    error: &koushi_sdk::PasswordLoginError,
+) -> Option<PendingLoginCleanupEvidence> {
+    match error {
+        koushi_sdk::PasswordLoginError::InvalidHomeserver(_) => {
+            Some(PendingLoginCleanupEvidence::NoRequestSent)
+        }
+        koushi_sdk::PasswordLoginError::Sdk(message)
+            if message.contains("401")
+                || message.contains("403")
+                || message.contains("M_UNAUTHORIZED")
+                || message.contains("M_FORBIDDEN") =>
+        {
+            Some(PendingLoginCleanupEvidence::ServerRejectedBeforeSession)
+        }
+        _ => None,
     }
 }
 
@@ -302,7 +334,8 @@ fn classify_auth_error(error: &koushi_sdk::PasswordLoginError) -> AuthFailureKin
         }
         koushi_sdk::PasswordLoginError::Runtime(_)
         | koushi_sdk::PasswordLoginError::MissingSession
-        | koushi_sdk::PasswordLoginError::Serialization(_) => AuthFailureKind::Sdk,
+        | koushi_sdk::PasswordLoginError::Serialization(_)
+        | koushi_sdk::PasswordLoginError::SavedCryptoStore(_) => AuthFailureKind::Sdk,
     }
 }
 
@@ -376,12 +409,25 @@ impl AccountActor {
             soft_logout,
         }])
         .await;
-        self.session_promoted = false;
-        self.stop_provisional_runtime().await;
-        self.stop_active_session_account_management_discovery()
-            .await;
-        self.invalidate_account_hydration();
-        self.stop_sync_actor().await;
+
+        let locked_record = self.session.as_ref().and_then(|session| {
+            let key_id = self.session_key_id.clone()?;
+            let persistable = session.persistable_session().ok()?;
+            let binding = self.store.existing_account_store_config(&key_id).ok();
+            Some(LockedSessionRecord {
+                info: session.info.clone(),
+                key_id,
+                persistable,
+                binding,
+            })
+        });
+        if !self.stop_current_session_runtime().await {
+            return;
+        }
+        drop(self.session.take());
+        self.session_key_id = None;
+        self.locked_session_record = locked_record;
+        self.record_lifecycle_probe("locked_client_released");
     }
 
     pub(super) async fn handle_discover_login(
@@ -425,9 +471,71 @@ impl AccountActor {
         request_id: RequestId,
         homeserver: String,
     ) {
-        match koushi_sdk::start_oidc_login(&homeserver, OIDC_REDIRECT_URI).await {
+        let homeserver = match koushi_sdk::Homeserver::parse(&homeserver) {
+            Ok(homeserver) => homeserver,
+            Err(error) => {
+                let kind = login_discovery_failure_kind(&error);
+                self.emit_failure(request_id, CoreFailure::AccountOperationFailed { kind });
+                return;
+            }
+        };
+        let normalized_homeserver = homeserver.normalized();
+
+        let (store_config, requested_device_id, allocation) =
+            if let Some(locked) = self.locked_session_record.as_ref() {
+                let Some(binding) = locked.binding.as_ref() else {
+                    self.emit_failure(request_id, CoreFailure::LocalEncryptionUnavailable);
+                    return;
+                };
+                (
+                    Some(binding.store_config.clone()),
+                    Some(locked.info.device_id.clone()),
+                    None,
+                )
+            } else {
+                let device_id = LocalStoreId::generate().as_str().to_owned();
+                let pending = match self.store.pending_login_owner().resume_or_create(
+                    normalized_homeserver.clone(),
+                    "oidc",
+                    device_id,
+                ) {
+                    Ok(pending) => pending,
+                    Err(failure) => {
+                        self.emit_failure(request_id, failure);
+                        return;
+                    }
+                };
+                let store_config = match self.store.pending_login_owner().store_config(&pending) {
+                    Ok(config) => config,
+                    Err(failure) => {
+                        self.emit_failure(request_id, failure);
+                        return;
+                    }
+                };
+                (
+                    Some(store_config),
+                    Some(pending.device_id.clone()),
+                    Some((pending.allocation_id.clone(), pending.attempt_generation)),
+                )
+            };
+
+        match koushi_sdk::start_oidc_login_with_store(
+            &normalized_homeserver,
+            OIDC_REDIRECT_URI,
+            store_config.as_ref(),
+            requested_device_id.as_deref(),
+            self.locked_session_record.is_some(),
+        )
+        .await
+        {
             Ok((pending, authorization)) => {
-                self.pending_oidc_login = Some((request_id, PendingOidcFlow::Sdk(pending)));
+                self.pending_oidc_login = Some((
+                    request_id,
+                    PendingOidcFlow::Sdk {
+                        pending,
+                        allocation,
+                    },
+                ));
                 self.emit(CoreEvent::Account(AccountEvent::OidcAuthorizationCreated {
                     request_id,
                     authorization_url: authorization.authorization_url,
@@ -436,8 +544,11 @@ impl AccountActor {
             }
             Err(error) => {
                 let kind = classify_auth_error(&error);
-                self.send_actions(vec![AppAction::LoginDiscoveryFailed { homeserver, kind }])
-                    .await;
+                self.send_actions(vec![AppAction::LoginDiscoveryFailed {
+                    homeserver: normalized_homeserver,
+                    kind,
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::AccountOperationFailed { kind });
             }
         }
@@ -473,6 +584,26 @@ impl AccountActor {
             return;
         };
         let homeserver = pending.homeserver().to_owned();
+        let allocation = match &pending {
+            PendingOidcFlow::Sdk { allocation, .. } => allocation.clone(),
+            #[cfg(test)]
+            PendingOidcFlow::Synthetic { .. } => None,
+        };
+        if let Some((allocation_id, attempt_generation)) = allocation.as_ref()
+            && !self
+                .store
+                .pending_login_owner()
+                .is_current(allocation_id, *attempt_generation)
+                .unwrap_or(false)
+        {
+            self.emit_failure(
+                request_id,
+                CoreFailure::AccountOperationFailed {
+                    kind: AuthFailureKind::Cancelled,
+                },
+            );
+            return;
+        }
         self.send_actions(vec![AppAction::AuthenticationStarted {
             attempt_id: LoginAttemptId::new(request_id.connection_id.0, request_id.sequence),
             homeserver: homeserver.clone(),
@@ -483,7 +614,7 @@ impl AccountActor {
         let login_result = match self.oidc_completion_override.take() {
             Some(session) => Ok(session),
             None => match pending {
-                PendingOidcFlow::Sdk(pending) => {
+                PendingOidcFlow::Sdk { pending, .. } => {
                     koushi_sdk::finish_oidc_login(pending, &callback_url).await
                 }
                 PendingOidcFlow::Synthetic { .. } => {
@@ -493,7 +624,7 @@ impl AccountActor {
         };
         #[cfg(not(test))]
         let login_result = match pending {
-            PendingOidcFlow::Sdk(pending) => {
+            PendingOidcFlow::Sdk { pending, .. } => {
                 koushi_sdk::finish_oidc_login(pending, &callback_url).await
             }
         };
@@ -533,6 +664,29 @@ impl AccountActor {
 
         let info = login_session.info.clone();
         let key_id = session_key_id_from_info(&info);
+        let reauth_key_id = self
+            .locked_session_record
+            .as_ref()
+            .map(|record| record.key_id.clone());
+        if let Some(expected_key_id) = reauth_key_id.as_ref()
+            && key_id != *expected_key_id
+        {
+            self.abort_login(login_session, expected_key_id, false, true)
+                .await;
+            self.emit_failure(request_id, CoreFailure::LocalEncryptionUnavailable);
+            return;
+        }
+        if let Some((allocation_id, attempt_generation)) = allocation
+            && self
+                .store
+                .pending_login_owner()
+                .bind(&allocation_id, attempt_generation, key_id.clone())
+                .is_err()
+        {
+            self.abort_login(login_session, &key_id, false, true).await;
+            self.emit_failure(request_id, CoreFailure::StoreUnavailable);
+            return;
+        }
         let account_key = account_key_from_info(&info);
 
         let persistable = match login_session.persistable_session() {
@@ -573,6 +727,18 @@ impl AccountActor {
                 account_key,
             }));
         }
+        let admission_action = if reauth_key_id.is_some() {
+            self.locked_session_record = None;
+            AppAction::SoftLogoutReauthSessionInstalled {
+                request_id: request_id.sequence,
+                info: info.clone(),
+            }
+        } else {
+            AppAction::LoginSucceeded {
+                attempt_id: LoginAttemptId::new(request_id.connection_id.0, request_id.sequence),
+                info: info.clone(),
+            }
+        };
         self.begin_sliding_sync_capability_discovery(
             PendingSlidingSyncAdmission::NewLogin {
                 account_epoch,
@@ -581,13 +747,7 @@ impl AccountActor {
                 login_session,
                 persistable,
                 key_id,
-                action: AppAction::LoginSucceeded {
-                    attempt_id: LoginAttemptId::new(
-                        request_id.connection_id.0,
-                        request_id.sequence,
-                    ),
-                    info,
-                },
+                action: admission_action,
                 ready_events,
             },
             SlidingSyncAdmission::NewLogin {
@@ -608,16 +768,17 @@ impl AccountActor {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         }
-        // Store bootstrap step 1: the password exchange runs on a storeless
-        // client. The device id (and therefore the store path) is unknown
-        // before this completes. The storeless client must never sync or
-        // initialize encryption.
-        let login_result = koushi_sdk::login_with_password_with_store(&request, None).await;
 
-        let login_session = match login_result {
+        let normalized_homeserver = match koushi_sdk::Homeserver::parse(&request.homeserver) {
+            Ok(homeserver) => homeserver.normalized(),
             Err(error) => {
-                let kind = classify_login_error(&error);
-                self.emit_failure(request_id, CoreFailure::LoginFailed { kind });
+                let error = koushi_sdk::PasswordLoginError::InvalidHomeserver(error);
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::LoginFailed {
+                        kind: classify_login_error(&error),
+                    },
+                );
                 self.send_actions(vec![AppAction::LoginFailed {
                     attempt_id: LoginAttemptId::new(
                         request_id.connection_id.0,
@@ -628,26 +789,211 @@ impl AccountActor {
                 .await;
                 return;
             }
-            Ok(session) => session,
+        };
+
+        let saved_key_id = match self
+            .lookup_saved_device_for_password_login(&request.username, &normalized_homeserver)
+            .await
+        {
+            Ok(key_id) => key_id,
+            Err(failure) => {
+                self.emit_failure(request_id, failure);
+                self.send_actions(vec![AppAction::LoginFailed {
+                    attempt_id: LoginAttemptId::new(
+                        request_id.connection_id.0,
+                        request_id.sequence,
+                    ),
+                    message: "login failed".to_owned(),
+                }])
+                .await;
+                return;
+            }
+        };
+
+        let (login_session, key_id) = if let Some(saved_key_id) = saved_key_id {
+            let store_config = match self.store.existing_account_store_config(&saved_key_id) {
+                Ok(config) => config,
+                Err(failure) => {
+                    self.emit_failure(request_id, failure);
+                    self.send_actions(vec![AppAction::LoginFailed {
+                        attempt_id: LoginAttemptId::new(
+                            request_id.connection_id.0,
+                            request_id.sequence,
+                        ),
+                        message: "login failed".to_owned(),
+                    }])
+                    .await;
+                    return;
+                }
+            };
+            let preflight = koushi_sdk::preflight_saved_crypto_store(
+                &store_config.store_config,
+                Some(&saved_key_id.user_id),
+                Some(&saved_key_id.device_id),
+            )
+            .await;
+            if preflight != koushi_sdk::SavedCryptoStorePreflight::PresentMatching {
+                self.emit_failure(request_id, CoreFailure::LocalEncryptionUnavailable);
+                self.send_actions(vec![AppAction::LoginFailed {
+                    attempt_id: LoginAttemptId::new(
+                        request_id.connection_id.0,
+                        request_id.sequence,
+                    ),
+                    message: "login failed".to_owned(),
+                }])
+                .await;
+                return;
+            }
+            let mut login_request = request.clone();
+            if !login_request.username.starts_with('@') {
+                // Use the selected saved identity as the expected Matrix user
+                // without changing the UI's login identifier.
+                login_request.username = saved_key_id.user_id.clone();
+            }
+            let login_session = match koushi_sdk::login_with_password_with_store_and_device(
+                &login_request,
+                Some(&store_config.store_config),
+                Some(&saved_key_id.device_id),
+            )
+            .await
+            {
+                Ok(session) => session,
+                Err(error) => {
+                    self.emit_failure(
+                        request_id,
+                        CoreFailure::LoginFailed {
+                            kind: classify_login_error(&error),
+                        },
+                    );
+                    self.send_actions(vec![AppAction::LoginFailed {
+                        attempt_id: LoginAttemptId::new(
+                            request_id.connection_id.0,
+                            request_id.sequence,
+                        ),
+                        message: "login failed".to_owned(),
+                    }])
+                    .await;
+                    return;
+                }
+            };
+            if session_key_id_from_info(&login_session.info) != saved_key_id {
+                self.abort_login(login_session, &saved_key_id, false, true)
+                    .await;
+                let _ = koushi_sdk::preflight_saved_crypto_store(
+                    &store_config.store_config,
+                    Some(&saved_key_id.user_id),
+                    Some(&saved_key_id.device_id),
+                )
+                .await;
+                self.emit_failure(request_id, CoreFailure::LocalEncryptionUnavailable);
+                self.send_actions(vec![AppAction::LoginFailed {
+                    attempt_id: LoginAttemptId::new(
+                        request_id.connection_id.0,
+                        request_id.sequence,
+                    ),
+                    message: "login failed".to_owned(),
+                }])
+                .await;
+                return;
+            }
+            (login_session, saved_key_id)
+        } else {
+            let device_id = LocalStoreId::generate().as_str().to_owned();
+            let pending = match self.store.pending_login_owner().resume_or_create(
+                normalized_homeserver.clone(),
+                "password",
+                device_id.clone(),
+            ) {
+                Ok(record) => record,
+                Err(failure) => {
+                    self.emit_failure(request_id, failure);
+                    self.send_actions(vec![AppAction::LoginFailed {
+                        attempt_id: LoginAttemptId::new(
+                            request_id.connection_id.0,
+                            request_id.sequence,
+                        ),
+                        message: "login failed".to_owned(),
+                    }])
+                    .await;
+                    return;
+                }
+            };
+            let store_config = match self.store.pending_login_owner().store_config(&pending) {
+                Ok(config) => config,
+                Err(failure) => {
+                    self.emit_failure(request_id, failure);
+                    self.send_actions(vec![AppAction::LoginFailed {
+                        attempt_id: LoginAttemptId::new(
+                            request_id.connection_id.0,
+                            request_id.sequence,
+                        ),
+                        message: "login failed".to_owned(),
+                    }])
+                    .await;
+                    return;
+                }
+            };
+            let login_session = match koushi_sdk::login_with_password_with_new_device(
+                &request,
+                &store_config,
+                &pending.device_id,
+            )
+            .await
+            {
+                Ok(session) => session,
+                Err(error) => {
+                    if let Some(evidence) = fresh_login_cleanup_evidence(&error) {
+                        let _ = self.store.pending_login_owner().cancel(
+                            &pending.allocation_id,
+                            pending.attempt_generation,
+                            evidence,
+                        );
+                    }
+                    self.emit_failure(
+                        request_id,
+                        CoreFailure::LoginFailed {
+                            kind: classify_login_error(&error),
+                        },
+                    );
+                    self.send_actions(vec![AppAction::LoginFailed {
+                        attempt_id: LoginAttemptId::new(
+                            request_id.connection_id.0,
+                            request_id.sequence,
+                        ),
+                        message: "login failed".to_owned(),
+                    }])
+                    .await;
+                    return;
+                }
+            };
+            let key_id = session_key_id_from_info(&login_session.info);
+            if self
+                .store
+                .pending_login_owner()
+                .bind(
+                    &pending.allocation_id,
+                    pending.attempt_generation,
+                    key_id.clone(),
+                )
+                .is_err()
+            {
+                self.abort_login(login_session, &key_id, false, true).await;
+                self.emit_failure(request_id, CoreFailure::StoreUnavailable);
+                self.send_actions(vec![AppAction::LoginFailed {
+                    attempt_id: LoginAttemptId::new(
+                        request_id.connection_id.0,
+                        request_id.sequence,
+                    ),
+                    message: "login failed".to_owned(),
+                }])
+                .await;
+                return;
+            }
+            (login_session, key_id)
         };
 
         let info = login_session.info.clone();
-        let key_id = session_key_id_from_info(&info);
         let account_key = account_key_from_info(&info);
-        let (login_session, info, key_id) = self
-            .prefer_saved_device_for_password_login(
-                login_session,
-                info,
-                key_id,
-                &account_key,
-                &request.password,
-            )
-            .await;
-
-        // #474: a fresh or re-login device gets a descriptive display name
-        // ("Koushi on macOS/Windows/Linux") when its authoritative name is
-        // empty; a user-customized name is never overwritten. Cosmetic only:
-        // a failure is recorded and login continues untouched.
         let device_name_outcome = match tokio::time::timeout(
             DEVICE_NAME_TIMEOUT,
             koushi_sdk::ensure_device_display_name(
@@ -662,8 +1008,6 @@ impl AccountActor {
         };
         record_device_name_outcome(device_name_outcome);
 
-        // Build a restorable in-memory session shape without writing the
-        // active credential index or last-session pointer before verification.
         let persistable = match login_session.persistable_session() {
             Ok(persistable) => persistable,
             Err(_) => {
@@ -692,7 +1036,6 @@ impl AccountActor {
             .await;
             return;
         };
-        let homeserver = info.homeserver.clone();
         let attempt_id = LoginAttemptId::new(request_id.connection_id.0, request_id.sequence);
         self.begin_sliding_sync_capability_discovery(
             PendingSlidingSyncAdmission::NewLogin {
@@ -709,7 +1052,7 @@ impl AccountActor {
                 })],
             },
             SlidingSyncAdmission::NewLogin { attempt_id },
-            homeserver,
+            normalized_homeserver,
         )
         .await;
     }
@@ -832,120 +1175,179 @@ impl AccountActor {
         request_id: RequestId,
         password: koushi_state::AuthSecret,
     ) {
-        let Some(session) = self.session.as_ref() else {
-            self.send_actions(vec![AppAction::SoftLogoutReauthFailed {
-                request_id: request_id.sequence,
-                kind: AuthFailureKind::Sdk,
-            }])
-            .await;
-            self.emit_failure(request_id, CoreFailure::SessionRequired);
+        record(DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "core.login_store_reauth",
+            "started",
+        ));
+        let locked_record = if let Some(record) = self.locked_session_record.take() {
+            record
+        } else {
+            let Some(session) = self.session.as_ref() else {
+                self.emit_failure(request_id, CoreFailure::SessionRequired);
+                return;
+            };
+            let key_id = session_key_id_from_info(&session.info);
+            LockedSessionRecord {
+                info: session.info.clone(),
+                key_id: key_id.clone(),
+                persistable: match session.persistable_session() {
+                    Ok(persistable) => persistable,
+                    Err(_) => {
+                        self.emit_failure(request_id, CoreFailure::LocalEncryptionUnavailable);
+                        return;
+                    }
+                },
+                binding: self.store.existing_account_store_config(&key_id).ok(),
+            }
+        };
+        let LockedSessionRecord {
+            info,
+            key_id,
+            persistable: old_persistable,
+            binding,
+        } = locked_record;
+        let Some(binding) = binding else {
+            self.locked_session_record = Some(LockedSessionRecord {
+                info,
+                key_id,
+                persistable: old_persistable,
+                binding: None,
+            });
+            self.emit_failure(request_id, CoreFailure::LocalEncryptionUnavailable);
             return;
         };
-        let info = session.info.clone();
-        let key_id = session_key_id_from_info(&info);
 
-        // Stop live sync immediately, but keep the locked session until the
-        // password login succeeds so a bad password does not make retry impossible.
-        self.stop_sync_actor().await;
+        // Reauthentication is store-backed from the first SDK call. Retire every
+        // owner and drop the invalid client before creating its replacement.
+        if self.session.is_some() && !self.stop_current_session_runtime().await {
+            self.locked_session_record = Some(LockedSessionRecord {
+                info,
+                key_id,
+                persistable: old_persistable,
+                binding: Some(binding),
+            });
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        }
+        drop(self.session.take());
+        self.session_key_id = None;
 
-        let login_session = match koushi_sdk::login_with_existing_device(
-            &info.homeserver,
-            &info.user_id,
-            &info.device_id,
-            &password,
+        if koushi_sdk::preflight_saved_crypto_store(
+            &binding.store_config,
+            Some(&key_id.user_id),
+            Some(&key_id.device_id),
+        )
+        .await
+            != koushi_sdk::SavedCryptoStorePreflight::PresentMatching
+        {
+            self.locked_session_record = Some(LockedSessionRecord {
+                info,
+                key_id,
+                persistable: old_persistable,
+                binding: Some(binding),
+            });
+            self.emit_failure(request_id, CoreFailure::LocalEncryptionUnavailable);
+            return;
+        }
+        record(DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "core.login_store_reauth",
+            "preflight_ok",
+        ));
+
+        let request = LoginRequest {
+            homeserver: info.homeserver.clone(),
+            username: info.user_id.clone(),
+            password,
+            device_display_name: None,
+        };
+        let login_session = match koushi_sdk::login_with_password_with_store_and_device(
+            &request,
+            Some(&binding.store_config),
+            Some(&key_id.device_id),
         )
         .await
         {
             Ok(session) => session,
             Err(error) => {
+                self.locked_session_record = Some(LockedSessionRecord {
+                    info,
+                    key_id,
+                    persistable: old_persistable,
+                    binding: Some(binding),
+                });
                 self.send_actions(vec![AppAction::SoftLogoutReauthFailed {
                     request_id: request_id.sequence,
-                    kind: AuthFailureKind::Sdk,
+                    kind: classify_auth_error(&error),
                 }])
                 .await;
-                let failure = CoreFailure::LoginFailed {
-                    kind: classify_login_error(&koushi_sdk::PasswordLoginError::Sdk(
-                        error.to_string(),
-                    )),
-                };
-                self.emit_failure(request_id, failure);
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::LoginFailed {
+                        kind: classify_login_error(&error),
+                    },
+                );
                 return;
             }
         };
-        drop(password);
-
-        let persistable = match self.persist_session(&login_session, &key_id).await {
+        if session_key_id_from_info(&login_session.info) != key_id {
+            self.abort_login(login_session, &key_id, false, true).await;
+            self.locked_session_record = Some(LockedSessionRecord {
+                info,
+                key_id,
+                persistable: old_persistable,
+                binding: Some(binding),
+            });
+            self.emit_failure(request_id, CoreFailure::LocalEncryptionUnavailable);
+            return;
+        }
+        record(DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "core.login_store_reauth",
+            "identity_ok",
+        ));
+        let persistable = match login_session.persistable_session() {
             Ok(persistable) => persistable,
-            Err(failure) => {
+            Err(_) => {
+                self.locked_session_record = Some(LockedSessionRecord {
+                    info,
+                    key_id: key_id.clone(),
+                    persistable: old_persistable,
+                    binding: Some(binding),
+                });
                 self.abort_login(login_session, &key_id, false, true).await;
-                self.send_actions(vec![AppAction::SoftLogoutReauthFailed {
-                    request_id: request_id.sequence,
-                    kind: AuthFailureKind::Sdk,
-                }])
-                .await;
-                self.emit_failure(request_id, failure);
+                self.emit_failure(request_id, CoreFailure::StoreUnavailable);
                 return;
             }
         };
 
-        // The locked session's observers own SDK streams and therefore keep the old client
-        // alive. Stop and join them before replacing the session or subscribing successors.
-        self.record_lifecycle_probe("recovery_observer_stop_requested");
-        self.stop_recovery_observer().await;
-        self.record_lifecycle_probe("recovery_observer_terminated");
-        self.record_lifecycle_probe("incoming_verification_observer_stop_requested");
-        self.stop_incoming_verification_observer().await;
-        self.record_lifecycle_probe("incoming_verification_observer_terminated");
-        self.stop_session_change_observer().await;
-        self.invalidate_account_hydration();
-        self.set_secure_backup_send_admitted(false);
-        drop(self.session.take());
-        self.session_key_id = None;
-
-        let store_backed = match self.restore_into_store(&persistable, &key_id).await {
-            Ok(session) => session,
-            Err(failure) => {
-                self.abort_login(login_session, &key_id, true, true).await;
-                self.send_actions(vec![AppAction::SoftLogoutReauthFailed {
-                    request_id: request_id.sequence,
-                    kind: AuthFailureKind::Sdk,
-                }])
-                .await;
-                self.emit_failure(request_id, failure);
-                return;
-            }
-        };
-        drop(login_session);
-
-        let session_arc = Arc::new(store_backed);
-        self.pending_uia_operations.clear();
-        self.session = Some(session_arc.clone());
-        self.session_key_id = Some(key_id);
-        self.record_lifecycle_probe("incoming_verification_observer_subscribing");
-        self.start_incoming_verification_observer(session_arc.clone())
+        self.pending_ready_events
+            .push(CoreEvent::Account(AccountEvent::LoggedIn {
+                request_id,
+                account_key: account_key_from_info(&info),
+            }));
+        record(DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "core.login_store_reauth",
+            "installing",
+        ));
+        self.prepare_store_backed_session(&login_session, true)
             .await;
-        self.spawn_sync_actor(session_arc.clone()).await;
-
-        let account_key = account_key_from_info(&info);
-        self.send_actions(vec![
-            AppAction::SoftLogoutReauthSucceeded {
+        self.install_provisional_session(
+            login_session,
+            persistable,
+            key_id,
+            AppAction::SoftLogoutReauthSessionInstalled {
                 request_id: request_id.sequence,
-            },
-            AppAction::LoginSucceeded {
-                attempt_id: LoginAttemptId::new(request_id.connection_id.0, request_id.sequence),
                 info,
             },
-        ])
+        )
         .await;
-        self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
-            request_id,
-            account_key,
-        }));
-        self.spawn_account_hydration(session_arc.clone());
-
-        self.start_recovery_observer(session_arc.clone());
-        self.record_lifecycle_probe("recovery_observer_started");
-        self.start_session_change_observer(session_arc);
+        self.send_actions(vec![AppAction::SoftLogoutReauthSucceeded {
+            request_id: request_id.sequence,
+        }])
+        .await;
     }
 
     pub(super) async fn handle_switch_account(
@@ -1104,6 +1506,22 @@ impl AccountActor {
             self.emit(CoreEvent::Account(AccountEvent::LoggedOut {
                 request_id,
                 account_key: AccountKey(key_id.user_id),
+            }));
+            return;
+        }
+        if self.session.is_none()
+            && let Some(locked) = self.locked_session_record.take()
+        {
+            if preserve_persistence {
+                self.forget_last_session_pointer_if_matches(&locked.key_id)
+                    .await;
+            } else {
+                self.clear_account_persistence(&locked.key_id).await;
+            }
+            self.send_actions(vec![AppAction::LogoutFinished]).await;
+            self.emit(CoreEvent::Account(AccountEvent::LoggedOut {
+                request_id,
+                account_key: AccountKey(locked.key_id.user_id),
             }));
             return;
         }
@@ -1454,6 +1872,12 @@ impl AccountActor {
                 let _ = backend.forget_saved_session(&key_id);
                 return Err(CoreFailure::StoreUnavailable);
             }
+            if store.pending_login_owner().complete_bound(&key_id).is_err() {
+                let _ = backend.delete_matrix_session(&key_id);
+                let _ = backend.forget_saved_session(&key_id);
+                let _ = backend.delete_last_session();
+                return Err(CoreFailure::StoreUnavailable);
+            }
             Ok(persistable)
         })
         .await
@@ -1472,7 +1896,20 @@ impl AccountActor {
         persistable: &PersistableMatrixSession,
         key_id: &SessionKeyId,
     ) -> Result<MatrixClientSession, CoreFailure> {
-        let store_config = self.store.account_store_config(key_id)?;
+        let store_config = self
+            .store
+            .existing_account_store_config(key_id)
+            .map_err(|failure| {
+                record(
+                    DiagnosticEvent::new(
+                        DiagnosticLevel::Warn,
+                        "core.login_store_restore",
+                        "refused",
+                    )
+                    .field(DiagnosticField::token("stage", "store_config")),
+                );
+                failure
+            })?;
         record_restore_store_event(
             restore_store_event("store_config_ready", None)
                 .field(DiagnosticField::boolean(
@@ -1506,9 +1943,9 @@ impl AccountActor {
             .with_search_index_store(search_config.search_index_config);
         let restore_started = Instant::now();
         record_restore_store_event(restore_store_event("sdk_restore_begin", None));
-        let session = match koushi_sdk::restore_session_with_store(
+        let session = match koushi_sdk::restore_session_with_verified_store(
             persistable,
-            Some(&store_config_with_search),
+            &store_config_with_search,
         )
         .await
         {
@@ -1531,24 +1968,31 @@ impl AccountActor {
                 return Err(CoreFailure::LocalEncryptionUnavailable);
             }
         };
-        let event_cache_result = koushi_sdk::enable_event_cache(&session).await;
+        self.prepare_store_backed_session(&session, encrypted_store)
+            .await;
+        Ok(session)
+    }
+
+    /// Install the event-cache and room-key diagnostic hooks on the exact
+    /// authenticated persistent client before it can enter admission.
+    pub(super) async fn prepare_store_backed_session(
+        &self,
+        session: &MatrixClientSession,
+        encrypted_store: bool,
+    ) {
+        let event_cache_result = koushi_sdk::enable_event_cache(session).await;
         self.emit_event_cache_status(encrypted_store, &event_cache_result);
-        // Baseline receive-side room-key diagnostics for this account runtime
-        // (#476). The observer is installed by `restore_session_with_store`
-        // before sync can deliver to-device events; reset the per-runtime
-        // late-decryption counters and record the initial summary.
         crate::room_key_receive::reset_late_decryption_counters();
-        let diagnostics = koushi_sdk::room_key_receive_diagnostics(&session).await;
+        let diagnostics = koushi_sdk::room_key_receive_diagnostics(session).await;
         crate::room_key_receive::record_room_key_receive_summary(
             &diagnostics,
             crate::room_key_receive::RECEIVE_SUMMARY_TRIGGER_RESTORE,
         );
-        Ok(session)
     }
 
     /// Roll back a failed login bootstrap: best-effort server logout of the
-    /// storeless client (so no orphan device stays registered), drop it inside
-    /// the runtime context, and — if credentials were already persisted —
+    /// provisional store-backed client, drop it inside the runtime context,
+    /// and — if credentials were already persisted —
     /// remove them again so a later restore does not pick up a session whose
     /// token was just invalidated.
     pub(super) async fn abort_login(
@@ -1567,97 +2011,44 @@ impl AccountActor {
         }
     }
 
-    /// When a normal sign-out preserved a keyed store for this Matrix user,
-    /// prefer logging back into that same device id. This preserves the local
-    /// SDK store and avoids turning every sign-out/sign-in into a cold device.
-    ///
-    /// The optimization is deliberately fail-open: if the homeserver rejects an
-    /// existing-device login, continue with the already-successful fresh login
-    /// instead of converting a successful password login into a user-visible
-    /// failure.
-    async fn prefer_saved_device_for_password_login(
+    async fn lookup_saved_device_for_password_login(
         &self,
-        fresh_login_session: MatrixClientSession,
-        fresh_info: SessionInfo,
-        fresh_key_id: SessionKeyId,
-        account_key: &AccountKey,
-        password: &koushi_state::AuthSecret,
-    ) -> (MatrixClientSession, SessionInfo, SessionKeyId) {
-        let saved_key_id = match self.lookup_session_key_id(account_key).await {
-            Ok(Some(key_id)) => key_id,
-            Ok(None) | Err(()) => {
-                return (fresh_login_session, fresh_info, fresh_key_id);
+        identifier: &str,
+        normalized_homeserver: &str,
+    ) -> Result<Option<SessionKeyId>, CoreFailure> {
+        let identifier = identifier.trim().to_owned();
+        let homeserver = normalized_homeserver.to_owned();
+        let store = self.store.clone();
+        executor::spawn_blocking(move || {
+            let sessions = store
+                .credential_backend()
+                .load_saved_sessions()
+                .map_err(|_| CoreFailure::StoreUnavailable)?;
+            let exact = identifier.starts_with('@') && identifier.contains(':');
+            let mut selected = None;
+            for key_id in sessions.sessions().iter().filter(|key_id| {
+                if key_id.homeserver != homeserver {
+                    return false;
+                }
+                if exact {
+                    key_id.user_id == identifier
+                } else {
+                    key_id
+                        .user_id
+                        .strip_prefix('@')
+                        .and_then(|user| user.split_once(':'))
+                        .is_some_and(|(localpart, _)| localpart == identifier)
+                }
+            }) {
+                if selected.is_some() {
+                    return Ok(None);
+                }
+                selected = Some(key_id.clone());
             }
-        };
-
-        if saved_key_id == fresh_key_id {
-            return (fresh_login_session, fresh_info, fresh_key_id);
-        }
-
-        if saved_key_id.homeserver != fresh_key_id.homeserver
-            || saved_key_id.user_id != fresh_key_id.user_id
-        {
-            return (fresh_login_session, fresh_info, fresh_key_id);
-        }
-
-        record(
-            DiagnosticEvent::new(
-                DiagnosticLevel::Debug,
-                "core.account",
-                "password_login_saved_device_attempted",
-            )
-            .field(DiagnosticField::boolean("has_saved_device", true)),
-        );
-
-        let saved_login_session = match koushi_sdk::login_with_existing_device(
-            &fresh_info.homeserver,
-            &fresh_info.user_id,
-            &saved_key_id.device_id,
-            password,
-        )
+            Ok(selected)
+        })
         .await
-        {
-            Ok(session) => session,
-            Err(_) => {
-                record(
-                    DiagnosticEvent::new(
-                        DiagnosticLevel::Warn,
-                        "core.account",
-                        "password_login_saved_device_failed",
-                    )
-                    .field(DiagnosticField::boolean("fallback_to_fresh_device", true)),
-                );
-                return (fresh_login_session, fresh_info, fresh_key_id);
-            }
-        };
-
-        let saved_info = saved_login_session.info.clone();
-        let actual_saved_key_id = session_key_id_from_info(&saved_info);
-        if actual_saved_key_id != saved_key_id {
-            let _ = koushi_sdk::logout(&saved_login_session).await;
-            drop(saved_login_session);
-            record(
-                DiagnosticEvent::new(
-                    DiagnosticLevel::Warn,
-                    "core.account",
-                    "password_login_saved_device_mismatch",
-                )
-                .field(DiagnosticField::boolean("fallback_to_fresh_device", true)),
-            );
-            return (fresh_login_session, fresh_info, fresh_key_id);
-        }
-
-        let _ = koushi_sdk::logout(&fresh_login_session).await;
-        drop(fresh_login_session);
-        record(
-            DiagnosticEvent::new(
-                DiagnosticLevel::Debug,
-                "core.account",
-                "password_login_saved_device_reused",
-            )
-            .field(DiagnosticField::boolean("fallback_to_fresh_device", false)),
-        );
-        (saved_login_session, saved_info, actual_saved_key_id)
+        .unwrap_or(Err(CoreFailure::StoreUnavailable))
     }
 
     /// Remove all persisted material for one account: session JSON, saved
@@ -2057,30 +2448,39 @@ mod tests {
             "fn emit_event_cache_status(",
         );
         let helper_compact: String = helper.chars().filter(|c| !c.is_whitespace()).collect();
+        let prepare = crate::account::test_source::item_body(
+            include_str!("session_lifecycle.rs"),
+            "async fn prepare_store_backed_session",
+        );
+        let prepare_compact: String = prepare.chars().filter(|c| !c.is_whitespace()).collect();
         let restore = compact
-            .find("koushi_sdk::restore_session_with_store")
-            .expect("restore_session_with_store call");
+            .find("koushi_sdk::restore_session_with_verified_store")
+            .expect("verified non-creating restore call");
         let store_config = compact
-            .find("letstore_config=self.store.account_store_config(key_id)?;")
-            .expect("keyed store configuration");
+            .find("self.store.existing_account_store_config(key_id)")
+            .expect("non-creating keyed store configuration");
+
         let encrypted_store = compact
             .find("letencrypted_store=store_config.store_config.encrypted_at_rest_configured();")
             .expect("derived encrypted-store flag");
-        let enable = compact
-            .find("koushi_sdk::enable_event_cache(&session).await")
-            .expect("enable_event_cache call");
-        let emit = compact
-            .find("self.emit_event_cache_status(encrypted_store,&event_cache_result);")
-            .expect("event cache diagnostic emission");
+        let prepare_call = compact
+            .find("self.prepare_store_backed_session(&session,encrypted_store).await")
+            .expect("store-backed session preparation");
+        assert!(prepare_compact.contains("koushi_sdk::enable_event_cache(session).await"));
+        assert!(
+            prepare_compact
+                .contains("self.emit_event_cache_status(encrypted_store,&event_cache_result);")
+        );
         // rfind: the restore body also contains an `Ok(session) =>` match arm
         // (session-preservation restore path), so the tail return is the LAST
         // occurrence, not the first.
         let return_ok = compact.rfind("Ok(session)").expect("return statement");
 
+        assert!(store_config < restore);
         assert!(store_config < encrypted_store);
-        assert!(restore < enable);
-        assert!(encrypted_store < emit);
-        assert!(enable < return_ok);
+        assert!(restore < prepare_call);
+        assert!(encrypted_store < prepare_call);
+        assert!(prepare_call < return_ok);
         assert!(
             helper_compact.contains("EventCacheSubscribeStatus::Enabled,None"),
             "enabled diagnostics should carry an explicit subscribe status and no failure reason"
@@ -2102,11 +2502,12 @@ mod tests {
             "restore_into_store must derive the encrypted-store diagnostic from the keyed store invariant"
         );
         assert!(
-            compact.contains("self.emit_event_cache_status(encrypted_store,&event_cache_result);"),
-            "restore_into_store must pass the derived encrypted-store flag into the diagnostic"
+            prepare_compact
+                .contains("self.emit_event_cache_status(encrypted_store,&event_cache_result);"),
+            "store-backed preparation must pass the derived encrypted-store flag into the diagnostic"
         );
         assert_eq!(
-            compact
+            prepare_compact
                 .matches("self.emit_event_cache_status(encrypted_store,&event_cache_result);")
                 .count(),
             1,
@@ -2208,13 +2609,17 @@ mod tests {
                 }))
                 .await
         );
-        assert!(matches!(
-            action_rx.recv().await.as_deref(),
-            Some([AppAction::SlidingSyncCapabilityCheckStarted {
-                admission: SlidingSyncAdmission::NewLogin { .. },
-                ..
-            }])
-        ));
+        let first_actions = action_rx.recv().await;
+        assert!(
+            matches!(
+                first_actions.as_deref(),
+                Some([AppAction::SlidingSyncCapabilityCheckStarted {
+                    admission: SlidingSyncAdmission::NewLogin { .. },
+                    ..
+                }])
+            ),
+            "unexpected first login actions: {first_actions:?}"
+        );
         assert!(matches!(
             recv_account_action_with_sliding_sync_effects(&handle, &mut action_rx)
                 .await
@@ -2455,18 +2860,33 @@ mod tests {
     async fn verified_offline_warm_restore_reaches_ready_without_network_catch_up() {
         let (homeserver, offline, sliding_sync_supported) =
             spawn_controllable_quarantine_password_server();
-        let login = koushi_sdk::login_with_password_with_store(
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let backend = CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+            cred_dir.path(),
+        ));
+        let key_id = SessionKeyId {
+            homeserver: homeserver.clone(),
+            user_id: "@fixture-user:example.invalid".to_owned(),
+            device_id: "FIXTUREDEVICE".to_owned(),
+        };
+        let store = StoreActor::with_backend(backend.clone(), data_dir.path());
+        let store_config = store
+            .account_store_config(&key_id)
+            .expect("fixture persistent store");
+        let login = koushi_sdk::login_with_password_with_new_device(
             &LoginRequest {
                 homeserver,
                 username: "fixture-user".to_owned(),
                 password: koushi_state::AuthSecret::new("synthetic-password"),
                 device_display_name: Some("Offline Restore Test".to_owned()),
             },
-            None,
+            &store_config.store_config,
+            &key_id.device_id,
         )
         .await
         .expect("fixture login");
-        let key_id = session_key_id_from_info(&login.info);
+        assert_eq!(session_key_id_from_info(&login.info), key_id);
         let stored = StoredMatrixSession::new(
             login
                 .persistable_session()
@@ -2478,12 +2898,6 @@ mod tests {
                 .expect("json"),
         );
         drop(login);
-
-        let cred_dir = tempdir().expect("tempdir");
-        let data_dir = tempdir().expect("tempdir");
-        let backend = CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
-            cred_dir.path(),
-        ));
         backend
             .save_matrix_session(&key_id, &stored)
             .expect("session seed");
@@ -3185,29 +3599,56 @@ mod tests {
             }) {
                 return actions;
             }
-            assert!(actions.iter().all(|action| matches!(
-                action,
-                AppAction::SlidingSyncCapabilityCheckStarted { .. }
-                    | AppAction::SlidingSyncCapabilityCheckCompleted { .. }
-            )));
+            assert!(
+                actions.iter().all(|action| matches!(
+                    action,
+                    AppAction::SlidingSyncCapabilityCheckStarted { .. }
+                        | AppAction::SlidingSyncCapabilityCheckCompleted { .. }
+                )),
+                "unexpected restore actions: restore_failed={} login_failed={} persistence_failed={}",
+                actions
+                    .iter()
+                    .any(|action| matches!(action, AppAction::RestoreSessionFailed { .. })),
+                actions
+                    .iter()
+                    .any(|action| matches!(action, AppAction::LoginFailed { .. })),
+                actions
+                    .iter()
+                    .any(|action| matches!(action, AppAction::SessionPersistenceFailed { .. }))
+            );
         }
     }
 
     #[tokio::test]
     async fn restore_installs_provisional_without_normal_sync_or_public_ready_event() {
         let homeserver = spawn_quarantine_password_server();
-        let login = koushi_sdk::login_with_password_with_store(
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let backend = CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+            cred_dir.path(),
+        ));
+        let key_id = SessionKeyId {
+            homeserver: homeserver.clone(),
+            user_id: "@fixture-user:example.invalid".to_owned(),
+            device_id: "FIXTUREDEVICE".to_owned(),
+        };
+        let store = StoreActor::with_backend(backend.clone(), data_dir.path());
+        let store_config = store
+            .account_store_config(&key_id)
+            .expect("fixture persistent store");
+        let login = koushi_sdk::login_with_password_with_new_device(
             &LoginRequest {
                 homeserver,
                 username: "fixture-user".to_owned(),
                 password: koushi_state::AuthSecret::new("synthetic-password"),
                 device_display_name: Some("Quarantine Test".to_owned()),
             },
-            None,
+            &store_config.store_config,
+            &key_id.device_id,
         )
         .await
         .expect("fixture login");
-        let key_id = session_key_id_from_info(&login.info);
+        assert_eq!(session_key_id_from_info(&login.info), key_id);
         let stored = StoredMatrixSession::new(
             login
                 .persistable_session()
@@ -3216,12 +3657,6 @@ mod tests {
                 .expect("json"),
         );
         drop(login);
-
-        let cred_dir = tempdir().expect("tempdir");
-        let data_dir = tempdir().expect("tempdir");
-        let backend = CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
-            cred_dir.path(),
-        ));
         backend
             .save_matrix_session(&key_id, &stored)
             .expect("session seed");
@@ -3298,6 +3733,9 @@ mod tests {
         let recorder = std::sync::Arc::clone(&rename_bodies);
         let requested_name = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
         let name_writer = std::sync::Arc::clone(&requested_name);
+        let requested_device =
+            std::sync::Arc::new(std::sync::Mutex::new("FIXTUREDEVICE".to_owned()));
+        let device_writer = std::sync::Arc::clone(&requested_device);
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("address");
         std::thread::spawn(move || {
@@ -3363,19 +3801,27 @@ mod tests {
                     if let Some(name) = requested_name {
                         *name_writer.lock().unwrap() = Some(name);
                     }
-                    r#"{"access_token":"fixture-token","device_id":"FIXTUREDEVICE","user_id":"@fixture-user:example.invalid"}"#
-                        .to_owned()
+                    let device_id = text
+                        .split("\r\n\r\n")
+                        .nth(1)
+                        .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+                        .and_then(|value| value["device_id"].as_str().map(str::to_owned))
+                        .unwrap_or_else(|| "FIXTUREDEVICE".to_owned());
+                    *device_writer.lock().unwrap() = device_id.clone();
+                    format!(
+                        r#"{{"access_token":"fixture-token","device_id":"{device_id}","user_id":"@fixture-user:example.invalid"}}"#
+                    )
                 } else if text.contains("GET /_matrix/client/v3/devices ") {
                     // The current device is authoritative; it is unnamed unless
                     // the login request explicitly named it.
+                    let device_id = device_writer.lock().unwrap().clone();
                     match name_writer.lock().unwrap().clone() {
                         Some(name) => format!(
-                            r#"{{"devices":[{{"device_id":"FIXTUREDEVICE","display_name":"{name}"}}]}}"#
+                            r#"{{"devices":[{{"device_id":"{device_id}","display_name":"{name}"}}]}}"#
                         ),
-                        None => {
-                            r#"{"devices":[{"device_id":"FIXTUREDEVICE","display_name":null}]}"#
-                                .to_owned()
-                        }
+                        None => format!(
+                            r#"{{"devices":[{{"device_id":"{device_id}","display_name":null}}]}}"#
+                        ),
                     }
                 } else if text.contains("PUT /_matrix/client/v3/devices/") {
                     let json_start = text.find("\r\n\r\n").map(|index| index + 4).unwrap_or(0);
@@ -3549,36 +3995,18 @@ mod tests {
     }
 
     #[test]
-    fn password_login_prefers_saved_device_without_making_login_fail_closed() {
+    fn password_login_is_persistent_store_first_without_saved_fallback() {
         let login_handler = crate::account::test_source::item_body(
             include_str!("session_lifecycle.rs"),
             "async fn handle_login_password",
         );
-        let reuse_helper = crate::account::test_source::item_body(
-            include_str!("session_lifecycle.rs"),
-            "async fn prefer_saved_device_for_password_login",
-        );
-
-        assert!(
-            login_handler.contains("prefer_saved_device_for_password_login"),
-            "password login should try to reuse a preserved signed-out device before restoring into a store"
-        );
-        assert!(
-            reuse_helper.contains("self.lookup_session_key_id(account_key).await"),
-            "saved-device reuse must be driven by the saved-session index"
-        );
-        assert!(
-            reuse_helper.contains("koushi_sdk::login_with_existing_device"),
-            "saved-device reuse must explicitly login with the preserved device id"
-        );
-        assert!(
-            reuse_helper.contains("fallback_to_fresh_device"),
-            "saved-device reuse must be fail-open so password login availability is not reduced"
-        );
-        assert!(
-            reuse_helper.contains("actual_saved_key_id != saved_key_id"),
-            "homeservers that ignore the requested device id must not poison the preserved store"
-        );
+        assert!(login_handler.contains("Homeserver::parse"));
+        assert!(login_handler.contains("existing_account_store_config"));
+        assert!(login_handler.contains("pending_login_owner()"));
+        assert!(login_handler.contains("login_with_password_with_new_device"));
+        assert!(login_handler.contains("login_with_password_with_store_and_device"));
+        assert!(!login_handler.contains("login_with_existing_device"));
+        assert!(!login_handler.contains("fallback_to_fresh_device"));
     }
 
     #[test]
@@ -3613,8 +4041,8 @@ mod tests {
             "auth invalidation must preserve its distinct reason when locking the active session"
         );
         assert!(
-            handler_body.contains("self.stop_sync_actor().await"),
-            "auth invalidation must stop the old sync loop instead of leaving it reconnecting forever"
+            handler_body.contains("self.stop_current_session_runtime().await"),
+            "auth invalidation must stop and join every old runtime owner"
         );
     }
 
@@ -3918,21 +4346,29 @@ mod tests {
             include_str!("session_lifecycle.rs"),
             "async fn handle_soft_logout_reauth",
         );
-        let login_call = handler_body
-            .find("koushi_sdk::login_with_existing_device")
-            .expect("reauth must use device-preserving password login");
         let drop_old_session = handler_body
             .find("drop(self.session.take())")
-            .expect("reauth must drop the old client before restoring into the account store");
+            .expect("reauth must drop the invalid client before replacement auth");
+        let preflight = handler_body
+            .find("preflight_saved_crypto_store")
+            .expect("reauth must preflight the matching saved crypto DB");
+        let login_call = handler_body
+            .find("login_with_password_with_store_and_device")
+            .expect("reauth must authenticate the saved device on its store");
 
-        assert!(
-            login_call < drop_old_session,
-            "wrong passwords must not discard the locked session before the user can retry"
+        assert!(drop_old_session < preflight && preflight < login_call);
+        assert!(handler_body.contains("locked_session_record = Some"));
+        assert!(handler_body.contains("prepare_store_backed_session(&login_session, true)"));
+        let logout_body = crate::account::test_source::item_body(
+            include_str!("session_lifecycle.rs"),
+            "async fn perform_logout",
         );
+        assert!(logout_body.contains("locked_session_record.take()"));
+        assert!(logout_body.contains("AppAction::LogoutFinished"));
     }
 
     #[tokio::test]
-    async fn soft_logout_reauth_joins_old_observers_before_subscribing_replacements() {
+    async fn soft_logout_reauth_quiesces_old_runtime_before_installing_replacement() {
         let homeserver = spawn_quarantine_password_server();
         let cred_dir = tempdir().expect("tempdir");
         let data_dir = tempdir().expect("tempdir");
@@ -3984,48 +4420,50 @@ mod tests {
                 }))
                 .await
         );
-        while !matches!(
-            action_rx.recv().await.as_deref(),
-            Some([
-                AppAction::SoftLogoutReauthSucceeded { request_id: 2 },
-                AppAction::LoginSucceeded { .. }
-            ])
-        ) {}
-        let _ = inspect_session_runtime(&handle).await;
-
+        let mut installed = false;
+        let mut succeeded = false;
+        let mut trust_projection = None;
+        while !installed || !succeeded {
+            let actions = action_rx.recv().await.expect("reauth action channel");
+            installed |= actions.iter().any(|action| {
+                matches!(
+                    action,
+                    AppAction::SoftLogoutReauthSessionInstalled { request_id: 2, .. }
+                )
+            });
+            succeeded |= actions.iter().any(|action| {
+                matches!(
+                    action,
+                    AppAction::SoftLogoutReauthSucceeded { request_id: 2 }
+                )
+            });
+            if let [
+                AppAction::AuthoritativeDeviceTrustChanged {
+                    generation,
+                    transition_id,
+                    trust: koushi_state::CurrentDeviceTrustState::Verified,
+                },
+            ] = actions.as_slice()
+            {
+                trust_projection = Some((*generation, *transition_id));
+            }
+        }
+        let _ = trust_projection;
         let tokens: Vec<_> = std::iter::from_fn(|| probe_rx.try_recv().ok()).collect();
-        let recovery_stop = tokens
+        let sync_stopped = tokens
             .iter()
-            .position(|token| *token == "recovery_observer_stop_requested")
-            .expect("the old recovery observer must be stopped");
-        let recovery_join = tokens
+            .position(|token| *token == "shutdown_stop_sync_actor")
+            .expect("the old sync owner must stop and join");
+        let room_cleared = tokens
             .iter()
-            .position(|token| *token == "recovery_observer_terminated")
-            .expect("the old recovery observer must be joined");
-        let recovery_start = tokens
+            .position(|token| *token == "shutdown_clear_room_session")
+            .expect("the old room session must be cleared");
+        let client_released = tokens
             .iter()
-            .position(|token| *token == "recovery_observer_started")
-            .expect("the replacement recovery observer must start");
-        let verification_stop = tokens
-            .iter()
-            .position(|token| *token == "incoming_verification_observer_stop_requested")
-            .expect("the old verification observer must be stopped");
-        let verification_join = tokens
-            .iter()
-            .position(|token| *token == "incoming_verification_observer_terminated")
-            .expect("the old verification observer must be joined");
-        let verification_subscribe = tokens
-            .iter()
-            .position(|token| *token == "incoming_verification_observer_subscribing")
-            .expect("the replacement verification observer must subscribe");
-        assert!(
-            recovery_stop < recovery_join && recovery_join < recovery_start,
-            "{tokens:?}"
-        );
-        assert!(
-            verification_stop < verification_join && verification_join < verification_subscribe,
-            "{tokens:?}"
-        );
+            .position(|token| *token == "locked_client_released")
+            .expect("the invalid client must be released after child shutdown");
+        assert!(sync_stopped < client_released, "{tokens:?}");
+        assert!(room_cleared < client_released, "{tokens:?}");
 
         let _ = handle.send(AccountMessage::Shutdown).await;
     }

@@ -1,4 +1,4 @@
-use super::cleanup::cleanup_e2ee_multi_device_participants;
+use super::cleanup::{cleanup_e2ee_multi_device_participants, leave_e2ee_login_store_room};
 use super::diagnostics::{diagnostic_count_field, diagnostic_has_token, diagnostic_token_field};
 use super::event_wait::{
     QaEventDeadline, find_timeline_item_with_body, start_sync_for_qa, subscribe_timeline_for_qa,
@@ -40,6 +40,723 @@ use super::{
     SessionInfo, SessionState, SessionStatusRefreshTrigger, SyncCommand, TimelineCommand,
     TimelineItem, TimelineKey, VerificationTarget, native_attention_state_from_rooms,
 };
+
+#[derive(Clone)]
+struct StoppedQaParticipant {
+    data_dir: std::path::PathBuf,
+    account_key: AccountKey,
+    device_id: String,
+}
+
+async fn restart_stopped_qa_participant(
+    stopped: StoppedQaParticipant,
+    label: &str,
+) -> Result<QaOwnedRuntimeParticipant, String> {
+    let runtime = CoreRuntime::start_with_data_dir(stopped.data_dir);
+    let conn = runtime.attach();
+    let mut participant = QaOwnedRuntimeParticipant::new(runtime, conn);
+    let result: Result<(), String> = async {
+        let restore_id = participant.conn.next_request_id();
+        participant.mark_login_submitted();
+        participant
+            .conn
+            .command(CoreCommand::Account(AccountCommand::RestoreSession {
+                request_id: restore_id,
+                account_key: stopped.account_key.clone(),
+            }))
+            .await
+            .map_err(|_| format!("{label}: submit store restore failed"))?;
+        wait_for_session_restored(
+            &mut participant.conn,
+            restore_id,
+            &stopped.account_key,
+            label,
+        )
+        .await?;
+        participant.mark_logged_in(stopped.account_key.clone());
+        wait_for_ready_snapshot(&mut participant.conn, label).await?;
+        let restored_info = authenticated_session_info(&mut participant.conn, label)?;
+        if restored_info.device_id != stopped.device_id {
+            return Err(format!("{label}: restored device identity changed"));
+        }
+        start_sync_for_qa(&mut participant.conn, label).await
+    }
+    .await;
+
+    match result {
+        Ok(()) => Ok(participant),
+        Err(error) => {
+            let _ = cleanup_owned_e2ee_participant_best_effort(participant, label).await;
+            Err(error)
+        }
+    }
+}
+
+async fn stop_qa_participant_for_offline(
+    participant: QaOwnedRuntimeParticipant,
+    data_dir: std::path::PathBuf,
+    account_key: AccountKey,
+    device_id: String,
+) -> Result<StoppedQaParticipant, String> {
+    let QaOwnedRuntimeParticipant {
+        runtime, mut conn, ..
+    } = participant;
+    let stop_id = conn.next_request_id();
+    conn.command(CoreCommand::Sync(SyncCommand::Stop {
+        request_id: stop_id,
+    }))
+    .await
+    .map_err(|_| "offline participant sync stop submit failed".to_owned())?;
+    wait_for_sync_stopped(&mut conn, stop_id, "offline participant sync stop").await?;
+    drop(conn);
+    runtime.shutdown().await;
+    Ok(StoppedQaParticipant {
+        data_dir,
+        account_key,
+        device_id,
+    })
+}
+
+async fn send_forced_index0(
+    conn: &mut CoreConnection,
+    account_key: &AccountKey,
+    room_id: &str,
+    body: &str,
+    transaction_id: &str,
+    deadline: tokio::time::Instant,
+    label: &str,
+) -> Result<(), String> {
+    let key = TimelineKey::room(account_key.clone(), room_id.to_owned());
+    let force_id = conn.next_request_id();
+    tokio::time::timeout_at(
+        deadline,
+        conn.command(CoreCommand::Room(RoomCommand::ForceNewOutboundSession {
+            request_id: force_id,
+            room_id: room_id.to_owned(),
+        })),
+    )
+    .await
+    .map_err(|_| format!("{label}: force-new submit timed out"))?
+    .map_err(|_| format!("{label}: force-new submit failed"))?;
+    let outcome = tokio::time::timeout_at(
+        deadline,
+        wait_for_encryption_debug_event(conn, force_id, room_id, label, "OutboundSessionForced"),
+    )
+    .await
+    .map_err(|_| format!("{label}: force-new timed out"))??;
+    if outcome != EncryptionDebugOperationOutcome::Completed {
+        return Err(format!("{label}: force-new did not complete"));
+    }
+
+    let send_id = conn.next_request_id();
+    tokio::time::timeout_at(
+        deadline,
+        conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+            request_id: send_id,
+            key: key.clone(),
+            transaction_id: transaction_id.to_owned(),
+            document: koushi_state::ComposerDocument::from_plain_text(body.to_owned()),
+        })),
+    )
+    .await
+    .map_err(|_| format!("{label}: send submit timed out"))?
+    .map_err(|_| format!("{label}: send submit failed"))?;
+    tokio::time::timeout_at(
+        deadline,
+        wait_for_send_flow_completion_with_timeout(
+            conn,
+            send_id,
+            &key,
+            transaction_id,
+            body,
+            label,
+            E2EE_EVENT_TIMEOUT,
+        ),
+    )
+    .await
+    .map_err(|_| format!("{label}: send completion timed out"))??;
+    Ok(())
+}
+
+async fn restart_recipient(
+    recipient: &mut Option<QaOwnedRuntimeParticipant>,
+    stopped: &mut Option<StoppedQaParticipant>,
+    label: &str,
+    deadline: tokio::time::Instant,
+) -> Result<(), String> {
+    let stopped_copy = stopped
+        .clone()
+        .ok_or_else(|| format!("{label}: recipient was not stopped"))?;
+    let restarted = tokio::time::timeout_at(
+        deadline,
+        restart_stopped_qa_participant(stopped_copy, label),
+    )
+    .await
+    .map_err(|_| format!("{label}: recipient restart timed out"))??;
+    *recipient = Some(restarted);
+    *stopped = None;
+    Ok(())
+}
+
+pub(super) async fn run_e2ee_login_store_scenario(config: &QaConfig) -> Result<(), String> {
+    let data_dir_a = qa_data_dir("e2ee-login-store-a");
+    let data_dir_b = qa_data_dir("e2ee-login-store-b");
+    let mut a_outcome = login_synced_participant_for_qa(
+        &config.homeserver,
+        data_dir_a.clone(),
+        &config.user_a,
+        &config.password_a,
+        DEVICE_A,
+        "e2ee login-store A",
+        "e2ee login-store bootstrap A",
+        QaParticipantLoginGate::BootstrapNewIdentity,
+    )
+    .await?;
+    let a_info = authenticated_session_info(&mut a_outcome.conn, "e2ee login-store A session")?;
+    let a_device_id = a_info.device_id.clone();
+    let a_account_key = a_outcome.account_key.clone();
+    let mut owner_a = Some(QaOwnedRuntimeParticipant::from(a_outcome));
+
+    let mut b_outcome = login_synced_participant_for_qa(
+        &config.homeserver,
+        data_dir_b.clone(),
+        &config.user_b,
+        &config.password_b,
+        DEVICE_B,
+        "e2ee login-store B",
+        "e2ee login-store bootstrap B",
+        QaParticipantLoginGate::BootstrapNewIdentity,
+    )
+    .await?;
+    let b_info = authenticated_session_info(&mut b_outcome.conn, "e2ee login-store B session")?;
+    let b_device_id = b_info.device_id.clone();
+    let b_account_key = b_outcome.account_key.clone();
+    let mut owner_b = Some(QaOwnedRuntimeParticipant::from(b_outcome));
+    let mut stopped_b = None;
+    let mut stopped_a = None;
+    let mut owner_c = None;
+    let mut rooms = Vec::new();
+
+    let stage_result: Result<(), String> = async {
+        let user_b_id = format!("@{}:{}", config.user_b, config.server_name);
+        let a = owner_a.as_mut().ok_or("e2ee login-store A owner missing")?;
+        let room_id = create_room_for_qa(
+            &mut a.conn,
+            "QA E2EE login store DM",
+            true,
+            "e2ee login-store create DM",
+        )
+        .await?;
+        rooms.push(room_id.clone());
+        invite_user_for_qa(
+            &mut a.conn,
+            &room_id,
+            &user_b_id,
+            "e2ee login-store invite B",
+        )
+        .await?;
+        let b = owner_b.as_mut().ok_or("e2ee login-store B owner missing")?;
+        wait_for_invite_in_snapshot(
+            &mut b.conn,
+            &room_id,
+            Some(false),
+            "e2ee login-store B invite",
+        )
+        .await?;
+        accept_invite_for_qa(&mut b.conn, &room_id, "e2ee login-store B accept").await?;
+        wait_for_room_in_room_list(&mut a.conn, &room_id, "e2ee login-store A room").await?;
+        wait_for_room_in_room_list(&mut b.conn, &room_id, "e2ee login-store B room").await?;
+
+        let b_session = authenticated_session_info(&mut b.conn, "e2ee login-store B identity")?;
+        refresh_device_keys_and_assert_known_for_qa(
+            &mut a.conn,
+            VerificationTarget {
+                user_id: b_session.user_id.clone(),
+                device_id: b_session.device_id.clone(),
+            },
+            "e2ee login-store B key refresh",
+        )
+        .await?;
+        let key_a = TimelineKey::room(a_account_key.clone(), room_id.clone());
+        let key_b = TimelineKey::room(b_account_key.clone(), room_id.clone());
+        let initial_a =
+            subscribe_timeline_for_qa(&mut a.conn, &key_a, "e2ee login-store A timeline").await?;
+        let initial_b =
+            subscribe_timeline_for_qa(&mut b.conn, &key_b, "e2ee login-store B timeline").await?;
+        assert_no_decryption_failure_items(&initial_a, "e2ee login-store A initial")?;
+        assert_no_decryption_failure_items(&initial_b, "e2ee login-store B initial")?;
+
+        let phase_deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
+        let stopped = stop_qa_participant_for_offline(
+            owner_b.take().ok_or("e2ee login-store B owner missing")?,
+            data_dir_b.clone(),
+            b_account_key.clone(),
+            b_device_id.clone(),
+        )
+        .await?;
+        stopped_b = Some(stopped.clone());
+        send_forced_index0(
+            &mut a.conn,
+            &a_account_key,
+            &room_id,
+            "QA E2EE login-store fresh offline",
+            "qa-login-store-fresh-offline",
+            phase_deadline,
+            "e2ee login-store fresh offline",
+        )
+        .await?;
+        restart_recipient(
+            &mut owner_b,
+            &mut stopped_b,
+            "e2ee login-store B fresh restart",
+            phase_deadline,
+        )
+        .await?;
+        let b = owner_b.as_mut().ok_or("e2ee login-store B owner missing")?;
+        let b_key = TimelineKey::room(b_account_key.clone(), room_id.clone());
+        let initial =
+            subscribe_timeline_for_qa(&mut b.conn, &b_key, "e2ee login-store fresh receive")
+                .await?;
+        if find_timeline_item_with_body(&initial, "QA E2EE login-store fresh offline").is_none() {
+            wait_for_item_with_body_or_decryption_failure(
+                &mut b.conn,
+                &b_key,
+                "QA E2EE login-store fresh offline",
+                "e2ee login-store fresh receive",
+            )
+            .await?;
+        }
+        println!("e2ee_login_store_fresh_offline_index0=ok");
+
+        let stopped_primary = stop_qa_participant_for_offline(
+            owner_a.take().ok_or("e2ee login-store A owner missing")?,
+            data_dir_a.clone(),
+            a_account_key.clone(),
+            a_device_id.clone(),
+        )
+        .await?;
+        stopped_a = Some(stopped_primary.clone());
+        owner_a = Some(
+            restart_stopped_qa_participant(stopped_primary, "e2ee login-store A restore").await?,
+        );
+        stopped_a = None;
+        let phase_deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
+        let stopped = stop_qa_participant_for_offline(
+            owner_b.take().ok_or("e2ee login-store B owner missing")?,
+            data_dir_b.clone(),
+            b_account_key.clone(),
+            b_device_id.clone(),
+        )
+        .await?;
+        stopped_b = Some(stopped.clone());
+        let a = owner_a.as_mut().ok_or("e2ee login-store A owner missing")?;
+        let key_a = TimelineKey::room(a_account_key.clone(), room_id.clone());
+        subscribe_timeline_for_qa(&mut a.conn, &key_a, "e2ee login-store restore sender").await?;
+        send_forced_index0(
+            &mut a.conn,
+            &a_account_key,
+            &room_id,
+            "QA E2EE login-store restore offline",
+            "qa-login-store-restore-offline",
+            phase_deadline,
+            "e2ee login-store restore offline",
+        )
+        .await?;
+        let b = restart_stopped_qa_participant(stopped, "e2ee login-store B restore").await?;
+        owner_b = Some(b);
+        stopped_b = None;
+        let b = owner_b.as_mut().ok_or("e2ee login-store B owner missing")?;
+        let key_b = TimelineKey::room(b_account_key.clone(), room_id.clone());
+        let initial =
+            subscribe_timeline_for_qa(&mut b.conn, &key_b, "e2ee login-store restore receive")
+                .await?;
+        if find_timeline_item_with_body(&initial, "QA E2EE login-store restore offline").is_none() {
+            wait_for_item_with_body_or_decryption_failure(
+                &mut b.conn,
+                &key_b,
+                "QA E2EE login-store restore offline",
+                "e2ee login-store restore receive",
+            )
+            .await?;
+        }
+        println!("e2ee_login_store_restore_offline_index0=ok");
+
+        // A second stop/restart keeps the restore path distinct from fresh login.
+        let phase_deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
+        let stopped = stop_qa_participant_for_offline(
+            owner_b.take().ok_or("e2ee login-store B owner missing")?,
+            data_dir_b.clone(),
+            b_account_key.clone(),
+            b_device_id.clone(),
+        )
+        .await?;
+        stopped_b = Some(stopped.clone());
+        let a = owner_a.as_mut().ok_or("e2ee login-store A owner missing")?;
+        let key_a = TimelineKey::room(a_account_key.clone(), room_id.clone());
+        subscribe_timeline_for_qa(&mut a.conn, &key_a, "e2ee login-store restart sender").await?;
+        send_forced_index0(
+            &mut a.conn,
+            &a_account_key,
+            &room_id,
+            "QA E2EE login-store restart offline",
+            "qa-login-store-restart-offline",
+            phase_deadline,
+            "e2ee login-store restart offline",
+        )
+        .await?;
+        owner_b =
+            Some(restart_stopped_qa_participant(stopped, "e2ee login-store B restart").await?);
+        stopped_b = None;
+        let b = owner_b.as_mut().ok_or("e2ee login-store B owner missing")?;
+        let key_b = TimelineKey::room(b_account_key.clone(), room_id.clone());
+        let initial =
+            subscribe_timeline_for_qa(&mut b.conn, &key_b, "e2ee login-store restart receive")
+                .await?;
+        if find_timeline_item_with_body(&initial, "QA E2EE login-store restart offline").is_none() {
+            wait_for_item_with_body_or_decryption_failure(
+                &mut b.conn,
+                &key_b,
+                "QA E2EE login-store restart offline",
+                "e2ee login-store restart receive",
+            )
+            .await?;
+        }
+        println!("e2ee_login_store_restart_offline_index0=ok");
+
+        let phase_deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
+        {
+            let a = owner_a.as_mut().ok_or("e2ee login-store A owner missing")?;
+            a.runtime
+                .inject_actions(vec![
+                    koushi_state::AppAction::SessionAuthenticationInvalidated { soft_logout: true },
+                ])
+                .await;
+            wait_for_locked_snapshot(&mut a.conn, "e2ee login-store injected soft logout").await?;
+        }
+        let reauth_id = {
+            let a = owner_a.as_mut().ok_or("e2ee login-store A owner missing")?;
+            let request_id = a.conn.next_request_id();
+            tokio::time::timeout_at(
+                phase_deadline,
+                a.conn
+                    .command(CoreCommand::Account(AccountCommand::SoftLogoutReauth {
+                        request_id,
+                        password: AuthSecret::new(config.password_a.clone()),
+                    })),
+            )
+            .await
+            .map_err(|_| "e2ee login-store reauth submit timed out".to_owned())?
+            .map_err(|_| "e2ee login-store reauth submit failed".to_owned())?;
+            request_id
+        };
+        {
+            let a = owner_a.as_mut().ok_or("e2ee login-store A owner missing")?;
+            let restored = tokio::time::timeout_at(
+                phase_deadline,
+                wait_for_logged_in(&mut a.conn, reauth_id, "e2ee login-store reauth"),
+            )
+            .await
+            .map_err(|_| "e2ee login-store reauth timed out".to_owned())??;
+            if restored != a_account_key
+                || authenticated_session_info(&mut a.conn, "e2ee login-store reauth identity")?
+                    .device_id
+                    != a_device_id
+            {
+                return Err("e2ee login-store reauth changed identity".to_owned());
+            }
+            wait_for_ready_snapshot(&mut a.conn, "e2ee login-store reauth Ready").await?;
+            start_sync_for_qa(&mut a.conn, "e2ee login-store reauth sync").await?;
+        }
+        let stopped = stop_qa_participant_for_offline(
+            owner_b.take().ok_or("e2ee login-store B owner missing")?,
+            data_dir_b.clone(),
+            b_account_key.clone(),
+            b_device_id.clone(),
+        )
+        .await?;
+        stopped_b = Some(stopped.clone());
+        let a = owner_a.as_mut().ok_or("e2ee login-store A owner missing")?;
+        let key_a = TimelineKey::room(a_account_key.clone(), room_id.clone());
+        subscribe_timeline_for_qa(&mut a.conn, &key_a, "e2ee login-store reauth sender").await?;
+        send_forced_index0(
+            &mut a.conn,
+            &a_account_key,
+            &room_id,
+            "QA E2EE login-store reauth offline",
+            "qa-login-store-reauth-offline",
+            phase_deadline,
+            "e2ee login-store reauth offline",
+        )
+        .await?;
+        owner_b = Some(restart_stopped_qa_participant(stopped, "e2ee login-store B reauth").await?);
+        stopped_b = None;
+        let b = owner_b.as_mut().ok_or("e2ee login-store B owner missing")?;
+        let key_b = TimelineKey::room(b_account_key.clone(), room_id.clone());
+        let initial =
+            subscribe_timeline_for_qa(&mut b.conn, &key_b, "e2ee login-store reauth receive")
+                .await?;
+        if find_timeline_item_with_body(&initial, "QA E2EE login-store reauth offline").is_none() {
+            wait_for_item_with_body_or_decryption_failure(
+                &mut b.conn,
+                &key_b,
+                "QA E2EE login-store reauth offline",
+                "e2ee login-store reauth receive",
+            )
+            .await?;
+        }
+        println!("e2ee_login_store_reauth_offline_index0=ok");
+
+        let phase_deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
+        let a = owner_a.as_mut().ok_or("e2ee login-store A owner missing")?;
+        let b = owner_b.as_mut().ok_or("e2ee login-store B owner missing")?;
+        let key_a = TimelineKey::room(a_account_key.clone(), room_id.clone());
+        subscribe_timeline_for_qa(&mut a.conn, &key_a, "e2ee login-store online sender").await?;
+        send_forced_index0(
+            &mut a.conn,
+            &a_account_key,
+            &room_id,
+            "QA E2EE login-store online",
+            "qa-login-store-online",
+            phase_deadline,
+            "e2ee login-store online",
+        )
+        .await?;
+        let key_b = TimelineKey::room(b_account_key.clone(), room_id.clone());
+        wait_for_item_with_body_or_decryption_failure(
+            &mut b.conn,
+            &key_b,
+            "QA E2EE login-store online",
+            "e2ee login-store online receive",
+        )
+        .await?;
+        println!("e2ee_login_store_online_index0=ok");
+
+        let user_c = config
+            .user_c
+            .as_deref()
+            .ok_or("e2ee login-store requires synthetic user C")?;
+        let suffix = user_c
+            .strip_prefix("qa_c_")
+            .ok_or("e2ee login-store requires the local QA user naming contract")?;
+        let password_c = std::env::var("KOUSHI_LOCAL_QA_PASSWORD_C")
+            .unwrap_or_else(|_| format!("koushi-desktop-local-c-{suffix}"));
+        let data_dir_c = qa_data_dir("e2ee-login-store-c");
+        let mut c_outcome = login_synced_participant_for_qa(
+            &config.homeserver,
+            data_dir_c,
+            user_c,
+            &password_c,
+            "Koushi Core QA C",
+            "e2ee login-store C",
+            "e2ee login-store bootstrap C",
+            QaParticipantLoginGate::BootstrapNewIdentity,
+        )
+        .await?;
+        let c_account_key = c_outcome.account_key.clone();
+        let c_info = authenticated_session_info(&mut c_outcome.conn, "e2ee login-store C session")?;
+        let c_device_id = c_info.device_id.clone();
+        owner_c = Some(QaOwnedRuntimeParticipant::from(c_outcome));
+        let room_id = create_room_for_qa(
+            &mut a.conn,
+            "QA E2EE login store group",
+            true,
+            "e2ee login-store create group",
+        )
+        .await?;
+        rooms.push(room_id.clone());
+        invite_user_for_qa(
+            &mut a.conn,
+            &room_id,
+            &user_b_id,
+            "e2ee login-store group invite B",
+        )
+        .await?;
+        let user_c_id = format!("@{}:{}", user_c, config.server_name);
+        invite_user_for_qa(
+            &mut a.conn,
+            &room_id,
+            &user_c_id,
+            "e2ee login-store group invite C",
+        )
+        .await?;
+        wait_for_invite_in_snapshot(
+            &mut b.conn,
+            &room_id,
+            Some(false),
+            "e2ee login-store group B invite",
+        )
+        .await?;
+        let c = owner_c.as_mut().ok_or("e2ee login-store C owner missing")?;
+        wait_for_invite_in_snapshot(
+            &mut c.conn,
+            &room_id,
+            Some(false),
+            "e2ee login-store group C invite",
+        )
+        .await?;
+        accept_invite_for_qa(&mut b.conn, &room_id, "e2ee login-store group B accept").await?;
+        accept_invite_for_qa(&mut c.conn, &room_id, "e2ee login-store group C accept").await?;
+        wait_for_room_in_room_list(&mut a.conn, &room_id, "e2ee login-store group A room").await?;
+        wait_for_room_in_room_list(&mut b.conn, &room_id, "e2ee login-store group B room").await?;
+        wait_for_room_in_room_list(&mut c.conn, &room_id, "e2ee login-store group C room").await?;
+        let b_session =
+            authenticated_session_info(&mut b.conn, "e2ee login-store group B identity")?;
+        let c_session =
+            authenticated_session_info(&mut c.conn, "e2ee login-store group C identity")?;
+        refresh_device_keys_and_assert_known_for_qa(
+            &mut a.conn,
+            VerificationTarget {
+                user_id: b_session.user_id.clone(),
+                device_id: b_session.device_id.clone(),
+            },
+            "e2ee login-store group B key refresh",
+        )
+        .await?;
+        refresh_device_keys_and_assert_known_for_qa(
+            &mut a.conn,
+            VerificationTarget {
+                user_id: c_session.user_id.clone(),
+                device_id: c_session.device_id.clone(),
+            },
+            "e2ee login-store group C key refresh",
+        )
+        .await?;
+        let key_a = TimelineKey::room(a_account_key.clone(), room_id.clone());
+        let key_b = TimelineKey::room(b_account_key.clone(), room_id.clone());
+        let key_c = TimelineKey::room(c_account_key.clone(), room_id.clone());
+        subscribe_timeline_for_qa(&mut a.conn, &key_a, "e2ee login-store group A timeline").await?;
+        subscribe_timeline_for_qa(&mut b.conn, &key_b, "e2ee login-store group B timeline").await?;
+        subscribe_timeline_for_qa(&mut c.conn, &key_c, "e2ee login-store group C timeline").await?;
+        let phase_deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
+        send_forced_index0(
+            &mut a.conn,
+            &a_account_key,
+            &room_id,
+            "QA E2EE login-store group",
+            "qa-login-store-group",
+            phase_deadline,
+            "e2ee login-store group",
+        )
+        .await?;
+        wait_for_item_with_body_or_decryption_failure(
+            &mut b.conn,
+            &key_b,
+            "QA E2EE login-store group",
+            "e2ee login-store group B receive",
+        )
+        .await?;
+        wait_for_item_with_body_or_decryption_failure(
+            &mut c.conn,
+            &key_c,
+            "QA E2EE login-store group",
+            "e2ee login-store group C receive",
+        )
+        .await?;
+        println!("e2ee_login_store_group_index0=ok");
+
+        let a_final = authenticated_session_info(&mut a.conn, "e2ee login-store final A")?;
+        let b_final = authenticated_session_info(&mut b.conn, "e2ee login-store final B")?;
+        let c = owner_c.as_mut().ok_or("e2ee login-store C owner missing")?;
+        let c_final = authenticated_session_info(&mut c.conn, "e2ee login-store final C")?;
+        if a_final.user_id != a_account_key.0
+            || a_final.device_id != a_device_id
+            || b_final.user_id != b_account_key.0
+            || b_final.device_id != b_device_id
+            || c_final.device_id != c_device_id
+        {
+            return Err("e2ee login-store identity continuity assertion failed".to_owned());
+        }
+        println!("e2ee_login_store_identity_stable=ok");
+        Ok(())
+    }
+    .await;
+
+    // A stopped recipient still owns a saved device. Reopen it before cleanup so
+    // the same ordered logout guard can remove every owned session.
+    if owner_b.is_none() {
+        if let Some(stopped) = stopped_b.clone() {
+            if let Ok(participant) =
+                restart_stopped_qa_participant(stopped, "e2ee login-store cleanup B").await
+            {
+                owner_b = Some(participant);
+                stopped_b = None;
+            }
+        }
+    }
+    if owner_a.is_none() {
+        if let Some(stopped) = stopped_a.clone() {
+            if let Ok(participant) =
+                restart_stopped_qa_participant(stopped, "e2ee login-store cleanup A").await
+            {
+                owner_a = Some(participant);
+                stopped_a = None;
+            }
+        }
+    }
+
+    let mut cleanup_failures = Vec::new();
+    for (room_index, room_id) in rooms.iter().enumerate() {
+        for (role_index, participant) in [&mut owner_a, &mut owner_b, &mut owner_c]
+            .into_iter()
+            .enumerate()
+        {
+            if room_index == 0 && role_index == 2 {
+                continue;
+            }
+            if let Some(participant) = participant.as_mut()
+                && leave_e2ee_login_store_room(
+                    &mut participant.conn,
+                    room_id,
+                    "e2ee login-store room cleanup",
+                )
+                .await
+                .is_err()
+            {
+                cleanup_failures.push(match (room_index, role_index) {
+                    (0, 0) => "room1_a",
+                    (0, 1) => "room1_b",
+                    (0, 2) => "room1_c",
+                    (1, 0) => "room2_a",
+                    (1, 1) => "room2_b",
+                    (1, 2) => "room2_c",
+                    _ => "room_other",
+                });
+            }
+        }
+    }
+    for (participant, label) in [
+        (&mut owner_c, "e2ee login-store cleanup C"),
+        (&mut owner_b, "e2ee login-store cleanup B"),
+        (&mut owner_a, "e2ee login-store cleanup A"),
+    ] {
+        if let Some(participant) = participant.take() {
+            if cleanup_owned_e2ee_participant_best_effort(participant, label)
+                .await
+                .is_err()
+            {
+                cleanup_failures.push(label);
+            }
+        }
+    }
+    if let Err(error) = stage_result {
+        return Err(if !cleanup_failures.is_empty() {
+            format!(
+                "{error}; cleanup also failed ({})",
+                cleanup_failures.join(",")
+            )
+        } else {
+            error
+        });
+    }
+    if !cleanup_failures.is_empty() {
+        return Err(format!(
+            "e2ee login-store cleanup failed ({})",
+            cleanup_failures.join(",")
+        ));
+    }
+    println!("e2ee_login_store=ok");
+    Ok(())
+}
 
 pub(super) async fn run_gate_restore_stage(
     mut conn: CoreConnection,

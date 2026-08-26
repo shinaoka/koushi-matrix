@@ -203,6 +203,7 @@ export function AuthScreen({
                 autoComplete="current-password"
                 name="password"
                 ref={passwordInputRef}
+                disabled={!passwordLoginAvailable}
                 onInput={(event) => onPasswordPresenceChange(event.currentTarget.value.length > 0)}
               />
             </label>
@@ -213,11 +214,21 @@ export function AuthScreen({
             ) : null}
             <button
               className="auth-submit"
-              disabled={isBusy || !passwordFilled}
+              disabled={isBusy || !passwordFilled || !passwordLoginAvailable}
               type="submit"
             >
               {isBusy ? t("auth.connecting") : t("auth.continue")}
             </button>
+            {oidcFlow ? (
+              <button
+                className="auth-secondary"
+                disabled={isBusy}
+                type="button"
+                onClick={onStartOidcLogin}
+              >
+                {authFlowLabel(oidcFlow)}
+              </button>
+            ) : null}
           </>
         ) : (
           <>

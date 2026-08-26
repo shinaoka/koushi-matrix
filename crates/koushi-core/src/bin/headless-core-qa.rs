@@ -165,3 +165,6 @@ fn run() -> Result<String, String> {
 #[cfg(test)]
 #[path = "headless_core_qa/contracts.rs"]
 mod contracts;
+#[cfg(test)]
+#[path = "headless_core_qa/login_store_contracts.rs"]
+mod login_store_contracts;

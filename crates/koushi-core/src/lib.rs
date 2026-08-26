@@ -25,6 +25,8 @@ pub mod ids;
 pub mod link_preview;
 mod live_catchup;
 mod live_tail_freshness;
+#[cfg(any(test, feature = "test-hooks"))]
+pub mod login_store_test_support;
 pub mod media_preparation;
 pub(crate) mod mention_candidates;
 pub(crate) mod read_state;

@@ -4,6 +4,11 @@ mod client_session;
 
 mod e2ee;
 
+mod login_store;
+
+#[cfg(any(test, feature = "test-hooks"))]
+pub mod login_store_test_support;
+
 mod profile;
 
 mod qa_reports;
@@ -27,10 +32,15 @@ pub use auth::{
     Homeserver, LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE, LoginDiscovery, LoginDiscoveryError,
     MatrixLoginDiscovery, MatrixLoginFlow, MatrixLoginFlowKind, OidcAuthorization,
     PasswordLoginError, PendingOidcLogin, discover_login_flows, finish_oidc_login,
-    login_with_existing_device, login_with_password, login_with_password_blocking,
-    login_with_password_with_store, logout_blocking, map_login_flows_to_desktop,
-    parse_login_discovery, parse_login_discovery_http_response, parse_matrix_login_flows,
-    parse_well_known_client, resolve_active_session_account_management_url, start_oidc_login,
+    login_with_password, login_with_password_blocking, login_with_password_with_new_device,
+    login_with_password_with_store, login_with_password_with_store_and_device, logout_blocking,
+    map_login_flows_to_desktop, parse_login_discovery, parse_login_discovery_http_response,
+    parse_matrix_login_flows, parse_well_known_client,
+    resolve_active_session_account_management_url, start_oidc_login, start_oidc_login_with_store,
+};
+
+pub use login_store::{
+    LocalServerDeviceKeyComparison, SavedCryptoStorePreflight, preflight_saved_crypto_store,
 };
 
 pub use client_session::{
@@ -38,6 +48,7 @@ pub use client_session::{
     MatrixEventCacheStatus, MatrixSlidingSyncInviteListSupport, PersistableAuthKind,
     PersistableMatrixSession, ProvisionalEncryptionSyncError, enable_event_cache, logout,
     restore_session, restore_session_blocking, restore_session_with_store,
+    restore_session_with_verified_store,
 };
 
 pub use e2ee::{

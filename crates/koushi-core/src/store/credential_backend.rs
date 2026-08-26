@@ -121,6 +121,145 @@ impl CredentialStoreBackend {
         }
     }
 
+    pub fn save_local_store_id(
+        &self,
+        key_id: &SessionKeyId,
+        store_id: &koushi_key::LocalStoreId,
+    ) -> Result<(), koushi_key::LocalSecretError> {
+        match self {
+            Self::OsKeychain(store) => store.save_local_store_id(key_id, store_id),
+            #[cfg(any(debug_assertions, test, feature = "qa-bin"))]
+            Self::FileDir(store) => store.save_named(
+                &format!("local-store|{}", key_id.local_unlock_account_name()),
+                store_id.as_str(),
+            ),
+            Self::InMemory(store) => store.save_local_store_id(key_id, store_id),
+        }
+    }
+
+    pub fn load_local_store_id(
+        &self,
+        key_id: &SessionKeyId,
+    ) -> Result<koushi_key::LocalStoreId, koushi_key::LocalSecretError> {
+        match self {
+            Self::OsKeychain(store) => store.load_local_store_id(key_id),
+            #[cfg(any(debug_assertions, test, feature = "qa-bin"))]
+            Self::FileDir(store) => koushi_key::LocalStoreId::parse(&store.load_named(
+                &format!("local-store|{}", key_id.local_unlock_account_name()),
+            )?),
+            Self::InMemory(store) => store.load_local_store_id(key_id),
+        }
+    }
+
+    pub fn delete_local_store_id(
+        &self,
+        key_id: &SessionKeyId,
+    ) -> Result<(), koushi_key::LocalSecretError> {
+        match self {
+            Self::OsKeychain(store) => store.delete_local_store_id(key_id),
+            #[cfg(any(debug_assertions, test, feature = "qa-bin"))]
+            Self::FileDir(store) => store.delete_named(&format!(
+                "local-store|{}",
+                key_id.local_unlock_account_name()
+            )),
+            Self::InMemory(store) => store.delete_local_store_id(key_id),
+        }
+    }
+
+    /// Persist the journal as one named credential for non-vault backends.
+    /// The OS backend stores the same value in the encrypted vault instead.
+    pub fn save_pending_login_journal(
+        &self,
+        value: &str,
+    ) -> Result<(), koushi_key::LocalSecretError> {
+        match self {
+            Self::OsKeychain(store) => store.save_pending_login_journal(value),
+            #[cfg(any(debug_assertions, test, feature = "qa-bin"))]
+            Self::FileDir(store) => {
+                store.save_named(koushi_key::pending_login_journal_account_name(), value)
+            }
+            Self::InMemory(store) => store.save_pending_login_journal(value),
+        }
+    }
+
+    pub fn load_pending_login_journal(
+        &self,
+    ) -> Result<Option<String>, koushi_key::LocalSecretError> {
+        match self {
+            Self::OsKeychain(store) => store.load_pending_login_journal(),
+            #[cfg(any(debug_assertions, test, feature = "qa-bin"))]
+            Self::FileDir(store) => {
+                match store.load_named(koushi_key::pending_login_journal_account_name()) {
+                    Ok(value) => Ok(Some(value)),
+                    Err(error) if koushi_key::is_missing_credential_error(&error) => Ok(None),
+                    Err(error) => Err(error),
+                }
+            }
+            Self::InMemory(store) => match store.load_pending_login_journal() {
+                Ok(value) => Ok(Some(value)),
+                Err(error) if koushi_key::is_missing_credential_error(&error) => Ok(None),
+                Err(error) => Err(error),
+            },
+        }
+    }
+
+    pub fn delete_pending_login_journal(&self) -> Result<(), koushi_key::LocalSecretError> {
+        match self {
+            Self::OsKeychain(store) => store.delete_pending_login_journal(),
+            #[cfg(any(debug_assertions, test, feature = "qa-bin"))]
+            Self::FileDir(store) => {
+                store.delete_named(koushi_key::pending_login_journal_account_name())
+            }
+            Self::InMemory(store) => store.delete_pending_login_journal(),
+        }
+    }
+
+    pub fn save_local_store_migration(
+        &self,
+        value: &str,
+    ) -> Result<(), koushi_key::LocalSecretError> {
+        match self {
+            Self::OsKeychain(store) => store.save_local_store_migration(value),
+            #[cfg(any(debug_assertions, test, feature = "qa-bin"))]
+            Self::FileDir(store) => {
+                store.save_named(koushi_key::local_store_migration_account_name(), value)
+            }
+            Self::InMemory(store) => store.save_local_store_migration(value),
+        }
+    }
+
+    pub fn load_local_store_migration(
+        &self,
+    ) -> Result<Option<String>, koushi_key::LocalSecretError> {
+        match self {
+            Self::OsKeychain(store) => store.load_local_store_migration(),
+            #[cfg(any(debug_assertions, test, feature = "qa-bin"))]
+            Self::FileDir(store) => {
+                match store.load_named(koushi_key::local_store_migration_account_name()) {
+                    Ok(value) => Ok(Some(value)),
+                    Err(error) if koushi_key::is_missing_credential_error(&error) => Ok(None),
+                    Err(error) => Err(error),
+                }
+            }
+            Self::InMemory(store) => match store.load_local_store_migration() {
+                Ok(value) => Ok(Some(value)),
+                Err(error) if koushi_key::is_missing_credential_error(&error) => Ok(None),
+                Err(error) => Err(error),
+            },
+        }
+    }
+
+    pub fn delete_local_store_migration(&self) -> Result<(), koushi_key::LocalSecretError> {
+        match self {
+            Self::OsKeychain(store) => store.delete_local_store_migration(),
+            #[cfg(any(debug_assertions, test, feature = "qa-bin"))]
+            Self::FileDir(store) => {
+                store.delete_named(koushi_key::local_store_migration_account_name())
+            }
+            Self::InMemory(store) => store.delete_local_store_migration(),
+        }
+    }
+
     pub fn delete_matrix_session(
         &self,
         key_id: &SessionKeyId,
@@ -288,6 +427,75 @@ impl OsCredentialStore {
         self.mutate_vault(|data| data.delete_local_unlock_secret(key_id))
     }
 
+    fn save_local_store_id(
+        &self,
+        key_id: &SessionKeyId,
+        store_id: &koushi_key::LocalStoreId,
+    ) -> Result<(), koushi_key::LocalSecretError> {
+        self.mutate_vault(|data| data.upsert_local_store_id(key_id.clone(), store_id.clone()))
+    }
+
+    fn load_local_store_id(
+        &self,
+        key_id: &SessionKeyId,
+    ) -> Result<koushi_key::LocalStoreId, koushi_key::LocalSecretError> {
+        self.read_vault(|data| {
+            data.local_store_id(key_id)
+                .cloned()
+                .ok_or_else(missing_credential_error)
+        })
+    }
+
+    fn delete_local_store_id(
+        &self,
+        key_id: &SessionKeyId,
+    ) -> Result<(), koushi_key::LocalSecretError> {
+        self.mutate_vault(|data| data.delete_local_store_id(key_id))
+    }
+
+    fn save_pending_login_journal(&self, value: &str) -> Result<(), koushi_key::LocalSecretError> {
+        let records: Vec<crate::credential_vault::PendingLoginRecord> =
+            serde_json::from_str(value).map_err(koushi_key::LocalSecretError::Json)?;
+        self.mutate_vault(|data| *data.pending_logins_mut() = records)
+    }
+
+    fn load_pending_login_journal(&self) -> Result<Option<String>, koushi_key::LocalSecretError> {
+        self.read_vault(|data| {
+            if data.pending_logins().is_empty() {
+                Ok(None)
+            } else {
+                serde_json::to_string(data.pending_logins())
+                    .map(Some)
+                    .map_err(koushi_key::LocalSecretError::Json)
+            }
+        })
+    }
+
+    fn delete_pending_login_journal(&self) -> Result<(), koushi_key::LocalSecretError> {
+        self.mutate_vault(|data| data.pending_logins_mut().clear())
+    }
+
+    fn save_local_store_migration(&self, value: &str) -> Result<(), koushi_key::LocalSecretError> {
+        let migration: crate::credential_vault::LocalStoreMigrationRecord =
+            serde_json::from_str(value).map_err(koushi_key::LocalSecretError::Json)?;
+        self.mutate_vault(|data| data.set_local_store_migration(migration))
+    }
+
+    fn load_local_store_migration(&self) -> Result<Option<String>, koushi_key::LocalSecretError> {
+        self.read_vault(|data| {
+            data.local_store_migration()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(koushi_key::LocalSecretError::Json)
+        })
+    }
+
+    fn delete_local_store_migration(&self) -> Result<(), koushi_key::LocalSecretError> {
+        self.mutate_vault(|data| {
+            data.clear_local_store_migration();
+        })
+    }
+
     fn save_matrix_session(
         &self,
         key_id: &SessionKeyId,
@@ -429,6 +637,12 @@ impl OsCredentialStore {
                 .vault_file
                 .load(&master_key)
                 .map_err(vault_error_to_local_secret_error)?;
+            if data.payload_version() == 1 {
+                self.vault_file
+                    .store(&master_key, &data)
+                    .map_err(vault_error_to_local_secret_error)?;
+                data.mark_current_version();
+            }
             let pending = data.legacy_cleanup_pending().to_vec();
             if !pending.is_empty() && self.cleanup_legacy_credentials(&pending) {
                 let mut cleaned = data.clone();

@@ -46,6 +46,8 @@ zeroize = "1"
 matrix-sdk = { workspace = true, features = ["bundled-sqlite"] }
 
 [dev-dependencies]
+# Integration tests need the crate's test-hooks feature on the SDK itself.
+koushi-sdk = { path = ".", features = ["test-hooks"] }
 matrix-sdk = { workspace = true, features = ["testing"] }
 matrix-sdk-test = { workspace = true }
 tempfile = "3"

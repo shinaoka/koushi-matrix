@@ -1,15 +1,51 @@
 use super::event_wait::{
-    wait_for_logged_out, wait_for_operation_failed_and_signed_out, wait_for_ready_snapshot,
-    wait_for_session_restored, wait_for_sync_stopped,
+    QaEventDeadline, wait_for_logged_out, wait_for_operation_failed_and_signed_out,
+    wait_for_ready_snapshot, wait_for_session_restored, wait_for_sync_stopped,
 };
 use super::participants::{
     QaOwnedRuntimeParticipant, QaParticipantLoginOutcome,
     cleanup_owned_e2ee_participant_best_effort,
 };
 use super::{
-    AccountCommand, AccountKey, CoreCommand, CoreConnection, CoreFailure, CoreRuntime, Future,
-    SyncCommand,
+    AccountCommand, AccountKey, CoreCommand, CoreConnection, CoreEvent, CoreFailure, CoreRuntime,
+    Future, RoomCommand, RoomEvent, SyncCommand,
 };
+
+pub(super) async fn leave_e2ee_login_store_room(
+    conn: &mut CoreConnection,
+    room_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Room(RoomCommand::LeaveRoom {
+        request_id,
+        room_id: room_id.to_owned(),
+    }))
+    .await
+    .map_err(|_| format!("{label}: submit room leave failed"))?;
+
+    let deadline = QaEventDeadline::after(super::registry::E2EE_EVENT_TIMEOUT);
+    loop {
+        let event = deadline
+            .recv(conn)
+            .await
+            .map_err(|_| format!("{label}: room leave timed out"))?
+            .map_err(|_| format!("{label}: room leave event stream failed"))?;
+        match event {
+            CoreEvent::Room(RoomEvent::RoomLeft {
+                request_id: event_request_id,
+                room_id: event_room_id,
+            }) if event_request_id == request_id && event_room_id == room_id => return Ok(()),
+            CoreEvent::OperationFailed {
+                request_id: event_request_id,
+                ..
+            } if event_request_id == request_id => {
+                return Err(format!("{label}: room leave operation failed"));
+            }
+            _ => {}
+        }
+    }
+}
 
 pub(super) async fn cleanup_after_login_sync(
     mut conn_a: CoreConnection,

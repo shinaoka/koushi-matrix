@@ -316,6 +316,49 @@ fn login_discovery_fails_open_when_well_known_is_missing() {
 }
 
 #[test]
+fn sso_completion_keeps_the_pre_auth_persistent_store_and_requested_device() {
+    let homeserver = spawn_legacy_sso_server();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build");
+    let store = tempfile::tempdir().expect("persistent SSO store");
+    let config = koushi_sdk::MatrixClientStoreConfig::new(
+        store.path(),
+        koushi_sdk::MatrixClientStoreKey::new([55; 32]),
+    );
+
+    runtime.block_on(async {
+        let (pending, _) = koushi_sdk::start_oidc_login_with_store(
+            &homeserver,
+            "koushi-desktop://auth/callback",
+            Some(&config),
+            Some("SSODEVICE"),
+            false,
+        )
+        .await
+        .expect("persistent SSO authorization");
+        let session = koushi_sdk::finish_oidc_login(
+            pending,
+            "koushi-desktop://auth/callback?loginToken=synthetic",
+        )
+        .await
+        .expect("persistent SSO completion");
+        assert_eq!(session.info.device_id, "SSODEVICE");
+        drop(session);
+        assert_eq!(
+            koushi_sdk::preflight_saved_crypto_store(
+                &config,
+                Some("@sso:example.invalid"),
+                Some("SSODEVICE"),
+            )
+            .await,
+            koushi_sdk::SavedCryptoStorePreflight::PresentMatching,
+        );
+    });
+}
+
+#[test]
 fn discovers_login_flows_over_http() {
     let homeserver = spawn_login_discovery_server(
         200,
@@ -456,11 +499,26 @@ fn spawn_legacy_sso_server() -> String {
                 .expect("test server should read request");
             let request = String::from_utf8_lossy(&request[..bytes_read]);
             let (status, body) = if request.starts_with("GET /_matrix/client/v3/login HTTP/1.1") {
-                (200, r#"{"flows":[{"type":"m.login.sso"}]}"#)
+                (200, r#"{"flows":[{"type":"m.login.sso"}]}"#.to_owned())
             } else if request.starts_with("GET /_matrix/client/versions HTTP/1.1") {
-                (200, r#"{"versions":["v1.1","v1.2","v1.3"]}"#)
+                (200, r#"{"versions":["v1.1","v1.2","v1.3"]}"#.to_owned())
+            } else if request.starts_with("POST /_matrix/client/v3/login HTTP/1.1") {
+                let device_id = request
+                    .split_once("\r\n\r\n")
+                    .and_then(|(_, body)| serde_json::from_str::<serde_json::Value>(body).ok())
+                    .and_then(|body| body["device_id"].as_str().map(str::to_owned))
+                    .unwrap_or_else(|| "SSODEVICE".to_owned());
+                (
+                    200,
+                    format!(
+                        r#"{{"access_token":"sso-token","device_id":"{device_id}","user_id":"@sso:example.invalid"}}"#
+                    ),
+                )
             } else {
-                (404, r#"{"errcode":"M_NOT_FOUND","error":"not found"}"#)
+                (
+                    404,
+                    r#"{"errcode":"M_NOT_FOUND","error":"not found"}"#.to_owned(),
+                )
             };
 
             let response = format!(

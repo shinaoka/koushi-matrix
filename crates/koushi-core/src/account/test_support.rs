@@ -286,6 +286,8 @@ pub(super) fn spawn_named_quarantine_password_server_with_controls(
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("address");
+    let uploaded_device_keys = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let uploaded_device_keys_for_server = uploaded_device_keys.clone();
     std::thread::spawn(move || {
         'accept: while let Ok((mut stream, _)) = listener.accept() {
             let mut request = Vec::new();
@@ -334,9 +336,24 @@ pub(super) fn spawn_named_quarantine_password_server_with_controls(
                     r#"{{"versions":["v1.7"],"unstable_features":{{"org.matrix.simplified_msc3575":{sliding_sync_supported}}}}}"#
                 )
             } else if text.contains("/_matrix/client/") && text.contains("login") {
+                let requested_device_id = text
+                    .split_once("\r\n\r\n")
+                    .and_then(|(_, body)| serde_json::from_str::<serde_json::Value>(body).ok())
+                    .and_then(|body| body["device_id"].as_str().map(str::to_owned))
+                    .unwrap_or_else(|| device_id.to_owned());
                 format!(
-                    r#"{{"access_token":"fixture-token","device_id":"{device_id}","user_id":"{user_id}"}}"#
+                    r#"{{"access_token":"fixture-token","device_id":"{requested_device_id}","user_id":"{user_id}"}}"#
                 )
+            } else if text.contains("/_matrix/client/") && text.contains("/keys/upload") {
+                if let Some((_, request_body)) = text.split_once("\r\n\r\n")
+                    && let Ok(request) = serde_json::from_str::<serde_json::Value>(request_body)
+                    && !request["device_keys"].is_null()
+                {
+                    *uploaded_device_keys_for_server
+                        .lock()
+                        .expect("uploaded device keys lock") = Some(request["device_keys"].clone());
+                }
+                r#"{"one_time_key_counts":{}}"#.to_owned()
             } else if text.contains("/_matrix/client/") && text.contains("/keys/query") {
                 if let Some(control) = key_query_control.as_ref() {
                     control
@@ -346,7 +363,25 @@ pub(super) fn spawn_named_quarantine_password_server_with_controls(
                         std::thread::sleep(Duration::from_millis(5));
                     }
                 }
-                r#"{"device_keys":{},"failures":{}}"#.to_owned()
+                let uploaded = uploaded_device_keys_for_server
+                    .lock()
+                    .expect("uploaded device keys lock")
+                    .clone();
+                if let Some(keys) = uploaded {
+                    let user = keys["user_id"].as_str().unwrap_or(user_id).to_owned();
+                    let device = keys["device_id"].as_str().unwrap_or(device_id).to_owned();
+                    let mut devices = serde_json::Map::new();
+                    devices.insert(device, keys);
+                    let mut users = serde_json::Map::new();
+                    users.insert(user, serde_json::Value::Object(devices));
+                    serde_json::json!({
+                        "device_keys": serde_json::Value::Object(users),
+                        "failures": {}
+                    })
+                    .to_string()
+                } else {
+                    r#"{"device_keys":{},"failures":{}}"#.to_owned()
+                }
             } else if text.contains("/_matrix/client/") && text.contains("/sync") {
                 std::thread::sleep(Duration::from_millis(20));
                 r#"{"next_batch":"batch","device_lists":{"changed":[],"left":[]},"rooms":{"invite":{},"join":{},"leave":{},"knock":{}},"to_device":{"events":[]},"presence":{"events":[]},"account_data":{"events":[]},"device_one_time_keys_count":{}}"#.to_owned()

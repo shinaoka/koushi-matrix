@@ -539,7 +539,7 @@ fn shared_primary_login_always_completes_the_new_identity_gate() {
     // from it; the gate completion must be unconditional.
     let source = production_source();
     let shared_login = source
-        .split("--- Login A (storeless exchange + store bootstrap inside the actor) ---")
+        .split("--- Login A (persistent store selected before authentication) ---")
         .nth(1)
         .expect("shared primary login route")
         .split("wait_for_logged_in(&mut conn_a, login_a_id")
@@ -621,7 +621,7 @@ fn scenarios_that_must_not_bootstrap_return_before_the_shared_login() {
         .split("async fn run_async")
         .nth(1)
         .expect("run_async body")
-        .split("--- Login A (storeless exchange + store bootstrap inside the actor) ---")
+        .split("--- Login A (persistent store selected before authentication) ---")
         .next()
         .expect("shared primary login follows the early returns");
     for marker in [

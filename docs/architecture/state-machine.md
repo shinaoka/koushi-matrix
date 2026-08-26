@@ -8,7 +8,7 @@ fixture/demo backend contract mentioned below is historical (dev/demo only).
 The state-transition diagrams in this document are normative and must track the
 reducer; see [Maintenance Contract](#maintenance-contract).
 
-Date: 2026-08-25
+Date: 2026-08-26
 
 ## Contract
 
@@ -102,6 +102,8 @@ stateDiagram-v2
     Ready --> Locked: SessionAuthenticationInvalidated [UnknownToken + soft_logout]
     Ready --> CapabilityBlocked: Revalidation Unsupported(matching epoch + request)
     Ready --> LoggingOut: LogoutRequested
+    Locked --> Locked: SoftLogoutReauth retry / cancel / retryable failure
+    Locked --> Provisional: store-backed reauth + identity continuity matched
     Locked --> LoggingOut: LogoutRequested
     Locked --> CapabilityBlocked: in-flight revalidation Unsupported(matching epoch + request)
     LoggingOut --> SignedOut: LogoutFinished
@@ -123,6 +125,82 @@ diagnostics keep SDK recheck failure classification (`authentication`,
 `network`, `server`, or `sdk`) separate from `core.account` UnknownToken
 receipt/admission, correlated by trust generation where available and without
 IDs, tokens, or response text.
+
+`SessionState::Locked` has an AccountActor-owned client-presence submachine. It
+is not a second reducer session variant:
+
+```mermaid
+stateDiagram-v2
+    [*] --> LockedWithClient: UnknownToken
+    LockedWithClient --> ReauthPreparing: password / OAuth / SSO retry accepted
+    ReauthPreparing --> LockedWithClient: cancelled before client retirement
+    ReauthPreparing --> LockedWithoutClient: stop+join owners / drop invalid client
+    LockedWithoutClient --> Reauthenticating: saved DB/account preflight matched
+    Reauthenticating --> [*]: auth + device identity + admission succeeded
+    Reauthenticating --> LockedWithoutClient: bad credentials / cancelled / network / identity mismatch
+    LockedWithClient --> ResetRequired: local crypto missing / corrupt / mismatch
+    LockedWithoutClient --> ResetRequired: local crypto missing / corrupt / mismatch
+```
+
+While `LockedWithoutClient`, password/OAuth/SSO reauth, explicit logout, and
+local reset remain admitted. Every command requiring a live SDK session rejects
+with one correlated typed failure. No invalidated token is restored merely to
+recreate a Locked client handle. Reauth builds a replacement client with the
+matching persistent store before authorization and promotes it directly.
+
+Saved-device admission also owns a pre-provisional identity-continuity machine:
+
+```mermaid
+stateDiagram-v2
+    [*] --> LocalChecking
+    LocalChecking --> LocalMatched: existing DB readable + expected Olm account
+    LocalChecking --> Refused: missing / open failed / wrong key or account
+    LocalMatched --> ServerChecking: store-backed authentication succeeded
+    LocalMatched --> Refused: authentication failed / returned user-device mismatch
+    ServerChecking --> Matched: advertised device keys match local Olm keys
+    ServerChecking --> RetryableUnknown: network / incomplete response
+    ServerChecking --> Refused: key mismatch
+    Matched --> Admitted: install provisional session
+    RetryableUnknown --> ServerChecking: explicit retry
+    RetryableUnknown --> Refused: explicit cancel / replacement
+    Refused --> [*]: typed failure after client drop + local account revalidation
+```
+
+`Unknown` is never a match. Online saved login/reauth uses a fresh keys query.
+Offline restore may use the persisted device view; the required first encryption
+sync generation refreshes device keys before encrypted send admission, and any
+mismatch re-enters quarantine. Fresh authentication journals its persistent store
+and generated Matrix device ID before network authorization, retains resumable
+`PreAuth` then `BoundTokenless` state until verified token persistence, and
+promotes the exact authenticated client without restore/transplant. Journal
+callbacks are allocation/generation-fenced; explicit abandon is exact-root and
+crash-recoverable, while an ambiguous root can only be forgotten without
+filesystem deletion after separate confirmation.
+
+Fresh authentication allocations use this actor/store-owned journal machine:
+
+```mermaid
+stateDiagram-v2
+    [*] --> PreAuth: durable allocation + generated device ID before network
+    PreAuth --> PreAuth: callback generation replaced / cancelled / ambiguous failure
+    PreAuth --> BoundTokenless: authentication identity returned / atomic bind
+    PreAuth --> Abandoning: explicit abandon
+    BoundTokenless --> PersistedSession: authoritative Verified / atomic token persistence
+    BoundTokenless --> BoundTokenless: restart / capability or verification retry
+    BoundTokenless --> Abandoning: explicit abandon
+    Abandoning --> [*]: exact validated root deleted + parent synced
+    Abandoning --> Abandoning: invalid or ambiguous root / fail closed for explicit local reset
+```
+
+At most one resumable allocation exists per normalized homeserver/auth method
+and eight total. There is no TTL. Immediate non-journal cleanup requires closed
+`NoRequestSent` or `ServerRejectedBeforeSession` evidence; transport failure,
+timeout, browser cancellation, callback loss, and token-exchange ambiguity stay
+resumable. `Abandoning` is persisted before root deletion and resumes after process
+interruption. An invalid or ambiguous root remains fail closed until the
+existing explicitly confirmed local-data reset; the journal never speculatively
+deletes it. Startup validates exact root ownership, rejects duplicates/collisions,
+and never silently chooses or expires state.
 
 Simplified Sliding Sync capability admission is a Rust-owned state slice that
 fences every completion by both account epoch and request ID. It runs before

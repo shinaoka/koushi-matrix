@@ -31,6 +31,23 @@ use wiremock::{
 const FAST_SEND_QUEUE_SLIDING_SYNC_PATH: &str =
     "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync";
 
+#[derive(Clone)]
+struct EchoRequestedLoginDevice;
+
+impl Respond for EchoRequestedLoginDevice {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).expect("login request JSON");
+        let device_id = body["device_id"]
+            .as_str()
+            .expect("fresh login generated device id");
+        ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "synthetic-access-token",
+            "device_id": device_id,
+            "user_id": "@fast-send-queue:localhost"
+        }))
+    }
+}
+
 struct FastSendQueueSlidingSyncResponder {
     room_id: String,
     request_count: AtomicUsize,
@@ -1867,7 +1884,12 @@ async fn run_fast_send_queue_feedback() {
         .ok()
         .mount()
         .await;
-    server.mock_login().ok().mock_once().mount().await;
+    Mock::given(method("POST"))
+        .and(path("/_matrix/client/v3/login"))
+        .respond_with(EchoRequestedLoginDevice)
+        .expect(1)
+        .mount(&server.server())
+        .await;
     server
         .mock_room_state_encryption()
         .ignore_access_token()

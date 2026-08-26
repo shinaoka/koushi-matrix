@@ -5,7 +5,7 @@ Dated specs and plans under `docs/superpowers/` are implementation guides
 toward this document and must not contradict it. Amend this document first
 when a design change is needed, then update or supersede the affected specs.
 
-Last amended: 2026-08-25.
+Last amended: 2026-08-26.
 
 The evidence-based classification of remaining frontend-owned resources and
 semantic migration candidates is maintained in
@@ -410,18 +410,31 @@ An in-process actor system in `koushi-core`:
 - `StoreActor` — credential store access, store/search keys, per-account
   paths, cleanup, debug/test secret injection policy.
 
-**Account store bootstrap invariant.** Per-account store paths derive from
-`homeserver|user|device`, so the device id — and therefore the store path —
-is unknown until the password exchange completes. First login therefore runs
-on a storeless client, and that client must never sync or initialize
-encryption: immediately after login the session is persisted and restored
-into the per-account encrypted store, and only the store-backed session may
-start sync or any E2EE traffic. This preserves the device's crypto identity
-across restarts; the fail-closed local-encryption rule applies to the store
-creation step. `SwitchAccount` is the ordered shutdown of the current
-account runtime (without clearing credentials or stores) followed by a
-store-backed restore of the target account; phases that do not yet have the
-affected children treat those shutdown steps as no-ops.
+**Account store bootstrap invariant.** Authentication never runs on a memory-
+store client. Before password, OAuth, SSO, restore, or soft-logout reauth can
+activate E2EE, `StoreActor` selects an encrypted persistent SDK/search store by
+an opaque random local store ID and builds the authentication client with it.
+Fresh authentication journals that store, its unlock secret, and a generated
+Matrix device ID before network authorization; `PreAuth` and bound-tokenless
+journal states remain resumable until verified promotion atomically persists
+tokens. The exact authenticated client is promoted directly through capability
+and verification admission—Koushi never authenticates a disposable client or
+transplants its session into another client.
+
+Saved-device login, restore, and reauth require the existing crypto DB before
+SDK builder use, open it with the saved key, and load the expected user/device
+Olm account. Online saved-device authentication and reauth compare that account
+to a fresh server device-key query before provisional installation. Offline
+restore compares the persisted local device view so startup remains available;
+the next encryption sync refreshes device keys and the authoritative trust gate
+quarantines any mismatch before normal encrypted use. Missing, corrupt,
+wrong-key, wrong-account, mismatched, or unknown state fails closed and never
+recreates crypto under the saved device ID. Legacy identity-slug store roots migrate once, unopened, into
+the opaque-ID layout through a durable, resumable same-volume rename. Soft-
+logout may retain a client-free actor-owned Locked record after the invalid
+client is dropped; only reauth, logout, and local-reset commands are admitted
+until a matching store-backed client is authenticated. `SwitchAccount` remains
+ordered shutdown followed by the same non-creating store-backed restore.
 
 **Keyed SDK media-store invariant.** The account-keyed `SqliteStoreConfig` is
 also the configuration used by the SDK `SqliteMediaStore`; supplying a separate

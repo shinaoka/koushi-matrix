@@ -6,7 +6,7 @@ glue. Vendored upstream code must keep its original license and copyright
 notices; local changes to vendored code must remain easy to upstream or
 revert.
 
-Last amended: 2026-08-21.
+Last amended: 2026-08-26.
 
 ## Read Order And Authority
 
@@ -319,6 +319,21 @@ conflict is being resolved.
 - Missing, corrupt, or inaccessible OS secrets MUST fail closed. The app may
   offer a local-state reset flow, but it must not silently recreate keys while
   keeping unreadable encrypted data.
+- A crypto-capable authentication client MUST be built with its encrypted
+  persistent SDK store before password, OAuth, SSO, restore, or reauthentication
+  activates E2EE. Authentication and active use keep that exact client; a
+  memory-store login followed by session transplant is prohibited.
+- Reusing a saved Matrix device ID requires a non-creating preflight of its
+  existing crypto DB and expected local Olm account. Online authentication and
+  reauth also require a fresh server device-key match. Offline restore may use
+  the persisted device view, but the required first encryption-sync generation
+  refreshes it before encrypted send admission. Missing, unreadable,
+  wrong-account, mismatched, or unknown state fails closed and must never create
+  replacement crypto under that device ID.
+- Fresh-login stores and generated device IDs are durably journaled before
+  network authorization and remain resumable through verified token
+  persistence. Journal cleanup is explicit, generation-fenced, exact-root-only,
+  and crash-recoverable; ambiguous roots are never deleted speculatively.
 - Key bytes and passphrases should use zeroizing containers where practical
   and should be kept out of long-lived UI state.
 - Standard outbound Megolm pre-share is the authoritative production path for

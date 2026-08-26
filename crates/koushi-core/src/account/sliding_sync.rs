@@ -425,27 +425,14 @@ impl AccountActor {
                 action,
                 ready_events,
                 ..
-            } => match self.restore_into_store(&persistable, &key_id).await {
-                Ok(store_backed) => {
-                    self.stored_sliding_sync_admission = None;
-                    drop(login_session);
-                    self.install_provisional_session(store_backed, persistable, key_id, action)
-                        .await;
-                    self.pending_ready_events.extend(ready_events);
-                }
-                Err(failure) => {
-                    self.abort_login(login_session, &key_id, false, true).await;
-                    self.emit_failure(core_request_id, failure);
-                    self.send_actions(vec![AppAction::LoginFailed {
-                        attempt_id: LoginAttemptId::new(
-                            core_request_id.connection_id.0,
-                            core_request_id.sequence,
-                        ),
-                        message: "login failed".to_owned(),
-                    }])
+            } => {
+                self.stored_sliding_sync_admission = None;
+                self.prepare_store_backed_session(&login_session, true)
                     .await;
-                }
-            },
+                self.install_provisional_session(login_session, persistable, key_id, action)
+                    .await;
+                self.pending_ready_events.extend(ready_events);
+            }
             PendingSlidingSyncAdmission::StoredSessionRestore {
                 core_request_id,
                 persistable,

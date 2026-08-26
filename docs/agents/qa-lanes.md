@@ -70,6 +70,7 @@ binary.
 | `credential_health` | credential-store health probe under the debug/test file credential-store guard; must refuse to touch the OS keychain | — |
 | `native_attention` | notification/badge projection | `notification_candidate=ok`, `badge_state=ok`, `suppress_focus=ok`, `clear_badge=ok` |
 | `e2ee_trust` | cross-signing bootstrap, key-backup upload, wrong-secret restore failure, passphrase restore on a second device, SAS verification, identity reset | token-only |
+| `e2ee_login_store` | persistent-store-first fresh/saved/restore/restart/reauth identity continuity; offline and online index-0 delivery in DM and three-user encrypted room | `e2ee_login_store_fresh_offline_index0=ok`, `e2ee_login_store_restore_offline_index0=ok`, `e2ee_login_store_restart_offline_index0=ok`, `e2ee_login_store_reauth_offline_index0=ok`, `e2ee_login_store_online_index0=ok`, `e2ee_login_store_group_index0=ok`, `e2ee_login_store_identity_stable=ok`, `e2ee_login_store=ok` |
 | `device_cleanup` | remote-first device removal, audited against the raw homeserver device list from a separate short-lived audit session, which is then deleted | token-only |
 | `gate_restore`, `gate_negative`, `gate_no_proof` | verification-gate paths | `gate_new_identity_bootstrap=ok` |
 | `invites_dm` | invite receipt/accept/decline and DM start | `invite_recv=ok`, `invite_accept=ok`, `invite_decline=ok`, `dm_start=ok` |

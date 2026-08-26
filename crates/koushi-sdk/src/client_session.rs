@@ -63,6 +63,14 @@ impl MatrixClientStoreConfig {
         self.cache_path.as_deref()
     }
 
+    pub(crate) fn sdk_store_key(&self) -> &[u8; 32] {
+        self.key.expose_key()
+    }
+
+    pub(crate) fn crypto_database_path(&self) -> PathBuf {
+        self.path.join("matrix-sdk-crypto.sqlite3")
+    }
+
     /// The store is keyed by construction: `MatrixClientStoreConfig::new`
     /// requires a [`MatrixClientStoreKey`], and `apply_to_builder` always
     /// passes that key into the SQLite store config.
@@ -459,6 +467,32 @@ pub async fn restore_session_with_store(
         diagnostic_counters,
         info: session.info.clone(),
     })
+}
+
+pub async fn restore_session_with_verified_store(
+    session: &PersistableMatrixSession,
+    store_config: &MatrixClientStoreConfig,
+) -> Result<MatrixClientSession, PasswordLoginError> {
+    let identity = crate::login_store::load_saved_crypto_store_identity(
+        store_config,
+        Some(&session.info.user_id),
+        Some(&session.info.device_id),
+    )
+    .await
+    .map_err(PasswordLoginError::SavedCryptoStore)?;
+    let restored = restore_session_with_store(session, Some(store_config)).await?;
+    if crate::login_store::compare_cached_device_keys_with_saved_identity(
+        &restored.client,
+        &identity,
+    )
+    .await
+        != crate::LocalServerDeviceKeyComparison::Match
+    {
+        return Err(PasswordLoginError::SavedCryptoStore(
+            crate::SavedCryptoStorePreflight::IdentityMismatch,
+        ));
+    }
+    Ok(restored)
 }
 
 pub async fn enable_event_cache(

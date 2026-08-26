@@ -12,7 +12,7 @@ fn all_session_constructors_leave_the_per_send_backup_fence_disabled() {
                     .count()
             })
             .sum::<usize>(),
-        4
+        3
     );
     assert!(sources.iter().all(|(_, source)| {
         !source.contains("require_secure_backup_for_encrypted_sends(true)")

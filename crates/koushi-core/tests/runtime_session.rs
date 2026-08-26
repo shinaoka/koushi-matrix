@@ -14,10 +14,41 @@ use koushi_state::{
     SessionState, SessionStatusRefreshTrigger, SlidingSyncCapabilityState,
     StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind,
 };
-use matrix_sdk::{
-    ruma::{device_id, user_id},
-    test_utils::mocks::{LoginResponseTemplate200, MatrixMockServer},
+use matrix_sdk::test_utils::mocks::MatrixMockServer;
+use wiremock::{
+    Mock, Request, Respond, ResponseTemplate,
+    matchers::{method, path},
 };
+
+#[derive(Clone)]
+struct EchoLoginDevice {
+    token: &'static str,
+    user_id: &'static str,
+}
+
+impl Respond for EchoLoginDevice {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: serde_json::Value =
+            serde_json::from_slice(&request.body).expect("login request JSON");
+        let device_id = body["device_id"]
+            .as_str()
+            .expect("fresh login generated device id");
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": self.token,
+            "device_id": device_id,
+            "user_id": self.user_id,
+        }))
+    }
+}
+
+async fn mount_echo_login(server: &MatrixMockServer, token: &'static str, user_id: &'static str) {
+    Mock::given(method("POST"))
+        .and(path("/_matrix/client/v3/login"))
+        .respond_with(EchoLoginDevice { token, user_id })
+        .expect(1)
+        .mount(&server.server())
+        .await;
+}
 
 #[tokio::test]
 async fn password_command_projects_authentication_before_account_actor_completion() {
@@ -72,7 +103,7 @@ async fn password_login_capability_gate_round_trips_through_reducer_effects() {
         .ok()
         .mount()
         .await;
-    server.mock_login().ok().mock_once().mount().await;
+    mount_echo_login(&server, "synthetic-token", "@reducer-gate:localhost").await;
     let data_dir = tempfile::tempdir().expect("runtime data directory");
     let credential_dir = tempfile::tempdir().expect("runtime credential directory");
     let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
@@ -122,16 +153,7 @@ async fn account_switch_capability_gate_round_trips_through_reducer_effects() {
         .ok()
         .mount()
         .await;
-    server_a
-        .mock_login()
-        .ok_with(LoginResponseTemplate200::new(
-            "token-a",
-            device_id!("DEVICEA"),
-            user_id!("@alpha:localhost"),
-        ))
-        .mock_once()
-        .mount()
-        .await;
+    mount_echo_login(&server_a, "token-a", "@alpha:localhost").await;
     server_a
         .mock_logout()
         .ignore_access_token()
@@ -147,16 +169,7 @@ async fn account_switch_capability_gate_round_trips_through_reducer_effects() {
         .ok()
         .mount()
         .await;
-    server_b
-        .mock_login()
-        .ok_with(LoginResponseTemplate200::new(
-            "token-b",
-            device_id!("DEVICEB"),
-            user_id!("@beta:localhost"),
-        ))
-        .mock_once()
-        .mount()
-        .await;
+    mount_echo_login(&server_b, "token-b", "@beta:localhost").await;
 
     let data_dir = tempfile::tempdir().expect("runtime data directory");
     let credential_dir = tempfile::tempdir().expect("runtime credential directory");

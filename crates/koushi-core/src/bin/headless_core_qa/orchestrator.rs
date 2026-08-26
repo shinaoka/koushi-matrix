@@ -23,9 +23,10 @@ use super::registry::{
     should_run_normal_secondary_participant,
 };
 use super::scenario_identity::{
-    run_credential_health_stage, run_e2ee_trust_stage, run_encryption_debug_stage,
-    run_gate_negative_stage, run_gate_no_proof_stage, run_gate_restore_stage,
-    run_native_attention_stage, run_provisional_device_cleanup_qa, run_session_status_stage,
+    run_credential_health_stage, run_e2ee_login_store_scenario, run_e2ee_trust_stage,
+    run_encryption_debug_stage, run_gate_negative_stage, run_gate_no_proof_stage,
+    run_gate_restore_stage, run_native_attention_stage, run_provisional_device_cleanup_qa,
+    run_session_status_stage,
 };
 use super::scenario_read_state::run_read_state_convergence_scenario;
 use super::scenario_rooms::{
@@ -107,13 +108,18 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
         run_focused_send_queue_scenario(&config).await?;
         return Ok(scenario_report(&config.server_kind, scenario));
     }
+    if scenario == QaScenario::E2eeLoginStore {
+        println!("safety=ok");
+        run_e2ee_login_store_scenario(&config).await?;
+        return Ok(scenario_report(&config.server_kind, scenario));
+    }
 
     // One CoreRuntime per synthetic user (two-device topology).
     let data_dir_a = qa_data_dir("a");
     let data_dir_b = qa_data_dir("b");
 
     // -----------------------------------------------------------------------
-    // --- Login A (storeless exchange + store bootstrap inside the actor) ---
+    // --- Login A (persistent store selected before authentication) ---
     // -----------------------------------------------------------------------
     let mut runtime_a = CoreRuntime::start_with_data_dir(data_dir_a.clone());
     let mut conn_a = runtime_a.attach();

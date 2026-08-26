@@ -394,7 +394,8 @@ mod tests {
             .expect("save encrypted read-state outbox");
 
         second
-            .account_store_config(&key_id)
+            .credential_backend()
+            .save(&key_id, &koushi_key::LocalUnlockSecret::generate())
             .expect("create a different unlock secret");
         assert!(matches!(
             second.load_read_state_outbox(&key_id),

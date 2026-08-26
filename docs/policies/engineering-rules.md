@@ -7,7 +7,7 @@ build gates. AGENTS.md remains the operational how-to (permissions, install
 caveats, recovery steps); durable rules discovered there are promoted to
 REPOSITORY_RULES.md or this document.
 
-Last amended: 2026-08-25.
+Last amended: 2026-08-26.
 
 ## Design Simplicity
 
@@ -253,6 +253,22 @@ Rules:
    expose only aliases, closed states, count/time
    buckets, and unchanged-index facts—not identifiers, keys, sync positions,
    request data, content, or raw errors.
+   Every crypto-capable authentication flow is persistent-store-first. Core
+   journals a fresh encrypted local store and generated Matrix device ID before
+   password/OAuth/SSO authorization, retains pre-auth and bound-tokenless states
+   until verified token persistence, and promotes the authenticated client
+   directly. Saved-device login/restore/reauth performs a non-creating DB/account
+   preflight. Online authentication/reauth requires a fresh server device-key
+   match; offline restore uses the persisted device view and relies on the
+   mandatory first encryption-sync generation to refresh keys before encrypted
+   send admission. Unknown or mismatch remains fail closed. Soft logout may retain a client-free
+   actor Locked record after ordered owner shutdown; ordinary live-session
+   commands reject until a store-backed reauth succeeds. Pending allocation
+   callbacks are allocation/generation-fenced, bounded, redacted, resumable, and
+   removed only by exact-root crash-safe abandon; invalid or ambiguous roots
+   remain fail closed until explicit local-data reset. No memory-store authenticated client, session transplant,
+   silent crypto recreation, automatic expiry, or speculative root deletion is
+   permitted.
    Authentication alone is not session admission. Until the SDK
    current-device verification state is authoritatively `Verified`, the SDK
    session is AccountActor-owned and quarantined: no normal sync children,

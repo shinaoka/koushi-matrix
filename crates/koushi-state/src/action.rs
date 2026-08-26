@@ -131,6 +131,10 @@ pub enum AppAction {
     SoftLogoutReauthSucceeded {
         request_id: u64,
     },
+    SoftLogoutReauthSessionInstalled {
+        request_id: u64,
+        info: SessionInfo,
+    },
     SoftLogoutReauthFailed {
         request_id: u64,
         kind: AuthFailureKind,

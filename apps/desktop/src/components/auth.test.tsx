@@ -112,7 +112,8 @@ describe("AuthScreen", () => {
     expect(screen.getByRole("alert").textContent).toContain("sign-in required");
   });
 
-  it("renders locked sessions as password-only reauthentication", () => {
+  it("renders locked sessions with password and discovered OIDC reauthentication", () => {
+    const onStartOidcLogin = vi.fn();
     render(
       <AuthScreen
         deviceName="Koushi test"
@@ -127,13 +128,25 @@ describe("AuthScreen", () => {
             user_id: "@alice:matrix.org",
             device_id: "DEVICE",
           },
+          auth: {
+            kind: "ready",
+            homeserver: "https://matrix.org",
+            flows: [
+              {
+                kind: "oidc",
+                delegated_oidc_compatibility: true,
+                display_name: "Continue with provider",
+              },
+            ],
+            delegated: { registration_url: null },
+          },
         })}
         username=""
         onDeviceNameChange={vi.fn()}
         onDiscoverLoginMethods={vi.fn()}
         onHomeserverChange={vi.fn()}
         onPasswordPresenceChange={vi.fn()}
-        onStartOidcLogin={vi.fn()}
+        onStartOidcLogin={onStartOidcLogin}
         onSubmit={vi.fn()}
         onUsernameChange={vi.fn()}
       />,
@@ -144,7 +157,9 @@ describe("AuthScreen", () => {
     expect(screen.queryByLabelText("Username")).toBeNull();
     expect(screen.queryByText("Device name")).toBeNull();
     expect(screen.getByLabelText("Password")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
+    screen.getByRole("button", { name: "Continue with provider" }).click();
+    expect(onStartOidcLogin).toHaveBeenCalledTimes(1);
   });
 
   it("offers OIDC login when discovery reports an OIDC flow", () => {

@@ -916,6 +916,7 @@ mod tests {
         let mut actor = AccountActor {
             session: None,
             session_key_id: Some(key_id.clone()),
+            locked_session_record: None,
             provisional_persistable: None,
             sliding_sync_positive_evidence: None,
             sliding_sync_account_epoch: 0,

@@ -6490,7 +6490,23 @@ mod tests {
                     let body = if text.starts_with("GET /_matrix/client/versions ") {
                         r#"{"versions":["v1.7"],"unstable_features":{"org.matrix.simplified_msc3575":true}}"#
                     } else if text.contains("/_matrix/client/") && text.contains("login") {
-                        r#"{"access_token":"fixture-token","device_id":"FIXTUREDEVICE","user_id":"@fixture-user:example.invalid"}"#
+                        let requested_device_id = text
+                            .split_once("\r\n\r\n")
+                            .and_then(|(_, body)| {
+                                serde_json::from_str::<serde_json::Value>(body).ok()
+                            })
+                            .and_then(|body| body["device_id"].as_str().map(str::to_owned))
+                            .unwrap_or_else(|| "FIXTUREDEVICE".to_owned());
+                        let body = format!(
+                            r#"{{"access_token":"fixture-token","device_id":"{requested_device_id}","user_id":"@fixture-user:example.invalid"}}"#
+                        );
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        stream.write_all(response.as_bytes()).expect("write");
+                        return;
                     } else if text
                         .contains("/_matrix/client/unstable/org.matrix.simplified_msc3575/sync")
                     {

@@ -239,11 +239,27 @@ impl AccountActor {
         if !composer_timeline_command_targets_active_session(self.session_key_id.as_ref(), &command)
             && let Some((request_id, _)) = command.composer_account_fence()
         {
+            record(
+                DiagnosticEvent::new(
+                    DiagnosticLevel::Warn,
+                    "core.timeline_send_admission",
+                    "rejected",
+                )
+                .field(DiagnosticField::token("reason", "account_mismatch")),
+            );
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         }
         if let Some(target) = encrypted_user_content_target(&command) {
             let Some(session) = self.session.as_deref().filter(|_| self.session_promoted) else {
+                record(
+                    DiagnosticEvent::new(
+                        DiagnosticLevel::Warn,
+                        "core.timeline_send_admission",
+                        "rejected",
+                    )
+                    .field(DiagnosticField::token("reason", "session_unpromoted")),
+                );
                 self.emit_failure(target.request_id, CoreFailure::SessionRequired);
                 return;
             };

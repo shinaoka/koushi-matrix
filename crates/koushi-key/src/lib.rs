@@ -16,6 +16,7 @@ use zeroize::Zeroizing;
 
 pub const LOCAL_UNLOCK_SECRET_LEN: usize = 32;
 pub const VAULT_MASTER_KEY_LEN: usize = 32;
+const LOCAL_STORE_ID_LEN: usize = 16;
 
 const SDK_STORE_INFO: &[u8] = b"koushi-desktop:sdk-store";
 const SEARCH_INDEX_INFO: &[u8] = b"koushi-desktop:search-index";
@@ -27,6 +28,8 @@ const READ_STATE_OUTBOX_INFO: &[u8] = b"koushi-desktop:read-state-outbox";
 const LAST_SESSION_ACCOUNT_NAME: &str = "koushi-desktop:last-session:v1";
 const SAVED_SESSIONS_ACCOUNT_NAME: &str = "koushi-desktop:saved-sessions:v1";
 const CREDENTIAL_VAULT_KEY_ACCOUNT_NAME: &str = "koushi-desktop:credential-vault-key:v1";
+const PENDING_LOGIN_JOURNAL_ACCOUNT_NAME: &str = "koushi-desktop:pending-login-journal:v1";
+const LOCAL_STORE_MIGRATION_ACCOUNT_NAME: &str = "koushi-desktop:local-store-migration:v1";
 
 pub fn last_session_account_name() -> &'static str {
     LAST_SESSION_ACCOUNT_NAME
@@ -38,6 +41,14 @@ pub fn saved_sessions_account_name() -> &'static str {
 
 pub fn credential_vault_key_account_name() -> &'static str {
     CREDENTIAL_VAULT_KEY_ACCOUNT_NAME
+}
+
+pub fn pending_login_journal_account_name() -> &'static str {
+    PENDING_LOGIN_JOURNAL_ACCOUNT_NAME
+}
+
+pub fn local_store_migration_account_name() -> &'static str {
+    LOCAL_STORE_MIGRATION_ACCOUNT_NAME
 }
 
 #[derive(Debug, Error)]
@@ -274,6 +285,77 @@ impl SessionKeyId {
 
     pub fn matrix_session_account_name(&self) -> String {
         format!("matrix-session|{}", self.local_unlock_account_name())
+    }
+}
+
+/// Opaque, validated identity for an account-local encrypted store.
+///
+/// The value is intentionally not printable: it is a filesystem/credential
+/// lookup key, not an application or diagnostic identifier.
+#[derive(Clone, Eq, Hash, PartialEq, Deserialize, Serialize)]
+pub struct LocalStoreId(String);
+
+impl LocalStoreId {
+    pub fn generate() -> Self {
+        Self(URL_SAFE_NO_PAD.encode(rand::random::<[u8; LOCAL_STORE_ID_LEN]>()))
+    }
+
+    pub fn parse(value: &str) -> Result<Self, LocalSecretError> {
+        let decoded = URL_SAFE_NO_PAD
+            .decode(value)
+            .map_err(LocalSecretError::Base64Decode)?;
+        if decoded.len() != LOCAL_STORE_ID_LEN || value != URL_SAFE_NO_PAD.encode(&decoded) {
+            return Err(LocalSecretError::InvalidSecretLength {
+                expected: LOCAL_STORE_ID_LEN,
+                actual: decoded.len(),
+            });
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for LocalStoreId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("LocalStoreId(..)")
+    }
+}
+
+/// The account-local identity and secret used to derive every encrypted store
+/// key.  The identity is opaque and the secret never has a printable/debug
+/// representation.
+pub struct LocalStoreBinding {
+    local_store_id: LocalStoreId,
+    unlock_secret: LocalUnlockSecret,
+}
+
+impl LocalStoreBinding {
+    pub fn new(local_store_id: LocalStoreId, unlock_secret: LocalUnlockSecret) -> Self {
+        Self {
+            local_store_id,
+            unlock_secret,
+        }
+    }
+
+    pub fn generate() -> Self {
+        Self::new(LocalStoreId::generate(), LocalUnlockSecret::generate())
+    }
+
+    pub fn local_store_id(&self) -> &LocalStoreId {
+        &self.local_store_id
+    }
+
+    pub fn unlock_secret(&self) -> &LocalUnlockSecret {
+        &self.unlock_secret
+    }
+}
+
+impl fmt::Debug for LocalStoreBinding {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("LocalStoreBinding(..)")
     }
 }
 
@@ -742,6 +824,33 @@ impl<B: CredentialBackend> CredentialStore<B> {
         self.delete_raw(CREDENTIAL_VAULT_KEY_ACCOUNT_NAME)
     }
 
+    /// Persist the serialized pending-login journal under its own credential
+    /// name. Callers own the schema; this API deliberately does not pretend a
+    /// pending allocation is a SessionKeyId.
+    pub fn save_pending_login_journal(&self, value: &str) -> Result<(), LocalSecretError> {
+        self.save_raw(PENDING_LOGIN_JOURNAL_ACCOUNT_NAME, value)
+    }
+
+    pub fn load_pending_login_journal(&self) -> Result<String, LocalSecretError> {
+        self.load_raw(PENDING_LOGIN_JOURNAL_ACCOUNT_NAME)
+    }
+
+    pub fn delete_pending_login_journal(&self) -> Result<(), LocalSecretError> {
+        self.delete_raw(PENDING_LOGIN_JOURNAL_ACCOUNT_NAME)
+    }
+
+    pub fn save_local_store_migration(&self, value: &str) -> Result<(), LocalSecretError> {
+        self.save_raw(LOCAL_STORE_MIGRATION_ACCOUNT_NAME, value)
+    }
+
+    pub fn load_local_store_migration(&self) -> Result<String, LocalSecretError> {
+        self.load_raw(LOCAL_STORE_MIGRATION_ACCOUNT_NAME)
+    }
+
+    pub fn delete_local_store_migration(&self) -> Result<(), LocalSecretError> {
+        self.delete_raw(LOCAL_STORE_MIGRATION_ACCOUNT_NAME)
+    }
+
     pub fn load(&self, key_id: &SessionKeyId) -> Result<LocalUnlockSecret, LocalSecretError> {
         let stored_secret = Zeroizing::new(self.load_raw(&key_id.local_unlock_account_name())?);
         LocalUnlockSecret::from_storage_string(stored_secret.as_str())
@@ -749,6 +858,35 @@ impl<B: CredentialBackend> CredentialStore<B> {
 
     pub fn delete(&self, key_id: &SessionKeyId) -> Result<(), LocalSecretError> {
         self.delete_raw(&key_id.local_unlock_account_name())
+    }
+
+    pub fn save_local_store_id(
+        &self,
+        key_id: &SessionKeyId,
+        store_id: &LocalStoreId,
+    ) -> Result<(), LocalSecretError> {
+        self.save_raw(
+            &format!("local-store|{}", key_id.local_unlock_account_name()),
+            store_id.as_str(),
+        )
+    }
+
+    pub fn load_local_store_id(
+        &self,
+        key_id: &SessionKeyId,
+    ) -> Result<LocalStoreId, LocalSecretError> {
+        let stored = Zeroizing::new(self.load_raw(&format!(
+            "local-store|{}",
+            key_id.local_unlock_account_name()
+        ))?);
+        LocalStoreId::parse(stored.as_str())
+    }
+
+    pub fn delete_local_store_id(&self, key_id: &SessionKeyId) -> Result<(), LocalSecretError> {
+        self.delete_raw(&format!(
+            "local-store|{}",
+            key_id.local_unlock_account_name()
+        ))
     }
 
     pub fn save_matrix_session(
