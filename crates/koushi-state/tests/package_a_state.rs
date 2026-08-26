@@ -1,12 +1,12 @@
 use koushi_state::compute_room_list_projection;
 use koushi_state::{
     AccountManagementOperation, AccountManagementState, AppAction, AppEffect, AppState,
-    AuthDiscoveryState, AuthFailureKind, DelegatedAuthLinks, DeviceSessionListState,
-    DeviceSessionSummary, E2eeKeyManagementState, LoginAttemptId, LoginFlow, LoginFlowKind,
-    OperationFailureKind, QrLoginState, RecoveryKeyDeliveryState, RoomKeyExportState,
-    RoomKeyImportState, RoomListEntryKind, RoomListFilter, RoomListProjectionItem, RoomSummary,
-    RoomTagInfo, SecureBackupPassphraseChangeState, SecureBackupSetupState, SessionInfo,
-    SessionState, SoftLogoutReauthState, TrustOperationFailureKind, UiEvent, reduce,
+    AuthDiscoveryState, AuthFailureKind, DelegatedAuthLinks, E2eeKeyManagementState,
+    LoginAttemptId, LoginFlow, LoginFlowKind, OperationFailureKind, QrLoginState,
+    RecoveryKeyDeliveryState, RoomKeyExportState, RoomKeyImportState, RoomListEntryKind,
+    RoomListFilter, RoomListProjectionItem, RoomSummary, RoomTagInfo,
+    SecureBackupPassphraseChangeState, SecureBackupSetupState, SessionInfo, SessionState,
+    SoftLogoutReauthState, TrustOperationFailureKind, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -37,7 +37,6 @@ fn auth_discovery_can_store_oidc_and_delegated_links_without_tokens() {
             }],
             delegated: DelegatedAuthLinks {
                 registration_url: Some("https://example.test/register".to_owned()),
-                account_management_url: Some("https://example.test/account".to_owned()),
             },
         },
     );
@@ -58,7 +57,6 @@ fn auth_discovery_can_store_oidc_and_delegated_links_without_tokens() {
             }],
             delegated: DelegatedAuthLinks {
                 registration_url: Some("https://example.test/register".to_owned()),
-                account_management_url: Some("https://example.test/account".to_owned()),
             },
         }
     );
@@ -76,7 +74,7 @@ fn package_a_substates_start_secret_free_and_idle() {
             passphrase_change: SecureBackupPassphraseChangeState::Idle,
         }
     ));
-    assert_eq!(state.device_sessions, DeviceSessionListState::Idle);
+    assert_eq!(state.account_management_url, None);
     assert_eq!(state.account_management, AccountManagementState::Idle);
     assert_eq!(state.qr_login, QrLoginState::Idle);
 }
@@ -85,81 +83,6 @@ fn package_a_substates_start_secret_free_and_idle() {
 fn auth_failure_kind_is_coarse() {
     assert_eq!(format!("{:?}", AuthFailureKind::Network), "Network");
     assert_eq!(format!("{:?}", AuthFailureKind::Sdk), "Sdk");
-}
-
-#[test]
-fn device_session_loading_is_ready_guarded_and_request_correlated() {
-    let mut state = AppState::default();
-
-    let effects = reduce(
-        &mut state,
-        AppAction::DeviceSessionsLoadRequested { request_id: 1 },
-    );
-
-    assert!(effects.is_empty());
-    assert_eq!(state.device_sessions, DeviceSessionListState::Idle);
-
-    state.session = SessionState::Ready(session_info());
-    let effects = reduce(
-        &mut state,
-        AppAction::DeviceSessionsLoadRequested { request_id: 1 },
-    );
-
-    assert_eq!(
-        effects,
-        vec![AppEffect::EmitUiEvent(UiEvent::DeviceSessionsChanged)]
-    );
-    assert_eq!(
-        state.device_sessions,
-        DeviceSessionListState::Loading { request_id: 1 }
-    );
-
-    let effects = reduce(
-        &mut state,
-        AppAction::DeviceSessionsLoadRequested { request_id: 2 },
-    );
-    assert!(effects.is_empty());
-    assert_eq!(
-        state.device_sessions,
-        DeviceSessionListState::Loading { request_id: 1 }
-    );
-
-    let effects = reduce(
-        &mut state,
-        AppAction::DeviceSessionsLoaded {
-            request_id: 2,
-            devices: Vec::new(),
-        },
-    );
-    assert!(effects.is_empty());
-    assert_eq!(
-        state.device_sessions,
-        DeviceSessionListState::Loading { request_id: 1 }
-    );
-
-    let devices = vec![DeviceSessionSummary {
-        device_ordinal: 1,
-        display_name: Some("Desktop".to_owned()),
-        current: true,
-        verified: true,
-        inactive: false,
-    }];
-    let effects = reduce(
-        &mut state,
-        AppAction::DeviceSessionsLoaded {
-            request_id: 1,
-            devices: devices.clone(),
-        },
-    );
-
-    assert_eq!(
-        effects,
-        vec![AppEffect::EmitUiEvent(UiEvent::DeviceSessionsChanged)]
-    );
-    assert_eq!(
-        state.device_sessions,
-        DeviceSessionListState::Loaded { devices }
-    );
 }
 
 #[test]
@@ -203,7 +126,7 @@ fn account_management_is_ready_guarded_duplicate_guarded_and_request_correlated(
         &mut state,
         AppAction::AccountManagementRequested {
             request_id: 11,
-            operation: AccountManagementOperation::DeleteDevice,
+            operation: AccountManagementOperation::DeactivateAccount,
         },
     );
     assert!(effects.is_empty());
@@ -213,7 +136,7 @@ fn account_management_is_ready_guarded_duplicate_guarded_and_request_correlated(
         AppAction::AccountManagementUiaRequired {
             request_id: 10,
             flow_id: 50,
-            operation: AccountManagementOperation::DeleteDevice,
+            operation: AccountManagementOperation::DeactivateAccount,
         },
     );
     assert!(effects.is_empty());
@@ -535,7 +458,7 @@ fn soft_logout_reauth_is_cleared_on_logout() {
 fn account_management_auth_submitted_transitions_awaiting_uia_to_working() {
     let mut state = AppState::default();
     state.session = SessionState::Ready(session_info());
-    let operation = AccountManagementOperation::DeleteDevice;
+    let operation = AccountManagementOperation::DeactivateAccount;
 
     reduce(
         &mut state,

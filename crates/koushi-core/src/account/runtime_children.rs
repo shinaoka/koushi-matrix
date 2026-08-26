@@ -189,6 +189,8 @@ impl AccountActor {
         self.stop_recovery_trust_settlement_task().await;
         self.stop_provisional_runtime().await;
         self.cancel_current_session_status_refresh().await;
+        self.stop_active_session_account_management_discovery()
+            .await;
         self.cancel_secure_backup_inspection().await;
         self.stop_secure_backup_observer().await;
         self.stop_recovery_observer().await;
@@ -215,7 +217,6 @@ impl AccountActor {
         self.cancel_identity_reset_handle().await;
         self.invalidate_account_hydration();
         self.abort_avatar_fetch_tasks();
-        self.device_session_ordinals.clear();
         self.pending_uia_operations.clear();
         self.provisional_persistable = None;
         self.session_promoted = false;
@@ -483,6 +484,8 @@ impl AccountActor {
         self.stop_incoming_verification_observer().await;
         self.record_lifecycle_probe("stop_session_change_observer");
         self.stop_session_change_observer().await;
+        self.stop_active_session_account_management_discovery()
+            .await;
         self.record_lifecycle_probe("stop_timeline_manager");
         self.stop_timeline_actor().await;
         self.stop_read_persistence_worker().await;

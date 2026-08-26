@@ -4170,11 +4170,6 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
                 request_id: *flow_id,
             })
         }
-        AccountCommand::QueryDevices { request_id } => {
-            Some(AppAction::DeviceSessionsLoadRequested {
-                request_id: request_id.sequence,
-            })
-        }
         AccountCommand::RefreshCurrentSessionStatus {
             request_id,
             trigger,
@@ -4185,24 +4180,6 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
         AccountCommand::LoadAccountManagementCapabilities { .. } => {
             Some(AppAction::AccountManagementCapabilitiesLoadRequested)
         }
-        AccountCommand::RenameDevice { request_id, .. } => {
-            Some(AppAction::AccountManagementRequested {
-                request_id: request_id.sequence,
-                operation: AccountManagementOperation::RenameDevice,
-            })
-        }
-        AccountCommand::DeleteDevices {
-            request_id,
-            device_ordinals,
-            ..
-        } => Some(AppAction::AccountManagementRequested {
-            request_id: request_id.sequence,
-            operation: if device_ordinals.len() == 1 {
-                AccountManagementOperation::DeleteDevice
-            } else {
-                AccountManagementOperation::DeleteOtherDevices
-            },
-        }),
         AccountCommand::ChangePassword { request_id, .. } => {
             Some(AppAction::AccountManagementRequested {
                 request_id: request_id.sequence,

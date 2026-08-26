@@ -170,7 +170,6 @@ describe("AuthScreen", () => {
             ],
             delegated: {
               registration_url: "https://auth.example.test/register",
-              account_management_url: null,
             },
           },
         })}

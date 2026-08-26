@@ -735,7 +735,7 @@ describe("appStore projection cache", () => {
   });
 });
 
-describe("session lock reason delta merge", () => {
+describe("session-scoped optional delta merge", () => {
   test("applies an explicit nested null clear instead of retaining the previous reason", () => {
     const snapshot = makeSnapshot();
     snapshot.state.domain.session_lock_reason = { kind: "unknownToken", soft_logout: true };
@@ -745,12 +745,22 @@ describe("session lock reason delta merge", () => {
     });
     expect(next?.state.domain.session_lock_reason).toBeNull();
   });
+
+  test("clears the active-session account-management destination", () => {
+    const snapshot = makeSnapshot();
+    snapshot.state.domain.account_management_url = "https://account.example/devices";
+    const next = applyDeltaToState(snapshot, {
+      generation: 1,
+      changed: { state: { domain: { account_management_url: null } } }
+    });
+    expect(next?.state.domain.account_management_url).toBeNull();
+  });
 });
 
 function makeSnapshot(): DesktopSnapshot {
   return {
     state: {
-      schema_version: 4,
+      schema_version: 5,
       domain: {
         session: { kind: "ready", homeserver: "https://example.invalid", user_id: "@user:example.invalid", device_id: "DEVICE" },
         session_lock_reason: null,
@@ -892,7 +902,7 @@ function makeSnapshot(): DesktopSnapshot {
         invites: [],
         room_interactions: {},
         room_notification_settings: {},
-        device_sessions: { kind: "idle" },
+        account_management_url: null,
         account_management: { kind: "idle" },
         account_management_capabilities: { change_password: { kind: "unknown" } },
         soft_logout_reauth: { kind: "idle" },

@@ -38,12 +38,12 @@ export type ComposerDraftAccountOwner = SavedSessionInfo;
  * IPC snapshot contract version. Must match `dto.rs`'s `SNAPSHOT_SCHEMA_VERSION`.
  * Bumped to 4 for the required secure backup gate DTO field.
  */
-export const SNAPSHOT_SCHEMA_VERSION = 4;
+export const SNAPSHOT_SCHEMA_VERSION = 5;
 
 /**
  * Snapshot state. #87 Phase 4 sectioned this into domain (Matrix/product, Rust-owned,
  * mobile-reusable) and ui (desktop presentation/view/navigation). `schema_version` is the
- * IPC contract version (4 = secure backup gate DTO); the App boundary asserts it so a stale flat (v1)
+ * IPC contract version (5 = active-session account-management DTO); the App boundary asserts it so a stale flat (v1)
  * snapshot or a mismatched build fails loudly.
  */
 export interface AppState {
@@ -59,7 +59,7 @@ export interface AppDomainState {
   current_session_status: CurrentSessionStatusState;
   device_cleanup: DeviceCleanupState;
   auth: AuthDiscoveryState;
-  device_sessions: DeviceSessionListState;
+  account_management_url: string | null;
   account_management: AccountManagementState;
   account_management_capabilities: AccountManagementCapabilities;
   soft_logout_reauth: SoftLogoutReauthState;
@@ -365,7 +365,6 @@ export type AuthDiscoveryState =
 
 export interface DelegatedAuthLinks {
   registration_url: string | null;
-  account_management_url: string | null;
 }
 
 export interface OidcAuthorization {
@@ -387,20 +386,6 @@ export type AuthFailureKind =
   | "timeout"
   | "sdk";
 
-export type DeviceSessionListState =
-  | { kind: "idle" }
-  | { kind: "loading"; request_id: number }
-  | { kind: "loaded"; devices: DeviceSessionSummary[] }
-  | { kind: "failed"; request_id: number; failureKind: AuthFailureKind };
-
-export interface DeviceSessionSummary {
-  device_ordinal: number;
-  display_name: string | null;
-  current: boolean;
-  verified: boolean;
-  inactive: boolean;
-}
-
 export type AccountManagementState =
   | { kind: "idle" }
   | { kind: "working"; request_id: number; operation: AccountManagementOperation }
@@ -419,13 +404,8 @@ export type AccountManagementState =
     };
 
 export type AccountManagementOperation =
-  | "renameDevice"
-  | "deleteDevice"
-  | "deleteOtherDevices"
   | "changePassword"
-  | "deactivateAccount"
-  | "threePid"
-  | "identityServer";
+  | "deactivateAccount";
 
 export interface AccountManagementCapabilities {
   change_password: CapabilityState;

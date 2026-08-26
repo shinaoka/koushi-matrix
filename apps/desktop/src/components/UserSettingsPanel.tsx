@@ -25,7 +25,6 @@ import { ImeSafeForm, ImeTextField } from "./ImeTextControl";
 import { KeyboardSettingsContent } from "./KeyboardSettingsPanel";
 import { SearchHistorySection } from "./user-settings/SearchHistorySection";
 import { AccountManagementSection } from "./user-settings/AccountManagementSection";
-import { SessionsSection } from "./user-settings/SessionsSection";
 import { SecuritySection } from "./user-settings/SecuritySection";
 import { TrustSection } from "./user-settings/TrustSection";
 import { AppearanceControls } from "./user-settings/AppearanceControls";
@@ -37,7 +36,6 @@ import type {
   AccountManagementCapabilities,
   AccountManagementState,
   CurrentSessionStatusState,
-  DeviceSessionListState,
   DisplaySettings,
   E2eeTrustState,
   DisplayPlatform,
@@ -63,7 +61,6 @@ export function UserSettingsPanel({
   e2eeTrust,
   localEncryption,
   platform,
-  deviceSessions,
   accountManagement,
   accountManagementCapabilities,
   keyboardLabelProfile,
@@ -92,9 +89,6 @@ export function UserSettingsPanel({
   onLogout,
   onOpenRecovery,
   onSwitchAccount,
-  onQueryDevices,
-  onRenameDevice,
-  onDeleteDevices,
   onLoadAccountManagementCapabilities,
   onRefreshCurrentSessionStatus = () => undefined,
   onChangePassword,
@@ -117,7 +111,6 @@ export function UserSettingsPanel({
   e2eeTrust: E2eeTrustState;
   localEncryption: LocalEncryptionState;
   platform: DisplayPlatform;
-  deviceSessions: DeviceSessionListState;
   accountManagement: AccountManagementState;
   accountManagementCapabilities: AccountManagementCapabilities;
   keyboardLabelProfile?: ShortcutLabelProfile;
@@ -154,9 +147,6 @@ export function UserSettingsPanel({
   onLogout: () => void;
   onOpenRecovery: () => void;
   onSwitchAccount: (session: SavedSessionInfo) => void;
-  onQueryDevices: () => void;
-  onRenameDevice: (deviceOrdinal: number, displayName: string) => void;
-  onDeleteDevices: (deviceOrdinals: number[]) => void;
   onLoadAccountManagementCapabilities: () => void;
   onRefreshCurrentSessionStatus?: () => void;
   onChangePassword: (newPassword: string) => void;
@@ -170,11 +160,6 @@ export function UserSettingsPanel({
   rooms?: RoomSummary[];
 }) {
   const sessionStatusRefreshOwnerRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (deviceSessions.kind === "idle" && currentSession) {
-      onQueryDevices();
-    }
-  }, [deviceSessions.kind, currentSession, onQueryDevices]);
   useEffect(() => {
     const owner = currentSession ? sessionKey(currentSession) : null;
     if (sessionStatusRefreshOwnerRef.current !== owner) {
@@ -477,15 +462,6 @@ export function UserSettingsPanel({
         currentSession={currentSession}
         savedSessions={savedSessions}
         onSwitchAccount={onSwitchAccount}
-      />
-
-      <SessionsSection
-        deviceSessions={deviceSessions}
-        accountManagement={accountManagement}
-        onQueryDevices={onQueryDevices}
-        onRenameDevice={onRenameDevice}
-        onDeleteDevices={onDeleteDevices}
-        onSubmitAccountManagementUia={onSubmitAccountManagementUia}
       />
 
       <AccountManagementSection

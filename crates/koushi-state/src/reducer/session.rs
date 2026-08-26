@@ -799,6 +799,20 @@ pub(crate) fn handle_login_discovery_failed(
     vec![AppEffect::EmitUiEvent(UiEvent::AuthChanged)]
 }
 
+pub(crate) fn handle_active_session_account_management_url_resolved(
+    state: &mut AppState,
+    info: crate::state::SessionInfo,
+    url: Option<crate::state::AccountManagementUrl>,
+) -> Vec<AppEffect> {
+    if !matches!(&state.session, SessionState::Ready(active) if active == &info)
+        || state.account_management_url == url
+    {
+        return Vec::new();
+    }
+    state.account_management_url = url;
+    vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
+}
+
 pub(crate) fn handle_session_persistence_failed(
     state: &mut AppState,
     message: String,

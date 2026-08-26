@@ -3,11 +3,11 @@ use crate::{
     effect::{AppEffect, UiEvent},
     state::{
         AccountManagementCapabilities, AccountManagementState, ActivityState, AppState,
-        DeviceSessionListState, DirectoryState, E2eeKeyManagementState, E2eeTrustState,
-        FilesViewState, FocusedContextState, InviteWorkflowState, LocalEncryptionState,
-        NavigationState, QrLoginState, SearchState, SessionState, SoftLogoutReauthState,
-        SpaceConversationSurface, SpaceNavigationSelection, ThreadAttentionState, ThreadPaneState,
-        ThreadsListState, TimelinePaneState, VerificationFlowState, compute_room_list_projection,
+        DirectoryState, E2eeKeyManagementState, E2eeTrustState, FilesViewState,
+        FocusedContextState, InviteWorkflowState, LocalEncryptionState, NavigationState,
+        QrLoginState, SearchState, SessionState, SoftLogoutReauthState, SpaceConversationSurface,
+        SpaceNavigationSelection, ThreadAttentionState, ThreadPaneState, ThreadsListState,
+        TimelinePaneState, VerificationFlowState, compute_room_list_projection,
     },
 };
 
@@ -371,6 +371,9 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::LoginDiscoveryFailed { homeserver, kind } => {
             session::handle_login_discovery_failed(state, homeserver, kind)
         }
+        AppAction::ActiveSessionAccountManagementUrlResolved { info, url } => {
+            session::handle_active_session_account_management_url_resolved(state, info, url)
+        }
         AppAction::SessionPersistenceFailed { message } => {
             session::handle_session_persistence_failed(state, message)
         }
@@ -403,16 +406,6 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         }
         AppAction::SoftLogoutReauthFailed { request_id, kind } => {
             session::handle_soft_logout_reauth_failed(state, request_id, kind)
-        }
-        AppAction::DeviceSessionsLoadRequested { request_id } => {
-            account::handle_device_sessions_load_requested(state, request_id)
-        }
-        AppAction::DeviceSessionsLoaded {
-            request_id,
-            devices,
-        } => account::handle_device_sessions_loaded(state, request_id, devices),
-        AppAction::DeviceSessionsLoadFailed { request_id, kind } => {
-            account::handle_device_sessions_load_failed(state, request_id, kind)
         }
         AppAction::AccountManagementRequested {
             request_id,
@@ -1788,7 +1781,6 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     let had_e2ee_trust = state.e2ee_trust != E2eeTrustState::default();
     let had_e2ee_key_management =
         state.e2ee_trust.key_management != E2eeKeyManagementState::default();
-    let had_device_sessions = state.device_sessions != DeviceSessionListState::Idle;
     let had_account_management = state.account_management != AccountManagementState::Idle;
     let had_account_management_capabilities =
         state.account_management_capabilities != AccountManagementCapabilities::default();
@@ -1837,7 +1829,7 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.files_view = FilesViewState::Closed;
     state.threads_list = ThreadsListState::Closed;
     state.e2ee_trust = E2eeTrustState::default();
-    state.device_sessions = DeviceSessionListState::Idle;
+    state.account_management_url = None;
     state.account_management = AccountManagementState::Idle;
     state.account_management_capabilities = AccountManagementCapabilities::default();
     state.soft_logout_reauth = SoftLogoutReauthState::Idle;
@@ -1874,9 +1866,6 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     }
     if had_e2ee_key_management {
         effects.push(AppEffect::EmitUiEvent(UiEvent::E2eeKeyManagementChanged));
-    }
-    if had_device_sessions {
-        effects.push(AppEffect::EmitUiEvent(UiEvent::DeviceSessionsChanged));
     }
     if had_account_management {
         effects.push(AppEffect::EmitUiEvent(UiEvent::AccountManagementChanged));

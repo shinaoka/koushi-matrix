@@ -499,7 +499,6 @@ export type MessageId =
   | "search.scopeAll"
   | "search.scopeRoom"
   | "search.scopeSpace"
-  | "sessionStatus.accountManagementFallback"
   | "sessionStatus.authentication"
   | "sessionStatus.authOauth"
   | "sessionStatus.authPassword"
@@ -529,7 +528,6 @@ export type MessageId =
   | "sessionStatus.open"
   | "sessionStatus.openWithRuntimeWarning"
   | "sessionStatus.openWithRuntimeWarnings"
-  | "sessionStatus.openLocalSettings"
   | "sessionStatus.ownerCrossSigning"
   | "sessionStatus.recheck"
   | "sessionStatus.retry"
@@ -613,11 +611,9 @@ export type MessageId =
   | "settings.searchIndex"
   | "settings.security"
   | "settings.securityPrivacy"
-  | "settings.sessions"
   | "settings.accountManagement"
   | "settings.manageAccount"
   | "settings.manageAccountHint"
-  | "settings.manageAccountUnavailable"
   | "settings.changePassword"
   | "settings.changePasswordLabel"
   | "settings.changePasswordConfirm"
@@ -628,17 +624,7 @@ export type MessageId =
   | "settings.deactivateAccountConfirm"
   | "settings.accountDeactivated"
   | "settings.accountManagementFailed"
-  | "settings.currentSession"
-  | "settings.otherSessions"
   | "settings.signOut"
-  | "settings.signOutOthers"
-  | "settings.renameDevice"
-  | "settings.deviceVerified"
-  | "settings.deviceUnverified"
-  | "settings.deviceInactive"
-  | "settings.deviceNamePlaceholder"
-  | "settings.sessionsLoading"
-  | "settings.sessionsLoadFailed"
   | "settings.keyManagement"
   | "settings.roomKeyExport"
   | "settings.roomKeyExportDestination"
@@ -1842,8 +1828,6 @@ const en: Catalog = {
   "search.scopeAll": "All",
   "search.scopeRoom": "Room/DM",
   "search.scopeSpace": "Space",
-  "sessionStatus.accountManagementFallback":
-    "This homeserver did not advertise a safe external account destination. Open local settings instead.",
   "sessionStatus.authentication": "Authentication",
   "sessionStatus.authOauth": "OAuth",
   "sessionStatus.authPassword": "Password",
@@ -1873,7 +1857,6 @@ const en: Catalog = {
   "sessionStatus.open": "Open session status",
   "sessionStatus.openWithRuntimeWarning": "Open session status, {count} runtime warning",
   "sessionStatus.openWithRuntimeWarnings": "Open session status, {count} runtime warnings",
-  "sessionStatus.openLocalSettings": "Open local account settings",
   "sessionStatus.ownerCrossSigning": "Owner cross-signing",
   "sessionStatus.recheck": "Recheck",
   "sessionStatus.retry": "Retry",
@@ -1969,11 +1952,9 @@ const en: Catalog = {
   "settings.searchIndex": "Encrypted local index",
   "settings.security": "Security",
   "settings.securityPrivacy": "Security & Privacy",
-  "settings.sessions": "Sessions",
   "settings.accountManagement": "Account management",
-  "settings.manageAccount": "Manage account",
-  "settings.manageAccountHint": "Opens the account-management page for this server in your browser.",
-  "settings.manageAccountUnavailable": "The server account-management destination is unavailable. Koushi will recheck it for this session.",
+  "settings.manageAccount": "Manage account & devices",
+  "settings.manageAccountHint": "Opens this server's account and device management page in your browser.",
   "settings.changePassword": "Change password",
   "settings.changePasswordLabel": "New password",
   "settings.changePasswordConfirm": "Confirm new password",
@@ -1984,17 +1965,7 @@ const en: Catalog = {
   "settings.deactivateAccountConfirm": "This cannot be undone. Confirm to proceed.",
   "settings.accountDeactivated": "Account deactivated",
   "settings.accountManagementFailed": "Account operation failed",
-  "settings.currentSession": "Current session",
-  "settings.otherSessions": "Other sessions",
   "settings.signOut": "Sign out",
-  "settings.signOutOthers": "Sign out all other sessions",
-  "settings.renameDevice": "Rename",
-  "settings.deviceVerified": "Verified",
-  "settings.deviceUnverified": "Unverified",
-  "settings.deviceInactive": "Inactive",
-  "settings.deviceNamePlaceholder": "Device name",
-  "settings.sessionsLoading": "Loading sessions…",
-  "settings.sessionsLoadFailed": "Could not load sessions.",
   "settings.keyManagement": "Key management",
   "settings.roomKeyExport": "Room key export",
   "settings.roomKeyExportDestination": "Key export destination",
@@ -3084,8 +3055,6 @@ const ja: Catalog = {
   "search.scopeAll": "すべて",
   "search.scopeRoom": "ルーム/DM",
   "search.scopeSpace": "スペース",
-  "sessionStatus.accountManagementFallback":
-    "このホームサーバーは安全な外部アカウント管理先を通知していません。代わりにローカル設定を開きます。",
   "sessionStatus.authentication": "認証方法",
   "sessionStatus.authOauth": "OAuth 認証",
   "sessionStatus.authPassword": "パスワード",
@@ -3115,7 +3084,6 @@ const ja: Catalog = {
   "sessionStatus.open": "セッション状態を開く",
   "sessionStatus.openWithRuntimeWarning": "セッション状態を開く（実行時の警告 {count} 件）",
   "sessionStatus.openWithRuntimeWarnings": "セッション状態を開く（実行時の警告 {count} 件）",
-  "sessionStatus.openLocalSettings": "ローカルのアカウント設定を開く",
   "sessionStatus.ownerCrossSigning": "所有者のクロス署名",
   "sessionStatus.recheck": "再確認",
   "sessionStatus.retry": "再試行",
@@ -3210,11 +3178,9 @@ const ja: Catalog = {
   "settings.searchIndex": "暗号化ローカルインデックス",
   "settings.security": "セキュリティ",
   "settings.securityPrivacy": "セキュリティとプライバシー",
-  "settings.sessions": "セッション",
   "settings.accountManagement": "アカウント管理",
-  "settings.manageAccount": "アカウントを管理",
-  "settings.manageAccountHint": "このサーバーのアカウント管理ページをブラウザで開きます。",
-  "settings.manageAccountUnavailable": "サーバーのアカウント管理先を取得できません。Koushi がこのセッションで再確認します。",
+  "settings.manageAccount": "アカウントとデバイスを管理",
+  "settings.manageAccountHint": "このサーバーのアカウントとデバイスの管理ページをブラウザで開きます。",
   "settings.changePassword": "パスワードを変更",
   "settings.changePasswordLabel": "新しいパスワード",
   "settings.changePasswordConfirm": "新しいパスワード（確認）",
@@ -3225,17 +3191,7 @@ const ja: Catalog = {
   "settings.deactivateAccountConfirm": "この操作は元に戻せません。続行するには確認してください。",
   "settings.accountDeactivated": "アカウントを無効化しました",
   "settings.accountManagementFailed": "アカウント操作に失敗しました",
-  "settings.currentSession": "現在のセッション",
-  "settings.otherSessions": "その他のセッション",
   "settings.signOut": "サインアウト",
-  "settings.signOutOthers": "その他のセッションをすべてサインアウト",
-  "settings.renameDevice": "名前を変更",
-  "settings.deviceVerified": "検証済み",
-  "settings.deviceUnverified": "未検証",
-  "settings.deviceInactive": "非アクティブ",
-  "settings.deviceNamePlaceholder": "デバイス名",
-  "settings.sessionsLoading": "セッションを読み込み中…",
-  "settings.sessionsLoadFailed": "セッションを読み込めませんでした。",
   "settings.keyManagement": "鍵管理",
   "settings.roomKeyExport": "ルーム鍵エクスポート",
   "settings.roomKeyExportDestination": "鍵エクスポート先",

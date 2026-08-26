@@ -343,10 +343,34 @@ pub enum AuthDiscoveryState {
     },
 }
 
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AccountManagementUrl(String);
+
+impl AccountManagementUrl {
+    /// Wrap an HTTP(S) destination already validated by the SDK boundary.
+    pub fn from_validated(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl std::ops::Deref for AccountManagementUrl {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for AccountManagementUrl {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("AccountManagementUrl(..)")
+    }
+}
+
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DelegatedAuthLinks {
     pub registration_url: Option<String>,
-    pub account_management_url: Option<String>,
 }
 
 /// Redact the URL values from Debug: they cross the snapshot/browser boundary
@@ -358,10 +382,6 @@ impl std::fmt::Debug for DelegatedAuthLinks {
             .field(
                 "registration_url",
                 &self.registration_url.as_deref().map(|_| "Url(..)"),
-            )
-            .field(
-                "account_management_url",
-                &self.account_management_url.as_deref().map(|_| "Url(..)"),
             )
             .finish()
     }
@@ -398,33 +418,6 @@ pub enum LoginFlowKind {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
-pub enum DeviceSessionListState {
-    #[default]
-    Idle,
-    Loading {
-        request_id: u64,
-    },
-    Loaded {
-        devices: Vec<DeviceSessionSummary>,
-    },
-    Failed {
-        request_id: u64,
-        #[serde(rename = "failureKind")]
-        kind: AuthFailureKind,
-    },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct DeviceSessionSummary {
-    pub device_ordinal: u64,
-    pub display_name: Option<String>,
-    pub current: bool,
-    pub verified: bool,
-    pub inactive: bool,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
 pub enum AccountManagementState {
     #[default]
     Idle,
@@ -452,13 +445,8 @@ pub enum AccountManagementState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AccountManagementOperation {
-    RenameDevice,
-    DeleteDevice,
-    DeleteOtherDevices,
     ChangePassword,
     DeactivateAccount,
-    ThreePid,
-    IdentityServer,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

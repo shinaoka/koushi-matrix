@@ -155,7 +155,7 @@ function snapshotForPanelMode(
 ): Pick<DesktopSnapshot, "state" | "thread"> {
   return {
     state: {
-      schema_version: 4,
+      schema_version: 5,
       domain: {
         session_lock_reason: null,
         session:
@@ -265,7 +265,7 @@ function snapshotForPanelMode(
         invites: [],
         room_interactions: {},
         room_notification_settings: {},
-        device_sessions: { kind: "idle" },
+        account_management_url: null,
         account_management: { kind: "idle" },
         account_management_capabilities: { change_password: { kind: "unknown" } },
         soft_logout_reauth: { kind: "idle" },

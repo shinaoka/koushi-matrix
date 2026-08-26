@@ -231,10 +231,7 @@ export interface DesktopApi {
   markRoomAsRead(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   markRoomAsUnread(roomId: string, unread: boolean): Promise<DesktopSnapshot>;
   setRoomNotificationMode(roomId: string, mode: RoomNotificationMode): Promise<DesktopSnapshot>;
-  queryDevices(): Promise<DesktopSnapshot>;
   refreshCurrentSessionStatus(trigger: SessionStatusRefreshTrigger): Promise<DesktopSnapshot>;
-  renameDevice(deviceOrdinal: number, displayName: string): Promise<DesktopSnapshot>;
-  deleteDevices(deviceOrdinals: number[]): Promise<DesktopSnapshot>;
   submitAccountManagementUia(flowId: number, password: string): Promise<DesktopSnapshot>;
   loadAccountManagementCapabilities(): Promise<DesktopSnapshot>;
   changePassword(newPassword: string): Promise<DesktopSnapshot>;
@@ -1332,32 +1329,6 @@ class BrowserFakeApi implements DesktopApi {
     this.refreshSidebar();
   }
 
-  async queryDevices(): Promise<DesktopSnapshot> {
-    if (!this.canUseSyncedViews()) {
-      return this.getSnapshot();
-    }
-    this.snapshot.state.domain.device_sessions = {
-      kind: "loaded",
-      devices: [
-        {
-          device_ordinal: 1,
-          display_name: "Current session",
-          current: true,
-          verified: true,
-          inactive: false
-        },
-        {
-          device_ordinal: 2,
-          display_name: "Other session",
-          current: false,
-          verified: false,
-          inactive: true
-        }
-      ]
-    };
-    return this.getSnapshot();
-  }
-
   async refreshCurrentSessionStatus(
     trigger: SessionStatusRefreshTrigger
   ): Promise<DesktopSnapshot> {
@@ -1386,27 +1357,6 @@ class BrowserFakeApi implements DesktopApi {
         checked_at_ms: Date.now()
       }
     };
-    return this.getSnapshot();
-  }
-
-  async renameDevice(deviceOrdinal: number, displayName: string): Promise<DesktopSnapshot> {
-    if (this.snapshot.state.domain.device_sessions.kind === "loaded") {
-      for (const device of this.snapshot.state.domain.device_sessions.devices) {
-        if (device.device_ordinal === deviceOrdinal) {
-          device.display_name = displayName;
-        }
-      }
-    }
-    return this.getSnapshot();
-  }
-
-  async deleteDevices(deviceOrdinals: number[]): Promise<DesktopSnapshot> {
-    if (this.snapshot.state.domain.device_sessions.kind === "loaded") {
-      this.snapshot.state.domain.device_sessions.devices =
-        this.snapshot.state.domain.device_sessions.devices.filter(
-          (d) => !deviceOrdinals.includes(d.device_ordinal)
-        );
-    }
     return this.getSnapshot();
   }
 
@@ -4926,7 +4876,7 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.domain.directory = defaultDirectoryState();
     this.snapshot.state.domain.room_management = defaultRoomManagementState();
     this.snapshot.state.domain.activity = { kind: "closed" };
-    this.snapshot.state.domain.device_sessions = { kind: "idle" };
+    this.snapshot.state.domain.account_management_url = null;
     this.snapshot.state.domain.account_management = { kind: "idle" };
     this.snapshot.state.domain.soft_logout_reauth = { kind: "idle" };
     this.snapshot.state.domain.qr_login = { kind: "idle" };
@@ -5183,7 +5133,7 @@ function createReadySnapshot(
   const snapshot: DesktopSnapshot = {
     state_generation: 0,
     state: {
-      schema_version: 4,
+      schema_version: 5,
       domain: {
         session: {
           ...session,
@@ -5194,7 +5144,7 @@ function createReadySnapshot(
         current_session_status: { status: "idle" },
         device_cleanup: { kind: "idle" },
         auth: { kind: "unknown" },
-        device_sessions: { kind: "idle" },
+        account_management_url: "https://account.example.test/devices",
         account_management: { kind: "idle" },
         account_management_capabilities: { change_password: { kind: "unknown" } },
         soft_logout_reauth: { kind: "idle" },
@@ -5323,7 +5273,7 @@ function createSignedOutSnapshot(
 ): DesktopSnapshot {
   return {
     state: {
-      schema_version: 4,
+      schema_version: 5,
       domain: {
         session: { kind: "signedOut" },
         session_lock_reason: null,
@@ -5331,7 +5281,7 @@ function createSignedOutSnapshot(
         current_session_status: { status: "idle" },
         device_cleanup: { kind: "idle" },
         auth: { kind: "unknown" },
-        device_sessions: { kind: "idle" },
+        account_management_url: null,
         account_management: { kind: "idle" },
         account_management_capabilities: { change_password: { kind: "unknown" } },
         soft_logout_reauth: { kind: "idle" },

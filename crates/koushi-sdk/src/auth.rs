@@ -109,31 +109,6 @@ pub enum MatrixLoginFlowKind {
     Unknown(String),
 }
 
-#[derive(Clone, Eq, PartialEq)]
-pub struct MatrixDeviceSessionSummary {
-    pub raw_device_id: String,
-    pub display_name: Option<String>,
-    pub current: bool,
-    pub verified: bool,
-    pub inactive: bool,
-}
-
-impl fmt::Debug for MatrixDeviceSessionSummary {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("MatrixDeviceSessionSummary")
-            .field("raw_device_id", &"DeviceId(..)")
-            .field(
-                "display_name",
-                &self.display_name.as_ref().map(|_| "DeviceDisplayName(..)"),
-            )
-            .field("current", &self.current)
-            .field("verified", &self.verified)
-            .field("inactive", &self.inactive)
-            .finish()
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct Homeserver {
     base_url: Url,
@@ -318,6 +293,39 @@ fn fetch_well_known_client(homeserver: &Homeserver) -> Option<DelegatedAuthLinks
     let body = response.text().ok()?;
     let value = serde_json::from_str::<serde_json::Value>(&body).ok()?;
     Some(parse_well_known_client(&value))
+}
+
+/// Resolve the server-owned account/device-management destination for the
+/// authenticated session. Absence and every discovery failure are a missing
+/// capability, never a session failure.
+pub async fn resolve_active_session_account_management_url(
+    session: &MatrixClientSession,
+) -> Option<String> {
+    if session.client().oauth().full_session().is_some() {
+        use matrix_sdk::ruma::api::client::discovery::get_authorization_server_metadata::v1::AccountManagementActionData;
+
+        let metadata = session.client().oauth().server_metadata().await.ok()?;
+        let url = metadata
+            .account_management_url_with_action(AccountManagementActionData::DevicesList)?;
+        return parse_discovered_http_url_str(url.as_str());
+    }
+
+    let homeserver = Homeserver::parse(&session.info.homeserver).ok()?;
+    let response = reqwest::Client::builder()
+        .timeout(WELL_KNOWN_CLIENT_TIMEOUT)
+        .user_agent("matrix-desktop-active-session/0.1")
+        .build()
+        .ok()?
+        .get(homeserver.well_known_client_url())
+        .send()
+        .await
+        .ok()?;
+    if response.status().as_u16() != 200 {
+        return None;
+    }
+    let body = response.text().await.ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&body).ok()?;
+    parse_account_management_url_from_well_known(&value)
 }
 
 pub fn login_with_password_blocking(
@@ -553,11 +561,10 @@ pub fn parse_login_discovery(
     Ok(map_login_flows_to_desktop(parse_matrix_login_flows(value)?))
 }
 
-/// Parse the delegated-auth links from a `/.well-known/matrix/client`
+/// Parse the pre-login registration link from a `/.well-known/matrix/client`
 /// document (#475). Both the finalized `m.authentication` key and the older
-/// `org.matrix.msc2965.authentication` key are accepted (matrix.org still
-/// serves the latter). Only http/https URLs are trusted; malformed values,
-/// missing metadata, or unsupported schemes yield empty links (unavailable).
+/// `org.matrix.msc2965.authentication` key are accepted. Authenticated account
+/// management is deliberately resolved by the active-session path instead.
 pub fn parse_well_known_client(value: &serde_json::Value) -> DelegatedAuthLinks {
     let authentication = value
         .get("m.authentication")
@@ -567,15 +574,25 @@ pub fn parse_well_known_client(value: &serde_json::Value) -> DelegatedAuthLinks 
     };
     DelegatedAuthLinks {
         registration_url: parse_discovered_http_url(authentication.get("registration")),
-        account_management_url: parse_discovered_http_url(authentication.get("account")),
     }
+}
+
+fn parse_account_management_url_from_well_known(value: &serde_json::Value) -> Option<String> {
+    let authentication = value
+        .get("m.authentication")
+        .or_else(|| value.get("org.matrix.msc2965.authentication"))?;
+    parse_discovered_http_url(authentication.get("account"))
 }
 
 /// A discovered URL is usable only when it parses and uses http/https.
 /// Anything else (missing, malformed, `javascript:`, `file:`, …) is None so
 /// the UI never renders a broken or dangerous link.
 fn parse_discovered_http_url(value: Option<&serde_json::Value>) -> Option<String> {
-    let raw = value?.as_str()?.trim();
+    parse_discovered_http_url_str(value?.as_str()?)
+}
+
+fn parse_discovered_http_url_str(raw: &str) -> Option<String> {
+    let raw = raw.trim();
     if raw.is_empty() {
         return None;
     }
@@ -655,4 +672,187 @@ fn matrix_error_message(body: &str) -> String {
         .and_then(|response| response.error)
         .filter(|message| !message.trim().is_empty())
         .unwrap_or_else(|| "homeserver did not return login flows".to_owned())
+}
+
+#[cfg(test)]
+mod active_session_account_management_tests {
+    use matrix_sdk::test_utils::{client::oauth, mocks::MatrixMockServer};
+    use serde_json::json;
+    use wiremock::{
+        Mock, ResponseTemplate,
+        matchers::{method, path},
+    };
+
+    use super::{MatrixClientSession, resolve_active_session_account_management_url};
+    use koushi_state::{SessionAuthenticationMethod, SessionInfo};
+
+    async fn password_session(server: &MatrixMockServer) -> MatrixClientSession {
+        let client = server.client_builder().unlogged().build().await;
+        MatrixClientSession::from_client_for_testing(
+            client,
+            SessionInfo {
+                homeserver: server.server().uri(),
+                user_id: "@alice:example.test".to_owned(),
+                device_id: "PASSWORDDEVICE".to_owned(),
+                authentication_method: SessionAuthenticationMethod::Password,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn password_session_resolves_finalized_and_matrix_org_legacy_well_known() {
+        for key in ["m.authentication", "org.matrix.msc2965.authentication"] {
+            let server = MatrixMockServer::new().await;
+            Mock::given(method("GET"))
+                .and(path("/.well-known/matrix/client"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    key: { "account": "https://account.example.test/devices" }
+                })))
+                .expect(1)
+                .mount(server.server())
+                .await;
+
+            assert_eq!(
+                resolve_active_session_account_management_url(&password_session(&server).await)
+                    .await
+                    .as_deref(),
+                Some("https://account.example.test/devices")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn password_session_treats_missing_malformed_and_unsafe_metadata_as_unavailable() {
+        for body in [
+            json!({}),
+            json!({ "m.authentication": { "account": 7 } }),
+            json!({ "m.authentication": { "account": "javascript:alert(1)" } }),
+            json!({ "m.authentication": { "account": "https://user:secret@example.test" } }),
+        ] {
+            let server = MatrixMockServer::new().await;
+            Mock::given(method("GET"))
+                .and(path("/.well-known/matrix/client"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .expect(1)
+                .mount(server.server())
+                .await;
+
+            assert_eq!(
+                resolve_active_session_account_management_url(&password_session(&server).await)
+                    .await,
+                None
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn password_session_treats_http_and_json_failures_as_unavailable() {
+        for response in [
+            ResponseTemplate::new(500),
+            ResponseTemplate::new(200).set_body_string("not-json"),
+        ] {
+            let server = MatrixMockServer::new().await;
+            Mock::given(method("GET"))
+                .and(path("/.well-known/matrix/client"))
+                .respond_with(response)
+                .expect(1)
+                .mount(server.server())
+                .await;
+
+            assert_eq!(
+                resolve_active_session_account_management_url(&password_session(&server).await)
+                    .await,
+                None
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn password_session_treats_network_failure_as_unavailable() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve test port");
+        let address = listener.local_addr().expect("reserved address");
+        drop(listener);
+        let server = MatrixMockServer::new().await;
+        let mut session = password_session(&server).await;
+        session.info.homeserver = format!("http://{address}");
+
+        assert_eq!(
+            resolve_active_session_account_management_url(&session).await,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_session_treats_metadata_failure_as_unavailable() {
+        let server = MatrixMockServer::new().await;
+        server
+            .oauth()
+            .mock_server_metadata()
+            .error500()
+            .expect(1)
+            .mount()
+            .await;
+        let client = server.client_builder().unlogged().build().await;
+        client
+            .oauth()
+            .restore_session(
+                oauth::mock_session(matrix_sdk::test_utils::client::mock_session_tokens()),
+                matrix_sdk_base::store::RoomLoadSettings::default(),
+            )
+            .await
+            .expect("restore synthetic OAuth session");
+        let session = MatrixClientSession::from_client_for_testing(
+            client,
+            SessionInfo {
+                homeserver: server.server().uri(),
+                user_id: "@alice:example.test".to_owned(),
+                device_id: "OAUTHDEVICE".to_owned(),
+                authentication_method: SessionAuthenticationMethod::OAuth,
+            },
+        );
+
+        assert_eq!(
+            resolve_active_session_account_management_url(&session).await,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_session_uses_public_server_metadata_devices_list_action() {
+        let server = MatrixMockServer::new().await;
+        server
+            .oauth()
+            .mock_server_metadata()
+            .ok_https()
+            .expect(1)
+            .mount()
+            .await;
+        let client = server.client_builder().unlogged().build().await;
+        client
+            .oauth()
+            .restore_session(
+                oauth::mock_session(matrix_sdk::test_utils::client::mock_session_tokens()),
+                matrix_sdk_base::store::RoomLoadSettings::default(),
+            )
+            .await
+            .expect("restore synthetic OAuth session");
+        let session = MatrixClientSession::from_client_for_testing(
+            client,
+            SessionInfo {
+                homeserver: server.server().uri(),
+                user_id: "@alice:example.test".to_owned(),
+                device_id: "OAUTHDEVICE".to_owned(),
+                authentication_method: SessionAuthenticationMethod::OAuth,
+            },
+        );
+
+        let destination = resolve_active_session_account_management_url(&session)
+            .await
+            .expect("mock metadata advertises account management");
+        assert!(destination.starts_with("https://"));
+        assert!(
+            destination.contains("org.matrix.sessions_list"),
+            "{destination}"
+        );
+    }
 }

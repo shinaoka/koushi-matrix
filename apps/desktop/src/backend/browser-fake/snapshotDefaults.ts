@@ -23,10 +23,7 @@ export function defaultDelegatedAuthLinks(): Extract<
   DesktopSnapshot["state"]["domain"]["auth"],
   { kind: "ready" }
 >["delegated"] {
-  return {
-    registration_url: null,
-    account_management_url: null
-  };
+  return { registration_url: null };
 }
 
 function defaultE2eeKeyManagementState(): DesktopSnapshot["state"]["domain"]["e2ee_trust"]["key_management"] {

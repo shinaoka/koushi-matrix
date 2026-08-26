@@ -1,5 +1,5 @@
-//! Runtime integration tests covering soft-logout reauth and account-management
-//! UIA submission projection.
+//! Runtime integration tests covering soft-logout reauth and non-device
+//! account-management UIA submission projection.
 
 use std::time::Duration;
 
@@ -78,12 +78,12 @@ async fn submit_account_management_uia_command_projects_auth_submitted_state() {
         .inject_actions(vec![
             AppAction::AccountManagementRequested {
                 request_id: 10,
-                operation: AccountManagementOperation::DeleteDevice,
+                operation: AccountManagementOperation::DeactivateAccount,
             },
             AppAction::AccountManagementUiaRequired {
                 request_id: 10,
                 flow_id: 10,
-                operation: AccountManagementOperation::DeleteDevice,
+                operation: AccountManagementOperation::DeactivateAccount,
             },
         ])
         .await;
@@ -118,7 +118,7 @@ async fn submit_account_management_uia_command_projects_auth_submitted_state() {
             state.account_management,
             AccountManagementState::Working {
                 request_id: 10,
-                operation: AccountManagementOperation::DeleteDevice,
+                operation: AccountManagementOperation::DeactivateAccount,
             }
         )
     })
@@ -128,7 +128,7 @@ async fn submit_account_management_uia_command_projects_auth_submitted_state() {
         snapshot.account_management,
         AccountManagementState::Working {
             request_id: 10,
-            operation: AccountManagementOperation::DeleteDevice,
+            operation: AccountManagementOperation::DeactivateAccount,
         }
     );
 }

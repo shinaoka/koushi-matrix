@@ -13,21 +13,21 @@ use std::collections::BTreeMap;
 
 use koushi_core::StateDelta;
 use koushi_state::{
-    AccountManagementCapabilities, AccountManagementState, ActivityState, AppError, AppState,
-    AuthDiscoveryState, BasicOperationState, CjkTextPolicyState, ComposerState,
-    CurrentSessionStatusState, DeviceCleanupState, DeviceSessionListState, DirectoryState,
-    DisplayPlatform, E2eeTrustState, FilesViewState, FocusedContextState, InvitePreview,
-    InviteWorkflowState, LinkPreviewSettingsState, LiveSignalsState, LocalEncryptionState,
-    LocaleDisplayProfile, MentionCandidatesState, NativeAttentionCapabilities,
-    NativeAttentionState, NavigationState, ProfileState, ProvisionalPhase, QrLoginState,
-    RoomInteractionState, RoomListProjection, RoomManagementState, RoomNotificationSettings,
-    RoomPreferencesState, RoomSummary, SearchCrawlerState, SearchMatchField, SearchMatchKind,
-    SearchResult, SearchScope, SearchState, SecureBackupGateState, SessionLockReason, SessionState,
-    SettingsState, SidebarModel, SoftLogoutReauthState, SpaceMembersState, SpaceSummary,
-    StagedUploadItem, SyncState, ThreadAttentionState, ThreadPaneState, ThreadsListState,
-    TimelinePaneState, TypographyDisplayProfile, VerificationGateRejectReason,
-    VerificationGateState, VerificationMethod, native_attention_capabilities_for_platform,
-    resolve_locale_display_profile, resolve_typography_display_profile,
+    AccountManagementCapabilities, AccountManagementState, AccountManagementUrl, ActivityState,
+    AppError, AppState, AuthDiscoveryState, BasicOperationState, CjkTextPolicyState, ComposerState,
+    CurrentSessionStatusState, DeviceCleanupState, DirectoryState, DisplayPlatform, E2eeTrustState,
+    FilesViewState, FocusedContextState, InvitePreview, InviteWorkflowState,
+    LinkPreviewSettingsState, LiveSignalsState, LocalEncryptionState, LocaleDisplayProfile,
+    MentionCandidatesState, NativeAttentionCapabilities, NativeAttentionState, NavigationState,
+    ProfileState, ProvisionalPhase, QrLoginState, RoomInteractionState, RoomListProjection,
+    RoomManagementState, RoomNotificationSettings, RoomPreferencesState, RoomSummary,
+    SearchCrawlerState, SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState,
+    SecureBackupGateState, SessionLockReason, SessionState, SettingsState, SidebarModel,
+    SoftLogoutReauthState, SpaceMembersState, SpaceSummary, StagedUploadItem, SyncState,
+    ThreadAttentionState, ThreadPaneState, ThreadsListState, TimelinePaneState,
+    TypographyDisplayProfile, VerificationGateRejectReason, VerificationGateState,
+    VerificationMethod, native_attention_capabilities_for_platform, resolve_locale_display_profile,
+    resolve_typography_display_profile,
 };
 use serde::{Deserialize, Serialize};
 
@@ -122,7 +122,7 @@ pub struct FrontendDomainStateChangedSlices {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthDiscoveryState>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub device_sessions: Option<DeviceSessionListState>,
+    pub account_management_url: Option<Option<AccountManagementUrl>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_management: Option<AccountManagementState>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -194,7 +194,7 @@ impl FrontendDomainStateChangedSlices {
             && self.current_session_status.is_none()
             && self.device_cleanup.is_none()
             && self.auth.is_none()
-            && self.device_sessions.is_none()
+            && self.account_management_url.is_none()
             && self.account_management.is_none()
             && self.account_management_capabilities.is_none()
             && self.soft_logout_reauth.is_none()
@@ -277,7 +277,7 @@ impl From<StateDelta> for FrontendDesktopSnapshotDelta {
         domain.current_session_status = changed.current_session_status;
         domain.device_cleanup = changed.device_cleanup;
         domain.auth = changed.auth;
-        domain.device_sessions = changed.device_sessions;
+        domain.account_management_url = changed.account_management_url;
         domain.account_management = changed.account_management;
         domain.account_management_capabilities = changed.account_management_capabilities;
         domain.soft_logout_reauth = changed.soft_logout_reauth;
@@ -357,8 +357,8 @@ impl From<StateDelta> for FrontendDesktopSnapshotDelta {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct FrontendAppState {
-    /// IPC snapshot contract version. v3 uses exact decimal-string composer
-    /// revisions. The renderer asserts this so a stale snapshot or
+    /// IPC snapshot contract version. v5 owns account management on the active
+    /// session and removes the remote-device manager. The renderer asserts this so a stale snapshot or
     /// a mismatched Rust/TS build fails loudly instead of reading `undefined`.
     pub schema_version: u32,
     pub domain: FrontendDomainState,
@@ -374,7 +374,7 @@ pub struct FrontendDomainState {
     pub current_session_status: CurrentSessionStatusState,
     pub device_cleanup: DeviceCleanupState,
     pub auth: AuthDiscoveryState,
-    pub device_sessions: DeviceSessionListState,
+    pub account_management_url: Option<AccountManagementUrl>,
     pub account_management: AccountManagementState,
     pub account_management_capabilities: AccountManagementCapabilities,
     pub soft_logout_reauth: SoftLogoutReauthState,
@@ -445,7 +445,7 @@ fn frontend_app_state_for_platform(state: AppState, platform: DisplayPlatform) -
             current_session_status: state.current_session_status,
             device_cleanup: state.device_cleanup,
             auth: state.auth,
-            device_sessions: state.device_sessions,
+            account_management_url: state.account_management_url,
             account_management: state.account_management,
             account_management_capabilities: state.account_management_capabilities,
             soft_logout_reauth: state.soft_logout_reauth,
@@ -492,7 +492,7 @@ fn frontend_app_state_for_platform(state: AppState, platform: DisplayPlatform) -
 }
 
 /// IPC snapshot contract version. Bumped to 2 by #87 Phase 4 (domain/ui sectioning).
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 4;
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 5;
 
 pub(crate) fn frontend_display_platform() -> DisplayPlatform {
     #[cfg(target_os = "macos")]
@@ -963,6 +963,9 @@ mod tests {
                 authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
             }),
             sync: SyncState::Running,
+            account_management_url: Some(koushi_state::AccountManagementUrl::from_validated(
+                "https://account.example.test/devices".to_owned(),
+            )),
             ..AppState::default()
         }
     }
@@ -990,8 +993,8 @@ mod tests {
         // only in browser fakes.
         assert_eq!(value["state"]["domain"]["room_interactions"], json!({}));
         assert_eq!(
-            value["state"]["domain"]["device_sessions"]["kind"],
-            json!("idle")
+            value["state"]["domain"]["account_management_url"],
+            json!("https://account.example.test/devices")
         );
         assert_eq!(
             value["state"]["domain"]["device_cleanup"]["kind"],
@@ -1282,6 +1285,22 @@ mod tests {
             .expect("lock reason clear should serialize");
         assert_eq!(
             clear_value["changed"]["state"]["domain"]["session_lock_reason"],
+            json!(null)
+        );
+    }
+
+    #[test]
+    fn account_management_url_clear_crosses_the_frontend_boundary_as_null() {
+        let previous = booted_app_state();
+        let mut next = previous.clone();
+        next.account_management_url = None;
+        let delta = koushi_core::build_state_delta(10, &previous, &next)
+            .expect("destination clear should produce a state delta");
+        let value = serde_json::to_value(FrontendDesktopSnapshotDelta::from(delta))
+            .expect("destination clear delta should serialize");
+
+        assert_eq!(
+            value["changed"]["state"]["domain"]["account_management_url"],
             json!(null)
         );
     }
@@ -1898,6 +1917,9 @@ mod tests {
 
         let mut state = AppState {
             session: SessionState::Ready(session_info.clone()),
+            account_management_url: Some(koushi_state::AccountManagementUrl::from_validated(
+                "https://account.example.invalid/devices".to_owned(),
+            )),
             device_cleanup: DeviceCleanupState::LocalResetFailed {
                 request_id: 370,
                 mode: DeviceCleanupLocalMode::RemoteRemoved {

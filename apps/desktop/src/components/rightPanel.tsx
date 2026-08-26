@@ -175,9 +175,6 @@ export function ContextualRightPanel({
   onIgnoreUser = () => undefined,
   onUnignoreUser = () => undefined,
   onReportUser = () => undefined,
-  onQueryDevices = () => undefined,
-  onRenameDevice = () => undefined,
-  onDeleteDevices = () => undefined,
   onLoadAccountManagementCapabilities = () => undefined,
   onChangePassword = () => undefined,
   onDeactivateAccount = () => undefined,
@@ -328,9 +325,6 @@ export function ContextualRightPanel({
   onRebuildSearchIndex?: () => void;
   onSetRoomUrlPreviewOverride?: (roomId: string, enabled: boolean) => void;
   onRepairRoomTimeline?: (roomId: string) => void | Promise<void>;
-  onQueryDevices?: () => void;
-  onRenameDevice?: (deviceOrdinal: number, displayName: string) => void;
-  onDeleteDevices?: (deviceOrdinals: number[]) => void;
   onLoadAccountManagementCapabilities?: () => void;
   onChangePassword?: (newPassword: string) => void;
   onDeactivateAccount?: (eraseData: boolean) => void;
@@ -495,15 +489,11 @@ export function ContextualRightPanel({
           onUpdateSettings={onUpdateSettings}
           onRebuildSearchIndex={onRebuildSearchIndex}
           onSwitchAccount={onSwitchAccount}
-          deviceSessions={snapshot.state.domain.device_sessions}
           accountManagement={snapshot.state.domain.account_management}
           accountManagementCapabilities={snapshot.state.domain.account_management_capabilities}
           accountManagementUrl={accountManagementUrl}
           onManageAccount={onManageAccount}
           onRefreshCurrentSessionStatus={onRefreshCurrentSessionStatus}
-          onQueryDevices={onQueryDevices ?? (() => undefined)}
-          onRenameDevice={onRenameDevice ?? (() => undefined)}
-          onDeleteDevices={onDeleteDevices ?? (() => undefined)}
           onLoadAccountManagementCapabilities={
             onLoadAccountManagementCapabilities ?? (() => undefined)
           }

@@ -56,15 +56,15 @@ pub use sync::{SyncLifecycleStatus, SyncState};
 // ── Re-exports: session ─────────────────────────────────────────────────────
 pub use session::{
     AccountManagementCapabilities, AccountManagementOperation, AccountManagementState,
-    AuthDiscoveryState, AuthFailureKind, CapabilityState, CurrentDeviceTrustState,
-    DelegatedAuthLinks, DeviceCleanupAuthMode, DeviceCleanupFailureKind, DeviceCleanupLocalMode,
-    DeviceCleanupOfferReason, DeviceCleanupRemoteOutcome, DeviceCleanupState,
-    DeviceSessionListState, DeviceSessionSummary, LoginAttemptId, LoginFlow, LoginFlowKind,
-    PendingKeyCountBucket, ProvisionalPhase, QrLoginState, RecoveryMethod,
-    SecureBackupGateFailureKind, SecureBackupGateState, SessionAuthenticationMethod, SessionInfo,
-    SessionLockReason, SessionState, SoftLogoutReauthState, VerificationAccountKind,
-    VerificationGateFailureKind, VerificationGateRejectReason, VerificationGateState,
-    VerificationMethod, VerificationMethodCapability,
+    AccountManagementUrl, AuthDiscoveryState, AuthFailureKind, CapabilityState,
+    CurrentDeviceTrustState, DelegatedAuthLinks, DeviceCleanupAuthMode, DeviceCleanupFailureKind,
+    DeviceCleanupLocalMode, DeviceCleanupOfferReason, DeviceCleanupRemoteOutcome,
+    DeviceCleanupState, LoginAttemptId, LoginFlow, LoginFlowKind, PendingKeyCountBucket,
+    ProvisionalPhase, QrLoginState, RecoveryMethod, SecureBackupGateFailureKind,
+    SecureBackupGateState, SessionAuthenticationMethod, SessionInfo, SessionLockReason,
+    SessionState, SoftLogoutReauthState, VerificationAccountKind, VerificationGateFailureKind,
+    VerificationGateRejectReason, VerificationGateState, VerificationMethod,
+    VerificationMethodCapability,
 };
 pub use session_status::{
     CurrentSessionBackupState, CurrentSessionStatusDetails, CurrentSessionStatusFailureKind,
@@ -269,7 +269,7 @@ pub struct AppState {
     pub current_session_status: CurrentSessionStatusState,
     pub auth: AuthDiscoveryState,
     #[serde(default)]
-    pub device_sessions: DeviceSessionListState,
+    pub account_management_url: Option<AccountManagementUrl>,
     #[serde(default)]
     pub account_management: AccountManagementState,
     #[serde(default)]
@@ -346,7 +346,7 @@ impl Default for AppState {
             device_cleanup: DeviceCleanupState::Idle,
             current_session_status: CurrentSessionStatusState::Idle,
             auth: AuthDiscoveryState::Unknown,
-            device_sessions: DeviceSessionListState::Idle,
+            account_management_url: None,
             account_management: AccountManagementState::Idle,
             account_management_capabilities: AccountManagementCapabilities::default(),
             soft_logout_reauth: SoftLogoutReauthState::Idle,

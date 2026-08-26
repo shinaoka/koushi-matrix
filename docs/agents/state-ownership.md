@@ -969,14 +969,15 @@ normal QA-title mode and cannot change product title semantics.
   own identity, and key-backup readiness. `e2ee_trust` remains the owner of
   trust operations, continuation state, and action availability. Its `devices`
   projection is not a complete homeserver session inventory and an empty array
-  must never be labelled `0 devices`; homeserver session inventory and cleanup
-  render from Rust-owned `device_sessions` or delegate to the discovered Manage
-  account destination.
-- Account-management discovery remains Rust/Core-owned and URL-safe. The
-  desktop composition root may request the same typed discovery command once
-  per authenticated/restored account when the cached snapshot has no safe
-  destination. React must not fetch well-known metadata, construct a URL, or
-  retry without an account-identity fence.
+  must never be labelled `0 devices`.
+- Remote account/device management is delegated to the active server. Rust/Core
+  owns one optional HTTP(S) `account_management_url`, resolves it after session
+  promotion through public OAuth metadata APIs or active-session well-known
+  discovery, exact-session fences completion, and clears it on quarantine,
+  logout, replacement, or switch. Login discovery owns no account-management
+  URL. React renders **Manage account & devices** only when the Rust destination
+  exists and never fetches metadata, constructs a URL, retries discovery, or
+  renders local remote-device list/rename/sign-out controls.
 - Verification and device DTOs include user/device ids for Rust correlation, but
   the GUI should not display those ids by default. Use ordinal/status labels
   (`Device 1`, `Verified`, etc.) unless a Rust-owned redacted display model is

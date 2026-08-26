@@ -18,11 +18,9 @@ async function seedReadyStatus(page: Page, accountManagementUrl: string | null):
             kind: "ready",
             homeserver: snapshot.state.domain.session.homeserver ?? "",
             flows: [],
-            delegated: {
-              registration_url: null,
-              account_management_url: managementUrl
-            }
+            delegated: { registration_url: null }
           },
+          account_management_url: managementUrl,
           current_session_status: {
             status: "ready",
             request_id: 369,
@@ -196,7 +194,7 @@ test("session popover refreshes through IPC and replaces stale facts on failure"
     .toBe(1);
 });
 
-test("session popover dismisses accessibly and falls back to local account settings", async ({
+test("session popover dismisses accessibly and hides an unsafe account destination", async ({
   page
 }) => {
   await gotoReadyShell(page);
@@ -206,9 +204,7 @@ test("session popover dismisses accessibly and falls back to local account setti
   await trigger.focus();
   await page.keyboard.press("Enter");
   const dialog = page.getByRole("dialog", { name: "Current session" });
-  await expect(dialog).toContainText("did not advertise a safe external account destination");
-  await dialog.getByRole("button", { name: "Open local account settings" }).click();
-  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Manage account and devices" })).toHaveCount(0);
 
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();

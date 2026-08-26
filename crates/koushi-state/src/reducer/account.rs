@@ -2,61 +2,11 @@ use crate::{
     effect::{AppEffect, UiEvent},
     state::{
         AccountManagementCapabilities, AccountManagementState, AppState, AuthFailureKind,
-        CapabilityState, DeviceSessionListState,
+        CapabilityState,
     },
 };
 
 use super::is_session_ready;
-
-pub(crate) fn handle_device_sessions_load_requested(
-    state: &mut AppState,
-    request_id: u64,
-) -> Vec<AppEffect> {
-    if !is_session_ready(state)
-        || matches!(
-            state.device_sessions,
-            DeviceSessionListState::Loading { .. }
-        )
-    {
-        return Vec::new();
-    }
-    state.device_sessions = DeviceSessionListState::Loading { request_id };
-    vec![AppEffect::EmitUiEvent(UiEvent::DeviceSessionsChanged)]
-}
-
-pub(crate) fn handle_device_sessions_loaded(
-    state: &mut AppState,
-    request_id: u64,
-    devices: Vec<crate::state::DeviceSessionSummary>,
-) -> Vec<AppEffect> {
-    if !matches!(
-        state.device_sessions,
-        DeviceSessionListState::Loading {
-            request_id: active
-        } if active == request_id
-    ) {
-        return Vec::new();
-    }
-    state.device_sessions = DeviceSessionListState::Loaded { devices };
-    vec![AppEffect::EmitUiEvent(UiEvent::DeviceSessionsChanged)]
-}
-
-pub(crate) fn handle_device_sessions_load_failed(
-    state: &mut AppState,
-    request_id: u64,
-    kind: AuthFailureKind,
-) -> Vec<AppEffect> {
-    if !matches!(
-        state.device_sessions,
-        DeviceSessionListState::Loading {
-            request_id: active
-        } if active == request_id
-    ) {
-        return Vec::new();
-    }
-    state.device_sessions = DeviceSessionListState::Failed { request_id, kind };
-    vec![AppEffect::EmitUiEvent(UiEvent::DeviceSessionsChanged)]
-}
 
 pub(crate) fn handle_account_management_requested(
     state: &mut AppState,

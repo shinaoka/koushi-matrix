@@ -1,78 +1,86 @@
 //! `account_management` ownership for AccountActor.
 
-use std::collections::BTreeMap;
-
-use koushi_state::{AccountManagementOperation, AppAction, AuthFailureKind, DeviceSessionSummary};
+use koushi_state::{AccountManagementOperation, AppAction, AuthFailureKind};
 
 use crate::failure::CoreFailure;
 use crate::ids::RequestId;
 
 use super::actor::AccountActor;
-use super::recovery_backup::classify_e2ee_trust_auth_failure;
 
 pub(super) struct PendingUiaOperation {
     operation: AccountManagementOperation,
-    raw_device_ids: Vec<String>,
     new_password: Option<koushi_state::AuthSecret>,
     erase_data: bool,
     uiaa_session: Option<String>,
 }
 
-enum AccountManagementUiaError {
-    DeleteDevices(koushi_sdk::DeleteDevicesError),
-    AccountManagement(koushi_sdk::AccountManagementError),
-}
-
 impl AccountActor {
-    pub(super) async fn handle_query_devices(&mut self, request_id: RequestId) {
-        let session = match &self.session {
-            Some(session) => session.clone(),
-            None => {
-                self.send_actions(vec![AppAction::DeviceSessionsLoadFailed {
-                    request_id: request_id.sequence,
-                    kind: AuthFailureKind::Sdk,
-                }])
+    pub(super) async fn start_active_session_account_management_discovery(
+        &mut self,
+        session: std::sync::Arc<koushi_sdk::MatrixClientSession>,
+    ) {
+        self.stop_active_session_account_management_discovery()
+            .await;
+        self.account_management_discovery_generation =
+            self.account_management_discovery_generation.wrapping_add(1);
+        let generation = self.account_management_discovery_generation;
+        let info = session.info.clone();
+        let tx = self.self_tx.clone();
+        #[cfg(test)]
+        let override_result = self
+            .account_management_discovery_override
+            .lock()
+            .expect("account-management discovery override lock")
+            .take();
+        self.account_management_discovery_task = Some(crate::executor::spawn(async move {
+            #[cfg(test)]
+            let url = match override_result {
+                Some(result) => result.await.unwrap_or(None),
+                None => koushi_sdk::resolve_active_session_account_management_url(&session).await,
+            };
+            #[cfg(not(test))]
+            let url = koushi_sdk::resolve_active_session_account_management_url(&session).await;
+            let _ = tx
+                .send(
+                    super::actor::AccountMessage::ActiveSessionAccountManagementUrlResolved {
+                        generation,
+                        info,
+                        url,
+                    },
+                )
                 .await;
-                self.emit_failure(request_id, CoreFailure::SessionRequired);
-                return;
-            }
-        };
+        }));
+    }
 
-        match koushi_sdk::list_devices(&session).await {
-            Ok(devices) => {
-                let mut ordinal_map = BTreeMap::new();
-                let summaries = devices
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, device)| {
-                        let ordinal = index as u64 + 1;
-                        ordinal_map.insert(ordinal, device.raw_device_id);
-                        DeviceSessionSummary {
-                            device_ordinal: ordinal,
-                            display_name: device.display_name,
-                            current: device.current,
-                            verified: device.verified,
-                            inactive: device.inactive,
-                        }
-                    })
-                    .collect();
-                self.device_session_ordinals = ordinal_map;
-                self.send_actions(vec![AppAction::DeviceSessionsLoaded {
-                    request_id: request_id.sequence,
-                    devices: summaries,
-                }])
-                .await;
-            }
-            Err(error) => {
-                let kind = classify_e2ee_trust_auth_failure(&error);
-                self.send_actions(vec![AppAction::DeviceSessionsLoadFailed {
-                    request_id: request_id.sequence,
-                    kind,
-                }])
-                .await;
-                self.emit_failure(request_id, CoreFailure::AccountOperationFailed { kind });
-            }
+    pub(super) async fn stop_active_session_account_management_discovery(&mut self) {
+        self.account_management_discovery_generation =
+            self.account_management_discovery_generation.wrapping_add(1);
+        if let Some(task) = self.account_management_discovery_task.take() {
+            task.abort();
+            let _ = task.await;
         }
+    }
+
+    pub(super) async fn handle_active_session_account_management_url_resolved(
+        &mut self,
+        generation: u64,
+        info: koushi_state::SessionInfo,
+        url: Option<String>,
+    ) {
+        if generation != self.account_management_discovery_generation
+            || !self.session_promoted
+            || !matches!(self.session.as_deref(), Some(session) if session.info == info)
+        {
+            return;
+        }
+        if let Some(task) = self.account_management_discovery_task.take() {
+            let _ = task.await;
+        }
+        self.send_actions(vec![AppAction::ActiveSessionAccountManagementUrlResolved {
+            info,
+            url: url.map(koushi_state::AccountManagementUrl::from_validated),
+        }])
+        .await;
     }
 
     pub(super) async fn handle_load_account_management_capabilities(
@@ -94,162 +102,6 @@ impl AccountActor {
             change_password: capabilities.change_password,
         }])
         .await;
-    }
-
-    pub(super) async fn handle_rename_device(
-        &mut self,
-        request_id: RequestId,
-        device_ordinal: u64,
-        display_name: String,
-    ) {
-        let operation = AccountManagementOperation::RenameDevice;
-        let session = match &self.session {
-            Some(session) => session.clone(),
-            None => {
-                self.project_account_management_failure(
-                    request_id,
-                    operation,
-                    AuthFailureKind::Sdk,
-                    CoreFailure::SessionRequired,
-                )
-                .await;
-                return;
-            }
-        };
-        let Some(raw_device_id) = self.device_session_ordinals.get(&device_ordinal).cloned() else {
-            self.project_account_management_failure(
-                request_id,
-                operation,
-                AuthFailureKind::Sdk,
-                CoreFailure::AccountOperationFailed {
-                    kind: AuthFailureKind::Sdk,
-                },
-            )
-            .await;
-            return;
-        };
-
-        let result = koushi_sdk::rename_device(&session, &raw_device_id, &display_name).await;
-        drop(display_name);
-        match result {
-            Ok(()) => {
-                self.send_actions(vec![AppAction::AccountManagementSucceeded {
-                    request_id: request_id.sequence,
-                    operation,
-                }])
-                .await;
-            }
-            Err(_) => {
-                self.project_account_management_failure(
-                    request_id,
-                    operation,
-                    AuthFailureKind::Sdk,
-                    CoreFailure::AccountOperationFailed {
-                        kind: AuthFailureKind::Sdk,
-                    },
-                )
-                .await
-            }
-        }
-    }
-
-    pub(super) async fn handle_delete_devices(
-        &mut self,
-        request_id: RequestId,
-        device_ordinals: Vec<u64>,
-        auth: Option<koushi_state::IdentityResetAuthRequest>,
-    ) {
-        let operation = if device_ordinals.len() == 1 {
-            AccountManagementOperation::DeleteDevice
-        } else {
-            AccountManagementOperation::DeleteOtherDevices
-        };
-        let session = match &self.session {
-            Some(session) => session.clone(),
-            None => {
-                self.project_account_management_failure(
-                    request_id,
-                    operation,
-                    AuthFailureKind::Sdk,
-                    CoreFailure::SessionRequired,
-                )
-                .await;
-                return;
-            }
-        };
-        let mut raw_device_ids = Vec::with_capacity(device_ordinals.len());
-        for ordinal in &device_ordinals {
-            let Some(raw_device_id) = self.device_session_ordinals.get(ordinal) else {
-                self.project_account_management_failure(
-                    request_id,
-                    operation,
-                    AuthFailureKind::Sdk,
-                    CoreFailure::AccountOperationFailed {
-                        kind: AuthFailureKind::Sdk,
-                    },
-                )
-                .await;
-                return;
-            };
-            raw_device_ids.push(raw_device_id.clone());
-        }
-
-        // If this is the first attempt (no auth), try without auth so the
-        // server can challenge us with UIA. The challenge response is handled
-        // below by projecting AwaitingUia and storing the continuation.
-        let uiaa_session = auth
-            .as_ref()
-            .and_then(|_| self.pending_uia_operations.get(&request_id.sequence))
-            .and_then(|pending| pending.uiaa_session.clone());
-        let result = koushi_sdk::delete_devices(
-            &session,
-            &raw_device_ids,
-            auth.as_ref(),
-            uiaa_session.as_deref(),
-        )
-        .await;
-        drop(auth);
-        match result {
-            Ok(()) => {
-                self.pending_uia_operations.remove(&request_id.sequence);
-                self.send_actions(vec![AppAction::AccountManagementSucceeded {
-                    request_id: request_id.sequence,
-                    operation,
-                }])
-                .await;
-            }
-            Err(koushi_sdk::DeleteDevicesError::UiaaChallenge { session }) => {
-                let flow_id = request_id.sequence;
-                self.pending_uia_operations.insert(
-                    flow_id,
-                    PendingUiaOperation {
-                        operation,
-                        raw_device_ids,
-                        new_password: None,
-                        erase_data: false,
-                        uiaa_session: session,
-                    },
-                );
-                self.send_actions(vec![AppAction::AccountManagementUiaRequired {
-                    request_id: request_id.sequence,
-                    flow_id,
-                    operation,
-                }])
-                .await;
-            }
-            Err(koushi_sdk::DeleteDevicesError::Sdk(_)) => {
-                self.pending_uia_operations.remove(&request_id.sequence);
-                self.project_account_management_failure(
-                    request_id,
-                    operation,
-                    AuthFailureKind::Sdk,
-                    CoreFailure::AccountOperationFailed {
-                        kind: AuthFailureKind::Sdk,
-                    },
-                )
-                .await;
-            }
-        }
     }
 
     pub(super) async fn handle_change_password(
@@ -287,7 +139,6 @@ impl AccountActor {
                     flow_id,
                     PendingUiaOperation {
                         operation,
-                        raw_device_ids: Vec::new(),
                         new_password: Some(new_password),
                         erase_data: false,
                         uiaa_session: session,
@@ -354,7 +205,6 @@ impl AccountActor {
                     flow_id,
                     PendingUiaOperation {
                         operation,
-                        raw_device_ids: Vec::new(),
                         new_password: None,
                         erase_data,
                         uiaa_session: session,
@@ -415,30 +265,6 @@ impl AccountActor {
         };
 
         let result = match operation {
-            AccountManagementOperation::RenameDevice
-            | AccountManagementOperation::ThreePid
-            | AccountManagementOperation::IdentityServer => {
-                // These operations do not use UIA; no pending op should exist.
-                self.emit_failure(
-                    RequestId {
-                        connection_id: request_id.connection_id,
-                        sequence: flow_id,
-                    },
-                    CoreFailure::AccountOperationFailed {
-                        kind: AuthFailureKind::Sdk,
-                    },
-                );
-                return;
-            }
-            AccountManagementOperation::DeleteDevice
-            | AccountManagementOperation::DeleteOtherDevices => koushi_sdk::delete_devices(
-                &session,
-                &pending.raw_device_ids,
-                Some(&auth),
-                pending.uiaa_session.as_deref(),
-            )
-            .await
-            .map_err(AccountManagementUiaError::DeleteDevices),
             AccountManagementOperation::ChangePassword => {
                 let Some(new_password) = pending.new_password.as_ref() else {
                     self.project_account_management_failure(
@@ -462,16 +288,16 @@ impl AccountActor {
                     pending.uiaa_session.as_deref(),
                 )
                 .await
-                .map_err(AccountManagementUiaError::AccountManagement)
             }
-            AccountManagementOperation::DeactivateAccount => koushi_sdk::deactivate_account(
-                &session,
-                pending.erase_data,
-                Some(&auth),
-                pending.uiaa_session.as_deref(),
-            )
-            .await
-            .map_err(AccountManagementUiaError::AccountManagement),
+            AccountManagementOperation::DeactivateAccount => {
+                koushi_sdk::deactivate_account(
+                    &session,
+                    pending.erase_data,
+                    Some(&auth),
+                    pending.uiaa_session.as_deref(),
+                )
+                .await
+            }
         };
         drop(auth);
         match result {
@@ -494,12 +320,7 @@ impl AccountActor {
                     .await;
                 }
             }
-            Err(AccountManagementUiaError::DeleteDevices(
-                koushi_sdk::DeleteDevicesError::UiaaChallenge { session },
-            ))
-            | Err(AccountManagementUiaError::AccountManagement(
-                koushi_sdk::AccountManagementError::UiaaChallenge { session },
-            )) => {
+            Err(koushi_sdk::AccountManagementError::UiaaChallenge { session }) => {
                 pending.uiaa_session = session;
                 self.pending_uia_operations.insert(flow_id, pending);
                 self.emit_failure(
@@ -509,12 +330,7 @@ impl AccountActor {
                     },
                 );
             }
-            Err(AccountManagementUiaError::DeleteDevices(koushi_sdk::DeleteDevicesError::Sdk(
-                _,
-            )))
-            | Err(AccountManagementUiaError::AccountManagement(
-                koushi_sdk::AccountManagementError::Sdk(_),
-            )) => {
+            Err(koushi_sdk::AccountManagementError::Sdk(_)) => {
                 self.project_account_management_failure(
                     RequestId {
                         connection_id: request_id.connection_id,
@@ -550,21 +366,222 @@ impl AccountActor {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use koushi_state::{
+        AppAction, CurrentDeviceTrustState, SessionAuthenticationMethod, SessionInfo,
+    };
+    use tokio::sync::{mpsc, oneshot};
+
+    use crate::account::{
+        actor::AccountMessage,
+        session_lifecycle::SessionInvalidationReason,
+        test_support::{
+            acknowledge_next_verified_projection, consume_initial_unknown_trust_projection,
+            inspect_session_runtime, login_gated_actor, shutdown_and_ack, test_request_id,
+        },
+    };
+
+    async fn promoted_actor_with_blocked_discovery() -> (
+        crate::account::actor::AccountActorHandle,
+        mpsc::Receiver<Vec<AppAction>>,
+        oneshot::Sender<Option<String>>,
+    ) {
+        let (handle, mut action_rx) = login_gated_actor().await;
+        consume_initial_unknown_trust_projection(&mut action_rx).await;
+        let (release, result) = oneshot::channel();
+        assert!(
+            handle
+                .send(AccountMessage::ConfigureAccountManagementDiscovery { result })
+                .await
+        );
+        assert!(
+            handle
+                .send(AccountMessage::CurrentDeviceTrustChanged {
+                    generation: 2,
+                    trust: CurrentDeviceTrustState::Verified,
+                })
+                .await
+        );
+        acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+        (handle, action_rx, release)
+    }
+
+    #[tokio::test]
+    async fn promoted_restored_session_starts_active_account_management_discovery() {
+        let (handle, mut action_rx) = login_gated_actor().await;
+        consume_initial_unknown_trust_projection(&mut action_rx).await;
+        assert!(
+            handle
+                .send(AccountMessage::CurrentDeviceTrustChanged {
+                    generation: 2,
+                    trust: CurrentDeviceTrustState::Verified,
+                })
+                .await
+        );
+        acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if matches!(
+                    action_rx.recv().await.as_deref(),
+                    Some([AppAction::ActiveSessionAccountManagementUrlResolved { .. }])
+                ) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("promotion must discover an active-session destination without login discovery");
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn trust_quarantine_aborts_active_account_management_discovery() {
+        let (handle, mut action_rx, release) = promoted_actor_with_blocked_discovery().await;
+        assert!(
+            handle
+                .send(AccountMessage::CurrentDeviceTrustChanged {
+                    generation: 2,
+                    trust: CurrentDeviceTrustState::Unverified,
+                })
+                .await
+        );
+        let (generation, transition_id) = loop {
+            if let Some(
+                [
+                    AppAction::AuthoritativeDeviceTrustChanged {
+                        generation,
+                        transition_id,
+                        trust: CurrentDeviceTrustState::Unverified,
+                    },
+                ],
+            ) = action_rx.recv().await.as_deref()
+            {
+                break (*generation, *transition_id);
+            }
+        };
+        assert!(
+            handle
+                .send(AccountMessage::TrustProjectionApplied {
+                    generation,
+                    transition_id,
+                    ready: false,
+                    locked: false,
+                })
+                .await
+        );
+        while inspect_session_runtime(&handle).await != (true, false, false, true) {
+            crate::executor::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            release
+                .send(Some("https://stale.example/devices".to_owned()))
+                .is_err()
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn authentication_lock_aborts_active_account_management_discovery() {
+        let (handle, _action_rx, release) = promoted_actor_with_blocked_discovery().await;
+        assert!(
+            handle
+                .send(AccountMessage::SessionInvalidated {
+                    reason: SessionInvalidationReason::UnknownToken { soft_logout: true },
+                })
+                .await
+        );
+        while inspect_session_runtime(&handle).await.1 {
+            crate::executor::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            release
+                .send(Some("https://stale.example/devices".to_owned()))
+                .is_err()
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn logout_aborts_active_account_management_discovery() {
+        let (handle, _action_rx, release) = promoted_actor_with_blocked_discovery().await;
+        assert!(
+            handle
+                .send(AccountMessage::Command(
+                    crate::command::AccountCommand::ChangeHomeserver {
+                        request_id: test_request_id(),
+                    },
+                ))
+                .await
+        );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !release.is_closed() {
+                crate::executor::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("logout must abort discovery");
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
 
     #[test]
-    fn device_list_failures_are_not_reported_as_store_unavailable() {
-        let handler = crate::account::test_source::item_body(
-            include_str!("account_management.rs"),
-            "async fn handle_query_devices",
+    fn session_replacement_uses_the_teardown_that_aborts_discovery() {
+        let install = crate::account::test_source::item_body(
+            include_str!("session_lifecycle.rs"),
+            "async fn install_provisional_session",
         );
+        let teardown = crate::account::test_source::item_body(
+            include_str!("runtime_children.rs"),
+            "async fn stop_current_session_runtime",
+        );
+        assert!(install.contains("stop_current_session_runtime().await"));
+        assert!(teardown.contains("stop_active_session_account_management_discovery"));
+    }
 
+    #[tokio::test]
+    async fn shutdown_aborts_active_account_management_discovery() {
+        let (handle, _action_rx, release) = promoted_actor_with_blocked_discovery().await;
+        shutdown_and_ack(&handle).await;
         assert!(
-            handler.contains("classify_e2ee_trust_auth_failure(&error)"),
-            "device list failures must classify SDK/network channel errors"
+            release
+                .send(Some("https://stale.example/devices".to_owned()))
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn wrong_session_destination_completion_is_ignored() {
+        let (handle, mut action_rx, release) = promoted_actor_with_blocked_discovery().await;
+        assert!(
+            handle
+                .send(AccountMessage::ActiveSessionAccountManagementUrlResolved {
+                    generation: 2,
+                    info: SessionInfo {
+                        homeserver: "https://other.example".to_owned(),
+                        user_id: "@other:example".to_owned(),
+                        device_id: "OTHER".to_owned(),
+                        authentication_method: SessionAuthenticationMethod::Password,
+                    },
+                    url: Some("https://stale.example/devices".to_owned()),
+                })
+                .await
         );
         assert!(
-            !handler.contains("CoreFailure::StoreUnavailable"),
-            "device list failures must not masquerade as credential-store failures"
+            tokio::time::timeout(Duration::from_millis(100), async {
+                loop {
+                    if matches!(
+                        action_rx.recv().await.as_deref(),
+                        Some([AppAction::ActiveSessionAccountManagementUrlResolved { .. }])
+                    ) {
+                        break;
+                    }
+                }
+            })
+            .await
+            .is_err()
         );
+        drop(release);
+        let _ = handle.send(AccountMessage::Shutdown).await;
     }
 }

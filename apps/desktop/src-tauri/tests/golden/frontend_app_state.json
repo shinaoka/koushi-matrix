@@ -64,6 +64,7 @@
           "kind": "unknown"
         }
       },
+      "account_management_url": "https://account.example.invalid/devices",
       "activity": {
         "active_tab": "recent",
         "kind": "open",
@@ -160,9 +161,6 @@
           "outcome": "alreadyAbsent"
         },
         "request_id": 370
-      },
-      "device_sessions": {
-        "kind": "idle"
       },
       "directory": {
         "join": {
@@ -734,7 +732,7 @@
         "platform": "linux"
       }
     },
-    "schema_version": 4,
+    "schema_version": 5,
     "ui": {
       "basic_operation": {
         "kind": "creatingRoom",

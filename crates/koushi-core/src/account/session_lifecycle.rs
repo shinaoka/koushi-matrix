@@ -378,6 +378,8 @@ impl AccountActor {
         .await;
         self.session_promoted = false;
         self.stop_provisional_runtime().await;
+        self.stop_active_session_account_management_discovery()
+            .await;
         self.invalidate_account_hydration();
         self.stop_sync_actor().await;
     }
@@ -916,7 +918,6 @@ impl AccountActor {
         drop(login_session);
 
         let session_arc = Arc::new(store_backed);
-        self.device_session_ordinals.clear();
         self.pending_uia_operations.clear();
         self.session = Some(session_arc.clone());
         self.session_key_id = Some(key_id);
@@ -1313,7 +1314,6 @@ impl AccountActor {
         }
         self.stop_provisional_runtime().await;
         let session = Arc::new(session);
-        self.device_session_ordinals.clear();
         self.pending_uia_operations.clear();
         self.pending_device_cleanup = None;
         self.session = Some(session.clone());

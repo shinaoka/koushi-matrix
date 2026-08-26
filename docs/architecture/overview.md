@@ -484,9 +484,15 @@ result permits account-local persistence clearing and `SignedOut`. A remote
 failure retains the session and keyed persistence for retry. A separately
 confirmed local-only escape is allowed only from that failed state and must say
 that the remote device may remain. Raw Device IDs, UIAA sessions, tokens,
-passwords, and SDK errors stay inside Rust. OAuth device naming and live
-account-management-link discovery have a separate owner in issue #369.
-Ambiguous legacy `M_UNKNOWN_TOKEN` and generic `M_NOT_FOUND` errors are not
+passwords, and SDK errors stay inside Rust. Remote account/device management is
+not a Koushi surface: after promotion, an AccountActor-owned task resolves one
+optional destination for the exact active session. OAuth uses public SDK server
+metadata plus its devices-list account action; non-OAuth sessions use the active
+homeserver's well-known client metadata. Only HTTP(S) destinations cross into
+AppState, and replacement, authentication lock, trust quarantine, logout, or
+switch invalidates them.
+Login discovery never owns this active-session capability. Ambiguous legacy
+`M_UNKNOWN_TOKEN` and generic `M_NOT_FOUND` errors are not
 proof of target-device absence and therefore remain retryable. Starting a new
 verification/recovery attempt retires the cleanup offer; the two flows never
 own the provisional session concurrently.

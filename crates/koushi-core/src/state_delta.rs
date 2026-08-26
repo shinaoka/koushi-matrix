@@ -3,9 +3,9 @@
 use std::collections::{BTreeMap, HashMap};
 
 use koushi_state::{
-    AccountManagementCapabilities, AccountManagementState, ActivityState, AppError, AppState,
-    AuthDiscoveryState, BasicOperationState, CjkTextPolicyState, CurrentSessionStatusState,
-    DeviceCleanupState, DeviceSessionListState, DirectoryState, E2eeTrustState, FilesViewState,
+    AccountManagementCapabilities, AccountManagementState, AccountManagementUrl, ActivityState,
+    AppError, AppState, AuthDiscoveryState, BasicOperationState, CjkTextPolicyState,
+    CurrentSessionStatusState, DeviceCleanupState, DirectoryState, E2eeTrustState, FilesViewState,
     FocusedContextState, InvitePreview, InviteWorkflowState, LinkPreviewSettingsState,
     LiveSignalsState, LocalEncryptionState, MentionCandidatesState, NativeAttentionState,
     NavigationState, ProfileState, QrLoginState, RoomInteractionState, RoomListProjection,
@@ -31,7 +31,7 @@ pub struct StateDeltaChangedSlices {
     pub device_cleanup: Option<DeviceCleanupState>,
     pub current_session_status: Option<CurrentSessionStatusState>,
     pub auth: Option<AuthDiscoveryState>,
-    pub device_sessions: Option<DeviceSessionListState>,
+    pub account_management_url: Option<Option<AccountManagementUrl>>,
     pub account_management: Option<AccountManagementState>,
     pub account_management_capabilities: Option<AccountManagementCapabilities>,
     pub soft_logout_reauth: Option<SoftLogoutReauthState>,
@@ -102,7 +102,7 @@ pub fn build_state_delta(
     changed_slice!(device_cleanup);
     changed_slice!(current_session_status);
     changed_slice!(auth);
-    changed_slice!(device_sessions);
+    changed_slice!(account_management_url);
     changed_slice!(account_management);
     changed_slice!(account_management_capabilities);
     changed_slice!(soft_logout_reauth);
@@ -184,7 +184,7 @@ fn audit_app_state_delta_slices(state: &AppState) {
         sliding_sync_capability: _,
         current_session_status: _,
         auth: _,
-        device_sessions: _,
+        account_management_url: _,
         account_management: _,
         account_management_capabilities: _,
         soft_logout_reauth: _,
@@ -256,6 +256,19 @@ mod tests {
         assert!(delta.changed.search_crawler.is_some());
         assert!(delta.changed.session.is_none());
         assert!(delta.changed.sidebar.is_none());
+    }
+
+    #[test]
+    fn account_management_url_clear_is_an_explicit_delta() {
+        let mut previous = AppState::default();
+        previous.account_management_url = Some(AccountManagementUrl::from_validated(
+            "https://account.example/devices".to_owned(),
+        ));
+        let next = AppState::default();
+
+        let delta = build_state_delta(2, &previous, &next).expect("URL clear changed state");
+
+        assert_eq!(delta.changed.account_management_url, Some(None));
     }
 
     #[test]

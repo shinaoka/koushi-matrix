@@ -88,11 +88,8 @@ impl CoreCommand {
                 | AccountCommand::RetrySlidingSyncCapability { request_id }
                 | AccountCommand::ChangeHomeserver { request_id }
                 | AccountCommand::QuerySavedSessions { request_id }
-                | AccountCommand::QueryDevices { request_id }
                 | AccountCommand::RefreshCurrentSessionStatus { request_id, .. }
                 | AccountCommand::LoadAccountManagementCapabilities { request_id }
-                | AccountCommand::RenameDevice { request_id, .. }
-                | AccountCommand::DeleteDevices { request_id, .. }
                 | AccountCommand::ChangePassword { request_id, .. }
                 | AccountCommand::DeactivateAccount { request_id, .. }
                 | AccountCommand::SubmitAccountManagementUia { request_id, .. }

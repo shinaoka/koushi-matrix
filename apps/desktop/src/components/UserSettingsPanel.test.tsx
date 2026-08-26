@@ -142,15 +142,11 @@ describe("UserSettingsPanel", () => {
     onSwitchAccount: () => undefined,
     onUpdateSettings: () => undefined,
     onRebuildSearchIndex: () => undefined,
-    onQueryDevices: () => undefined,
-    onRenameDevice: () => undefined,
-    onDeleteDevices: () => undefined,
     onLoadAccountManagementCapabilities: () => undefined,
     onChangePassword: () => undefined,
     onDeactivateAccount: () => undefined,
     onSubmitAccountManagementUia: () => undefined
   };
-  const idleDeviceSessions: import("../domain/types").DeviceSessionListState = { kind: "idle" };
   const idleAccountManagement: import("../domain/types").AccountManagementState = { kind: "idle" };
   const idleAccountManagementCapabilities: import("../domain/types").AccountManagementCapabilities =
     { change_password: { kind: "unknown" } };
@@ -170,7 +166,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={e2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
         accountManagementCapabilities={idleAccountManagementCapabilities}
         savedSessions={[
@@ -253,7 +248,7 @@ describe("UserSettingsPanel", () => {
     expect(markup).not.toContain("TARGETDEVICE");
   });
 
-  test("keeps Manage account discoverable and enables it when a safe URL exists", () => {
+  test("renders Manage account & devices only when the active session has a safe URL", () => {
     const withoutUrl = renderToStaticMarkup(
       <UserSettingsPanel
         currentSession={{
@@ -264,7 +259,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={e2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
         accountManagementCapabilities={idleAccountManagementCapabilities}
         accountManagementUrl={null}
@@ -274,9 +268,31 @@ describe("UserSettingsPanel", () => {
         {...handlers}
       />
     );
-    expect(withoutUrl).toContain("Manage account");
-    expect(withoutUrl).toContain("account-management destination is unavailable");
-    expect(withoutUrl).toMatch(/disabled="" data-testid="manage-account-button"/);
+    expect(withoutUrl).not.toContain("Manage account &amp; devices");
+    expect(withoutUrl).not.toContain("manage-account-button");
+    expect(withoutUrl).not.toContain("account-management destination is unavailable");
+
+    const withUnsafeUrl = renderToStaticMarkup(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={e2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        accountManagementUrl="javascript:alert(1)"
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+      />
+    );
+    expect(withUnsafeUrl).not.toContain("Manage account &amp; devices");
+    expect(withUnsafeUrl).not.toContain("manage-account-button");
 
     const withUrl = renderToStaticMarkup(
       <UserSettingsPanel
@@ -288,7 +304,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={e2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
         accountManagementCapabilities={idleAccountManagementCapabilities}
         accountManagementUrl="https://account.example.test/account"
@@ -298,8 +313,8 @@ describe("UserSettingsPanel", () => {
         {...handlers}
       />
     );
-    expect(withUrl).toContain("Manage account");
-    expect(withUrl).toContain("Opens the account-management page");
+    expect(withUrl).toContain("Manage account &amp; devices");
+    expect(withUrl).toContain("account and device management page");
   });
 
   test("uses current-session facts and keeps account controls together without a misleading device count", () => {
@@ -328,7 +343,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={idleE2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
         accountManagementCapabilities={idleAccountManagementCapabilities}
         accountManagementUrl="https://account.example.test/account"
@@ -361,8 +375,8 @@ describe("UserSettingsPanel", () => {
     const keyboardPosition = markup.indexOf('aria-label="Keyboard"');
     expect(sessionPosition).toBeGreaterThanOrEqual(0);
     expect(accountsPosition).toBeGreaterThan(sessionPosition);
-    expect(remoteSessionsPosition).toBeGreaterThan(accountsPosition);
-    expect(accountManagementPosition).toBeGreaterThan(remoteSessionsPosition);
+    expect(remoteSessionsPosition).toBe(-1);
+    expect(accountManagementPosition).toBeGreaterThan(accountsPosition);
     expect(keyboardPosition).toBeGreaterThan(accountManagementPosition);
   });
 
@@ -379,7 +393,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={e2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
         accountManagementCapabilities={idleAccountManagementCapabilities}
         accountManagementUrl="https://account.example.test/account"
@@ -409,7 +422,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={e2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
         accountManagementCapabilities={idleAccountManagementCapabilities}
         savedSessions={[]}
@@ -438,7 +450,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={e2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
         accountManagementCapabilities={idleAccountManagementCapabilities}
         savedSessions={[]}
@@ -465,7 +476,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={idleE2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
         accountManagementCapabilities={idleAccountManagementCapabilities}
         savedSessions={[]}
@@ -490,7 +500,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={idleE2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
         accountManagementCapabilities={idleAccountManagementCapabilities}
         savedSessions={[]}
@@ -517,7 +526,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={idleE2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
         accountManagementCapabilities={idleAccountManagementCapabilities}
         savedSessions={[]}
@@ -556,7 +564,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={idleE2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
         accountManagementCapabilities={idleAccountManagementCapabilities}
         savedSessions={[]}
@@ -607,7 +614,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={idleE2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
         accountManagementCapabilities={idleAccountManagementCapabilities}
         savedSessions={[]}
@@ -703,7 +709,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={idleE2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
         accountManagementCapabilities={idleAccountManagementCapabilities}
         savedSessions={[]}
@@ -816,7 +821,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={idleE2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
         accountManagementCapabilities={idleAccountManagementCapabilities}
         savedSessions={[]}
@@ -884,7 +888,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={idleE2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
         accountManagementCapabilities={idleAccountManagementCapabilities}
         savedSessions={[]}
@@ -926,7 +929,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={idleE2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
         accountManagementCapabilities={idleAccountManagementCapabilities}
         savedSessions={[]}
@@ -959,7 +961,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={idleE2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
         accountManagementCapabilities={idleAccountManagementCapabilities}
         savedSessions={[]}
@@ -997,7 +998,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={idleE2eeTrust}
         localEncryption={{ kind: "unknown" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
         accountManagementCapabilities={idleAccountManagementCapabilities}
         savedSessions={[
@@ -1064,7 +1064,6 @@ describe("UserSettingsPanel", () => {
         }}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
         accountManagementCapabilities={idleAccountManagementCapabilities}
         savedSessions={[]}
@@ -1093,27 +1092,7 @@ describe("UserSettingsPanel", () => {
     expect(markup).not.toContain("/tmp/");
   });
 
-  test("renders loaded device sessions and dispatches rename", () => {
-    const onRenameDevice = vi.fn();
-    const loadedDeviceSessions: import("../domain/types").DeviceSessionListState = {
-      kind: "loaded",
-      devices: [
-        {
-          device_ordinal: 1,
-          display_name: "Current Browser",
-          current: true,
-          verified: true,
-          inactive: false
-        },
-        {
-          device_ordinal: 2,
-          display_name: "Other Phone",
-          current: false,
-          verified: false,
-          inactive: true
-        }
-      ]
-    };
+  test("does not render Koushi-owned remote device management", () => {
     const markup = renderToStaticMarkup(
       <UserSettingsPanel
         currentSession={{
@@ -1124,63 +1103,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={idleE2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={loadedDeviceSessions}
-        accountManagement={idleAccountManagement}
-        accountManagementCapabilities={idleAccountManagementCapabilities}
-        savedSessions={[]}
-        profile={profile}
-        settings={settings}
-        {...handlers}
-        onRenameDevice={onRenameDevice}
-      />
-    );
-
-    expect(markup).toContain("Sessions");
-    expect(markup).toContain("Current Browser");
-    expect(markup).toContain("Other Phone");
-    expect(markup).toContain("Current session");
-    expect(markup).toContain("Other sessions");
-    expect(markup).toContain("Sign out all other sessions");
-  });
-
-  test("computes non-current ordinals for sign out all other sessions", () => {
-    const loadedDeviceSessions: import("../domain/types").DeviceSessionListState = {
-      kind: "loaded",
-      devices: [
-        {
-          device_ordinal: 1,
-          display_name: "Current Browser",
-          current: true,
-          verified: true,
-          inactive: false
-        },
-        {
-          device_ordinal: 2,
-          display_name: "Other Phone",
-          current: false,
-          verified: false,
-          inactive: true
-        },
-        {
-          device_ordinal: 3,
-          display_name: "Other Tablet",
-          current: false,
-          verified: true,
-          inactive: false
-        }
-      ]
-    };
-    const markup = renderToStaticMarkup(
-      <UserSettingsPanel
-        currentSession={{
-          homeserver: "https://matrix.org",
-          user_id: "@demo-user:example.invalid",
-          device_id: "FAKEDEVICE"
-        }}
-        e2eeTrust={idleE2eeTrust}
-        localEncryption={{ kind: "healthy" }}
-        platform="linux"
-        deviceSessions={loadedDeviceSessions}
         accountManagement={idleAccountManagement}
         accountManagementCapabilities={idleAccountManagementCapabilities}
         savedSessions={[]}
@@ -1190,7 +1112,9 @@ describe("UserSettingsPanel", () => {
       />
     );
 
-    expect(markup).toContain("Sign out all other sessions");
+    expect(markup).not.toContain("Other sessions");
+    expect(markup).not.toContain("Sign out all other sessions");
+    expect(markup).not.toContain("Rename device");
   });
 
   test("renders UIA password prompt when account management awaits UIA", () => {
@@ -1205,12 +1129,11 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={idleE2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={{
           kind: "awaitingUia",
           request_id: 42,
           flow_id: 7,
-          operation: "deleteOtherDevices"
+          operation: "deactivateAccount"
         }}
         accountManagementCapabilities={idleAccountManagementCapabilities}
         savedSessions={[]}
@@ -1236,7 +1159,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={idleE2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
         accountManagementCapabilities={{
           change_password: { kind: "enabled" }
@@ -1264,7 +1186,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={idleE2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={idleAccountManagement}
         accountManagementCapabilities={{
           change_password: { kind: "disabled" }
@@ -1291,7 +1212,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={idleE2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={{
           kind: "succeeded",
           request_id: 50,
@@ -1321,7 +1241,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={idleE2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={{
           kind: "succeeded",
           request_id: 51,
@@ -1352,7 +1271,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={idleE2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={{
           kind: "awaitingUia",
           request_id: 52,
@@ -1386,7 +1304,6 @@ describe("UserSettingsPanel", () => {
         e2eeTrust={idleE2eeTrust}
         localEncryption={{ kind: "healthy" }}
         platform="linux"
-        deviceSessions={idleDeviceSessions}
         accountManagement={{
           kind: "awaitingUia",
           request_id: 53,

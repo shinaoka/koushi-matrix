@@ -58,7 +58,7 @@ describe("TauriIpcMock command responses", () => {
       "current_session_status",
       "device_cleanup",
       "auth",
-      "device_sessions",
+      "account_management_url",
       "account_management",
       "account_management_capabilities",
       "soft_logout_reauth",

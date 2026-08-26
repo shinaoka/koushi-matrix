@@ -110,6 +110,41 @@ pub(super) async fn run_gate_restore_stage(
     Ok(())
 }
 
+async fn delete_qa_current_device(
+    session: &koushi_sdk::MatrixClientSession,
+    password: &str,
+) -> Result<(), String> {
+    let device_ids = [matrix_sdk::ruma::OwnedDeviceId::from(
+        session.info.device_id.as_str(),
+    )];
+    let uiaa_session = match session.client().delete_devices(&device_ids, None).await {
+        Ok(_) => return Ok(()),
+        Err(error) => error
+            .as_uiaa_response()
+            .and_then(|uiaa| uiaa.session.clone())
+            .ok_or_else(|| "no-proof initial device delete failed".to_owned())?,
+    };
+    let identifier = matrix_sdk::ruma::api::client::uiaa::UserIdentifier::Matrix(
+        matrix_sdk::ruma::api::client::uiaa::MatrixUserIdentifier::new(
+            session.info.user_id.clone(),
+        ),
+    );
+    let mut password_auth =
+        matrix_sdk::ruma::api::client::uiaa::Password::new(identifier, password.to_owned());
+    password_auth.session = Some(uiaa_session);
+    session
+        .client()
+        .delete_devices(
+            &device_ids,
+            Some(matrix_sdk::ruma::api::client::uiaa::AuthData::Password(
+                password_auth,
+            )),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|_| "no-proof authenticated device delete failed".to_owned())
+}
+
 pub(super) async fn run_gate_no_proof_stage(config: &QaConfig) -> Result<(), String> {
     let raw = koushi_sdk::login_with_password(&koushi_state::LoginRequest {
         homeserver: config.homeserver.clone(),
@@ -125,24 +160,7 @@ pub(super) async fn run_gate_no_proof_stage(config: &QaConfig) -> Result<(), Str
     koushi_sdk::bootstrap_cross_signing(&raw, Some(&AuthSecret::new(config.password_a.clone())))
         .await
         .map_err(|_| "no-proof cross-signing bootstrap failed".to_owned())?;
-    let device_ids = vec![raw.info.device_id.clone()];
-    let uiaa_session = match koushi_sdk::delete_devices(&raw, &device_ids, None, None).await {
-        Err(koushi_sdk::DeleteDevicesError::UiaaChallenge { session }) => session,
-        Ok(()) => None,
-        Err(_) => return Err("no-proof initial device delete failed".to_owned()),
-    };
-    if uiaa_session.is_some() {
-        koushi_sdk::delete_devices(
-            &raw,
-            &device_ids,
-            Some(&IdentityResetAuthRequest::UiaaPassword {
-                password: AuthSecret::new(config.password_a.clone()),
-            }),
-            uiaa_session.as_deref(),
-        )
-        .await
-        .map_err(|_| "no-proof authenticated device delete failed".to_owned())?;
-    }
+    delete_qa_current_device(&raw, &config.password_a).await?;
     let _ = koushi_sdk::close_session_stores(&raw).await;
     drop(raw);
 

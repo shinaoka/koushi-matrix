@@ -2,11 +2,11 @@ import type { DesktopSnapshot } from "./types";
 
 export function e2eeSendDiagnosticMessage(snapshot: DesktopSnapshot, roomId: string): string {
   const room = snapshot.state.domain.rooms.find((candidate) => candidate.room_id === roomId);
-  const deviceSessions = snapshot.state.domain.device_sessions;
-  const ownDevices = deviceSessions.kind === "loaded" ? deviceSessions.devices : null;
-  const verifiedOwnDevices = ownDevices?.filter((device) => device.verified).length ?? null;
-  const unverifiedOwnDevices = ownDevices?.filter((device) => !device.verified).length ?? null;
-  const currentOwnDevice = ownDevices?.find((device) => device.current) ?? null;
+  const currentSessionStatus = snapshot.state.domain.current_session_status;
+  const currentDeviceVerification =
+    currentSessionStatus.status === "ready"
+      ? currentSessionStatus.details.verification
+      : "unknown";
   const trustDevices = snapshot.state.domain.e2ee_trust.devices;
   const trustedDevices = trustDevices.filter((device) => device.trust_level === "verified").length;
   const blockedDevices = trustDevices.filter((device) => device.trust_level === "blocked").length;
@@ -20,10 +20,7 @@ export function e2eeSendDiagnosticMessage(snapshot: DesktopSnapshot, roomId: str
     `joined_members=${room?.joined_members ?? "unknown"}`,
     `key_backup=${snapshot.state.domain.e2ee_trust.key_backup.kind}`,
     `cross_signing=${snapshot.state.domain.e2ee_trust.cross_signing.kind}`,
-    `own_sessions=${ownDevices?.length ?? "unknown"}`,
-    `own_sessions_verified=${verifiedOwnDevices ?? "unknown"}`,
-    `own_sessions_unverified=${unverifiedOwnDevices ?? "unknown"}`,
-    `current_session_verified=${currentOwnDevice?.verified ?? "unknown"}`,
+    `current_session_verification=${currentDeviceVerification}`,
     `trust_devices=${trustDevices.length}`,
     `trust_devices_verified=${trustedDevices}`,
     `trust_devices_blocked=${blockedDevices}`

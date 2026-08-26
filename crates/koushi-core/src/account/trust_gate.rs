@@ -586,6 +586,8 @@ impl AccountActor {
             .await;
         self.spawn_sync_actor(session.clone()).await;
         self.spawn_account_hydration(session.clone());
+        self.start_active_session_account_management_discovery(session.clone())
+            .await;
         self.start_recovery_observer(session.clone());
         let trust_at_promotion = session.current_device_trust();
         self.start_session_change_observer(session.clone());
@@ -1161,6 +1163,8 @@ impl AccountActor {
             transition_id,
         ));
         self.spawn_account_hydration(session.clone());
+        self.start_active_session_account_management_discovery(session.clone())
+            .await;
         self.start_recovery_observer(session.clone());
         self.start_session_change_observer(session.clone());
         self.session_promoted = true;

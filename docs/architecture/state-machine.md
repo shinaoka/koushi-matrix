@@ -2838,9 +2838,9 @@ stateDiagram-v2
 ```
 
 - `LoginDiscoverySucceeded` stores login flow kinds, delegated OIDC
-  compatibility, optional display labels, and delegated registration/account
-  management links. It does not carry access tokens, refresh tokens, or OAuth
-  authorization artifacts.
+  compatibility, optional display labels, and a delegated registration link.
+  It never owns the authenticated session's account-management destination and
+  does not carry access tokens, refresh tokens, or OAuth authorization artifacts.
 - `StartOidcLogin` creates an SDK-owned authorization-code flow with PKCE and
   emits only a redacted `OidcAuthorizationCreated` command event containing the
   provider URL/state for the WebView handoff. `CompleteOidcLogin` consumes the
@@ -2853,30 +2853,31 @@ stateDiagram-v2
   `Discovering` the same homeserver. Late completions from older discovery
   requests are ignored.
 
-Device sessions:
+Active-session account management:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Idle
-    Idle --> Loading: DeviceSessionsLoadRequested [Ready]
-    Loaded --> Loading: DeviceSessionsLoadRequested [Ready]
-    Failed --> Loading: DeviceSessionsLoadRequested [Ready]
-    Loading --> Loaded: DeviceSessionsLoaded [matching request_id]
-    Loading --> Failed: DeviceSessionsLoadFailed [matching request_id]
+    [*] --> Unavailable
+    Unavailable --> Available: DestinationResolved [exact active SessionInfo, HTTP(S)]
+    Available --> Unavailable: auth lock/trust quarantine/logout/account switch/session replacement/session cleanup
+    Unavailable --> Unavailable: absent/failure/stale completion
 ```
 
-- Device summaries use app-owned ordinals and coarse current/verified/inactive
-  facts. Raw device ids and IP addresses are command-boundary values until a
-  later explicitly reviewed DTO admits a redacted display form.
-- `AccountCommand::QueryDevices` calls the SDK-owned device-list API in
-  `AccountActor`, stores the ordinal-to-raw-device-id map actor-private, and
-  projects only `DeviceSessionSummary` DTOs through `DeviceSessionsLoaded`.
-- `AccountCommand::RenameDevice` and `AccountCommand::DeleteDevices` accept
-  app-owned ordinals only. The actor resolves those ordinals to raw SDK device
-  ids immediately before calling the SDK and clears the private map on logout,
-  account switch, local reset, and actor shutdown.
+- `AppState.account_management_url` is the sole UI-facing destination. The
+  AccountActor owns one bounded task after promotion and accepts completion only
+  for its current task generation and exact `SessionInfo`.
+- OAuth resolution uses public upstream SDK server metadata and its devices-list
+  account action. Non-OAuth resolution narrowly fetches the active homeserver's
+  well-known client document, accepting finalized `m.authentication` and legacy
+  `org.matrix.msc2965.authentication`. Only HTTP(S) account URLs are admitted.
+- Missing, malformed, unsafe, or unreachable metadata leaves the capability
+  unavailable and never fails login, restore, verification, or normal runtime.
+- User Settings renders **Manage account & devices** only while available.
+  Koushi has no remote-device inventory, rename, or sign-out state machine; the
+  server destination owns those operations. Current-device diagnostics/name
+  repair and explicit rejected-provisional-device cleanup remain local.
 
-Shared UIA and account management:
+Shared UIA and local account operations:
 
 ```mermaid
 stateDiagram-v2
@@ -2897,11 +2898,8 @@ stateDiagram-v2
   secrets remain in the account actor or native adapter.
 - `AccountManagementAuthSubmitted` is accepted only from `AwaitingUia` when both
   `request_id` and `flow_id` match the pending UIA state. It transitions back to
-  `Working` with the original operation so the account actor can retry the
-  destructive action with the supplied auth.
-- Device rename/delete completion uses `AccountManagementSucceeded` /
-  `AccountManagementFailed`; reducer state does not include raw device ids,
-  device IPs, auth passwords, or SDK errors.
+  `Working` with the original password-change or deactivation operation so the
+  account actor can retry with supplied auth.
 
 Soft-logout re-authentication (MSC2697):
 

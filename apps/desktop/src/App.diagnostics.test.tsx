@@ -78,17 +78,17 @@ async function openDiagnostics() {
 }
 
 describe("App diagnostics lifecycle", () => {
-  test("re-discovers account management metadata for an authenticated restored session", async () => {
+  test("does not use login discovery to repair active-session account management", async () => {
     const api = createBrowserFakeApi();
     await api.discoverLoginMethods("https://matrix.org");
     const discoverLoginMethods = vi.spyOn(api, "discoverLoginMethods");
 
     await renderAppWithApi(api);
 
-    await waitFor(() => {
-      expect(discoverLoginMethods).toHaveBeenCalledWith("https://matrix.org");
+    await act(async () => {
+      await Promise.resolve();
     });
-    expect(discoverLoginMethods).toHaveBeenCalledTimes(1);
+    expect(discoverLoginMethods).not.toHaveBeenCalled();
   });
 
   test("keeps the normal shell hidden until a ready session has a ready secure backup gate", async () => {

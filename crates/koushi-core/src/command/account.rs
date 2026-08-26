@@ -131,25 +131,12 @@ pub enum AccountCommand {
     QuerySavedSessions {
         request_id: RequestId,
     },
-    QueryDevices {
-        request_id: RequestId,
-    },
     RefreshCurrentSessionStatus {
         request_id: RequestId,
         trigger: koushi_state::SessionStatusRefreshTrigger,
     },
     LoadAccountManagementCapabilities {
         request_id: RequestId,
-    },
-    RenameDevice {
-        request_id: RequestId,
-        device_ordinal: u64,
-        display_name: String,
-    },
-    DeleteDevices {
-        request_id: RequestId,
-        device_ordinals: Vec<u64>,
-        auth: Option<IdentityResetAuthRequest>,
     },
     ChangePassword {
         request_id: RequestId,
@@ -346,11 +333,8 @@ impl AccountCommand {
                 | Self::ResetIdentity { .. }
                 | Self::CancelIdentityReset { .. }
                 | Self::SubmitIdentityResetAuth { .. }
-                | Self::QueryDevices { .. }
                 | Self::RefreshCurrentSessionStatus { .. }
                 | Self::LoadAccountManagementCapabilities { .. }
-                | Self::RenameDevice { .. }
-                | Self::DeleteDevices { .. }
                 | Self::ChangePassword { .. }
                 | Self::DeactivateAccount { .. }
                 | Self::SubmitAccountManagementUia { .. }
@@ -443,10 +427,6 @@ impl fmt::Debug for AccountCommand {
                 .debug_struct("QuerySavedSessions")
                 .field("request_id", request_id)
                 .finish(),
-            Self::QueryDevices { request_id } => formatter
-                .debug_struct("QueryDevices")
-                .field("request_id", request_id)
-                .finish(),
             Self::RefreshCurrentSessionStatus {
                 request_id,
                 trigger,
@@ -458,26 +438,6 @@ impl fmt::Debug for AccountCommand {
             Self::LoadAccountManagementCapabilities { request_id } => formatter
                 .debug_struct("LoadAccountManagementCapabilities")
                 .field("request_id", request_id)
-                .finish(),
-            Self::RenameDevice {
-                request_id,
-                device_ordinal,
-                ..
-            } => formatter
-                .debug_struct("RenameDevice")
-                .field("request_id", request_id)
-                .field("device_ordinal", device_ordinal)
-                .field("display_name", &"DeviceDisplayName(..)")
-                .finish(),
-            Self::DeleteDevices {
-                request_id,
-                device_ordinals,
-                auth,
-            } => formatter
-                .debug_struct("DeleteDevices")
-                .field("request_id", request_id)
-                .field("device_ordinals", device_ordinals)
-                .field("auth", auth)
                 .finish(),
             Self::ChangePassword { request_id, .. } => formatter
                 .debug_struct("ChangePassword")

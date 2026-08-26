@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { ExternalLink, KeyRound, ShieldAlert } from "lucide-react";
 
+import { toExternalHttpUrl } from "../../domain/externalLinks";
 import { t } from "../../i18n/messages";
 import { ImeSafeForm, SecureImeTextField } from "../ImeTextControl";
 import { AccountManagementUiaForm } from "./AccountManagementUiaForm";
@@ -37,6 +38,7 @@ export function AccountManagementSection({
     }
   }, [currentSession, accountManagementCapabilities.change_password.kind, onLoadAccountManagementCapabilities]);
 
+  const safeAccountManagementUrl = toExternalHttpUrl(accountManagementUrl);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showDeactivate, setShowDeactivate] = useState(false);
   const newPasswordRef = useRef<HTMLInputElement>(null);
@@ -102,23 +104,20 @@ export function AccountManagementSection({
         <h3>{t("settings.accountManagement")}</h3>
       </div>
 
-      <div className="manage-account-row">
-        <button
-          className="trust-action-button"
-          type="button"
-          disabled={!accountManagementUrl}
-          onClick={onManageAccount}
-          data-testid="manage-account-button"
-        >
-          <ExternalLink size={14} aria-hidden="true" />
-          <span>{t("settings.manageAccount")}</span>
-        </button>
-        <p className="profile-settings-hint">
-          {accountManagementUrl
-            ? t("settings.manageAccountHint")
-            : t("settings.manageAccountUnavailable")}
-        </p>
-      </div>
+      {safeAccountManagementUrl ? (
+        <div className="manage-account-row">
+          <button
+            className="trust-action-button"
+            type="button"
+            onClick={onManageAccount}
+            data-testid="manage-account-button"
+          >
+            <ExternalLink size={14} aria-hidden="true" />
+            <span>{t("settings.manageAccount")}</span>
+          </button>
+          <p className="profile-settings-hint">{t("settings.manageAccountHint")}</p>
+        </div>
+      ) : null}
 
       {accountManagement.kind === "awaitingUia" && (isChangePassword || isDeactivate) ? (
         <AccountManagementUiaForm

@@ -179,7 +179,6 @@ fn discovered_urls_reject_embedded_credentials() {
         }
     });
     let links = koushi_sdk::parse_well_known_client(&well_known);
-    assert!(links.account_management_url.is_none());
     assert_eq!(
         links.registration_url.as_deref(),
         Some("https://account.example.test/register")
@@ -190,7 +189,7 @@ fn discovered_urls_reject_embedded_credentials() {
 fn well_known_debug_redacts_url_values() {
     let well_known = serde_json::json!({
         "m.authentication": {
-            "account": "https://account.example.test/account?token=secret"
+            "registration": "https://account.example.test/register?token=secret"
         }
     });
     let links = koushi_sdk::parse_well_known_client(&well_known);
@@ -226,7 +225,7 @@ fn maps_non_successful_http_response_to_discovery_error() {
 }
 
 #[test]
-fn parses_account_management_url_from_well_known_delegated_auth() {
+fn parses_registration_url_from_well_known_delegated_auth() {
     let well_known = serde_json::json!({
         "m.homeserver": { "base_url": "https://matrix.example.test" },
         "m.authentication": {
@@ -239,32 +238,27 @@ fn parses_account_management_url_from_well_known_delegated_auth() {
     let links = koushi_sdk::parse_well_known_client(&well_known);
 
     assert_eq!(
-        links.account_management_url.as_deref(),
-        Some("https://auth.example.test/account")
-    );
-    assert_eq!(
         links.registration_url.as_deref(),
         Some("https://auth.example.test/register")
     );
 }
 
 #[test]
-fn parses_account_url_from_msc2965_prefixed_well_known_key() {
+fn parses_registration_url_from_msc2965_prefixed_well_known_key() {
     // matrix.org still serves the org.matrix.msc2965.authentication spelling.
     let well_known = serde_json::json!({
         "org.matrix.msc2965.authentication": {
             "issuer": "https://account.example.test/",
-            "account": "https://account.example.test/account/"
+            "registration": "https://account.example.test/register/"
         }
     });
 
     let links = koushi_sdk::parse_well_known_client(&well_known);
 
     assert_eq!(
-        links.account_management_url.as_deref(),
-        Some("https://account.example.test/account/")
+        links.registration_url.as_deref(),
+        Some("https://account.example.test/register/")
     );
-    assert!(links.registration_url.is_none());
 }
 
 #[test]
@@ -274,7 +268,6 @@ fn well_known_without_delegated_auth_metadata_is_unavailable() {
 
     let links = koushi_sdk::parse_well_known_client(&well_known);
 
-    assert!(links.account_management_url.is_none());
     assert!(links.registration_url.is_none());
 }
 
@@ -289,7 +282,6 @@ fn malformed_or_unsupported_scheme_discovery_values_are_unavailable() {
 
     let links = koushi_sdk::parse_well_known_client(&well_known);
 
-    assert!(links.account_management_url.is_none());
     assert!(links.registration_url.is_none());
 }
 
@@ -304,27 +296,7 @@ fn non_string_discovery_values_are_unavailable() {
 
     let links = koushi_sdk::parse_well_known_client(&well_known);
 
-    assert!(links.account_management_url.is_none());
     assert!(links.registration_url.is_none());
-}
-
-#[test]
-fn discovers_delegated_account_management_url_over_http() {
-    let homeserver = spawn_discovery_with_well_known_server(
-        200,
-        r#"{"flows":[{"type":"m.login.password"}]}"#,
-        Some(
-            r#"{"m.homeserver":{"base_url":"https://matrix.example.test"},"m.authentication":{"issuer":"https://auth.example.test/","account":"https://auth.example.test/account"}}"#,
-        ),
-    );
-
-    let discovery =
-        koushi_sdk::discover_login_flows(&homeserver).expect("discovery should succeed");
-
-    assert_eq!(
-        discovery.delegated.account_management_url.as_deref(),
-        Some("https://auth.example.test/account")
-    );
 }
 
 #[test]
@@ -333,14 +305,14 @@ fn login_discovery_fails_open_when_well_known_is_missing() {
         200,
         r#"{"flows":[{"type":"m.login.password"}]}"#,
         // The server returns 404 for the well-known path; login still works
-        // and the account-management capability is simply unavailable.
+        // and the optional registration link is simply unavailable.
         None,
     );
 
     let discovery =
         koushi_sdk::discover_login_flows(&homeserver).expect("discovery should succeed");
 
-    assert!(discovery.delegated.account_management_url.is_none());
+    assert!(discovery.delegated.registration_url.is_none());
 }
 
 #[test]

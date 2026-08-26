@@ -752,7 +752,6 @@ function composerDraftApiAccount(scope: ComposerDraftScope): {
 export function App() {
   const snapshot = useAppStore(selectSnapshot);
   const snapshotRef = useRef(snapshot);
-  const accountManagementDiscoveryAttemptRef = useRef<string | null>(null);
   const secureBackupShellAccountRef = useRef<string | null>(null);
   const secureBackupShellExposedRef = useRef(false);
   const diagnosticLogBufferRef = useRef<ReturnType<typeof createDiagnosticLogBuffer> | null>(null);
@@ -802,50 +801,6 @@ export function App() {
     setSchemaMismatchVersion(null);
     setAppStoreSnapshot(next);
   }, [diagnosticLogBuffer]);
-  useEffect(() => {
-    if (!snapshot) {
-      accountManagementDiscoveryAttemptRef.current = null;
-      return;
-    }
-    const session = snapshot.state.domain.session;
-    if (session.kind !== "ready") {
-      accountManagementDiscoveryAttemptRef.current = null;
-      return;
-    }
-    const accountKey = JSON.stringify([
-      session.homeserver,
-      session.user_id,
-      session.device_id
-    ]);
-    const auth = snapshot.state.domain.auth;
-    if (auth.kind !== "ready") {
-      return;
-    }
-    if (auth.delegated.account_management_url) {
-      accountManagementDiscoveryAttemptRef.current = accountKey;
-      return;
-    }
-    if (accountManagementDiscoveryAttemptRef.current === accountKey) {
-      return;
-    }
-    accountManagementDiscoveryAttemptRef.current = accountKey;
-    void api
-      .discoverLoginMethods(session.homeserver)
-      .then((next) => {
-        const current = snapshotRef.current?.state.domain.session;
-        if (
-          current?.kind === "ready" &&
-          JSON.stringify([current.homeserver, current.user_id, current.device_id]) === accountKey
-        ) {
-          setSnapshot(next);
-        }
-      })
-      .catch(() => undefined);
-  }, [
-    setSnapshot,
-    snapshot?.state.domain.auth,
-    snapshot?.state.domain.session
-  ]);
   const latestTextMutationQueueRef = useRef(createLatestMutationOperationQueue<string>());
 
   async function applyLatestTextMutationSnapshot(
@@ -2336,18 +2291,6 @@ export function App() {
 
   async function repairRoomTimeline(roomId: string) {
     setSnapshot(await api.repairRoomTimeline(roomId));
-  }
-
-  async function queryDevices() {
-    setSnapshot(await api.queryDevices());
-  }
-
-  async function renameDevice(deviceOrdinal: number, displayName: string) {
-    setSnapshot(await api.renameDevice(deviceOrdinal, displayName));
-  }
-
-  async function deleteDevices(deviceOrdinals: number[]) {
-    setSnapshot(await api.deleteDevices(deviceOrdinals));
   }
 
   async function submitAccountManagementUia(flowId: number, password: string) {
@@ -5510,11 +5453,7 @@ export function App() {
         data-density={displayDensity}
       >
         <TopBar
-          accountManagementUrl={
-            snapshot.state.domain.auth.kind === "ready"
-              ? snapshot.state.domain.auth.delegated.account_management_url
-              : undefined
-          }
+          accountManagementUrl={snapshot.state.domain.account_management_url ?? undefined}
           activeRoomName={activeRoom?.display_label ?? null}
           activeSpaceName={activeSpaceName}
           currentSessionStatus={snapshot.state.domain.current_session_status}
@@ -5528,11 +5467,7 @@ export function App() {
           sync={snapshot.state.domain.sync}
           userId={snapshot.state.domain.session.user_id ?? null}
           onManageAccount={(safeExternalUrl) => {
-            if (safeExternalUrl) {
-              void openExternalHttpUrl(safeExternalUrl);
-              return;
-            }
-            void setRightPanelModeClosingFocusedContext("userSettings");
+            void openExternalHttpUrl(safeExternalUrl);
           }}
           onCopyDiagnostics={() => copyDiagnostics(snapshot)}
           onOpenKeyboardSettings={() => {
@@ -5832,11 +5767,7 @@ export function App() {
           activeRoom={activeRoom ?? null}
           activeSpace={activeSpace ?? null}
           activeSpaceName={activeSpaceName}
-          accountManagementUrl={
-            snapshot.state.domain.auth.kind === "ready"
-              ? snapshot.state.domain.auth.delegated.account_management_url
-              : null
-          }
+          accountManagementUrl={snapshot.state.domain.account_management_url}
           displayDensity={displayDensity}
           encryptedComposerBlocked={encryptedComposerBlocked}
           isRecoveryBusy={isBusy}
@@ -5954,11 +5885,9 @@ export function App() {
             void setRightPanelModeClosingFocusedContext("recovery");
           }}
           onManageAccount={() => {
-            if (snapshot.state.domain.auth.kind === "ready") {
-              const url = snapshot.state.domain.auth.delegated.account_management_url;
-              if (url) {
-                void openExternalHttpUrl(url);
-              }
+            const url = snapshot.state.domain.account_management_url;
+            if (url) {
+              void openExternalHttpUrl(url);
             }
           }}
           onRefreshCurrentSessionStatus={() => {
@@ -6129,15 +6058,6 @@ export function App() {
           }}
           onSetRoomUrlPreviewOverride={(roomId, enabled) => {
             void setRoomUrlPreviewOverride(roomId, enabled);
-          }}
-          onQueryDevices={() => {
-            void queryDevices();
-          }}
-          onRenameDevice={(deviceOrdinal, displayName) => {
-            void renameDevice(deviceOrdinal, displayName);
-          }}
-          onDeleteDevices={(deviceOrdinals) => {
-            void deleteDevices(deviceOrdinals);
           }}
           onLoadAccountManagementCapabilities={() => {
             void loadAccountManagementCapabilities();

@@ -245,6 +245,15 @@ pub(crate) enum AccountMessage {
         generation: u64,
         trust: koushi_state::CurrentDeviceTrustState,
     },
+    ActiveSessionAccountManagementUrlResolved {
+        generation: u64,
+        info: koushi_state::SessionInfo,
+        url: Option<String>,
+    },
+    #[cfg(test)]
+    ConfigureAccountManagementDiscovery {
+        result: oneshot::Receiver<Option<String>>,
+    },
     CheckCurrentDeviceTrust,
     InspectSecureBackup,
     SecureBackupInspectionFinished {
@@ -765,6 +774,9 @@ pub struct AccountActor {
     #[cfg(test)]
     pub(super) close_store_results: std::collections::VecDeque<bool>,
     #[cfg(test)]
+    pub(super) account_management_discovery_override:
+        std::sync::Mutex<Option<oneshot::Receiver<Option<String>>>>,
+    #[cfg(test)]
     pub(super) device_cleanup_results: std::collections::VecDeque<
         Result<koushi_sdk::MatrixDeviceCleanupOutcome, DeviceCleanupFailureKind>,
     >,
@@ -824,9 +836,6 @@ pub struct AccountActor {
     pub(super) identity_reset_flow_id: Option<u64>,
     /// Timeout task for the pending identity reset auth challenge.
     pub(super) identity_reset_timeout_task: Option<crate::executor::JoinHandle<()>>,
-    /// Actor-private mapping from app-owned device ordinal to raw Matrix
-    /// device id. Raw ids never enter reducer state or snapshots.
-    pub(super) device_session_ordinals: BTreeMap<u64, String>,
     /// Pending UIA operations keyed by the flow id (original request id).
     /// Holds the data needed to retry a destructive action after the user
     /// supplies interactive auth. Secrets (password, UIA session) are held
@@ -863,6 +872,10 @@ pub struct AccountActor {
     pub(super) session_change_observer: Option<SessionChangeObservation>,
     /// Optional profile/account-data hydration task for the active session.
     pub(super) account_hydration_task: Option<crate::executor::JoinHandle<()>>,
+    /// Active-session account-management discovery. Generation-fenced and
+    /// aborted whenever the promoted session is no longer usable.
+    pub(super) account_management_discovery_task: Option<crate::executor::JoinHandle<()>>,
+    pub(super) account_management_discovery_generation: u64,
     /// Incremented whenever optional account hydration is invalidated.
     pub(super) account_hydration_generation: u64,
     /// Synthetic flow id sequence for SDK-originated verification requests.
@@ -1023,6 +1036,8 @@ impl AccountActor {
             #[cfg(test)]
             close_store_results: std::collections::VecDeque::new(),
             #[cfg(test)]
+            account_management_discovery_override: std::sync::Mutex::new(None),
+            #[cfg(test)]
             device_cleanup_results: std::collections::VecDeque::new(),
             store: store_actor,
             action_tx,
@@ -1047,7 +1062,6 @@ impl AccountActor {
             identity_reset_handle: None,
             identity_reset_flow_id: None,
             identity_reset_timeout_task: None,
-            device_session_ordinals: BTreeMap::new(),
             pending_uia_operations: BTreeMap::new(),
             pending_device_cleanup: None,
             pending_oidc_login: None,
@@ -1066,6 +1080,8 @@ impl AccountActor {
             incoming_verification_session_generation: 0,
             session_change_observer: None,
             account_hydration_task: None,
+            account_management_discovery_task: None,
+            account_management_discovery_generation: 0,
             account_hydration_generation: 0,
             next_incoming_verification_sequence: INCOMING_VERIFICATION_FLOW_ID_BASE,
             pending_crawler_notification: None,
@@ -1411,6 +1427,23 @@ impl AccountActor {
                 }
                 AccountMessage::CurrentDeviceTrustChanged { generation, trust } => {
                     self.handle_current_device_trust(generation, trust).await;
+                }
+                AccountMessage::ActiveSessionAccountManagementUrlResolved {
+                    generation,
+                    info,
+                    url,
+                } => {
+                    self.handle_active_session_account_management_url_resolved(
+                        generation, info, url,
+                    )
+                    .await;
+                }
+                #[cfg(test)]
+                AccountMessage::ConfigureAccountManagementDiscovery { result } => {
+                    *self
+                        .account_management_discovery_override
+                        .lock()
+                        .expect("account-management discovery override lock") = Some(result);
                 }
                 AccountMessage::CheckCurrentDeviceTrust => {
                     self.request_authoritative_trust_recheck();
@@ -2080,31 +2113,12 @@ impl AccountActor {
             AccountCommand::QuerySavedSessions { request_id } => {
                 self.handle_query_saved_sessions(request_id).await;
             }
-            AccountCommand::QueryDevices { request_id } => {
-                self.handle_query_devices(request_id).await;
-            }
             AccountCommand::RefreshCurrentSessionStatus { .. } => {
                 // The AppActor routes the reducer-owned refresh effect with
                 // the authoritative sync projection.
             }
             AccountCommand::LoadAccountManagementCapabilities { request_id } => {
                 self.handle_load_account_management_capabilities(request_id)
-                    .await;
-            }
-            AccountCommand::RenameDevice {
-                request_id,
-                device_ordinal,
-                display_name,
-            } => {
-                self.handle_rename_device(request_id, device_ordinal, display_name)
-                    .await;
-            }
-            AccountCommand::DeleteDevices {
-                request_id,
-                device_ordinals,
-                auth,
-            } => {
-                self.handle_delete_devices(request_id, device_ordinals, auth)
                     .await;
             }
             AccountCommand::ChangePassword {

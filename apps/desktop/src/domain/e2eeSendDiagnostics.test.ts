@@ -17,13 +17,10 @@ describe("e2eeSendDiagnosticMessage", () => {
               joined_members: 2
             }
           ],
-          device_sessions: {
-            kind: "loaded",
-            devices: [
-              { current: true, verified: true, inactive: false },
-              { current: false, verified: true, inactive: false },
-              { current: false, verified: false, inactive: true }
-            ]
+          current_session_status: {
+            status: "ready",
+            request_id: 1,
+            details: { verification: "verified" }
           },
           e2ee_trust: {
             cross_signing: { kind: "trusted" },
@@ -49,10 +46,8 @@ describe("e2eeSendDiagnosticMessage", () => {
     expect(message).toContain("joined_members=2");
     expect(message).toContain("key_backup=enabled");
     expect(message).toContain("cross_signing=trusted");
-    expect(message).toContain("own_sessions=3");
-    expect(message).toContain("own_sessions_verified=2");
-    expect(message).toContain("own_sessions_unverified=1");
-    expect(message).toContain("current_session_verified=true");
+    expect(message).toContain("current_session_verification=verified");
+    expect(message).not.toContain("own_sessions=");
     expect(message).toContain("trust_devices=1");
     expect(message).not.toContain("!secret");
     expect(message).not.toContain("@recipient");

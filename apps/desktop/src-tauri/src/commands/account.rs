@@ -3,19 +3,6 @@ use super::*;
 use crate::commands::contracts::fake_request_id;
 
 #[tauri::command]
-pub async fn query_devices(
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::Account(AccountCommand::QueryDevices { request_id }),
-    )
-    .await?;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
 pub async fn refresh_current_session_status(
     trigger: koushi_state::SessionStatusRefreshTrigger,
     state: State<'_, CoreRuntimeState>,
@@ -26,43 +13,6 @@ pub async fn refresh_current_session_status(
         CoreCommand::Account(AccountCommand::RefreshCurrentSessionStatus {
             request_id,
             trigger,
-        }),
-    )
-    .await?;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn rename_device(
-    device_ordinal: u64,
-    display_name: String,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::Account(AccountCommand::RenameDevice {
-            request_id,
-            device_ordinal,
-            display_name,
-        }),
-    )
-    .await?;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn delete_devices(
-    device_ordinals: Vec<u64>,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::Account(AccountCommand::DeleteDevices {
-            request_id,
-            device_ordinals,
-            auth: None,
         }),
     )
     .await?;

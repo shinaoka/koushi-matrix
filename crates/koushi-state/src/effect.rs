@@ -184,7 +184,6 @@ pub enum UiEvent {
     LiveSignalsChanged,
     E2eeTrustChanged,
     E2eeKeyManagementChanged,
-    DeviceSessionsChanged,
     AccountManagementChanged,
     AccountManagementCapabilitiesChanged,
     SoftLogoutReauthChanged,

@@ -117,7 +117,7 @@ function sessionViewProjection(snapshot: DesktopSnapshot) {
     directory: domain.directory,
     room_management: domain.room_management,
     activity: domain.activity,
-    device_sessions: domain.device_sessions,
+    account_management_url: domain.account_management_url,
     account_management: domain.account_management,
     soft_logout_reauth: domain.soft_logout_reauth,
     qr_login: domain.qr_login,

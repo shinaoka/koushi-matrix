@@ -3,7 +3,7 @@ use crate::client_session::{
     PersistableMatrixSession, desktop_client_builder_defaults, restore_session,
 };
 use crate::room_projection::matrix_room;
-use crate::{MatrixClientSession, MatrixDeviceSessionSummary, MatrixRoomOperationError};
+use crate::{MatrixClientSession, MatrixRoomOperationError};
 use futures_util::{Stream, StreamExt, stream};
 use koushi_diagnostics::{
     DiagnosticCounterContext, DiagnosticEvent, DiagnosticField, DiagnosticLevel, record,
@@ -21,7 +21,7 @@ use koushi_state::{
 use matrix_sdk::ruma::{events::AnySyncTimelineEvent, serde::Raw};
 use matrix_sdk_base::crypto::CollectStrategy;
 use serde::{Deserialize, Serialize};
-use std::{fmt, path::PathBuf, pin::Pin, sync::Arc, time::SystemTime};
+use std::{fmt, path::PathBuf, pin::Pin, sync::Arc};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
@@ -1208,14 +1208,6 @@ pub enum E2eeTrustFailureKind {
     Sdk,
 }
 
-#[derive(thiserror::Error)]
-pub enum DeleteDevicesError {
-    #[error("interactive authentication required")]
-    UiaaChallenge { session: Option<String> },
-    #[error("Matrix SDK delete devices failed")]
-    Sdk(String),
-}
-
 #[derive(Clone, Eq, PartialEq)]
 pub enum MatrixDeviceCleanupOutcome {
     Settled(DeviceCleanupRemoteOutcome),
@@ -1230,18 +1222,6 @@ impl fmt::Debug for MatrixDeviceCleanupOutcome {
                 .debug_struct("UiaaRequired")
                 .field("session", &session.as_ref().map(|_| "SessionId(..)"))
                 .finish(),
-        }
-    }
-}
-
-impl fmt::Debug for DeleteDevicesError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UiaaChallenge { session } => formatter
-                .debug_struct("UiaaChallenge")
-                .field("session", &session.as_ref().map(|_| "SessionId(..)"))
-                .finish(),
-            Self::Sdk(_) => formatter.write_str("Sdk(..)"),
         }
     }
 }
@@ -1820,107 +1800,6 @@ pub async fn complete_identity_reset(
     handle.reset(session, request).await
 }
 
-/// Threshold after which a device is considered inactive (90 days).
-const INACTIVE_DEVICE_THRESHOLD_DAYS: u64 = 90;
-
-pub async fn list_devices(
-    session: &MatrixClientSession,
-) -> Result<Vec<MatrixDeviceSessionSummary>, E2eeTrustError> {
-    let response = session
-        .client()
-        .devices()
-        .await
-        .map_err(|error| E2eeTrustError::Sdk(error.to_string()))?;
-    let user_id = match matrix_sdk::ruma::OwnedUserId::try_from(session.info.user_id.as_str()) {
-        Ok(user_id) => user_id,
-        Err(_) => {
-            return Err(E2eeTrustError::Sdk("invalid session user id".to_owned()));
-        }
-    };
-    let now_millis = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default();
-    let inactive_threshold_millis = INACTIVE_DEVICE_THRESHOLD_DAYS * 24 * 60 * 60 * 1000;
-
-    let mut summaries = Vec::with_capacity(response.devices.len());
-    for device in response.devices {
-        let device_id = device.device_id.clone();
-        let is_current = device_id.as_str() == session.info.device_id;
-        let verified = if is_current {
-            session.current_device_trust() == CurrentDeviceTrustState::Verified
-        } else {
-            match session
-                .client()
-                .encryption()
-                .get_device(&user_id, &device_id)
-                .await
-            {
-                Ok(Some(crypto_device)) => crypto_device.is_verified_with_cross_signing(),
-                Ok(None) | Err(_) => false,
-            }
-        };
-        let inactive = device
-            .last_seen_ts
-            .map(|timestamp| i64::from(timestamp.0) as u64)
-            .is_some_and(|timestamp_millis| {
-                now_millis.saturating_sub(timestamp_millis) > inactive_threshold_millis
-            });
-
-        summaries.push(MatrixDeviceSessionSummary {
-            current: is_current,
-            raw_device_id: device_id.to_string(),
-            display_name: device.display_name,
-            verified,
-            inactive,
-        });
-    }
-    Ok(summaries)
-}
-
-pub async fn rename_device(
-    session: &MatrixClientSession,
-    raw_device_id: &str,
-    display_name: &str,
-) -> Result<(), E2eeTrustError> {
-    let device_id = matrix_sdk::ruma::OwnedDeviceId::from(raw_device_id);
-    session
-        .client()
-        .rename_device(&device_id, display_name)
-        .await
-        .map_err(|error| E2eeTrustError::Sdk(error.to_string()))?;
-    Ok(())
-}
-
-pub async fn delete_devices(
-    session: &MatrixClientSession,
-    raw_device_ids: &[String],
-    auth: Option<&IdentityResetAuthRequest>,
-    uiaa_session: Option<&str>,
-) -> Result<(), DeleteDevicesError> {
-    let device_ids = raw_device_ids
-        .iter()
-        .map(|id| matrix_sdk::ruma::OwnedDeviceId::from(id.as_str()))
-        .collect::<Vec<_>>();
-    let auth_data = delete_devices_auth_data(session, auth, uiaa_session);
-    match session
-        .client()
-        .delete_devices(&device_ids, auth_data)
-        .await
-    {
-        Ok(_) => Ok(()),
-        Err(error) => {
-            if let Some(uiaa) = error.as_uiaa_response() {
-                Err(DeleteDevicesError::UiaaChallenge {
-                    session: uiaa.session.clone(),
-                })
-            } else {
-                Err(DeleteDevicesError::Sdk(error.to_string()))
-            }
-        }
-    }
-}
-
 pub async fn cleanup_current_device(
     session: &MatrixClientSession,
     password: Option<&AuthSecret>,
@@ -1991,29 +1870,6 @@ fn device_cleanup_auth_data(
     uiaa_session: Option<&str>,
 ) -> Option<matrix_sdk::ruma::api::client::uiaa::AuthData> {
     let password = password?;
-    let identifier = matrix_sdk::ruma::api::client::uiaa::UserIdentifier::Matrix(
-        matrix_sdk::ruma::api::client::uiaa::MatrixUserIdentifier::new(
-            session.info.user_id.clone(),
-        ),
-    );
-    let mut password_auth = matrix_sdk::ruma::api::client::uiaa::Password::new(
-        identifier,
-        password.expose_secret().to_owned(),
-    );
-    password_auth.session = uiaa_session.map(str::to_owned);
-    Some(matrix_sdk::ruma::api::client::uiaa::AuthData::Password(
-        password_auth,
-    ))
-}
-
-fn delete_devices_auth_data(
-    session: &MatrixClientSession,
-    auth: Option<&IdentityResetAuthRequest>,
-    uiaa_session: Option<&str>,
-) -> Option<matrix_sdk::ruma::api::client::uiaa::AuthData> {
-    let IdentityResetAuthRequest::UiaaPassword { password } = auth? else {
-        return None;
-    };
     let identifier = matrix_sdk::ruma::api::client::uiaa::UserIdentifier::Matrix(
         matrix_sdk::ruma::api::client::uiaa::MatrixUserIdentifier::new(
             session.info.user_id.clone(),
@@ -3084,18 +2940,18 @@ mod secure_backup_inspection_tests {
 mod e2ee_trust_tests {
     use super::{
         E2eeTrustError, IdentityFact, KeyBackupRestoreScope, KeyBackupRestoreSummary,
-        MatrixCrossSigningStatus, MatrixDeviceSessionSummary, MatrixIdentityResetAuthType,
-        MatrixIncomingVerificationRequest, MatrixIncomingVerificationRequestObserver,
-        PersistableMatrixSession, RecoveryFact, RoomKeyExportSummary, RoomKeyImportSummary,
-        SecureBackupSetupSummary, VerificationMethodFacts, accept_sas_verification,
-        accept_verification_request, bootstrap_cross_signing, bootstrap_secure_backup,
-        cancel_sas_verification, cancel_verification_request, change_secure_backup_passphrase,
-        complete_identity_reset, confirm_sas_verification, cross_signing_status, delete_devices,
-        enable_key_backup, export_room_keys_to_file, forward_incoming_verification_deliveries,
-        import_room_keys_from_file, list_devices, map_backup_state_to_desktop,
+        MatrixCrossSigningStatus, MatrixIdentityResetAuthType, MatrixIncomingVerificationRequest,
+        MatrixIncomingVerificationRequestObserver, PersistableMatrixSession, RecoveryFact,
+        RoomKeyExportSummary, RoomKeyImportSummary, SecureBackupSetupSummary,
+        VerificationMethodFacts, accept_sas_verification, accept_verification_request,
+        bootstrap_cross_signing, bootstrap_secure_backup, cancel_sas_verification,
+        cancel_verification_request, change_secure_backup_passphrase, complete_identity_reset,
+        confirm_sas_verification, cross_signing_status, enable_key_backup,
+        export_room_keys_to_file, forward_incoming_verification_deliveries,
+        import_room_keys_from_file, map_backup_state_to_desktop,
         map_cross_signing_status_to_desktop, map_identity_reset_auth_type_to_desktop,
         map_sdk_sas_emojis_to_desktop, map_sdk_verification_state, map_verification_method_facts,
-        mismatch_sas_verification, observe_incoming_verification_requests, rename_device,
+        mismatch_sas_verification, observe_incoming_verification_requests,
         request_device_verification, reset_identity, restore_key_backup, restore_session,
         start_sas_verification, write_recovery_key_if_requested,
     };
@@ -3706,24 +3562,6 @@ GYW19pdjg0qdXNk/eqZsQTsNWVo6A\n\
         assert!(!debug.contains("AllRooms"));
     }
     #[test]
-    fn device_session_summary_is_private_data_free() {
-        let summary = MatrixDeviceSessionSummary {
-            raw_device_id: "DEVICEID".to_owned(),
-            display_name: Some("Alice private laptop".to_owned()),
-            current: true,
-            verified: false,
-            inactive: false,
-        };
-
-        assert_eq!(summary.raw_device_id, "DEVICEID");
-        let debug = format!("{summary:?}");
-        assert!(!debug.contains("DEVICEID"), "{debug}");
-        assert!(!debug.contains("Alice private laptop"), "{debug}");
-        assert!(debug.contains("current"));
-        assert!(debug.contains("verified"));
-        assert!(debug.contains("inactive"));
-    }
-    #[test]
     fn room_key_file_transfer_summaries_are_private_data_free() {
         let export_summary = RoomKeyExportSummary {
             exported_sessions: None,
@@ -3833,9 +3671,6 @@ GYW19pdjg0qdXNk/eqZsQTsNWVo6A\n\
         let _ = cancel_verification_request;
         let _ = cancel_sas_verification;
         let _ = observe_incoming_verification_requests;
-        let _ = list_devices;
-        let _ = rename_device;
-        let _ = delete_devices;
         let _ = export_room_keys_to_file;
         let _ = import_room_keys_from_file;
         let _ = bootstrap_secure_backup;

@@ -10,12 +10,12 @@ use crate::state::{
     AttachmentFilter, AttachmentResult, AttachmentScope, AttachmentSort, AuthFailureKind,
     AvatarThumbnailState, BasicOperationRequest, CrossSigningStatus, CurrentDeviceTrustState,
     CurrentSessionStatusDetails, CurrentSessionStatusFailureKind, DelegatedAuthLinks,
-    DeviceCleanupAuthMode, DeviceCleanupFailureKind, DeviceCleanupRemoteOutcome,
-    DeviceSessionSummary, DirectoryQuery, DirectoryRoomPreview, DirectoryRoomSummary,
-    E2eeRecoveryState, EncryptionDebugOperationKind, EncryptionDebugOperationOutcome,
-    FilesViewScope, IdentityResetAuthType, InviteDestinationResult, InviteScopeSelection,
-    JapaneseCatalogProfile, LiveEventReceipts, LocalEncryptionHealth, LoginAttemptId, LoginFlow,
-    MentionCandidate, MentionCandidatesCompleteness, MentionCandidatesFailureKind, MentionSurface,
+    DeviceCleanupAuthMode, DeviceCleanupFailureKind, DeviceCleanupRemoteOutcome, DirectoryQuery,
+    DirectoryRoomPreview, DirectoryRoomSummary, E2eeRecoveryState, EncryptionDebugOperationKind,
+    EncryptionDebugOperationOutcome, FilesViewScope, IdentityResetAuthType,
+    InviteDestinationResult, InviteScopeSelection, JapaneseCatalogProfile, LiveEventReceipts,
+    LocalEncryptionHealth, LoginAttemptId, LoginFlow, MentionCandidate,
+    MentionCandidatesCompleteness, MentionCandidatesFailureKind, MentionSurface,
     NativeAttentionDispatchId, NativeAttentionSoundOutcome, NativeAttentionState, NavigationState,
     OperationFailureKind, OwnProfile, PinnedEvent, PresenceKind, ProfileUpdateRequest,
     RecoveryKeyDeliveryState, RecoveryMethod, RoomListFailureKind, RoomListFilter,
@@ -81,16 +81,9 @@ pub enum AppAction {
         homeserver: String,
         kind: AuthFailureKind,
     },
-    DeviceSessionsLoadRequested {
-        request_id: u64,
-    },
-    DeviceSessionsLoaded {
-        request_id: u64,
-        devices: Vec<DeviceSessionSummary>,
-    },
-    DeviceSessionsLoadFailed {
-        request_id: u64,
-        kind: AuthFailureKind,
+    ActiveSessionAccountManagementUrlResolved {
+        info: SessionInfo,
+        url: Option<crate::state::AccountManagementUrl>,
     },
     AccountManagementRequested {
         request_id: u64,

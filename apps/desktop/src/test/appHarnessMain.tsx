@@ -175,7 +175,7 @@ function readySnapshot(
   };
       return {
       state: {
-        schema_version: 4,
+        schema_version: 5,
         domain: {
           session: { kind: "ready", homeserver: HOMESERVER, user_id: USER_ID, device_id: DEVICE_ID },
           session_lock_reason: null,
@@ -201,7 +201,7 @@ function readySnapshot(
             operation: { kind: "idle" }
           },
           room_notification_settings: {}, room_interactions: {},
-          device_sessions: { kind: "idle" },
+          account_management_url: "https://account.example.test/devices",
           account_management: { kind: "idle" },
           account_management_capabilities: { change_password: { kind: "unknown" } },
           soft_logout_reauth: { kind: "idle" }, qr_login: { kind: "idle" },
@@ -1482,84 +1482,6 @@ mock.setCommandResponse(
           room_preferences: {
             rooms: roomPreferences
           }
-        },
-      }
-    });
-  }
-);
-mock.setCommandResponse("query_devices", () =>
-  setCurrentSnapshot({
-    ...currentSnapshot,
-    state: {
-      ...currentSnapshot.state,
-      domain: {
-        ...currentSnapshot.state.domain,
-      device_sessions: {
-        kind: "loaded",
-        devices: [
-          {
-            device_ordinal: 1,
-            display_name: "Current session",
-            current: true,
-            verified: true,
-            inactive: false
-          },
-          {
-            device_ordinal: 2,
-            display_name: "Other session",
-            current: false,
-            verified: false,
-            inactive: true
-          }
-        ]
-      }
-      },
-    }
-  })
-);
-mock.setCommandResponse(
-  "rename_device",
-  ({ deviceOrdinal, displayName }: { deviceOrdinal: number; displayName: string }) => {
-    if (currentSnapshot.state.domain.device_sessions.kind !== "loaded") {
-      return currentSnapshot;
-    }
-    return setCurrentSnapshot({
-      ...currentSnapshot,
-      state: {
-        ...currentSnapshot.state,
-        domain: {
-          ...currentSnapshot.state.domain,
-        device_sessions: {
-          ...currentSnapshot.state.domain.device_sessions,
-          devices: currentSnapshot.state.domain.device_sessions.devices.map((device) =>
-            device.device_ordinal === deviceOrdinal
-              ? { ...device, display_name: displayName }
-              : device
-          )
-        }
-        },
-      }
-    });
-  }
-);
-mock.setCommandResponse(
-  "delete_devices",
-  ({ deviceOrdinals }: { deviceOrdinals: number[] }) => {
-    if (currentSnapshot.state.domain.device_sessions.kind !== "loaded") {
-      return currentSnapshot;
-    }
-    return setCurrentSnapshot({
-      ...currentSnapshot,
-      state: {
-        ...currentSnapshot.state,
-        domain: {
-          ...currentSnapshot.state.domain,
-        device_sessions: {
-          ...currentSnapshot.state.domain.device_sessions,
-          devices: currentSnapshot.state.domain.device_sessions.devices.filter(
-            (device) => !deviceOrdinals.includes(device.device_ordinal)
-          )
-        }
         },
       }
     });

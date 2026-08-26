@@ -1410,7 +1410,7 @@ describe("TopBar current session status", () => {
     expect(onRefresh).toHaveBeenLastCalledWith("manual");
   });
 
-  it("copies only Device ID and routes safe management, fallback, and diagnostics actions", async () => {
+  it("copies only Device ID and renders only safe management and diagnostics actions", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -1454,9 +1454,10 @@ describe("TopBar current session status", () => {
         onSearchScopeChange={() => undefined}
       />
     );
-    expect(screen.getByText(/did not advertise a safe external account destination/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Open local account settings" }));
-    expect(onManage).toHaveBeenLastCalledWith(null);
+    expect(screen.queryByText(/did not advertise a safe external account destination/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open local account settings" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Manage account and devices" })).toBeNull();
+    expect(onManage).toHaveBeenCalledTimes(1);
   });
 
   it("shows the highest runtime-alert severity, lists every warning, and retries Secure Backup", () => {

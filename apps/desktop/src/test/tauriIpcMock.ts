@@ -291,7 +291,7 @@ function defaultSnapshotResponse() {
       },
       room_notification_settings: {},
       room_interactions: {},
-      device_sessions: { kind: "idle" },
+      account_management_url: "https://account.example.test/devices",
       account_management: { kind: "idle" },
       account_management_capabilities: { change_password: { kind: "unknown" } },
       soft_logout_reauth: { kind: "idle" },
@@ -385,7 +385,7 @@ function defaultSnapshotResponse() {
   };
   const DOMAIN_KEYS = new Set([
     "session", "session_lock_reason", "secure_backup_gate", "current_session_status", "device_cleanup",
-    "auth", "device_sessions", "account_management", "account_management_capabilities",
+    "auth", "account_management_url", "account_management", "account_management_capabilities",
     "soft_logout_reauth", "qr_login", "settings", "link_preview_settings", "room_preferences",
     "locale_profile", "typography_profile", "profile", "space_members", "sync", "spaces", "rooms",
     "invites", "invite_workflow", "room_notification_settings", "room_interactions", "directory",
@@ -399,7 +399,7 @@ function defaultSnapshotResponse() {
     else ui[key] = value;
   }
   return {
-    state: { schema_version: 4, domain, ui },
+    state: { schema_version: 5, domain, ui },
     sidebar: {
       active_space_id: null,
       account_home: {

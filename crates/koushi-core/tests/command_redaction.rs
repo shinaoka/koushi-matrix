@@ -362,37 +362,6 @@ fn e2ee_trust_account_commands_are_correlated_ready_gated_and_redacted() {
 }
 
 #[test]
-fn device_session_commands_are_correlated_ready_gated_and_redacted() {
-    let request_id = fake_request_id();
-    let display_name = "Alice private laptop";
-    let auth_phrase = "device-delete-auth-text";
-    let commands = vec![
-        CoreCommand::Account(AccountCommand::QueryDevices { request_id }),
-        CoreCommand::Account(AccountCommand::RenameDevice {
-            request_id,
-            device_ordinal: 7,
-            display_name: display_name.to_owned(),
-        }),
-        CoreCommand::Account(AccountCommand::DeleteDevices {
-            request_id,
-            device_ordinals: vec![7, 8],
-            auth: Some(IdentityResetAuthRequest::UiaaPassword {
-                password: AuthSecret::new(auth_phrase),
-            }),
-        }),
-    ];
-
-    for command in commands {
-        assert_eq!(command.request_id(), request_id);
-        assert!(command.requires_ready_session());
-        let debug = format!("{command:?}");
-        assert!(!debug.contains(display_name), "{debug}");
-        assert!(!debug.contains(auth_phrase), "{debug}");
-        assert!(!debug.contains("DEVICE"), "{debug}");
-    }
-}
-
-#[test]
 fn soft_logout_reauth_is_correlated_redacted_and_allowed_when_locked() {
     let request_id = fake_request_id();
     let auth_phrase = "soft-logout-private-password";

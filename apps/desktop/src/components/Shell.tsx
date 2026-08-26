@@ -192,7 +192,7 @@ export function TopBar({
   searchScope: SearchScopeKind;
   sync: DesktopSnapshot["state"]["domain"]["sync"];
   userId?: string | null;
-  onManageAccount?: (safeExternalUrl: string | null) => void;
+  onManageAccount?: (safeExternalUrl: string) => void;
   onCopyDiagnostics?: () => Promise<void>;
   onOpenKeyboardSettings: () => void;
   onOpenDiagnostics?: () => void;
@@ -211,7 +211,6 @@ export function TopBar({
   const syncStatus = syncStatePresentation(sync);
   const serverLabel = matrixServerLabel(homeserver);
   const safeAccountManagementUrl = toExternalHttpUrl(accountManagementUrl);
-  const accountManagementResolved = accountManagementUrl !== undefined;
   const syncAriaLabel = serverLabel
     ? `${serverLabel} · ${syncStatus.ariaLabel}`
     : syncStatus.ariaLabel;
@@ -355,7 +354,6 @@ export function TopBar({
           {sessionStatusOpen ? (
             <SessionStatusPopover
               accountManagementUrl={safeAccountManagementUrl}
-              accountManagementResolved={accountManagementResolved}
               currentSessionStatus={currentSessionStatus}
               deviceId={deviceId}
               homeserver={serverLabel ?? homeserver ?? null}
@@ -404,7 +402,6 @@ export function TopBar({
 
 function SessionStatusPopover({
   accountManagementUrl,
-  accountManagementResolved,
   currentSessionStatus,
   deviceId,
   homeserver,
@@ -418,12 +415,11 @@ function SessionStatusPopover({
   runtimeAlerts
 }: {
   accountManagementUrl: string | null;
-  accountManagementResolved: boolean;
   currentSessionStatus: CurrentSessionStatusState;
   deviceId: string | null;
   homeserver: string | null;
   userId: string | null;
-  onManageAccount: (safeExternalUrl: string | null) => void;
+  onManageAccount: (safeExternalUrl: string) => void;
   onCopyDiagnostics: () => Promise<void>;
   onOpenDiagnostics: () => void;
   onRefresh: (trigger: SessionStatusRefreshTrigger) => void;
@@ -533,9 +529,6 @@ function SessionStatusPopover({
           />
         </dl>
       )}
-      {accountManagementResolved && !accountManagementUrl ? (
-        <p className="session-status-note">{t("sessionStatus.accountManagementFallback")}</p>
-      ) : null}
       {runtimeAlerts.length ? (
         <section className="runtime-alerts" aria-labelledby="runtime-warnings-title">
           <h2 id="runtime-warnings-title">{t("sessionStatus.runtimeWarnings")}</h2>
@@ -579,11 +572,11 @@ function SessionStatusPopover({
         >
           {t("sessionStatus.copyDeviceId")}
         </button>
-        <button type="button" onClick={() => onManageAccount(accountManagementUrl)}>
-          {accountManagementUrl
-            ? t("sessionStatus.manageAccount")
-            : t("sessionStatus.openLocalSettings")}
-        </button>
+        {accountManagementUrl ? (
+          <button type="button" onClick={() => onManageAccount(accountManagementUrl)}>
+            {t("sessionStatus.manageAccount")}
+          </button>
+        ) : null}
         <button type="button" onClick={onOpenDiagnostics}>
           {t("diagnostics.open")}
         </button>
