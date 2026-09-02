@@ -37,6 +37,36 @@ const VERIFICATION_METHOD_DISCOVERY_ADMISSION_TIMEOUT: Duration = Duration::from
 
 const CURRENT_SESSION_STATUS_TIMEOUT: Duration = Duration::from_secs(15);
 
+fn current_session_status_connectivity_proven(
+    sync_state: koushi_state::CurrentSessionSyncState,
+) -> bool {
+    sync_state == koushi_state::CurrentSessionSyncState::Running
+}
+
+fn current_session_status_failure(
+    error: koushi_sdk::MatrixCurrentSessionInspectionError,
+) -> koushi_state::CurrentSessionStatusFailureKind {
+    match error {
+        koushi_sdk::MatrixCurrentSessionInspectionError::Unavailable
+        | koushi_sdk::MatrixCurrentSessionInspectionError::CurrentDeviceMissing => {
+            koushi_state::CurrentSessionStatusFailureKind::Unavailable
+        }
+        koushi_sdk::MatrixCurrentSessionInspectionError::DeviceRequest
+        | koushi_sdk::MatrixCurrentSessionInspectionError::IdentityRequest => {
+            koushi_state::CurrentSessionStatusFailureKind::Sdk
+        }
+        koushi_sdk::MatrixCurrentSessionInspectionError::Authentication => {
+            koushi_state::CurrentSessionStatusFailureKind::Authentication
+        }
+        koushi_sdk::MatrixCurrentSessionInspectionError::Network => {
+            koushi_state::CurrentSessionStatusFailureKind::Network
+        }
+        koushi_sdk::MatrixCurrentSessionInspectionError::Server => {
+            koushi_state::CurrentSessionStatusFailureKind::Server
+        }
+    }
+}
+
 pub(super) fn record_verification_admission_event(event: DiagnosticEvent) {
     koushi_diagnostics::record_and_stderr(event);
 }
@@ -292,6 +322,14 @@ fn current_session_status_settled_event(action: &AppAction, elapsed: Duration) -
                     koushi_state::CurrentSessionStatusFailureKind::Sdk => "sdk",
                     koushi_state::CurrentSessionStatusFailureKind::TimedOut => "timed_out",
                     koushi_state::CurrentSessionStatusFailureKind::Unavailable => "unavailable",
+                    koushi_state::CurrentSessionStatusFailureKind::ConnectivityUnavailable => {
+                        "connectivity_unavailable"
+                    }
+                    koushi_state::CurrentSessionStatusFailureKind::Authentication => {
+                        "authentication"
+                    }
+                    koushi_state::CurrentSessionStatusFailureKind::Network => "network",
+                    koushi_state::CurrentSessionStatusFailureKind::Server => "server",
                 },
             ))
         }
@@ -715,6 +753,7 @@ impl AccountActor {
                     match trigger {
                         koushi_state::SessionStatusRefreshTrigger::Open => "open",
                         koushi_state::SessionStatusRefreshTrigger::Manual => "manual",
+                        koushi_state::SessionStatusRefreshTrigger::Recovery => "recovery",
                     },
                 )),
         );
@@ -734,6 +773,26 @@ impl AccountActor {
             return;
         };
         let tx = self.self_tx.clone();
+        if !current_session_status_connectivity_proven(sync_state) {
+            record(
+                DiagnosticEvent::new(DiagnosticLevel::Info, "session_status", "refresh_deferred")
+                    .field(DiagnosticField::token("reason", "connectivity_unproven")),
+            );
+            self.current_session_status_task = Some(executor::spawn(async move {
+                let _ = tx
+                    .send(AccountMessage::CurrentSessionStatusRefreshFinished {
+                        request_id,
+                        generation,
+                        sync_state,
+                        started_at,
+                        result: Err(
+                            koushi_state::CurrentSessionStatusFailureKind::ConnectivityUnavailable,
+                        ),
+                    })
+                    .await;
+            }));
+            return;
+        }
         self.current_session_status_task = Some(executor::spawn(async move {
             let result = match executor::timeout(
                 CURRENT_SESSION_STATUS_TIMEOUT,
@@ -742,14 +801,7 @@ impl AccountActor {
             .await
             {
                 Ok(Ok(inspection)) => Ok(inspection),
-                Ok(Err(
-                    koushi_sdk::MatrixCurrentSessionInspectionError::Unavailable
-                    | koushi_sdk::MatrixCurrentSessionInspectionError::CurrentDeviceMissing,
-                )) => Err(koushi_state::CurrentSessionStatusFailureKind::Unavailable),
-                Ok(Err(
-                    koushi_sdk::MatrixCurrentSessionInspectionError::DeviceRequest
-                    | koushi_sdk::MatrixCurrentSessionInspectionError::IdentityRequest,
-                )) => Err(koushi_state::CurrentSessionStatusFailureKind::Sdk),
+                Ok(Err(error)) => Err(current_session_status_failure(error)),
                 Err(_) => Err(koushi_state::CurrentSessionStatusFailureKind::TimedOut),
             };
             let _ = tx

@@ -182,10 +182,15 @@ describe("i18n message catalog", () => {
 
   test("localizes the current-session status surface without changing protocol tokens", () => {
     expect(t("sessionStatus.title")).toBe("Current session");
-    expect(t("sessionStatus.failureTimedOut")).toBe("Session check timed out");
+    expect(t("sessionStatus.failureTimedOut")).toBe(
+      "Could not check this session before the connection timed out"
+    );
+    expect(t("sessionStatus.failureConnectivityUnavailable")).toBe(
+      "Could not check this session while the connection was unavailable"
+    );
     expect(t("sessionStatus.title", {}, "ja")).toBe("現在のセッション");
     expect(t("sessionStatus.failureTimedOut", {}, "ja")).toBe(
-      "セッションの確認がタイムアウトしました"
+      "接続がタイムアウトする前にこのセッションを確認できませんでした"
     );
     expect(t("sessionStatus.authOauth", {}, "ja")).toBe("OAuth 認証");
   });

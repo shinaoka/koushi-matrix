@@ -10,6 +10,10 @@ import {
 } from "lucide-react";
 
 import { t } from "../../i18n/messages";
+import {
+  currentSessionStatusDetails,
+  currentSessionStatusFactsRemainAuthoritative
+} from "../../domain/currentSessionStatus";
 import { ImeSafeForm, SecureImeTextField } from "../ImeTextControl";
 import {
   TrustActionButton,
@@ -51,8 +55,7 @@ export function TrustSection({
   onSubmitIdentityResetPassword: (flowId: number, password: string) => void;
   onSubmitIdentityResetOAuth: (flowId: number) => void;
 }) {
-  const currentSessionDetails =
-    currentSessionStatus.status === "ready" ? currentSessionStatus.details : null;
+  const currentSessionDetails = currentSessionStatusDetails(currentSessionStatus);
   const overall = trustOverallStatus(trust, currentSessionStatus);
   const crossSigningEstablished = currentSessionDetails?.is_cross_signed_by_owner === true;
   const keyBackupEstablished = currentSessionDetails?.key_backup === "ready";
@@ -342,8 +345,10 @@ function trustOverallStatus(
   trust: E2eeTrustState,
   currentSessionStatus: CurrentSessionStatusState
 ): { label: string; tone: TrustTone } {
-  if (currentSessionStatus.status === "ready") {
-    const details = currentSessionStatus.details;
+  const details = currentSessionStatusDetails(currentSessionStatus);
+  const detailsRemainAuthoritative =
+    currentSessionStatusFactsRemainAuthoritative(currentSessionStatus);
+  if (details && detailsRemainAuthoritative) {
     return details.verification === "verified"
       ? { label: t("sessionStatus.verified"), tone: "good" }
       : { label: t("trust.statusNeedsAttention"), tone: "warning" };

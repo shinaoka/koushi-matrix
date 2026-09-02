@@ -18,9 +18,9 @@ and must build on the authoritative trust-recheck path fixed by #375.
 Add a dedicated `CurrentSessionStatusState` slice to `AppState`:
 
 - `Idle`
-- `Checking { request_id, trigger }`
+- `Checking { request_id, trigger, last_known_details }`
 - `Ready { request_id, details }`
-- `Failed { request_id, kind, checked_at_ms }`
+- `Failed { request_id, kind, checked_at_ms, last_known_details }`
 
 `details` is one coherent result containing:
 
@@ -34,12 +34,16 @@ Add a dedicated `CurrentSessionStatusState` slice to `AppState`:
 - the completion timestamp.
 
 React renders this slice and never combines independent badges into a trust
-verdict. A failed refresh replaces a prior `Ready` result with `Failed`; stale
-verified data is not presented as a successful refresh.
+verdict. A failed refresh replaces the prior `Ready` verdict with `Failed`.
+After #802, transport timeout/connectivity failure retains the prior facts in
+`last_known_details`; the UI may present them as stale observations but never as
+a newly successful refresh or an authentication/trust downgrade.
 
 Opening the popover and pressing **Recheck** both dispatch the same typed
 command. Correlation IDs and the session generation reject stale completion.
-Only one refresh may be active at a time.
+Only one refresh may be active at a time. After #802, `Recovery` is a core-only
+trigger admitted once when accepted sync state returns from unproven to
+`Running`; Tauri rejects attempts to forge it from the frontend.
 
 ### Extend, do not replace, the #375 trust path
 

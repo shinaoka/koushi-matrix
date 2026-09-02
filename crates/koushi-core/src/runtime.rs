@@ -1767,6 +1767,10 @@ impl AppActor {
                     AccountCommand::SetLocalUserAlias { user_id, .. } => Some(user_id.as_str()),
                     _ => None,
                 };
+                let current_session_status_already_checking = matches!(
+                    self.state.current_session_status,
+                    koushi_state::CurrentSessionStatusState::Checking { .. }
+                );
                 let display_label_user_ids = display_label_user_id.into_iter().collect::<Vec<_>>();
                 let effects =
                     if let Some(action) = account_command_projected_action(&account_command) {
@@ -1780,6 +1784,13 @@ impl AppActor {
                     AccountCommand::RefreshCurrentSessionStatus { .. }
                 ) {
                     self.handle_app_effects(command_request_id, effects).await;
+                    if let Some(event) = current_session_status_noop_event(
+                        command_request_id,
+                        current_session_status_already_checking,
+                        self.state_generation,
+                    ) {
+                        self.emit(event);
+                    }
                     return projected_state_changed;
                 }
                 self.handle_ui_event_effects_with_display_label_users(
@@ -3718,6 +3729,12 @@ impl AppActor {
                         .send(AccountMessage::InspectSecureBackup)
                         .await;
                 }
+                AppEffect::SyncConnectivityChanged { proven } => {
+                    let _ = self
+                        .account_actor
+                        .send(AccountMessage::SyncConnectivityChanged { proven })
+                        .await;
+                }
                 AppEffect::RefreshCurrentSessionStatus {
                     request_id,
                     trigger,
@@ -3911,6 +3928,12 @@ impl AppActor {
                     let _ = self
                         .account_actor
                         .send(AccountMessage::InspectSecureBackup)
+                        .await;
+                }
+                AppEffect::SyncConnectivityChanged { proven } => {
+                    let _ = self
+                        .account_actor
+                        .send(AccountMessage::SyncConnectivityChanged { proven: *proven })
                         .await;
                 }
                 AppEffect::RefreshCurrentSessionStatus {
@@ -4220,6 +4243,18 @@ fn unsubscribe_replaced_thread_timeline_key(
     replacement_key: TimelineKey,
 ) -> Option<TimelineKey> {
     unsubscribe_replaced_timeline_key(current_key, replacement_key)
+}
+
+fn current_session_status_noop_event(
+    request_id: RequestId,
+    already_checking: bool,
+    published_generation: u64,
+) -> Option<CoreEvent> {
+    already_checking.then_some(CoreEvent::IntentLifecycle {
+        request_id,
+        outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::AlreadyActive),
+        published_generation,
+    })
 }
 
 fn is_ready_session_for_commands(session: &SessionState) -> bool {

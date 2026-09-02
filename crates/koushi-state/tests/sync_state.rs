@@ -36,7 +36,10 @@ fn sync_status_projection_converges_from_stopped_to_running() {
     assert_eq!(state.sync_generation, 1);
     assert_eq!(
         effects,
-        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::SyncConnectivityChanged { proven: true },
+        ]
     );
 }
 
@@ -80,7 +83,10 @@ fn sync_status_projection_normalizes_when_session_not_sync_capable() {
     assert_eq!(state.sync_generation, 4);
     assert_eq!(
         effects,
-        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::SyncConnectivityChanged { proven: false },
+        ]
     );
 }
 

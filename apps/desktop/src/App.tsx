@@ -634,7 +634,16 @@ export function retainedTimelineStoreKeyIds(snapshot: DesktopSnapshot | null): S
   return retained;
 }
 
-function currentSessionStatusFailureLabel(kind: "sdk" | "timed_out" | "unavailable"): string {
+function currentSessionStatusFailureLabel(
+  kind:
+    | "sdk"
+    | "timed_out"
+    | "unavailable"
+    | "connectivity_unavailable"
+    | "authentication"
+    | "network"
+    | "server"
+): string {
   switch (kind) {
     case "sdk":
       return t("sessionStatus.failureSdk");
@@ -642,6 +651,14 @@ function currentSessionStatusFailureLabel(kind: "sdk" | "timed_out" | "unavailab
       return t("sessionStatus.failureTimedOut");
     case "unavailable":
       return t("sessionStatus.failureUnavailable");
+    case "connectivity_unavailable":
+      return t("sessionStatus.failureConnectivityUnavailable");
+    case "authentication":
+      return t("sessionStatus.failureAuthentication");
+    case "network":
+      return t("sessionStatus.failureNetwork");
+    case "server":
+      return t("sessionStatus.failureServer");
   }
 }
 
@@ -5438,8 +5455,18 @@ export function App() {
   if (snapshot.state.domain.current_session_status.status === "failed") {
     runtimeAlerts.push({
       kind: "session",
-      severity: "error",
-      title: t("sessionStatus.failed"),
+      severity:
+        snapshot.state.domain.current_session_status.kind === "timed_out" ||
+        snapshot.state.domain.current_session_status.kind === "connectivity_unavailable" ||
+        snapshot.state.domain.current_session_status.kind === "network"
+          ? "warning"
+          : "error",
+      title:
+        snapshot.state.domain.current_session_status.kind === "timed_out" ||
+        snapshot.state.domain.current_session_status.kind === "connectivity_unavailable" ||
+        snapshot.state.domain.current_session_status.kind === "network"
+          ? t("sessionStatus.connectionUnavailable")
+          : t("sessionStatus.failed"),
       detail: currentSessionStatusFailureLabel(snapshot.state.domain.current_session_status.kind),
       retryable: false
     });

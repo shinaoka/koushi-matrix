@@ -34,9 +34,75 @@ const RECOVERY_TRUST_SETTLEMENT_POLL_INTERVAL: Duration = Duration::from_millis(
 
 const SECURE_BACKUP_INSPECTION_TIMEOUT: Duration = Duration::from_secs(30);
 
-const SECURE_BACKUP_RETRY_DELAY: Duration = Duration::from_secs(5);
+const SECURE_BACKUP_RETRY_BASE: Duration = Duration::from_secs(5);
+
+const SECURE_BACKUP_RETRY_MAX: Duration = Duration::from_secs(5 * 60);
 
 const SECURE_BACKUP_MONITOR_INTERVAL: Duration = Duration::from_secs(60);
+
+pub(super) fn secure_backup_retry_delay(attempt: u32, jitter_seed: u64) -> Duration {
+    let exponent = attempt.min(6);
+    let base_ms = SECURE_BACKUP_RETRY_BASE
+        .as_millis()
+        .saturating_mul(1_u128 << exponent)
+        .min(SECURE_BACKUP_RETRY_MAX.as_millis());
+    let jitter_max_ms = base_ms / 5;
+    let mut mixed =
+        jitter_seed ^ u64::from(attempt.wrapping_add(1)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    mixed ^= mixed >> 30;
+    mixed = mixed.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    mixed ^= mixed >> 27;
+    let jitter_ms = if jitter_max_ms == 0 {
+        0
+    } else {
+        u128::from(mixed) % (jitter_max_ms + 1)
+    };
+    Duration::from_millis(
+        (base_ms + jitter_ms)
+            .min(SECURE_BACKUP_RETRY_MAX.as_millis())
+            .try_into()
+            .unwrap_or(u64::MAX),
+    )
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SecureBackupInspectionAdmission {
+    Start,
+    Coalesce,
+    Defer,
+}
+
+pub(super) fn secure_backup_inspection_admission(
+    connectivity_proven: bool,
+    inspection_active: bool,
+) -> SecureBackupInspectionAdmission {
+    if inspection_active {
+        SecureBackupInspectionAdmission::Coalesce
+    } else if connectivity_proven {
+        SecureBackupInspectionAdmission::Start
+    } else {
+        SecureBackupInspectionAdmission::Defer
+    }
+}
+
+pub(super) fn apply_secure_backup_connectivity_edge(
+    proven: bool,
+    retry_attempt: &mut u32,
+    recovery_epoch: &mut bool,
+    reset_consumed: &mut bool,
+) -> bool {
+    if !proven {
+        if !*recovery_epoch {
+            *recovery_epoch = true;
+            *reset_consumed = false;
+        }
+    } else if *recovery_epoch && !*reset_consumed {
+        *retry_attempt = 0;
+        *reset_consumed = true;
+        return true;
+    }
+    false
+}
 
 pub(super) fn secure_backup_monitor_wakeup_is_current(
     current_generation: u64,
@@ -1485,9 +1551,28 @@ impl AccountActor {
     }
 
     pub(super) fn start_secure_backup_inspection(&mut self) {
-        if self.secure_backup_inspection_task.is_some() {
-            self.secure_backup_inspection_pending = true;
-            return;
+        match secure_backup_inspection_admission(
+            self.sync_connectivity_proven,
+            self.secure_backup_inspection_task.is_some(),
+        ) {
+            SecureBackupInspectionAdmission::Coalesce => {
+                self.secure_backup_inspection_pending = true;
+                return;
+            }
+            SecureBackupInspectionAdmission::Defer => {
+                self.retire_secure_backup_monitor();
+                self.secure_backup_inspection_pending = true;
+                record(
+                    DiagnosticEvent::new(
+                        DiagnosticLevel::Info,
+                        "core.secure_backup",
+                        "inspection_deferred",
+                    )
+                    .field(DiagnosticField::token("reason", "connectivity_unproven")),
+                );
+                return;
+            }
+            SecureBackupInspectionAdmission::Start => {}
         }
         self.retire_secure_backup_monitor();
         let Some(session) = self.session.clone().filter(|_| self.session_promoted) else {
@@ -1500,6 +1585,7 @@ impl AccountActor {
             "inspection_started",
         ));
         let tx = self.self_tx.clone();
+        let started_at = Instant::now();
         self.secure_backup_inspection_task = Some(executor::spawn(async move {
             let result = match executor::timeout(
                 SECURE_BACKUP_INSPECTION_TIMEOUT,
@@ -1512,7 +1598,11 @@ impl AccountActor {
                 Err(_) => Err(koushi_state::SecureBackupGateFailureKind::Timeout),
             };
             let _ = tx
-                .send(AccountMessage::SecureBackupInspectionFinished { generation, result })
+                .send(AccountMessage::SecureBackupInspectionFinished {
+                    generation,
+                    started_at,
+                    result,
+                })
                 .await;
         }));
     }
@@ -1520,6 +1610,7 @@ impl AccountActor {
     pub(super) async fn finish_secure_backup_inspection(
         &mut self,
         generation: u64,
+        started_at: Instant,
         result: Result<
             koushi_sdk::MatrixSecureBackupInspection,
             koushi_state::SecureBackupGateFailureKind,
@@ -1568,9 +1659,23 @@ impl AccountActor {
                 .field(DiagnosticField::token(
                     "gate",
                     secure_backup_gate_token(gate),
+                ))
+                .field(DiagnosticField::milliseconds(
+                    "elapsed_ms",
+                    started_at.elapsed().as_millis(),
                 )),
             );
-            self.schedule_secure_backup_monitor(generation, retrying);
+            if retrying {
+                self.schedule_secure_backup_monitor(generation, true);
+            } else if !matches!(
+                gate,
+                koushi_state::SecureBackupGateState::BlockedFailed { .. }
+            ) {
+                self.secure_backup_retry_attempt = 0;
+                self.secure_backup_recovery_epoch = false;
+                self.secure_backup_recovery_reset_consumed = false;
+                self.schedule_secure_backup_monitor(generation, false);
+            }
         }
         self.send_actions(vec![action]).await;
     }
@@ -1578,10 +1683,16 @@ impl AccountActor {
     fn schedule_secure_backup_monitor(&mut self, generation: u64, retrying: bool) {
         self.retire_secure_backup_monitor();
         let monitor_serial = self.secure_backup_monitor_serial;
-        let (delay, cadence) = if retrying {
-            (SECURE_BACKUP_RETRY_DELAY, "retry_5s")
+        let (delay, cadence, attempt) = if retrying {
+            let attempt = self.secure_backup_retry_attempt;
+            self.secure_backup_retry_attempt = self.secure_backup_retry_attempt.saturating_add(1);
+            (
+                secure_backup_retry_delay(attempt, monitor_serial),
+                "retry_exponential",
+                Some(attempt),
+            )
         } else {
-            (SECURE_BACKUP_MONITOR_INTERVAL, "periodic_60s")
+            (SECURE_BACKUP_MONITOR_INTERVAL, "periodic_60s", None)
         };
         record(
             DiagnosticEvent::new(
@@ -1589,7 +1700,12 @@ impl AccountActor {
                 "core.secure_backup",
                 "monitor_scheduled",
             )
-            .field(DiagnosticField::token("cadence", cadence)),
+            .field(DiagnosticField::token("cadence", cadence))
+            .field(DiagnosticField::milliseconds("delay_ms", delay.as_millis()))
+            .field(DiagnosticField::count(
+                "attempt",
+                attempt.map(u64::from).unwrap_or(0),
+            )),
         );
         let tx = self.self_tx.clone();
         self.secure_backup_monitor_task = Some(executor::spawn(async move {
@@ -1603,6 +1719,46 @@ impl AccountActor {
         }));
     }
 
+    pub(super) async fn handle_sync_connectivity_changed(&mut self, proven: bool) {
+        if self.sync_connectivity_proven == proven {
+            return;
+        }
+        self.sync_connectivity_proven = proven;
+        record(
+            DiagnosticEvent::new(
+                DiagnosticLevel::Info,
+                "core.secure_backup",
+                "connectivity_changed",
+            )
+            .field(DiagnosticField::boolean("proven", proven)),
+        );
+        let recovery_reset = apply_secure_backup_connectivity_edge(
+            proven,
+            &mut self.secure_backup_retry_attempt,
+            &mut self.secure_backup_recovery_epoch,
+            &mut self.secure_backup_recovery_reset_consumed,
+        );
+        if !proven {
+            self.secure_backup_inspection_pending |= self.session_promoted
+                || self.secure_backup_inspection_task.is_some()
+                || self.secure_backup_monitor_task.is_some();
+            if let Some(task) = self.secure_backup_inspection_task.take() {
+                task.abort();
+                let _ = task.await;
+            }
+            self.retire_secure_backup_monitor();
+            return;
+        }
+        if self.session_promoted {
+            self.secure_backup_inspection_pending = false;
+            if !self.secure_backup_recovery_epoch || recovery_reset {
+                self.start_secure_backup_inspection();
+            } else {
+                self.schedule_secure_backup_monitor(self.trust_generation, true);
+            }
+        }
+    }
+
     fn retire_secure_backup_monitor(&mut self) {
         self.secure_backup_monitor_serial =
             self.secure_backup_monitor_serial.wrapping_add(1).max(1);
@@ -1613,6 +1769,10 @@ impl AccountActor {
 
     pub(super) async fn cancel_secure_backup_inspection(&mut self) {
         self.secure_backup_inspection_pending = false;
+        self.sync_connectivity_proven = false;
+        self.secure_backup_retry_attempt = 0;
+        self.secure_backup_recovery_epoch = false;
+        self.secure_backup_recovery_reset_consumed = false;
         if let Some(task) = self.secure_backup_inspection_task.take() {
             task.abort();
             let _ = task.await;

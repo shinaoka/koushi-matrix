@@ -32,6 +32,7 @@ import { DetailRow } from "./user-settings/SettingsStatusPrimitives";
 import type { DisplayDensity } from "../domain/types";
 import type { ShortcutLabelProfile } from "../domain/shortcuts";
 import { renderableThumbnailSourceUrl } from "../backend/linkMediaRuntime";
+import { currentSessionStatusDetails } from "../domain/currentSessionStatus";
 import type {
   AccountManagementCapabilities,
   AccountManagementState,
@@ -192,8 +193,7 @@ export function UserSettingsPanel({
   const profileAvatarUrl = avatarSourceUrl(profile.own.avatar);
   const profileInitial = profile.own.display_name?.charAt(0).toUpperCase()
     || accountInitial(currentSession?.user_id ?? "");
-  const currentSessionDetails =
-    currentSessionStatus.status === "ready" ? currentSessionStatus.details : null;
+  const currentSessionDetails = currentSessionStatusDetails(currentSessionStatus);
 
   useEffect(() => {
     setDisplayNameDraft(profile.own.display_name ?? "");

@@ -618,13 +618,21 @@ export type SessionState =
     >
   | ExactSessionState<"loggingOut">;
 
-export type SessionStatusRefreshTrigger = "open" | "manual";
+export type SessionStatusRefreshTrigger = "open" | "manual" | "recovery";
+export type SessionStatusRefreshCommandTrigger = Exclude<SessionStatusRefreshTrigger, "recovery">;
 export type SessionAuthenticationMethod = "password" | "sso" | "oauth" | "token" | "unknown";
 export type CurrentSessionSyncState = "stopped" | "starting" | "running" | "error";
 export type OwnIdentityVerification = "missing" | "unverified" | "verified";
 export type CurrentSessionBackupState = "ready" | "disabled" | "unknown";
 export type CurrentSessionVerification = "verified" | "unverified" | "unknown";
-export type CurrentSessionStatusFailureKind = "sdk" | "timed_out" | "unavailable";
+export type CurrentSessionStatusFailureKind =
+  | "sdk"
+  | "timed_out"
+  | "unavailable"
+  | "connectivity_unavailable"
+  | "authentication"
+  | "network"
+  | "server";
 
 export interface CurrentSessionStatusDetails {
   device_display_name: string | null;
@@ -640,13 +648,19 @@ export interface CurrentSessionStatusDetails {
 
 export type CurrentSessionStatusState =
   | { status: "idle" }
-  | { status: "checking"; request_id: number; trigger: SessionStatusRefreshTrigger }
+  | {
+      status: "checking";
+      request_id: number;
+      trigger: SessionStatusRefreshTrigger;
+      last_known_details: CurrentSessionStatusDetails | null;
+    }
   | { status: "ready"; request_id: number; details: CurrentSessionStatusDetails }
   | {
       status: "failed";
       request_id: number;
       kind: CurrentSessionStatusFailureKind;
       checked_at_ms: number;
+      last_known_details: CurrentSessionStatusDetails | null;
     };
 
 export type SyncState =

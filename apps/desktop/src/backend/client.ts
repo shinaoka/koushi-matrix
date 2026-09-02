@@ -34,7 +34,7 @@ import type {
   RoomTagKind,
   SavedSessionInfo,
   SearchScopeKind,
-  SessionStatusRefreshTrigger,
+  SessionStatusRefreshCommandTrigger,
   SettingsPatch,
   StagedUploadCompressionChoice,
   StagedUploadOutputSelection,
@@ -215,7 +215,7 @@ export class TauriDesktopApi implements DesktopApi {
   }
 
   async refreshCurrentSessionStatus(
-    trigger: SessionStatusRefreshTrigger
+    trigger: SessionStatusRefreshCommandTrigger
   ): Promise<CommandAdmission> {
     return this.invokeCommand<CommandAdmission>("refresh_current_session_status", { trigger });
   }

@@ -920,6 +920,23 @@ fn current_session_status_account_command_projects_open_and_manual_refreshes() {
 }
 
 #[test]
+fn current_session_status_duplicate_has_a_full_request_id_correlated_benign_noop() {
+    let request_id = RequestId {
+        connection_id: RuntimeConnectionId(9),
+        sequence: 42,
+    };
+    assert!(current_session_status_noop_event(request_id, false, 7).is_none());
+    assert!(matches!(
+        current_session_status_noop_event(request_id, true, 7),
+        Some(CoreEvent::IntentLifecycle {
+            request_id: event_request_id,
+            outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::AlreadyActive),
+            published_generation: 7,
+        }) if event_request_id == request_id
+    ));
+}
+
+#[test]
 fn replacement_thread_helper_preserves_same_key_and_unsubscribes_different_key() {
     let account_key = AccountKey("@alice:example.invalid".to_owned());
     let current = TimelineKey {

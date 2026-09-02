@@ -383,6 +383,46 @@ describe("UserSettingsPanel", () => {
     expect(remoteSessionsPosition).toBe(-1);
     expect(accountManagementPosition).toBeGreaterThan(accountsPosition);
     expect(keyboardPosition).toBeGreaterThan(accountManagementPosition);
+
+    const degradedMarkup = renderToStaticMarkup(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        currentSessionStatus={{
+          status: "failed",
+          request_id: 42,
+          kind: "connectivity_unavailable",
+          checked_at_ms: 1_787_665_621_000,
+          last_known_details: {
+            device_display_name: "Koushi on macOS",
+            device_id: "FAKEDEVICE",
+            authentication_method: "password",
+            sync_state: "running",
+            is_cross_signed_by_owner: true,
+            own_identity_verification: "unverified",
+            key_backup: "ready",
+            verification: "verified",
+            checked_at_ms: 1_787_665_620_000
+          }
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+      />
+    );
+    expect(degradedMarkup).toContain("Koushi on macOS");
+    expect(degradedMarkup).toContain("Cross-signed");
+    expect(degradedMarkup).toContain("Verified");
+    expect(degradedMarkup).not.toContain("Needs attention");
   });
 
   test("dispatches the manage-account open action from the account section", () => {

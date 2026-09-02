@@ -37,9 +37,10 @@ import type {
   RoomSummary,
   SearchScopeKind,
   SettingsPatch,
-  SessionStatusRefreshTrigger
+  SessionStatusRefreshCommandTrigger
 } from "../domain/types";
 import { contextMenuItems } from "../domain/contextMenus";
+import { currentSessionStatusDetails } from "../domain/currentSessionStatus";
 import { toExternalHttpUrl } from "../domain/externalLinks";
 import { renderableThumbnailSourceUrl } from "../backend/linkMediaRuntime";
 import { Tooltip } from "./Tooltip";
@@ -170,7 +171,7 @@ export function TopBar({
   onCopyDiagnostics?: () => Promise<void>;
   onOpenKeyboardSettings: () => void;
   onOpenDiagnostics?: () => void;
-  onRefreshCurrentSessionStatus?: (trigger: SessionStatusRefreshTrigger) => void;
+  onRefreshCurrentSessionStatus?: (trigger: SessionStatusRefreshCommandTrigger) => void;
   onRetryRuntimeAlert?: (kind: RuntimeAlertKind) => void;
   onRestartSync: () => void;
   onSearchQueryChange: (value: string) => void;
@@ -396,15 +397,14 @@ function SessionStatusPopover({
   onManageAccount: (safeExternalUrl: string) => void;
   onCopyDiagnostics: () => Promise<void>;
   onOpenDiagnostics: () => void;
-  onRefresh: (trigger: SessionStatusRefreshTrigger) => void;
+  onRefresh: (trigger: SessionStatusRefreshCommandTrigger) => void;
   runtimeAlertRetrying: boolean;
   onRetryRuntimeAlert: (kind: RuntimeAlertKind) => void;
   runtimeAlerts: RuntimeAlert[];
 }) {
   const dialogRef = useRef<HTMLElement>(null);
   const [copyState, setCopyState] = useState<"idle" | "copying" | "copied" | "failed">("idle");
-  const details =
-    currentSessionStatus.status === "ready" ? currentSessionStatus.details : null;
+  const details = currentSessionStatusDetails(currentSessionStatus);
   const displayedDeviceId = details?.device_id ?? deviceId;
   const checking = currentSessionStatus.status === "checking";
   const retryLabel =
@@ -441,68 +441,60 @@ function SessionStatusPopover({
         </span>
       </div>
       {currentSessionStatus.status === "failed" ? (
-        <>
-          <p className="session-status-failure">
-            {sessionStatusFailureLabel(currentSessionStatus.kind)}
-          </p>
-          <dl className="session-status-facts">
-            <SessionStatusFact label={t("sessionStatus.homeserver")} value={homeserver} />
-            <SessionStatusFact label={t("sessionStatus.userId")} value={userId} />
-            <SessionStatusFact label={t("sessionStatus.deviceId")} value={displayedDeviceId} />
-          </dl>
-        </>
-      ) : (
-        <dl className="session-status-facts">
-          <SessionStatusFact label={t("sessionStatus.homeserver")} value={homeserver} />
-          <SessionStatusFact label={t("sessionStatus.userId")} value={userId} />
-          <SessionStatusFact
-            label={t("sessionStatus.deviceName")}
-            value={details?.device_display_name}
-          />
-          <SessionStatusFact label={t("sessionStatus.deviceId")} value={displayedDeviceId} />
-          <SessionStatusFact
-            label={t("sessionStatus.authentication")}
-            value={details ? authenticationMethodLabel(details.authentication_method) : null}
-          />
-          <SessionStatusFact
-            label={t("sessionStatus.sync")}
-            value={details ? sessionSyncLabel(details.sync_state) : null}
-          />
-          <SessionStatusFact
-            label={t("sessionStatus.verification")}
-            value={details ? verificationLabel(details.verification) : null}
-          />
-          <SessionStatusFact
-            label={t("sessionStatus.ownerCrossSigning")}
-            value={
-              details
-                ? details.is_cross_signed_by_owner
-                  ? t("sessionStatus.crossSigned")
-                  : t("sessionStatus.notCrossSigned")
-                : null
-            }
-          />
-          <SessionStatusFact
-            label={t("sessionStatus.identity")}
-            value={details ? identityVerificationLabel(details.own_identity_verification) : null}
-          />
-          <SessionStatusFact
-            label={t("sessionStatus.keyBackup")}
-            value={details ? keyBackupLabel(details.key_backup) : null}
-          />
-          <SessionStatusFact
-            label={t("sessionStatus.lastChecked")}
-            value={
-              details
-                ? new Intl.DateTimeFormat(undefined, {
-                    dateStyle: "medium",
-                    timeStyle: "short"
-                  }).format(details.checked_at_ms)
-                : null
-            }
-          />
-        </dl>
-      )}
+        <p className="session-status-failure">
+          {sessionStatusFailureLabel(currentSessionStatus.kind)}
+        </p>
+      ) : null}
+      <dl className="session-status-facts">
+        <SessionStatusFact label={t("sessionStatus.homeserver")} value={homeserver} />
+        <SessionStatusFact label={t("sessionStatus.userId")} value={userId} />
+        <SessionStatusFact
+          label={t("sessionStatus.deviceName")}
+          value={details?.device_display_name}
+        />
+        <SessionStatusFact label={t("sessionStatus.deviceId")} value={displayedDeviceId} />
+        <SessionStatusFact
+          label={t("sessionStatus.authentication")}
+          value={details ? authenticationMethodLabel(details.authentication_method) : null}
+        />
+        <SessionStatusFact
+          label={t("sessionStatus.sync")}
+          value={details ? sessionSyncLabel(details.sync_state) : null}
+        />
+        <SessionStatusFact
+          label={t("sessionStatus.verification")}
+          value={details ? verificationLabel(details.verification) : null}
+        />
+        <SessionStatusFact
+          label={t("sessionStatus.ownerCrossSigning")}
+          value={
+            details
+              ? details.is_cross_signed_by_owner
+                ? t("sessionStatus.crossSigned")
+                : t("sessionStatus.notCrossSigned")
+              : null
+          }
+        />
+        <SessionStatusFact
+          label={t("sessionStatus.identity")}
+          value={details ? identityVerificationLabel(details.own_identity_verification) : null}
+        />
+        <SessionStatusFact
+          label={t("sessionStatus.keyBackup")}
+          value={details ? keyBackupLabel(details.key_backup) : null}
+        />
+        <SessionStatusFact
+          label={t("sessionStatus.lastChecked")}
+          value={
+            details
+              ? new Intl.DateTimeFormat(undefined, {
+                  dateStyle: "medium",
+                  timeStyle: "short"
+                }).format(details.checked_at_ms)
+              : null
+          }
+        />
+      </dl>
       {runtimeAlerts.length ? (
         <section className="runtime-alerts" aria-labelledby="runtime-warnings-title">
           <h2 id="runtime-warnings-title">{t("sessionStatus.runtimeWarnings")}</h2>
@@ -589,7 +581,16 @@ function sessionStatusVerdict(status: CurrentSessionStatusState): string {
   }
 }
 
-function sessionStatusFailureLabel(kind: "sdk" | "timed_out" | "unavailable"): string {
+function sessionStatusFailureLabel(
+  kind:
+    | "sdk"
+    | "timed_out"
+    | "unavailable"
+    | "connectivity_unavailable"
+    | "authentication"
+    | "network"
+    | "server"
+): string {
   switch (kind) {
     case "sdk":
       return t("sessionStatus.failureSdk");
@@ -597,6 +598,14 @@ function sessionStatusFailureLabel(kind: "sdk" | "timed_out" | "unavailable"): s
       return t("sessionStatus.failureTimedOut");
     case "unavailable":
       return t("sessionStatus.failureUnavailable");
+    case "connectivity_unavailable":
+      return t("sessionStatus.failureConnectivityUnavailable");
+    case "authentication":
+      return t("sessionStatus.failureAuthentication");
+    case "network":
+      return t("sessionStatus.failureNetwork");
+    case "server":
+      return t("sessionStatus.failureServer");
   }
 }
 

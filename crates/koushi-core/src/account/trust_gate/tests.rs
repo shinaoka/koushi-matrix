@@ -17,6 +17,7 @@ use super::{
     PendingTrustTransition, TrustLifecycleDecision, VerificationMethodDiscoveryResult,
     active_own_user_sas_flow_for_provisional_encryption_sync, advance_observed_trust,
     begin_provisional_encryption_sync_cursor_attempt, current_session_status_completion_action,
+    current_session_status_connectivity_proven, current_session_status_failure,
     current_session_status_observed_non_verified_trust, current_session_status_settled_event,
     first_provisional_encryption_sync_is_current, method_discovery_admission_timeout_is_current,
     method_discovery_is_current, own_user_sas_recheck_is_current,
@@ -104,6 +105,40 @@ fn session_status_non_verified_observation_routes_to_the_trust_gate() {
 }
 
 #[test]
+fn session_status_probe_requires_proven_running_sync() {
+    use koushi_state::CurrentSessionSyncState;
+
+    assert!(current_session_status_connectivity_proven(
+        CurrentSessionSyncState::Running
+    ));
+    for state in [
+        CurrentSessionSyncState::Stopped,
+        CurrentSessionSyncState::Starting,
+        CurrentSessionSyncState::Error,
+    ] {
+        assert!(!current_session_status_connectivity_proven(state));
+    }
+}
+
+#[test]
+fn session_status_request_failures_keep_auth_network_server_and_sdk_distinct() {
+    use koushi_sdk::MatrixCurrentSessionInspectionError as Inspection;
+    use koushi_state::CurrentSessionStatusFailureKind as Failure;
+
+    for (inspection, expected) in [
+        (Inspection::Authentication, Failure::Authentication),
+        (Inspection::Network, Failure::Network),
+        (Inspection::Server, Failure::Server),
+        (Inspection::DeviceRequest, Failure::Sdk),
+        (Inspection::IdentityRequest, Failure::Sdk),
+        (Inspection::Unavailable, Failure::Unavailable),
+        (Inspection::CurrentDeviceMissing, Failure::Unavailable),
+    ] {
+        assert_eq!(current_session_status_failure(inspection), expected);
+    }
+}
+
+#[test]
 fn session_status_sdk_failure_projects_coarse_failed_action() {
     let info = session_status_info();
     assert_eq!(
@@ -184,6 +219,18 @@ fn session_status_diagnostics_expose_only_coarse_result_and_elapsed_time() {
     assert_eq!(
         formatted,
         "stage=refresh_settled elapsed_ms=9 result=ready verdict=verified"
+    );
+    let deferred = AppAction::CurrentSessionStatusRefreshFailed {
+        request_id: 8,
+        kind: koushi_state::CurrentSessionStatusFailureKind::ConnectivityUnavailable,
+        checked_at_ms: 124,
+    };
+    assert_eq!(
+        koushi_diagnostics::format_event(&current_session_status_settled_event(
+            &deferred,
+            Duration::from_millis(3),
+        )),
+        "stage=refresh_settled elapsed_ms=3 result=connectivity_unavailable"
     );
     for private in [
         "private.example.test",

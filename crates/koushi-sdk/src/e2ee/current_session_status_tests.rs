@@ -124,7 +124,7 @@ async fn current_session_status_rejects_an_absent_current_device() {
 }
 
 #[tokio::test]
-async fn current_session_status_maps_device_and_identity_failures_coarsely() {
+async fn current_session_status_classifies_server_and_crypto_failures_coarsely() {
     let device_server = MatrixMockServer::new().await;
     let device_session = session(&device_server).await;
     let _devices = device_server
@@ -135,7 +135,7 @@ async fn current_session_status_maps_device_and_identity_failures_coarsely() {
         .await;
     assert_eq!(
         device_session.inspect_current_session().await,
-        Err(MatrixCurrentSessionInspectionError::DeviceRequest)
+        Err(MatrixCurrentSessionInspectionError::Server)
     );
 
     let identity_server = MatrixMockServer::new().await;

@@ -9,6 +9,7 @@ use super::{CurrentDeviceTrustState, SessionAuthenticationMethod};
 pub enum SessionStatusRefreshTrigger {
     Open,
     Manual,
+    Recovery,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -42,6 +43,10 @@ pub enum CurrentSessionStatusFailureKind {
     Sdk,
     TimedOut,
     Unavailable,
+    ConnectivityUnavailable,
+    Authentication,
+    Network,
+    Server,
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -112,6 +117,8 @@ pub enum CurrentSessionStatusState {
     Checking {
         request_id: u64,
         trigger: SessionStatusRefreshTrigger,
+        #[serde(default)]
+        last_known_details: Option<CurrentSessionStatusDetails>,
     },
     Ready {
         request_id: u64,
@@ -121,5 +128,7 @@ pub enum CurrentSessionStatusState {
         request_id: u64,
         kind: CurrentSessionStatusFailureKind,
         checked_at_ms: u64,
+        #[serde(default)]
+        last_known_details: Option<CurrentSessionStatusDetails>,
     },
 }

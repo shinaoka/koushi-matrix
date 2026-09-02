@@ -1866,6 +1866,7 @@ pub(super) async fn run_session_status_stage(conn: &mut CoreConnection) -> Resul
             CurrentSessionStatusState::Checking {
                 request_id: observed_request_id,
                 trigger: SessionStatusRefreshTrigger::Manual,
+                ..
             } if *observed_request_id == request_id.sequence => {
                 if !saw_checking {
                     println!("session_status_checking=ok");

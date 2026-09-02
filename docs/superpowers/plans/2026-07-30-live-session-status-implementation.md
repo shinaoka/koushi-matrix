@@ -5,6 +5,12 @@
 
 **Issue:** #369
 
+> #802 amendment: the original fail-closed replacement assertions below apply
+> to the current inspection verdict, not destruction of prior observational
+> facts. `Checking`/`Failed` now retain `last_known_details` across transient
+> connectivity failure, and core-owned `Recovery` refreshes it after proven sync
+> recovery. See `2026-09-02-issue-802-degraded-network-recovery.md`.
+
 **Goal:** Conditionally name empty OAuth devices and expose one authoritative
 Rust-owned current-session status through an accessible top-bar popover.
 

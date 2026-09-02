@@ -109,6 +109,20 @@ fn classify_current_device_trust_recheck_http_error(
     }
 }
 
+fn map_current_session_request_error(
+    error: &matrix_sdk::HttpError,
+    sdk_fallback: MatrixCurrentSessionInspectionError,
+) -> MatrixCurrentSessionInspectionError {
+    match classify_current_device_trust_recheck_http_error(error) {
+        CurrentDeviceTrustRecheckError::Authentication => {
+            MatrixCurrentSessionInspectionError::Authentication
+        }
+        CurrentDeviceTrustRecheckError::Network => MatrixCurrentSessionInspectionError::Network,
+        CurrentDeviceTrustRecheckError::Server => MatrixCurrentSessionInspectionError::Server,
+        CurrentDeviceTrustRecheckError::Sdk => sdk_fallback,
+    }
+}
+
 fn current_device_trust_recheck_failure_token(
     error: CurrentDeviceTrustRecheckError,
 ) -> &'static str {
@@ -172,6 +186,9 @@ pub enum MatrixCurrentSessionInspectionError {
     DeviceRequest,
     CurrentDeviceMissing,
     IdentityRequest,
+    Authentication,
+    Network,
+    Server,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2537,10 +2554,12 @@ impl MatrixClientSession {
             .device_id()
             .ok_or(MatrixCurrentSessionInspectionError::Unavailable)?;
 
-        let devices = client
-            .devices()
-            .await
-            .map_err(|_| MatrixCurrentSessionInspectionError::DeviceRequest)?;
+        let devices = client.devices().await.map_err(|error| {
+            map_current_session_request_error(
+                &error,
+                MatrixCurrentSessionInspectionError::DeviceRequest,
+            )
+        })?;
         let current_device = devices
             .devices
             .into_iter()

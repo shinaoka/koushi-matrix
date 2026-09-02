@@ -398,6 +398,15 @@ stateDiagram-v2
   degradation retain normal use; an inconclusive initial inspection does not.
   Account/session generation fencing occurs in `AccountActor` before reducer
   projection.
+- Nonessential secure-backup server inspection runs only while the accepted
+  sync projection is `Running`. An unproven connectivity edge aborts and
+  coalesces inspection/monitor work; the first proven edge in one recovery
+  epoch admits one inspection. Post-authority recoverable failures use bounded
+  exponential backoff with jitter (5 seconds through 5 minutes), preserving the
+  attempt across connectivity flaps until a successful backup inspection resets
+  the epoch. A pre-authority inconclusive inspection is `BlockedFailed`, has no
+  automatic monitor, and requires the explicit typed retry. Successful
+  authoritative inspection resumes periodic monitoring.
 - Secure-backup setup admission is Rust-owned and uses the closed
   `SecureBackupSetupIntent`. `InitialSetup` is admitted only by `SetupRequired`
   or recovery-key delivery retry; `Reenable { confirmed: true }` is admitted
@@ -432,11 +441,13 @@ not promote, demote, unlock, or otherwise alter `SessionState`.
 stateDiagram-v2
     [*] --> Idle
     Idle --> Checking: RefreshRequested(open/manual)
-    Ready --> Checking: RefreshRequested(open/manual)
-    Failed --> Checking: RefreshRequested(open/manual)
+    Ready --> Checking: RefreshRequested(open/manual) / retain details
+    Failed --> Checking: RefreshRequested(open/manual) / retain last-known details
+    Failed --> Checking: accepted SyncStatusChanged(unproven→Running) and transport failure / Recovery
     Checking --> Ready: Refreshed(matching request)
-    Checking --> Failed: RefreshFailed(matching request)
-    Checking --> Checking: duplicate/stale request ignored
+    Checking --> Failed: RefreshFailed(matching request) / retain last-known details
+    Checking --> Checking: duplicate manual request / correlated benign-no-op
+    Checking --> Checking: stale request ignored
     Ready --> Ready: stale completion ignored
     Failed --> Failed: stale completion ignored
     Checking --> Idle: LogoutRequested/session clear
@@ -444,28 +455,41 @@ stateDiagram-v2
     Failed --> Idle: LogoutRequested/session clear
 ```
 
-- Only a Ready session admits a refresh, and only one refresh may be active.
+- Only a Ready session admits a refresh, and only one network refresh may be
+  active. Open/manual work admitted while sync connectivity is unproven settles
+  as coarse `ConnectivityUnavailable` without starting an SDK probe. A manual
+  request coalesced behind `Checking(Recovery)` receives a full-request-id
+  `IntentLifecycle::BenignNoOp(AlreadyActive)`; it never replaces the automatic
+  request or waits opaquely.
 - `Ready.details.verification` is the app-owned three-state mapping of the same
   SDK current-device `VerificationState` used by admission. It is never derived
   from cross-signing, own-identity, backup, or sync facts. Those facts remain
   explicit supplemental diagnostics and do not form a second verification
   verdict. A refresh that observes non-Verified trust routes through the
   session gate and cannot publish Ready-session diagnostics.
-- A matching failure replaces prior successful details with a coarse `Failed`
-  state. Identifiers and raw SDK errors are excluded from generic diagnostics
-  and redacted from custom `Debug`.
+- A matching failure replaces the current inspection verdict with coarse
+  `Failed`, but `Checking.last_known_details` and `Failed.last_known_details`
+  retain the preceding successful observational facts. UI may label those facts
+  stale; it must not visually downgrade them into an authentication/trust loss.
+  Identifiers and raw SDK errors are excluded from generic diagnostics and
+  redacted from custom `Debug`.
+- `TimedOut`, `Network`, and `ConnectivityUnavailable` are
+  transport/reachability outcomes, not session invalidation. SDK request errors
+  are classified into coarse `Authentication`, `Network`, `Server`, or `Sdk`
+  before crossing into app state. `Unavailable` remains reserved for a missing
+  active session/current device required by the inspection.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Stopped
-    Stopped --> Starting: Restore/Login success
-    Starting --> Running: SyncStarted
-    Starting --> Reconnecting: owner reconnecting before first response
-    Running --> Reconnecting: unexpected sync-owner termination
-    Running --> Failed: non-recoverable SyncFailed
-    Failed --> Reconnecting: explicit SyncReconnecting
-    Reconnecting --> Running: SyncStarted/SyncRecovered
-    Running --> Stopped: LogoutRequested
+    Stopped --> Starting: accepted SyncStatusChanged(Starting)
+    Starting --> Running: accepted SyncStatusChanged(Running) / connectivity proven
+    Starting --> Reconnecting: accepted SyncStatusChanged(Reconnecting)
+    Running --> Reconnecting: accepted SyncStatusChanged(Reconnecting) / connectivity unproven
+    Running --> Failed: accepted SyncStatusChanged(Failed) / connectivity unproven
+    Failed --> Reconnecting: accepted SyncStatusChanged(Reconnecting)
+    Reconnecting --> Running: accepted SyncStatusChanged(Running) / one Recovery refresh if stale transport failure
+    Running --> Stopped: accepted SyncStatusChanged(Stopped) / connectivity unproven
     Failed --> Stopped: LogoutRequested
     Reconnecting --> Stopped: LogoutRequested
 ```

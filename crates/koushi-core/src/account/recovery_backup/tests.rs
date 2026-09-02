@@ -5,11 +5,13 @@ use koushi_state::{AppAction, AuthFailureKind, VerificationCancelReason};
 use tokio::sync::oneshot;
 
 use super::{
+    SecureBackupInspectionAdmission, apply_secure_backup_connectivity_edge,
     classify_e2ee_trust_auth_failure, classify_e2ee_trust_error, classify_recovery_error,
     project_bootstrap_cross_signing_result, project_enable_key_backup_result,
     project_reset_identity_auth_required, project_reset_identity_completed,
     project_restore_key_backup_result, recovery_result_is_current,
-    secure_backup_inspection_completion_action, secure_backup_monitor_wakeup_is_current,
+    secure_backup_inspection_admission, secure_backup_inspection_completion_action,
+    secure_backup_monitor_wakeup_is_current, secure_backup_retry_delay,
 };
 use crate::account::actor::AccountMessage;
 use crate::account::test_support::{
@@ -103,6 +105,82 @@ fn secure_backup_monitor_rejects_stale_generation_serial_and_locked_session_wake
     assert!(!secure_backup_monitor_wakeup_is_current(
         7, 11, false, 7, 11
     ));
+}
+
+#[test]
+fn secure_backup_inspection_is_deferred_until_sync_connectivity_is_proven() {
+    assert_eq!(
+        secure_backup_inspection_admission(false, false),
+        SecureBackupInspectionAdmission::Defer
+    );
+    assert_eq!(
+        secure_backup_inspection_admission(false, true),
+        SecureBackupInspectionAdmission::Coalesce
+    );
+    assert_eq!(
+        secure_backup_inspection_admission(true, false),
+        SecureBackupInspectionAdmission::Start
+    );
+}
+
+#[test]
+fn secure_backup_backoff_resets_only_once_across_a_flapping_recovery_epoch() {
+    let mut attempt = 4;
+    let mut epoch = false;
+    let mut reset_consumed = false;
+
+    assert!(!apply_secure_backup_connectivity_edge(
+        false,
+        &mut attempt,
+        &mut epoch,
+        &mut reset_consumed,
+    ));
+    assert!(apply_secure_backup_connectivity_edge(
+        true,
+        &mut attempt,
+        &mut epoch,
+        &mut reset_consumed,
+    ));
+    assert_eq!(attempt, 0);
+    assert!(epoch);
+    assert!(reset_consumed);
+
+    attempt = 3;
+    assert!(!apply_secure_backup_connectivity_edge(
+        false,
+        &mut attempt,
+        &mut epoch,
+        &mut reset_consumed,
+    ));
+    assert!(!apply_secure_backup_connectivity_edge(
+        true,
+        &mut attempt,
+        &mut epoch,
+        &mut reset_consumed,
+    ));
+    assert_eq!(attempt, 3, "a flap in the same epoch must preserve backoff");
+}
+
+#[test]
+fn secure_backup_retry_delay_is_exponential_jittered_and_capped() {
+    let delays = (0..10)
+        .map(|attempt| secure_backup_retry_delay(attempt, 17))
+        .collect::<Vec<_>>();
+
+    assert!(delays.windows(2).all(|pair| pair[0] <= pair[1]));
+    assert!(delays[0] >= Duration::from_secs(5));
+    assert!(delays[0] <= Duration::from_secs(6));
+    assert!(
+        delays
+            .iter()
+            .all(|delay| *delay <= Duration::from_secs(300))
+    );
+    assert_eq!(delays.last(), Some(&Duration::from_secs(300)));
+    assert_ne!(
+        secure_backup_retry_delay(2, 17),
+        secure_backup_retry_delay(2, 18),
+        "monitor serial must contribute bounded jitter"
+    );
 }
 
 #[test]

@@ -2,11 +2,22 @@ use super::*;
 #[cfg(test)]
 use crate::commands::contracts::fake_request_id;
 
+fn admit_frontend_session_status_trigger(
+    trigger: koushi_state::SessionStatusRefreshTrigger,
+) -> Result<koushi_state::SessionStatusRefreshTrigger, String> {
+    if trigger == koushi_state::SessionStatusRefreshTrigger::Recovery {
+        Err("recovery refresh is core-owned".to_owned())
+    } else {
+        Ok(trigger)
+    }
+}
+
 #[tauri::command]
 pub async fn refresh_current_session_status(
     trigger: koushi_state::SessionStatusRefreshTrigger,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandAdmission, String> {
+    let trigger = admit_frontend_session_status_trigger(trigger)?;
     let request_id = next_request_id(state.inner()).await;
     let admission = submit_core_command_with_admission(
         state.inner(),
@@ -122,6 +133,26 @@ pub(super) fn build_submit_account_management_uia_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frontend_cannot_forge_the_core_owned_recovery_trigger() {
+        assert!(
+            admit_frontend_session_status_trigger(koushi_state::SessionStatusRefreshTrigger::Open)
+                .is_ok()
+        );
+        assert!(
+            admit_frontend_session_status_trigger(
+                koushi_state::SessionStatusRefreshTrigger::Manual
+            )
+            .is_ok()
+        );
+        assert!(
+            admit_frontend_session_status_trigger(
+                koushi_state::SessionStatusRefreshTrigger::Recovery
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn device_cleanup_commands_route_to_the_provisional_account_state_machine() {

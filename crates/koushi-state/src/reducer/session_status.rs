@@ -3,6 +3,19 @@ use crate::{
     CurrentSessionStatusState, SessionState, SessionStatusRefreshTrigger,
 };
 
+fn last_known_details(state: &CurrentSessionStatusState) -> Option<CurrentSessionStatusDetails> {
+    match state {
+        CurrentSessionStatusState::Ready { details, .. } => Some(details.clone()),
+        CurrentSessionStatusState::Checking {
+            last_known_details, ..
+        }
+        | CurrentSessionStatusState::Failed {
+            last_known_details, ..
+        } => last_known_details.clone(),
+        CurrentSessionStatusState::Idle => None,
+    }
+}
+
 pub(super) fn handle_refresh_requested(
     state: &mut AppState,
     request_id: u64,
@@ -16,9 +29,11 @@ pub(super) fn handle_refresh_requested(
     {
         return Vec::new();
     }
+    let last_known_details = last_known_details(&state.current_session_status);
     state.current_session_status = CurrentSessionStatusState::Checking {
         request_id,
         trigger,
+        last_known_details,
     };
     vec![AppEffect::RefreshCurrentSessionStatus {
         request_id,
@@ -62,10 +77,12 @@ pub(super) fn handle_refresh_failed(
     ) {
         return Vec::new();
     }
+    let last_known_details = last_known_details(&state.current_session_status);
     state.current_session_status = CurrentSessionStatusState::Failed {
         request_id,
         kind,
         checked_at_ms,
+        last_known_details,
     };
     Vec::new()
 }

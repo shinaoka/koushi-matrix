@@ -486,6 +486,7 @@ export type MessageId =
   | "sessionStatus.backupDisabled"
   | "sessionStatus.backupReady"
   | "sessionStatus.checking"
+  | "sessionStatus.connectionUnavailable"
   | "sessionStatus.copyDeviceId"
   | "sessionStatus.crossSigned"
   | "sessionStatus.deviceId"
@@ -494,6 +495,10 @@ export type MessageId =
   | "sessionStatus.failureSdk"
   | "sessionStatus.failureTimedOut"
   | "sessionStatus.failureUnavailable"
+  | "sessionStatus.failureConnectivityUnavailable"
+  | "sessionStatus.failureAuthentication"
+  | "sessionStatus.failureNetwork"
+  | "sessionStatus.failureServer"
   | "sessionStatus.homeserver"
   | "sessionStatus.identity"
   | "sessionStatus.identityMissing"
@@ -1790,14 +1795,19 @@ const en: Catalog = {
   "sessionStatus.backupDisabled": "Disabled",
   "sessionStatus.backupReady": "Ready",
   "sessionStatus.checking": "Checking",
+  "sessionStatus.connectionUnavailable": "Connection unavailable",
   "sessionStatus.copyDeviceId": "Copy Device ID",
   "sessionStatus.crossSigned": "Cross-signed",
   "sessionStatus.deviceId": "Device ID",
   "sessionStatus.deviceName": "Device name",
   "sessionStatus.failed": "Check failed",
   "sessionStatus.failureSdk": "Session check failed",
-  "sessionStatus.failureTimedOut": "Session check timed out",
+  "sessionStatus.failureTimedOut": "Could not check this session before the connection timed out",
   "sessionStatus.failureUnavailable": "Session status is unavailable",
+  "sessionStatus.failureConnectivityUnavailable": "Could not check this session while the connection was unavailable",
+  "sessionStatus.failureAuthentication": "Sign-in is required to check this session",
+  "sessionStatus.failureNetwork": "Could not check this session because of a network problem",
+  "sessionStatus.failureServer": "The server could not complete the session check",
   "sessionStatus.homeserver": "Homeserver",
   "sessionStatus.identity": "Own identity",
   "sessionStatus.identityMissing": "Identity missing",
@@ -2993,14 +3003,19 @@ const ja: Catalog = {
   "sessionStatus.backupDisabled": "無効",
   "sessionStatus.backupReady": "準備完了",
   "sessionStatus.checking": "確認中",
+  "sessionStatus.connectionUnavailable": "接続を利用できません",
   "sessionStatus.copyDeviceId": "デバイス ID をコピー",
   "sessionStatus.crossSigned": "クロス署名済み",
   "sessionStatus.deviceId": "デバイス ID",
   "sessionStatus.deviceName": "デバイス名",
   "sessionStatus.failed": "確認失敗",
   "sessionStatus.failureSdk": "セッションの確認に失敗しました",
-  "sessionStatus.failureTimedOut": "セッションの確認がタイムアウトしました",
+  "sessionStatus.failureTimedOut": "接続がタイムアウトする前にこのセッションを確認できませんでした",
   "sessionStatus.failureUnavailable": "セッション状態を確認できません",
+  "sessionStatus.failureConnectivityUnavailable": "接続を利用できない間はこのセッションを確認できません",
+  "sessionStatus.failureAuthentication": "このセッションを確認するにはサインインが必要です",
+  "sessionStatus.failureNetwork": "ネットワークの問題によりこのセッションを確認できませんでした",
+  "sessionStatus.failureServer": "サーバーがセッションの確認を完了できませんでした",
   "sessionStatus.homeserver": "ホームサーバー",
   "sessionStatus.identity": "自分の ID",
   "sessionStatus.identityMissing": "ID がありません",

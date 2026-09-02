@@ -50,7 +50,11 @@ async function seedReadyStatus(page: Page, accountManagementUrl: string | null):
             current_session_status: {
               status: "checking" as const,
               request_id: trigger === "open" ? 370 : 371,
-              trigger
+              trigger,
+              last_known_details:
+                current.state.domain.current_session_status.status === "ready"
+                  ? current.state.domain.current_session_status.details
+                  : null
             }
           }
         }
@@ -62,7 +66,7 @@ async function seedReadyStatus(page: Page, accountManagementUrl: string | null):
   }, accountManagementUrl);
 }
 
-test("session popover refreshes through IPC and replaces stale facts on failure", async ({
+test("session popover preserves stale facts and reflects core-owned network recovery", async ({
   page
 }) => {
   await gotoReadyShell(page);
@@ -74,7 +78,7 @@ test("session popover refreshes through IPC and replaces stale facts on failure"
   const dialog = page.getByRole("dialog", { name: "Current session" });
   await expect(dialog).toBeVisible();
   await expect(dialog).toBeFocused();
-  await expect(dialog).not.toContainText("Harness Desktop");
+  await expect(dialog).toContainText("Harness Desktop");
   await expect
     .poll(() =>
       page.evaluate(
@@ -170,23 +174,87 @@ test("session popover refreshes through IPC and replaces stale facts on failure"
             status: "failed",
             request_id: 371,
             kind: "timed_out",
-            checked_at_ms: Date.UTC(2026, 6, 30, 12, 1, 0)
+            checked_at_ms: Date.UTC(2026, 6, 30, 12, 1, 0),
+            last_known_details: {
+              device_display_name: "Harness Desktop",
+              device_id: "HARNESSDEVICE",
+              authentication_method: "oauth",
+              sync_state: "running",
+              is_cross_signed_by_owner: true,
+              own_identity_verification: "verified",
+              key_backup: "ready",
+              verification: "verified",
+              checked_at_ms: Date.UTC(2026, 6, 30, 12, 0, 0)
+            }
           }
         }
       }
     });
     window.__harness.pushStateUpdate();
   });
-  await expect(dialog).toContainText("Session check timed out");
-  await expect(dialog).not.toContainText("Harness Desktop");
-  await dialog.getByRole("button", { name: "Retry" }).click();
-  await expect
-    .poll(() =>
-      page.evaluate(
-        () => window.__harness.invocationsOf("refresh_current_session_status").at(-1)?.args
-      )
+  await expect(dialog).toContainText(
+    "Could not check this session before the connection timed out"
+  );
+  await expect(dialog).toContainText("Harness Desktop");
+
+  const refreshCountBeforeRecovery = await page.evaluate(
+    () => window.__harness.invocationsOf("refresh_current_session_status").length
+  );
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    const status = snapshot.state.domain.current_session_status;
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          current_session_status: {
+            status: "checking",
+            request_id: 372,
+            trigger: "recovery",
+            last_known_details: status.status === "failed" ? status.last_known_details : null
+          }
+        }
+      }
+    });
+    window.__harness.pushStateUpdate();
+  });
+  await expect(dialog.getByRole("button", { name: "Checking" })).toBeDisabled();
+  await expect(dialog).toContainText("Harness Desktop");
+  expect(
+    await page.evaluate(
+      () => window.__harness.invocationsOf("refresh_current_session_status").length
     )
-    .toEqual({ trigger: "manual" });
+  ).toBe(refreshCountBeforeRecovery);
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    const status = snapshot.state.domain.current_session_status;
+    if (status.status !== "checking" || !status.last_known_details) {
+      throw new Error("expected recovery checking with retained details");
+    }
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          current_session_status: {
+            status: "ready",
+            request_id: 372,
+            details: {
+              ...status.last_known_details,
+              checked_at_ms: Date.UTC(2026, 6, 30, 12, 1, 2)
+            }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateUpdate();
+  });
+  await expect(dialog.getByRole("button", { name: "Recheck" })).toBeEnabled();
+  await expect(dialog).toContainText("Harness Desktop");
 
   await dialog.getByRole("button", { name: "Open diagnostics" }).click();
   await expect

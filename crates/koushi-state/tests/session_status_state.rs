@@ -2,7 +2,7 @@ use koushi_state::{
     AppAction, AppEffect, AppState, CurrentDeviceTrustState, CurrentSessionBackupState,
     CurrentSessionStatusDetails, CurrentSessionStatusFailureKind, CurrentSessionStatusState,
     CurrentSessionSyncState, OwnIdentityVerification, SessionAuthenticationMethod, SessionInfo,
-    SessionState, SessionStatusRefreshTrigger, reduce,
+    SessionState, SessionStatusRefreshTrigger, SyncLifecycleStatus, SyncState, reduce,
 };
 
 fn ready_state() -> AppState {
@@ -51,6 +51,7 @@ fn refresh_enters_checking_and_emits_one_correlated_effect() {
         CurrentSessionStatusState::Checking {
             request_id: 7,
             trigger: SessionStatusRefreshTrigger::Open,
+            last_known_details: None,
         }
     );
     assert_eq!(
@@ -94,6 +95,7 @@ fn correlated_completion_settles_ready_and_derives_verified_once_in_rust() {
     state.current_session_status = CurrentSessionStatusState::Checking {
         request_id: 7,
         trigger: SessionStatusRefreshTrigger::Manual,
+        last_known_details: None,
     };
 
     reduce(
@@ -139,7 +141,7 @@ fn supplemental_identity_facts_do_not_override_authoritative_device_verification
 }
 
 #[test]
-fn failed_refresh_replaces_prior_ready_status() {
+fn failed_refresh_preserves_prior_ready_facts() {
     let mut state = ready_state();
     state.current_session_status = CurrentSessionStatusState::Ready {
         request_id: 6,
@@ -168,6 +170,7 @@ fn failed_refresh_replaces_prior_ready_status() {
             request_id: 7,
             kind: CurrentSessionStatusFailureKind::Sdk,
             checked_at_ms: 1_235,
+            last_known_details: Some(details(true, OwnIdentityVerification::Verified)),
         }
     );
 }
@@ -178,6 +181,7 @@ fn stale_completion_cannot_replace_the_current_request() {
     state.current_session_status = CurrentSessionStatusState::Checking {
         request_id: 8,
         trigger: SessionStatusRefreshTrigger::Manual,
+        last_known_details: None,
     };
 
     let effects = reduce(
@@ -201,6 +205,7 @@ fn trust_loss_clears_status_and_late_completions_stay_idle() {
     state.current_session_status = CurrentSessionStatusState::Checking {
         request_id: 41,
         trigger: SessionStatusRefreshTrigger::Manual,
+        last_known_details: None,
     };
 
     reduce(
@@ -257,6 +262,110 @@ fn logout_resets_current_session_status() {
     assert_eq!(
         state.current_session_status,
         CurrentSessionStatusState::Idle
+    );
+}
+
+#[test]
+fn connectivity_recovery_refreshes_once_and_coalesces_a_later_manual_retry() {
+    let mut state = ready_state();
+    state.sync = SyncState::Reconnecting {
+        reason: "transport".to_owned(),
+    };
+    state.current_session_status = CurrentSessionStatusState::Failed {
+        request_id: 40,
+        kind: CurrentSessionStatusFailureKind::Network,
+        checked_at_ms: 2_000,
+        last_known_details: Some(details(true, OwnIdentityVerification::Verified)),
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SyncStatusChanged {
+            generation: 41,
+            status: SyncLifecycleStatus::Running,
+        },
+    );
+
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::EmitUiEvent(koushi_state::UiEvent::RoomListChanged),
+            AppEffect::SyncConnectivityChanged { proven: true },
+            AppEffect::RefreshCurrentSessionStatus {
+                request_id: 41,
+                trigger: SessionStatusRefreshTrigger::Recovery,
+            },
+        ]
+    );
+    assert!(matches!(
+        state.current_session_status,
+        CurrentSessionStatusState::Checking {
+            request_id: 41,
+            trigger: SessionStatusRefreshTrigger::Recovery,
+            last_known_details: Some(_),
+        }
+    ));
+
+    let duplicate_effects = reduce(
+        &mut state,
+        AppAction::CurrentSessionStatusRefreshRequested {
+            request_id: 42,
+            trigger: SessionStatusRefreshTrigger::Manual,
+        },
+    );
+    assert!(duplicate_effects.is_empty());
+    assert!(matches!(
+        state.current_session_status,
+        CurrentSessionStatusState::Checking { request_id: 41, .. }
+    ));
+
+    reduce(
+        &mut state,
+        AppAction::CurrentSessionStatusRefreshed {
+            request_id: 41,
+            details: details(true, OwnIdentityVerification::Verified),
+        },
+    );
+    assert!(matches!(
+        state.current_session_status,
+        CurrentSessionStatusState::Ready { request_id: 41, .. }
+    ));
+}
+
+#[test]
+fn timeout_preserves_last_known_session_facts() {
+    let mut state = ready_state();
+    state.sync = SyncState::Running;
+    let known = details(true, OwnIdentityVerification::Verified);
+    state.current_session_status = CurrentSessionStatusState::Ready {
+        request_id: 6,
+        details: known.clone(),
+    };
+
+    reduce(
+        &mut state,
+        AppAction::CurrentSessionStatusRefreshRequested {
+            request_id: 7,
+            trigger: SessionStatusRefreshTrigger::Manual,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::CurrentSessionStatusRefreshFailed {
+            request_id: 7,
+            kind: CurrentSessionStatusFailureKind::TimedOut,
+            checked_at_ms: 2_001,
+        },
+    );
+
+    assert_eq!(
+        state.current_session_status,
+        CurrentSessionStatusState::Failed {
+            request_id: 7,
+            kind: CurrentSessionStatusFailureKind::TimedOut,
+            checked_at_ms: 2_001,
+            last_known_details: Some(known),
+        }
     );
 }
 

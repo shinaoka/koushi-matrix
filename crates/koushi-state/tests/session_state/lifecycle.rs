@@ -667,6 +667,7 @@ fn duplicate_session_locked_does_not_reset_newer_status_or_emit_effects() {
     state.current_session_status = koushi_state::CurrentSessionStatusState::Checking {
         request_id: 99,
         trigger: koushi_state::SessionStatusRefreshTrigger::Manual,
+        last_known_details: None,
     };
 
     let before = state.clone();

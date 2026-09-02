@@ -32,7 +32,7 @@ import type {
   SavedSessionInfo,
   SearchScopeKind,
   SecureBackupSetupIntent,
-  SessionStatusRefreshTrigger,
+  SessionStatusRefreshCommandTrigger,
   SettingsPatch,
   StageUploadBytesRequestItem,
   StagedUploadCompressionChoice,
@@ -137,7 +137,7 @@ export interface DesktopApi {
   markRoomAsUnread(roomId: string, unread: boolean): Promise<CommandAdmission>;
   forceRotateOutboundSession(roomId: string): Promise<CommandSettlement>;
   setRoomNotificationMode(roomId: string, mode: RoomNotificationMode): Promise<CommandAdmission>;
-  refreshCurrentSessionStatus(trigger: SessionStatusRefreshTrigger): Promise<CommandAdmission>;
+  refreshCurrentSessionStatus(trigger: SessionStatusRefreshCommandTrigger): Promise<CommandAdmission>;
   submitAccountManagementUia(flowId: number, password: string): Promise<CommandAdmission>;
   loadAccountManagementCapabilities(): Promise<CommandAdmission>;
   changePassword(newPassword: string): Promise<CommandAdmission>;

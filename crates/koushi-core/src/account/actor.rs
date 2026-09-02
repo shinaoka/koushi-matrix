@@ -268,8 +268,12 @@ pub(crate) enum AccountMessage {
     },
     CheckCurrentDeviceTrust,
     InspectSecureBackup,
+    SyncConnectivityChanged {
+        proven: bool,
+    },
     SecureBackupInspectionFinished {
         generation: u64,
+        started_at: Instant,
         result: Result<
             koushi_sdk::MatrixSecureBackupInspection,
             koushi_state::SecureBackupGateFailureKind,
@@ -771,6 +775,10 @@ pub struct AccountActor {
     pub(super) secure_backup_monitor_task: Option<crate::executor::JoinHandle<()>>,
     pub(super) secure_backup_monitor_serial: u64,
     pub(super) secure_backup_inspection_pending: bool,
+    pub(super) sync_connectivity_proven: bool,
+    pub(super) secure_backup_retry_attempt: u32,
+    pub(super) secure_backup_recovery_epoch: bool,
+    pub(super) secure_backup_recovery_reset_consumed: bool,
     pub(super) secure_backup_observer: Option<crate::executor::JoinHandle<()>>,
     pub(super) verification_method_discovery_task: Option<OwnedVerificationMethodDiscoveryTask>,
     pub(super) verification_method_discovery_admission_task:
@@ -1064,6 +1072,10 @@ impl AccountActor {
             secure_backup_monitor_task: None,
             secure_backup_monitor_serial: 0,
             secure_backup_inspection_pending: false,
+            sync_connectivity_proven: false,
+            secure_backup_retry_attempt: 0,
+            secure_backup_recovery_epoch: false,
+            secure_backup_recovery_reset_consumed: false,
             secure_backup_observer: None,
             verification_method_discovery_task: None,
             verification_method_discovery_admission_task: None,
@@ -1897,8 +1909,15 @@ impl AccountActor {
                 AccountMessage::InspectSecureBackup => {
                     self.start_secure_backup_inspection();
                 }
-                AccountMessage::SecureBackupInspectionFinished { generation, result } => {
-                    self.finish_secure_backup_inspection(generation, result)
+                AccountMessage::SyncConnectivityChanged { proven } => {
+                    self.handle_sync_connectivity_changed(proven).await;
+                }
+                AccountMessage::SecureBackupInspectionFinished {
+                    generation,
+                    started_at,
+                    result,
+                } => {
+                    self.finish_secure_backup_inspection(generation, started_at, result)
                         .await;
                 }
                 AccountMessage::RetrySecureBackupInspection {

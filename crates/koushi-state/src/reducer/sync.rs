@@ -1,6 +1,9 @@
 use crate::{
     effect::{AppEffect, UiEvent},
-    state::{AppError, AppState, SessionState, SyncLifecycleStatus, SyncState},
+    state::{
+        AppError, AppState, CurrentSessionStatusFailureKind, CurrentSessionStatusState,
+        SessionState, SessionStatusRefreshTrigger, SyncLifecycleStatus, SyncState,
+    },
 };
 
 use super::{current_session_info, is_session_ready};
@@ -15,6 +18,7 @@ pub(crate) fn handle_sync_status_changed(
     }
 
     state.sync_generation = generation;
+    let was_proven = matches!(state.sync, SyncState::Running);
     let next = if is_session_ready(state) {
         sync_state_from_status(status)
     } else {
@@ -25,8 +29,37 @@ pub(crate) fn handle_sync_status_changed(
         return Vec::new();
     }
 
+    let is_proven = matches!(next, SyncState::Running);
     state.sync = next;
-    vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+    let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
+    if was_proven != is_proven {
+        effects.push(AppEffect::SyncConnectivityChanged { proven: is_proven });
+    }
+    if !was_proven && is_proven {
+        let last_known_details = match &state.current_session_status {
+            CurrentSessionStatusState::Failed {
+                kind:
+                    CurrentSessionStatusFailureKind::TimedOut
+                    | CurrentSessionStatusFailureKind::ConnectivityUnavailable
+                    | CurrentSessionStatusFailureKind::Network,
+                last_known_details,
+                ..
+            } => Some(last_known_details.clone()),
+            _ => None,
+        };
+        if let Some(last_known_details) = last_known_details {
+            state.current_session_status = CurrentSessionStatusState::Checking {
+                request_id: generation,
+                trigger: SessionStatusRefreshTrigger::Recovery,
+                last_known_details,
+            };
+            effects.push(AppEffect::RefreshCurrentSessionStatus {
+                request_id: generation,
+                trigger: SessionStatusRefreshTrigger::Recovery,
+            });
+        }
+    }
+    effects
 }
 
 fn sync_state_from_status(status: SyncLifecycleStatus) -> SyncState {

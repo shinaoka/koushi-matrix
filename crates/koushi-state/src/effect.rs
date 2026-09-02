@@ -39,6 +39,9 @@ pub enum AppEffect {
     },
     CheckCurrentDeviceTrust,
     InspectSecureBackup,
+    SyncConnectivityChanged {
+        proven: bool,
+    },
     RefreshCurrentSessionStatus {
         request_id: u64,
         trigger: crate::SessionStatusRefreshTrigger,
