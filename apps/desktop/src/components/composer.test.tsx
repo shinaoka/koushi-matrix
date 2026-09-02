@@ -868,6 +868,105 @@ describe("Composer", () => {
     expect(container.querySelector(".composer-mention-pills")).toBeNull();
   });
 
+  it("uses the guarded main-surface Tab seam and semantic footer order", () => {
+    const { container } = render(
+      <Composer
+        composerMode={{ kind: "plain" }}
+        isSending={false}
+        preferSendOnForwardTab
+        roomName="Direct room"
+        document={documentFromText("sendable")}
+        onCancelReply={() => undefined}
+        onSend={textSend(() => undefined)}
+        onDocumentChange={textChange(() => undefined)}
+        onScheduleSend={() => undefined}
+      />
+    );
+    const editor = screen.getByRole("textbox", { name: "Message composer" });
+    const send = screen.getByRole("button", { name: "Send" });
+    const controls = container.querySelector(".composer-footer-controls");
+    const fileInput = screen.getByLabelText("Attach file input");
+    expect(controls).not.toBeNull();
+    expect(send.compareDocumentPosition(controls!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(fileInput.tabIndex).toBe(-1);
+
+    editor.focus();
+    const forwardTab = new KeyboardEvent("keydown", {
+      key: "Tab",
+      bubbles: true,
+      cancelable: true
+    });
+    editor.dispatchEvent(forwardTab);
+    expect(forwardTab.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(send);
+
+    for (const init of [
+      { shiftKey: true },
+      { ctrlKey: true },
+      { altKey: true },
+      { metaKey: true },
+      { isComposing: true }
+    ]) {
+      editor.focus();
+      const event = new KeyboardEvent("keydown", {
+        key: "Tab",
+        bubbles: true,
+        cancelable: true,
+        ...init
+      });
+      editor.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+      expect(document.activeElement).toBe(editor);
+    }
+  });
+
+  it("keeps a thread surface on default order even if the main-only preference is passed", () => {
+    const { container } = render(
+      <Composer
+        composerMode={{ kind: "plain" }}
+        isSending={false}
+        preferSendOnForwardTab
+        surface="thread"
+        roomName="Direct room"
+        document={documentFromText("sendable")}
+        onCancelReply={() => undefined}
+        onSend={textSend(() => undefined)}
+        onDocumentChange={textChange(() => undefined)}
+      />
+    );
+    const send = screen.getByRole("button", { name: "Send" });
+    const controls = container.querySelector(".composer-footer-controls");
+    expect(controls).not.toBeNull();
+    expect(controls!.compareDocumentPosition(send) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(screen.getByLabelText("Attach file input").tabIndex).toBe(0);
+  });
+
+  it("leaves Tab native when the preferred main Send button is disabled", () => {
+    render(
+      <Composer
+        composerMode={{ kind: "plain" }}
+        isSending={false}
+        preferSendOnForwardTab
+        roomName="Direct room"
+        document={documentFromText("")}
+        onCancelReply={() => undefined}
+        onSend={textSend(() => undefined)}
+        onDocumentChange={textChange(() => undefined)}
+      />
+    );
+    const editor = screen.getByRole("textbox", { name: "Message composer" });
+    editor.focus();
+    const event = new KeyboardEvent("keydown", {
+      key: "Tab",
+      bubbles: true,
+      cancelable: true
+    });
+    editor.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(editor);
+    expect(screen.getByRole("button", { name: "Send" }).hasAttribute("disabled")).toBe(true);
+  });
+
   it("moves the active mention row with arrows and accepts it with Tab", () => {
     const onDocumentChange = vi.fn();
 
@@ -876,6 +975,7 @@ describe("Composer", () => {
         composerMode={{ kind: "plain" }}
         isSending={false}
         mentionCandidates={mentionCandidates}
+        preferSendOnForwardTab
         roomName="Direct room"
         document={documentFromText("@")}
         onCancelReply={() => undefined}
@@ -894,6 +994,7 @@ describe("Composer", () => {
 
     fireEvent.keyDown(editor!, { key: "Tab", code: "Tab" });
 
+    expect(document.activeElement).not.toBe(screen.getByRole("button", { name: "Send" }));
     expect(onDocumentChange.mock.lastCall?.[0].inlines).toMatchObject([
       {
         kind: "mention",

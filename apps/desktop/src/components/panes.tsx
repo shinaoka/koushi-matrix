@@ -1107,6 +1107,7 @@ export function TimelinePane({
       <Composer
         canEdit={canEdit}
         composerMode={composerModeForComposer}
+        preferSendOnForwardTab
         hasStagedUploads={stagedUploads.length > 0}
         stagedUploadsReady={stagedUploadsReady}
         onSendStagedUploads={onSendStagedAttachmentsStable}

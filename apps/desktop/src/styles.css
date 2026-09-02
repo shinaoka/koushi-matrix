@@ -5131,6 +5131,10 @@ mark {
   padding: 0 8px 8px;
 }
 
+.composer-footer-controls {
+  order: 1;
+}
+
 /* #498: inline message edits keep the shared emoji picker in a compact
    auxiliary row while attachment/schedule/send controls stay hidden. */
 .composer-edit-aux {
@@ -5149,6 +5153,7 @@ mark {
 }
 
 .send-button {
+  order: 2;
   display: grid;
   place-items: center;
   width: 34px;

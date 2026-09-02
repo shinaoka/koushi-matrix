@@ -81,6 +81,53 @@ async function dispatchComposingEnter(locator: Locator): Promise<boolean> {
   });
 }
 
+test("main composer Tab focuses Send before auxiliary controls", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+  const composer = page.getByRole("textbox", { name: t("composer.messageComposer") });
+  const send = page.getByRole("button", { name: t("action.send"), exact: true });
+
+  await composer.fill("keyboard traversal");
+  await composer.press("Tab");
+  await expect(send).toBeFocused();
+  await page.keyboard.press("Tab");
+  const attach = page.getByRole("button", { name: t("composer.attachFile"), exact: true });
+  await expect(attach).toBeFocused();
+  const [attachBox, sendBox] = await Promise.all([attach.boundingBox(), send.boundingBox()]);
+  expect(attachBox).not.toBeNull();
+  expect(sendBox).not.toBeNull();
+  expect(attachBox!.x).toBeLessThan(sendBox!.x);
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("button", { name: t("composer.mention"), exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("button", { name: t("composer.emoji"), exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("button", { name: t("scheduled.sendLater"), exact: true })).toBeFocused();
+
+  await composer.fill("");
+  await composer.focus();
+  await composer.press("Tab");
+  await expect(page.getByRole("button", { name: t("composer.attachFile"), exact: true })).toBeFocused();
+
+  await composer.fill("keyboard send");
+  await composer.press("Tab");
+  await expect(send).toBeFocused();
+  await send.press("Enter");
+  await expect.poll(() => invocationCount(page, "send_text")).toBe(1);
+});
+
+test("main composer focused Send activates once with Space", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+  const composer = page.getByRole("textbox", { name: t("composer.messageComposer") });
+  const send = page.getByRole("button", { name: t("action.send"), exact: true });
+  await composer.fill("keyboard space send");
+  await composer.press("Tab");
+  await expect(send).toBeFocused();
+  await send.press("Space");
+  await expect.poll(() => invocationCount(page, "send_text")).toBe(1);
+});
+
 test("timeline reply action invokes set_composer_reply_target", async ({ page }) => {
   await gotoReadyShell(page);
   await page.evaluate(() => window.__harness.clearInvocations());

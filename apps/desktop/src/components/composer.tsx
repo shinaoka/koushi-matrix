@@ -104,6 +104,7 @@ export const Composer = memo(function Composer({
   onSend,
   onSendStagedUploads,
   onTabToSend,
+  preferSendOnForwardTab = false,
   onDiagnosticLogEntry,
   notice = null
 }: {
@@ -133,8 +134,10 @@ export const Composer = memo(function Composer({
   onMentionQueryChange?: (query: string | null) => void;
   onScheduleSend?: (sendAtMs: number, document: ComposerDocument) => void | Promise<void>;
   onSend: (document: ComposerDocument) => void | Promise<void>;
-  /** Focuses the owning attachment Send button for an unmodified forward Tab. */
+  /** Focuses an owning Send button for an unmodified forward Tab. */
   onTabToSend?: () => void;
+  /** Makes Send the first main-surface focus target after the editor. */
+  preferSendOnForwardTab?: boolean;
   /** #send-key-unification: routed when the send shortcut is pressed while
    *  staged uploads are ready, instead of sending the composer body. */
   onSendStagedUploads?: () => void;
@@ -144,6 +147,7 @@ export const Composer = memo(function Composer({
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const emojiButtonRef = useRef<HTMLButtonElement>(null);
+  const sendButtonRef = useRef<HTMLButtonElement>(null);
   const macKillRingRef = useRef<string>("");
   const onMentionQueryChangeRef = useRef(onMentionQueryChange);
   onMentionQueryChangeRef.current = onMentionQueryChange;
@@ -214,6 +218,11 @@ export const Composer = memo(function Composer({
     autocompleteOpen && activeMentionOption
       ? `${autocompleteListboxId}-option-${Math.min(activeMentionIndex, activeMentionSuggestions.length - 1)}`
       : undefined;
+  const sendEnabled = canEdit && !isSending && localValue.trim().length > 0;
+  const preferSendFirst = preferSendOnForwardTab && surface === "main" && !editorOnly;
+  const effectiveOnTabToSend =
+    onTabToSend ??
+    (preferSendFirst && sendEnabled ? () => sendButtonRef.current?.focus() : undefined);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -551,10 +560,10 @@ export const Composer = memo(function Composer({
       !event.metaKey &&
       !event.altKey &&
       !event.nativeEvent.isComposing &&
-      onTabToSend
+      effectiveOnTabToSend
     ) {
       event.preventDefault();
-      onTabToSend();
+      effectiveOnTabToSend();
       return;
     }
     if (!shouldResolveComposerKeyEvent(event)) {
@@ -672,6 +681,64 @@ export const Composer = memo(function Composer({
         />
       ) : null}
     </span>
+  );
+
+  const footerControls = (
+    <div className="composer-footer-controls">
+      <input
+        ref={fileInputRef}
+        className="composer-file-input"
+        type="file"
+        multiple
+        tabIndex={preferSendFirst ? -1 : undefined}
+        aria-label={t("composer.attachFileInput")}
+        onChange={(event) => {
+          void onAttachFileChange(event);
+        }}
+      />
+      <button
+        className="icon-button"
+        type="button"
+        aria-label={t("composer.attachFile")}
+        disabled={!canEdit}
+        onClick={() => fileInputRef.current?.click()}
+      >
+        <Paperclip size={ICON_SIZE.control} />
+      </button>
+      <button
+        className="icon-button"
+        type="button"
+        aria-label={t("composer.mention")}
+        onMouseDown={keepComposerFocus}
+        onClick={insertMentionTrigger}
+      >
+        <AtSign size={ICON_SIZE.control} />
+      </button>
+      {emojiControl}
+      {onScheduleSend ? (
+        <button
+          className="icon-button"
+          type="button"
+          aria-label={t("scheduled.sendLater")}
+          disabled={!canEdit || isSending || !localValue.trim() || hasStagedUploads}
+          onClick={openScheduleForm}
+        >
+          <Clock3 size={ICON_SIZE.control} />
+        </button>
+      ) : null}
+    </div>
+  );
+  const sendControl = (
+    <button
+      ref={sendButtonRef}
+      className={`send-button ${localValue.trim() && !isSending ? "ready" : ""} ${isSending ? "is-sending" : ""}`}
+      type="button"
+      aria-label={isSending ? t("action.sending") : t("action.send")}
+      disabled={!sendEnabled}
+      onClick={() => submitDocument("button", localDocument, localValue)}
+    >
+      <Send size={ICON_SIZE.input} />
+    </button>
   );
 
   return (
@@ -804,57 +871,17 @@ export const Composer = memo(function Composer({
         }}
       />
       {!editorOnly ? <div className="composer-footer">
-        <div>
-          <input
-            ref={fileInputRef}
-            className="composer-file-input"
-            type="file"
-            multiple
-            aria-label={t("composer.attachFileInput")}
-            onChange={(event) => {
-              void onAttachFileChange(event);
-            }}
-          />
-          <button
-            className="icon-button"
-            type="button"
-            aria-label={t("composer.attachFile")}
-            disabled={!canEdit}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <Paperclip size={ICON_SIZE.control} />
-          </button>
-          <button
-            className="icon-button"
-            type="button"
-            aria-label={t("composer.mention")}
-            onMouseDown={keepComposerFocus}
-            onClick={insertMentionTrigger}
-          >
-            <AtSign size={ICON_SIZE.control} />
-          </button>
-          {emojiControl}
-          {onScheduleSend ? (
-            <button
-              className="icon-button"
-              type="button"
-              aria-label={t("scheduled.sendLater")}
-              disabled={!canEdit || isSending || !localValue.trim() || hasStagedUploads}
-              onClick={openScheduleForm}
-            >
-              <Clock3 size={ICON_SIZE.control} />
-            </button>
-          ) : null}
-        </div>
-        <button
-          className={`send-button ${localValue.trim() && !isSending ? "ready" : ""} ${isSending ? "is-sending" : ""}`}
-          type="button"
-          aria-label={isSending ? t("action.sending") : t("action.send")}
-          disabled={!canEdit || isSending || !localValue.trim()}
-          onClick={() => submitDocument("button", localDocument, localValue)}
-        >
-          <Send size={ICON_SIZE.input} />
-        </button>
+        {preferSendFirst ? (
+          <>
+            {sendControl}
+            {footerControls}
+          </>
+        ) : (
+          <>
+            {footerControls}
+            {sendControl}
+          </>
+        )}
       </div> : (
         // #498: inline edits keep the shared emoji picker while attachment,
         // scheduled-send, and send controls stay out of the edit surface.
