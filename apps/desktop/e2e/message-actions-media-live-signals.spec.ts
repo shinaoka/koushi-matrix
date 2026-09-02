@@ -924,6 +924,97 @@ test("live signals render from Rust state and dispatch only viewport/typing comm
     });
 });
 
+test("ready receipt thumbnails replace initials in place without changing marker geometry", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    const next = structuredClone(snapshot);
+    next.state.domain.live_signals = {
+      rooms: {
+        "!harness-room:example.invalid": {
+          receipts_by_event: {
+            "$seed-event:example.invalid": {
+              readers: [{
+                user_id: "@alice:example.invalid",
+                display_name: "Alice",
+                avatar: {
+                  mxc_uri: "mxc://example.invalid/alice",
+                  thumbnail: { kind: "loading", request_id: 1 }
+                },
+                timestamp_ms: 1_800_000_000_500
+              }],
+              total_count: 1,
+              overflow_count: 0
+            }
+          },
+          fully_read_event_id: null,
+          typing_user_ids: [],
+          typing_users: []
+        }
+      },
+      presence: {}
+    };
+    window.__harness.setSnapshot(next);
+    window.__harness.pushStateUpdate();
+  });
+
+  const avatar = page.locator('[data-event-id="$seed-event:example.invalid"]')
+    .locator(".receipt-reader-avatar");
+  await expect(avatar).toHaveText("AL");
+  await expect(avatar.locator("img")).toHaveCount(0);
+  await avatar.evaluate((element) => {
+    element.setAttribute("data-receipt-node-identity", "preserved");
+  });
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    const next = structuredClone(snapshot);
+    const reader = next.state.domain.live_signals.rooms["!harness-room:example.invalid"]
+      .receipts_by_event["$seed-event:example.invalid"].readers[0];
+    if (!reader.avatar) throw new Error("seeded reader avatar missing");
+    reader.avatar.thumbnail = {
+      kind: "ready",
+      source_ref: "data:image/gif;base64,R0lGODlhAQABAAAAACw=",
+      width: 1,
+      height: 1,
+      mime_type: "image/gif"
+    };
+    window.__harness.setSnapshot(next);
+    window.__harness.pushStateUpdate();
+  });
+
+  await expect(avatar.locator("img")).toHaveCount(1);
+  await expect(avatar).not.toHaveText("AL");
+  await expect(avatar).toHaveAttribute("data-receipt-node-identity", "preserved");
+  expect(await avatar.evaluate((element) => {
+    const marker = getComputedStyle(element);
+    const image = getComputedStyle(element.querySelector("img")!);
+    return {
+      width: marker.width,
+      height: marker.height,
+      borderRadius: marker.borderRadius,
+      objectFit: image.objectFit
+    };
+  })).toEqual({ width: "18px", height: "18px", borderRadius: "50%", objectFit: "cover" });
+
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    const next = structuredClone(snapshot);
+    const reader = next.state.domain.live_signals.rooms["!harness-room:example.invalid"]
+      .receipts_by_event["$seed-event:example.invalid"].readers[0];
+    if (!reader.avatar) throw new Error("seeded reader avatar missing");
+    reader.avatar.thumbnail = { kind: "failed", request_id: 1, failureKind: "network" };
+    window.__harness.setSnapshot(next);
+    window.__harness.pushStateUpdate();
+  });
+  await expect(avatar.locator("img")).toHaveCount(0);
+  await expect(avatar).toHaveText("AL");
+  await expect(avatar).toHaveAttribute("data-receipt-node-identity", "preserved");
+});
+
 test("read receipt avatars render from Rust projection with overflow and tooltip", async ({
   page
 }) => {

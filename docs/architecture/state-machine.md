@@ -2285,11 +2285,13 @@ stateDiagram-v2
   an MXC URI directly; it renders an image only when Rust/platform-owned media
   handling has settled `AvatarThumbnailState::Ready { source_url, .. }`.
   `NotRequested`, `Loading`, and `Failed` render the colored-initial fallback.
-- In the #17 reducer slice, avatar thumbnail fields are replaced through the
-  Rust-owned snapshot actions (`OwnProfileUpdated`, `UserProfilesUpdated`, room
-  list updates, and invite updates). A future explicit avatar-thumbnail download
-  workflow must add its own `AppAction` transitions and update this document in
-  the same change.
+- Avatar thumbnail fields settle through Rust-owned snapshot actions. The
+  existing `AvatarThumbnailUpdated` action updates every matching avatar copy by
+  exact MXC URI across own/global/relevant-room user profiles, rooms, Spaces,
+  invites, and live-signal receipt readers. When any receipt copy changes, the reducer emits one
+  `LiveSignalsChanged` after existing profile/room-list effects. Duplicate
+  thumbnail state and unrelated MXCs are inert; no new action or renderer-side
+  profile join is required.
 - The existing timeline media download contract emits byte counts only and does
   not put downloaded bytes in React state. Avatar thumbnail source URLs must
   remain app-owned handles or source URLs produced by Rust/platform media
@@ -2384,6 +2386,9 @@ stateDiagram-v2
   removes receipt entries in that scope, then inserts the replacement snapshot;
   receipt state outside the scope is preserved.
 - Receipt reader display data is resolved in Rust before it reaches the GUI.
+  `AvatarThumbnailUpdated` also settles already-enriched reader avatar copies by
+  exact MXC URI and emits `LiveSignalsChanged` when at least one copy changes, so
+  pending initials can become the ready image without a new receipt event.
   Each event's receipt projection deduplicates by reader user id using the
   newest timestamp, fills missing display labels and avatar DTOs from
   `AppState.profile`, orders readers most-recent-first with deterministic

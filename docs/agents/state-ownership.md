@@ -466,9 +466,12 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
 - Read-receipt reader avatars are Rust-owned live-signal projection data:
   reducers resolve reader display labels and avatar DTOs from profile state,
   dedupe by reader using the newest timestamp, order readers most-recent-first,
-  cap the rendered readers, and expose `overflow_count`. `TimelineView` renders
-  that DTO and may own only tooltip visibility through DOM/CSS; do not join
-  receipts with `profile.users` in React.
+  cap the rendered readers, and expose `overflow_count`. The existing
+  `AvatarThumbnailUpdated` reducer settles every already-copied reader avatar
+  with the same exact MXC URI and emits `LiveSignalsChanged` when any changes.
+  Main and thread timelines consume this same room/event projection.
+  `TimelineView` renders the DTO and may own only tooltip visibility through
+  DOM/CSS; do not join receipts with `profile.users` in React.
 - Read-receipt readers carry both `display_name` (the Rust-projected visible
   label, despite the legacy field name) and `original_display_label` for
   alias-free hover/profile context. React must not recover original names by

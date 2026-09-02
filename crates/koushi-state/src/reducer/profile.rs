@@ -430,11 +430,18 @@ pub(crate) fn handle_avatar_thumbnail_updated(
 
     let mut profile_changed = false;
     let mut room_list_changed = false;
+    let mut live_signals_changed = false;
 
     profile_changed |=
         update_avatar_thumbnail(&mut state.profile.own.avatar, &mxc_uri, thumbnail.clone());
     for user in state.profile.users.values_mut() {
         profile_changed |= update_avatar_thumbnail(&mut user.avatar, &mxc_uri, thumbnail.clone());
+    }
+    for room_users in state.profile.room_users.values_mut() {
+        for user in room_users.values_mut() {
+            profile_changed |=
+                update_avatar_thumbnail(&mut user.avatar, &mxc_uri, thumbnail.clone());
+        }
     }
 
     for room in &mut state.rooms {
@@ -448,6 +455,14 @@ pub(crate) fn handle_avatar_thumbnail_updated(
         room_list_changed |=
             update_avatar_thumbnail(&mut invite.avatar, &mxc_uri, thumbnail.clone());
     }
+    for room in state.live_signals.rooms.values_mut() {
+        for summary in room.receipts_by_event.values_mut() {
+            for reader in &mut summary.readers {
+                live_signals_changed |=
+                    update_avatar_thumbnail(&mut reader.avatar, &mxc_uri, thumbnail.clone());
+            }
+        }
+    }
 
     if room_list_changed {
         recompute_room_list_projection(state);
@@ -459,6 +474,9 @@ pub(crate) fn handle_avatar_thumbnail_updated(
     }
     if room_list_changed {
         effects.push(AppEffect::EmitUiEvent(UiEvent::RoomListChanged));
+    }
+    if live_signals_changed {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged));
     }
     effects
 }

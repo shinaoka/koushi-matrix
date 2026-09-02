@@ -97,6 +97,135 @@ fn profile_changed() -> Vec<AppEffect> {
 }
 
 #[test]
+fn avatar_thumbnail_update_refreshes_all_matching_receipt_copies() {
+    let mut state = ready_state();
+    let target_mxc = "mxc://example.invalid/shared-reader-avatar";
+    let other_mxc = "mxc://example.invalid/other-reader-avatar";
+    state.profile.users.insert(
+        "@reader:localhost".to_owned(),
+        UserProfile {
+            user_id: "@reader:localhost".to_owned(),
+            display_name: Some("Reader".to_owned()),
+            display_label: "Reader".to_owned(),
+            original_display_label: "Reader".to_owned(),
+            mention_search_terms: Vec::new(),
+            avatar: Some(avatar(target_mxc)),
+        },
+    );
+    state.profile.room_users.insert(
+        "!relevant:localhost".to_owned(),
+        BTreeMap::from([(
+            "@reader:localhost".to_owned(),
+            UserProfile {
+                user_id: "@reader:localhost".to_owned(),
+                display_name: Some("Relevant reader".to_owned()),
+                display_label: "Relevant reader".to_owned(),
+                original_display_label: "Relevant reader".to_owned(),
+                mention_search_terms: Vec::new(),
+                avatar: Some(avatar(target_mxc)),
+            },
+        )]),
+    );
+
+    for (room_id, event_id) in [
+        ("!room-a:localhost", "$event-a:localhost"),
+        ("!room-b:localhost", "$event-b:localhost"),
+    ] {
+        reduce(
+            &mut state,
+            AppAction::LiveRoomReceiptsUpdated {
+                room_id: room_id.to_owned(),
+                receipts_by_event: vec![LiveEventReceipts {
+                    event_id: event_id.to_owned(),
+                    receipts: vec![
+                        LiveReadReceipt {
+                            user_id: "@reader:localhost".to_owned(),
+                            display_name: Some("Reader".to_owned()),
+                            original_display_label: "Reader".to_owned(),
+                            avatar: Some(avatar(target_mxc)),
+                            timestamp_ms: Some(2),
+                        },
+                        LiveReadReceipt {
+                            user_id: "@other:localhost".to_owned(),
+                            display_name: Some("Other".to_owned()),
+                            original_display_label: "Other".to_owned(),
+                            avatar: Some(avatar(other_mxc)),
+                            timestamp_ms: Some(1),
+                        },
+                    ],
+                }],
+            },
+        );
+    }
+
+    let ready = AvatarThumbnailState::Ready {
+        source_ref: "avatar/0123456789abcdef".to_owned(),
+        width: Some(18),
+        height: Some(18),
+        mime_type: Some("image/png".to_owned()),
+    };
+    let effects = reduce(
+        &mut state,
+        AppAction::AvatarThumbnailUpdated {
+            mxc_uri: target_mxc.to_owned(),
+            thumbnail: ready.clone(),
+        },
+    );
+
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::ProfileChanged),
+            AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged),
+        ]
+    );
+    assert_eq!(
+        state.profile.room_users["!relevant:localhost"]["@reader:localhost"]
+            .avatar
+            .as_ref()
+            .map(|avatar| &avatar.thumbnail),
+        Some(&ready)
+    );
+    for (room_id, event_id) in [
+        ("!room-a:localhost", "$event-a:localhost"),
+        ("!room-b:localhost", "$event-b:localhost"),
+    ] {
+        let readers = &state.live_signals.rooms[room_id].receipts_by_event[event_id].readers;
+        assert_eq!(
+            readers[0].avatar.as_ref().map(|avatar| &avatar.thumbnail),
+            Some(&ready)
+        );
+        assert_eq!(
+            readers[1].avatar.as_ref().map(|avatar| &avatar.thumbnail),
+            Some(&AvatarThumbnailState::NotRequested)
+        );
+    }
+
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::AvatarThumbnailUpdated {
+                mxc_uri: target_mxc.to_owned(),
+                thumbnail: ready,
+            },
+        )
+        .is_empty(),
+        "an identical settled thumbnail must not churn live signals"
+    );
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::AvatarThumbnailUpdated {
+                mxc_uri: "mxc://example.invalid/unrelated".to_owned(),
+                thumbnail: AvatarThumbnailState::Loading { request_id: 99 },
+            },
+        )
+        .is_empty(),
+        "an unrelated MXC must be inert"
+    );
+}
+
+#[test]
 fn optional_people_facing_label_preserves_precedence_without_mxid_fallback() {
     let mut profiles = ready_state().profile;
     profiles.own.display_name = Some("Own Name".to_owned());
