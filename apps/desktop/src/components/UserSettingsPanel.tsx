@@ -216,9 +216,11 @@ export function UserSettingsPanel({
   }
 
   function scrollToSection(sectionId: string) {
-    panelRef.current
-      ?.querySelector<HTMLElement>(`#${sectionId}`)
-      ?.scrollIntoView({ block: "start" });
+    const panel = panelRef.current;
+    const section = panel?.querySelector<HTMLElement>(`#${sectionId}`);
+    if (panel && section) {
+      panel.scrollTop = section.offsetTop;
+    }
   }
 
   return (

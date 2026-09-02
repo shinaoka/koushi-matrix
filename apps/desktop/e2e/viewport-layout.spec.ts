@@ -45,6 +45,59 @@ function expectRootAligned(geometry: Awaited<ReturnType<typeof layoutGeometry>>)
   }
 }
 
+test("User settings quick navigation scrolls only its panel", async ({ page }) => {
+  await page.setViewportSize({ width: 1334, height: 852 });
+  await gotoReadyShell(page);
+  await page.getByRole("button", { name: t("workspace.userSettings"), exact: true }).click();
+  const panel = page.locator(".settings-panel");
+  await expect(panel).toBeVisible();
+
+  const quickNavigation = [
+    t("settings.general"),
+    t("settings.session"),
+    t("settings.appearance"),
+    t("settings.display"),
+    t("settings.notifications"),
+    t("settings.messagingPrivacy"),
+    t("settings.keyboard"),
+    t("settings.timeline"),
+    t("settings.searchHistory"),
+    t("settings.securityPrivacy")
+  ];
+  const shellObservations: Array<{
+    desktopScrollTop: number;
+    titlebarTop: number;
+  }> = [];
+  for (const name of quickNavigation) {
+    await panel.getByRole("button", { name, exact: true }).click();
+    shellObservations.push(
+      await page.evaluate(() => ({
+        desktopScrollTop: document.querySelector<HTMLElement>(".desktop")!.scrollTop,
+        titlebarTop: document.querySelector<HTMLElement>(".titlebar")!.getBoundingClientRect().top
+      }))
+    );
+  }
+
+  for (const observation of shellObservations) {
+    expect(observation.desktopScrollTop).toBe(0);
+    expect(observation.titlebarTop).toBeCloseTo(0, 0);
+  }
+  const shellRange = await page.locator(".desktop").evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight
+  }));
+  expect(shellRange.scrollHeight).toBe(shellRange.clientHeight);
+
+  await panel.getByRole("button", { name: t("settings.general"), exact: true }).click();
+  const generalTop = await panel.evaluate((element) => element.scrollTop);
+  await panel.getByRole("button", { name: t("settings.securityPrivacy"), exact: true }).click();
+  const securityTop = await panel.evaluate((element) => element.scrollTop);
+  await panel.getByRole("button", { name: t("settings.general"), exact: true }).click();
+  const returnedTop = await panel.evaluate((element) => element.scrollTop);
+  expect(securityTop).toBeGreaterThan(generalTop);
+  expect(returnedTop).toBe(generalTop);
+});
+
 test("density, browser resize, and right-panel resize preserve the root viewport", async ({
   page
 }) => {

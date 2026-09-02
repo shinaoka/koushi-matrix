@@ -6059,6 +6059,8 @@ mark {
 }
 
 .settings-panel {
+  /* Own absolute descendants and section offsetTop coordinates used by quick navigation. */
+  position: relative;
   min-height: 0;
   overflow: auto;
   padding: 18px;
