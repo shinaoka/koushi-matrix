@@ -1058,9 +1058,8 @@ export const TimelineView = memo(function TimelineView({
         container &&
         viewportIntentRef.current.kind === "free-scroll" &&
         !jumpViewportControlRef.current &&
-        !anchorRestorePendingRef.current &&
         !roomScrollAnchorRestorePendingRef.current
-          ? freeScrollAnchorRef.current
+          ? pendingAnchorRef.current ?? freeScrollAnchorRef.current
           : null;
       pendingHeightModelCommitRef.current = heightAnchor
         ? { timelineKeyHash: timelineKeyHashRef.current, anchor: heightAnchor, changedRows }
@@ -1875,7 +1874,6 @@ export const TimelineView = memo(function TimelineView({
       !container ||
       viewportIntentRef.current.kind !== "free-scroll" ||
       jumpViewportControlRef.current ||
-      anchorRestorePendingRef.current ||
       roomScrollAnchorRestorePendingRef.current
     ) {
       return;
@@ -2873,9 +2871,8 @@ export const TimelineView = memo(function TimelineView({
       container &&
       viewportIntentRef.current.kind === "free-scroll" &&
       !jumpViewportControlRef.current &&
-      !anchorRestorePendingRef.current &&
       !roomScrollAnchorRestorePendingRef.current
-        ? freeScrollAnchorRef.current
+        ? pendingAnchorRef.current ?? freeScrollAnchorRef.current
         : null;
     pendingHeightModelCommitRef.current = heightAnchor
       ? {

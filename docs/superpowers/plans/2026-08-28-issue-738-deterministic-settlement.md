@@ -1,6 +1,6 @@
 # Issue #738 deterministic settlement — implementation design
 
-Status: proposed; implementation is blocked until `reviewer-flash` records Correct-to-merge.
+Status: Phases A–E landed in #746; residual viewport remediation approved by `reviewer-flash` (2026-09-03, Correct-to-merge).
 
 ## Outcome
 
@@ -170,6 +170,91 @@ No implementation begins until this full design receives `reviewer-flash` Correc
 ## Full verification before PR
 
 Run repository CI-equivalent gates: Rust workspace/Tauri/wasm tests, focused 100-run modes, typecheck, lint, all Vitest, full Playwright DOM, build, IME and SDK-submodule checks, formatting, agent-doc checks, secret/import/platform boundary checks, workflow checks, and `git diff --check`. Review the exact final diff, rebase onto `origin/main`, rerun affected gates, push, open one conflict-free PR, and monitor exact submitted-state CI.
+
+## Residual viewport remediation (2026-09-03)
+
+### New evidence
+
+`origin/main` at `809360cd` failed CI run `33645535262` in
+`e2e/timeline-scrollback.spec.ts:1477`: a mixed 100-row prepend left the
+pre-apply virtual anchor displaced by `384.171875px` after the existing 5-second
+poll. The exact test passed 20 consecutive local serial runs and 20 runs with
+four workers, so a same-path rerun is not proof of correctness. Running the
+whole scrollback file exposed the sibling variable-height case at line 413;
+repeating that case produced 20 failures with a `1462px` numeric `scrollTop`
+change while the same bottom rows remained rendered.
+
+The production race is narrower than the original stale-epoch bug. During an
+active mixed prepend, `handleTimelineCoreEvent` captures `pendingAnchorRef` and
+sets `anchorRestorePendingRef`. The first virtual render can exclude that anchor,
+so the layout effect applies the height-model fallback and queues an exact
+follow-up frame. Independently, the 100ms measurement flush can commit a new
+height model while anchor restoration is pending. That flush deliberately sets
+`pendingHeightModelCommitRef` to `null`, and the height-commit effect also drops
+transactions while `anchorRestorePendingRef` is true. On a loaded runner, the
+model commit can therefore land between fallback and exact restoration without
+any causal compensation for the same pre-apply anchor. Wall-clock order decides
+whether the final anchor is correct.
+
+The line-413 numeric `scrollTop` assertion is not a valid oracle when measured
+row heights above the viewport change: preserving the visible row can correctly
+change `scrollTop`. Convert it to the same stable row-and-offset assertion used
+by the mixed-prepend check; do not relax pixel tolerances.
+
+### RED
+
+Add a focused `TimelineView.anchor-race.test.tsx` case using the manual viewport
+scheduler, fake timers, and `mockTimelineRects`; do not grow the existing
+monolithic scrollback test file:
+
+1. establish a virtualized free-scroll anchor;
+2. mark scrolling active;
+3. apply a mixed prepend that temporarily unmounts the anchor;
+4. deliver changed row measurements and advance the 100ms idle flush before
+   flushing the queued exact-restoration frame; and
+5. assert the original row returns to its original pixel offset after the
+   scheduler drains.
+
+The current implementation must fail this ordering deterministically. Keep the
+Playwright mixed-prepend assertion as end-to-end proof and replace only the
+invalid line-413 numeric oracle.
+
+### Minimal change
+
+A measurement commit that overlaps a pending backfill restoration must reuse
+`pendingAnchorRef` as its compensation anchor instead of discarding height
+compensation, while preserving the existing free-scroll, jump-control, and
+room-anchor guards. The height-commit layout effect may restore that same anchor
+while backfill restoration is pending; both paths are idempotent because restoration
+uses the row's current pixel delta. If the row is not mounted, the existing
+virtual fallback and exact follow-up remain authoritative. Do not add another
+scheduler, retry, timeout, tolerance, or viewport state machine.
+
+### Gates
+
+Run the deterministic Vitest RED/GREEN case first, then the affected
+`TimelineView.anchor-race` and existing scrollback tests, the full timeline-scrollback Playwright file,
+20 serial and four-worker repetitions of line 1477, full Vitest, typecheck,
+lint, and the full Playwright DOM tier. Preserve required-CI retry count zero.
+The original ten-CI-run and seven-day evidence criteria remain open after this
+PR; this remediation must not close #738 by itself.
+
+### Residual design review record
+
+`reviewer-flash` reviewed this addendum read-only on 2026-09-03 against the
+repository rules, verification discipline, viewport scheduler/anchor code, and
+both failing tests. Verdict: **Correct-to-merge**. The sole non-blocking precision
+note—preserve the existing free-scroll, jump-control, and room-anchor guards—is
+incorporated above. After moving the RED to a new focused frontend test file,
+`reviewer-flash` re-reviewed the placement-only change and retained
+**Correct-to-merge**.
+
+### Residual diff review record
+
+`reviewer-flash` reviewed the exact implementation diff read-only on 2026-09-03.
+Verdict: **Correct-to-merge** with no blocking findings. It confirmed the
+preserved guards, idempotent dual restoration, non-vacuous RED→GREEN test, and
+the stricter stable-row Playwright oracle.
 
 ## Explicit exclusions
 

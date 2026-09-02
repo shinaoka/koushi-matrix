@@ -468,16 +468,36 @@ test("short variable-height load stays stable when the user scrolls up slightly"
   );
   const targetScrollTop = Math.max(0, maxScrollTop - 100);
 
-  await container.evaluate((node, target) => {
+  const anchorBefore = await container.evaluate((node, target) => {
     node.scrollTop = target;
     node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -100 }));
     node.dispatchEvent(new Event("scroll", { bubbles: true }));
+    const top = node.getBoundingClientRect().top;
+    for (const row of node.querySelectorAll<HTMLElement>("[data-item-id]")) {
+      if (row.getBoundingClientRect().bottom > top) {
+        return {
+          itemId: row.dataset["itemId"] ?? "",
+          offsetTop: row.getBoundingClientRect().top - top
+        };
+      }
+    }
+    return null;
   }, targetScrollTop);
+  expect(anchorBefore).not.toBeNull();
 
   await page.waitForTimeout(500);
 
-  const finalScrollTop = await container.evaluate((node) => node.scrollTop);
-  expect(Math.abs(finalScrollTop - targetScrollTop)).toBeLessThanOrEqual(10);
+  await expect
+    .poll(async () => {
+      const offset = await container.evaluate((node, anchorId) => {
+        const row = node.querySelector<HTMLElement>(`[data-item-id="${anchorId}"]`);
+        return row
+          ? row.getBoundingClientRect().top - node.getBoundingClientRect().top
+          : null;
+      }, anchorBefore!.itemId);
+      return offset === null ? Number.POSITIVE_INFINITY : Math.abs(offset - anchorBefore!.offsetTop);
+    })
+    .toBeLessThanOrEqual(ANCHOR_PIXEL_TOLERANCE);
 });
 
 test("tall variable-height initial load snaps to the real live edge after measurement", async ({ page }) => {
