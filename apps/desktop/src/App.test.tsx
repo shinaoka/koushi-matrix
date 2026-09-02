@@ -1608,17 +1608,6 @@ describe("desktop integration source guards", () => {
     expect(createSource).not.toContain("api.setSpaceChild(");
   });
 
-  test("accepting an invite returns to the timeline view", () => {
-    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
-    const acceptStart = source.indexOf("async function acceptInvite");
-    const acceptEnd = source.indexOf("async function declineInvite", acceptStart);
-    const acceptSource = source.slice(acceptStart, acceptEnd);
-
-    expect(acceptSource).toContain("api.acceptInvite(roomId)");
-    expect(acceptSource).toContain("await selectRoom(roomId)");
-    expect(acceptSource).toContain('setPrimaryView("timeline")');
-  });
-
   test("directory search queries the chosen homeserver, not always the user's own", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     const queryStart = source.indexOf("async function queryDirectory");

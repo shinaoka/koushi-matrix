@@ -181,6 +181,7 @@ import { createOrderedEventBatcher } from "./domain/orderedEventBatcher";
 import { createStateUpdateConsumer } from "./domain/stateUpdateConsumer";
 import { createCommandReceiptReconciler } from "./domain/commandWatermark";
 import { SNAPSHOT_SCHEMA_VERSION } from "./domain/types";
+import { selectJoinedRoomIfPresent } from "./domain/joinedRoomNavigation";
 import { createViewportSyncReporter } from "./app/viewportSyncReporter";
 import { EMOJI_BY_CATEGORY, EMOJI_CATEGORIES } from "./components/emojiData";
 import {
@@ -2885,6 +2886,26 @@ export function App() {
     if (roomNavigationIntentEpochRef.current !== navigationRequestId) {
       return false;
     }
+    appendDiagnosticLog({
+      timestampMs: Date.now(),
+      source: "room.transition",
+      message: `stage=before_api_select elapsed_ms_since_start=${Date.now() - transitionStartedAt}`
+    });
+    const nextSnapshot = await settleCommandSnapshot(api.selectRoom(roomId));
+    if (roomNavigationIntentEpochRef.current !== navigationRequestId) {
+      return false;
+    }
+    const committed =
+      nextSnapshot.state.ui.navigation.active_room_id === roomId &&
+      nextSnapshot.state.ui.timeline.room_id === roomId;
+    appendDiagnosticLog({
+      timestampMs: Date.now(),
+      source: "room.transition",
+      message: `stage=after_api_select elapsed_ms=${Date.now() - transitionStartedAt} committed_active=${nextSnapshot.state.ui.navigation.active_room_id === roomId} timeline_matches=${nextSnapshot.state.ui.timeline.room_id === nextSnapshot.state.ui.navigation.active_room_id}`
+    });
+    if (!committed) {
+      return false;
+    }
     const primaryViewUpdateStartedAt = Date.now();
     appendDiagnosticLog({
       timestampMs: primaryViewUpdateStartedAt,
@@ -2896,20 +2917,6 @@ export function App() {
       timestampMs: Date.now(),
       source: "room.transition",
       message: `stage=after_primary_view_update elapsed_ms=${Date.now() - primaryViewUpdateStartedAt} elapsed_ms_since_start=${Date.now() - transitionStartedAt}`
-    });
-    appendDiagnosticLog({
-      timestampMs: Date.now(),
-      source: "room.transition",
-      message: `stage=before_api_select elapsed_ms_since_start=${Date.now() - transitionStartedAt}`
-    });
-    const nextSnapshot = await settleCommandSnapshot(api.selectRoom(roomId));
-    if (roomNavigationIntentEpochRef.current !== navigationRequestId) {
-      return false;
-    }
-    appendDiagnosticLog({
-      timestampMs: Date.now(),
-      source: "room.transition",
-      message: `stage=after_api_select elapsed_ms=${Date.now() - transitionStartedAt} committed_active=${nextSnapshot.state.ui.navigation.active_room_id === roomId} timeline_matches=${nextSnapshot.state.ui.timeline.room_id === nextSnapshot.state.ui.navigation.active_room_id}`
     });
     appendDiagnosticLog({
       timestampMs: Date.now(),
@@ -3374,10 +3381,9 @@ export function App() {
     setIsBusy(true);
     try {
       const nextSnapshot = await settleCommandSnapshot(api.acceptInvite(roomId));
-      if (nextSnapshot.state.domain.rooms.some((room) => room.room_id === roomId)) {
-        await selectRoom(roomId);
+      if (!(await selectJoinedRoomIfPresent(nextSnapshot.state.domain.rooms, roomId, selectRoom))) {
+        return;
       }
-      setPrimaryView("timeline");
     } finally {
       setIsBusy(false);
     }
@@ -3403,10 +3409,15 @@ export function App() {
     setIsBusy(true);
     try {
       const nextSnapshot = await settleCommandSnapshot(api.joinRoom(trimmedRoomId));
-      if (nextSnapshot.state.domain.rooms.some((room) => room.room_id === trimmedRoomId)) {
-        await selectRoom(trimmedRoomId);
+      if (
+        !(await selectJoinedRoomIfPresent(
+          nextSnapshot.state.domain.rooms,
+          trimmedRoomId,
+          selectRoom
+        ))
+      ) {
+        return;
       }
-      setPrimaryView("timeline");
     } finally {
       setIsBusy(false);
     }

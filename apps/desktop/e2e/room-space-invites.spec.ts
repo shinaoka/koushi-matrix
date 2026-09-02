@@ -443,6 +443,89 @@ test("Space member roles use authoritative success, failure retry, confirmation,
   console.log("space_member_role=ok");
 });
 
+test("invite acceptance does not expose the previous timeline when room selection is uncommitted", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+
+  await page.evaluate(() => {
+    const base = window.__harness.currentSnapshot();
+    const roomId = "!invite-navigation-refused:example.invalid";
+    const invite = {
+      room_id: roomId,
+      display_name: "Refused Navigation Invite",
+      avatar: null,
+      topic: null,
+      inviter_display_name: "Synthetic Inviter",
+      is_dm: false
+    };
+    window.__harness.setSnapshot({
+      ...base,
+      state: {
+        ...base.state,
+        domain: { ...base.state.domain, invites: [invite] }
+      }
+    });
+    window.__harness.setCommandResponse("accept_invite", () => {
+      const snapshot = window.__harness.currentSnapshot();
+      const joinedRoom = {
+        room_id: roomId,
+        display_name: invite.display_name,
+        avatar: null,
+        is_dm: false,
+        tags: { favourite: null, low_priority: null },
+        unread_count: 0,
+        notification_count: 0,
+        highlight_count: 0,
+        parent_space_ids: []
+      };
+      const joinedItem = {
+        room_id: roomId,
+        display_name: invite.display_name,
+        avatar: null,
+        tags: { favourite: null, low_priority: null },
+        unread_count: 0,
+        highlight_count: 0
+      };
+      const next = {
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          domain: {
+            ...snapshot.state.domain,
+            rooms: [...snapshot.state.domain.rooms, joinedRoom],
+            invites: []
+          }
+        },
+        sidebar: {
+          ...snapshot.sidebar,
+          space_rooms: [...snapshot.sidebar.space_rooms, joinedItem],
+          sections: {
+            ...snapshot.sidebar.sections,
+            rooms: [...snapshot.sidebar.sections.rooms, joinedItem]
+          }
+        }
+      };
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+    window.__harness.setCommandResponse("select_room", () =>
+      window.__harness.currentSnapshot()
+    );
+    window.__harness.pushStateUpdate();
+    window.__harness.clearInvocations();
+  });
+
+  await selectAccountHome(page);
+  await page.getByRole("button", { name: "Invites", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Invites" })).toBeVisible();
+  await page.getByRole("button", { name: "Accept invite" }).click();
+
+  await expect.poll(() => invocationCount(page, "select_room")).toBe(1);
+  await expect(page.getByRole("heading", { name: "Invites" })).toBeVisible();
+  await expect(page.getByRole("main", { name: "Conversation timeline" })).toBeHidden();
+});
+
 test("invites view accepts a seeded invite and New DM renders the returned direct room", async ({
   page
 }) => {
@@ -451,7 +534,7 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
   await page.evaluate(() => {
     const base = window.__harness.currentSnapshot();
     const invite = {
-      room_id: "!invite-seed:example.invalid",
+      room_id: "!joined-from-invite:example.invalid",
       display_name: "Seeded Invite",
       avatar: null,
       topic: "Synthetic invite topic",
@@ -497,18 +580,6 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
             ...snapshot.state.domain,
             rooms: [...snapshot.state.domain.rooms, joinedRoom],
             invites: []
-          },
-          ui: {
-            ...snapshot.state.ui,
-            navigation: {
-              ...snapshot.state.ui.navigation,
-              active_room_id: joinedRoom.room_id
-            },
-            timeline: {
-              ...snapshot.state.ui.timeline,
-              room_id: joinedRoom.room_id,
-              is_subscribed: true
-            }
           }
         },
         sidebar: {
@@ -709,7 +780,19 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
     .poll(async () =>
       page.evaluate(() => window.__harness.invocationsOf("accept_invite")[0]?.args)
     )
-    .toEqual({ roomId: "!invite-seed:example.invalid" });
+    .toEqual({ roomId: "!joined-from-invite:example.invalid" });
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("select_room").at(-1)?.args)
+    )
+    .toEqual({ roomId: "!joined-from-invite:example.invalid" });
+  await expect
+    .poll(async () =>
+      page.evaluate(
+        () => window.__harness.currentSnapshot().state.ui.navigation.active_room_id
+      )
+    )
+    .toBe("!joined-from-invite:example.invalid");
   await expect(page.getByRole("button", { name: "Seeded Invite" })).toBeVisible();
 
   await page.getByRole("button", { name: "Seeded Invite" }).click();

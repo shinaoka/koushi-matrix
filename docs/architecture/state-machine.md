@@ -717,6 +717,13 @@ code without a matching command-success correlation.
   effect. It hydrates the selected room's active composer from the Rust-owned
   draft store; it does not reset the draft to an empty composer unless no stored
   draft exists.
+- The renderer switches its primary pane to the timeline only after the typed
+  `SelectRoom` settlement survives the current room-intent epoch and the
+  authoritative snapshot has both `active_room_id` and `timeline.room_id` equal
+  to the target. Composer-drain refusal, supersession, failed/no-op settlement,
+  or a mismatched snapshot must not reveal the previously committed room as if
+  the newer navigation succeeded. Invite acceptance and direct join delegate to
+  this shared selection path and never switch the pane independently.
 
 ```mermaid
 stateDiagram-v2
