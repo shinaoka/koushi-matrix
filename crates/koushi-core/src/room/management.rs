@@ -184,6 +184,9 @@ impl RoomActor {
         match koushi_sdk::get_room_settings_snapshot(session, &room_id).await {
             Ok(settings) => {
                 let settings = room_settings_snapshot_from_sdk(settings);
+                // Request-outcome settlement may accept this exact baseline generation for an
+                // idempotent reload, so the authoritative reduction must complete before the
+                // correlated RoomSettingsLoaded event is emitted.
                 self.reduce_reliable(vec![AppAction::RoomSettingsSnapshotLoaded {
                     room_id,
                     settings: settings.clone(),

@@ -2954,6 +2954,31 @@ export function App() {
     await setRightPanelModeClosingFocusedContext("profile", isCurrent);
   }
 
+  async function openPeoplePanel() {
+    const roomId = snapshotRef.current?.state.ui.navigation.active_room_id;
+    const navigationRequestId = roomNavigationIntentEpochRef.current;
+    const requestId = ++roomSettingsRequestRef.current;
+    const isCurrent = () =>
+      roomSettingsRequestRef.current === requestId &&
+      roomNavigationIntentEpochRef.current === navigationRequestId &&
+      snapshotRef.current?.state.ui.navigation.active_room_id === roomId;
+
+    setPeoplePanelScope(roomId ? { kind: "room", roomId } : null);
+    setSelectedProfileUserId(null);
+    await setRightPanelModeClosingFocusedContext("people", isCurrent);
+    if (!roomId || !isCurrent()) return;
+
+    roomSettingsLoadRef.current = null;
+    const next = await settleCommandSnapshot(api.loadRoomSettings(roomId));
+    if (
+      !isCurrent() ||
+      next.state.ui.navigation.active_room_id !== roomId ||
+      !exactRoomSettingsForRoom(next, roomId)
+    ) {
+      return;
+    }
+  }
+
   async function openHomeActivityView(trigger: ActivityOpenTrigger = "activity_sidebar") {
     setHomeSelection({ kind: "activity" });
     await openHomeSelection({ kind: "activity" }, trigger);
@@ -4142,6 +4167,9 @@ export function App() {
   }
 
   async function openThreadsListPanel(scope: ThreadsListScope) {
+    // A newer Threads intent must also retire a People open still awaiting
+    // focused-context closure or room-settings settlement.
+    roomSettingsRequestRef.current += 1;
     await closeFocusedContextIfHiddenBy("threads");
     await settleCommand(api.openThreadsList(scope));
     setRightPanelMode("threads");
@@ -5915,28 +5943,8 @@ export function App() {
                 runInBackground(openPinnedMessagesPanel(roomId));
               }
             }}
-            onOpenPeople={async () => {
-              const roomId = snapshotRef.current?.state.ui.navigation.active_room_id;
-              const navigationRequestId = roomNavigationIntentEpochRef.current;
-              const requestId = ++roomSettingsRequestRef.current;
-              if (roomId) {
-                roomSettingsLoadRef.current = null;
-                const next = await settleCommandSnapshot(api.loadRoomSettings(roomId));
-                if (
-                  roomSettingsRequestRef.current !== requestId ||
-                  roomNavigationIntentEpochRef.current !== navigationRequestId ||
-                  snapshotRef.current?.state.ui.navigation.active_room_id !== roomId ||
-                  next.state.ui.navigation.active_room_id !== roomId ||
-                  !exactRoomSettingsForRoom(next, roomId)
-                ) {
-                  return;
-                }
-                setPeoplePanelScope({ kind: "room", roomId });
-              } else {
-                setPeoplePanelScope(null);
-              }
-              setSelectedProfileUserId(null);
-              await setRightPanelModeClosingFocusedContext("people");
+            onOpenPeople={() => {
+              runInBackground(openPeoplePanel());
             }}
             onOpenThreads={() => {
               const roomId = snapshot.state.ui.navigation.active_room_id;
@@ -6038,29 +6046,8 @@ export function App() {
           onReloadSpaceMemberRoles={() => {
             runInBackground(reloadSpaceMemberRoles());
           }}
-          onOpenPeople={async () => {
-            const roomId = snapshotRef.current?.state.ui.navigation.active_room_id;
-            const navigationRequestId = roomNavigationIntentEpochRef.current;
-            const requestId = ++roomSettingsRequestRef.current;
-            if (roomId) {
-              roomSettingsLoadRef.current = null;
-              const next = await settleCommandSnapshot(api.loadRoomSettings(roomId));
-              if (
-                roomSettingsRequestRef.current !== requestId ||
-                roomNavigationIntentEpochRef.current !== navigationRequestId ||
-                snapshotRef.current?.state.ui.navigation.active_room_id !== roomId ||
-                next.state.ui.navigation.active_room_id !== roomId ||
-                !exactRoomSettingsForRoom(next, roomId)
-              ) {
-                return;
-              }
-              setSnapshot(next);
-              setPeoplePanelScope({ kind: "room", roomId });
-            } else {
-              setPeoplePanelScope(null);
-            }
-            setSelectedProfileUserId(null);
-            await setRightPanelModeClosingFocusedContext("people");
+          onOpenPeople={() => {
+            runInBackground(openPeoplePanel());
           }}
           onOpenProfile={(userId) => {
             setSelectedProfileUserId(userId);

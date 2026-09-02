@@ -2611,39 +2611,6 @@ describe("Timeline item row rendering", () => {
     expect(sending).toContain("Cancel send");
   });
 
-  test("room People entries load room settings before switching to people mode", () => {
-    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
-
-    const timelinePaneStart = source.indexOf("<TimelinePane");
-    const timelinePaneEnd = source.indexOf("\n          />", timelinePaneStart);
-    expect(timelinePaneStart).toBeGreaterThanOrEqual(0);
-    expect(timelinePaneEnd).toBeGreaterThan(timelinePaneStart);
-    const timelinePaneSource = source.slice(timelinePaneStart, timelinePaneEnd);
-
-    expect(timelinePaneSource).toContain("api.loadRoomSettings(");
-    expect(timelinePaneSource).toContain('setRightPanelModeClosingFocusedContext("people")');
-    expect(timelinePaneSource.indexOf("api.loadRoomSettings(")).toBeLessThan(
-      timelinePaneSource.indexOf('setRightPanelModeClosingFocusedContext("people")')
-    );
-
-    const contextualRightPanelStart = source.indexOf("<ContextualRightPanel");
-    const contextualRightPanelEnd = source.indexOf("\n        />", contextualRightPanelStart);
-    expect(contextualRightPanelStart).toBeGreaterThanOrEqual(0);
-    expect(contextualRightPanelEnd).toBeGreaterThan(contextualRightPanelStart);
-    const contextualRightPanelSource = source.slice(
-      contextualRightPanelStart,
-      contextualRightPanelEnd
-    );
-
-    expect(contextualRightPanelSource).toContain("api.loadRoomSettings(");
-    expect(contextualRightPanelSource).toContain(
-      'setRightPanelModeClosingFocusedContext("people")'
-    );
-    expect(contextualRightPanelSource.indexOf("api.loadRoomSettings(")).toBeLessThan(
-      contextualRightPanelSource.indexOf('setRightPanelModeClosingFocusedContext("people")')
-    );
-  });
-
   test("main and thread caption edits retain bounded mounted-editor ordering", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     const mainStart = source.indexOf("async function updateStagedUploadCaption(");

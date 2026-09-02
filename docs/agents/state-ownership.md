@@ -800,7 +800,11 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   load terminal and the returned settings snapshot, while React must distinguish
   same-room People/Profile intents (including equal snapshot generations) and
   suppress duplicate mount-effect dispatch because Rust intentionally projects no
-  panel-open or settings-load Pending state. A rejected effect load may release
+  panel-open or settings-load Pending state. People navigation opens the pane
+  before its settings read settles; a newer Threads intent retires that People
+  request before either focused-context closure or settings settlement, and a
+  late load may refresh only still-current data. A
+  rejected effect load may release
   only its still-current request/target marker; it must not log the raw error,
   clear a newer same-target demand, or add retry/backoff. Navigation and panel
   replacement continue to fence completion before the Rust-shaped snapshot enters

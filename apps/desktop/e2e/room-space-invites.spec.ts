@@ -2849,6 +2849,64 @@ test("room header People button opens People panel and shows the Rust-owned memb
   await expect(page.getByText(t("people.memberCount", { count: "3" }))).toBeVisible();
 });
 
+test("People reopens immediately and a late settings load cannot override Threads", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const releases: Array<() => void> = [];
+    window.__harness.setCommandResponse("load_room_settings", () =>
+      new Promise((resolve) => {
+        releases.push(() => resolve(window.__harness.currentSnapshot()));
+      })
+    );
+    window.__harness.setCommandResponse("open_threads_list", () => {
+      const snapshot = window.__harness.currentSnapshot();
+      const next = {
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          ui: {
+            ...snapshot.state.ui,
+            threads_list: {
+              kind: "open" as const,
+              room_id: "!harness-room:example.invalid",
+              request_id: 1,
+              items: [],
+              is_paginating: false,
+              end_reached: true
+            }
+          }
+        }
+      };
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+    (window as unknown as { __releasePeopleLoads: () => void }).__releasePeopleLoads = () => {
+      releases.splice(0).forEach((release) => release());
+    };
+  });
+
+  const actions = page.locator(".channel-actions");
+  const peopleButton = actions.getByRole("button", { name: t("panel.people") });
+  await peopleButton.click();
+  await expect(page.getByRole("heading", { name: t("panel.people") })).toBeVisible();
+  await page.getByLabel("Context panel").getByRole("button", { name: "Close" }).click();
+  await expect(page.getByRole("heading", { name: t("panel.people") })).toBeHidden();
+
+  await peopleButton.click();
+  await expect(page.getByRole("heading", { name: t("panel.people") })).toBeVisible();
+  await actions.getByRole("button", { name: "Threads" }).click();
+  const threadsTitle = page
+    .locator('aside[aria-label="Context panel"]')
+    .getByText(t("threads.title"), { exact: true });
+  await expect(threadsTitle).toBeVisible();
+
+  await page.evaluate(() =>
+    (window as unknown as { __releasePeopleLoads: () => void }).__releasePeopleLoads()
+  );
+  await expect(threadsTitle).toBeVisible();
+  await expect(page.getByRole("heading", { name: t("panel.people") })).toBeHidden();
+});
+
 test("room info People entry opens the standalone People panel", async ({ page }) => {
   await gotoReadyShell(page);
   await page.getByRole("button", { name: t("room.roomInfo") }).click();

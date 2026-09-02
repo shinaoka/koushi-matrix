@@ -2720,6 +2720,13 @@ stateDiagram-v2
   visible snapshot while preserving any pending settings, moderation, or role
   operation. Loading a different room settings view replaces the selected
   settings state and clears the prior selected-room operation.
+- `RoomSettingsLoaded` is an idempotent read terminal. After its correlated event
+  progress is observed, an already-matching settings snapshot may settle at the
+  baseline generation because RoomActor reliably reduces that snapshot before
+  emitting the event. No-event timeouts and mutation operations, including
+  `RoomSettingUpdated`, still require their normal terminal/generation evidence.
+  The People pane opens from renderer intent before this read settles and never
+  changes pane mode from the late completion; a later Threads/panel intent wins.
 - Settings and moderation completions are request-correlated. Stale successes,
   stale failures, duplicate completions, and completions for a room that is no
   longer selected are ignored.

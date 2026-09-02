@@ -1854,13 +1854,35 @@ fn snapshot_outcome(
     }
 }
 
+pub(super) fn progress_generation_is_eligible(
+    expectation: &RequestOutcomeExpectation,
+    progress_request_id: RequestId,
+    snapshot_generation: u64,
+    baseline_generation: u64,
+) -> bool {
+    snapshot_generation > baseline_generation
+        || (expectation.request_id() == progress_request_id
+            && matches!(
+                expectation,
+                RequestOutcomeExpectation::RoomOperation {
+                    operation: RoomOperationKind::RoomSettingsLoaded,
+                    ..
+                }
+            ))
+}
+
 fn snapshot_outcome_for_progress(
     progress: &EventProgress,
     expectation: &RequestOutcomeExpectation,
     snapshot: &VersionedAppStateSnapshot,
     baseline_generation: u64,
 ) -> Option<RequestOutcome> {
-    if snapshot.generation <= baseline_generation {
+    if !progress_generation_is_eligible(
+        expectation,
+        progress.request_id(),
+        snapshot.generation,
+        baseline_generation,
+    ) {
         return None;
     }
     if progress.request_id() != expectation.request_id() {
