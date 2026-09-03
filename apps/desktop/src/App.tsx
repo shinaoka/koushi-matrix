@@ -2273,14 +2273,21 @@ export function App() {
 
   async function startOidcLogin() {
     setIsBusy(true);
+    setLoginTransportError(null);
     try {
       const activeHomeserver =
         snapshot?.state.domain.session.kind === "locked"
           ? snapshot.state.domain.session.homeserver
           : loginHomeserver;
-      const authorization = await api.startOidcLogin(activeHomeserver);
-      await applyCommandReceipt(authorization.settlement);
-      await openExternalHttpUrl(authorization.authorization_url);
+      const launch = await api.startOidcLogin(activeHomeserver);
+      await applyCommandReceipt(launch.settlement);
+      if (launch.outcome === "invalid_authorization_url") {
+        setLoginTransportError(t("auth.ssoInvalidAuthorizationUrl"));
+      } else if (launch.outcome === "browser_launch_failed") {
+        setLoginTransportError(t("auth.ssoBrowserLaunchFailed"));
+      }
+    } catch {
+      setLoginTransportError(t("auth.ssoAuthorizationFailed"));
     } finally {
       setIsBusy(false);
     }

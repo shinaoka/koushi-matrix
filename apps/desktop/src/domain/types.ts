@@ -403,9 +403,8 @@ export interface CommandResult<T> {
 
 export type CommandReceipt = CommandAdmission | CommandSettlement;
 
-export interface OidcAuthorization {
-  authorization_url: string;
-  state: string;
+export interface OidcBrowserLaunchResponse {
+  outcome: "launched" | "invalid_authorization_url" | "browser_launch_failed";
   settlement: CommandSettlement;
 }
 

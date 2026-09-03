@@ -297,6 +297,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: .
-          shared-key: koushi-windows-overlay-acl
+          shared-key: koushi-windows-tauri-native
       - name: Prove overlay set and clear cross the Tauri ACL
         run: cargo test -p koushi-windows-overlay-acl windows_overlay_ipc_is_authorized -- --nocapture
+      - name: Prove OIDC native browser launch outcomes
+        run: cargo test -p koushi-desktop oidc_browser --lib -- --nocapture

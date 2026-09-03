@@ -22,7 +22,7 @@ import type {
   InviteScopeSelection,
   MentionSurface,
   NavigationPreferenceUpdate,
-  OidcAuthorization,
+  OidcBrowserLaunchResponse,
   PresenceKind,
   RoomListFilter,
   RoomModerationAction,
@@ -104,7 +104,7 @@ export interface DesktopApi {
   getDiagnosticSnapshot(): Promise<DiagnosticLogSnapshot>;
   observeViewportSync(observation: ViewportSyncObservation): Promise<ViewportSyncReceipt>;
   discoverLoginMethods(homeserver: string): Promise<CommandSettlement>;
-  startOidcLogin(homeserver: string): Promise<OidcAuthorization>;
+  startOidcLogin(homeserver: string): Promise<OidcBrowserLaunchResponse>;
   completeOidcLogin(homeserver: string, callbackUrl: string): Promise<CommandSettlement>;
   submitLogin(
     homeserver: string,

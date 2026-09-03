@@ -4,10 +4,20 @@ use super::account::{
 };
 use super::*;
 use crate::dto::FrontendDesktopSnapshot;
+use crate::oidc_browser::{OidcBrowserLaunchFailure, launch_oidc_authorization_url};
+use tauri_plugin_opener::OpenerExt;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OidcBrowserLaunchOutcome {
+    Launched,
+    InvalidAuthorizationUrl,
+    BrowserLaunchFailed,
+}
+
 #[derive(serde::Serialize)]
-pub struct OidcAuthorizationResponse {
-    pub authorization_url: String,
-    pub state: String,
+pub struct OidcBrowserLaunchResponse {
+    pub outcome: OidcBrowserLaunchOutcome,
     pub settlement: FrontendCommandSettlement,
 }
 
@@ -98,8 +108,9 @@ pub async fn discover_login_methods(
 #[tauri::command]
 pub async fn start_oidc_login(
     homeserver: String,
+    app: AppHandle,
     state: State<'_, CoreRuntimeState>,
-) -> Result<OidcAuthorizationResponse, String> {
+) -> Result<OidcBrowserLaunchResponse, String> {
     let mut wait_conn = state.inner().runtime.attach();
     let baseline_generation = wait_conn.versioned_snapshot().generation;
     let request_id = next_request_id(state.inner()).await;
@@ -119,16 +130,50 @@ pub async fn start_oidc_login(
         .map_err(|error| invoke_error_from_request_outcome("OIDC login", error))?;
     let RequestOutcome::OidcAuthorization {
         authorization_url,
-        state,
+        state: _,
         generation,
         ..
     } = outcome
     else {
         return Err("OIDC login returned an invalid outcome".to_owned());
     };
-    Ok(OidcAuthorizationResponse {
-        authorization_url,
-        state,
+    record(DiagnosticEvent::new(
+        DiagnosticLevel::Info,
+        "desktop.oidc_browser",
+        "authorization_created",
+    ));
+    let outcome = match launch_oidc_authorization_url(&authorization_url, |url| {
+        record(DiagnosticEvent::new(
+            DiagnosticLevel::Info,
+            "desktop.oidc_browser",
+            "browser_launch_requested",
+        ));
+        app.opener().open_url(url, None::<&str>)
+    }) {
+        Ok(()) => OidcBrowserLaunchOutcome::Launched,
+        Err(OidcBrowserLaunchFailure::InvalidAuthorizationUrl) => {
+            OidcBrowserLaunchOutcome::InvalidAuthorizationUrl
+        }
+        Err(OidcBrowserLaunchFailure::BrowserLaunchFailed) => {
+            OidcBrowserLaunchOutcome::BrowserLaunchFailed
+        }
+    };
+    let stage = match outcome {
+        OidcBrowserLaunchOutcome::Launched => "browser_launch_succeeded",
+        OidcBrowserLaunchOutcome::InvalidAuthorizationUrl => "url_rejected",
+        OidcBrowserLaunchOutcome::BrowserLaunchFailed => "browser_launch_failed",
+    };
+    record(DiagnosticEvent::new(
+        if outcome == OidcBrowserLaunchOutcome::Launched {
+            DiagnosticLevel::Info
+        } else {
+            DiagnosticLevel::Warn
+        },
+        "desktop.oidc_browser",
+        stage,
+    ));
+    Ok(OidcBrowserLaunchResponse {
+        outcome,
         settlement: FrontendCommandSettlement::from_published_generation(generation),
     })
 }

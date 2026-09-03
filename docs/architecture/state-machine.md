@@ -2931,12 +2931,17 @@ stateDiagram-v2
   compatibility, optional display labels, and a delegated registration link.
   It never owns the authenticated session's account-management destination and
   does not carry access tokens, refresh tokens, or OAuth authorization artifacts.
-- `StartOidcLogin` creates an SDK-owned authorization-code flow with PKCE and
-  emits only a redacted `OidcAuthorizationCreated` command event containing the
-  provider URL/state for the WebView handoff. `CompleteOidcLogin` consumes the
+- `StartOidcLogin` creates an SDK-owned authorization-code flow with PKCE. The
+  internal Tauri waiter receives the full authorization event and opens its exact
+  HTTP(S), userinfo-free URL with the native opener; the WebView event projection
+  contains only `request_id`, and the command response contains only settlement
+  plus `launched`, `invalid_authorization_url`, or `browser_launch_failed`.
+  Repeating the same homeserver replays the retained authorization; a different
+  homeserver is rejected without replacing it. `CompleteOidcLogin` consumes the
   callback in `AccountActor`, persists the OAuth session in the credential
   store, restores it into the encrypted per-account SDK store, and then emits
-  `LoginSucceeded`.
+  `LoginSucceeded`. Logout/change-homeserver retires the pending flow with
+  `BrowserCancellation` cleanup evidence.
 - `LoginDiscoveryFailed` stores only `AuthFailureKind`; raw discovery responses,
   homeserver error bodies, and SDK errors do not enter snapshots.
 - Discovery completion actions are accepted only while the reducer is still

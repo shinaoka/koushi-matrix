@@ -24,7 +24,7 @@ import type {
   DirectoryQuery,
   MentionSurface,
   NavigationPreferenceUpdate,
-  OidcAuthorization,
+  OidcBrowserLaunchResponse,
   PresenceKind,
   InviteScopeSelection,
   RoomListFilter,
@@ -85,8 +85,8 @@ export class TauriDesktopApi implements DesktopApi {
     return this.invokeCommand<CommandSettlement>("discover_login_methods", { homeserver });
   }
 
-  async startOidcLogin(homeserver: string): Promise<OidcAuthorization> {
-    return this.invokeCommand<OidcAuthorization>("start_oidc_login", { homeserver });
+  async startOidcLogin(homeserver: string): Promise<OidcBrowserLaunchResponse> {
+    return this.invokeCommand<OidcBrowserLaunchResponse>("start_oidc_login", { homeserver });
   }
 
   async completeOidcLogin(

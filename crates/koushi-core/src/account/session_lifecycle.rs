@@ -157,6 +157,13 @@ pub(super) struct LockedSessionRecord {
     pub(super) binding: Option<AccountStoreConfig>,
 }
 
+pub(super) struct PendingOidcAttempt {
+    pub(super) start_request_id: RequestId,
+    pub(super) flow: PendingOidcFlow,
+    pub(super) authorization_url: String,
+    pub(super) state: String,
+}
+
 pub(super) enum PendingOidcFlow {
     Sdk {
         pending: PendingOidcLogin,
@@ -543,6 +550,23 @@ impl AccountActor {
             }
         };
         let normalized_homeserver = homeserver.normalized();
+        if let Some(pending) = self.pending_oidc_login.as_ref() {
+            if pending.flow.homeserver() == normalized_homeserver {
+                self.emit(CoreEvent::Account(AccountEvent::OidcAuthorizationCreated {
+                    request_id,
+                    authorization_url: pending.authorization_url.clone(),
+                    state: pending.state.clone(),
+                }));
+            } else {
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::AccountOperationFailed {
+                        kind: AuthFailureKind::Cancelled,
+                    },
+                );
+            }
+            return;
+        }
 
         let (store_config, requested_device_id, allocation) =
             if let Some(locked) = self.locked_session_record.as_ref() {
@@ -592,13 +616,15 @@ impl AccountActor {
         .await
         {
             Ok((pending, authorization)) => {
-                self.pending_oidc_login = Some((
-                    request_id,
-                    PendingOidcFlow::Sdk {
+                self.pending_oidc_login = Some(PendingOidcAttempt {
+                    start_request_id: request_id,
+                    flow: PendingOidcFlow::Sdk {
                         pending,
                         allocation,
                     },
-                ));
+                    authorization_url: authorization.authorization_url.clone(),
+                    state: authorization.state.clone(),
+                });
                 self.emit(CoreEvent::Account(AccountEvent::OidcAuthorizationCreated {
                     request_id,
                     authorization_url: authorization.authorization_url,
@@ -627,7 +653,7 @@ impl AccountActor {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         }
-        let Some((start_request_id, pending)) = self.pending_oidc_login.take() else {
+        let Some(pending_attempt) = self.pending_oidc_login.take() else {
             self.send_actions(vec![AppAction::LoginDiscoveryFailed {
                 homeserver: String::new(),
                 kind: AuthFailureKind::Cancelled,
@@ -646,6 +672,11 @@ impl AccountActor {
             .await;
             return;
         };
+        let PendingOidcAttempt {
+            start_request_id,
+            flow: pending,
+            ..
+        } = pending_attempt;
         let homeserver = pending.homeserver().to_owned();
         let allocation = match &pending {
             PendingOidcFlow::Sdk { allocation, .. } => allocation.clone(),
@@ -1533,12 +1564,42 @@ impl AccountActor {
         .await;
     }
 
+    pub(super) fn retire_pending_oidc_login(&mut self) {
+        let Some(pending) = self.pending_oidc_login.take() else {
+            return;
+        };
+        let allocation = match &pending.flow {
+            PendingOidcFlow::Sdk { allocation, .. } => allocation.clone(),
+            #[cfg(test)]
+            PendingOidcFlow::Synthetic { .. } => None,
+        };
+        drop(pending);
+        if let Some((allocation_id, attempt_generation)) = allocation
+            && self
+                .store
+                .pending_login_owner()
+                .cancel(
+                    &allocation_id,
+                    attempt_generation,
+                    PendingLoginCleanupEvidence::BrowserCancellation,
+                )
+                .is_err()
+        {
+            record(DiagnosticEvent::new(
+                DiagnosticLevel::Warn,
+                "core.oidc_browser",
+                "pending_retirement_failed",
+            ));
+        }
+    }
+
     pub(super) async fn perform_logout(
         &mut self,
         request_id: RequestId,
         server_logout: bool,
         preserve_persistence: bool,
     ) {
+        self.retire_pending_oidc_login();
         if self.session.is_none()
             && let Some(pending) = self.pending_sliding_sync_admission.take()
         {
