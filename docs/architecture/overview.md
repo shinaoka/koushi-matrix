@@ -1017,14 +1017,21 @@ tray is unavailable the close proceeds and destroys the window. React must not
 own this decision; it may only render the setting toggle and dispatch a settings
 patch.
 
-Explicit Quit is the only path that triggers `AppCommand::Shutdown` as part of
-process exit. App-menu Quit and tray Quit both request application exit, the
-adapter intercepts the exit request once, submits `AppCommand::Shutdown`,
-awaits it, and only then lets the process exit; a second exit request after
-shutdown completes proceeds immediately, so shutdown is submitted exactly once
-even when the product window is hidden rather than destroyed. Window
-destruction without an exit request (an unavoidable close, or close-to-hide
-disabled) still submits shutdown, because the process is ending either way.
+`AppCommand::Shutdown` is submitted exactly once as part of process exit, and
+one barrier owns it for every path. App-menu Quit and tray Quit request
+application exit; the adapter intercepts the exit request, submits
+`AppCommand::Shutdown`, awaits it, and only then lets the process exit. A second
+exit request while shutdown is in flight is held, and the one re-delivered after
+shutdown completes proceeds immediately, so a hidden product window quits
+cleanly. Window destruction (an unavoidable close, or close-to-hide disabled)
+means the process is ending either way, so it enters the same barrier rather
+than submitting its own shutdown: whichever of the destroy path and the exit
+request that follows it claims the barrier first is the single submitter, and it
+is also the one that finally exits the process. The exit request's code is not
+inspected — a last-window-closed request and an explicit `exit(0)` are handled
+identically — and the awaited submit is bounded by the adapter's core-command
+submit timeout with its error ignored, so a wedged core can never leave the exit
+held forever.
 
 ### Desktop Viewport Synchronization
 

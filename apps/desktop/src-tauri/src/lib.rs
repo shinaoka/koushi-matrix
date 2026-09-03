@@ -84,6 +84,16 @@ pub struct CoreRuntimeState {
     /// hide before it returns, because `api.prevent_close()` cannot be deferred
     /// across an await, so the close-to-hide gate cannot go through the
     /// `tokio::sync::Mutex`-guarded command connection.
+    ///
+    /// This connection is never polled for events, and that is safe: the event
+    /// side of a `CoreConnection` is a `tokio::sync::broadcast::Receiver`
+    /// (`crates/koushi-core/src/runtime/connection.rs`), whose ring is
+    /// pre-allocated at `EVENT_QUEUE_CAPACITY` when the runtime is built and
+    /// overwritten oldest-first by every send. A receiver that never drains is
+    /// therefore lossy, not buffering: it retains no memory beyond the shared
+    /// ring that already exists for the drained connections, and it never
+    /// applies backpressure to senders. The snapshot side is a `watch`
+    /// receiver, which is latest-wins by construction.
     pub(crate) window_lifecycle_connection: CoreConnection,
     /// Tauri-side timeline item count (updated by event loop; QA title only).
     pub(crate) timeline_items_count: Arc<AtomicUsize>,
@@ -425,9 +435,10 @@ impl CloseRequestedAction {
 
 /// Graceful-quit barrier stage.
 ///
-/// Explicit Quit is the only path that triggers `AppCommand::Shutdown` as part
-/// of process exit, and it must trigger it exactly once even though the exit
-/// request is re-delivered after shutdown completes.
+/// Process exit triggers `AppCommand::Shutdown` exactly once, no matter which
+/// path started it — explicit Quit (app-menu or tray), or a real window close
+/// that destroys the product window — and even though the exit request is
+/// re-delivered after shutdown completes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum QuitStage {
     Idle,
@@ -483,7 +494,28 @@ fn request_application_exit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     app.exit(0);
 }
 
+/// Move the barrier out of `Idle` and report whether this caller won the race.
+///
+/// Only the winner may call [`begin_graceful_shutdown`]; every later caller
+/// observes a non-`Idle` stage and must submit nothing. This is what makes
+/// shutdown exactly-once when the window-destroy path and the subsequent
+/// `RunEvent::ExitRequested` both want to start it.
+fn claim_core_shutdown(quit_stage: &AtomicU8) -> bool {
+    quit_stage
+        .compare_exchange(
+            QuitStage::Idle.repr(),
+            QuitStage::ShuttingDown.repr(),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+}
+
 /// Hold the exit, shut the core runtime down, then exit for real.
+///
+/// The awaited submit is bounded by `commands::CORE_COMMAND_SUBMIT_TIMEOUT`
+/// and its error is intentionally ignored, so `app.exit(0)` always runs and the
+/// held exit can never deadlock.
 fn begin_graceful_shutdown(app: tauri::AppHandle) {
     koushi_diagnostics::record(
         DiagnosticEvent::new(DiagnosticLevel::Info, "desktop.lifecycle", "quit_requested")
@@ -521,18 +553,6 @@ fn is_oidc_callback_url(url: &str) -> bool {
         Some(tail) => tail.starts_with('?') || tail.starts_with('#'),
         None => false,
     }
-}
-
-fn submit_core_shutdown(app: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        let core_state = app.state::<CoreRuntimeState>();
-        let request_id = core_state.connection.lock().await.next_request_id();
-        let _ = commands::submit_core_command(
-            &core_state,
-            CoreCommand::App(AppCommand::Shutdown { request_id }),
-        )
-        .await;
-    });
 }
 
 fn submit_oidc_callback_url(app: tauri::AppHandle, callback_url: String) {
@@ -847,7 +867,17 @@ pub fn run() {
                     }
                 }
                 if window_event_should_stop_background_tasks(event) {
-                    submit_core_shutdown(window.app_handle().clone());
+                    // The product window was really destroyed, so the process
+                    // is going away. Enter the same barrier the Quit paths use
+                    // instead of submitting a second `AppCommand::Shutdown`
+                    // ahead of the `ExitRequested` that follows.
+                    let app = window.app_handle().clone();
+                    let claimed = app
+                        .try_state::<CoreRuntimeState>()
+                        .is_some_and(|core_state| claim_core_shutdown(&core_state.quit_stage));
+                    if claimed {
+                        begin_graceful_shutdown(app);
+                    }
                 }
             }
         })
@@ -1034,21 +1064,20 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("failed to build matrix desktop app")
         .run(|app, event| {
-            // Explicit Quit (app-menu Quit, tray Quit) is the only path that
-            // triggers `AppCommand::Shutdown` as part of process exit. Hold the
-            // exit until core shutdown has completed; the re-delivered request
-            // after completion proceeds, so shutdown is submitted exactly once
-            // even when the product window is hidden rather than destroyed.
+            // Hold the exit until core shutdown has completed; the re-delivered
+            // request after completion proceeds. The barrier is shared with the
+            // window-destroy path, so `AppCommand::Shutdown` is submitted
+            // exactly once whether the product window was hidden or destroyed,
+            // and `ExitRequested` is treated the same for any exit code.
             if let tauri::RunEvent::ExitRequested { api, .. } = &event {
                 if let Some(core_state) = app.try_state::<CoreRuntimeState>() {
                     let stage = QuitStage::from_repr(core_state.quit_stage.load(Ordering::Acquire));
                     match quit_request_action(stage) {
                         QuitRequestAction::BeginShutdown => {
-                            core_state
-                                .quit_stage
-                                .store(QuitStage::ShuttingDown.repr(), Ordering::Release);
                             api.prevent_exit();
-                            begin_graceful_shutdown(app.clone());
+                            if claim_core_shutdown(&core_state.quit_stage) {
+                                begin_graceful_shutdown(app.clone());
+                            }
                         }
                         QuitRequestAction::AwaitShutdown => api.prevent_exit(),
                         QuitRequestAction::Exit => {}

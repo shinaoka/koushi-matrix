@@ -1,6 +1,6 @@
 use super::{
     CloseRequestedAction, MacosCloseRequestedAction, QuitRequestAction, QuitStage,
-    close_requested_action, desktop_menu_items, desktop_standard_menu_items,
+    claim_core_shutdown, close_requested_action, desktop_menu_items, desktop_standard_menu_items,
     macos_close_requested_action, next_native_window_focus_generation, quit_request_action,
     observed_native_window_focus, qa_control_pipe_path_from_env_value,
     qa_login_pipe_path_from_env_value, restore_session_enabled_from_env_value,
@@ -8,7 +8,7 @@ use super::{
 };
 use crate::commands::diagnostics::parse_qa_login_pipe_payload;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 #[test]
 fn main_window_overlay_permission_contract() {
@@ -373,6 +373,27 @@ fn exit_request_shuts_core_down_exactly_once_before_exiting() {
     assert_eq!(
         quit_request_action(QuitStage::ShutdownComplete),
         QuitRequestAction::Exit
+    );
+}
+
+#[test]
+fn only_one_caller_claims_core_shutdown() {
+    // The window-destroy path and the `ExitRequested` that follows it both try
+    // to start shutdown; exactly one may submit `AppCommand::Shutdown`.
+    let quit_stage = AtomicU8::new(QuitStage::Idle.repr());
+    assert!(claim_core_shutdown(&quit_stage));
+    assert_eq!(
+        QuitStage::from_repr(quit_stage.load(Ordering::Acquire)),
+        QuitStage::ShuttingDown
+    );
+    assert!(!claim_core_shutdown(&quit_stage));
+
+    // A completed shutdown is never restarted by a late claim.
+    let quit_stage = AtomicU8::new(QuitStage::ShutdownComplete.repr());
+    assert!(!claim_core_shutdown(&quit_stage));
+    assert_eq!(
+        QuitStage::from_repr(quit_stage.load(Ordering::Acquire)),
+        QuitStage::ShutdownComplete
     );
 }
 
