@@ -55,8 +55,8 @@ use super::recovery_backup::{
     PendingRecoveryCompletion, PendingRecoveryTask, secure_backup_monitor_wakeup_is_current,
 };
 use super::session_lifecycle::{
-    LockedSessionRecord, PendingOidcFlow, PendingSessionTeardown, SessionChangeObservation,
-    SessionInvalidationReason,
+    LockedSessionRecord, PendingOidcAttempt, PendingOidcFlow, PendingSessionTeardown,
+    SessionChangeObservation, SessionInvalidationReason,
 };
 use super::sliding_sync::{
     PendingSlidingSyncAdmission, PendingSlidingSyncRetry, StoredSlidingSyncAdmissionContext,
@@ -453,6 +453,11 @@ pub(crate) enum AccountMessage {
         start_request_id: RequestId,
         homeserver: String,
         session: MatrixClientSession,
+    },
+    #[cfg(test)]
+    ConfigurePendingOidc {
+        start_request_id: RequestId,
+        homeserver: String,
     },
     #[cfg(test)]
     ConfigureCloseStoreResults {
@@ -902,7 +907,7 @@ pub struct AccountActor {
     pub(super) pending_device_cleanup: Option<PendingDeviceCleanup>,
     /// Pending OAuth authorization-code flow, keyed by originating request id.
     /// Holds SDK client, PKCE verifier, and CSRF validation data inside Rust.
-    pub(super) pending_oidc_login: Option<(RequestId, PendingOidcFlow)>,
+    pub(super) pending_oidc_login: Option<PendingOidcAttempt>,
     #[cfg(test)]
     pub(super) oidc_completion_override: Option<MatrixClientSession>,
     /// Pending SDK verification request continuation, held only inside
@@ -2129,9 +2134,27 @@ impl AccountActor {
                     homeserver,
                     session,
                 } => {
-                    self.pending_oidc_login =
-                        Some((start_request_id, PendingOidcFlow::Synthetic { homeserver }));
+                    self.pending_oidc_login = Some(PendingOidcAttempt {
+                        start_request_id,
+                        flow: PendingOidcFlow::Synthetic { homeserver },
+                        authorization_url: "https://synthetic.invalid/authorize?opaque=fixture"
+                            .to_owned(),
+                        state: "synthetic-state".to_owned(),
+                    });
                     self.oidc_completion_override = Some(session);
+                }
+                #[cfg(test)]
+                AccountMessage::ConfigurePendingOidc {
+                    start_request_id,
+                    homeserver,
+                } => {
+                    self.pending_oidc_login = Some(PendingOidcAttempt {
+                        start_request_id,
+                        flow: PendingOidcFlow::Synthetic { homeserver },
+                        authorization_url: "https://synthetic.invalid/authorize?opaque=fixture"
+                            .to_owned(),
+                        state: "synthetic-state".to_owned(),
+                    });
                 }
                 #[cfg(test)]
                 AccountMessage::ConfigureCloseStoreResults { results } => {

@@ -63,6 +63,9 @@ export type MessageId =
   | "auth.recoverySecret"
   | "auth.securityPhrase"
   | "auth.sessionLocked"
+  | "auth.ssoAuthorizationFailed"
+  | "auth.ssoBrowserLaunchFailed"
+  | "auth.ssoInvalidAuthorizationUrl"
   | "auth.signIn"
   | "auth.supportedRecoveryMethods"
   | "auth.username"
@@ -1362,6 +1365,9 @@ const en: Catalog = {
   "auth.recoverySecret": "Recovery key or security phrase",
   "auth.securityPhrase": "Security phrase",
   "auth.sessionLocked": "Session locked",
+  "auth.ssoAuthorizationFailed": "Could not start single sign-on",
+  "auth.ssoBrowserLaunchFailed": "Could not open the browser for single sign-on",
+  "auth.ssoInvalidAuthorizationUrl": "The single sign-on address is invalid",
   "auth.signIn": "Sign in",
   "auth.supportedRecoveryMethods": "Supported recovery methods",
   "auth.username": "Username",
@@ -2566,6 +2572,9 @@ const ja: Catalog = {
   "auth.recoverySecret": "リカバリキーまたはセキュリティフレーズ",
   "auth.securityPhrase": "セキュリティフレーズ",
   "auth.sessionLocked": "セッションはロック中",
+  "auth.ssoAuthorizationFailed": "シングルサインオンを開始できませんでした",
+  "auth.ssoBrowserLaunchFailed": "シングルサインオン用のブラウザーを開けませんでした",
+  "auth.ssoInvalidAuthorizationUrl": "シングルサインオンのアドレスが無効です",
   "auth.signIn": "サインイン",
   "auth.supportedRecoveryMethods": "対応している復旧方法",
   "auth.loginFailureUsernameHint":

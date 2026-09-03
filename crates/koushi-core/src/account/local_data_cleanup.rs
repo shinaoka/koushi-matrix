@@ -431,6 +431,7 @@ impl AccountActor {
     }
 
     pub(super) async fn handle_reset_local_data(&mut self, request_id: RequestId) {
+        self.retire_pending_oidc_login();
         let started_at = Instant::now();
         let key_id = self.session_key_id.clone().or_else(|| {
             self.pending_sliding_sync_admission

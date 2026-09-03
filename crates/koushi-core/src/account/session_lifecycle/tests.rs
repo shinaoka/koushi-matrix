@@ -4,8 +4,8 @@ use koushi_key::StoredMatrixSession;
 use koushi_protocol::SessionKeyId;
 use koushi_sdk::PersistableMatrixSession;
 use koushi_state::{
-    AppAction, LoginAttemptId, LoginRequest, SlidingSyncAdmission, SlidingSyncAdmissionSource,
-    SlidingSyncCapabilityResult, SlidingSyncPositiveEvidence,
+    AppAction, AuthFailureKind, LoginAttemptId, LoginRequest, SlidingSyncAdmission,
+    SlidingSyncAdmissionSource, SlidingSyncCapabilityResult, SlidingSyncPositiveEvidence,
 };
 
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -406,6 +406,50 @@ async fn oidc_completion_installs_only_a_provisional_quarantined_session() {
             })
             .await
     );
+    let replay_request_id = RequestId {
+        connection_id: koushi_protocol::ids::RuntimeConnectionId(41),
+        sequence: 5,
+    };
+    assert!(
+        handle
+            .send(AccountMessage::Command(AccountCommand::StartOidcLogin {
+                request_id: replay_request_id,
+                homeserver: homeserver.clone(),
+            }))
+            .await
+    );
+    assert!(matches!(
+        event_rx.recv().await.expect("replayed authorization event"),
+        CoreEvent::Account(AccountEvent::OidcAuthorizationCreated {
+            request_id,
+            authorization_url,
+            state,
+        }) if request_id == replay_request_id
+            && authorization_url == "https://synthetic.invalid/authorize?opaque=fixture"
+            && state == "synthetic-state"
+    ));
+
+    let rejected_request_id = RequestId {
+        connection_id: koushi_protocol::ids::RuntimeConnectionId(41),
+        sequence: 6,
+    };
+    assert!(
+        handle
+            .send(AccountMessage::Command(AccountCommand::StartOidcLogin {
+                request_id: rejected_request_id,
+                homeserver: "https://different.example.invalid".to_owned(),
+            }))
+            .await
+    );
+    assert!(matches!(
+        event_rx.recv().await.expect("different homeserver failure"),
+        CoreEvent::OperationFailed { request_id, failure }
+            if request_id == rejected_request_id
+                && failure == CoreFailure::AccountOperationFailed {
+                    kind: AuthFailureKind::Cancelled,
+                }
+    ));
+
     let completion_request_id = RequestId {
         connection_id: koushi_protocol::ids::RuntimeConnectionId(41),
         sequence: 7,
@@ -480,6 +524,61 @@ async fn oidc_completion_installs_only_a_provisional_quarantined_session() {
         .is_err(),
         "OIDC completion escaped quarantine before Verified"
     );
+    let _ = handle.send(AccountMessage::Shutdown).await;
+}
+
+#[tokio::test]
+async fn change_homeserver_retires_a_pending_oidc_attempt() {
+    let cred_dir = tempdir().expect("tempdir");
+    let data_dir = tempdir().expect("tempdir");
+    let (handle, _action_rx, mut event_rx) =
+        spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+    let start_request_id = test_request_id();
+    assert!(
+        handle
+            .send(AccountMessage::ConfigurePendingOidc {
+                start_request_id,
+                homeserver: "https://original.example.invalid".to_owned(),
+            })
+            .await
+    );
+    let change_request_id = RequestId {
+        connection_id: koushi_protocol::ids::RuntimeConnectionId(42),
+        sequence: 1,
+    };
+    assert!(
+        handle
+            .send(AccountMessage::Command(AccountCommand::ChangeHomeserver {
+                request_id: change_request_id,
+            }))
+            .await
+    );
+    assert!(matches!(
+        event_rx.recv().await.expect("change homeserver settlement"),
+        CoreEvent::OperationFailed { request_id, .. } if request_id == change_request_id
+    ));
+
+    let completion_request_id = RequestId {
+        connection_id: koushi_protocol::ids::RuntimeConnectionId(42),
+        sequence: 2,
+    };
+    assert!(
+        handle
+            .send(AccountMessage::Command(AccountCommand::CompleteOidcLogin {
+                request_id: completion_request_id,
+                callback_url: "http://127.0.0.1/callback".to_owned(),
+                platform: koushi_state::DisplayPlatform::Linux,
+            }))
+            .await
+    );
+    assert!(matches!(
+        event_rx.recv().await.expect("retired OIDC completion"),
+        CoreEvent::OperationFailed { request_id, failure }
+            if request_id == completion_request_id
+                && failure == CoreFailure::AccountOperationFailed {
+                    kind: AuthFailureKind::Cancelled,
+                }
+    ));
     let _ = handle.send(AccountMessage::Shutdown).await;
 }
 

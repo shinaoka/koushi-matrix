@@ -14,7 +14,8 @@ use crate::dto::{
 use koushi_core::{CoreCommandHandle, CoreConnection, EventStreamLag};
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_protocol::{
-    CoreCommand, CoreEvent, SearchEvent, TimelineCommand, TimelineEvent, VersionedAppStateSnapshot,
+    AccountEvent, CoreCommand, CoreEvent, SearchEvent, TimelineCommand, TimelineEvent,
+    VersionedAppStateSnapshot,
 };
 
 /// Tauri event for serialized CoreEvent payloads (discrete events + diff batches).
@@ -204,6 +205,16 @@ fn serialize_core_event(event: &CoreEvent) -> Option<serde_json::Value> {
     Some(match event {
         CoreEvent::StateDelta(_) => {
             return None;
+        }
+        CoreEvent::Account(AccountEvent::OidcAuthorizationCreated { request_id, .. }) => {
+            serde_json::json!({
+                "kind": "Account",
+                "event": {
+                    "OidcAuthorizationCreated": {
+                        "request_id": request_id
+                    }
+                }
+            })
         }
         CoreEvent::Account(e) => serde_json::json!({ "kind": "Account", "event": e }),
         CoreEvent::Sync(e) => serde_json::json!({ "kind": "Sync", "event": e }),

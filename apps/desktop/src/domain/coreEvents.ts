@@ -596,7 +596,7 @@ export interface SessionInfo {
 }
 
 export type AccountEvent =
-  | { OidcAuthorizationCreated: { request_id: RequestId; authorization_url: string; state: string } }
+  | { OidcAuthorizationCreated: { request_id: RequestId } }
   | { LoggedIn: { request_id: RequestId; account_key: string } }
   | { SessionRestored: { request_id: RequestId; account_key: string } }
   | { SavedSessionsListed: { request_id: RequestId; sessions: SessionInfo[] } }

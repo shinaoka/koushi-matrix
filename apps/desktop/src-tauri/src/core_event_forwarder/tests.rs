@@ -1016,6 +1016,10 @@ fn core_event_wire_format_matches_checked_in_contract_artifact() {
         },
     ))
     .expect("serialize OIDC authorization event");
+    let forwarded_oidc = &account_oidc_authorization_created["event"]["OidcAuthorizationCreated"];
+    assert_eq!(forwarded_oidc["request_id"], json!(request_id));
+    assert!(forwarded_oidc.get("authorization_url").is_none());
+    assert!(forwarded_oidc.get("state").is_none());
 
     // OperationFailed: unit failures are strings
     let failed = serialize_core_event(&CoreEvent::OperationFailed {

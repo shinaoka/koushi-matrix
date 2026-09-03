@@ -6,6 +6,7 @@ mod desktop_menu;
 mod dto;
 pub mod keyring_backend;
 mod media_save;
+mod oidc_browser;
 mod viewport_sync;
 mod window_state;
 

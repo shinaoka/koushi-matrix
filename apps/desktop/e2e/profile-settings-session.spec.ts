@@ -83,6 +83,76 @@ async function gotoSignedOutAuth(page: Page): Promise<void> {
   await expect(page.getByTestId("auth-screen")).toBeVisible();
 }
 
+test("SSO start reports authorization and native browser outcomes without a window.open fallback", async ({
+  page
+}) => {
+  await gotoSignedOutAuth(page);
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          auth: {
+            kind: "ready",
+            homeserver: "https://matrix.org",
+            flows: [
+              {
+                kind: "sso",
+                delegated_oidc_compatibility: false,
+                display_name: null
+              }
+            ],
+            delegated: { registration_url: null }
+          }
+        }
+      }
+    });
+    (window as typeof window & { __oidcWindowOpenCalls: number }).__oidcWindowOpenCalls = 0;
+    window.open = () => {
+      (window as typeof window & { __oidcWindowOpenCalls: number }).__oidcWindowOpenCalls += 1;
+      return null;
+    };
+    window.__harness.setCommandResponse("start_oidc_login", {
+      outcome: "invalid_authorization_url"
+    });
+    window.__harness.pushStateUpdate();
+  });
+
+  const startSso = page.getByRole("button", { name: t("auth.flowSso") });
+  await startSso.click();
+  await expect(page.getByRole("alert")).toHaveText(t("auth.ssoInvalidAuthorizationUrl"));
+
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse("start_oidc_login", {
+      outcome: "browser_launch_failed"
+    });
+  });
+  await startSso.click();
+  await expect(page.getByRole("alert")).toHaveText(t("auth.ssoBrowserLaunchFailed"));
+
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse("start_oidc_login", () => {
+      throw new Error("authorization creation failed");
+    });
+  });
+  await startSso.click();
+  await expect(page.getByRole("alert")).toHaveText(t("auth.ssoAuthorizationFailed"));
+
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse("start_oidc_login", { outcome: "launched" });
+  });
+  await startSso.click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  expect(
+    await page.evaluate(
+      () => (window as typeof window & { __oidcWindowOpenCalls: number }).__oidcWindowOpenCalls
+    )
+  ).toBe(0);
+});
+
 test("auth form defaults to matrix.org and submits custom ports in the homeserver URL field", async ({
   page
 }) => {

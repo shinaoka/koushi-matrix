@@ -1139,6 +1139,12 @@ normal QA-title mode and cannot change product title semantics.
   unimplemented SDK path), the actor must also send the matching reducer failure
   action. An `OperationFailed` event alone leaves Rust-owned pending state stuck
   and pushes recovery semantics toward the GUI.
+- Login OIDC authorization is also Rust/native-owned. `AccountActor` retains the
+  PKCE/state flow and replays only a same-homeserver authorization; Tauri alone
+  receives the full authorization URL and launches it through the native opener.
+  WebView Core-event projection contains only `request_id`, and React receives
+  only coarse launch outcome plus settlement. Never return the provider URL or
+  OAuth state to React or add an SSO `window.open` fallback.
 - Trust GUI controls are transport clients only. Add Tauri commands as thin
   `CoreCommand::Account` submitters and keep SDK calls, UIAA/OAuth continuation
   handles, and verification handles inside Rust actors. React must render
