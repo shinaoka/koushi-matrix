@@ -405,7 +405,8 @@ impl From<StateDelta> for FrontendDesktopSnapshotDelta {
         if let Some(mut native_attention) = changed.native_attention {
             if native_attention.summary.capabilities == NativeAttentionCapabilities::default() {
                 native_attention.summary.capabilities =
-                    native_attention_capabilities_for_platform(platform);
+                    native_attention_capabilities_for_platform(platform)
+                        .with_tray(crate::tray::observed_tray_capability());
             }
             domain.native_attention = Some(native_attention);
         }
@@ -522,7 +523,8 @@ fn frontend_app_state_for_platform(state: AppState, platform: DisplayPlatform) -
     let mut native_attention = state.native_attention;
     if native_attention.summary.capabilities == NativeAttentionCapabilities::default() {
         native_attention.summary.capabilities =
-            native_attention_capabilities_for_platform(platform);
+            native_attention_capabilities_for_platform(platform)
+                .with_tray(crate::tray::observed_tray_capability());
     }
     FrontendAppState {
         schema_version: SNAPSHOT_SCHEMA_VERSION,

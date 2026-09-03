@@ -1,6 +1,7 @@
 use super::{
-    MacosCloseRequestedAction, desktop_menu_items, desktop_standard_menu_items,
-    macos_close_requested_action, next_native_window_focus_generation,
+    CloseRequestedAction, MacosCloseRequestedAction, QuitRequestAction, QuitStage,
+    close_requested_action, desktop_menu_items, desktop_standard_menu_items,
+    macos_close_requested_action, next_native_window_focus_generation, quit_request_action,
     observed_native_window_focus, qa_control_pipe_path_from_env_value,
     qa_login_pipe_path_from_env_value, restore_session_enabled_from_env_value,
     saved_sessions_disabled_from_env_value, window_event_should_stop_background_tasks,
@@ -330,4 +331,61 @@ fn desktop_menu_items_include_platform_standard_close_and_quit() {
     assert!(items.iter().any(|item| {
         item.id == "quit" && item.accelerator == "CmdOrCtrl+Q" && item.menu == "app"
     }));
+}
+
+#[test]
+fn close_to_hide_requires_both_the_setting_and_a_real_tray() {
+    // Linux/Windows default: opted in with a tray present.
+    assert_eq!(
+        close_requested_action(true, true),
+        CloseRequestedAction::HideToTray
+    );
+    // Opted out: the close must destroy the window as before.
+    assert_eq!(
+        close_requested_action(true, false),
+        CloseRequestedAction::DestroyWindow
+    );
+    // No tray: hiding the only window would leave the process unreachable, so
+    // the setting alone must never be enough.
+    assert_eq!(
+        close_requested_action(false, true),
+        CloseRequestedAction::DestroyWindow
+    );
+    assert_eq!(
+        close_requested_action(false, false),
+        CloseRequestedAction::DestroyWindow
+    );
+}
+
+#[test]
+fn exit_request_shuts_core_down_exactly_once_before_exiting() {
+    // First Quit holds the exit and submits shutdown.
+    assert_eq!(
+        quit_request_action(QuitStage::Idle),
+        QuitRequestAction::BeginShutdown
+    );
+    // A second Quit while shutdown is in flight must not submit a second one.
+    assert_eq!(
+        quit_request_action(QuitStage::ShuttingDown),
+        QuitRequestAction::AwaitShutdown
+    );
+    // The exit re-requested by the shutdown task proceeds.
+    assert_eq!(
+        quit_request_action(QuitStage::ShutdownComplete),
+        QuitRequestAction::Exit
+    );
+}
+
+#[test]
+fn quit_stage_survives_its_atomic_representation() {
+    for stage in [
+        QuitStage::Idle,
+        QuitStage::ShuttingDown,
+        QuitStage::ShutdownComplete,
+    ] {
+        assert_eq!(QuitStage::from_repr(stage.repr()), stage);
+    }
+    // An unexpected stored value must fail closed to "shutdown not started"
+    // rather than letting the process exit without shutting core down.
+    assert_eq!(QuitStage::from_repr(200), QuitStage::Idle);
 }

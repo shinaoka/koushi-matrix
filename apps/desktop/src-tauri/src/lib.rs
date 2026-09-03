@@ -7,6 +7,7 @@ mod dto;
 pub mod keyring_backend;
 mod media_save;
 mod oidc_browser;
+mod tray;
 mod viewport_sync;
 mod window_state;
 
@@ -14,7 +15,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering},
     },
 };
 use tokio::sync::Mutex as TokioMutex;
@@ -78,11 +79,19 @@ pub struct CoreRuntimeState {
     /// Command-dispatch connection. Uses `tokio::sync::Mutex` so the guard can
     /// be held across `.await` points in async Tauri command handlers.
     pub(crate) connection: TokioMutex<CoreConnection>,
+    /// Window-lifecycle connection, used only for synchronous latest-wins
+    /// snapshot reads. `WindowEvent::CloseRequested` must decide whether to
+    /// hide before it returns, because `api.prevent_close()` cannot be deferred
+    /// across an await, so the close-to-hide gate cannot go through the
+    /// `tokio::sync::Mutex`-guarded command connection.
+    pub(crate) window_lifecycle_connection: CoreConnection,
     /// Tauri-side timeline item count (updated by event loop; QA title only).
     pub(crate) timeline_items_count: Arc<AtomicUsize>,
     _forwarder_task: Option<CoreEventForwarderTask>,
     pub(crate) native_window_focus_generation: AtomicU64,
     pub(crate) viewport_sync_generation: viewport_sync::ViewportSyncGeneration,
+    /// Graceful-quit barrier; see [`quit_request_action`].
+    pub(crate) quit_stage: AtomicU8,
 }
 
 fn restore_session_enabled_from_env_value(value: Option<&str>) -> bool {
@@ -378,6 +387,125 @@ impl MacosCloseRequestedAction {
     }
 }
 
+/// What a non-macOS `CloseRequested` should do.
+///
+/// macOS hides unconditionally per platform convention and does not use this
+/// decision (overview.md, "Desktop Window Lifecycle And Tray").
+#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CloseRequestedAction {
+    HideToTray,
+    DestroyWindow,
+}
+
+/// Close-to-hide gate for Linux and Windows.
+///
+/// Both inputs must hold: the user must not have opted out, and a tray icon
+/// must actually exist. Hiding the only window with no tray and no dock
+/// presence would leave the process unreachable, so a missing or unknown tray
+/// always lets the close proceed.
+#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
+fn close_requested_action(tray_available: bool, close_to_tray: bool) -> CloseRequestedAction {
+    if tray_available && close_to_tray {
+        CloseRequestedAction::HideToTray
+    } else {
+        CloseRequestedAction::DestroyWindow
+    }
+}
+
+impl CloseRequestedAction {
+    #[cfg(not(target_os = "macos"))]
+    fn diagnostic_token(self) -> &'static str {
+        match self {
+            Self::HideToTray => "hide_to_tray",
+            Self::DestroyWindow => "destroy_window",
+        }
+    }
+}
+
+/// Graceful-quit barrier stage.
+///
+/// Explicit Quit is the only path that triggers `AppCommand::Shutdown` as part
+/// of process exit, and it must trigger it exactly once even though the exit
+/// request is re-delivered after shutdown completes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QuitStage {
+    Idle,
+    ShuttingDown,
+    ShutdownComplete,
+}
+
+const QUIT_STAGE_IDLE: u8 = 0;
+const QUIT_STAGE_SHUTTING_DOWN: u8 = 1;
+const QUIT_STAGE_SHUTDOWN_COMPLETE: u8 = 2;
+
+impl QuitStage {
+    fn from_repr(value: u8) -> Self {
+        match value {
+            QUIT_STAGE_SHUTTING_DOWN => Self::ShuttingDown,
+            QUIT_STAGE_SHUTDOWN_COMPLETE => Self::ShutdownComplete,
+            _ => Self::Idle,
+        }
+    }
+
+    fn repr(self) -> u8 {
+        match self {
+            Self::Idle => QUIT_STAGE_IDLE,
+            Self::ShuttingDown => QUIT_STAGE_SHUTTING_DOWN,
+            Self::ShutdownComplete => QUIT_STAGE_SHUTDOWN_COMPLETE,
+        }
+    }
+}
+
+/// What an `ExitRequested` should do for a given barrier stage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QuitRequestAction {
+    /// First request: hold the exit and submit core shutdown.
+    BeginShutdown,
+    /// Shutdown already in flight: hold the exit, submit nothing.
+    AwaitShutdown,
+    /// Shutdown finished: let the process exit.
+    Exit,
+}
+
+fn quit_request_action(stage: QuitStage) -> QuitRequestAction {
+    match stage {
+        QuitStage::Idle => QuitRequestAction::BeginShutdown,
+        QuitStage::ShuttingDown => QuitRequestAction::AwaitShutdown,
+        QuitStage::ShutdownComplete => QuitRequestAction::Exit,
+    }
+}
+
+/// Request application exit. Menu Quit, tray Quit, and this helper all end up
+/// in the same `RunEvent::ExitRequested` barrier, so shutdown ordering has one
+/// owner.
+fn request_application_exit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    app.exit(0);
+}
+
+/// Hold the exit, shut the core runtime down, then exit for real.
+fn begin_graceful_shutdown(app: tauri::AppHandle) {
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(DiagnosticLevel::Info, "desktop.lifecycle", "quit_requested")
+            .field(DiagnosticField::token("action", "graceful_shutdown")),
+    );
+    tauri::async_runtime::spawn(async move {
+        {
+            let core_state = app.state::<CoreRuntimeState>();
+            let request_id = core_state.connection.lock().await.next_request_id();
+            let _ = commands::submit_core_command(
+                &core_state,
+                CoreCommand::App(AppCommand::Shutdown { request_id }),
+            )
+            .await;
+            core_state
+                .quit_stage
+                .store(QuitStage::ShutdownComplete.repr(), Ordering::Release);
+        }
+        app.exit(0);
+    });
+}
+
 fn is_oidc_callback_url(url: &str) -> bool {
     // The registered redirect URI is hostless (`scheme:/auth/callback`), but
     // URL normalization between the browser, the OS opener, and the deep-link
@@ -518,19 +646,26 @@ pub fn run() {
                 event_conn,
                 Arc::clone(&timeline_items_count),
             );
+            // synchronous snapshot connection for the window-close gate
+            let window_lifecycle_connection = runtime.attach();
             let core_state = CoreRuntimeState {
                 runtime,
                 connection: TokioMutex::new(command_conn),
+                window_lifecycle_connection,
                 timeline_items_count,
                 _forwarder_task: Some(forwarder_task),
                 native_window_focus_generation: AtomicU64::new(0),
                 viewport_sync_generation: viewport_sync::ViewportSyncGeneration::default(),
+                quit_stage: AtomicU8::new(QuitStage::Idle.repr()),
             };
             app.manage(core_state);
             install_oidc_deep_link_handler(app)?;
 
             let menu = build_desktop_menu(app)?;
             app.set_menu(menu)?;
+            // Best-effort by contract: a session with no status-notifier host
+            // simply has no tray, and close-to-hide stays off there.
+            tray::install_tray_icon(app);
             let _ = restore_main_window_state(app);
             ensure_main_window_visible(app);
             app.on_menu_event(|app, event| {
@@ -649,6 +784,52 @@ pub fn run() {
                         )),
                     );
                     return;
+                }
+                #[cfg(not(target_os = "macos"))]
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    // The gate is a synchronous latest-wins snapshot read:
+                    // `prevent_close` cannot be deferred across an await.
+                    let close_to_tray = window
+                        .try_state::<CoreRuntimeState>()
+                        .map(|core_state| {
+                            core_state
+                                .window_lifecycle_connection
+                                .snapshot()
+                                .settings
+                                .values
+                                .window
+                                .close_to_tray
+                        })
+                        .unwrap_or(false);
+                    let action = close_requested_action(tray::tray_is_available(), close_to_tray);
+                    koushi_diagnostics::record(
+                        DiagnosticEvent::new(
+                            DiagnosticLevel::Info,
+                            "desktop.lifecycle",
+                            "close_requested",
+                        )
+                        .field(DiagnosticField::token("action", action.diagnostic_token()))
+                        .field(DiagnosticField::boolean(
+                            "close_to_tray",
+                            close_to_tray,
+                        ))
+                        .field(DiagnosticField::boolean(
+                            "tray_available",
+                            tray::tray_is_available(),
+                        )),
+                    );
+                    if matches!(action, CloseRequestedAction::HideToTray) {
+                        // Persist geometry exactly as a real close would, then
+                        // keep the window alive. `DestroyWindow` falls through
+                        // to the shared persistence path below instead.
+                        let _ = persist_close_window_state_if_ready(
+                            window,
+                            WindowCloseEvent::CloseRequested,
+                        );
+                        api.prevent_close();
+                        let _ = window.hide();
+                        return;
+                    }
                 }
                 if window_event_should_persist(event) {
                     if window_event_is_geometry(event) {
@@ -853,6 +1034,27 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("failed to build matrix desktop app")
         .run(|app, event| {
+            // Explicit Quit (app-menu Quit, tray Quit) is the only path that
+            // triggers `AppCommand::Shutdown` as part of process exit. Hold the
+            // exit until core shutdown has completed; the re-delivered request
+            // after completion proceeds, so shutdown is submitted exactly once
+            // even when the product window is hidden rather than destroyed.
+            if let tauri::RunEvent::ExitRequested { api, .. } = &event {
+                if let Some(core_state) = app.try_state::<CoreRuntimeState>() {
+                    let stage = QuitStage::from_repr(core_state.quit_stage.load(Ordering::Acquire));
+                    match quit_request_action(stage) {
+                        QuitRequestAction::BeginShutdown => {
+                            core_state
+                                .quit_stage
+                                .store(QuitStage::ShuttingDown.repr(), Ordering::Release);
+                            api.prevent_exit();
+                            begin_graceful_shutdown(app.clone());
+                        }
+                        QuitRequestAction::AwaitShutdown => api.prevent_exit(),
+                        QuitRequestAction::Exit => {}
+                    }
+                }
+            }
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
                 koushi_diagnostics::record(
