@@ -147,6 +147,8 @@ pub struct SettingsValues {
     #[serde(default)]
     pub sidebar: SidebarSettings,
     #[serde(default)]
+    pub window: WindowSettings,
+    #[serde(default)]
     pub legacy_frontend_preferences_imported: bool,
 }
 
@@ -192,6 +194,9 @@ impl SettingsValues {
         if let Some(sidebar) = patch.sidebar {
             self.sidebar = sidebar;
         }
+        if let Some(window) = patch.window {
+            self.window = window;
+        }
     }
 }
 
@@ -211,6 +216,7 @@ impl Default for SettingsValues {
             room_list_sort: RoomListSort::default(),
             search_crawler: SearchCrawlerSettings::default(),
             sidebar: SidebarSettings::default(),
+            window: WindowSettings::default(),
             legacy_frontend_preferences_imported: false,
         }
     }
@@ -477,6 +483,31 @@ impl Default for DisplaySettings {
     }
 }
 
+/// Rust-owned desktop window lifecycle preferences.
+///
+/// `close_to_tray` gates close-to-hide on Linux and Windows (overview.md,
+/// "Desktop Window Lifecycle And Tray"). macOS hides on close unconditionally
+/// per platform convention and ignores this value. The Tauri adapter also
+/// requires an actually-created tray icon before honouring it, so turning this
+/// on can never make the only window unreachable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WindowSettings {
+    #[serde(default = "default_close_to_tray")]
+    pub close_to_tray: bool,
+}
+
+fn default_close_to_tray() -> bool {
+    true
+}
+
+impl Default for WindowSettings {
+    fn default() -> Self {
+        Self {
+            close_to_tray: default_close_to_tray(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 /// Media settings.
 ///
@@ -609,4 +640,6 @@ pub struct SettingsPatch {
     pub search_crawler: Option<SearchCrawlerSettings>,
     #[serde(default)]
     pub sidebar: Option<SidebarSettings>,
+    #[serde(default)]
+    pub window: Option<WindowSettings>,
 }

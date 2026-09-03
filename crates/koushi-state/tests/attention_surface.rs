@@ -81,12 +81,38 @@ fn native_attention_capabilities_are_resolved_from_platform_profile() {
     assert_eq!(macos.sound, NativeAttentionCapability::Available);
     assert_eq!(windows.sound, NativeAttentionCapability::Available);
     assert_eq!(linux.sound, NativeAttentionCapability::Unavailable);
+    // Tray availability is not a platform constant: it depends on whether the
+    // adapter actually managed to create a tray icon at startup, so the
+    // platform-static baseline must stay `Unknown` on every platform rather
+    // than claiming a tray that may not exist.
     assert_eq!(macos.tray, NativeAttentionCapability::Unknown);
     assert_eq!(windows.tray, NativeAttentionCapability::Unknown);
     assert_eq!(linux.tray, NativeAttentionCapability::Unknown);
     assert_eq!(macos.activation, NativeAttentionCapability::Unknown);
     assert_eq!(windows.activation, NativeAttentionCapability::Unknown);
     assert_eq!(linux.activation, NativeAttentionCapability::Unknown);
+}
+
+#[test]
+fn tray_capability_is_resolved_by_the_adapter_without_touching_other_capabilities() {
+    let baseline = native_attention_capabilities_for_platform(DisplayPlatform::Linux);
+
+    let available = baseline.with_tray(NativeAttentionCapability::Available);
+    assert_eq!(available.tray, NativeAttentionCapability::Available);
+    let unavailable = baseline.with_tray(NativeAttentionCapability::Unavailable);
+    assert_eq!(unavailable.tray, NativeAttentionCapability::Unavailable);
+
+    // Only `tray` moves; the platform-decided capabilities are untouched.
+    assert_eq!(
+        available.with_tray(baseline.tray),
+        baseline,
+        "with_tray must not change any other capability"
+    );
+    assert_eq!(
+        unavailable.with_tray(baseline.tray),
+        baseline,
+        "with_tray must not change any other capability"
+    );
 }
 
 #[test]
