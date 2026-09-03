@@ -28,6 +28,7 @@ describe("KeyboardSettingsPanel", () => {
               url_previews_enabled: true,
               encrypted_url_previews_enabled: false
             },
+            window: { close_to_tray: true },
             media: {
               image_upload_compression_policy: {
                 threshold_bytes: 1048576,
@@ -92,6 +93,7 @@ describe("KeyboardSettingsPanel", () => {
               url_previews_enabled: true,
               encrypted_url_previews_enabled: false
             },
+            window: { close_to_tray: true },
             media: {
               image_upload_compression_policy: {
                 threshold_bytes: 1048576,

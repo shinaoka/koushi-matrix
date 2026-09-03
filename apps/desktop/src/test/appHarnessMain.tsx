@@ -322,6 +322,7 @@ function defaultSettingsState(): DesktopSnapshot["state"]["domain"]["settings"] 
         url_previews_enabled: true,
         encrypted_url_previews_enabled: true
       },
+      window: { close_to_tray: true },
       media: {
         image_upload_compression_policy: {
           threshold_bytes: 1048576,
@@ -433,6 +434,7 @@ function applySettingsPatch(
     composer: patch.composer ?? values.composer,
     notifications: patch.notifications ?? values.notifications,
     display: patch.display ?? values.display,
+    window: patch.window ?? values.window,
     media: patch.media ?? values.media,
     timeline: patch.timeline ?? values.timeline,
     search_crawler: patch.search_crawler ?? values.search_crawler,

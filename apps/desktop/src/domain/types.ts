@@ -130,6 +130,7 @@ export interface SettingsValues {
   composer: ComposerSettings;
   notifications: NotificationSettings;
   display: DisplaySettings;
+  window: WindowSettings;
   media: MediaSettings;
   timeline: TimelineSettings;
   sidebar: SidebarSettings;
@@ -147,6 +148,7 @@ export interface SettingsPatch {
   composer?: ComposerSettings;
   notifications?: NotificationSettings;
   display?: DisplaySettings;
+  window?: WindowSettings;
   media?: MediaSettings;
   timeline?: TimelineSettings;
   sidebar?: SidebarSettings;
@@ -256,6 +258,10 @@ export interface DisplaySettings {
   hide_redacted: boolean;
   url_previews_enabled: boolean;
   encrypted_url_previews_enabled: boolean;
+}
+
+export interface WindowSettings {
+  close_to_tray: boolean;
 }
 
 export interface MediaSettings {
