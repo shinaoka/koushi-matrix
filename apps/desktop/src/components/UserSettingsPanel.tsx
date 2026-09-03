@@ -48,6 +48,7 @@ import type {
   SettingsPatch,
   SettingsState,
   SecureBackupSetupIntent,
+  WindowSettings,
   ProfileState,
   TimelineSettings
 } from "../domain/types";
@@ -183,6 +184,10 @@ export function UserSettingsPanel({
   const selectedTimeline = settings.values.timeline;
   const selectedNotifications = settings.values.notifications;
   const selectedDisplay = settings.values.display;
+  const selectedWindow = settings.values.window;
+  // macOS hides on close unconditionally (overview.md, "Desktop Window
+  // Lifecycle And Tray"), so the setting has nothing to control there.
+  const closeToTrayIsConfigurable = platform !== "macos";
   const isSaving = settings.persistence.kind === "saving";
   const [displayNameDraft, setDisplayNameDraft] = useState(profile.own.display_name ?? "");
   const panelRef = useRef<HTMLElement | null>(null);
@@ -583,6 +588,15 @@ export function UserSettingsPanel({
             current={selectedDisplay}
             onSelect={onUpdateSettings}
           />
+          {closeToTrayIsConfigurable ? (
+            <WindowToggle
+              label={t("settings.closeToTray")}
+              description={t("settings.closeToTrayDescription")}
+              settingKey="close_to_tray"
+              current={selectedWindow}
+              onSelect={onUpdateSettings}
+            />
+          ) : null}
         </div>
       </section>
 
@@ -944,6 +958,52 @@ function DisplayToggle({
       <span className="settings-toggle-copy">
         <span className="settings-toggle-label">
           <Icon size={15} aria-hidden="true" />
+          <span>{label}</span>
+        </span>
+        {description ? (
+          <span className="settings-toggle-description">{description}</span>
+        ) : null}
+      </span>
+      <span className="settings-switch-track" aria-hidden="true">
+        <span className="settings-switch-thumb" />
+      </span>
+    </button>
+  );
+}
+
+function WindowToggle({
+  label,
+  description,
+  settingKey,
+  current,
+  onSelect
+}: {
+  label: string;
+  description?: string;
+  settingKey: keyof WindowSettings;
+  current: WindowSettings;
+  onSelect: (patch: SettingsPatch) => void;
+}) {
+  const checked = current[settingKey];
+  return (
+    <button
+      className="settings-toggle-row"
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={() => {
+        onSelect({
+          window: {
+            ...current,
+            [settingKey]: !checked
+          }
+        });
+      }}
+    >
+      <span className="settings-toggle-copy">
+        <span className="settings-toggle-label">
+          <Monitor size={15} aria-hidden="true" />
           <span>{label}</span>
         </span>
         {description ? (

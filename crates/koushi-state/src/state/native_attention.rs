@@ -332,6 +332,27 @@ pub struct NativeAttentionCapabilities {
     pub activation: NativeAttentionCapability,
 }
 
+impl NativeAttentionCapabilities {
+    /// Resolve the tray capability observed by the platform adapter.
+    ///
+    /// `native_attention_capabilities_for_platform` is the platform-static
+    /// baseline and cannot know whether a tray icon was actually created, so it
+    /// leaves `tray` as `Unknown`. The adapter overwrites it with what it
+    /// observed when it attempted the tray build (overview.md, "Desktop
+    /// Attention Surfaces").
+    #[must_use]
+    pub fn with_tray(mut self, tray: NativeAttentionCapability) -> Self {
+        self.tray = tray;
+        self
+    }
+}
+
+/// Platform-static native attention capability baseline.
+///
+/// Capabilities decided by the platform alone are resolved here. Capabilities
+/// that depend on a runtime attempt stay `Unknown` and are resolved by the
+/// adapter before the snapshot reaches the webview; `tray` is resolved through
+/// [`NativeAttentionCapabilities::with_tray`].
 pub fn native_attention_capabilities_for_platform(
     platform: DisplayPlatform,
 ) -> NativeAttentionCapabilities {

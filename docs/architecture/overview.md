@@ -990,6 +990,49 @@ subscriptions, QA title ownership, persisted geometry, and shutdown behavior.
 Secondary OS dialogs or system prompts do not change this product-window
 contract.
 
+### Desktop Window Lifecycle And Tray
+
+The tray (system tray on Linux, notification area on Windows, status item on
+macOS) is a platform capability owned by the Tauri adapter. The adapter attempts
+to create exactly one process-wide tray icon during `setup`, and the outcome is
+recorded so it can be resolved truthfully into
+`NativeAttentionCapabilities.tray`. Tray creation is best-effort: a desktop
+environment without a status-notifier host is a NORMAL outcome, the adapter
+records the failure as a diagnostic, reports the capability as unavailable, and
+the app must still run as an ordinary windowed application. The tray carries no
+Matrix data — only a static tooltip and two commands, Show and Quit — so it is
+not an attention rendering surface and must not display room labels, counts, or
+message content.
+
+Close-to-hide is the default window-close behavior on all three desktop
+platforms. Requesting a window close hides the `main` window instead of
+destroying it, after the same window-state persistence that a real close
+performs. macOS keeps the hide unconditional, per platform convention, because
+the application stays alive in the Dock with no window. On Linux and Windows the
+behavior is gated by the Rust-owned persisted setting
+`SettingsValues.window.close_to_tray` (default `true`) and additionally requires
+that the tray icon was created: hiding the only window with no tray and no dock
+presence would leave the process unreachable, so when the setting is off or the
+tray is unavailable the close proceeds and destroys the window. React must not
+own this decision; it may only render the setting toggle and dispatch a settings
+patch.
+
+`AppCommand::Shutdown` is submitted exactly once as part of process exit, and
+one barrier owns it for every path. App-menu Quit and tray Quit request
+application exit; the adapter intercepts the exit request, submits
+`AppCommand::Shutdown`, awaits it, and only then lets the process exit. A second
+exit request while shutdown is in flight is held, and the one re-delivered after
+shutdown completes proceeds immediately, so a hidden product window quits
+cleanly. Window destruction (an unavoidable close, or close-to-hide disabled)
+means the process is ending either way, so it enters the same barrier rather
+than submitting its own shutdown: whichever of the destroy path and the exit
+request that follows it claims the barrier first is the single submitter, and it
+is also the one that finally exits the process. The exit request's code is not
+inspected — a last-window-closed request and an explicit `exit(0)` are handled
+identically — and the awaited submit is bounded by the adapter's core-command
+submit timeout with its error ignored, so a wedged core can never leave the exit
+held forever.
+
 ### Desktop Viewport Synchronization
 
 Live desktop viewport synchronization is Rust-owned at the Tauri adapter
@@ -1035,7 +1078,13 @@ candidate. The adapter may only map that private-data-minimized candidate to
 macOS, Windows, Linux, or no-op capabilities; React must not branch on platform
 notification semantics or synthesize badge/window-title state locally.
 Persistent title, badge, overlay, tray, and clear hooks follow the Rust-owned
-snapshot. Sound and activation hooks are candidate-scoped transient effects, so
+snapshot. `native_attention_capabilities_for_platform` is the platform-static
+baseline only: capabilities that are decided by the platform alone are resolved
+there, and capabilities that depend on a runtime attempt are left `Unknown` for
+the adapter to overwrite before the snapshot reaches React. `tray` is such a
+capability — its value is whatever the adapter observed when it tried to create
+the tray icon, applied in the DTO projection alongside the process-wide display
+platform, so React never sees a claimed tray that does not exist. Sound and activation hooks are candidate-scoped transient effects, so
 they run only for a Rust-owned notification candidate and not for every later
 snapshot that still contains unread state. Until a native Core-owned
 notification dispatcher replaces the webview/window sound port,

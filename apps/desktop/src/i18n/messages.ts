@@ -562,6 +562,8 @@ export type MessageId =
   | "settings.densityComfortable"
   | "settings.codeBlockWrap"
   | "settings.hideRedacted"
+  | "settings.closeToTray"
+  | "settings.closeToTrayDescription"
   | "settings.notificationBadges"
   | "settings.notificationDesktop"
   | "settings.notificationSound"
@@ -1873,6 +1875,9 @@ const en: Catalog = {
   "settings.densityComfortable": "Comfortable",
   "settings.codeBlockWrap": "Wrap long lines in code blocks",
   "settings.hideRedacted": "Hide deleted messages",
+  "settings.closeToTray": "Close button minimises to tray",
+  "settings.closeToTrayDescription":
+    "Keep Koushi running in the tray when the window is closed. Quit from the tray menu to exit.",
   "settings.urlPreviews": "URL previews",
   "settings.urlPreviewsEnabled": "Show link previews",
   "settings.urlPreviewsDescription": "Load previews for links in messages",
@@ -3082,6 +3087,9 @@ const ja: Catalog = {
   "settings.densityComfortable": "ゆったり",
   "settings.codeBlockWrap": "コードブロックの長い行を折り返す",
   "settings.hideRedacted": "削除されたメッセージを非表示",
+  "settings.closeToTray": "閉じるボタンでトレイに最小化",
+  "settings.closeToTrayDescription":
+    "ウィンドウを閉じても Koushi をトレイで実行し続けます。終了するにはトレイメニューの終了を使います。",
   "settings.urlPreviews": "URLプレビュー",
   "settings.urlPreviewsEnabled": "リンクプレビューを表示",
   "settings.urlPreviewsDescription": "メッセージ内のリンクのプレビューを読み込む",

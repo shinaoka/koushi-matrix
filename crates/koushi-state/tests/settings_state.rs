@@ -3,7 +3,8 @@ use koushi_state::{
     DisplaySettings, EmojiPreference, FontPreference, KeyboardSettings, LocaleSettings,
     MediaSettings, NotificationSettings, RoomListSort, RoomSummary, SettingsPatch,
     SettingsPersistenceState, SettingsValues, TextDirectionPreference, ThemePreference,
-    ThreadListOrder, TimelineSettings, TimelineThreadRootOrder, UiEvent, reduce,
+    ThreadListOrder, TimelineSettings, TimelineThreadRootOrder, UiEvent, WindowSettings,
+    reduce,
 };
 
 fn dark_theme_patch() -> SettingsPatch {
@@ -114,6 +115,7 @@ fn settings_loaded_replaces_values_without_requiring_a_session() {
         room_list_sort: RoomListSort::Activity,
         search_crawler: koushi_state::SearchCrawlerSettings::default(),
         sidebar: koushi_state::SidebarSettings::default(),
+        window: WindowSettings::default(),
         legacy_frontend_preferences_imported: false,
     };
 
@@ -944,4 +946,54 @@ fn settings_update_without_sort_changes_does_not_emit_room_or_threads_list_event
         !effects.contains(&AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged)),
         "expected no ThreadsListChanged when order is unchanged"
     );
+}
+
+#[test]
+fn close_to_tray_defaults_on_persists_and_backfills_for_legacy_stores() {
+    // Default is close-to-hide enabled (overview.md, "Desktop Window Lifecycle
+    // And Tray").
+    let mut state = AppState::default();
+    assert!(state.settings.values.window.close_to_tray);
+    assert_eq!(state.settings.values.window, WindowSettings::default());
+
+    // Opting out is a normal settings patch; the reducer persists the whole
+    // value set, so persistence needs no dedicated transport.
+    let effects = reduce(
+        &mut state,
+        AppAction::SettingsUpdateRequested {
+            request_id: 805,
+            patch: SettingsPatch {
+                window: Some(WindowSettings {
+                    close_to_tray: false,
+                }),
+                ..SettingsPatch::default()
+            },
+        },
+    );
+    assert!(!state.settings.values.window.close_to_tray);
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        AppEffect::PersistSettings { request_id: 805, values }
+            if !values.window.close_to_tray
+    )));
+
+    // Whole-SettingsValues serde is the persistence format, so the opted-out
+    // choice survives a save/load round trip.
+    let json = serde_json::to_string(&state.settings.values)
+        .expect("settings values should serialize");
+    let restored = serde_json::from_str::<SettingsValues>(&json)
+        .expect("settings values should deserialize");
+    assert!(!restored.window.close_to_tray);
+
+    // A settings file written before the section existed picks up the default.
+    let legacy = serde_json::from_str::<SettingsValues>(
+        r#"{
+          "locale": {"language_tag": null, "text_direction": "auto"},
+          "appearance": {"theme": "system"},
+          "typography": {"font": "system", "emoji": "system", "density": "comfortable"},
+          "keyboard": {"composer_send_shortcut": "enter"}
+        }"#,
+    )
+    .expect("legacy settings should deserialize");
+    assert!(legacy.window.close_to_tray);
 }

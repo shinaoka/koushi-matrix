@@ -728,6 +728,9 @@
           "typography": {
             "emoji": "system",
             "font": "system"
+          },
+          "window": {
+            "close_to_tray": true
           }
         }
       },
