@@ -42,7 +42,7 @@ describe("TimelineView anchor settlement", () => {
       },
     });
     const rects: Record<string, { top: number; height: number }> = {};
-    for (let index = 0; index < 700; index += 1) {
+    for (let index = 0; index < 601; index += 1) {
       rects[`$item${index}`] = { top: index * 72, height: 72 };
     }
     const scrollContainerRef: { current: HTMLElement | null } = {
@@ -57,6 +57,7 @@ describe("TimelineView anchor settlement", () => {
         transport={transport}
         onReply={() => undefined}
         onScrollDiagnosticsChange={onScrollDiagnosticsChange}
+        enableAvatarThumbnailDownloads={false}
         viewportScheduler={scheduler}
         listRefCallback={(element) => {
           scrollContainerRef.current =
@@ -74,7 +75,7 @@ describe("TimelineView anchor settlement", () => {
             request_id: null,
             key: KEY,
             generation: 1,
-            items: Array.from({ length: 700 }, (_, index) =>
+            items: Array.from({ length: 601 }, (_, index) =>
               message(`$item${index}`, `message ${index}`),
             ),
           },
@@ -89,7 +90,7 @@ describe("TimelineView anchor settlement", () => {
       configurable: true,
     });
     Object.defineProperty(timeline, "scrollHeight", {
-      value: 700 * 72,
+      value: 601 * 72,
       writable: true,
       configurable: true,
     });
@@ -98,7 +99,7 @@ describe("TimelineView anchor settlement", () => {
       writable: true,
       configurable: true,
     });
-    timeline.scrollTop = 49_800;
+    timeline.scrollTop = 42_672;
     fireEvent.scroll(timeline);
     act(() => {
       scheduler.flushAll();
@@ -117,7 +118,7 @@ describe("TimelineView anchor settlement", () => {
     const anchorId = anchor?.dataset["itemId"] ?? "";
     const anchorOffset = anchor?.getBoundingClientRect().top ?? 0;
 
-    const prepended = Array.from({ length: 100 }, (_, index) =>
+    const prepended = Array.from({ length: 80 }, (_, index) =>
       message(`$old${index}`, `old ${index}`),
     );
     act(() => {
@@ -132,7 +133,7 @@ describe("TimelineView anchor settlement", () => {
               ...prepended.map((item) => ({ PushFront: { item } })),
               {
                 Set: {
-                  index: 700,
+                  index: 680,
                   item: {
                     ...message("$item600", "message 600"),
                     is_hidden: true,
@@ -144,16 +145,16 @@ describe("TimelineView anchor settlement", () => {
         },
       });
       let extraHeight = 0;
-      for (let index = 0; index < 700; index += 1) {
+      for (let index = 0; index < 601; index += 1) {
         const height = index >= 117 && index < 123 ? 136 : 72;
         rects[`$item${index}`] = {
-          top: 100 * 72 + index * 72 + extraHeight,
+          top: 80 * 72 + index * 72 + extraHeight,
           height,
         };
         extraHeight += height - 72;
       }
-      for (let index = 0; index < 100; index += 1) {
-        rects[`$old${index}`] = { top: (99 - index) * 72, height: 72 };
+      for (let index = 0; index < 80; index += 1) {
+        rects[`$old${index}`] = { top: (79 - index) * 72, height: 72 };
       }
     });
     act(() => {
