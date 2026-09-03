@@ -500,6 +500,10 @@ pub(crate) enum AccountMessage {
     SessionInvalidated {
         reason: SessionInvalidationReason,
     },
+    /// The SDK rotated the session's access and refresh tokens. MAS issues
+    /// single-use refresh tokens, so the stored copy is invalid from this
+    /// moment on and must be replaced.
+    SessionTokensRefreshed,
     IdentityResetAuthTimedOut {
         flow_id: u64,
     },
@@ -2215,6 +2219,9 @@ impl AccountActor {
                 }
                 AccountMessage::SessionInvalidated { reason } => {
                     self.handle_session_invalidated(reason).await;
+                }
+                AccountMessage::SessionTokensRefreshed => {
+                    self.handle_session_tokens_refreshed().await;
                 }
                 AccountMessage::IdentityResetAuthTimedOut { flow_id } => {
                     self.handle_identity_reset_auth_timeout(flow_id).await;

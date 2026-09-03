@@ -1620,6 +1620,51 @@ async fn session_change_observer_records_exact_unknown_token_diagnostics_for_bot
 }
 
 #[tokio::test]
+async fn session_change_observer_forwards_token_rotation_and_keeps_observing() {
+    let _diagnostic_lock = koushi_diagnostics::test_support::lock();
+
+    let diagnostic_start = koushi_diagnostics::test_support::detail_snapshot()
+        .records
+        .len();
+    let (tx, mut receiver) = mpsc::channel(2);
+    let (change_tx, change_rx) = broadcast::channel(2);
+    let (_stop_tx, stop_rx) = oneshot::channel();
+    let task = executor::spawn(run_session_change_observation(change_rx, tx, stop_rx, None));
+
+    change_tx
+        .send(matrix_sdk::SessionChange::TokensRefreshed)
+        .expect("publish synthetic token rotation");
+    match receiver.recv().await.expect("observer message") {
+        AccountMessage::SessionTokensRefreshed => {}
+        _ => panic!("expected a token-rotation persistence request"),
+    }
+
+    // A rotation must not end the observation: the same session keeps running
+    // and its later invalidation still has to reach the actor.
+    let mut unknown_token = matrix_sdk::ruma::api::error::UnknownTokenErrorData::new();
+    unknown_token.soft_logout = false;
+    change_tx
+        .send(matrix_sdk::SessionChange::UnknownToken(unknown_token))
+        .expect("publish synthetic session invalidation");
+    match receiver.recv().await.expect("observer message") {
+        AccountMessage::SessionInvalidated {
+            reason: SessionInvalidationReason::UnknownToken { soft_logout },
+        } => assert!(!soft_logout),
+        _ => panic!("expected UnknownToken invalidation after a rotation"),
+    }
+    task.await.expect("session-change observer task");
+
+    let expected =
+        "stage=session_change_received source=matrix_sdk reason=tokens_refreshed".to_owned();
+    assert!(
+        koushi_diagnostics::test_support::detail_snapshot().records[diagnostic_start..]
+            .iter()
+            .any(|record| koushi_diagnostics::format_event(&record.event) == expected),
+        "missing exact observer diagnostic: {expected}"
+    );
+}
+
+#[tokio::test]
 async fn admitted_unknown_token_records_exact_lock_diagnostics_for_both_soft_logout_values() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock();
 

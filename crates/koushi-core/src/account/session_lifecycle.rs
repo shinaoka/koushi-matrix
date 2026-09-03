@@ -247,7 +247,29 @@ async fn run_session_change_observation(
                         }
                         break;
                     }
-                    Ok(matrix_sdk::SessionChange::TokensRefreshed) => {}
+                    Ok(matrix_sdk::SessionChange::TokensRefreshed) => {
+                        record(
+                            DiagnosticEvent::new(
+                                DiagnosticLevel::Info,
+                                "core.account",
+                                "session_change_received",
+                            )
+                            .field(DiagnosticField::token("source", "matrix_sdk"))
+                            .field(DiagnosticField::token("reason", "tokens_refreshed")),
+                        );
+                        // Unlike an invalidation, a rotation leaves the session
+                        // usable: keep observing so a later invalidation still
+                        // reaches the actor.
+                        if !send_observer_output_until_stopped(
+                            &tx,
+                            AccountMessage::SessionTokensRefreshed,
+                            &mut stop_rx,
+                        )
+                        .await
+                        {
+                            break;
+                        }
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -393,6 +415,29 @@ impl AccountActor {
             let _ = observation.stop_tx.send(());
             let _ = observation.task.await;
         }
+    }
+
+    /// Replace the stored credentials after the SDK rotated the session
+    /// tokens. MAS invalidates a refresh token as soon as it is used, so a
+    /// vault that still holds the pre-rotation copy cannot restore the session
+    /// on the next launch — the homeserver answers the first authenticated
+    /// request with `M_UNKNOWN_TOKEN`.
+    pub(super) async fn handle_session_tokens_refreshed(&mut self) {
+        let (Some(session), Some(key_id)) = (self.session.clone(), self.session_key_id.clone())
+        else {
+            return;
+        };
+        let outcome = if self.persist_session(&session, &key_id).await.is_ok() {
+            "persisted"
+        } else {
+            "failed"
+        };
+        trace_restore!(
+            "session_tokens_refreshed",
+            [DiagnosticField::token("outcome", outcome)],
+            "outcome={}",
+            outcome
+        );
     }
 
     pub(super) async fn handle_session_invalidated(&mut self, reason: SessionInvalidationReason) {
