@@ -908,6 +908,29 @@ pub(super) fn thread_root_item_with_authoritative_aggregate(
     item
 }
 
+pub(super) async fn load_exact_timeline_event_projection(
+    session: &MatrixClientSession,
+    key: &TimelineKey,
+    event_id: &str,
+) -> Result<TimelineItem, OperationFailureKind> {
+    let activity = ThreadRootProjectionActivity {
+        room_id: key.room_id().to_owned(),
+        root_event_id: event_id.to_owned(),
+        activity_event_id: event_id.to_owned(),
+        activity_timestamp_ms: None,
+        activity_sender: None,
+        activity_sender_label: None,
+        activity_body_preview: None,
+    };
+    let client = session.client();
+    let own_user_id = client.user_id();
+    let mut item = load_thread_root_projection_item(session, key, own_user_id, &activity).await?;
+    if let TimelineKind::Thread { root_event_id, .. } = &key.kind {
+        item.thread_root = Some(root_event_id.clone());
+    }
+    Ok(item)
+}
+
 async fn load_thread_root_projection_item(
     session: &MatrixClientSession,
     key: &TimelineKey,

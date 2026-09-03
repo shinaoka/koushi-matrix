@@ -33,6 +33,10 @@ struct DisplayProjectionSlot {
 pub(super) struct DisplayProjectionState {
     slots: Vec<DisplayProjectionSlot>,
     display_items: Vec<TimelineItem>,
+    /// Manager-owned accepted sends which are not yet represented by an SDK slot.
+    pending_items: Vec<TimelineItem>,
+    /// Transaction identities whose late SDK local echo must not reappear.
+    suppressed_transaction_ids: HashSet<String>,
 }
 
 impl DisplayProjectionState {
@@ -58,6 +62,8 @@ impl DisplayProjectionState {
         Self {
             slots,
             display_items,
+            pending_items: Vec::new(),
+            suppressed_transaction_ids: HashSet::new(),
         }
     }
 
@@ -67,7 +73,38 @@ impl DisplayProjectionState {
 
     pub(super) fn reproject(&mut self, context: &DisplayProjectionContext) -> Vec<TimelineDiff> {
         let before = self.display_items.clone();
-        self.display_items = project_display_items(&self.slots, context);
+        self.display_items = project_display_items(
+            &self.slots,
+            &self.pending_items,
+            &self.suppressed_transaction_ids,
+            context,
+        );
+        finalize_display_projection_diffs(&before, &self.display_items, false).0
+    }
+
+    pub(super) fn set_pending_inputs(
+        &mut self,
+        pending_items: Vec<TimelineItem>,
+        suppressed_transaction_ids: HashSet<String>,
+    ) {
+        self.pending_items = pending_items;
+        self.suppressed_transaction_ids = suppressed_transaction_ids;
+    }
+
+    pub(super) fn replace_pending(
+        &mut self,
+        pending_items: Vec<TimelineItem>,
+        suppressed_transaction_ids: HashSet<String>,
+        context: &DisplayProjectionContext,
+    ) -> Vec<TimelineDiff> {
+        let before = self.display_items.clone();
+        self.set_pending_inputs(pending_items, suppressed_transaction_ids);
+        self.display_items = project_display_items(
+            &self.slots,
+            &self.pending_items,
+            &self.suppressed_transaction_ids,
+            context,
+        );
         finalize_display_projection_diffs(&before, &self.display_items, false).0
     }
 }
@@ -568,7 +605,12 @@ impl DisplayMembershipRope {
             cursor = node.right.take();
         }
         display_state.slots = slots;
-        display_state.display_items = project_display_items(&display_state.slots, context);
+        display_state.display_items = project_display_items(
+            &display_state.slots,
+            &display_state.pending_items,
+            &display_state.suppressed_transaction_ids,
+            context,
+        );
         #[cfg(test)]
         {
             (self.display_payload_visits, self.structural_node_visits)
@@ -789,13 +831,32 @@ fn normalize_display_projection_slots(slots: &[DisplayProjectionSlot]) -> Vec<Ti
 
 fn project_display_items(
     slots: &[DisplayProjectionSlot],
+    pending_items: &[TimelineItem],
+    suppressed_transaction_ids: &HashSet<String>,
     context: &DisplayProjectionContext,
 ) -> Vec<TimelineItem> {
     if !context.project_thread_roots {
-        return slots
+        let mut rendered = slots
             .iter()
+            .filter(|slot| match &slot.item.id {
+                TimelineItemId::Transaction { transaction_id } => {
+                    !suppressed_transaction_ids.contains(transaction_id)
+                }
+                _ => true,
+            })
             .filter_map(|slot| decorate_event_item(&slot.item))
-            .collect();
+            .collect::<Vec<_>>();
+        let mut seen = rendered
+            .iter()
+            .map(timeline_item_render_id)
+            .collect::<HashSet<_>>();
+        for item in pending_items {
+            let id = timeline_item_render_id(item);
+            if seen.insert(id) {
+                rendered.push(decorate_event_item(item).expect("pending send is renderable"));
+            }
+        }
+        return rendered;
     }
 
     let roots = context
@@ -902,6 +963,13 @@ fn project_display_items(
     let mut projected = Vec::new();
     let mut rendered_ids = HashSet::new();
     for slot in slots {
+        if matches!(
+            &slot.item.id,
+            TimelineItemId::Transaction { transaction_id }
+                if suppressed_transaction_ids.contains(transaction_id)
+        ) {
+            continue;
+        }
         if let Some(item) = root_at_index.remove(&slot.canonical_index) {
             if rendered_ids.insert(timeline_item_render_id(&item)) {
                 projected.push(item);
@@ -949,6 +1017,23 @@ fn project_display_items(
             })
             .unwrap_or(projected.len());
         projected.insert(insertion_index, projected_item);
+    }
+    let mut seen = projected
+        .iter()
+        .map(timeline_item_render_id)
+        .collect::<HashSet<_>>();
+    for item in pending_items {
+        if matches!(
+            &item.id,
+            TimelineItemId::Transaction { transaction_id }
+                if suppressed_transaction_ids.contains(transaction_id)
+        ) {
+            continue;
+        }
+        let id = timeline_item_render_id(item);
+        if seen.insert(id) {
+            projected.push(decorate_event_item(item).expect("pending send is renderable"));
+        }
     }
     projected
 }
@@ -1489,7 +1574,12 @@ pub(super) fn apply_non_sdk_item_set_diffs_to_display_items(
             existing.item = item.clone();
         }
     }
-    display_projection.display_items = project_display_items(&display_projection.slots, context);
+    display_projection.display_items = project_display_items(
+        &display_projection.slots,
+        &display_projection.pending_items,
+        &display_projection.suppressed_transaction_ids,
+        context,
+    );
     let display_after = display_projection.display_items.clone();
     finalize_display_projection_diffs(&display_before, &display_after, false).0
 }

@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -52,7 +52,9 @@ use super::navigation::{
     commit_prepared_initial_window_with_lease, derive_timeline_navigation_snapshot,
     record_timeline_unread_consistency,
 };
-use super::outbound_send::thread_activity_observed_action_for_batch;
+use super::outbound_send::{
+    PendingSendPhase, PendingSendProjection, thread_activity_observed_action_for_batch,
+};
 use super::room_key_recovery::{decrypt_retry_diff_settlement, decrypt_retry_settlement_operation};
 use super::thread_projection::{
     ThreadAttentionBatchProvenance, ThreadAttentionObservation,
@@ -61,8 +63,57 @@ use super::thread_projection::{
 };
 // END GENERATED SIBLING IMPORTS
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+fn pending_display_inputs_for_incoming_transactions(
+    projections: &[PendingSendProjection],
+    incoming_transaction_ids: &HashSet<String>,
+    mut suppressed: HashSet<String>,
+) -> (Vec<TimelineItem>, HashSet<String>) {
+    let has_unbound = projections.iter().any(|projection| {
+        projection.phase == PendingSendPhase::Pending && projection.sdk_transaction_id.is_none()
+    });
+    let bound_incoming_transaction_ids = projections
+        .iter()
+        .filter_map(|projection| projection.sdk_transaction_id.as_ref())
+        .filter(|transaction_id| incoming_transaction_ids.contains(*transaction_id))
+        .cloned()
+        .collect::<HashSet<_>>();
+    let pending_items = projections
+        .iter()
+        .filter(|projection| {
+            !matches!(
+                projection.phase,
+                PendingSendPhase::Pending | PendingSendPhase::FailedRecoverable
+            ) || !projection
+                .sdk_transaction_id
+                .as_ref()
+                .is_some_and(|transaction_id| {
+                    bound_incoming_transaction_ids.contains(transaction_id)
+                })
+        })
+        .map(|projection| projection.item.clone())
+        .collect();
+    suppressed.extend(
+        projections
+            .iter()
+            .filter(|projection| {
+                matches!(
+                    projection.phase,
+                    PendingSendPhase::SentAwaitingRemote | PendingSendPhase::HydratedSent
+                )
+            })
+            .filter_map(|projection| projection.sdk_transaction_id.clone()),
+    );
+    if has_unbound {
+        suppressed.extend(
+            incoming_transaction_ids
+                .difference(&bound_incoming_transaction_ids)
+                .cloned(),
+        );
+    }
+    (pending_items, suppressed)
+}
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TimelineRelayControl {
     Overflow {
         generation: TimelineGeneration,
@@ -404,6 +455,43 @@ impl TimelineActor {
                 _ => {}
             }
         }
+        // A local timeline diff can overtake the manager's actor refresh after
+        // SDK binding. Prepare the display inputs without mutating the stable
+        // coordinator: known SDK ids atomically replace their client fallback;
+        // while a registration is still unbound, hide the overtaking SDK row
+        // for this batch and keep the already-visible client fallback.
+        let incoming_transaction_ids = core_diffs
+            .iter()
+            .flat_map(|diff| match diff {
+                TimelineDiff::PushFront { item }
+                | TimelineDiff::PushBack { item }
+                | TimelineDiff::Insert { item, .. }
+                | TimelineDiff::Set { item, .. } => vec![item],
+                TimelineDiff::Reset { items } => items.iter().collect(),
+                _ => Vec::new(),
+            })
+            .filter_map(|item| match &item.id {
+                koushi_protocol::event::TimelineItemId::Transaction { transaction_id } => {
+                    Some(transaction_id.clone())
+                }
+                _ => None,
+            })
+            .collect::<std::collections::HashSet<_>>();
+        if !incoming_transaction_ids.is_empty() {
+            let coordinator = self
+                .send_completion
+                .lock()
+                .expect("send completion coordinator lock must not be poisoned");
+            let projections = coordinator.projections_for_key(&self.key);
+            let (pending_items, suppressed) = pending_display_inputs_for_incoming_transactions(
+                &projections,
+                &incoming_transaction_ids,
+                coordinator.settled_transaction_ids(self.key.room_id()),
+            );
+            self.display_projection
+                .set_pending_inputs(pending_items, suppressed);
+        }
+
         let receipts_action = Self::live_receipts_action_from_sdk_diffs(&self.key, &sdk_diffs);
         let search_messages = sdk_diffs
             .iter()
@@ -523,6 +611,75 @@ impl TimelineActor {
             return;
         };
         drop(thread_summary_commit_lease);
+
+        // Reconcile only after the generation-fenced canonical batch committed.
+        // A replaced actor must not retire manager-owned fallback state.
+        let mut reconciled_pending = false;
+        {
+            let mut coordinator = self
+                .send_completion
+                .lock()
+                .expect("send completion coordinator lock must not be poisoned");
+            let mut reconcile_item = |item: &koushi_protocol::event::TimelineItem| match &item.id {
+                koushi_protocol::event::TimelineItemId::Transaction { transaction_id } => {
+                    reconciled_pending |= coordinator
+                        .reconcile_local_echo(self.key.room_id(), transaction_id)
+                        .is_some();
+                }
+                koushi_protocol::event::TimelineItemId::Event { event_id } => {
+                    reconciled_pending |= coordinator
+                        .reconcile_remote_event(self.key.room_id(), event_id)
+                        .is_some();
+                }
+                koushi_protocol::event::TimelineItemId::Synthetic { .. } => {}
+            };
+            for diff in &core_diffs {
+                match diff {
+                    TimelineDiff::PushFront { item }
+                    | TimelineDiff::PushBack { item }
+                    | TimelineDiff::Insert { item, .. }
+                    | TimelineDiff::Set { item, .. } => reconcile_item(item),
+                    TimelineDiff::Reset { items } => {
+                        for item in items {
+                            reconcile_item(item);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if reconciled_pending {
+            self.pending_send_projections = self
+                .send_completion
+                .lock()
+                .expect("send completion coordinator lock must not be poisoned")
+                .projections_for_key(&self.key);
+            let pending_items = self
+                .pending_send_projections
+                .iter()
+                .map(|projection| projection.item.clone())
+                .collect();
+            let mut suppressed = self
+                .pending_send_projections
+                .iter()
+                .filter(|projection| {
+                    matches!(
+                        projection.phase,
+                        super::outbound_send::PendingSendPhase::SentAwaitingRemote
+                            | super::outbound_send::PendingSendPhase::HydratedSent
+                    )
+                })
+                .filter_map(|projection| projection.sdk_transaction_id.clone())
+                .collect::<std::collections::HashSet<_>>();
+            suppressed.extend(
+                self.send_completion
+                    .lock()
+                    .expect("send completion coordinator lock must not be poisoned")
+                    .settled_transaction_ids(self.key.room_id()),
+            );
+            self.display_projection
+                .set_pending_inputs(pending_items, suppressed);
+        }
 
         thread_summary_affected_roots.extend(thread_summary_affected_root_event_ids(
             &self.key,

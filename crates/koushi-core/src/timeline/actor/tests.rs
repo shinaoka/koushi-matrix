@@ -10,10 +10,11 @@ use crate::executor;
 
 use std::sync::atomic::AtomicBool;
 
-use super::super::test_support::fake_rid;
+use super::super::outbound_send::{PendingSendPhase, PendingSendProjection, pending_send_item};
+use super::super::test_support::{fake_rid, room_key, timeline_item};
 use super::{
     ThreadSummaryProjectionIngress, ThreadSummaryProjectionWake, TimelineActorControl,
-    TimelineActorHandle, TimelineActorMessage, should_fetch_members,
+    TimelineActorHandle, TimelineActorMessage, canonical_pending_event_ids, should_fetch_members,
 };
 
 struct DropFlag(Arc<AtomicBool>);
@@ -22,6 +23,36 @@ impl Drop for DropFlag {
     fn drop(&mut self) {
         self.0.store(false, Ordering::SeqCst);
     }
+}
+
+#[test]
+fn pending_terminal_already_in_canonical_window_is_selected_for_convergence() {
+    let key = room_key();
+    let mut projection_item = pending_send_item("sdk-prior", "fallback", None, None, None);
+    projection_item.id = koushi_protocol::event::TimelineItemId::Event {
+        event_id: "$prior:test".to_owned(),
+    };
+    let projection = PendingSendProjection {
+        key,
+        sequence: 1,
+        client_txn_id: "client-prior".to_owned(),
+        item: projection_item,
+        sdk_transaction_id: Some("sdk-prior".to_owned()),
+        handle: None,
+        terminal_event_id: Some("$prior:test".to_owned()),
+        phase: PendingSendPhase::SentAwaitingRemote,
+    };
+    let canonical = vec![timeline_item(
+        "$prior:test",
+        Some("authoritative"),
+        "@sender:test",
+        false,
+    )];
+
+    assert_eq!(
+        canonical_pending_event_ids(&[projection], &canonical),
+        vec!["$prior:test".to_owned()]
+    );
 }
 
 #[test]

@@ -202,11 +202,19 @@ carry tokens and counts only. The full prohibited list is in
   `room.send_queue().send` call. The latter can settle `SendCompleted` while
   starving the event-driven `TimelineView` of local-echo diffs in the Linux
   WebView lane.
+- Core must not depend on that SDK local-echo diff for first visibility. The
+  session-scoped send coordinator owns one bounded pending display projection
+  from accepted client transaction through SDK/event identity convergence. The
+  current `TimelineActor` combines that projection with canonical SDK slots and
+  acknowledges publication before the matching composer acceptance may clear
+  the draft. Actor replacement receives the same bounded snapshot; React only
+  applies the resulting ordinary Rust-authored timeline diffs.
 - Retry/cancel is driven by SDK `SendHandle`, not by a direct
-  `RoomSendQueue::retry(transaction_id)` API. `TimelineActor` must keep a
-  transaction-id keyed handle registry initialized from
-  `RoomSendQueue::subscribe()` local echoes and updated by
-  `RoomSendQueueUpdate::NewLocalEvent`.
+  `RoomSendQueue::retry(transaction_id)` API. `TimelineActor` keeps its
+  transaction-id keyed handle registry from `RoomSendQueue::subscribe()` local
+  echoes; when that echo is missing it uses the exact handle retained by the
+  manager-owned coordinator. Body, sender, and timestamp never participate in
+  correlation.
 - Recoverable SDK send errors disable the room send queue. `RetrySend` must call
   `room.send_queue().set_enabled(true)` before `SendHandle::unwedge()`;
   successful `CancelSend` must also re-enable the room queue after
@@ -215,9 +223,12 @@ carry tokens and counts only. The full prohibited list is in
 - `TimelineItem.send_state` is a Rust-owned DTO projection. React may render it
   and dispatch `retry_send` / `cancel_send`, but must not infer send legality
   from `TimelineItemId::Transaction` or repair queue state locally.
-- `TimelineItemId::Transaction` is a stable identity for local echoes, not a UI
-  state. A transaction row without `send_state` must not be labeled unsent;
-  failed/sending/cancelled affordances come only from `send_state`.
+- `TimelineItemId::Transaction` is a stable Rust-owned pending/local-echo
+  identity, not a UI state. It starts with the client transaction ID, changes to
+  the SDK transaction ID only through the coordinator's exact bind, and changes
+  to the terminal event ID only through `SentEvent`. A transaction row without
+  `send_state` must not be labeled unsent; failed/sending/cancelled affordances
+  come only from `send_state`.
 - Transaction timeline rows use `timelineItemDomId`, so local echoes render with
   `data-item-id="txn:<transaction_id>"`. Headless media-progress specs should
   target that canonical id instead of the raw transaction id.

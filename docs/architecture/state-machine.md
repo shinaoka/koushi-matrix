@@ -2540,38 +2540,45 @@ stateDiagram-v2
 
 ## Outbound Send Queue
 
-Outbound timeline send presentation and retry/cancel handles are Rust-owned and
-keyed by the SDK send-queue transaction id exposed on local-echo timeline
-items. The replaceable `TimelineActor` projects that local state. A
-session-scoped `TimelineManager` owns supervised text/reply/media enqueue
-workers, the sole client-global terminal observer, and the composite
-`(room_id, sdk_transaction_id)` correlation back to the original
+Outbound timeline send presentation and retry/cancel handles are Rust-owned.
+Before composer acceptance clears a draft, the session-scoped
+`TimelineManager` installs a bounded display projection keyed by the client
+transaction ID and waits for the current generation-fenced `TimelineActor` to
+acknowledge publication. SDK enqueue then binds the SDK transaction ID and
+`SendHandle`; terminal success binds the event ID. The actor combines these
+pending projections with canonical SDK slots without changing canonical SDK
+indexes. A session-scoped `TimelineManager` also owns supervised
+text/reply/media enqueue workers, the sole client-global terminal observer, and
+the composite `(room_id, sdk_transaction_id)` correlation back to the original
 `TimelineKey`, `RequestId`, and `SubmissionId`. React may render
 `TimelineItem.send_state` and dispatch typed commands, but it must not derive
-retry/cancel legality from local component state.
-Visible timeline sends go through the SDK UI `Timeline::send` path so local
-echo diffs reach the subscribed timeline store; retry/cancel still operate on
-the underlying SDK send queue handles.
+identity, convergence, or retry/cancel legality from local component state.
+Visible timeline sends still go through the SDK UI `Timeline::send` path; a
+missing local-echo diff no longer creates a visibility gap.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Sending: NewLocalEvent / enqueue success
+    [*] --> PendingProjection: accepted payload / actor publication ack
+    PendingProjection --> Sending: SDK transaction + SendHandle bound
+    PendingProjection --> SentAwaitingRemote: SentEvent before local echo
     Sending --> NotSent: SendError
-    Sending --> Sent: SentEvent
+    Sending --> SentAwaitingRemote: SentEvent
     Sending --> Cancelled: CancelSend / CancelledLocalEvent
     NotSent --> Sending: RetrySend / RetryEvent
     NotSent --> Cancelled: CancelSend / CancelledLocalEvent
+    SentAwaitingRemote --> Sent: canonical event or exact-event hydration
     Cancelled --> [*]
     Sent --> [*]
 ```
 
 | Command / update | Accepted states | Rejected states | Notes |
 | --- | --- | --- | --- |
-| `NewLocalEvent` | any | none | Records `sending` and stores the SDK `SendHandle` for retry/cancel. Restored local echoes from `RoomSendQueue::subscribe()` initialize the same table before the actor starts processing commands. |
+| accepted text/reply | below the bounded pending cap and current actor publication acknowledged | cap full, actor replaced without successful reroute, publication unavailable | Publishes one client-transaction `sending` row before composer acceptance clears the draft. |
+| `NewLocalEvent` | any | none | Exact SDK binding merges the canonical local echo into the pending row and stores the SDK `SendHandle`; it never inserts a duplicate. Restored local echoes from `RoomSendQueue::subscribe()` initialize the same actor table before commands. |
 | `SendError` | `sending` | none | Records `not_sent { reason }` using only the SDK recoverable flag. Release diagnostics may record a closed app-owned failure class plus that recoverable flag, but raw SDK errors stay out of DTOs, logs, QA tokens, and React state. The matching composer pending state is failed once; later retry success can still emit `SendCompleted`. |
 | `RetrySend { room_id, transaction_id }` | `not_sent` with a stored `SendHandle` | `sending`, `sent`, `cancelled`, unknown transaction | Re-enables the SDK room queue with `room.send_queue().set_enabled(true)`, then calls `SendHandle::unwedge()`. FIFO order remains the SDK send queue's responsibility; React never reorders or manually marks successors sent. |
 | `CancelSend { room_id, transaction_id }` | `sending`, `not_sent` with a stored `SendHandle` | `sent`, `cancelled`, unknown transaction | Calls `SendHandle::abort()`. A successful cancel records `cancelled`, drops the handle, re-enables the SDK room queue so successors are not stranded, and clears matching composer pending state without creating a send-failure error. |
-| `SentEvent` | any | none | The manager-owned observer records `sent`, maps the composite SDK correlation to the original request, reliably enqueues the matching reducer action, then emits `SendCompleted`. Settled correlations are bounded tombstones so duplicate SDK terminals cannot complete twice. |
+| `SentEvent` | any | none | The manager-owned observer records `sent`, maps the composite SDK correlation to the original request, reliably enqueues the matching reducer action, then emits `SendCompleted`. Without a local echo, the same row changes atomically to the event ID and remains visible until canonical remote convergence or exact-event hydration. Settled correlations are bounded tombstones so duplicate SDK terminals cannot complete twice. |
 
 An explicit timeline `Unsubscribe`, room switch, resubscribe, or actor crash
 removes only the presentation actor; active send correlation remains at

@@ -6,7 +6,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use koushi_protocol::event::{
     CoreEvent, TimelineAnchorRestoreStatus, TimelineDiff, TimelineEvent, TimelineItem,
-    TimelineItemId, TimelineMediaKind, TimelineViewportObservation,
+    TimelineItemId, TimelineMediaKind, TimelineSendState, TimelineViewportObservation,
 };
 
 use koushi_protocol::ids::{TimelineBatchId, TimelineGeneration};
@@ -25,6 +25,127 @@ use super::{
     apply_timeline_diffs_to_display_items, apply_timeline_diffs_to_items,
     commit_sdk_batch_for_generation, project_sdk_batch,
 };
+
+#[test]
+fn pending_send_converges_to_local_and_remote_echo_without_an_empty_projection() {
+    let seed = timeline_item("$seed:test", Some("seed"), "@sender:test", false);
+    let mut canonical_items = vec![seed];
+    let mut projection = DisplayProjectionState::from_canonical_window(&canonical_items, 0..1);
+    let mut pending = timeline_item(
+        "$placeholder:test",
+        Some("pending body"),
+        "@sender:test",
+        false,
+    );
+    pending.id = TimelineItemId::Transaction {
+        transaction_id: "client-transaction".to_owned(),
+    };
+    pending.send_state = Some(TimelineSendState::Sending);
+
+    let inserted = projection.replace_pending(
+        vec![pending.clone()],
+        Default::default(),
+        &DisplayProjectionContext::bounded_live_edge(),
+    );
+    assert!(!inserted.is_empty());
+    assert_eq!(
+        projection.display_items().last().map(|item| &item.id),
+        Some(&pending.id)
+    );
+
+    pending.id = TimelineItemId::Transaction {
+        transaction_id: "sdk-transaction".to_owned(),
+    };
+    projection.set_pending_inputs(Vec::new(), Default::default());
+    let local = project_sdk_batch(
+        &mut canonical_items,
+        &mut projection,
+        &[TimelineDiff::PushBack {
+            item: pending.clone(),
+        }],
+        &DisplayProjectionContext::bounded_live_edge(),
+    );
+    assert!(
+        local
+            .display_diffs
+            .iter()
+            .all(|diff| !matches!(diff, TimelineDiff::Remove { .. } | TimelineDiff::Clear))
+    );
+    assert_eq!(projection.display_items().len(), 2);
+    assert_eq!(projection.display_items()[1].id, pending.id);
+
+    let event_id = "$remote:test";
+    let mut sent_fallback = pending;
+    sent_fallback.id = TimelineItemId::Event {
+        event_id: event_id.to_owned(),
+    };
+    sent_fallback.send_state = Some(TimelineSendState::Sent);
+    let mut canonical_items = vec![timeline_item(
+        "$seed:test",
+        Some("seed"),
+        "@sender:test",
+        false,
+    )];
+    let mut projection = DisplayProjectionState::from_canonical_window(&canonical_items, 0..1);
+    projection.replace_pending(
+        vec![sent_fallback.clone()],
+        ["sdk-transaction".to_owned()].into_iter().collect(),
+        &DisplayProjectionContext::bounded_live_edge(),
+    );
+    let mut remote = sent_fallback;
+    remote.body = Some("canonical remote body".to_owned());
+    remote.send_state = None;
+    projection.set_pending_inputs(Vec::new(), Default::default());
+    let converged = project_sdk_batch(
+        &mut canonical_items,
+        &mut projection,
+        &[TimelineDiff::PushBack {
+            item: remote.clone(),
+        }],
+        &DisplayProjectionContext::bounded_live_edge(),
+    );
+    assert!(
+        converged
+            .display_diffs
+            .iter()
+            .all(|diff| !matches!(diff, TimelineDiff::Remove { .. } | TimelineDiff::Clear))
+    );
+    assert_eq!(projection.display_items().len(), 2);
+    assert_eq!(projection.display_items()[1].id, remote.id);
+    assert_eq!(projection.display_items()[1].body, remote.body);
+    assert_eq!(projection.display_items()[1].send_state, None);
+
+    let mut delayed_local = timeline_item(
+        "$delayed-placeholder:test",
+        Some("pending body"),
+        "@sender:test",
+        false,
+    );
+    delayed_local.id = TimelineItemId::Transaction {
+        transaction_id: "sdk-transaction".to_owned(),
+    };
+    delayed_local.send_state = Some(TimelineSendState::Sending);
+    projection.set_pending_inputs(
+        Vec::new(),
+        ["sdk-transaction".to_owned()].into_iter().collect(),
+    );
+    project_sdk_batch(
+        &mut canonical_items,
+        &mut projection,
+        &[TimelineDiff::PushBack {
+            item: delayed_local,
+        }],
+        &DisplayProjectionContext::bounded_live_edge(),
+    );
+    assert_eq!(projection.display_items().len(), 2);
+    assert!(projection.display_items().iter().all(|item| {
+        !matches!(
+            &item.id,
+            TimelineItemId::Transaction { transaction_id }
+                if transaction_id == "sdk-transaction"
+        )
+    }));
+}
 
 #[test]
 fn sdk_canonical_indices_project_to_bounded_display_and_converge_local_echo() {
