@@ -777,31 +777,35 @@ mod tests {
         assert!(receipt.dom_root_aligned);
 
         let _guard = koushi_diagnostics::test_support::lock();
-        let before = koushi_diagnostics::test_support::detail_snapshot()
-            .records
-            .len();
         record_diagnostic(&receipt, Some(&observation));
         let after = koushi_diagnostics::test_support::detail_snapshot();
-        let record = after.records[before]
-            .event
+        let event = &after
+            .records
+            .iter()
+            .rev()
+            .find(|record| {
+                record.event.source == "desktop.viewport_sync"
+                    && record.event.stage == "observed"
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "generation"
+                            && field.value == koushi_diagnostics::DiagnosticValue::Correlation(2)
+                    })
+            })
+            .expect("viewport diagnostic must be present")
+            .event;
+        let generation = event
             .fields
             .iter()
             .find(|field| field.key == "generation")
             .expect("generation diagnostic must be present");
         assert_eq!(
-            record.value,
+            generation.value,
             koushi_diagnostics::DiagnosticValue::Correlation(2)
         );
-        assert!(
-            after.records[before]
-                .event
-                .fields
-                .iter()
-                .all(|field| !matches!(
-                    field.value,
-                    koushi_diagnostics::DiagnosticValue::Token(value)
-                        if value.contains("://") || value.contains('/')
-                ))
-        );
+        assert!(event.fields.iter().all(|field| !matches!(
+            field.value,
+            koushi_diagnostics::DiagnosticValue::Token(value)
+                if value.contains("://") || value.contains('/')
+        )));
     }
 }

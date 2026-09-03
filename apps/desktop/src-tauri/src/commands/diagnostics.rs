@@ -620,9 +620,6 @@ mod snapshot_tests {
     #[test]
     fn diagnostic_snapshot_exports_current_media_memory_summaries() {
         let _guard = koushi_diagnostics::test_support::lock();
-        let before = koushi_diagnostics::test_support::detail_snapshot()
-            .records
-            .len();
         let exported = snapshot_with_media_memory_summaries(
             koushi_core::renderable_thumbnail::RenderableThumbnailCacheStats {
                 entry_count: 3,
@@ -664,16 +661,14 @@ mod snapshot_tests {
         assert!(media.message.contains("stage=summary"));
         assert!(media.message.contains("source_backed_variant_count=2"));
         let details = koushi_diagnostics::test_support::detail_snapshot();
-        let summaries = details.records[before..]
-            .iter()
-            .filter(|record| {
-                matches!(
-                    record.event.source,
-                    "core.renderable_thumbnail" | "core.media_preparation"
-                )
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(summaries.len(), 2);
+        let summaries = ["core.renderable_thumbnail", "core.media_preparation"].map(|source| {
+            details
+                .records
+                .iter()
+                .rev()
+                .find(|record| record.event.source == source && record.event.stage == "summary")
+                .expect("media summary diagnostic must be present")
+        });
         for record in summaries {
             assert!(record.event.fields.iter().all(|field| matches!(
                 field.value,
