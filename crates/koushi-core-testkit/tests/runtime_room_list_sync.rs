@@ -3,7 +3,7 @@
 use std::{
     collections::BTreeSet,
     sync::{
-        Arc, Mutex,
+        Arc, Barrier, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
@@ -74,6 +74,8 @@ struct RuntimeSlidingSyncResponder {
     encryption_requests: Arc<AtomicUsize>,
     request_bodies: Arc<Mutex<Vec<Value>>>,
     room_list_request_tx: tokio::sync::mpsc::UnboundedSender<usize>,
+    first_response_release: Arc<Barrier>,
+    complete_range_release: Arc<Barrier>,
 }
 
 impl Respond for RuntimeSlidingSyncResponder {
@@ -91,21 +93,22 @@ impl Respond for RuntimeSlidingSyncResponder {
                 match request_index {
                     // The first committed response proves transport but not the complete
                     // loaded range: count 21 makes the service expand 0..=19 to 0..=20.
-                    0 => room_list_response(&body, "room-pos-0", 19)
-                        .set_delay(Duration::from_millis(300)),
+                    0 => {
+                        self.first_response_release.wait();
+                        room_list_response(&body, "room-pos-0", 19)
+                    }
                     // Hold the complete-range response after request capture so the test can
                     // inspect the projection between commit and RoomActor reconciliation.
-                    1 => room_list_response(&body, "room-pos-1", 20)
-                        .set_delay(Duration::from_millis(500)),
+                    1 => {
+                        self.complete_range_release.wait();
+                        room_list_response(&body, "room-pos-1", 20)
+                    }
                     // Exercise the SyncService's own reconnect loop without replacing it.
-                    2 => ResponseTemplate::new(500)
-                        .set_body_json(json!({
-                            "errcode": "M_UNKNOWN",
-                            "error": "synthetic reconnect"
-                        }))
-                        .set_delay(Duration::from_millis(300)),
-                    _ => room_list_response(&body, "room-pos-2", 20)
-                        .set_delay(Duration::from_millis(500)),
+                    2 => ResponseTemplate::new(500).set_body_json(json!({
+                        "errcode": "M_UNKNOWN",
+                        "error": "synthetic reconnect"
+                    })),
+                    _ => room_list_response(&body, "room-pos-2", 20),
                 }
             }
             Some("encryption") => {
@@ -114,7 +117,6 @@ impl Respond for RuntimeSlidingSyncResponder {
                     &body,
                     json!({ "pos": format!("encryption-pos-{request_index}") }),
                 )
-                .set_delay(Duration::from_millis(500))
             }
             other => panic!("unexpected sliding-sync conn_id: {other:?}"),
         }
@@ -200,7 +202,7 @@ fn response_with_request_transaction(request: &Value, mut response: Value) -> Re
     ResponseTemplate::new(200).set_body_json(response)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn normal_runtime_waits_for_full_all_rooms_reconciliation_and_reuses_one_sync_engine() {
     let server = MatrixMockServer::new().await;
     server
@@ -220,6 +222,8 @@ async fn normal_runtime_waits_for_full_all_rooms_reconciliation_and_reuses_one_s
     let encryption_requests = Arc::new(AtomicUsize::new(0));
     let request_bodies = Arc::new(Mutex::new(Vec::new()));
     let (room_list_request_tx, mut room_list_request_rx) = tokio::sync::mpsc::unbounded_channel();
+    let first_response_release = Arc::new(Barrier::new(2));
+    let complete_range_release = Arc::new(Barrier::new(2));
     Mock::given(method("POST"))
         .and(path(SLIDING_SYNC_PATH))
         .respond_with(RuntimeSlidingSyncResponder {
@@ -227,6 +231,8 @@ async fn normal_runtime_waits_for_full_all_rooms_reconciliation_and_reuses_one_s
             encryption_requests: encryption_requests.clone(),
             request_bodies: request_bodies.clone(),
             room_list_request_tx,
+            first_response_release: first_response_release.clone(),
+            complete_range_release: complete_range_release.clone(),
         })
         .mount(&server.server())
         .await;
@@ -267,8 +273,10 @@ async fn normal_runtime_waits_for_full_all_rooms_reconciliation_and_reuses_one_s
             .expect("first room-list request deadline"),
         Some(0)
     );
+    let state_before_first_response = connection.snapshot().sync;
+    first_response_release.wait();
     assert_ne!(
-        connection.snapshot().sync,
+        state_before_first_response,
         SyncState::Running,
         "SDK Running before the first response is not a connected projection"
     );
@@ -280,6 +288,7 @@ async fn normal_runtime_waits_for_full_all_rooms_reconciliation_and_reuses_one_s
         Some(1)
     );
     let state_after_partial_commit = connection.snapshot().sync;
+    complete_range_release.wait();
 
     let reconciled = wait_for_state_event(&mut connection, |state| {
         matches!(state.sync, SyncState::Running)
