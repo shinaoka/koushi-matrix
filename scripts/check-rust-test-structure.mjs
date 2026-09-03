@@ -849,13 +849,33 @@ export function checkDesktopNativeWindowLifecycleContract() {
   const rule = "desktop.native.window_lifecycle_contract";
   const source = productionOnly(readTauriSource("lib.rs"), "apps/desktop/src-tauri/src/lib.rs");
   const failures = [];
+  // A destroyed product window means the process is ending, so it must enter
+  // the shared quit barrier rather than submit a shutdown of its own ahead of
+  // the `ExitRequested` that follows it.
   const destroyed = sourceSection(source, "if window_event_should_stop_background_tasks(event)", ".invoke_handler");
-  for (const marker of ["submit_core_shutdown", "AppCommand::Shutdown { request_id }"]) if (!destroyed?.includes(marker) && !source.includes(marker)) failures.push(sourceContractFailure(rule, `window destruction path lacks ${marker}`));
+  for (const marker of ["claim_core_shutdown", "begin_graceful_shutdown"]) if (!destroyed?.includes(marker)) failures.push(sourceContractFailure(rule, `window destruction path lacks ${marker}`));
+  failures.push(...orderedMarkers(rule, destroyed ?? "", ["claim_core_shutdown", "begin_graceful_shutdown"]));
+  if (destroyed?.includes("AppCommand::Shutdown {")) failures.push(sourceContractFailure(rule, "window destruction path submits shutdown outside the quit barrier"));
+  // Exactly one owner submits the shutdown, awaits it, and only then exits.
+  const shutdown = rustItemBody(source, "fn begin_graceful_shutdown");
+  for (const marker of ["AppCommand::Shutdown { request_id }", "QuitStage::ShutdownComplete", "app.exit(0)"]) if (!shutdown?.includes(marker)) failures.push(sourceContractFailure(rule, `graceful shutdown lacks ${marker}`));
+  failures.push(...orderedMarkers(rule, shutdown ?? "", ["AppCommand::Shutdown { request_id }", "QuitStage::ShutdownComplete", "app.exit(0)"]));
+  if (source.split("AppCommand::Shutdown { request_id }").length - 1 !== 1) failures.push(sourceContractFailure(rule, "shutdown is submitted from more than one place"));
+  // The barrier holds every exit request, whatever its code, until the single
+  // claimant has finished shutting core down.
+  const barrier = sourceSection(source, "tauri::RunEvent::ExitRequested", "QuitRequestAction::Exit");
+  for (const marker of ["{ api, .. }", "quit_request_action", "QuitRequestAction::AwaitShutdown"]) if (!barrier?.includes(marker)) failures.push(sourceContractFailure(rule, `exit barrier lacks ${marker}`));
+  failures.push(...orderedMarkers(rule, barrier ?? "", ["api.prevent_exit()", "claim_core_shutdown", "begin_graceful_shutdown"]));
+  const claim = rustItemBody(source, "fn claim_core_shutdown");
+  for (const marker of ["compare_exchange", "QuitStage::Idle.repr()", "QuitStage::ShuttingDown.repr()"]) if (!claim?.includes(marker)) failures.push(sourceContractFailure(rule, `shutdown claim lacks ${marker}`));
   const helper = rustItemBody(source, "fn window_event_should_stop_background_tasks");
   if (helper?.includes("CloseRequested")) failures.push(sourceContractFailure(rule, "close request stops background tasks"));
+  // The section spans both close-request branches: it opens at the macOS
+  // unconditional hide and closes at the shared persistence path.
   const close = sourceSection(source, "tauri::WindowEvent::CloseRequested", "if window_event_should_persist");
-  for (const marker of ["prevent_close()", ".hide()", "window.is_fullscreen()", "window.set_fullscreen(false)"]) if (!close?.includes(marker)) failures.push(sourceContractFailure(rule, `close handler lacks ${marker}`));
+  for (const marker of ["prevent_close()", ".hide()", "window.is_fullscreen()", "window.set_fullscreen(false)", "= macos_close_requested_action(", "= close_requested_action(tray::tray_is_available(), close_to_tray)", "close_to_tray", "CloseRequestedAction::HideToTray"]) if (!close?.includes(marker)) failures.push(sourceContractFailure(rule, `close handler lacks ${marker}`));
   failures.push(...orderedMarkers(rule, close ?? "", ["window.set_fullscreen(false)", "window.hide()"]));
+  if (close?.includes("AppCommand::Shutdown {")) failures.push(sourceContractFailure(rule, "close request submits shutdown"));
   return failures;
 }
 
