@@ -1,6 +1,6 @@
 use super::super::test_source::item_body;
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use std::sync::{
     Arc, Mutex,
@@ -35,6 +35,7 @@ use super::super::navigation::{
     InitialItemsRequestIdentity, PreparedInitialWindow, TimelineActorGenerationGate,
     commit_prepared_initial_window_for_generation, emit_items_updated_for_generation,
 };
+use super::super::outbound_send::{PendingSendPhase, PendingSendProjection, pending_send_item};
 use super::super::test_support::{
     fake_rid, projection_service, replacement_generation_fixture, room_key, timeline_item,
 };
@@ -43,9 +44,61 @@ use super::{
     PreparedRelayRecovery, RelayRestartBackoff, RelayRestartSchedule, TimelineRelayBatch,
     TimelineRelayControl, accepted_relay_batch, authoritative_receipts_action,
     authoritative_search_removals, authoritative_window_reconciliation,
-    commit_authoritative_recovery_window, prepare_relay_recovery, replace_authoritative_cache,
-    run_diff_relay, spawn_relay_restart_timer,
+    commit_authoritative_recovery_window, pending_display_inputs_for_incoming_transactions,
+    prepare_relay_recovery, replace_authoritative_cache, run_diff_relay, spawn_relay_restart_timer,
 };
+
+#[test]
+fn mixed_bound_and_unbound_local_echo_batch_keeps_exactly_one_row_per_send() {
+    let key = room_key();
+    let make_projection = |sequence, client: &str, sdk: Option<&str>| {
+        let render_id = sdk.unwrap_or(client);
+        PendingSendProjection {
+            key: key.clone(),
+            sequence,
+            client_txn_id: client.to_owned(),
+            item: pending_send_item(render_id, "body", None, None, None),
+            sdk_transaction_id: sdk.map(str::to_owned),
+            handle: None,
+            terminal_event_id: None,
+            phase: PendingSendPhase::Pending,
+        }
+    };
+    let mut sent_fallback = make_projection(3, "client-sent", Some("sdk-delayed"));
+    sent_fallback.phase = PendingSendPhase::SentAwaitingRemote;
+    sent_fallback.terminal_event_id = Some("$sent:test".to_owned());
+    sent_fallback.item.id = TimelineItemId::Event {
+        event_id: "$sent:test".to_owned(),
+    };
+    sent_fallback.item.send_state = Some(TimelineSendState::Sent);
+    let projections = vec![
+        make_projection(1, "client-bound", Some("sdk-bound")),
+        make_projection(2, "client-unbound", None),
+        sent_fallback,
+    ];
+    let incoming = HashSet::from([
+        "sdk-bound".to_owned(),
+        "sdk-overtake".to_owned(),
+        "sdk-delayed".to_owned(),
+    ]);
+    let (pending, suppressed) =
+        pending_display_inputs_for_incoming_transactions(&projections, &incoming, HashSet::new());
+
+    assert_eq!(pending.len(), 2);
+    assert!(pending.iter().any(|item| matches!(
+        &item.id,
+        TimelineItemId::Transaction { transaction_id }
+            if transaction_id == "client-unbound"
+    )));
+    assert!(pending.iter().any(|item| matches!(
+        &item.id,
+        TimelineItemId::Event { event_id } if event_id == "$sent:test"
+    )));
+    assert_eq!(
+        suppressed,
+        HashSet::from(["sdk-overtake".to_owned(), "sdk-delayed".to_owned()])
+    );
+}
 
 #[test]
 fn batch_id_monotonically_increases_per_generation() {

@@ -698,7 +698,7 @@ impl TimelineManagerActor {
                 }
                 worker = self.send_enqueue_workers.tasks.next(), if !self.send_enqueue_workers.tasks.is_empty() => {
                     if let Some(completion) = worker {
-                        self.handle_send_enqueue_worker_completion(completion);
+                        self.handle_send_enqueue_worker_completion(completion).await;
                     }
                     continue;
                 }
@@ -783,6 +783,7 @@ impl TimelineManagerActor {
                     {
                         live_tail_completion_dispatches += 1;
                     }
+                    let hydration_key = key.clone();
                     self.handle_live_tail_refresh_completed(
                         key,
                         actor_generation,
@@ -794,6 +795,7 @@ impl TimelineManagerActor {
                         duration_ms,
                     )
                     .await;
+                    self.retry_pending_send_hydrations(&hydration_key);
                 }
                 #[cfg(test)]
                 TimelineMessage::TestLiveTailDispatchState {
@@ -1679,6 +1681,7 @@ impl TimelineManagerActor {
                 if !replay_existing {
                     trace("replay_initial_skipped");
                 }
+                self.retry_pending_send_hydrations(&key);
                 trace("subscribed_done");
                 return;
             }
@@ -1740,6 +1743,7 @@ impl TimelineManagerActor {
                 }
                 self.replay_retained_room_subscription_checkpoint(&key)
                     .await;
+                self.retry_pending_send_hydrations(&key);
                 trace("subscribed_done");
             }
             Err(kind) => {

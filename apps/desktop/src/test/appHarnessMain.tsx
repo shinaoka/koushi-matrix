@@ -100,6 +100,7 @@ interface AppHarnessControl {
   invoke(command: string, args?: Record<string, unknown>): Promise<unknown>;
    
   setCommandResponse(command: string, response: any): void;
+  setNextTextSendPendingBody(body: string): void;
   setSnapshot(snapshot: DesktopSnapshot): void;
   pushCoreEvent(event: CoreEventPayload): Promise<void>;
   pushStateUpdate(envelope?: StateUpdateEnvelope): void;
@@ -2288,18 +2289,21 @@ mock.setCommandResponse("set_composer_reply_target", () =>
 mock.setCommandResponse("cancel_composer_reply", () => setCurrentSnapshot(readySnapshot()));
 // send_reply / send_text return a correlated accepted response with the
 // Rust-shaped revision tombstone.
+let nextTextSendPendingBody: string | null = null;
 for (const command of ["send_reply", "send_text"] as const) {
-  mock.setCommandResponse(command, ({
+  mock.setCommandResponse(command, async ({
     accountHomeserver,
     accountUserId,
     accountDeviceId,
     submissionId,
+    transactionId: clientTransactionId,
     draftRevision
   }: {
     accountHomeserver: string;
     accountUserId: string;
     accountDeviceId: string;
     submissionId: string;
+    transactionId: string;
     draftRevision: ComposerDraftRevision;
   }) => {
     if (!composerCommandAccountMatches({
@@ -2354,10 +2358,49 @@ for (const command of ["send_reply", "send_text"] as const) {
         }
       }
     };
+    const sdkTransactionId = `harness-${submissionId}`;
+    if (command === "send_text" && nextTextSendPendingBody !== null) {
+      const body = nextTextSendPendingBody;
+      nextTextSendPendingBody = null;
+      externalCoreEventPushSeen = true;
+      await emit(CORE_EVENT_NAME, {
+        kind: "Timeline",
+        event: {
+          ItemsUpdated: {
+            key: roomTimelineKey(USER_ID, ROOM_ID),
+            generation: 1,
+            batch_id: 9_000,
+            diffs: [
+              {
+                PushBack: {
+                  item: {
+                    id: { Transaction: { transaction_id: clientTransactionId } },
+                    sender: USER_ID,
+                    body,
+                    timestamp_ms: 1_800_000_003_000,
+                    in_reply_to_event_id: null,
+                    thread_root: null,
+                    thread_summary: null,
+                    reactions: [],
+                    can_react: false,
+                    is_redacted: false,
+                    is_hidden: false,
+                    can_redact: false,
+                    is_edited: false,
+                    can_edit: false,
+                    send_state: { kind: "sending" }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      });
+    }
     return {
       submissionId,
       outcome: "accepted",
-      transactionId: `harness-${submissionId}`,
+      transactionId: sdkTransactionId,
       snapshot: setCurrentSnapshot(next)
     };
   });
@@ -3457,6 +3500,9 @@ const harnessControl: AppHarnessControl = {
       const value = typeof response === "function" ? response(args) : response;
       return normalizeHarnessCommandResponse(value);
     }),
+  setNextTextSendPendingBody: (body) => {
+    nextTextSendPendingBody = body;
+  },
   setSnapshot: (snapshot) => {
     setCurrentSnapshot(snapshot);
     mock.setCommandResponse("get_snapshot", () => currentSnapshot);

@@ -76,9 +76,9 @@ use super::navigation::{
     should_hydrate_empty_initial_room_timeline,
 };
 use super::outbound_send::{
-    MatrixTimelineSendEnqueueContext, SharedSendCompletionCoordinator, TimelineSendEnqueueContext,
-    TimelineSendTerminalIngress, run_send_queue_monitor, thread_activity_observed_action,
-    thread_attention_action,
+    MatrixTimelineSendEnqueueContext, PendingSendProjection, SharedSendCompletionCoordinator,
+    TimelineSendEnqueueContext, TimelineSendTerminalIngress, run_send_queue_monitor,
+    thread_activity_observed_action, thread_attention_action,
 };
 use super::read_state::{ReadActorApplyKind, run_typing_notifications};
 use super::relay::{
@@ -369,6 +369,11 @@ pub(super) enum TimelineActorMessage {
     },
     DisplayPolicyChanged {
         thread_root_order: TimelineThreadRootOrder,
+    },
+    RefreshPendingSendProjection {
+        actor_generation: u64,
+        projections: Vec<PendingSendProjection>,
+        acknowledged: oneshot::Sender<bool>,
     },
     SetTyping {
         request_id: RequestId,
@@ -682,6 +687,10 @@ impl TimelineActorHandle {
         self.tx.send(msg).await.is_ok()
     }
 
+    pub(super) fn try_send(&self, msg: TimelineActorMessage) -> bool {
+        self.tx.try_send(msg).is_ok()
+    }
+
     pub(super) async fn send_control(&self, control: TimelineActorControl) -> bool {
         match &self.control_tx {
             Some(tx) => tx.send(control).await.is_ok(),
@@ -816,6 +825,8 @@ pub(super) struct TimelineActor {
     pub(super) send_statuses: HashMap<String, TimelineSendState>,
     /// SDK transaction id -> SDK send handle used for retry/cancel.
     pub(super) send_handles: HashMap<String, SendHandle>,
+    /// Manager-owned sends retained even when the SDK local echo is omitted.
+    pub(super) pending_send_projections: Vec<PendingSendProjection>,
     /// Current account user id, used to project reaction ownership.
     pub(super) own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
     /// event_id → SDK transaction id for events this actor sent. Used to
@@ -987,6 +998,22 @@ impl Drop for TimelineActor {
     }
 }
 
+fn canonical_pending_event_ids(
+    projections: &[PendingSendProjection],
+    canonical_items: &[TimelineItem],
+) -> Vec<String> {
+    projections
+        .iter()
+        .filter_map(|projection| projection.terminal_event_id.as_deref())
+        .filter(|event_id| {
+            canonical_items.iter().any(|item| {
+                matches!(&item.id, TimelineItemId::Event { event_id: canonical } if canonical == event_id)
+            })
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
 impl TimelineActor {
     pub(super) fn display_projection_context(&self) -> DisplayProjectionContext {
         DisplayProjectionContext::for_timeline(
@@ -1006,6 +1033,78 @@ impl TimelineActor {
     pub(super) fn reproject_display_items(&mut self) -> Vec<TimelineDiff> {
         let context = self.display_projection_context();
         self.display_projection.reproject(&context)
+    }
+
+    pub(super) async fn refresh_pending_send_projection(
+        &mut self,
+        actor_generation: u64,
+        mut projections: Vec<PendingSendProjection>,
+    ) -> bool {
+        if actor_generation != self.actor_generation
+            || self
+                .timeline_actor_generations
+                .current_generation(&self.key)
+                != Some(self.actor_generation)
+        {
+            return false;
+        }
+        let converged_event_ids = canonical_pending_event_ids(&projections, &self.navigation_items);
+        if !converged_event_ids.is_empty() {
+            let mut coordinator = self
+                .send_completion
+                .lock()
+                .expect("send completion coordinator lock must not be poisoned");
+            for event_id in converged_event_ids {
+                coordinator.reconcile_remote_event(self.key.room_id(), &event_id);
+            }
+            projections = coordinator.projections_for_key(&self.key);
+        }
+        let settled_transaction_ids = self
+            .send_completion
+            .lock()
+            .expect("send completion coordinator lock must not be poisoned")
+            .settled_transaction_ids(self.key.room_id());
+        self.pending_send_projections = projections;
+        let pending_items = self
+            .pending_send_projections
+            .iter()
+            .map(|projection| projection.item.clone())
+            .collect();
+        let mut suppressed = self
+            .pending_send_projections
+            .iter()
+            .filter(|projection| {
+                matches!(
+                    projection.phase,
+                    super::outbound_send::PendingSendPhase::SentAwaitingRemote
+                        | super::outbound_send::PendingSendPhase::HydratedSent
+                )
+            })
+            .filter_map(|projection| projection.sdk_transaction_id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        suppressed.extend(settled_transaction_ids);
+        let diffs = self.display_projection.replace_pending(
+            pending_items,
+            suppressed,
+            &self.display_projection_context(),
+        );
+        if !diffs.is_empty() {
+            let batch_id = self.next_batch_id;
+            if super::navigation::emit_items_updated_for_generation(
+                &self.event_tx,
+                &self.timeline_actor_generations,
+                &self.key,
+                self.actor_generation,
+                self.generation,
+                batch_id,
+                diffs,
+            ) {
+                self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
+            } else {
+                return false;
+            }
+        }
+        true
     }
 
     fn drain_thread_summary_projection_wakes(&mut self) {
@@ -1335,7 +1434,32 @@ impl TimelineActor {
                 .expect("thread-root projection service lock must not be poisoned")
                 .display_data_for_room(key.room_id()),
         );
-        display_projection.reproject(&initial_display_context);
+        let (pending_send_projections, settled_transaction_ids) = {
+            let coordinator = send_completion
+                .lock()
+                .expect("send completion coordinator lock must not be poisoned");
+            (
+                coordinator.projections_for_key(&key),
+                coordinator.settled_transaction_ids(key.room_id()),
+            )
+        };
+        let pending_items = pending_send_projections
+            .iter()
+            .map(|projection| projection.item.clone())
+            .collect();
+        let mut suppressed = pending_send_projections
+            .iter()
+            .filter(|projection| {
+                matches!(
+                    projection.phase,
+                    super::outbound_send::PendingSendPhase::SentAwaitingRemote
+                        | super::outbound_send::PendingSendPhase::HydratedSent
+                )
+            })
+            .filter_map(|projection| projection.sdk_transaction_id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        suppressed.extend(settled_transaction_ids);
+        display_projection.replace_pending(pending_items, suppressed, &initial_display_context);
         let initial_media_gallery_items =
             media_gallery_items_from_timeline_items(&key, &initial_items);
         let initial_receipts = live_event_receipts_from_sdk_items(initial_sdk_items.iter());
@@ -1633,6 +1757,7 @@ impl TimelineActor {
             send_completion: Arc::clone(&send_completion),
             send_statuses,
             send_handles,
+            pending_send_projections,
             own_user_id,
             sent_event_txns: HashMap::new(),
             media_sources,
@@ -2356,6 +2481,16 @@ impl TimelineActor {
                     self.read_state_sync = TimelineReadStateSync::NotRequested;
                     self.emit_navigation_if_changed();
                 }
+            }
+            TimelineActorMessage::RefreshPendingSendProjection {
+                actor_generation,
+                projections,
+                acknowledged,
+            } => {
+                let accepted = self
+                    .refresh_pending_send_projection(actor_generation, projections)
+                    .await;
+                let _ = acknowledged.send(accepted);
             }
             TimelineActorMessage::DisplayPolicyChanged { thread_root_order } => {
                 if self.thread_root_order != thread_root_order {

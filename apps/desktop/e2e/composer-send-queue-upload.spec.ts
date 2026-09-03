@@ -128,6 +128,73 @@ test("main composer focused Send activates once with Space", async ({ page }) =>
   await expect.poll(() => invocationCount(page, "send_text")).toBe(1);
 });
 
+test("accepted send stays visible without a local echo through event convergence", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  const body = "Visible before local echo";
+  await page.evaluate((pendingBody) => {
+    (
+      window.__harness as typeof window.__harness & {
+        setNextTextSendPendingBody(body: string): void;
+      }
+    ).setNextTextSendPendingBody(pendingBody);
+    window.__harness.clearInvocations();
+  }, body);
+
+  const composer = page.getByRole("textbox", { name: t("composer.messageComposer") });
+  await composer.fill(body);
+  await page.getByRole("button", { name: t("action.send"), exact: true }).click();
+  await expect(composer).toHaveText("");
+
+  const { submissionId, transactionId: clientTransactionId } = await page.evaluate(() => {
+    const args = window.__harness.invocationsOf("send_text")[0]?.args;
+    return {
+      submissionId: args.submissionId as string,
+      transactionId: args.transactionId as string
+    };
+  });
+  const sdkTransactionId = `harness-${submissionId}`;
+  const pendingRow = page.locator(`[data-item-id="txn:${clientTransactionId}"]`);
+  await expect(pendingRow).toHaveCount(1);
+  await expect(pendingRow.getByText(t("timeline.sending"))).toBeVisible();
+
+  const sdkPending = makeSendQueueItem(sdkTransactionId, body, { kind: "sending" });
+  await pushTimelineDiffs(page, [{ Set: { index: 1, item: sdkPending } }], 1, 9_001);
+  const sdkRow = page.locator(`[data-item-id="txn:${sdkTransactionId}"]`);
+  await expect(pendingRow).toHaveCount(0);
+  await expect(sdkRow).toHaveCount(1);
+  await expect(sdkRow.getByText(t("timeline.sending"))).toBeVisible();
+
+  const eventId = "$accepted-without-local-echo:example.invalid";
+  const sentFallback = {
+    ...sdkPending,
+    id: { Event: { event_id: eventId } },
+    send_state: { kind: "sent" as const }
+  };
+  await pushTimelineDiffs(page, [{ Set: { index: 1, item: sentFallback } }], 1, 9_002);
+  const eventRow = page.locator(`[data-item-id="${eventId}"]`);
+  await expect(sdkRow).toHaveCount(0);
+  await expect(eventRow).toHaveCount(1);
+  await expect(eventRow.getByText(body)).toBeVisible();
+
+  await pushTimelineDiffs(
+    page,
+    [
+      {
+        Set: {
+          index: 1,
+          item: { ...sentFallback, body: "Canonical remote echo" }
+        }
+      }
+    ],
+    1,
+    9_003
+  );
+  await expect(eventRow).toHaveCount(1);
+  await expect(eventRow.getByText("Canonical remote echo")).toBeVisible();
+});
+
 test("timeline reply action invokes set_composer_reply_target", async ({ page }) => {
   await gotoReadyShell(page);
   await page.evaluate(() => window.__harness.clearInvocations());

@@ -12,7 +12,10 @@ use koushi_state::{AppAction, ComposerDocument, ComposerFormattingOptions};
 
 use crate::send_diagnostics::SendFailureDiagnostic;
 
-use matrix_sdk::send_queue::{RoomSendQueueUpdate, SendQueueUpdate};
+use matrix_sdk::{
+    send_queue::{RoomSendQueueUpdate, SendQueueUpdate},
+    test_utils::mocks::MatrixMockServer,
+};
 
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -38,7 +41,7 @@ use std::sync::atomic::AtomicBool;
 use crate::runtime::CoreRuntime;
 use koushi_protocol::command::CoreCommand;
 
-use super::super::actor::TimelineActorHandle;
+use super::super::actor::{TimelineActorHandle, TimelineActorMessage};
 
 use super::super::manager::{TimelineManagerActor, TimelineMessage};
 use super::super::navigation::{TimelineActorGenerationGate, send_generation_fenced};
@@ -49,8 +52,9 @@ use super::super::test_support::{
 };
 use super::super::thread_projection::ThreadRootProjectionFetchRegistry;
 use super::{
-    EncryptedSendDiagnosticSnapshot, MAX_SETTLED_SEND_TOMBSTONES, MAX_SUBMISSION_TOMBSTONES,
-    MediaSendQueuedDelivery, OwnUserTrackingDiagnosticState, RoomEncryptionDiagnosticState,
+    EncryptedSendDiagnosticSnapshot, MAX_PENDING_SEND_PROJECTIONS, MAX_SETTLED_SEND_TOMBSTONES,
+    MAX_SUBMISSION_TOMBSTONES, MediaSendQueuedDelivery, OwnUserTrackingDiagnosticState,
+    PendingSendPhase, PendingSendProjection, RoomEncryptionDiagnosticState,
     SEND_ENQUEUE_WORKER_SHUTDOWN_DEADLINE, SendCompletionObservation, SendCompletionRegistration,
     SendCorrelationKey, SendEnqueueSuccess, SendEnqueueWorkerCompletion,
     SendEnqueueWorkerSupervisor, SendLifecycleTrace, SharedSendCompletionCoordinator,
@@ -59,7 +63,7 @@ use super::{
     TimelineSendTerminalAdmission, TimelineSendTerminalHandoff, TimelineSendTerminalIngress,
     apply_send_completion_observation_and_handoff,
     apply_send_completion_observation_loss_and_handoff, await_submission_admission,
-    classify_timeline_send_error, media_upload_progress_identity,
+    classify_timeline_send_error, media_upload_progress_identity, pending_send_item,
     run_global_send_completion_observer,
 };
 
@@ -272,6 +276,7 @@ async fn media_enqueue_publishes_queued_before_a_prebind_terminal() {
         async move {
             Ok(SendEnqueueSuccess {
                 sdk_transaction_id,
+                handle: None,
                 media_queued: Some(MediaSendQueuedDelivery {
                     request_id,
                     key,
@@ -332,6 +337,8 @@ async fn send_terminal_required_action_failure_suppresses_completion_and_shutdow
     let mut event_rx = manager.event_tx.subscribe();
     assert!(matches!(
         manager.terminal_ingress.admit(TimelineSendTerminalHandoff {
+            key: None,
+            hydration: None,
             submission_id: Some(submission_id.clone()),
             action: Some(AppAction::SendTextFinished {
                 room_id: key.room_id().to_owned(),
@@ -398,6 +405,8 @@ async fn observation_loss_failure_survives_required_action_channel_shutdown() {
 
     manager
         .handle_send_terminal_handoff(TimelineSendTerminalHandoff {
+            key: None,
+            hydration: None,
             submission_id: None,
             action: Some(AppAction::SendTextFailed {
                 room_id: key.room_id().to_owned(),
@@ -432,21 +441,89 @@ async fn observation_loss_failure_survives_required_action_channel_shutdown() {
 fn synthetic_send_timeline_actor_handle(
     requests: mpsc::UnboundedSender<SyntheticSendEnqueueRequest>,
 ) -> TimelineActorHandle {
+    synthetic_send_timeline_actor_handle_with_projection_probe(requests, None, true)
+}
+
+fn synthetic_send_timeline_actor_handle_with_projection_probe(
+    requests: mpsc::UnboundedSender<SyntheticSendEnqueueRequest>,
+    mut projection_probe: Option<oneshot::Sender<Vec<PendingSendProjection>>>,
+    acknowledge: bool,
+) -> TimelineActorHandle {
     let mut handle = test_timeline_actor_handle();
+    let (tx, mut rx) = mpsc::channel(1);
+    handle.tx = tx;
+    handle.task = Some(executor::spawn(async move {
+        while let Some(message) = rx.recv().await {
+            if let TimelineActorMessage::RefreshPendingSendProjection {
+                projections,
+                acknowledged,
+                ..
+            } = message
+            {
+                if let Some(probe) = projection_probe.take() {
+                    let _ = probe.send(projections);
+                }
+                let _ = acknowledged.send(acknowledge);
+            }
+        }
+    }));
     handle.enqueue_context = Some(TimelineSendEnqueueContext::Synthetic { requests });
     handle
 }
 
+#[tokio::test]
+async fn full_actor_mailbox_defers_pending_refresh_without_blocking_manager() {
+    let key = room_key();
+    let (tx, mut rx) = mpsc::channel(1);
+    tx.try_send(TimelineActorMessage::DisplayPolicyChanged {
+        thread_root_order: koushi_state::TimelineThreadRootOrder::RootEvent,
+    })
+    .expect("fill actor mailbox");
+    let mut handle = test_timeline_actor_handle();
+    handle.tx = tx;
+    let mut manager = live_tail_test_manager(HashMap::from([(key.clone(), handle)]));
+
+    manager.refresh_pending_send_projection(&key).await;
+    manager.refresh_pending_send_projection(&key).await;
+    assert_eq!(
+        manager.send_enqueue_workers.tasks.len(),
+        1,
+        "repeated refreshes for one actor generation are coalesced"
+    );
+    assert!(matches!(
+        rx.recv().await,
+        Some(TimelineActorMessage::DisplayPolicyChanged { .. })
+    ));
+    let completion = manager
+        .send_enqueue_workers
+        .tasks
+        .next()
+        .await
+        .expect("deferred refresh settles after mailbox capacity returns");
+    manager
+        .handle_send_enqueue_worker_completion(completion)
+        .await;
+    assert!(matches!(
+        rx.recv().await,
+        Some(TimelineActorMessage::RefreshPendingSendProjection { .. })
+    ));
+}
+
 async fn poll_manager_enqueue_workers_once(manager: &mut TimelineManagerActor) {
-    std::future::poll_fn(|context| {
-        if let Poll::Ready(Some(completion)) =
-            manager.send_enqueue_workers.tasks.poll_next_unpin(context)
-        {
-            manager.handle_send_enqueue_worker_completion(completion);
-        }
-        Poll::Ready(())
+    let completion = std::future::poll_fn(|context| {
+        Poll::Ready(
+            match manager.send_enqueue_workers.tasks.poll_next_unpin(context) {
+                Poll::Ready(completion) => completion,
+                Poll::Pending => None,
+            },
+        )
     })
     .await;
+    if let Some(completion) = completion {
+        manager
+            .handle_send_enqueue_worker_completion(completion)
+            .await;
+    }
 }
 
 #[tokio::test]
@@ -505,10 +582,13 @@ async fn duplicate_submission_routes_one_manager_enqueue_worker() {
         live_tail_refreshes: LiveTailRefreshCoordinator::new(),
         test_session_available: true,
     };
-    manager
-        .send_enqueue_workers
-        .tasks
-        .push(Box::pin(async { SendEnqueueWorkerCompletion }));
+    manager.send_enqueue_workers.tasks.push(Box::pin(async {
+        SendEnqueueWorkerCompletion {
+            changed_key: None,
+            hydration: None,
+            deferred_refresh: None,
+        }
+    }));
     let submission_id = SubmissionId::new("opaque-submission");
     for request_id in [fake_rid(7300), fake_rid(7301)] {
         manager
@@ -549,6 +629,104 @@ async fn duplicate_submission_routes_one_manager_enqueue_worker() {
     manager.join_send_enqueue_workers().await;
 
     while event_rx.try_recv().is_ok() {}
+    let mut cap_registrations = Vec::new();
+    for index in 1..MAX_PENDING_SEND_PROJECTIONS {
+        let client_txn_id = format!("client-route-cap-{index}");
+        cap_registrations.push(SendCompletionRegistration::begin_with_projection(
+            Arc::clone(&manager.send_completion),
+            manager.terminal_ingress.clone(),
+            key.clone(),
+            client_txn_id.clone(),
+            None,
+            fake_rid(7_400 + index as u64),
+            true,
+            Some(PendingSendProjection {
+                key: key.clone(),
+                sequence: 0,
+                item: pending_send_item(&client_txn_id, "body", None, None, None),
+                client_txn_id,
+                sdk_transaction_id: None,
+                handle: None,
+                terminal_event_id: None,
+                phase: PendingSendPhase::Pending,
+            }),
+        ));
+    }
+    assert_eq!(
+        manager
+            .send_completion
+            .lock()
+            .expect("coordinator")
+            .pending_projection_count(),
+        MAX_PENDING_SEND_PROJECTIONS
+    );
+    let cap_rejected_id = SubmissionId::new("pending-cap-rejected");
+    manager
+        .handle_command(TimelineCommand::SubmitText {
+            request_id: fake_rid(7_599),
+            expected_account: test_session_key(),
+            submission_id: cap_rejected_id.clone(),
+            key: key.clone(),
+            transaction_id: "txn-cap-rejected".to_owned(),
+            document: ComposerDocument::from_plain_text("body"),
+            draft_revision: 2.into(),
+        })
+        .await;
+    assert!(action_rx.try_recv().is_err());
+    assert!(enqueue_rx.try_recv().is_err());
+    assert!(matches!(
+        event_rx.try_recv(),
+        Ok(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
+            submission_id,
+            kind: TimelineFailureKind::QueueOverflow,
+            ..
+        })) if submission_id == cap_rejected_id
+    ));
+    drop(cap_registrations);
+
+    let (rejected_projection_enqueue_tx, mut rejected_projection_enqueue_rx) =
+        mpsc::unbounded_channel();
+    manager.timelines.insert(
+        key.clone(),
+        synthetic_send_timeline_actor_handle_with_projection_probe(
+            rejected_projection_enqueue_tx,
+            None,
+            false,
+        ),
+    );
+    let publication_rejected_id = SubmissionId::new("publication-rejected");
+    manager
+        .handle_command(TimelineCommand::SubmitText {
+            request_id: fake_rid(7_600),
+            expected_account: test_session_key(),
+            submission_id: publication_rejected_id.clone(),
+            key: key.clone(),
+            transaction_id: "txn-publication-rejected".to_owned(),
+            document: ComposerDocument::from_plain_text("body"),
+            draft_revision: 3.into(),
+        })
+        .await;
+    manager.join_send_enqueue_workers().await;
+    assert!(action_rx.try_recv().is_err());
+    assert!(rejected_projection_enqueue_rx.try_recv().is_err());
+    assert!(matches!(
+        event_rx.try_recv(),
+        Ok(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
+            submission_id,
+            kind: TimelineFailureKind::QueueOverflow,
+            ..
+        })) if submission_id == publication_rejected_id
+    ));
+    assert!(
+        manager
+            .send_completion
+            .lock()
+            .expect("coordinator")
+            .projections_for_key(&key)
+            .iter()
+            .all(|projection| projection.client_txn_id != "txn-publication-rejected")
+    );
+
     manager.timelines.remove(&key);
     let rejected_id = SubmissionId::new("unsubscribed-submission");
     manager
@@ -595,6 +773,16 @@ async fn duplicate_submission_routes_one_manager_enqueue_worker() {
     assert!(
         enqueue_rx.try_recv().is_err(),
         "a rejected reducer action never releases the SDK enqueue permit"
+    );
+    assert!(
+        manager
+            .send_completion
+            .lock()
+            .expect("coordinator")
+            .projections_for_key(&key)
+            .iter()
+            .all(|projection| projection.client_txn_id != "txn-reducer-closed"),
+        "a rejected acceptance must retract the actor-visible pending projection"
     );
     manager
         .handle_command(TimelineCommand::SubmitText {
@@ -937,6 +1125,7 @@ async fn shutdown_cleans_captured_room_keys_before_acknowledging() {
 async fn manager_enqueue_worker_waits_for_reducer_acceptance_delivery() {
     let key = room_key();
     let (enqueue_tx, mut enqueue_rx) = mpsc::unbounded_channel();
+    let (projection_probe_tx, projection_probe_rx) = oneshot::channel();
     let (action_tx, mut action_rx) = mpsc::channel(1);
     action_tx
         .try_send(Vec::new())
@@ -961,7 +1150,11 @@ async fn manager_enqueue_worker_waits_for_reducer_acceptance_delivery() {
         global_response_commit: None,
         timelines: HashMap::from([(
             key.clone(),
-            synthetic_send_timeline_actor_handle(enqueue_tx),
+            synthetic_send_timeline_actor_handle_with_projection_probe(
+                enqueue_tx,
+                Some(projection_probe_tx),
+                true,
+            ),
         )]),
         accepted_submissions: SubmissionAdmissionLedger::default(),
         send_completion: SharedSendCompletionCoordinator::default(),
@@ -1040,6 +1233,14 @@ async fn manager_enqueue_worker_waits_for_reducer_acceptance_delivery() {
             .await;
         manager
     });
+    let projections = projection_probe_rx
+        .await
+        .expect("actor receives pending projection before acknowledging acceptance");
+    assert!(matches!(projections.as_slice(), [projection] if matches!(
+        &projection.item.id,
+        koushi_protocol::event::TimelineItemId::Transaction { transaction_id }
+            if transaction_id == "txn-paused"
+    ) && projection.item.send_state == Some(koushi_protocol::event::TimelineSendState::Sending)));
     acceptance_probe_rx
         .await
         .expect("timeline reached acceptance projection");
@@ -1292,6 +1493,402 @@ fn send_completion_trace_orders_terminal_before_and_after_binding() {
             })
         }));
     }
+}
+
+#[test]
+fn pending_projection_uses_exact_ids_and_converges_with_or_without_local_echo() {
+    let _diagnostic_lock = koushi_diagnostics::test_support::lock();
+    let coordinator = SharedSendCompletionCoordinator::default();
+    let (ingress, _terminal_rx) = TimelineSendTerminalIngress::channel();
+    let key = room_key();
+    let projection = |client_txn_id: &str| PendingSendProjection {
+        key: key.clone(),
+        sequence: 0,
+        client_txn_id: client_txn_id.to_owned(),
+        item: pending_send_item(client_txn_id, "private body", None, None, None),
+        sdk_transaction_id: None,
+        handle: None,
+        terminal_event_id: None,
+        phase: PendingSendPhase::Pending,
+    };
+
+    let mut normal = SendCompletionRegistration::begin_with_projection(
+        Arc::clone(&coordinator),
+        ingress.clone(),
+        key.clone(),
+        "client-normal".to_owned(),
+        None,
+        fake_rid(7402),
+        true,
+        Some(projection("client-normal")),
+    );
+    let normal_correlation = normal
+        .lifecycle_trace
+        .as_ref()
+        .expect("normal trace")
+        .correlation();
+    normal.activate();
+    normal.bind("sdk-normal".to_owned());
+    {
+        let mut owner = coordinator.lock().expect("coordinator");
+        let visible = owner.projections_for_key(&key);
+        assert!(matches!(visible.as_slice(), [projection] if matches!(
+            &projection.item.id,
+            koushi_protocol::event::TimelineItemId::Transaction { transaction_id }
+                if transaction_id == "sdk-normal"
+        )));
+        assert_eq!(
+            owner.reconcile_local_echo(key.room_id(), "sdk-normal"),
+            Some(key.clone())
+        );
+        assert!(owner.projections_for_key(&key).is_empty());
+    }
+
+    let mut omitted = SendCompletionRegistration::begin_with_projection(
+        Arc::clone(&coordinator),
+        ingress.clone(),
+        key.clone(),
+        "client-omitted".to_owned(),
+        None,
+        fake_rid(7403),
+        true,
+        Some(projection("client-omitted")),
+    );
+    let omitted_correlation = omitted
+        .lifecycle_trace
+        .as_ref()
+        .expect("omitted trace")
+        .correlation();
+    omitted.activate();
+    omitted.bind("sdk-omitted".to_owned());
+    assert!(
+        !coordinator
+            .lock()
+            .expect("coordinator")
+            .mark_retry_sending(&key, "sdk-omitted"),
+        "a still-pending send cannot be resurrected through retry"
+    );
+    apply_send_completion_observation_and_handoff(
+        &coordinator,
+        &ingress,
+        key.room_id(),
+        SendCompletionObservation::Sent {
+            sdk_transaction_id: "sdk-omitted".to_owned(),
+            event_id: "$event-omitted:test".to_owned(),
+        },
+    );
+    {
+        let mut owner = coordinator.lock().expect("coordinator");
+        let visible = owner.projections_for_key(&key);
+        assert!(matches!(visible.as_slice(), [projection] if matches!(
+            &projection.item.id,
+            koushi_protocol::event::TimelineItemId::Event { event_id }
+                if event_id == "$event-omitted:test"
+        ) && projection.item.send_state == Some(koushi_protocol::event::TimelineSendState::Sent)));
+        assert_eq!(owner.pending_projection_count(), 1);
+        assert_eq!(
+            owner.reconcile_local_echo(key.room_id(), "sdk-omitted"),
+            None
+        );
+        assert_eq!(owner.projections_for_key(&key).len(), 1);
+        let mut hydrated_item = visible[0].item.clone();
+        hydrated_item.body = Some("authoritative fetched body".to_owned());
+        hydrated_item.send_state = None;
+        let correlation = SendCorrelationKey {
+            room_id: key.room_id().to_owned(),
+            sdk_transaction_id: "sdk-omitted".to_owned(),
+        };
+        assert_eq!(owner.pending_hydrations_for_key(&key).len(), 1);
+        assert!(owner.begin_hydration(&correlation));
+        assert!(owner.pending_hydrations_for_key(&key).is_empty());
+        owner.finish_hydration_failure(&correlation);
+        assert_eq!(owner.pending_hydrations_for_key(&key).len(), 1);
+        assert!(owner.begin_hydration(&correlation));
+        assert_eq!(
+            owner.mark_hydrated(&correlation, hydrated_item),
+            Some(key.clone())
+        );
+        assert_eq!(owner.pending_projection_count(), 0);
+        let hydrated = owner.projections_for_key(&key);
+        assert_eq!(hydrated.len(), 1);
+        assert_eq!(
+            hydrated[0].item.body.as_deref(),
+            Some("authoritative fetched body")
+        );
+        assert_eq!(
+            hydrated[0].item.send_state,
+            Some(koushi_protocol::event::TimelineSendState::Sent)
+        );
+        assert_eq!(
+            owner.reconcile_remote_event(key.room_id(), "$event-omitted:test"),
+            Some(key.clone())
+        );
+        assert!(owner.projections_for_key(&key).is_empty());
+        assert_eq!(owner.pending_projection_count(), 0);
+        assert!(
+            !owner.mark_retry_sending(&key, "sdk-omitted"),
+            "a converged send cannot be resurrected through retry"
+        );
+    }
+
+    let mut recoverable = SendCompletionRegistration::begin_with_projection(
+        Arc::clone(&coordinator),
+        ingress.clone(),
+        key.clone(),
+        "client-recoverable".to_owned(),
+        None,
+        fake_rid(7404),
+        true,
+        Some(projection("client-recoverable")),
+    );
+    recoverable.activate();
+    recoverable.bind("sdk-recoverable".to_owned());
+    apply_send_completion_observation_and_handoff(
+        &coordinator,
+        &ingress,
+        key.room_id(),
+        SendCompletionObservation::SendError {
+            sdk_transaction_id: "sdk-recoverable".to_owned(),
+            diagnostic: SendFailureDiagnostic {
+                reason: "http",
+                recoverable: true,
+            },
+        },
+    );
+    {
+        let mut owner = coordinator.lock().expect("coordinator");
+        assert!(owner.mark_retry_sending(&key, "sdk-recoverable"));
+        let retried = owner.projections_for_key(&key);
+        assert!(matches!(retried.as_slice(), [projection] if
+            projection.phase == PendingSendPhase::Pending
+                && projection.item.send_state
+                    == Some(koushi_protocol::event::TimelineSendState::Sending)));
+    }
+
+    let diagnostics = koushi_diagnostics::test_support::detail_snapshot();
+    let stages_for = |correlation| {
+        diagnostics
+            .records
+            .iter()
+            .filter(|record| {
+                record.event.source == "core.send"
+                    && record
+                        .event
+                        .fields
+                        .iter()
+                        .any(|field| field.value == DiagnosticValue::Correlation(correlation))
+            })
+            .map(|record| record.event.stage)
+            .collect::<Vec<_>>()
+    };
+    assert!(stages_for(normal_correlation).contains(&"pending_projection_inserted"));
+    assert!(stages_for(normal_correlation).contains(&"sdk_local_echo_merged"));
+    assert!(stages_for(omitted_correlation).contains(&"sdk_local_echo_missing"));
+    assert!(stages_for(omitted_correlation).contains(&"remote_echo_converged"));
+}
+
+#[test]
+fn pending_projection_capacity_is_hard_bounded() {
+    let coordinator = SharedSendCompletionCoordinator::default();
+    let (ingress, _terminal_rx) = TimelineSendTerminalIngress::channel();
+    let key = room_key();
+    let mut registrations = Vec::new();
+    for index in 0..MAX_PENDING_SEND_PROJECTIONS {
+        let client_txn_id = format!("client-cap-{index}");
+        registrations.push(SendCompletionRegistration::begin_with_projection(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
+            client_txn_id.clone(),
+            None,
+            fake_rid(8_000 + index as u64),
+            true,
+            Some(PendingSendProjection {
+                key: key.clone(),
+                sequence: 0,
+                item: pending_send_item(&client_txn_id, "body", None, None, None),
+                client_txn_id,
+                sdk_transaction_id: None,
+                handle: None,
+                terminal_event_id: None,
+                phase: PendingSendPhase::Pending,
+            }),
+        ));
+    }
+    {
+        let owner = coordinator.lock().expect("coordinator");
+        assert_eq!(
+            owner.pending_projection_count(),
+            MAX_PENDING_SEND_PROJECTIONS
+        );
+        let visible = owner.projections_for_key(&key);
+        assert_eq!(
+            visible.first().map(|item| item.client_txn_id.as_str()),
+            Some("client-cap-0")
+        );
+        assert_eq!(
+            visible.last().map(|item| item.client_txn_id.as_str()),
+            Some("client-cap-127")
+        );
+    }
+    drop(registrations);
+    assert_eq!(
+        coordinator
+            .lock()
+            .expect("coordinator")
+            .pending_projection_count(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn causal_hydration_retry_rearms_after_a_failed_exact_event_fetch() {
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let session = Arc::new(koushi_sdk::MatrixClientSession::from_client_for_testing(
+        client.clone(),
+        koushi_state::SessionInfo {
+            homeserver: server.server().uri(),
+            user_id: client.user_id().expect("synthetic user id").to_string(),
+            device_id: client.device_id().expect("synthetic device id").to_string(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        },
+    ));
+    let key = room_key();
+    let mut manager = live_tail_test_manager(HashMap::new());
+    manager.session = Some(session);
+    let (ingress, _terminal_rx) = TimelineSendTerminalIngress::channel();
+    let mut registration = SendCompletionRegistration::begin_with_projection(
+        Arc::clone(&manager.send_completion),
+        ingress.clone(),
+        key.clone(),
+        "client-hydration-retry".to_owned(),
+        None,
+        fake_rid(8_999),
+        true,
+        Some(PendingSendProjection {
+            key: key.clone(),
+            sequence: 0,
+            client_txn_id: "client-hydration-retry".to_owned(),
+            item: pending_send_item("client-hydration-retry", "body", None, None, None),
+            sdk_transaction_id: None,
+            handle: None,
+            terminal_event_id: None,
+            phase: PendingSendPhase::Pending,
+        }),
+    );
+    registration.activate();
+    registration.bind("sdk-hydration-retry".to_owned());
+    apply_send_completion_observation_and_handoff(
+        &manager.send_completion,
+        &ingress,
+        key.room_id(),
+        SendCompletionObservation::Sent {
+            sdk_transaction_id: "sdk-hydration-retry".to_owned(),
+            event_id: "$missing-hydration:test".to_owned(),
+        },
+    );
+
+    manager.retry_pending_send_hydrations(&key);
+    assert_eq!(manager.send_enqueue_workers.tasks.len(), 1);
+    assert!(
+        manager
+            .send_completion
+            .lock()
+            .expect("coordinator")
+            .pending_hydrations_for_key(&key)
+            .is_empty(),
+        "the exact hydration is marked in flight"
+    );
+    let completion = manager
+        .send_enqueue_workers
+        .tasks
+        .next()
+        .await
+        .expect("missing-room hydration settles");
+    manager
+        .handle_send_enqueue_worker_completion(completion)
+        .await;
+    assert_eq!(
+        manager
+            .send_completion
+            .lock()
+            .expect("coordinator")
+            .pending_hydrations_for_key(&key)
+            .len(),
+        1,
+        "a causal subscribe/live-tail wake can retry after failure"
+    );
+}
+
+#[test]
+fn hydrated_sent_projection_cache_evicts_oldest_without_consuming_active_capacity() {
+    let coordinator = SharedSendCompletionCoordinator::default();
+    let (ingress, _terminal_rx) = TimelineSendTerminalIngress::channel();
+    let key = room_key();
+    for index in 0..=MAX_PENDING_SEND_PROJECTIONS {
+        let client_txn_id = format!("client-hydrated-{index}");
+        let sdk_txn_id = format!("sdk-hydrated-{index}");
+        let event_id = format!("$event-hydrated-{index}:test");
+        let mut registration = SendCompletionRegistration::begin_with_projection(
+            Arc::clone(&coordinator),
+            ingress.clone(),
+            key.clone(),
+            client_txn_id.clone(),
+            None,
+            fake_rid(9_000 + index as u64),
+            true,
+            Some(PendingSendProjection {
+                key: key.clone(),
+                sequence: 0,
+                item: pending_send_item(&client_txn_id, "body", None, None, None),
+                client_txn_id,
+                sdk_transaction_id: None,
+                handle: None,
+                terminal_event_id: None,
+                phase: PendingSendPhase::Pending,
+            }),
+        );
+        registration.activate();
+        registration.bind(sdk_txn_id.clone());
+        apply_send_completion_observation_and_handoff(
+            &coordinator,
+            &ingress,
+            key.room_id(),
+            SendCompletionObservation::Sent {
+                sdk_transaction_id: sdk_txn_id.clone(),
+                event_id,
+            },
+        );
+        let correlation = SendCorrelationKey {
+            room_id: key.room_id().to_owned(),
+            sdk_transaction_id: sdk_txn_id,
+        };
+        let mut owner = coordinator.lock().expect("coordinator");
+        let hydrated_item = owner
+            .projections_for_key(&key)
+            .into_iter()
+            .find(|projection| {
+                projection.sdk_transaction_id.as_deref()
+                    == Some(correlation.sdk_transaction_id.as_str())
+            })
+            .expect("current retained projection")
+            .item;
+        assert!(owner.begin_hydration(&correlation));
+        assert_eq!(
+            owner.mark_hydrated(&correlation, hydrated_item),
+            Some(key.clone())
+        );
+        assert_eq!(owner.pending_projection_count(), 0);
+    }
+    assert_eq!(
+        coordinator
+            .lock()
+            .expect("coordinator")
+            .projections_for_key(&key)
+            .len(),
+        MAX_PENDING_SEND_PROJECTIONS
+    );
 }
 
 #[test]
@@ -1665,7 +2262,9 @@ async fn panicked_enqueue_future_is_fail_closed_without_stopping_manager_workers
         .next()
         .await
         .expect("caught panic still settles the supervised future");
-    manager.handle_send_enqueue_worker_completion(completion);
+    manager
+        .handle_send_enqueue_worker_completion(completion)
+        .await;
     let panic_terminal = manager
         .terminal_rx
         .try_recv()
@@ -1700,7 +2299,9 @@ async fn panicked_enqueue_future_is_fail_closed_without_stopping_manager_workers
         .next()
         .await
         .expect("manager continues polling workers after an isolated panic");
-    manager.handle_send_enqueue_worker_completion(completion);
+    manager
+        .handle_send_enqueue_worker_completion(completion)
+        .await;
     let next_terminal = manager
         .terminal_rx
         .try_recv()
