@@ -634,7 +634,7 @@ async fn cancelled_local_fallback_scheduled_send_does_not_resurrect_on_restart()
     let mut conn = restarted.attach();
     inject_ready_local_fallback_room(&restarted, "!room:example.test").await;
 
-    let snapshot = wait_for_state_for(&mut conn, Duration::from_millis(200), |state| {
+    let snapshot = wait_for_state_event(&mut conn, |state| {
         matches!(state.session, SessionState::Ready(_))
             && state.timeline.room_id.as_deref() == Some("!room:example.test")
             && state.timeline.scheduled_sends.is_empty()
