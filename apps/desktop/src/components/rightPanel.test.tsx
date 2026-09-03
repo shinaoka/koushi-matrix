@@ -15,7 +15,8 @@ import type {
   UserProfile
 } from "../domain/types";
 import { documentFromText } from "../domain/composerDocument";
-import { ContextualRightPanel } from "./rightPanel";
+import { t } from "../i18n/messages";
+import { ContextualRightPanel, PanelHeader } from "./rightPanel";
 
 class MockIntersectionObserver {
   static callback: IntersectionObserverCallback | null = null;
@@ -299,6 +300,19 @@ beforeEach(() => {
 function renderPanel(overrides: Partial<RightPanelProps> = {}) {
   return render(<ContextualRightPanel {...defaultProps} {...overrides} />);
 }
+
+describe("PanelHeader", () => {
+  test("exposes only its title and requested Close action", () => {
+    const onClose = vi.fn();
+    const title = t("panel.userSettings");
+    render(<PanelHeader title={title} onClose={onClose} />);
+
+    expect(screen.getByText(title)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "More" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: t("action.close", { title }) }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("ContextualRightPanel people composition", () => {
   test("forwards Space presentation data and the close action", () => {

@@ -196,7 +196,7 @@ Thread support should use SDK thread timeline support where available. The MVP s
 
 If thread APIs, server support, or thread subscriptions are unavailable, the fallback UX opens a focused permalink-style context around the root event and replies instead of pretending full thread support exists.
 
-Thread UI should follow Element's interaction pattern rather than a generic chat pane. A message action opens the right panel, the panel shows the root event and replies, and the panel header provides close and contextual actions. The center timeline remains selected on wide screens. On narrow screens, the thread becomes a focused view or drawer.
+Thread UI should follow Element's interaction pattern rather than a generic chat pane. A message action opens the right panel, the panel shows the root event and replies, and the panel header provides close; contextual actions appear only when concrete actions are implemented. The center timeline remains selected on wide screens. On narrow screens, the thread becomes a focused view or drawer.
 
 The MVP should support:
 

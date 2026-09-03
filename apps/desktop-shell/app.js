@@ -363,7 +363,6 @@ function renderThreadPane(activeRoom) {
     <aside class="thread-pane">
       <header class="thread-header">
         <div class="thread-title">スレッド</div>
-        <button class="icon-button" type="button" aria-label="More">⋮</button>
         <button class="icon-button" type="button" data-close-thread aria-label="Close thread">×</button>
       </header>
       <section class="thread-scroll">

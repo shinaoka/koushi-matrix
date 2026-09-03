@@ -1,5 +1,5 @@
 import { type FormEvent, type RefObject, useMemo } from "react";
-import { MoreHorizontal, X } from "lucide-react";
+import { X } from "lucide-react";
 import { t } from "../i18n/messages";
 import type {
   StagedUploadOutputSelection,
@@ -1054,9 +1054,6 @@ export function PanelHeader({
   return (
     <header className="thread-header">
       <div className="thread-title">{title}</div>
-      <button className="icon-button" type="button" aria-label={t("action.more")}>
-        <MoreHorizontal size={ICON_SIZE.panel} />
-      </button>
       {showClose ? (
         <button className="icon-button" type="button" aria-label={t("action.close", { title })} onClick={onClose}>
           <X size={ICON_SIZE.panel} />

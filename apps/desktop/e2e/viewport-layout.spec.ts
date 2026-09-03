@@ -45,6 +45,20 @@ function expectRootAligned(geometry: Awaited<ReturnType<typeof layoutGeometry>>)
   }
 }
 
+test("right-panel header exposes no inert More action", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.getByRole("button", { name: t("workspace.userSettings"), exact: true }).click();
+  const contextPanel = page.locator('aside[aria-label="Context panel"]');
+  await expect(contextPanel.getByRole("button", { name: "More", exact: true })).toHaveCount(0);
+  const close = contextPanel.getByRole("button", {
+    name: t("action.close", { title: t("panel.userSettings") }),
+    exact: true
+  });
+  await close.focus();
+  await close.press("Enter");
+  await expect(page.locator(".app-grid")).toHaveClass(/(^|\s)thread-closed(\s|$)/);
+});
+
 test("User settings quick navigation scrolls only its panel", async ({ page }) => {
   await page.setViewportSize({ width: 1334, height: 852 });
   await gotoReadyShell(page);
