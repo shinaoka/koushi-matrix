@@ -1,7 +1,7 @@
 //! Runtime timeline / composer integration tests.
 
 use koushi_core::executor;
-use koushi_core::runtime::{COMPOSER_DRAFT_PERSIST_DEBOUNCE, CoreRuntime};
+use koushi_core::runtime::CoreRuntime;
 use koushi_protocol::SessionKeyId;
 use koushi_protocol::command::{AppCommand, CoreCommand, TimelineCommand};
 use koushi_protocol::event::CoreEvent;
@@ -925,6 +925,7 @@ async fn composer_drafts_persist_after_debounce_and_load_on_restart() {
                 && state.timeline.room_id.as_deref() == Some("!room:example.test")
         })
         .await;
+        let mut persistence = runtime.install_composer_draft_io_barrier_for_testing();
 
         submit_composer_command(
             &conn,
@@ -943,7 +944,19 @@ async fn composer_drafts_persist_after_debounce_and_load_on_restart() {
             state.timeline.composer.draft == "survives restart"
         })
         .await;
-        executor::sleep(COMPOSER_DRAFT_PERSIST_DEBOUNCE * 2).await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            persistence.wait_for_save_started(),
+        )
+        .await
+        .expect("debounced composer draft save must start");
+        persistence.release_save();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            persistence.wait_for_save_completed(),
+        )
+        .await
+        .expect("composer draft save must complete before restart");
     }
 
     let restarted = CoreRuntime::start_with_data_dir_and_file_credentials(
