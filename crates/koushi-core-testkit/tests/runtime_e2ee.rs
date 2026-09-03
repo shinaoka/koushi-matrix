@@ -68,7 +68,7 @@ impl Respond for NotifyFirstSlidingSync {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn provisional_verification_hands_one_encryption_sync_owner_to_normal_runtime() {
     let server = MatrixMockServer::new().await;
     server
@@ -117,6 +117,15 @@ async fn provisional_verification_hands_one_encryption_sync_owner_to_normal_runt
         .await
         .expect("submit login");
 
+    wait_for_state_event(&mut connection, |state| {
+        matches!(
+            state.session,
+            SessionState::Provisional { .. } | SessionState::AwaitingVerification { .. }
+        )
+    })
+    .await;
+    // The probe is installed before login and the oneshot buffers a request that
+    // wins this state observation, so splitting the phase fences loses no event.
     executor::timeout(Duration::from_secs(5), first_request_rx)
         .await
         .expect("provisional encryption request deadline")

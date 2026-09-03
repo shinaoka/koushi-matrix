@@ -11,8 +11,11 @@ use matrix_sdk_base::crypto::{OlmMachine, store::CryptoStore};
 use std::{
     fs,
     path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+static TEMP_ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 type TestResult<T> = Result<T, String>;
 
@@ -222,8 +225,9 @@ impl TempRoot {
             .duration_since(UNIX_EPOCH)
             .map_err(|_| "system clock unavailable".to_owned())?
             .as_nanos();
+        let sequence = TEMP_ROOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "koushi-sdk-login-store-{}-{stamp}",
+            "koushi-sdk-login-store-{}-{stamp}-{sequence}",
             std::process::id()
         ));
         fs::create_dir_all(&path).map_err(|_| "temporary store unavailable".to_owned())?;
