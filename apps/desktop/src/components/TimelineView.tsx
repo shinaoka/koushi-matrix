@@ -307,6 +307,7 @@ export const TimelineView = memo(function TimelineView({
   transport,
   onReply,
   onOpenMatrixTarget,
+  onOpenSenderProfile,
   onOpenThread = () => undefined,
   resolveComposerKeyAction = ignoreComposerKeyAction,
   liveSignals,
@@ -351,6 +352,7 @@ export const TimelineView = memo(function TimelineView({
   transport: TimelineTransport;
   onReply: TimelineRowActionHandlers["onReply"];
   onOpenMatrixTarget?: TimelineRowActionHandlers["onOpenMatrixTarget"];
+  onOpenSenderProfile?: TimelineRowActionHandlers["onOpenSenderProfile"];
   onOpenThread?: TimelineRowActionHandlers["onOpenThread"];
   resolveComposerKeyAction?: ResolveComposerKeyAction;
   liveSignals?: LiveSignalsState;
@@ -3494,6 +3496,9 @@ export const TimelineView = memo(function TimelineView({
                 onSaveMediaFile={transport.saveMediaFile}
                 forwardDestinations={effectiveForwardDestinations}
                 onOpenMatrixTarget={onOpenMatrixTarget}
+                onOpenSenderProfile={
+                  presentationContext === "room" ? onOpenSenderProfile : undefined
+                }
                 presence={item.sender ? liveSignals?.presence[item.sender] : undefined}
                 profile={item.sender ? profileUsers[item.sender] : undefined}
                 reactionSenderLabelsByUserId={reactionSenderLabelsByUserId}

@@ -130,6 +130,7 @@ export interface TimelineRowActionHandlers {
    * rather than swallowing the click.
    */
   onOpenMatrixTarget?: OpenMatrixTargetHandler;
+  onOpenSenderProfile?: (roomId: string, userId: string) => void;
 }
 
 function reactionPickerBoundaryElement(anchor: Element): Element | null {
@@ -224,6 +225,7 @@ export function TimelineItemRow({
   onRetrySend = ignoreSendQueueAction,
   onCancelSend = ignoreSendQueueAction,
   onOpenMatrixTarget,
+  onOpenSenderProfile,
   presence,
   profile,
   reactionSenderLabelsByUserId = {},
@@ -287,6 +289,7 @@ export function TimelineItemRow({
   onRetrySend?: TimelineRowActionHandlers["onRetrySend"];
   onCancelSend?: TimelineRowActionHandlers["onCancelSend"];
   onOpenMatrixTarget?: TimelineRowActionHandlers["onOpenMatrixTarget"];
+  onOpenSenderProfile?: TimelineRowActionHandlers["onOpenSenderProfile"];
   presence?: PresenceKind;
   profile?: UserProfile;
   reactionSenderLabelsByUserId?: Readonly<Record<string, string>>;
@@ -624,6 +627,7 @@ export function TimelineItemRow({
   } = useRecoverableImageSource(avatarUrl);
   const showAvatarImage = Boolean(displayAvatarUrl);
   const senderDisplayLabel = peopleFacingLabel(item.sender_label);
+  const senderProfileUserId = isContinuation ? null : item.sender;
   const senderOriginalLabel =
     profile?.original_display_label.trim() || profile?.display_name?.trim() || "";
   const senderAliasTarget =
@@ -852,6 +856,11 @@ export function TimelineItemRow({
             isRedacted={isRedacted}
             sendStateKind={sendStateKind}
             presence={presence}
+            onOpenSenderProfile={
+              senderProfileUserId && onOpenSenderProfile
+                ? () => onOpenSenderProfile(roomId, senderProfileUserId)
+                : undefined
+            }
           />
         </div>
         {replyQuoteContent}

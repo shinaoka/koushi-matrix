@@ -2931,20 +2931,32 @@ export function App() {
     return true;
   }
 
-  async function openDmUserInfo(roomId: string, userId: string) {
-    if (!(await selectRoom(roomId))) {
+  async function openRoomUserProfile(roomId: string, userId: string) {
+    const current = getAppStoreSnapshot();
+    if (
+      current?.state.ui.navigation.active_room_id !== roomId ||
+      current.state.ui.timeline.room_id !== roomId
+    ) {
       return;
     }
     const navigationRequestId = roomNavigationIntentEpochRef.current;
-    roomSettingsLoadRef.current = null;
     const settingsRequestId = ++roomSettingsRequestRef.current;
+    const isCurrent = () => {
+      const latest = getAppStoreSnapshot();
+      return (
+        roomNavigationIntentEpochRef.current === navigationRequestId &&
+        roomSettingsRequestRef.current === settingsRequestId &&
+        latest?.state.ui.navigation.active_room_id === roomId &&
+        latest.state.ui.timeline.room_id === roomId
+      );
+    };
+
+    roomSettingsLoadRef.current = null;
     const next = await settleCommandSnapshot(api.loadRoomSettings(roomId));
-    const isCurrent = () =>
-      roomNavigationIntentEpochRef.current === navigationRequestId &&
-      roomSettingsRequestRef.current === settingsRequestId;
     if (
       !isCurrent() ||
       next.state.ui.navigation.active_room_id !== roomId ||
+      next.state.ui.timeline.room_id !== roomId ||
       !exactRoomSettingsForRoom(next, roomId)
     ) {
       return;
@@ -2952,6 +2964,12 @@ export function App() {
     setPeoplePanelScope({ kind: "room", roomId });
     setSelectedProfileUserId(userId);
     await setRightPanelModeClosingFocusedContext("profile", isCurrent);
+  }
+
+  async function openDmUserInfo(roomId: string, userId: string) {
+    if (await selectRoom(roomId)) {
+      await openRoomUserProfile(roomId, userId);
+    }
   }
 
   async function openPeoplePanel() {
@@ -5919,6 +5937,9 @@ export function App() {
             onOpenThread={openThread}
             onOpenMatrixTarget={(target) => {
               runInBackground(openMatrixTarget(target));
+            }}
+            onOpenSenderProfile={(roomId, userId) => {
+              runInBackground(openRoomUserProfile(roomId, userId));
             }}
             onReply={(roomId, eventId) => {
               runInBackground(setComposerReplyTarget(roomId, eventId));

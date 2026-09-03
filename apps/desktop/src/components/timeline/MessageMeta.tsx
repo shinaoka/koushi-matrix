@@ -39,7 +39,8 @@ export function MessageMeta({
   isEdited,
   isRedacted,
   sendStateKind,
-  presence
+  presence,
+  onOpenSenderProfile
 }: {
   senderDisplayLabel: string;
   timestampMs: number | null;
@@ -47,6 +48,7 @@ export function MessageMeta({
   isRedacted: boolean;
   sendStateKind: string | null;
   presence?: import("../../domain/types").PresenceKind;
+  onOpenSenderProfile?: () => void;
 }): ReactNode {
   const messageTimestamp = formatMessageTimestamp(timestampMs);
   const sendStateLabel =
@@ -77,7 +79,22 @@ export function MessageMeta({
           aria-label={presenceLabel(presence)}
         />
       ) : null}
-      <span className="sender" dir="auto">{senderDisplayLabel}</span>
+      {onOpenSenderProfile ? (
+        <button
+          className="sender sender-profile-button"
+          type="button"
+          dir="auto"
+          aria-label={t("people.openProfile", { name: senderDisplayLabel })}
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenSenderProfile();
+          }}
+        >
+          {senderDisplayLabel}
+        </button>
+      ) : (
+        <span className="sender" dir="auto">{senderDisplayLabel}</span>
+      )}
       {messageTimestamp ? (
         <time className="message-timestamp" dateTime={new Date(timestampMs!).toISOString()}>
           {messageTimestamp}

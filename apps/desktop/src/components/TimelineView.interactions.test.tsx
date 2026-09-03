@@ -83,6 +83,50 @@ afterEach(() => {
 });
 
 describe("TimelineView", () => {
+  it("routes sender profile intent with room and stable user identity only", () => {
+    const onOpenSenderProfile = vi.fn();
+    const onReply = vi.fn();
+    const onOpenThread = vi.fn();
+    const onOpenContextMenu = vi.fn();
+    const item = {
+      ...message("$sender-profile", "Profile target body"),
+      sender: "@stable-profile-target:example.invalid",
+      sender_label: "Duplicate Name"
+    };
+    const store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [item]
+      }
+    });
+
+    render(
+      <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={baseTransport({})}
+          onReply={onReply}
+          onOpenThread={onOpenThread}
+          onOpenContextMenu={onOpenContextMenu}
+          onOpenSenderProfile={onOpenSenderProfile}
+        />
+      </TimelineStoreContext.Provider>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Open profile for Duplicate Name" }));
+    expect(onOpenSenderProfile).toHaveBeenCalledTimes(1);
+    expect(onOpenSenderProfile).toHaveBeenCalledWith(
+      "!room:example.invalid",
+      "@stable-profile-target:example.invalid"
+    );
+    expect(onReply).not.toHaveBeenCalled();
+    expect(onOpenThread).not.toHaveBeenCalled();
+    expect(onOpenContextMenu).not.toHaveBeenCalled();
+  });
+
   it("keeps edit live conversion DOM value and selection across timeline rerenders", () => {
     const editable = { ...message("$edit-ime", "before"), can_edit: true };
     const makeStore = (item: TimelineItem): TimelineStoreState =>

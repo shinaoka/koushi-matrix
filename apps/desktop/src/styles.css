@@ -3492,6 +3492,22 @@ button:disabled {
   white-space: nowrap;
 }
 
+.sender-profile-button {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  background: transparent;
+  cursor: pointer;
+}
+
+.sender-profile-button:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
 .message-send-state {
   display: inline-flex;
   align-items: center;

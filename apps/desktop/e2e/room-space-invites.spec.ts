@@ -2700,6 +2700,194 @@ test("room context menu reports room with a reason", async ({ page }) => {
     });
 });
 
+test("timeline sender profile navigation uses stable user ids and latest-wins settings", async ({ page }) => {
+  await gotoReadyShell(page);
+  const firstUserId = "@duplicate-first:example.invalid";
+  const secondUserId = "@duplicate-second:example.invalid";
+  await seedTimelineItems(page, [
+    {
+      id: { Event: { event_id: "$duplicate-first:example.invalid" } },
+      sender: firstUserId,
+      sender_label: "Duplicate Name",
+      body: "First duplicate sender",
+      timestamp_ms: 1_800_000_020_000,
+      in_reply_to_event_id: null,
+      thread_root: null,
+      thread_summary: null,
+      media: null,
+      is_redacted: false,
+      is_hidden: false,
+      can_redact: false,
+      is_edited: false,
+      can_edit: false,
+      reactions: []
+    },
+    {
+      id: { Event: { event_id: "$duplicate-second:example.invalid" } },
+      sender: secondUserId,
+      sender_label: "Duplicate Name",
+      body: "Second duplicate sender",
+      timestamp_ms: 1_800_000_021_000,
+      in_reply_to_event_id: null,
+      thread_root: null,
+      thread_summary: null,
+      media: null,
+      is_redacted: false,
+      is_hidden: false,
+      can_redact: false,
+      is_edited: false,
+      can_edit: false,
+      reactions: []
+    },
+    {
+      id: { Event: { event_id: "$duplicate-continuation:example.invalid" } },
+      sender: secondUserId,
+      sender_label: "Duplicate Name",
+      body: "Continuation sender",
+      timestamp_ms: 1_800_000_021_500,
+      in_reply_to_event_id: null,
+      thread_root: null,
+      thread_summary: null,
+      media: null,
+      is_redacted: false,
+      is_hidden: false,
+      can_redact: false,
+      is_edited: false,
+      can_edit: false,
+      reactions: []
+    },
+    {
+      id: { Event: { event_id: "$missing-sender:example.invalid" } },
+      sender: null,
+      sender_label: "Unbound Sender",
+      body: "Missing stable sender id",
+      timestamp_ms: 1_800_000_022_000,
+      in_reply_to_event_id: null,
+      thread_root: null,
+      thread_summary: null,
+      media: null,
+      is_redacted: false,
+      is_hidden: false,
+      can_redact: false,
+      is_edited: false,
+      can_edit: false,
+      reactions: []
+    }
+  ]);
+  await page.evaluate(
+    ({ firstUserId: first, secondUserId: second }) => {
+      const pending: Array<{ roomId: string; resolve: (snapshot: ReturnType<typeof window.__harness.currentSnapshot>) => void }> = [];
+      window.__harness.setCommandResponse("load_room_settings", ({ roomId }) =>
+        new Promise((resolve) => pending.push({ roomId: String(roomId), resolve }))
+      );
+      const release = (index: number) => {
+        const request = pending[index];
+        if (!request) throw new Error(`missing profile load ${index}`);
+        const current = window.__harness.currentSnapshot();
+        const member = (user_id: string) => ({
+          user_id,
+          display_name: "Duplicate Name",
+          display_label: "Duplicate Name",
+          original_display_label: "Duplicate Name",
+          avatar_url: null,
+          power_level: 0,
+          role: "user" as const,
+          role_options: []
+        });
+        const next = {
+          ...current,
+          state: {
+            ...current.state,
+            domain: {
+              ...current.state.domain,
+              room_management: {
+                selected_room_id: request.roomId,
+                settings: {
+                  room_id: request.roomId,
+                  name: "Harness Room",
+                  topic: null,
+                  avatar_url: null,
+                  join_rule: "invite" as const,
+                  history_visibility: "shared" as const,
+                  permissions: {
+                    can_edit_settings: true,
+                    can_edit_roles: true,
+                    can_invite: true,
+                    can_kick: true,
+                    can_ban: false,
+                    can_unban: false
+                  },
+                  members: [member(first), member(second)]
+                },
+                operation: { kind: "idle" as const }
+              }
+            }
+          }
+        };
+        window.__harness.setSnapshot(next);
+        request.resolve(next);
+      };
+      (window as unknown as { __releaseProfileLoad: (index: number) => void }).__releaseProfileLoad = release;
+      window.__harness.clearInvocations();
+    },
+    { firstUserId, secondUserId }
+  );
+
+  const firstRow = page.locator("article.message").filter({ hasText: "First duplicate sender" });
+  const secondRow = page.locator("article.message").filter({ hasText: "Second duplicate sender" });
+  const missingSenderRow = page.locator("article.message").filter({ hasText: "Missing stable sender id" });
+  const continuationRow = page.locator("article.message").filter({ hasText: "Continuation sender" });
+  await expect(missingSenderRow).toBeVisible();
+  await expect(continuationRow).toBeVisible();
+  await expect(missingSenderRow.getByRole("button", { name: /Open profile for/ })).toHaveCount(0);
+  await expect(continuationRow.getByRole("button", { name: /Open profile for/ })).toHaveCount(0);
+  const firstSender = firstRow.getByRole("button", { name: "Open profile for Duplicate Name" });
+  await page.keyboard.press("Tab");
+  await firstSender.focus();
+  await expect(firstSender).toBeFocused();
+  expect(await firstSender.evaluate((element) => element.matches(":focus-visible"))).toBe(true);
+  expect(await firstSender.evaluate((element) => getComputedStyle(element).outlineStyle)).not.toBe("none");
+  await firstSender.press("Enter");
+  await expect(page.getByRole("heading", { name: t("panel.profile") })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: t("panel.people") })).toHaveCount(0);
+  await secondRow.getByRole("button", { name: "Open profile for Duplicate Name" }).click();
+  await expect.poll(() => invocationCount(page, "load_room_settings")).toBe(2);
+
+  await page.evaluate(() =>
+    (window as unknown as { __releaseProfileLoad: (index: number) => void }).__releaseProfileLoad(1)
+  );
+  await expect(page.getByRole("heading", { name: t("panel.profile") })).toBeVisible();
+  await expect(page.locator(".profile-identity")).toContainText(secondUserId);
+  await page.evaluate(() =>
+    (window as unknown as { __releaseProfileLoad: (index: number) => void }).__releaseProfileLoad(0)
+  );
+  await expect(page.locator(".profile-identity")).toContainText(secondUserId);
+
+  await page.getByRole("button", { name: t("action.back"), exact: true }).click();
+  await expect(page.getByRole("heading", { name: t("panel.people") })).toBeVisible();
+  await expect(
+    page
+      .locator('aside[aria-label="Context panel"]')
+      .getByRole("button", { name: "Open profile for Duplicate Name" })
+  ).toHaveCount(2);
+  await page.getByRole("button", {
+    name: t("action.close", { title: t("panel.people") }),
+    exact: true
+  }).click();
+
+  await firstSender.focus();
+  await firstSender.press("Space");
+  await expect.poll(() => invocationCount(page, "load_room_settings")).toBe(3);
+  await page
+    .getByRole("navigation", { name: t("workspace.workspaces") })
+    .getByRole("button", { name: /^Home/ })
+    .click();
+  await page.evaluate(() =>
+    (window as unknown as { __releaseProfileLoad: (index: number) => void }).__releaseProfileLoad(2)
+  );
+  await expect(page.getByRole("heading", { name: t("panel.profile") })).toHaveCount(0);
+});
+
 test("room member panel ignores, unignores, and reports a user", async ({ page }) => {
   await gotoReadyShell(page);
   const targetUserId = "@target-member:example.invalid";
