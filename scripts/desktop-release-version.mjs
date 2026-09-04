@@ -13,13 +13,21 @@ try {
   const current = readVersionsFromDisk(repoRoot);
   const version = requireConsistentSemVer(current, "current");
 
+  let proceed = true;
   if (options.before) {
     const previous = readVersionsFromGit(repoRoot, options.before);
     const previousVersion = requireConsistentSemVer(previous, options.before);
-    if (compareSemVer(version, previousVersion) <= 0) {
+    const comparison = compareSemVer(version, previousVersion);
+    if (comparison < 0) {
       throw new Error(
         `release version must increase: ${previousVersion} -> ${version}`
       );
+    }
+    if (comparison === 0) {
+      // A manifest edit without a version bump (e.g. a dependency change in
+      // Cargo.toml) is not a release request: skip instead of failing.
+      console.error(`desktop-release-version: release version unchanged: ${version}`);
+      proceed = false;
     }
   }
 
@@ -27,6 +35,7 @@ try {
     version,
     tag: `v${version}`,
     prerelease: String(parseSemVer(version).prerelease.length > 0),
+    proceed: String(proceed),
   };
   for (const [name, value] of Object.entries(values)) {
     console.log(`${name}=${value}`);
