@@ -25,6 +25,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
       prerelease: ${{ steps.version.outputs.prerelease }}
+      proceed: ${{ steps.version.outputs.proceed }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -43,6 +44,7 @@ jobs:
           node scripts/desktop-release-version.mjs "${args[@]}"
 
       - name: Require a new release tag
+        if: steps.version.outputs.proceed == 'true'
         env:
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
@@ -54,6 +56,7 @@ jobs:
   build-macos:
     name: macOS ${{ matrix.arch }} signed and notarized DMG
     needs: prepare
+    if: needs.prepare.outputs.proceed == 'true'
     environment: release-macos
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
@@ -206,6 +209,7 @@ jobs:
   build-windows:
     name: Windows x64 unsigned NSIS installer
     needs: prepare
+    if: needs.prepare.outputs.proceed == 'true'
     runs-on: windows-2025
     timeout-minutes: 120
     defaults:
@@ -277,6 +281,7 @@ jobs:
   build-linux:
     name: Linux x64 AppImage, deb, and RPM packages
     needs: prepare
+    if: needs.prepare.outputs.proceed == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     steps:

@@ -183,8 +183,24 @@ describe("desktop release scripts", () => {
         ],
         { cwd: repoRoot, encoding: "utf8" }
       );
-      expect(unchanged.status).toBe(1);
-      expect(unchanged.stderr).toContain("release version must increase: 1.2.2 -> 1.2.2");
+      expect(unchanged.status).toBe(0);
+      expect(unchanged.stdout).toContain("proceed=false");
+      expect(unchanged.stderr).toContain("release version unchanged: 1.2.2");
+
+      writeVersions("1.2.1", "1.2.1", "1.2.1");
+      const decreased = spawnSync(
+        process.execPath,
+        [
+          "scripts/desktop-release-version.mjs",
+          "--root",
+          temporaryDirectory,
+          "--before",
+          previousSha
+        ],
+        { cwd: repoRoot, encoding: "utf8" }
+      );
+      expect(decreased.status).toBe(1);
+      expect(decreased.stderr).toContain("release version must increase: 1.2.2 -> 1.2.1");
 
       writeVersions("1.2.3", "1.2.3", "1.2.4");
       const mismatch = spawnSync(
@@ -210,6 +226,7 @@ describe("desktop release scripts", () => {
       expect(consistent.status).toBe(0);
       expect(consistent.stdout).toContain("version=1.2.3");
       expect(consistent.stdout).toContain("tag=v1.2.3");
+      expect(consistent.stdout).toContain("proceed=true");
     } finally {
       rmSync(temporaryDirectory, { recursive: true, force: true });
     }
