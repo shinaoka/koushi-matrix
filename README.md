@@ -4,16 +4,44 @@
   <img src="assets/branding/koushi-wordmark.svg" alt="Koushi logo: a bright photon node on a lattice with light running through the grid" width="372">
 </p>
 
-Desktop Matrix client prototype built toward Tauri, React, and matrix-rust-sdk.
+A desktop client for [Matrix](https://matrix.org), the open protocol for
+secure, decentralized communication.
 
 **Koushi** (コウシ) is a deliberate double pun in Japanese:
+
 - **光子** — *photon*: light, signal, speed, communication.
 - **格子** — *lattice / grid*: a direct conceptual bridge to Matrix.
 
 The logo reflects both: a photon (the bright node) resting on a lattice, with
-light running through the grid. Do not rebrand back to "Kagome", "Ruri", or
-"Matrix Desktop" — the name is intentional. The repository is now
-`shinaoka/koushi-matrix`.
+light running through the grid.
+
+## Features
+
+- End-to-end encrypted text chat, with your session kept signed in across
+  restarts
+- Sign in through your normal browser (OIDC)
+- A familiar three-pane layout: Spaces, rooms, and direct messages
+- Room timelines with threads, replies, reactions, edits, and read receipts
+- Image and file uploads with captions
+- Full-text search across your encrypted history, including Japanese and other
+  CJK text
+- Desktop conveniences: system tray, close-to-hide, and native notifications
+
+Not included yet: voice and video calls, screen sharing, bots, widgets, and
+third-party app integrations.
+
+## Platform Support
+
+- **macOS (Apple Silicon) — officially supported.** Releases are Developer ID
+  signed, notarized, stapled, and checked by Gatekeeper before publication.
+  Koushi v0.1.0 was the final release to include an Intel Mac build.
+- **Windows and Linux — buildable, but untested.** The code compiles and CI
+  produces installers, but the maintainer has no Windows or Linux hardware, so
+  these builds are unverified and unsupported. Expect rough edges.
+
+**Contributors wanted.** If you use Windows or Linux and can test, report bugs,
+or help maintain those builds, you are very welcome — open an issue or a pull
+request. The same goes for anyone who wants to work on the client itself.
 
 ## Downloads
 
@@ -21,19 +49,14 @@ Every synchronized desktop version bump on `main` publishes a GitHub Release
 after all platform builds succeed:
 
 - [macOS Apple Silicon DMG](https://github.com/shinaoka/koushi-matrix/releases/latest/download/Koushi-macos-arm64.dmg)
-- [Windows x64 trial installer](https://github.com/shinaoka/koushi-matrix/releases/latest/download/Koushi-windows-x64-unsigned.exe) — currently unsigned; Windows SmartScreen may warn
-- [Linux x64 AppImage](https://github.com/shinaoka/koushi-matrix/releases/latest/download/Koushi-linux-x64.AppImage)
-- [Linux x64 deb package](https://github.com/shinaoka/koushi-matrix/releases/latest/download/Koushi-linux-x64.deb)
-- [Linux x64 RPM package](https://github.com/shinaoka/koushi-matrix/releases/latest/download/Koushi-linux-x64.rpm)
+- [Windows x64 installer](https://github.com/shinaoka/koushi-matrix/releases/latest/download/Koushi-windows-x64-unsigned.exe) — untested; unsigned, so Windows SmartScreen may warn
+- [Linux x64 AppImage](https://github.com/shinaoka/koushi-matrix/releases/latest/download/Koushi-linux-x64.AppImage) — untested
+- [Linux x64 deb package](https://github.com/shinaoka/koushi-matrix/releases/latest/download/Koushi-linux-x64.deb) — untested
+- [Linux x64 RPM package](https://github.com/shinaoka/koushi-matrix/releases/latest/download/Koushi-linux-x64.rpm) — untested
 - [Latest release and checksums](https://github.com/shinaoka/koushi-matrix/releases/latest)
 - [Maintainer release runbook](docs/releases/desktop-release.md)
 
-The macOS artifact is Developer ID signed, notarized, stapled, and checked by
-Gatekeeper before publication. Verify the adjacent `.sha256` file when testing
-any downloaded installer. Koushi v0.1.0 was the final release to include an
-Intel Mac build; subsequent macOS releases support Apple Silicon only.
-
-Current status: pre-login desktop shell. The repository has pure Rust state/search/key crates, a Tauri v2 + React app shell, and a static Slack-like reference shell.
+Verify the adjacent `.sha256` file when testing any downloaded installer.
 
 ## License
 
@@ -130,8 +153,9 @@ Keychain service `koushi-desktop`.
 
 ### Build Linux packages
 
-On Linux, build the unsigned AppImage and deb packages through the desktop
-package:
+Linux builds are untested by the maintainer; contributions from Linux users are
+welcome. On Linux, build the unsigned AppImage and deb packages through the
+desktop package:
 
 ```bash
 npm --prefix apps/desktop run build:linux
@@ -165,4 +189,5 @@ python3 -m http.server 4173 --bind 127.0.0.1
 
 Then open `http://127.0.0.1:4173/`.
 
-See `docs/architecture/desktop-foundation.md` and `docs/architecture/tauri-react-shell.md` for the real-login boundary.
+See `docs/architecture/overview.md`, `docs/architecture/desktop-foundation.md`,
+and `docs/architecture/tauri-react-shell.md` for the architecture.
