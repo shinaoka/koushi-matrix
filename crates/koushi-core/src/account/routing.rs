@@ -1,5 +1,7 @@
 //! `routing` ownership for AccountActor.
 
+use std::time::Duration;
+
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_protocol::SessionKeyId;
 use koushi_state::{AppAction, OperationFailureKind};
@@ -24,6 +26,9 @@ use super::actor::{AccountActor, trace_restore};
 use super::scheduled_send::admit_secure_backup_user_content;
 
 const SEARCH_UNAVAILABLE_MESSAGE: &str = "search unavailable";
+const ROOM_EVENT_CACHE_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const ROOM_EVENT_CACHE_TEST_TIMEOUT: Duration = Duration::from_millis(25);
 
 fn composer_timeline_command_targets_active_session(
     active_session_key: Option<&SessionKeyId>,
@@ -443,26 +448,49 @@ impl AccountActor {
         request_id: RequestId,
         room_id: String,
         event_id: String,
-    ) {
+    ) -> bool {
+        #[cfg(test)]
+        if let Some(fetch) = self.event_cache_fetch_override.take() {
+            return match crate::executor::timeout(ROOM_EVENT_CACHE_TEST_TIMEOUT, fetch).await {
+                Ok(Ok(())) => {
+                    Self::record_event_cache_repair(request_id, "done", "succeeded", "loaded");
+                    true
+                }
+                Ok(Err(_)) => {
+                    Self::record_event_cache_repair(request_id, "failed", "failed", "sdk");
+                    false
+                }
+                Err(_) => {
+                    Self::record_event_cache_repair(request_id, "failed", "failed", "timeout");
+                    false
+                }
+            };
+        }
+
         let Some(session) = &self.session else {
             Self::record_event_cache_repair(request_id, "skip", "skipped", "no_session");
-            return;
+            return false;
         };
         let Ok(parsed_room_id) = matrix_sdk::ruma::RoomId::parse(room_id.as_str()) else {
             Self::record_event_cache_repair(request_id, "skip", "skipped", "invalid_room");
-            return;
+            return false;
         };
         let Ok(parsed_event_id) = matrix_sdk::ruma::EventId::parse(event_id.as_str()) else {
             Self::record_event_cache_repair(request_id, "skip", "skipped", "invalid_event");
-            return;
+            return false;
         };
         let Some(room) = session.client().get_room(&parsed_room_id) else {
             Self::record_event_cache_repair(request_id, "skip", "skipped", "room_missing");
-            return;
+            return false;
         };
 
-        match room.load_or_fetch_event(&parsed_event_id, None).await {
-            Ok(_) => {
+        match crate::executor::timeout(
+            ROOM_EVENT_CACHE_TIMEOUT,
+            room.load_or_fetch_event(&parsed_event_id, None),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {
                 Self::record_event_cache_repair(request_id, "done", "succeeded", "loaded");
                 if let Some(account_key) = self.active_account_key() {
                     self.route_timeline_command(TimelineCommand::RepairGaps {
@@ -474,9 +502,15 @@ impl AccountActor {
                     })
                     .await;
                 }
+                true
+            }
+            Ok(Err(_)) => {
+                Self::record_event_cache_repair(request_id, "failed", "failed", "sdk");
+                false
             }
             Err(_) => {
-                Self::record_event_cache_repair(request_id, "failed", "failed", "sdk");
+                Self::record_event_cache_repair(request_id, "failed", "failed", "timeout");
+                false
             }
         }
     }
@@ -704,11 +738,14 @@ mod tests {
 
     use koushi_protocol::SessionKeyId;
 
+    use std::time::Duration;
+
     use tokio::sync::oneshot;
 
     use super::composer_timeline_command_targets_active_session;
     use crate::account::actor::AccountMessage;
     use crate::account::test_support::spawn_actor_with_dirs;
+    use crate::executor;
     use koushi_protocol::command::TimelineCommand;
 
     use koushi_protocol::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey};
@@ -748,6 +785,53 @@ mod tests {
             Some(&stale),
             &command
         ));
+    }
+
+    #[tokio::test]
+    async fn pending_event_cache_fetch_times_out_and_releases_account_actor() {
+        let cred_dir = tempdir().expect("credential tempdir");
+        let data_dir = tempdir().expect("data tempdir");
+        let (handle, _action_rx, _event_rx) =
+            crate::account::test_support::spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (_fetch_tx, fetch_rx) = oneshot::channel::<()>();
+        assert!(
+            handle
+                .send(AccountMessage::ConfigureEventCacheFetchForTesting { fetch: fetch_rx })
+                .await
+        );
+
+        let request_id = RequestId {
+            connection_id: RuntimeConnectionId(7),
+            sequence: 23,
+        };
+        let (response_tx, response_rx) = oneshot::channel();
+        assert!(
+            handle
+                .send(AccountMessage::EnsureRoomEventCached {
+                    request_id,
+                    room_id: "!synthetic-room:example.invalid".to_owned(),
+                    event_id: "$synthetic-event:example.invalid".to_owned(),
+                    response_tx,
+                })
+                .await
+        );
+        let (acknowledged, completion) = oneshot::channel();
+        assert!(
+            handle
+                .send(AccountMessage::ShutdownWithAck { acknowledged })
+                .await
+        );
+
+        assert!(
+            !executor::timeout(Duration::from_secs(1), response_rx)
+                .await
+                .expect("bounded event-cache response")
+                .expect("event-cache response channel")
+        );
+        executor::timeout(Duration::from_secs(1), completion)
+            .await
+            .expect("account actor should process the following shutdown")
+            .expect("account shutdown acknowledgement");
     }
 
     #[test]
@@ -800,7 +884,10 @@ mod tests {
                 })
                 .await
         );
-        response_rx.await.expect("cache-repair response");
+        assert!(
+            !response_rx.await.expect("cache-repair response"),
+            "a cache miss must not be reported as successful"
+        );
 
         let records = koushi_diagnostics::test_support::detail_snapshot().records;
         let repair = records

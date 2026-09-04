@@ -98,7 +98,7 @@ test("room people labels never promote raw Matrix ids in timeline metadata", asy
   await expect(row).not.toContainText("@missing-reactor:example.invalid");
 });
 
-test("timeline sender avatars render after headless account thumbnail events", async ({
+test("a timeline sender avatar renders after a Rust profile thumbnail update", async ({
   page
 }) => {
   await gotoReadyShell(page);
@@ -167,51 +167,57 @@ test("timeline sender avatars render after headless account thumbnail events", a
       ])
     );
 
-  // The invocation recorder observes the mock call synchronously. Wait for the
-  // corresponding timeline commit before injecting the account-owned
-  // completion event so the relevance fence is deterministic under full-suite
-  // load.
   await expect(firstRow.getByText("Avatar headless row A")).toBeVisible();
   await expect(secondRow.getByText("Avatar headless row B")).toBeVisible();
 
-  // The harness promise acknowledges dispatch, not React commit. Settle each
-  // completion in the DOM before publishing the next non-replaying event.
-  for (const { mxcUri, sequence, row } of [
-    {
-      mxcUri: "mxc://example.invalid/headless-avatar-a",
-      sequence: 31,
-      row: firstRow
-    },
-    {
-      mxcUri: "mxc://example.invalid/headless-avatar-b",
-      sequence: 32,
-      row: secondRow
-    }
-  ]) {
-    await page.evaluate(
-      async ({ completionMxcUri, completionSequence }) => {
-        await window.__harness.pushCoreEvent({
-          kind: "Account",
-          event: {
-            AvatarThumbnailDownloaded: {
-              request_id: { connection_id: 1, sequence: completionSequence },
-              mxc_uri: completionMxcUri,
-              thumbnail: {
-                kind: "ready",
-                source_ref: "data:image/gif;base64,R0lGODlhAQABAAAAACw=",
-                width: 1,
-                height: 1,
-                mime_type: "image/gif"
-              }
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    const ready = (userId: string, label: string, mxcUri: string) => ({
+      user_id: userId,
+      display_name: label,
+      display_label: label,
+      original_display_label: label,
+      mention_search_terms: [label, userId],
+      avatar: {
+        mxc_uri: mxcUri,
+        thumbnail: {
+          kind: "ready" as const,
+          source_ref: "data:image/gif;base64,R0lGODlhAQABAAAAACw=",
+          width: 1,
+          height: 1,
+          mime_type: "image/gif"
+        }
+      }
+    });
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          profile: {
+            ...snapshot.state.domain.profile,
+            users: {
+              ...snapshot.state.domain.profile.users,
+              "@avatar-a:example.invalid": ready(
+                "@avatar-a:example.invalid",
+                "Avatar Alpha",
+                "mxc://example.invalid/headless-avatar-a"
+              ),
+              "@avatar-b:example.invalid": ready(
+                "@avatar-b:example.invalid",
+                "Avatar Beta",
+                "mxc://example.invalid/headless-avatar-b"
+              )
             }
           }
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        } as any);
-      },
-      { completionMxcUri: mxcUri, completionSequence: sequence }
-    );
-    await expect(row.locator(".avatar img")).toHaveAttribute("src", /data:image\/gif;base64/);
-  }
+        }
+      }
+    });
+    window.__harness.pushStateUpdate();
+  });
+
+  await expect(firstRow.locator(".avatar img")).toHaveAttribute("src", /data:image\/gif;base64/);
 });
 
 test("sent own messages show a visible timestamp and a sent check mark", async ({ page }) => {

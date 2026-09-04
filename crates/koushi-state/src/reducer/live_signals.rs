@@ -17,9 +17,11 @@ pub(crate) fn handle_live_room_profiles_observed(
         return Vec::new();
     }
 
+    let known_thumbnails = super::avatar::collect_known_avatar_thumbnails(state, false);
     let room_profiles = state.profile.room_users.entry(room_id).or_default();
     let mut changed = false;
     for mut profile in profiles {
+        super::avatar::preserve_avatar_thumbnail(&known_thumbnails, &mut profile.avatar);
         if let Some(existing) = room_profiles.get_mut(&profile.user_id) {
             if profile.display_name.is_none() {
                 profile.display_name = existing.display_name.clone();
@@ -61,6 +63,8 @@ pub(crate) fn handle_live_room_receipts_updated(
 
     let own_user_id = session_user_id(state).map(str::to_owned);
     let relevant_room_profiles = state.profile.room_users.get(&room_id);
+    let mut receipts_by_event = receipts_by_event;
+    preserve_known_receipt_thumbnails(state, &mut receipts_by_event);
     let room = state.live_signals.rooms.entry(room_id).or_default();
     let normalized = crate::state::LiveRoomSignalUpdate {
         receipts_by_event,
@@ -89,6 +93,8 @@ pub(crate) fn handle_live_room_receipts_window_reconciled(
     }
     let own_user_id = session_user_id(state).map(str::to_owned);
     let relevant_room_profiles = state.profile.room_users.get(&room_id);
+    let mut receipts_by_event = receipts_by_event;
+    preserve_known_receipt_thumbnails(state, &mut receipts_by_event);
     let normalized = crate::state::LiveRoomSignalUpdate {
         receipts_by_event,
         fully_read_event_id: None,
@@ -105,6 +111,18 @@ pub(crate) fn handle_live_room_receipts_window_reconciled(
     }
     room.receipts_by_event.extend(normalized.receipts_by_event);
     vec![AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)]
+}
+
+fn preserve_known_receipt_thumbnails(
+    state: &AppState,
+    receipts_by_event: &mut [crate::state::LiveEventReceipts],
+) {
+    let known_thumbnails = super::avatar::collect_known_avatar_thumbnails(state, false);
+    for event_receipts in receipts_by_event {
+        for receipt in &mut event_receipts.receipts {
+            super::avatar::preserve_avatar_thumbnail(&known_thumbnails, &mut receipt.avatar);
+        }
+    }
 }
 
 pub(crate) fn handle_fully_read_marker_updated(

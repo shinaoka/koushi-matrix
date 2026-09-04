@@ -118,8 +118,8 @@ type PointerEvent as ReactPointerEvent,
 type SetStateAction
 } from "react";
 
-import { peopleFacingLabel,type MentionCandidate } from "../app/uiShared";
-import { AVATAR_THUMBNAIL_DOWNLOADS_ENABLED } from "../domain/avatarThumbnails";
+import { peopleFacingLabel, type MentionCandidate } from "../app/uiShared";
+import { resolvedAvatar } from "../domain/avatarThumbnails";
 import {
 type ContextMenuItem
 } from "../domain/contextMenus";
@@ -127,7 +127,6 @@ import type { DiagnosticLogEntry } from "../domain/diagnostics";
 import { t } from "../i18n/messages";
 
 import type {
-AvatarThumbnailState,
 MediaTransferProgress,
 CoreEventPayload,
 TimelineItem,
@@ -185,6 +184,7 @@ recordTimelineKeyMismatch,
 recordTimelineResync
 } from "../domain/timelineTransportStats";
 import type {
+DisplayDensity,
 LiveSignalsState,
 ResolveComposerKeyAction,
 RoomLatestEventSummary,
@@ -308,6 +308,7 @@ export const TimelineView = memo(function TimelineView({
   onReply,
   onOpenMatrixTarget,
   onOpenSenderProfile,
+  onStartDirectMessage,
   onOpenThread = () => undefined,
   resolveComposerKeyAction = ignoreComposerKeyAction,
   liveSignals,
@@ -332,7 +333,8 @@ export const TimelineView = memo(function TimelineView({
   mediaDownloads = {},
   continuity = { kind: "unknown" },
   roomScrollAnchor: _persistedRoomScrollAnchor = null,
-  enableAvatarThumbnailDownloads = AVATAR_THUMBNAIL_DOWNLOADS_ENABLED,
+  density = "default",
+  enableAvatarThumbnailDownloads = true,
   onDiagnosticsChange,
   onScrollDiagnosticsChange,
   onDiagnosticLogEntry,
@@ -353,6 +355,7 @@ export const TimelineView = memo(function TimelineView({
   onReply: TimelineRowActionHandlers["onReply"];
   onOpenMatrixTarget?: TimelineRowActionHandlers["onOpenMatrixTarget"];
   onOpenSenderProfile?: TimelineRowActionHandlers["onOpenSenderProfile"];
+  onStartDirectMessage?: (userId: string) => void;
   onOpenThread?: TimelineRowActionHandlers["onOpenThread"];
   resolveComposerKeyAction?: ResolveComposerKeyAction;
   liveSignals?: LiveSignalsState;
@@ -393,11 +396,8 @@ export const TimelineView = memo(function TimelineView({
   mediaDownloads?: Record<string, TimelineMediaDownloadState>;
   continuity?: TimelineContinuityState;
   roomScrollAnchor?: TimelineScrollAnchor | null;
-  /**
-   * #116 perf gate. Defaults to the enabled
-   * AVATAR_THUMBNAIL_DOWNLOADS_ENABLED policy; tests may disable it to isolate
-   * unrelated timeline behavior.
-   */
+  density?: DisplayDensity;
+  /** Tests may disable avatar thumbnail demand discovery to isolate unrelated behavior. */
   enableAvatarThumbnailDownloads?: boolean;
   onDiagnosticsChange?: (diagnostics: TimelineDiagnostics) => void;
   onScrollDiagnosticsChange?: (diagnostics: TimelineScrollDiagnostics) => void;
@@ -465,9 +465,6 @@ export const TimelineView = memo(function TimelineView({
   const mediaViewerReturnFocusRef = useRef<HTMLElement | null>(null);
   const [navigationSnapshot, setNavigationSnapshot] =
     useState<TimelineNavigationSnapshot | null>(null);
-  const [avatarThumbnails, setAvatarThumbnails] = useState<Record<string, AvatarThumbnailState>>(
-    {}
-  );
   const [viewportAtBottom, setViewportAtBottom] = useState(false);
   const [aliasTarget, setAliasTarget] = useState<TimelineAliasTarget | null>(null);
   const [aliasDraft, setAliasDraft] = useState("");
@@ -598,7 +595,6 @@ export const TimelineView = memo(function TimelineView({
   const autoReturnToLiveKeyRef = useRef<string | null>(null);
   const downloadedEventIdsRef = useRef<Set<string>>(new Set());
   const requestedImagePreviewEventIdsRef = useRef<Set<string>>(new Set());
-  const relevantAvatarMxcsRef = useRef<Set<string>>(new Set());
   const requestedAvatarMxcsRef = useRef<Set<string>>(new Set());
   const initialItemsSeenForTimelineKeyRef = useRef<string | null>(null);
   const lastDiagnosticsEmissionRef = useRef<{
@@ -1199,31 +1195,11 @@ export const TimelineView = memo(function TimelineView({
         lastPersistedViewportAnchorSignatureRef.current = null;
         restoredRoomScrollAnchorSignatureRef.current = null;
         setNavigationSnapshot(null);
-        relevantAvatarMxcsRef.current = new Set();
         if (!isAppLevelStore) {
-          setStore((current) => {
-            const next = applyGlobalResync(current);
-            relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
-              getItems(next, timelineKeyRef.current),
-              profileUsersRef.current
-            );
-            return next;
-          });
+          setStore((current) => applyGlobalResync(current));
         }
         scheduleBackfillEvaluation("timeline_reset");
         void transport.ensureSubscribed?.(timelineKeyRef.current).catch(() => undefined);
-        return;
-      }
-      if (payload.kind === "Account" && "AvatarThumbnailDownloaded" in payload.event) {
-        const { mxc_uri, thumbnail } = payload.event.AvatarThumbnailDownloaded;
-        if (
-          !requestedAvatarMxcsRef.current.has(mxc_uri) &&
-          !relevantAvatarMxcsRef.current.has(mxc_uri)
-        ) {
-          return;
-        }
-        emitDiagnosticLog("timeline.avatar", avatarThumbnailLogMessage(thumbnail));
-        setAvatarThumbnails((current) => ({ ...current, [mxc_uri]: thumbnail }));
         return;
       }
       // Issue #460: Rust-published room-key request transitions update the
@@ -1241,18 +1217,13 @@ export const TimelineView = memo(function TimelineView({
         }
         if (!isAppLevelStore) {
           setStore((current) => {
-            const next = applyRoomKeyRequestStateChanged(
+            return applyRoomKeyRequestStateChanged(
               current,
               change.key,
               change.event_id,
               change.stage,
               change.withheld_code
             );
-            relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
-              getItems(next, timelineKeyRef.current),
-              profileUsersRef.current
-            );
-            return next;
           });
         }
         return;
@@ -1266,12 +1237,7 @@ export const TimelineView = memo(function TimelineView({
       if ("DisplayLabelsUpdated" in event || "DisplayPolicyUpdated" in event) {
         if (!isAppLevelStore) {
           setStore((current) => {
-            const next = applyTimelineEvent(current, event);
-            relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
-              getItems(next, timelineKeyRef.current),
-              profileUsersRef.current
-            );
-            return next;
+            return applyTimelineEvent(current, event);
           });
         }
         return;
@@ -1349,10 +1315,6 @@ export const TimelineView = memo(function TimelineView({
         recordTimelineInitialItems(event.InitialItems.items.length);
         advanceViewportEpoch();
         resetActiveMeasurementDeferral({ clearMountedIds: true });
-        relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
-          event.InitialItems.items,
-          profileUsersRef.current
-        );
         scheduleBackfillEvaluation("initial_projection");
       }
       if (
@@ -1496,12 +1458,7 @@ export const TimelineView = memo(function TimelineView({
 
       if (!isAppLevelStore) {
         setStore((current) => {
-          const next = applyTimelineEvent(current, event);
-          relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
-            getItems(next, timelineKeyRef.current),
-            profileUsersRef.current
-          );
-          return next;
+          return applyTimelineEvent(current, event);
         });
       }
   }, [
@@ -1605,7 +1562,6 @@ export const TimelineView = memo(function TimelineView({
     lastViewportObservationRef.current = null;
     downloadedEventIdsRef.current = new Set();
     requestedImagePreviewEventIdsRef.current = new Set();
-    relevantAvatarMxcsRef.current = new Set();
     requestedAvatarMxcsRef.current = new Set();
     initialItemsSeenForTimelineKeyRef.current = null;
     lastDiagnosticsEmissionRef.current = null;
@@ -1677,9 +1633,6 @@ export const TimelineView = memo(function TimelineView({
     [resetActiveMeasurementDeferral]
   );
 
-  useEffect(() => {
-    relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(items, profileUsers);
-  }, [items, profileUsers]);
   const visibleItems = useMemo(() => items.filter((item) => !item.is_hidden), [items]);
   // The SDK-owned store stays canonical. Only these presentation rows feed
   // rendering, measuring, and virtualization for an opt-in Room projection.
@@ -1969,8 +1922,7 @@ export const TimelineView = memo(function TimelineView({
   useEffect(() => {
     const avatarDiagnostics = timelineAvatarDiagnostics(
       visibleRows.map((row) => row.item),
-      profileUsers,
-      avatarThumbnails
+      profileUsers
     );
     for (const item of items) {
       if ("Event" in item.id) {
@@ -2002,7 +1954,6 @@ export const TimelineView = memo(function TimelineView({
     };
     onDiagnosticsChange(diagnostics);
   }, [
-    avatarThumbnails,
     items,
     onDiagnosticsChange,
     profileUsers,
@@ -2020,12 +1971,11 @@ export const TimelineView = memo(function TimelineView({
     }
     for (const item of avatarSideEffectItems) {
       const profileAvatar = item.sender ? profileUsers[item.sender]?.avatar : null;
-      const avatar = item.sender_avatar ?? profileAvatar;
+      const avatar = resolvedAvatar(item.sender_avatar, profileAvatar);
       if (!avatar) {
         continue;
       }
-      const thumbnail = avatarThumbnails[avatar.mxc_uri] ?? avatar.thumbnail;
-      if (thumbnail.kind !== "notRequested") {
+      if (avatar.thumbnail.kind !== "notRequested") {
         continue;
       }
       if (requestedAvatarMxcsRef.current.has(avatar.mxc_uri)) {
@@ -2039,7 +1989,6 @@ export const TimelineView = memo(function TimelineView({
       });
     }
   }, [
-    avatarThumbnails,
     avatarSideEffectItems,
     emitDiagnosticLog,
     enableAvatarThumbnailDownloads,
@@ -3499,10 +3448,13 @@ export const TimelineView = memo(function TimelineView({
                 onOpenSenderProfile={
                   presentationContext === "room" ? onOpenSenderProfile : undefined
                 }
+                onStartDirectMessage={
+                  presentationContext === "room" ? onStartDirectMessage : undefined
+                }
+                density={density}
                 presence={item.sender ? liveSignals?.presence[item.sender] : undefined}
                 profile={item.sender ? profileUsers[item.sender] : undefined}
                 reactionSenderLabelsByUserId={reactionSenderLabelsByUserId}
-                avatarThumbnails={avatarThumbnails}
                 currentUserId={currentUserId}
                 ignoredUserIds={ignoredUserIds}
                 onOpenContextMenu={onOpenContextMenu}
@@ -3627,31 +3579,6 @@ function readStateStatusMessageForSync(sync: TimelineReadStateSync): string | nu
     sdk: "timeline.readStateReasonSdk"
   } as const;
   return `${t("timeline.readStateNotSynced")}: ${t(reasonMessage[reason])}`;
-}
-
-function timelineAvatarMxcsForItems(
-  items: readonly TimelineItem[],
-  profileUsers: Record<string, UserProfile>
-): Set<string> {
-  const mxcs = new Set<string>();
-  for (const item of items) {
-    const profileAvatar = item.sender ? profileUsers[item.sender]?.avatar : null;
-    const avatar = item.sender_avatar ?? profileAvatar;
-    if (avatar) {
-      mxcs.add(avatar.mxc_uri);
-    }
-  }
-  return mxcs;
-}
-
-function avatarThumbnailLogMessage(thumbnail: AvatarThumbnailState): string {
-  if (thumbnail.kind === "ready") {
-    return "avatar thumbnail ready";
-  }
-  if (thumbnail.kind === "failed") {
-    return `avatar thumbnail failed kind=${thumbnail.failureKind}`;
-  }
-  return `avatar thumbnail ${thumbnail.kind}`;
 }
 
 function formatTypingUsers(users: LiveSignalsState["rooms"][string]["typing_users"]): string {

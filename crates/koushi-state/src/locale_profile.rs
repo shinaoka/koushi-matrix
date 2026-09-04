@@ -1,6 +1,7 @@
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
+use unicode_casefold::{Locale, UnicodeCaseFold, Variant};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::state::{LocaleSettings, TextDirectionPreference};
@@ -96,7 +97,15 @@ pub fn resolve_locale_display_profile(
 }
 
 pub fn normalize_cjk_search_text(value: &str) -> String {
-    value.nfkc().flat_map(char::to_lowercase).collect()
+    value
+        .nfkc()
+        .case_fold_with(Variant::Full, Locale::NonTurkic)
+        .map(|ch| match ch {
+            '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2015}'
+            | '\u{2212}' | '\u{fe58}' | '\u{ff0d}' => '-',
+            other => other,
+        })
+        .collect()
 }
 
 pub fn cjk_display_sort_key(value: &str) -> String {

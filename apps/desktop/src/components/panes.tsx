@@ -712,6 +712,7 @@ export function TimelinePane({
   onReply,
   onOpenMatrixTarget,
   onOpenSenderProfile,
+  onStartDirectMessage,
   onRescheduleScheduledSend,
   onResultSelect,
   onScheduleSend,
@@ -761,6 +762,7 @@ export function TimelinePane({
   onReply: TimelineRowActionHandlers["onReply"];
   onOpenMatrixTarget?: TimelineRowActionHandlers["onOpenMatrixTarget"];
   onOpenSenderProfile?: TimelineRowActionHandlers["onOpenSenderProfile"];
+  onStartDirectMessage?: (userId: string) => void;
   onRescheduleScheduledSend: (scheduledId: string, body: string, sendAtMs: number) => void;
   onResultSelect: (roomId: string, eventId: string) => void;
   onScheduleSend: (sendAtMs: number, document: ComposerDocument) => void;
@@ -894,6 +896,9 @@ export function TimelinePane({
   );
   const onOpenSenderProfileStable = useStableEvent(
     onOpenSenderProfile ?? (() => undefined)
+  );
+  const onStartDirectMessageStable = useStableEvent(
+    onStartDirectMessage ?? (() => undefined)
   );
   const onRescheduleScheduledSendStable = useStableEvent(onRescheduleScheduledSend);
   const onResultSelectStable = useStableEvent(onResultSelect);
@@ -1029,6 +1034,9 @@ export function TimelinePane({
               onOpenSenderProfile={
                 onOpenSenderProfile ? onOpenSenderProfileStable : undefined
               }
+              onStartDirectMessage={
+                onStartDirectMessage ? onStartDirectMessageStable : undefined
+              }
               onOpenThread={onOpenThreadStable}
               resolveComposerKeyAction={resolveComposerKeyActionStable}
               liveSignals={snapshot.state.domain.live_signals}
@@ -1049,6 +1057,7 @@ export function TimelinePane({
               mentionCandidatesLoading={mentionCandidatesLoading}
               onMentionQueryChange={onMentionQueryChangeStable}
               continuity={snapshot.state.ui.timeline.continuity ?? { kind: "unknown" }}
+              density={snapshot.state.domain.settings.values.appearance.density}
               roomScrollAnchor={
                 mainTimelineAnchorEventId
                   ? null

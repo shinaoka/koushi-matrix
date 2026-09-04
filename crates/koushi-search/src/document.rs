@@ -396,10 +396,10 @@ impl SearchDocumentStore {
                 }
 
                 if let Some(variants) = &query_variants {
-                    let filename_lower = attachment.filename.as_str().to_lowercase();
+                    let filename = normalize_cjk_search_text(attachment.filename.as_str());
                     if !variants
                         .iter()
-                        .any(|variant| filename_lower.contains(&variant.to_lowercase()))
+                        .any(|variant| filename.contains(&normalize_cjk_search_text(variant)))
                     {
                         return None;
                     }

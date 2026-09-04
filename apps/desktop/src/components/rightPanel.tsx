@@ -803,6 +803,7 @@ export function ContextualRightPanel({
               onSetLocalUserAlias={onSetLocalUserAlias}
               autoLoadOlderMessages={snapshot.state.domain.settings.values.timeline.auto_load_older_messages}
               codeBlockWrap={snapshot.state.domain.settings.values.display.code_block_wrap}
+              density={snapshot.state.domain.settings.values.appearance.density}
               recentEmojis={composerSettings.recent_emojis}
               onRecentEmojisChange={onRecentEmojisChange}
               searchHighlightsByEventId={searchHighlightsByEventId}
@@ -897,6 +898,7 @@ export function ContextualRightPanel({
             }
             autoLoadOlderMessages={snapshot.state.domain.settings.values.timeline.auto_load_older_messages}
             codeBlockWrap={snapshot.state.domain.settings.values.display.code_block_wrap}
+            density={snapshot.state.domain.settings.values.appearance.density}
             recentEmojis={composerSettings.recent_emojis}
             onRecentEmojisChange={onRecentEmojisChange}
             searchHighlightsByEventId={searchHighlightsByEventId}

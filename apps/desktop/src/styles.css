@@ -991,6 +991,20 @@ button:disabled {
   background: var(--surface-hover);
 }
 
+.navigation-failure {
+  position: fixed;
+  z-index: 20;
+  inset-block-start: 52px;
+  inset-inline-end: 12px;
+  max-inline-size: min(360px, calc(100vw - 24px));
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--danger);
+  border-radius: var(--r-sm);
+  color: var(--danger);
+  background: var(--surface);
+}
+
 .app-grid {
   display: grid;
   position: relative;
@@ -2875,6 +2889,16 @@ button:disabled {
   background: var(--avatar-8);
 }
 
+.avatar-button {
+  appearance: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.avatar-button:active {
+  transform: none;
+}
+
 .avatar-c1 {
   background: var(--avatar-1);
 }
@@ -3497,7 +3521,10 @@ button:disabled {
   padding: 0;
   border: 0;
   color: inherit;
-  font: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: 800;
+  line-height: inherit;
   text-align: start;
   background: transparent;
   cursor: pointer;

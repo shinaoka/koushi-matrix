@@ -45,7 +45,6 @@ import {
   trimDocument
 } from "../../domain/composerDocument";
 import type {
-  AvatarThumbnailState,
   MediaTransferProgress,
   ReactionSender,
   TimelineItem
@@ -55,11 +54,14 @@ import {
   openExternalHttpUrl,
   renderableThumbnailSourceUrl
 } from "../../backend/linkMediaRuntime";
+import { resolvedAvatar } from "../../domain/avatarThumbnails";
 import { toExternalHttpUrl } from "../../domain/externalLinks";
 import type { TimelineForwardDestination } from "../../domain/projectionTypes";
 import type { TimelineDisplayRow } from "../../domain/timelineDisplayProjection";
 import type {
+  AvatarThumbnailState,
   ComposerDocument,
+  DisplayDensity,
   LiveReadReceipt,
   PresenceKind,
   ResolveComposerKeyAction,
@@ -226,10 +228,11 @@ export function TimelineItemRow({
   onCancelSend = ignoreSendQueueAction,
   onOpenMatrixTarget,
   onOpenSenderProfile,
+  onStartDirectMessage,
+  density = "default",
   presence,
   profile,
   reactionSenderLabelsByUserId = {},
-  avatarThumbnails = {},
   mentionProfileUsers = {},
   mentionCandidates = [],
   mentionCandidatesLoading = false,
@@ -290,10 +293,11 @@ export function TimelineItemRow({
   onCancelSend?: TimelineRowActionHandlers["onCancelSend"];
   onOpenMatrixTarget?: TimelineRowActionHandlers["onOpenMatrixTarget"];
   onOpenSenderProfile?: TimelineRowActionHandlers["onOpenSenderProfile"];
+  onStartDirectMessage?: (userId: string) => void;
+  density?: DisplayDensity;
   presence?: PresenceKind;
   profile?: UserProfile;
   reactionSenderLabelsByUserId?: Readonly<Record<string, string>>;
-  avatarThumbnails?: Record<string, AvatarThumbnailState>;
   mentionProfileUsers?: Record<string, UserProfile>;
   mentionCandidates?: MentionCandidate[];
   mentionCandidatesLoading?: boolean;
@@ -616,10 +620,8 @@ export function TimelineItemRow({
     canForward;
   const canShowThreadSummary = Boolean(showThreadSummary && eventId && item.thread_summary);
   const canShowReactions = !isRedacted && !isEditing && item.reactions.length > 0;
-  const senderAvatar = item.sender_avatar ?? profile?.avatar ?? null;
-  const avatarUrl =
-    thumbnailSourceUrl(senderAvatar ? avatarThumbnails[senderAvatar.mxc_uri] : null) ??
-    thumbnailSourceUrl(senderAvatar?.thumbnail);
+  const senderAvatar = resolvedAvatar(item.sender_avatar, profile?.avatar);
+  const avatarUrl = thumbnailSourceUrl(senderAvatar?.thumbnail);
   const {
     displaySourceUrl: displayAvatarUrl,
     onImageError: onAvatarImageError,
@@ -627,7 +629,15 @@ export function TimelineItemRow({
   } = useRecoverableImageSource(avatarUrl);
   const showAvatarImage = Boolean(displayAvatarUrl);
   const senderDisplayLabel = peopleFacingLabel(item.sender_label);
-  const senderProfileUserId = isContinuation ? null : item.sender;
+  const senderProfileUserId =
+    isContinuation && density === "compact" ? null : item.sender;
+  const canStartDirectMessage = Boolean(
+    !(isContinuation && density === "compact") &&
+      item.sender &&
+      currentUserId &&
+      item.sender !== currentUserId &&
+      onStartDirectMessage
+  );
   const senderOriginalLabel =
     profile?.original_display_label.trim() || profile?.display_name?.trim() || "";
   const senderAliasTarget =
@@ -820,6 +830,37 @@ export function TimelineItemRow({
     }, items);
   }
 
+  const avatar = (
+    <>
+      {showAvatarImage ? (
+        <img
+          src={displayAvatarUrl ?? undefined}
+          onError={onAvatarImageError}
+          onLoad={onAvatarImageLoad}
+        />
+      ) : (
+        senderInitials(senderDisplayLabel || item.sender)
+      )}
+    </>
+  );
+  const avatarElement = canStartDirectMessage ? (
+    <button
+      className="avatar avatar-button"
+      type="button"
+      aria-label={t("room.messageMember", { name: senderDisplayLabel })}
+      onClick={(event) => {
+        event.stopPropagation();
+        onStartDirectMessage?.(item.sender!);
+      }}
+    >
+      {avatar}
+    </button>
+  ) : (
+    <div className="avatar" aria-hidden="true">
+      {avatar}
+    </div>
+  );
+
   return (
     <article
       className={`message${isTarget ? " pinned-target" : ""}${
@@ -836,17 +877,7 @@ export function TimelineItemRow({
       data-message-kind={messageKind}
       onContextMenu={handleContextMenu}
     >
-      <div className="avatar" aria-hidden="true">
-        {showAvatarImage ? (
-          <img
-            src={displayAvatarUrl ?? undefined}
-            onError={onAvatarImageError}
-            onLoad={onAvatarImageLoad}
-          />
-        ) : (
-          senderInitials(senderDisplayLabel || item.sender)
-        )}
-      </div>
+      {avatarElement}
       <div className="message-main">
         <div className="message-heading">
           <MessageMeta

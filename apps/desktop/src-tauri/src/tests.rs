@@ -1,9 +1,9 @@
 use super::{
     CloseRequestedAction, MacosCloseRequestedAction, QuitRequestAction, QuitStage,
     claim_core_shutdown, close_requested_action, desktop_menu_items, desktop_standard_menu_items,
-    macos_close_requested_action, next_native_window_focus_generation, quit_request_action,
+    macos_close_requested_action, next_native_window_focus_generation,
     observed_native_window_focus, qa_control_pipe_path_from_env_value,
-    qa_login_pipe_path_from_env_value, restore_session_enabled_from_env_value,
+    qa_login_pipe_path_from_env_value, quit_request_action, restore_session_enabled_from_env_value,
     saved_sessions_disabled_from_env_value, window_event_should_stop_background_tasks,
 };
 use crate::commands::diagnostics::parse_qa_login_pipe_payload;
@@ -295,6 +295,13 @@ fn desktop_menu_items_include_element_compatible_shortcuts() {
             .iter()
             .any(|item| item.id == "sign_out" && item.accelerator == "" && item.menu == "app")
     );
+    let about_index = items
+        .iter()
+        .position(|item| item.id == "about_koushi")
+        .expect("native About Koushi menu item should exist");
+    assert_eq!(about_index, 0);
+    assert_eq!(items[about_index].label, "About Koushi");
+
     let user_settings_index = items
         .iter()
         .position(|item| item.id == "open_user_settings")

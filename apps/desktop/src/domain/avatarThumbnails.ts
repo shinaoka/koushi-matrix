@@ -3,6 +3,15 @@ import type { AvatarImage, DesktopSnapshot } from "./types";
 /** Renderer demand discovery only; Core owns request dedupe, retries and terminal state. */
 export const AVATAR_THUMBNAIL_DOWNLOADS_ENABLED = true;
 
+export function resolvedAvatar(
+  itemAvatar: AvatarImage | null | undefined,
+  profileAvatar: AvatarImage | null | undefined
+): AvatarImage | null {
+  return profileAvatar && itemAvatar && profileAvatar.mxc_uri === itemAvatar.mxc_uri
+    ? profileAvatar
+    : itemAvatar ?? profileAvatar ?? null;
+}
+
 export interface AvatarThumbnailRequestPlan {
   requestMxcUris: string[];
   requestedMxcUris: Set<string>;

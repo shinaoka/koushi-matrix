@@ -374,6 +374,11 @@ impl AccountActor {
         // 1. Cache hit — Ready and terminal Failed states both settle without I/O.
         if let Some(cached) = self.avatar_cache.get(&mxc_uri) {
             let thumbnail = avatar_thumbnail_for_request(cached, request_id);
+            self.send_actions(vec![AppAction::AvatarThumbnailUpdated {
+                mxc_uri: mxc_uri.clone(),
+                thumbnail: thumbnail.clone(),
+            }])
+            .await;
             self.emit(CoreEvent::Account(
                 AccountEvent::AvatarThumbnailDownloaded {
                     request_id,

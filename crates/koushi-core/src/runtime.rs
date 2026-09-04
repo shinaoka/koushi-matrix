@@ -2300,8 +2300,18 @@ impl AppActor {
                     event_id,
                 } => {
                     self.pending_focused_navigation = None;
-                    self.ensure_room_event_cached(request_id, &room_id, &event_id)
-                        .await;
+                    if !self
+                        .ensure_room_event_cached(request_id, &room_id, &event_id)
+                        .await
+                    {
+                        self.emit(CoreEvent::OperationFailed {
+                            request_id,
+                            failure: CoreFailure::TimelineOperationFailed {
+                                kind: TimelineFailureKind::Timeout,
+                            },
+                        });
+                        return true;
+                    }
                     let replaced_focused_key =
                         self.unsubscribe_replaced_focused_context_timeline(&room_id, &event_id);
                     let effects = self
@@ -2327,8 +2337,18 @@ impl AppActor {
                     event_id,
                     allow_live_fallback,
                 } => {
-                    self.ensure_room_event_cached(request_id, &room_id, &event_id)
-                        .await;
+                    if !self
+                        .ensure_room_event_cached(request_id, &room_id, &event_id)
+                        .await
+                    {
+                        self.emit(CoreEvent::OperationFailed {
+                            request_id,
+                            failure: CoreFailure::TimelineOperationFailed {
+                                kind: TimelineFailureKind::Timeout,
+                            },
+                        });
+                        return true;
+                    }
                     let replaced_focused_key =
                         self.unsubscribe_replaced_focused_context_timeline(&room_id, &event_id);
                     let Some(account_key) = self.current_account_key() else {
@@ -4107,7 +4127,12 @@ impl AppActor {
         }
     }
 
-    async fn ensure_room_event_cached(&self, request_id: RequestId, room_id: &str, event_id: &str) {
+    async fn ensure_room_event_cached(
+        &self,
+        request_id: RequestId,
+        room_id: &str,
+        event_id: &str,
+    ) -> bool {
         let (response_tx, response_rx) = oneshot::channel();
         if !self
             .account_actor
@@ -4119,9 +4144,9 @@ impl AppActor {
             })
             .await
         {
-            return;
+            return false;
         }
-        let _ = response_rx.await;
+        response_rx.await.unwrap_or(false)
     }
 
     fn current_account_key(&self) -> Option<AccountKey> {

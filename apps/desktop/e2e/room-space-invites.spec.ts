@@ -2840,7 +2840,21 @@ test("timeline sender profile navigation uses stable user ids and latest-wins se
   await expect(missingSenderRow).toBeVisible();
   await expect(continuationRow).toBeVisible();
   await expect(missingSenderRow.getByRole("button", { name: /Open profile for/ })).toHaveCount(0);
-  await expect(continuationRow.getByRole("button", { name: /Open profile for/ })).toHaveCount(0);
+  const continuationSender = continuationRow.getByRole("button", { name: /Open profile for/ });
+  await expect(continuationSender).toHaveCount(1);
+  const plainSender = missingSenderRow.locator(".sender");
+  const [buttonTypography, spanTypography] = await Promise.all([
+    continuationSender.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { fontWeight: style.fontWeight, lineHeight: style.lineHeight };
+    }),
+    plainSender.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { fontWeight: style.fontWeight, lineHeight: style.lineHeight };
+    })
+  ]);
+  expect(buttonTypography).toEqual(spanTypography);
+  expect(buttonTypography.fontWeight).toBe("800");
   const firstSender = firstRow.getByRole("button", { name: "Open profile for Duplicate Name" });
   await page.keyboard.press("Tab");
   await firstSender.focus();
