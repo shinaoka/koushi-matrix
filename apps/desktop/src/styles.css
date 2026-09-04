@@ -5237,9 +5237,11 @@ mark {
 }
 
 .upload-staging-list {
-  /* #515: the staging list is the vertical scroll owner; min-height: 0 lets
-     the middle grid row collapse so the list scrolls instead of the panel
-     overflowing. Contain overscroll so the timeline behind it never moves. */
+  /* #515: the staging list is the fallback vertical scroll owner; min-height: 0
+     lets the middle grid row collapse so the list scrolls instead of the panel
+     overflowing. Contain overscroll so the timeline behind it never moves.
+     A single staged file fills the row in a tall window so its preview, not
+     this list, is what scrolls. */
   display: grid;
   gap: 8px;
   min-height: 0;
@@ -5252,11 +5254,30 @@ mark {
    inspection scrolling, so editing controls never disappear below a list
    scrollbar. Multi-file staging retains the scrollable card list above. */
 .upload-staging-item {
+  /* Rows: filename, preview, per-file controls. The preview is the only
+     flexible row (see the tall-window rule below), so the filename and the
+     controls keep their intrinsic height and stay pinned when the list has to
+     scroll. */
   display: grid;
   gap: 6px;
   padding: 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
+  background: var(--surface-hover);
+}
+
+/* Output controls and the caption field stay reachable even when the list has
+   to scroll (many staged files, a very short window, or an image too tall for
+   the card), so only the preview ever moves out of view. They sit below the
+   preview, so they pin to the end of the scroll box while the filename above
+   it pins to the start; the filename wins the overlap in a very short box. */
+.upload-staging-controls {
+  position: sticky;
+  inset-block-end: 0;
+  z-index: 1;
+  display: grid;
+  gap: 6px;
+  padding-block-start: 4px;
   background: var(--surface-hover);
 }
 
@@ -5266,6 +5287,16 @@ mark {
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
+}
+
+/* Pinned at the start of the scroll box, above the pinned controls, so the card
+   keeps naming its file however far the preview has scrolled. */
+.upload-staging-item > .upload-staging-file {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 2;
+  padding-block-end: 4px;
+  background: var(--surface-hover);
 }
 
 .upload-staging-name,
@@ -5393,7 +5424,11 @@ mark {
   inline-size: 100%;
   min-inline-size: 0;
   max-inline-size: 100%;
-  block-size: clamp(
+  /* Never collapses below a usable size. Outside the tall-window rule below it
+     keeps no fixed height: a preview taller than the card grows the item and
+     the staging list absorbs the overflow, with the per-file controls pinned,
+     rather than the panel overflowing the window. */
+  min-block-size: clamp(
     var(--upload-preview-viewport-min-size),
     22dvh,
     var(--upload-preview-viewport-size)
@@ -5488,8 +5523,11 @@ mark {
     overflow-y: hidden;
   }
 
+  /* Filename, preview, controls: only the preview row is flexible, so the
+     single card fills the list exactly and the list never becomes a scroll
+     owner at this height. */
   .upload-staging-list.is-single .upload-staging-item.has-preview {
-    grid-template-rows: auto minmax(0, 1fr) auto auto;
+    grid-template-rows: auto minmax(0, 1fr) auto;
     min-block-size: 0;
   }
 

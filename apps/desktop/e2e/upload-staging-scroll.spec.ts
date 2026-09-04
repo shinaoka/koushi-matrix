@@ -11,6 +11,11 @@
  * no way to reach them. The same component is embedded in the main composer
  * and the thread composer, so both surfaces are covered.
  *
+ * The per-file controls (filename, caption field, Resize/Format toolbar) are
+ * pinned inside the staging list, so when the list does have to scroll it is
+ * only the preview that leaves the visible box — the caption field and the
+ * output choices for the file stay where the user left them.
+ *
  * These tests drive the real attach flow through the harness and measure
  * rendered geometry (dialog bounds, scroll region overflow, scrollTop
  * movement), so they fail on the symptom rather than on a hard-coded height.
@@ -23,6 +28,8 @@ import { t } from "../src/i18n/messages";
 const SHORT_VIEWPORT = { width: 900, height: 520 };
 /** Ordinary desktop viewport where attachment controls must be visible immediately. */
 const STANDARD_VIEWPORT = { width: 1200, height: 800 };
+/** Mid-height window where a tall card forces the staging list to scroll. */
+const MID_VIEWPORT = { width: 1000, height: 640 };
 
 /** A small portrait image (240x640) so the preview keeps a tall aspect. */
 const PORTRAIT_PNG = Buffer.from(
@@ -208,6 +215,68 @@ test("main composer keeps upload controls visible while only the preview pans", 
   const after = await stagingGeometry(page);
   expect(after!.list!.scrollTop).toBe(0);
   expect(after!.pageScrollY).toBe(0);
+});
+
+test("per-file upload controls stay pinned while the staging list scrolls", async ({ page }) => {
+  // A window tall enough for ordinary use but not for the whole card: the
+  // staging list must scroll here, and when it does the filename, caption
+  // field, and output controls have to stay inside the visible list box so the
+  // preview is the only part that moves out of view.
+  await page.setViewportSize(MID_VIEWPORT);
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse("download_media", () => window.__harness.currentSnapshot());
+    window.__harness.clearInvocations();
+  });
+
+  await page.getByRole("button", { name: "Attach file", exact: true }).click();
+  await page
+    .locator('input[type="file"][aria-label="Attach file input"]')
+    .setInputFiles(stagedPortraitImage());
+
+  const dialog = page.getByRole("dialog", { name: t("upload.dialogTitle") });
+  await expect(dialog).toBeVisible();
+  const preview = dialog.locator(".upload-preview-viewport");
+  await expect(preview).toBeVisible();
+  // Emulate a large prepared image so the card cannot fit the list.
+  await dialog.locator(".upload-staging-preview").evaluate((image) => {
+    image.style.inlineSize = "1400px";
+  });
+
+  const listLocator = dialog.locator(".upload-staging-list");
+  await listLocator.hover({ position: { x: 20, y: 20 } });
+  for (let index = 0; index < 6; index += 1) {
+    await page.mouse.wheel(0, 120);
+  }
+
+  const pinned = await dialog.evaluate((element) => {
+    const box = (selector: string) => {
+      const node = element.querySelector<HTMLElement>(selector);
+      return node ? node.getBoundingClientRect() : null;
+    };
+    const list = element.querySelector<HTMLElement>(".upload-staging-list");
+    const listBox = box(".upload-staging-list");
+    const caption = box(".upload-staging-caption");
+    const toolbar = box(".upload-output-toolbar");
+    if (!list || !listBox || !caption || !toolbar) return null;
+    return {
+      listScrollTop: list.scrollTop,
+      listScrolls: list.scrollHeight > list.clientHeight,
+      listTop: listBox.top,
+      listBottom: listBox.bottom,
+      captionTop: caption.top,
+      toolbarBottom: toolbar.bottom
+    };
+  });
+  expect(pinned).not.toBeNull();
+  // The list is the fallback scroll owner and it did move.
+  expect(pinned!.listScrolls).toBe(true);
+  expect(pinned!.listScrollTop).toBeGreaterThan(0);
+  // …yet the per-file controls are still fully inside the visible list box.
+  expect(pinned!.captionTop).toBeGreaterThanOrEqual(pinned!.listTop - 1);
+  expect(pinned!.toolbarBottom).toBeLessThanOrEqual(pinned!.listBottom + 1);
+  await expect(dialog.getByRole("heading", { name: t("upload.dialogTitle") })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: t("upload.sendAttachments") })).toBeVisible();
 });
 
 test("thread composer staging panel stays bounded and scrolls at a short viewport", async ({

@@ -963,6 +963,8 @@ export function UploadStagingDialog({
             }`}
             key={item.staged_id}
           >
+            {/* The filename heads the card and stays pinned at the top of the
+                scroll box, so the file a caption belongs to is always named. */}
             <div className="upload-staging-file">
               {item.kind.kind === "image" ? (
                 <ImageIcon size={ICON_SIZE.control} aria-hidden="true" />
@@ -979,66 +981,72 @@ export function UploadStagingDialog({
             {item.kind.kind === "image" && item.preparation.kind === "ready" ? (
               <PreparedUploadPreview item={item} loadPreview={loadPreview} />
             ) : null}
-            {item.preparation.kind === "preparing" ? (
-              <p className="upload-staging-status">{t("upload.preparing")}</p>
-            ) : item.preparation.kind === "failed" ? (
-              <div className="upload-staging-failure">
-                <p className="upload-staging-status is-error">{t("upload.preparationFailed")}</p>
-                <div className="upload-staging-failure-actions">
-                  <button className="dialog-button" type="button" onClick={() => void onRetryPreparation(item.staged_id)}>
-                    {t("upload.retryPreparation")}
-                  </button>
-                  {item.preparation.can_use_original ? (
-                    <button className="dialog-button" type="button" onClick={() => void onUseOriginal(item.staged_id)}>
-                      {t("upload.useOriginal")}
+            {/* The decisions for this file stay pinned below its preview: the
+                preview is the only part that leaves the visible box, so the
+                output controls and the caption field never move out of reach
+                when the staging list has to scroll. */}
+            <div className="upload-staging-controls">
+              {item.preparation.kind === "preparing" ? (
+                <p className="upload-staging-status">{t("upload.preparing")}</p>
+              ) : item.preparation.kind === "failed" ? (
+                <div className="upload-staging-failure">
+                  <p className="upload-staging-status is-error">{t("upload.preparationFailed")}</p>
+                  <div className="upload-staging-failure-actions">
+                    <button className="dialog-button" type="button" onClick={() => void onRetryPreparation(item.staged_id)}>
+                      {t("upload.retryPreparation")}
                     </button>
-                  ) : null}
+                    {item.preparation.can_use_original ? (
+                      <button className="dialog-button" type="button" onClick={() => void onUseOriginal(item.staged_id)}>
+                        {t("upload.useOriginal")}
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
+              ) : item.kind.kind === "image" ? (
+                <UploadOutputToolbar
+                  item={item}
+                  preparation={item.preparation}
+                  onSelectOutput={onSelectOutput}
+                />
+              ) : null}
+              <div className="upload-staging-caption">
+                <Composer
+                  editorOnly
+                  surface={surface}
+                  composerMode={{ kind: "plain" }}
+                  isSending={false}
+                  stagedUploadsReady={sendable}
+                  mathModeEnabled={mathModeEnabled}
+                  recentEmojis={recentEmojis}
+                  onRecentEmojisChange={onRecentEmojisChange}
+                  mentionCandidates={mentionCandidates}
+                  mentionCandidatesLoading={mentionCandidatesLoading}
+                  resolveComposerKeyAction={resolveComposerKeyAction}
+                  document={item.caption ?? documentFromText("")}
+                  draftKey={item.staged_id}
+                  ariaLabel={t("upload.captionForFile", { filename: item.filename })}
+                  placeholder={t("upload.captionForFile", { filename: item.filename })}
+                  roomName={roomName}
+                  onCancelReply={() => undefined}
+                  onDocumentChange={(document) => {
+                    const update = Promise.resolve(onUpdateCaption(item.staged_id, document));
+                    pendingCaptionUpdatesRef.current.add(update);
+                    void update.then(
+                      () => pendingCaptionUpdatesRef.current.delete(update),
+                      () => pendingCaptionUpdatesRef.current.delete(update)
+                    );
+                  }}
+                  onMathModeChange={onMathModeChange}
+                  onMentionQueryChange={onMentionQueryChange}
+                  onSend={sendAttachments}
+                  onSendStagedUploads={sendable ? sendAttachments : undefined}
+                  onTabToSend={
+                    index === items.length - 1 && sendable
+                      ? () => sendButtonRef.current?.focus()
+                      : undefined
+                  }
+                />
               </div>
-            ) : item.kind.kind === "image" ? (
-              <UploadOutputToolbar
-                item={item}
-                preparation={item.preparation}
-                onSelectOutput={onSelectOutput}
-              />
-            ) : null}
-            <div className="upload-staging-caption">
-              <Composer
-                editorOnly
-                surface={surface}
-                composerMode={{ kind: "plain" }}
-                isSending={false}
-                stagedUploadsReady={sendable}
-                mathModeEnabled={mathModeEnabled}
-                recentEmojis={recentEmojis}
-                onRecentEmojisChange={onRecentEmojisChange}
-                mentionCandidates={mentionCandidates}
-                mentionCandidatesLoading={mentionCandidatesLoading}
-                resolveComposerKeyAction={resolveComposerKeyAction}
-                document={item.caption ?? documentFromText("")}
-                draftKey={item.staged_id}
-                ariaLabel={t("upload.captionForFile", { filename: item.filename })}
-                placeholder={t("upload.captionForFile", { filename: item.filename })}
-                roomName={roomName}
-                onCancelReply={() => undefined}
-                onDocumentChange={(document) => {
-                  const update = Promise.resolve(onUpdateCaption(item.staged_id, document));
-                  pendingCaptionUpdatesRef.current.add(update);
-                  void update.then(
-                    () => pendingCaptionUpdatesRef.current.delete(update),
-                    () => pendingCaptionUpdatesRef.current.delete(update)
-                  );
-                }}
-                onMathModeChange={onMathModeChange}
-                onMentionQueryChange={onMentionQueryChange}
-                onSend={sendAttachments}
-                onSendStagedUploads={sendable ? sendAttachments : undefined}
-                onTabToSend={
-                  index === items.length - 1 && sendable
-                    ? () => sendButtonRef.current?.focus()
-                    : undefined
-                }
-              />
             </div>
           </article>
         ))}
