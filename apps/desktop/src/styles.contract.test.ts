@@ -181,7 +181,7 @@ describe("styles.css token system", () => {
       ".upload-staging-list.is-single .upload-staging-item.has-preview"
     );
     expect(singlePreviewItem).toMatch(
-      /grid-template-rows:\s*auto\s+minmax\(0,\s*1fr\)\s+auto\s+auto/
+      /grid-template-rows:\s*auto\s+minmax\(0,\s*1fr\)\s+auto/
     );
     expect(singlePreviewItem).toMatch(/min-block-size:\s*0/);
 
