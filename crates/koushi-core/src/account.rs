@@ -4,6 +4,8 @@ mod account_management;
 mod actor;
 mod local_data_cleanup;
 mod profile;
+#[cfg(test)]
+mod profile_tests;
 mod recovery_backup;
 mod routing;
 mod runtime_children;

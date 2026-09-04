@@ -239,7 +239,11 @@ pub(crate) enum AccountMessage {
         request_id: RequestId,
         room_id: String,
         event_id: String,
-        response_tx: oneshot::Sender<()>,
+        response_tx: oneshot::Sender<bool>,
+    },
+    #[cfg(test)]
+    ConfigureEventCacheFetchForTesting {
+        fetch: oneshot::Receiver<()>,
     },
     RepairRoomTimeline {
         request_id: RequestId,
@@ -950,6 +954,8 @@ pub struct AccountActor {
     /// Actor-owned avatar thumbnail cache: mxc_uri -> last resolved state.
     /// Mutated only from the actor loop; no shared lock needed.
     pub(super) avatar_cache: HashMap<String, AvatarThumbnailState>,
+    #[cfg(test)]
+    pub(super) event_cache_fetch_override: Option<oneshot::Receiver<()>>,
     /// In-flight fetches: mxc_uri -> waiting request_ids (single-flight dedup).
     /// The first `DownloadAvatarThumbnail` for a given mxc spawns a task and
     /// records its `request_id` here; subsequent ones for the same mxc while
@@ -1172,6 +1178,8 @@ impl AccountActor {
             next_incoming_verification_sequence: INCOMING_VERIFICATION_FLOW_ID_BASE,
             pending_crawler_notification: None,
             avatar_cache: HashMap::new(),
+            #[cfg(test)]
+            event_cache_fetch_override: None,
             avatar_inflight: HashMap::new(),
             avatar_download_semaphore: Arc::new(Semaphore::new(AVATAR_DOWNLOAD_CONCURRENCY)),
             avatar_fetch_tasks: tokio::task::JoinSet::new(),
@@ -1518,15 +1526,20 @@ impl AccountActor {
                     self.handle_open_timeline_at_timestamp(request_id, room_id, timestamp_ms)
                         .await;
                 }
+                #[cfg(test)]
+                AccountMessage::ConfigureEventCacheFetchForTesting { fetch } => {
+                    self.event_cache_fetch_override = Some(fetch);
+                }
                 AccountMessage::EnsureRoomEventCached {
                     request_id,
                     room_id,
                     event_id,
                     response_tx,
                 } => {
-                    self.handle_ensure_room_event_cached(request_id, room_id, event_id)
+                    let cached = self
+                        .handle_ensure_room_event_cached(request_id, room_id, event_id)
                         .await;
-                    let _ = response_tx.send(());
+                    let _ = response_tx.send(cached);
                 }
                 AccountMessage::RepairRoomTimeline {
                     request_id,

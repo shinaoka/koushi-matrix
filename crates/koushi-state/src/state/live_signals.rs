@@ -2,7 +2,10 @@ use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Serialize};
 
-use super::profile::{AvatarImage, ProfileState, UserProfile, resolve_optional_user_display_name};
+use super::profile::{
+    AvatarImage, AvatarThumbnailState, ProfileState, UserProfile,
+    resolve_optional_user_display_name,
+};
 
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LiveSignalsState {
@@ -393,11 +396,18 @@ fn enrich_receipt(
         .unwrap_or_else(|| "Unknown user".to_owned());
     receipt.display_name = Some(display_label);
     receipt.original_display_label = original_display_label;
-    if receipt.avatar.is_none() {
-        receipt.avatar = relevant_room_profile
-            .and_then(|profile| profile.avatar.clone())
-            .or_else(|| own_profile.and_then(|profile| profile.avatar.clone()))
-            .or_else(|| user_profile.and_then(|profile| profile.avatar.clone()));
+    let profile_avatar = relevant_room_profile
+        .and_then(|profile| profile.avatar.as_ref())
+        .or_else(|| own_profile.and_then(|profile| profile.avatar.as_ref()))
+        .or_else(|| user_profile.and_then(|profile| profile.avatar.as_ref()));
+    if let (Some(receipt_avatar), Some(profile_avatar)) = (&receipt.avatar, profile_avatar) {
+        if receipt_avatar.mxc_uri == profile_avatar.mxc_uri
+            && receipt_avatar.thumbnail == AvatarThumbnailState::NotRequested
+        {
+            receipt.avatar = Some(profile_avatar.clone());
+        }
+    } else if receipt.avatar.is_none() {
+        receipt.avatar = profile_avatar.cloned();
     }
     receipt
 }

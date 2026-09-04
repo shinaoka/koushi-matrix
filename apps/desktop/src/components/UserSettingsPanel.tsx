@@ -179,6 +179,7 @@ export function UserSettingsPanel({
     }
   }, [currentSession, currentSessionStatus.status, onRefreshCurrentSessionStatus]);
   const selectedTheme = settings.values.appearance.theme;
+  const selectedLocale = settings.values.locale;
   const selectedFont = settings.values.typography.font;
   const selectedEmoji = settings.values.typography.emoji;
   const selectedTimeline = settings.values.timeline;
@@ -547,6 +548,7 @@ export function UserSettingsPanel({
           selectedEmoji={selectedEmoji}
           selectedFont={selectedFont}
           selectedTheme={selectedTheme}
+          selectedLocale={selectedLocale}
           onDisplayDensityChange={onDisplayDensityChange}
           onUpdateSettings={onUpdateSettings}
         />

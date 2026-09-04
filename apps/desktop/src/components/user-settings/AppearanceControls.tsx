@@ -3,6 +3,7 @@ import type {
   DisplayDensity,
   EmojiPreference,
   FontPreference,
+  LocaleSettings,
   SettingsPatch,
   ThemePreference
 } from "../../domain/types";
@@ -12,6 +13,7 @@ export function AppearanceControls({
   selectedEmoji,
   selectedFont,
   selectedTheme,
+  selectedLocale,
   onDisplayDensityChange,
   onUpdateSettings
 }: {
@@ -19,11 +21,38 @@ export function AppearanceControls({
   selectedEmoji: EmojiPreference;
   selectedFont: FontPreference;
   selectedTheme: ThemePreference;
+  selectedLocale: LocaleSettings;
   onDisplayDensityChange: (density: DisplayDensity) => void;
   onUpdateSettings: (patch: SettingsPatch) => void;
 }) {
   return (
     <>
+        <div className="settings-control-row">
+          <span>{t("settings.language")}</span>
+          <div className="segmented-control" role="group" aria-label={t("settings.language")}>
+            <LocaleButton
+              label={t("settings.languageDefault")}
+              selected={selectedLocale.language_tag === null}
+              value={null}
+              current={selectedLocale}
+              onSelect={onUpdateSettings}
+            />
+            <LocaleButton
+              label={t("settings.languageEnglish")}
+              selected={selectedLocale.language_tag === "en"}
+              value="en"
+              current={selectedLocale}
+              onSelect={onUpdateSettings}
+            />
+            <LocaleButton
+              label={t("settings.languageJapanese")}
+              selected={selectedLocale.language_tag === "ja-JP"}
+              value="ja-JP"
+              current={selectedLocale}
+              onSelect={onUpdateSettings}
+            />
+          </div>
+        </div>
         <div className="segmented-control" role="group" aria-label={t("settings.theme")}>
           <ThemeButton
             label={t("settings.themeSystem")}
@@ -112,6 +141,35 @@ export function AppearanceControls({
           </div>
         </div>
     </>
+  );
+}
+
+function LocaleButton({
+  label,
+  selected,
+  value,
+  current,
+  onSelect
+}: {
+  label: string;
+  selected: boolean;
+  value: LocaleSettings["language_tag"];
+  current: LocaleSettings;
+  onSelect: (patch: SettingsPatch) => void;
+}) {
+  return (
+    <button
+      className={`segmented-control-option ${selected ? "is-selected" : ""}`}
+      type="button"
+      aria-pressed={selected}
+      onClick={() => {
+        if (!selected) {
+          onSelect({ locale: { ...current, language_tag: value } });
+        }
+      }}
+    >
+      {label}
+    </button>
   );
 }
 

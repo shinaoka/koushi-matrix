@@ -11,6 +11,18 @@ pub(crate) fn collect_known_avatar_thumbnails(
     for profile in state.profile.users.values() {
         remember_known_avatar_thumbnail(&mut known_thumbnails, profile.avatar.as_ref());
     }
+    for room_profiles in state.profile.room_users.values() {
+        for profile in room_profiles.values() {
+            remember_known_avatar_thumbnail(&mut known_thumbnails, profile.avatar.as_ref());
+        }
+    }
+    for room_signals in state.live_signals.rooms.values() {
+        for receipts in room_signals.receipts_by_event.values() {
+            for reader in &receipts.readers {
+                remember_known_avatar_thumbnail(&mut known_thumbnails, reader.avatar.as_ref());
+            }
+        }
+    }
     for room in &state.rooms {
         remember_known_avatar_thumbnail(&mut known_thumbnails, room.avatar.as_ref());
     }

@@ -501,6 +501,7 @@ async fn reset_local_data_clears_current_account_persistence_and_signs_out_local
         next_incoming_verification_sequence: INCOMING_VERIFICATION_FLOW_ID_BASE,
         pending_crawler_notification: None,
         avatar_cache: HashMap::new(),
+        event_cache_fetch_override: None,
         avatar_inflight: HashMap::new(),
         avatar_download_semaphore: Arc::new(Semaphore::new(AVATAR_DOWNLOAD_CONCURRENCY)),
         avatar_fetch_tasks: tokio::task::JoinSet::new(),

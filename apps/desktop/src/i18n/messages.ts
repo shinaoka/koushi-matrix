@@ -137,6 +137,7 @@ export type MessageId =
   | "upload.outputReady"
   | "upload.sendAttachments"
   | "window.title"
+  | "navigation.failed"
   | "context.editMessage"
   | "context.addToFavourites"
   | "context.addToLowPriority"
@@ -535,6 +536,10 @@ export type MessageId =
   | "sessionStatus.verified"
   | "settings.accounts"
   | "settings.appearance"
+  | "settings.language"
+  | "settings.languageDefault"
+  | "settings.languageEnglish"
+  | "settings.languageJapanese"
   | "settings.accountSwitcher"
   | "settings.current"
   | "settings.autoLoadOlderMessages"
@@ -1441,6 +1446,7 @@ const en: Catalog = {
   "upload.outputReady": "Ready",
   "upload.sendAttachments": "Send attachments",
   "window.title": "Koushi",
+  "navigation.failed": "Navigation failed. Please try again.",
   "context.editMessage": "Edit",
   "context.addToFavourites": "Add to Favourites",
   "context.addToLowPriority": "Move to Low priority",
@@ -1848,6 +1854,10 @@ const en: Catalog = {
   "sessionStatus.verified": "Verified",
   "settings.accounts": "Accounts",
   "settings.appearance": "Appearance",
+  "settings.language": "Language",
+  "settings.languageDefault": "Default (English)",
+  "settings.languageEnglish": "English",
+  "settings.languageJapanese": "Japanese",
   "settings.accountSwitcher": "Account switcher",
   "settings.current": "Current",
   "settings.autoLoadOlderMessages": "Automatically load older messages",
@@ -2654,6 +2664,7 @@ const ja: Catalog = {
   "upload.outputReady": "準備完了",
   "upload.sendAttachments": "添付を送信",
   "window.title": "Koushi（光子・格子）",
+  "navigation.failed": "移動に失敗しました。もう一度お試しください。",
   "context.editMessage": "編集",
   "context.addToFavourites": "お気に入りに追加",
   "context.addToLowPriority": "低優先度に移動",
@@ -3061,6 +3072,10 @@ const ja: Catalog = {
   "sessionStatus.verified": "検証済み",
   "settings.accounts": "アカウント",
   "settings.appearance": "外観",
+  "settings.language": "言語",
+  "settings.languageDefault": "標準（英語）",
+  "settings.languageEnglish": "英語",
+  "settings.languageJapanese": "日本語",
   "settings.accountSwitcher": "アカウント切り替え",
   "settings.current": "現在",
   "settings.autoLoadOlderMessages": "古いメッセージを自動で読み込む",

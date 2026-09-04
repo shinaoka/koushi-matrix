@@ -1,4 +1,5 @@
-import type { AvatarThumbnailState, TimelineItem } from "../../domain/coreEvents";
+import { resolvedAvatar } from "../../domain/avatarThumbnails";
+import type { TimelineItem } from "../../domain/coreEvents";
 import type { UserProfile } from "../../domain/types";
 
 export interface TimelineDiagnostics {
@@ -16,8 +17,7 @@ export interface TimelineDiagnostics {
 
 export function timelineAvatarDiagnostics(
   items: readonly TimelineItem[],
-  profileUsers: Record<string, UserProfile>,
-  avatarThumbnails: Record<string, AvatarThumbnailState>
+  profileUsers: Record<string, UserProfile>
 ): Omit<
   TimelineDiagnostics,
   "visibleItems" | "downloadedItems" | "backfill" | "avatarRenderedImages" | "avatarBrokenImages"
@@ -31,13 +31,13 @@ export function timelineAvatarDiagnostics(
   };
   for (const item of items) {
     const profileAvatar = item.sender ? profileUsers[item.sender]?.avatar : null;
-    const avatar = item.sender_avatar ?? profileAvatar;
+    const avatar = resolvedAvatar(item.sender_avatar, profileAvatar);
     if (!avatar) {
       diagnostics.avatarMissingItems += 1;
       continue;
     }
     diagnostics.avatarMxcItems += 1;
-    const thumbnail = avatarThumbnails[avatar.mxc_uri] ?? avatar.thumbnail;
+    const thumbnail = avatar.thumbnail;
     if (thumbnail.kind === "ready") {
       diagnostics.avatarReadyItems += 1;
     } else if (thumbnail.kind === "failed") {

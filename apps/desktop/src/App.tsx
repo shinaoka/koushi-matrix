@@ -1069,6 +1069,7 @@ export function App() {
     "user" | "notRecognized" | null
   >(null);
   const [newDmDialogOpen, setNewDmDialogOpen] = useState(false);
+  const [navigationFailure, setNavigationFailure] = useState(false);
   const [resetLocalDataConfirmOpen, setResetLocalDataConfirmOpen] = useState(false);
   const logoutConfirmationInFlightRef = useRef(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
@@ -2745,6 +2746,7 @@ export function App() {
     const transitionStartedAt = Date.now();
     const homeSelectionKind = selection.kind;
     const currentSnapshot = snapshotRef.current;
+    setNavigationFailure(false);
     invalidatePeoplePanelForNavigation();
     const navigationRequestId = ++spaceNavigationIntentEpochRef.current;
     setContextMenu(null);
@@ -2775,6 +2777,7 @@ export function App() {
         source: "home.transition",
         message: `stage=after_composer_drain elapsed_ms=${composerDrainFinishedAt - composerDrainStartedAt} outcome=blocked`
       });
+      setNavigationFailure(true);
       return;
     }
     const composerDrainFinishedAt = Date.now();
@@ -2798,7 +2801,9 @@ export function App() {
         (candidate) => candidate.room_id === selection.room_id && candidate.is_dm
       );
       if (room) {
-        await selectRoom(selection.room_id);
+        if (!(await selectRoom(selection.room_id))) {
+          setNavigationFailure(true);
+        }
         return;
       }
     }
@@ -2841,8 +2846,12 @@ export function App() {
       await openHomeActivityView("home_rail");
       return;
     }
+    setNavigationFailure(false);
     const navigationRequestId = ++spaceNavigationIntentEpochRef.current;
-    if (!(await drainActiveComposerScopesForNavigation(true, true))) return;
+    if (!(await drainActiveComposerScopesForNavigation(true, true))) {
+      setNavigationFailure(true);
+      return;
+    }
     if (spaceNavigationIntentEpochRef.current !== navigationRequestId) return;
     setPrimaryView("timeline");
     await settleCommand(api.selectSpace(spaceId));
@@ -2861,6 +2870,7 @@ export function App() {
       invalidatePeoplePanelForNavigation();
     }
     const navigationRequestId = ++roomNavigationIntentEpochRef.current;
+    setNavigationFailure(false);
     appendDiagnosticLog({
       timestampMs: transitionStartedAt,
       source: "room.transition",
@@ -2882,6 +2892,7 @@ export function App() {
           source: "room.transition",
           message: `stage=after_composer_drain elapsed_ms=${Date.now() - composerDrainStartedAt} outcome=blocked elapsed_ms_since_start=${Date.now() - transitionStartedAt}`
         });
+        setNavigationFailure(true);
         return false;
       }
       appendDiagnosticLog({
@@ -2898,7 +2909,13 @@ export function App() {
       source: "room.transition",
       message: `stage=before_api_select elapsed_ms_since_start=${Date.now() - transitionStartedAt}`
     });
-    const nextSnapshot = await settleCommandSnapshot(api.selectRoom(roomId));
+    let nextSnapshot: DesktopSnapshot;
+    try {
+      nextSnapshot = await settleCommandSnapshot(api.selectRoom(roomId));
+    } catch {
+      setNavigationFailure(true);
+      return false;
+    }
     if (roomNavigationIntentEpochRef.current !== navigationRequestId) {
       return false;
     }
@@ -2911,8 +2928,10 @@ export function App() {
       message: `stage=after_api_select elapsed_ms=${Date.now() - transitionStartedAt} committed_active=${nextSnapshot.state.ui.navigation.active_room_id === roomId} timeline_matches=${nextSnapshot.state.ui.timeline.room_id === nextSnapshot.state.ui.navigation.active_room_id}`
     });
     if (!committed) {
+      setNavigationFailure(true);
       return false;
     }
+    setNavigationFailure(false);
     const primaryViewUpdateStartedAt = Date.now();
     appendDiagnosticLog({
       timestampMs: primaryViewUpdateStartedAt,
@@ -4172,17 +4191,36 @@ export function App() {
     roomId: string,
     rootEventId: string,
     intent: ThreadOpenIntent
-  ) {
+  ): Promise<boolean> {
     const thread = snapshot?.state.ui.thread;
     if (
       thread?.kind === "open" &&
       (thread.room_id !== roomId || thread.root_event_id !== rootEventId)
     ) {
-      if (!(await drainActiveComposerScopesForNavigation(false, true))) return;
+      if (!(await drainActiveComposerScopesForNavigation(false, true))) {
+        setNavigationFailure(true);
+        return false;
+      }
     }
-    await closeFocusedContextIfHiddenBy("thread");
-    await settleCommand(api.openThread(roomId, rootEventId, intent));
+    try {
+      await closeFocusedContextIfHiddenBy("thread");
+      await settleCommand(api.openThread(roomId, rootEventId, intent));
+    } catch {
+      setNavigationFailure(true);
+      return false;
+    }
+    const current = getAppStoreSnapshot();
+    const opened =
+      current?.state.ui.thread.kind === "open" &&
+      current.state.ui.thread.room_id === roomId &&
+      current.state.ui.thread.root_event_id === rootEventId;
+    if (!opened) {
+      setNavigationFailure(true);
+      return false;
+    }
+    setNavigationFailure(false);
     setRightPanelMode("thread");
+    return true;
   }
 
   async function closeThread() {
@@ -5169,38 +5207,59 @@ export function App() {
   }
 
   function openActivityRow(roomId: string, eventId: string, threadRootEventId: string | null) {
-    if (threadRootEventId) {
-      runInBackground(
-        (async () => {
+    runInBackground(
+      (async () => {
+        setNavigationFailure(false);
+        if (threadRootEventId) {
+          if (!(await drainActiveComposerScopesForNavigation(true, true))) {
+            setNavigationFailure(true);
+            return;
+          }
+          if (!(await selectRoom(roomId))) {
+            setNavigationFailure(true);
+            return;
+          }
+          if (!(await openThread(roomId, threadRootEventId, "existingThread"))) {
+            setNavigationFailure(true);
+            return;
+          }
           setPrimaryView("timeline");
-          if (!(await drainActiveComposerScopesForNavigation(true, true))) return;
-          await selectRoom(roomId);
-          await openThread(roomId, threadRootEventId, "existingThread");
-        })()
-      );
-      return;
-    }
-    void settleCommand(api.openActivityEvent(roomId, eventId))
-      .then(() => {
+          return;
+        }
+        try {
+          await settleCommand(api.openActivityEvent(roomId, eventId));
+        } catch {
+          setNavigationFailure(true);
+          return;
+        }
         setPrimaryView("timeline");
         setRightPanelMode("closed");
-      })
-      .catch(() => undefined);
+      })()
+    );
   }
 
   async function openActivityRoom(roomId: string) {
-    setPrimaryView("timeline");
-    setRightPanelMode("closed");
+    setNavigationFailure(false);
+    try {
+      const closedSnapshot = await settleCommandSnapshot(api.closeFocusedContext());
+      if (
+        closedSnapshot.state.ui.navigation.active_room_id === roomId &&
+        closedSnapshot.state.ui.timeline.room_id === roomId
+      ) {
+        setPrimaryView("timeline");
+        setRightPanelMode("closed");
+        return;
+      }
 
-    const closedSnapshot = await settleCommandSnapshot(api.closeFocusedContext());
-    if (
-      closedSnapshot.state.ui.navigation.active_room_id === roomId &&
-      closedSnapshot.state.ui.timeline.room_id === roomId
-    ) {
-      return;
+      if (!(await selectRoom(roomId))) {
+        setNavigationFailure(true);
+        return;
+      }
+      setPrimaryView("timeline");
+      setRightPanelMode("closed");
+    } catch {
+      setNavigationFailure(true);
     }
-
-    await selectRoom(roomId);
   }
 
   function selectSearchResult(roomId: string, eventId: string) {
@@ -5728,6 +5787,11 @@ export function App() {
           runtimeAlertRetrying={secureBackupInspectionRetrying}
           runtimeAlerts={runtimeAlerts}
         />
+        {navigationFailure ? (
+          <p className="navigation-failure" role="alert">
+            {t("navigation.failed")}
+          </p>
+        ) : null}
       <div
         className={`app-grid ${rightPanelOpen ? "right-panel-open" : "thread-closed"}`}
         style={appGridStyle}
@@ -5947,6 +6011,9 @@ export function App() {
             }}
             onOpenSenderProfile={(roomId, userId) => {
               runInBackground(openRoomUserProfile(roomId, userId));
+            }}
+            onStartDirectMessage={(userId) => {
+              runInBackground(startDirectMessage(userId));
             }}
             onReply={(roomId, eventId) => {
               runInBackground(setComposerReplyTarget(roomId, eventId));
