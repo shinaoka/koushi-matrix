@@ -282,6 +282,7 @@ function readySnapshot(
             home_selection: { kind: "activity" },
             space_local_presentations: {},
             legacy_frontend_preferences_imported: false,
+            event_navigation: { kind: "idle" },
             space_order: spaces.map((space) => space.space_id),
             last_room_by_space_id: {}
           },
@@ -2629,7 +2630,14 @@ mock.setCommandResponse(
           navigation: {
             ...currentSnapshot.state.ui.navigation,
             active_room_id: roomId,
-            main_timeline_anchor: { event_id: eventId }
+            main_timeline_anchor: { event_id: eventId },
+            event_navigation: {
+              kind: "anchored",
+              generation: (currentSnapshot.state.ui.navigation.event_navigation.kind === "idle"
+                ? 0
+                : currentSnapshot.state.ui.navigation.event_navigation.generation) + 1,
+              source: "search"
+            }
           },
           timeline: {
             ...currentSnapshot.state.ui.timeline,
@@ -2673,6 +2681,14 @@ mock.setCommandResponse(
           navigation: {
             ...currentSnapshot.state.ui.navigation,
             active_room_id: roomId,
+            main_timeline_anchor: { event_id: eventId },
+            event_navigation: {
+              kind: "anchored",
+              generation: (currentSnapshot.state.ui.navigation.event_navigation.kind === "idle"
+                ? 0
+                : currentSnapshot.state.ui.navigation.event_navigation.generation) + 1,
+              source: "activity"
+            },
             room_scroll_anchors: {
               ...(currentSnapshot.state.ui.navigation.room_scroll_anchors ?? {}),
               [roomId]: {
@@ -2706,6 +2722,13 @@ mock.setCommandResponse(
     const next = currentSnapshot;
     next.state.ui.navigation.active_room_id = roomId;
     next.state.ui.navigation.main_timeline_anchor = { event_id: eventId };
+    next.state.ui.navigation.event_navigation = {
+      kind: "anchored",
+      generation: (next.state.ui.navigation.event_navigation.kind === "idle"
+        ? 0
+        : next.state.ui.navigation.event_navigation.generation) + 1,
+      source: "pinned"
+    };
     next.state.ui.timeline.room_id = roomId;
     next.state.ui.timeline.is_subscribed = true;
     next.state.ui.focused_context = { kind: "closed" };

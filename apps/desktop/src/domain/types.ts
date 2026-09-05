@@ -761,6 +761,26 @@ export type NavigationPreferenceUpdate =
       space_local_presentations: Record<string, SpaceLocalPresentation>;
     };
 
+export type EventNavigationSource = "activity" | "search" | "pinned";
+
+export type EventNavigationFailureKind =
+  | "targetMissing"
+  | "roomUnavailable"
+  | "sessionUnavailable"
+  | "timeline";
+
+export type EventNavigationState =
+  | { kind: "idle" }
+  | { kind: "opening"; generation: number; source: EventNavigationSource }
+  | { kind: "anchored"; generation: number; source: EventNavigationSource }
+  | { kind: "liveFallback"; generation: number; source: EventNavigationSource }
+  | {
+      kind: "failed";
+      generation: number;
+      source: EventNavigationSource;
+      failureKind: EventNavigationFailureKind;
+    };
+
 export interface NavigationState {
   active_space_id: string | null;
   active_room_id: string | null;
@@ -775,6 +795,7 @@ export interface NavigationState {
   // #161: when set, the main pane renders the focused timeline anchored to this
   // event (jump-to-date), not the live timeline; the right panel is not opened.
   main_timeline_anchor?: MainTimelineAnchor | null;
+  event_navigation: EventNavigationState;
 }
 
 export interface MainTimelineAnchor {

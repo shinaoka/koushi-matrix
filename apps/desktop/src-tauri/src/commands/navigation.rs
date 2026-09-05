@@ -6,6 +6,8 @@ use super::timeline::{
     build_update_navigation_scroll_anchor_command,
 };
 use super::*;
+use koushi_core::EventNavigationError;
+
 #[tauri::command]
 pub async fn update_navigation_preference(
     update: koushi_state::NavigationPreferenceUpdate,
@@ -130,7 +132,14 @@ pub async fn open_activity_event(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    open_anchored_timeline(room_id, event_id, app, state, true).await
+    navigate_to_event(
+        room_id,
+        event_id,
+        koushi_state::EventNavigationSource::Activity,
+        app,
+        state,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -140,7 +149,14 @@ pub async fn open_pinned_event(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    open_anchored_timeline(room_id, event_id, app, state, false).await
+    navigate_to_event(
+        room_id,
+        event_id,
+        koushi_state::EventNavigationSource::Pinned,
+        app,
+        state,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -150,78 +166,37 @@ pub async fn select_search_result(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    open_anchored_timeline(room_id, event_id, app, state, true).await
+    navigate_to_event(
+        room_id,
+        event_id,
+        koushi_state::EventNavigationSource::Search,
+        app,
+        state,
+    )
+    .await
 }
 
-async fn open_anchored_timeline(
+async fn navigate_to_event(
     room_id: String,
     event_id: String,
+    source: koushi_state::EventNavigationSource,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
-    allow_live_fallback: bool,
 ) -> Result<FrontendCommandSettlement, String> {
     let mut event_conn = state.runtime.attach();
-    let operation_snapshot = event_conn.versioned_snapshot();
-    let account_key = account_key_from_app_state(&operation_snapshot.state);
-    let close_room_id = operation_snapshot.state.navigation.active_room_id.clone();
-    let close_baseline_generation = operation_snapshot.generation;
-    let close_deadline = tokio::time::Instant::now() + FOCUSED_CONTEXT_EVENT_TIMEOUT;
-
-    let close_request_id = event_conn.next_request_id();
-    event_conn
-        .command(CoreCommand::App(AppCommand::CloseFocusedContext {
-            request_id: close_request_id,
-        }))
+    let snapshot = event_conn
+        .navigate_to_event_and_wait(
+            room_id,
+            event_id,
+            source,
+            event_navigation_policy(source),
+            FOCUSED_CONTEXT_EVENT_TIMEOUT,
+        )
         .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_focused_context_closed(
-        &mut event_conn,
-        close_request_id,
-        account_key.clone(),
-        close_room_id,
-        close_baseline_generation,
-        close_deadline,
-    )
-    .await?;
-
-    event_conn
-        .select_room_and_wait(room_id.clone(), SELECT_ROOM_EVENT_TIMEOUT)
-        .await
-        .map_err(invoke_error_from_select_room_error)?;
-
-    let anchor_baseline_generation = event_conn.versioned_snapshot().generation;
-    let anchor_key = TimelineKey {
-        account_key,
-        kind: koushi_protocol::TimelineKind::Focused {
-            room_id: room_id.clone(),
-            event_id: event_id.clone(),
-        },
-    };
-    let anchor_deadline = tokio::time::Instant::now() + FOCUSED_CONTEXT_EVENT_TIMEOUT;
-    let open_request_id = event_conn.next_request_id();
-    event_conn
-        .command(CoreCommand::App(AppCommand::OpenAnchoredTimeline {
-            request_id: open_request_id,
-            room_id: room_id.clone(),
-            event_id: event_id.clone(),
-            allow_live_fallback,
-        }))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    let anchored_snapshot = wait_for_main_timeline_anchor(
-        &mut event_conn,
-        open_request_id,
-        anchor_key,
-        event_id,
-        allow_live_fallback,
-        anchor_baseline_generation,
-        anchor_deadline,
-    )
-    .await?;
-
+        .map_err(invoke_error_from_event_navigation_error)?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     Ok(FrontendCommandSettlement::from_published_generation(
-        anchored_snapshot.generation,
+        snapshot.generation,
     ))
 }
 
@@ -310,6 +285,44 @@ pub async fn update_navigation_scroll_anchor(
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     Ok(())
+}
+
+fn event_navigation_policy(
+    source: koushi_state::EventNavigationSource,
+) -> koushi_core::EventNavigationMissingTargetPolicy {
+    match source {
+        koushi_state::EventNavigationSource::Activity
+        | koushi_state::EventNavigationSource::Search => {
+            koushi_core::EventNavigationMissingTargetPolicy::LiveFallback
+        }
+        koushi_state::EventNavigationSource::Pinned => {
+            koushi_core::EventNavigationMissingTargetPolicy::Fail
+        }
+    }
+}
+
+fn invoke_error_from_event_navigation_error(error: koushi_core::EventNavigationError) -> String {
+    match error {
+        EventNavigationError::CommandSubmit(_) => "event navigation command submit failed".to_owned(),
+        EventNavigationError::Rejected => "event navigation rejected".to_owned(),
+        EventNavigationError::Failed(kind) => match kind {
+            koushi_state::EventNavigationFailureKind::TargetMissing => {
+                "event navigation target unavailable".to_owned()
+            }
+            koushi_state::EventNavigationFailureKind::RoomUnavailable => {
+                "event navigation room unavailable".to_owned()
+            }
+            koushi_state::EventNavigationFailureKind::SessionUnavailable => {
+                "event navigation session unavailable".to_owned()
+            }
+            koushi_state::EventNavigationFailureKind::Timeline => {
+                "event navigation failed".to_owned()
+            }
+        },
+        EventNavigationError::EventStreamClosed | EventNavigationError::Timeout => {
+            "event navigation did not complete".to_owned()
+        }
+    }
 }
 
 pub(super) fn invoke_error_from_select_room_error(error: koushi_core::SelectRoomError) -> String {
@@ -434,40 +447,6 @@ async fn wait_for_focused_context(
     match outcome {
         RequestOutcome::FocusedContext { snapshot } => Ok(snapshot),
         _ => Err("focused context open returned an invalid outcome".to_owned()),
-    }
-}
-
-async fn wait_for_main_timeline_anchor(
-    event_conn: &mut CoreConnection,
-    request_id: RequestId,
-    key: TimelineKey,
-    event_id: String,
-    allow_live_fallback: bool,
-    baseline_generation: u64,
-    deadline: tokio::time::Instant,
-) -> Result<koushi_protocol::state_update::VersionedAppStateSnapshot, String> {
-    let outcome = event_conn
-        .wait_for_request_outcome(
-            OutcomeCorrelation::Request(request_id),
-            RequestOutcomeExpectation::MainTimelineAnchor {
-                request_id,
-                key,
-                event_id,
-                allow_live_fallback,
-            },
-            baseline_generation,
-            deadline,
-        )
-        .await
-        .map_err(|error| match error {
-            RequestOutcomeError::OperationFailed { failure } => {
-                invoke_error_from_core_failure("main timeline anchor", failure)
-            }
-            error => invoke_error_from_request_outcome("main timeline anchor", error),
-        })?;
-    match outcome {
-        RequestOutcome::MainTimelineAnchor { snapshot } => Ok(snapshot),
-        _ => Err("main timeline anchor returned an invalid outcome".to_owned()),
     }
 }
 
@@ -659,6 +638,31 @@ mod tests {
                 ordinal: 0,
             }]
         );
+    }
+
+    #[test]
+    fn event_navigation_source_selects_the_only_allowed_missing_target_policy() {
+        assert_eq!(
+            event_navigation_policy(koushi_state::EventNavigationSource::Activity),
+            koushi_core::EventNavigationMissingTargetPolicy::LiveFallback
+        );
+        assert_eq!(
+            event_navigation_policy(koushi_state::EventNavigationSource::Search),
+            koushi_core::EventNavigationMissingTargetPolicy::LiveFallback
+        );
+        assert_eq!(
+            event_navigation_policy(koushi_state::EventNavigationSource::Pinned),
+            koushi_core::EventNavigationMissingTargetPolicy::Fail
+        );
+    }
+
+    #[test]
+    fn event_navigation_transport_errors_are_coarse_and_private() {
+        let error = invoke_error_from_event_navigation_error(
+            EventNavigationError::Failed(koushi_state::EventNavigationFailureKind::Timeline),
+        );
+        assert_eq!(error, "event navigation failed");
+        assert!(!error.contains("example"));
     }
 
     #[tokio::test]

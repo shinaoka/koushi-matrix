@@ -363,7 +363,8 @@ export function defaultSnapshotResponse() {
         active_room_id: null,
         home_selection: { kind: "activity" },
         space_local_presentations: {},
-        legacy_frontend_preferences_imported: false
+        legacy_frontend_preferences_imported: false,
+        event_navigation: { kind: "idle" }
       },
       spaces: [],
       rooms: [],
