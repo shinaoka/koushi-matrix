@@ -1541,7 +1541,7 @@ export function checkCoreRuntimeClosedTimelineRoute() {
 
 export function checkCoreRuntimeActorStartSyncEffect() {
   const rule = "core.runtime.actor_start_sync_effect";
-  const body = sourceSection(coreSource("runtime.rs"), "actions = self.action_rx.recv()", "command = self.command_rx.recv()");
+  const body = sourceSection(coreSource("runtime.rs"), "action_batch = receive_action_batch(", "command = self.command_rx.recv()");
   return body?.includes("handle_post_projection_effects") ? [] : [sourceContractFailure(rule, "actor projection actions do not execute post-projection effects")];
 }
 
@@ -1582,7 +1582,7 @@ export function checkCoreRuntimeFocusedCacheRepair() {
 export function checkCoreRuntimeRoomSwitchPagination() {
   const rule = "core.runtime.room_switch_pagination";
   const source = coreSource("runtime.rs");
-  const arm = sourceSection(source, "actions = self.action_rx.recv()", "app_loop_trace(\"action\"");
+  const arm = sourceSection(source, "action_batch = receive_action_batch(", "app_loop_trace(\"action\"");
   const cancel = arm?.indexOf("cancel_replaced_room_timeline_pagination") ?? -1;
   const effects = arm?.indexOf("handle_post_projection_effects") ?? -1;
   const failures = [];
@@ -1593,7 +1593,7 @@ export function checkCoreRuntimeRoomSwitchPagination() {
 export function checkCoreRuntimeRoomSwitchLinkPreviews() {
   const rule = "core.runtime.room_switch_link_previews";
   const source = coreSource("runtime.rs");
-  const arm = sourceSection(source, "actions = self.action_rx.recv()", "app_loop_trace(\"action\"");
+  const arm = sourceSection(source, "action_batch = receive_action_batch(", "app_loop_trace(\"action\"");
   const cancel = arm?.indexOf("cancel_replaced_room_timeline_link_previews") ?? -1;
   const effects = arm?.indexOf("handle_post_projection_effects") ?? -1;
   const failures = [];
