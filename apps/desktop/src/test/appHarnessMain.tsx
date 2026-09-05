@@ -100,6 +100,9 @@ interface AppHarnessControl {
   invoke(command: string, args?: Record<string, unknown>): Promise<unknown>;
    
   setCommandResponse(command: string, response: any): void;
+  deferCommand(command: string): void;
+  resolveDeferredCommand(command: string, index: number, value: unknown): void;
+  rejectDeferredCommand(command: string, index: number): void;
   setNextTextSendPendingBody(body: string): void;
   setSnapshot(snapshot: DesktopSnapshot): void;
   pushCoreEvent(event: CoreEventPayload): Promise<void>;
@@ -1104,6 +1107,36 @@ function isDesktopSnapshotLike(value: unknown): value is DesktopSnapshot {
       Array.isArray(candidate.state.domain?.spaces) &&
       Array.isArray(candidate.state.domain?.invites)
   );
+}
+
+type DeferredCommand = {
+  resolve: (value: unknown) => void;
+  reject: (reason?: unknown) => void;
+};
+const deferredCommands = new Map<string, DeferredCommand[]>();
+
+function deferCommand(command: string): void {
+  mock.setCommandResponse(command, () =>
+    new Promise<unknown>((resolve, reject) => {
+      const pending = deferredCommands.get(command) ?? [];
+      pending.push({ resolve, reject });
+      deferredCommands.set(command, pending);
+    })
+  );
+}
+
+function resolveDeferredCommand(command: string, index: number, value: unknown): void {
+  const pending = deferredCommands.get(command) ?? [];
+  const [entry] = pending.splice(index, 1);
+  if (pending.length === 0) deferredCommands.delete(command);
+  if (entry) entry.resolve(value);
+}
+
+function rejectDeferredCommand(command: string, index: number): void {
+  const pending = deferredCommands.get(command) ?? [];
+  const [entry] = pending.splice(index, 1);
+  if (pending.length === 0) deferredCommands.delete(command);
+  if (entry) entry.reject(new Error("synthetic deferred rejection"));
 }
 
 // Snapshot-returning commands the App calls. Default snapshot stays ready so
@@ -3525,6 +3558,9 @@ const harnessControl: AppHarnessControl = {
       const value = typeof response === "function" ? response(args) : response;
       return normalizeHarnessCommandResponse(value);
     }),
+  deferCommand,
+  resolveDeferredCommand,
+  rejectDeferredCommand,
   setNextTextSendPendingBody: (body) => {
     nextTextSendPendingBody = body;
   },
