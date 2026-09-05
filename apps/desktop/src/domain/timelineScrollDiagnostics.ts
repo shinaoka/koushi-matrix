@@ -32,7 +32,7 @@ export type TimelineViewportIntentKind =
 
 export type TimelineScrollWriteReason = (typeof WRITE_REASONS)[number];
 
-export type TimelineScrollHeightCommitReason = "initial" | "idleFlush" | "timelineReset";
+export type TimelineScrollHeightCommitReason = "initial" | "idleFlush" | "layout" | "timelineReset";
 
 export type TimelineScrollRowKind = (typeof ROW_KINDS)[number];
 
@@ -74,7 +74,8 @@ export interface TimelineScrollDiagnostics {
   /** Rows still waiting for a height commit — a gauge, decremented on flush. */
   pendingMeasuredRows: number;
   /**
-   * Total measured-row changes seen across frames.
+   * Total changed-row observations across frames and measurement flushes.
+   * Repeated observations of the same row are included, not deduplicated.
    *
    * `latestFrame` only carries the most recent frame, and frames with no
    * measured-row change follow a commit immediately, so a test asking "did a
@@ -152,6 +153,7 @@ export function recordTimelineScrollMeasurementFlush(
   return {
     ...diagnostics,
     measurementFlushes: diagnostics.measurementFlushes + 1,
+    changedMeasuredRows: diagnostics.changedMeasuredRows + changedRows,
     pendingMeasuredRows: Math.max(0, diagnostics.pendingMeasuredRows - changedRows)
   };
 }

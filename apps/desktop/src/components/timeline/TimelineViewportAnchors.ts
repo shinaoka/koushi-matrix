@@ -29,14 +29,16 @@ export function captureAnchor(
   container: HTMLElement,
   options: ScrollAnchorCaptureOptions = {}
 ): ScrollAnchor | null {
-  const containerTop = container.getBoundingClientRect().top;
+  const containerRect = container.getBoundingClientRect();
+  const containerTop = containerRect.top;
+  const containerBottom = containerTop + (container.clientHeight || containerRect.height);
   const nodes = container.querySelectorAll<HTMLElement>("[data-item-id]");
   for (const node of nodes) {
     if (options.isEligible && !options.isEligible(node)) {
       continue;
     }
     const rect = node.getBoundingClientRect();
-    if (rect.bottom > containerTop) {
+    if (rect.bottom > containerTop && rect.top < containerBottom) {
       return {
         itemId: node.dataset["itemId"] ?? "",
         offsetTop: rect.top - containerTop
@@ -61,8 +63,8 @@ export function captureFreeScrollAnchor(container: HTMLElement): ScrollAnchor | 
   });
 }
 
-/** Restore the anchor by its local pixel delta and report the applied delta. */
-export function restoreAnchorWithDelta(
+/** Measure the anchor's local delta; only the viewport transaction may apply it. */
+export function measureAnchorDelta(
   container: HTMLElement,
   anchor: ScrollAnchor
 ): number | null {
@@ -74,21 +76,8 @@ export function restoreAnchorWithDelta(
   }
   const containerTop = container.getBoundingClientRect().top;
   const currentOffset = node.getBoundingClientRect().top - containerTop;
-  const delta = currentOffset - anchor.offsetTop;
-  container.scrollTop += delta;
-  return delta;
+  return currentOffset - anchor.offsetTop;
 }
-
-/** Restore the anchor by adjusting scrollTop; true if the anchor was found. */
-export function restoreAnchor(container: HTMLElement, anchor: ScrollAnchor): boolean {
-  return restoreAnchorWithDelta(container, anchor) !== null;
-}
-
-export type PendingHeightModelCommit = {
-  timelineKeyHash: string;
-  anchor: ScrollAnchor;
-  changedRows: number;
-};
 
 type CapturedTimelineScrollAnchor = {
   event_id: string;

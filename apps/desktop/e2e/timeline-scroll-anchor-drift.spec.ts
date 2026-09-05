@@ -122,6 +122,16 @@ async function placeAnchorInViewport(
 
   const anchor = page.locator(`[data-event-id="${anchorEventId}"]`);
   await expect(anchor).toBeVisible({ timeout: 5000 });
+  // The first jump uses estimated heights only to mount the row. Visibility
+  // includes overscan offscreen rows, so position the actual measured row before
+  // choosing the viewport oracle (it used to be ~1551px above a 422px viewport).
+  await anchor.evaluate((row) => {
+    const container = row.closest<HTMLElement>("[data-testid=timeline-view]")!;
+    container.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
+    container.scrollTop += row.getBoundingClientRect().top - container.getBoundingClientRect().top - 40;
+    container.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await expect(anchor).toBeInViewport();
 
   const originalOffset = await anchorOffsetFromContainer(page, anchorEventId);
   expect(originalOffset).not.toBeNull();

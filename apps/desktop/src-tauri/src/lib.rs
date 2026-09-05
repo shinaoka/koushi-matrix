@@ -829,10 +829,7 @@ pub fn run() {
                             "close_requested",
                         )
                         .field(DiagnosticField::token("action", action.diagnostic_token()))
-                        .field(DiagnosticField::boolean(
-                            "close_to_tray",
-                            close_to_tray,
-                        ))
+                        .field(DiagnosticField::boolean("close_to_tray", close_to_tray))
                         .field(DiagnosticField::boolean(
                             "tray_available",
                             tray::tray_is_available(),

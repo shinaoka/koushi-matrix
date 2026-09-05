@@ -70,6 +70,7 @@ describe("timelineScrollDiagnostics", () => {
     diagnostics = recordTimelineScrollRangeCommit(diagnostics);
     diagnostics = recordTimelineScrollHeightCommit(diagnostics, "idleFlush");
     diagnostics = recordTimelineScrollMeasurementFlush(diagnostics, 3);
+    expect(diagnostics.changedMeasuredRows).toBe(3);
     diagnostics = recordTimelineScrollWrite(diagnostics, "measurementFlush");
     diagnostics = recordTimelineScrollEstimate(diagnostics, {
       rowKind: "media",

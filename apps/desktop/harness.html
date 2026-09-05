@@ -15,6 +15,11 @@
         height: 400px;
         border: 1px solid #888;
       }
+      /* Match production: only the renderer transaction anchors scrolling. */
+      .timeline-view,
+      .timeline-item-list {
+        overflow-anchor: none;
+      }
       .timeline-view .message {
         box-sizing: border-box;
         height: 48px;

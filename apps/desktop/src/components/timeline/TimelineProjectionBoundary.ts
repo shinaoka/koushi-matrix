@@ -1,21 +1,12 @@
 import { Component, type ReactNode } from "react";
 import type { TimelineDisplayRow } from "../../domain/timelineDisplayProjection";
-import type { ScrollAnchor } from "./TimelineViewportAnchors";
 
 export type TimelineProjectionSnapshot = {
   timelineKeyHash: string;
   generation: number;
   signature: string;
+  chromeSignature: string;
   rows: readonly TimelineDisplayRow[];
-};
-
-export type PendingProjectionLayoutTransaction = {
-  timelineKeyHash: string;
-  generation: number;
-  signature: string;
-  viewportEpoch: number;
-  mode: "free-scroll" | "live-edge";
-  anchor: ScrollAnchor | null;
 };
 
 type ProjectionSnapshotBoundaryProps = {
@@ -65,7 +56,7 @@ export function projectionStructureChanged(
   previous: TimelineProjectionSnapshot,
   next: TimelineProjectionSnapshot
 ): boolean {
-  return previous.signature !== next.signature;
+  return previous.signature !== next.signature || previous.chromeSignature !== next.chromeSignature;
 }
 
 /**

@@ -1,6 +1,9 @@
 # Active prepend anchor preservation (#520)
 
-Status: design approved by reviewer-gpt; implementation may proceed.
+Status: historical #520 design; superseded by
+[the single-owner #837 migration](2026-09-05-issue837-viewport-transaction.md).
+The constraints below describe the former localized fix, not the current
+viewport ownership contract.
 
 ## Problem
 

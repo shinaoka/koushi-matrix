@@ -184,6 +184,7 @@ Phase A is Rust/headless work and comes before Phase B GUI wiring.
 | Same-user secondary-device QA credential isolation (#577 follow-up) | [2026-08-21-issue577-secondary-device-qa-credentials.md](../superpowers/plans/2026-08-21-issue577-secondary-device-qa-credentials.md) | — |
 | Formatted-body newline preservation (#522) | [2026-08-14-formatted-body-newlines.md](../superpowers/plans/2026-08-14-formatted-body-newlines.md) | — |
 | Nested Markdown bullet lists (#648) | [2026-08-22-issue648-nested-markdown-lists.md](../superpowers/plans/2026-08-22-issue648-nested-markdown-lists.md) | — |
+| Unified renderer viewport stabilization (#837) | — | [2026-09-05-issue837-viewport-transaction.md](../superpowers/plans/2026-09-05-issue837-viewport-transaction.md) |
 | Active prepend anchor preservation (#520) | [2026-08-14-active-prepend-anchor.md](../superpowers/plans/2026-08-14-active-prepend-anchor.md) | — |
 
 Font asset loading and any bundled font package must update

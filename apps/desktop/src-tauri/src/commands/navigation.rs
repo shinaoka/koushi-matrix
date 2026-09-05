@@ -303,7 +303,9 @@ fn event_navigation_policy(
 
 fn invoke_error_from_event_navigation_error(error: koushi_core::EventNavigationError) -> String {
     match error {
-        EventNavigationError::CommandSubmit(_) => "event navigation command submit failed".to_owned(),
+        EventNavigationError::CommandSubmit(_) => {
+            "event navigation command submit failed".to_owned()
+        }
         EventNavigationError::Rejected => "event navigation rejected".to_owned(),
         EventNavigationError::Failed(kind) => match kind {
             koushi_state::EventNavigationFailureKind::TargetMissing => {

@@ -13,7 +13,6 @@ import {
   projectionStructureChanged,
   stableProjectionAnchorRowIds,
   timelineProjectionSignature,
-  type PendingProjectionLayoutTransaction,
   type TimelineProjectionSnapshot
 } from "./timeline/TimelineProjectionBoundary";
 export {
@@ -35,9 +34,7 @@ import {
   captureFreeScrollAnchor,
   captureRoomScrollAnchor,
   findTimelineEventNode,
-  type PendingHeightModelCommit,
-  restoreAnchor,
-  restoreAnchorWithDelta,
+  measureAnchorDelta,
   roomScrollAnchorSignature,
   roomScrollAnchorStableSignature,
   restoreRoomScrollAnchor,
@@ -69,6 +66,7 @@ import {
   createTimelineViewportScheduler,
   type TimelineViewportScheduler
 } from "./timeline/TimelineViewportScheduler";
+import { createTimelineViewportTransactionController, VIEWPORT_ANCHOR_TOLERANCE_PX } from "./timeline/TimelineViewportTransaction";
 export { TimelineItemRow };
 export type { TimelineRowActionHandlers,TimelineThreadAttention };
 export type { TimelineTransport } from "./timeline/TimelineTransport";
@@ -117,6 +115,7 @@ type MouseEvent,
 type PointerEvent as ReactPointerEvent,
 type SetStateAction
 } from "react";
+import { flushSync } from "react-dom";
 
 import { peopleFacingLabel, type MentionCandidate } from "../app/uiShared";
 import { resolvedAvatar } from "../domain/avatarThumbnails";
@@ -168,6 +167,7 @@ applyGlobalResync,
 applyRoomKeyRequestStateChanged,
 applyTimelineEvent,
 batchContainsPrepend,
+classifyTimelineItemsUpdatedApplication,
 createTimelineStore,
 getItems,
 getKeyState,
@@ -458,6 +458,8 @@ export const TimelineView = memo(function TimelineView({
   }, [timelineViewportScheduler]);
   const [localStore, localSetStore] = useState<TimelineStoreState>(createTimelineStore);
   const store = timelineStore ?? timelineStoreContext?.store ?? localStore;
+  const renderedStoreRef = useRef(store);
+  useLayoutEffect(() => { renderedStoreRef.current = store; }, [store]);
   const setStore = setTimelineStore ?? timelineStoreContext?.setStore ?? localSetStore;
   const isAppLevelStore = timelineStore !== undefined || timelineStoreContext !== null;
   const [messageSource, setMessageSource] = useState<TimelineMessageSource | null>(null);
@@ -492,17 +494,22 @@ export const TimelineView = memo(function TimelineView({
   const rangeModelEpochRef = useRef(0);
   const virtualItemHeight = TIMELINE_ESTIMATED_ITEM_HEIGHT_PX;
   const [measuredHeightVersion, setMeasuredHeightVersion] = useState(0);
-  const [, setDeferredPrependReleaseVersion] = useState(0);
+  const [viewportTransactionRevision, setViewportTransactionRevision] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const itemHeightByDomIdRef = useRef<Map<string, number>>(new Map());
   const committedVisibleRowsRef = useRef<{
     timelineKeyHash: string;
+    generation: number;
     rows: readonly TimelineDisplayRow[];
   } | null>(null);
-  const deferredPrependPendingRef = useRef(false);
-  const pendingHeightModelCommitRef = useRef<PendingHeightModelCommit | null>(null);
-  const heightCompensationRecordedVersionRef = useRef<number | null>(null);
+  const viewportDiagnosticCallbackRef = useRef(onDiagnosticLogEntry);
+  viewportDiagnosticCallbackRef.current = onDiagnosticLogEntry;
+  const viewportTransactionRef = useRef(createTimelineViewportTransactionController((message) => {
+    viewportDiagnosticCallbackRef.current?.({ timestampMs: Date.now(), source: "timeline.viewport_transaction", message });
+  }));
+  const viewportSettlementFrameRef = useRef<TimelineScheduledFrame | null>(null);
+  const viewportSettlementAttemptRef = useRef<(() => void) | null>(null);
   const openMediaViewer = useCallback((item: TimelineMediaViewerItem) => {
     const activeElement =
       typeof document !== "undefined" && document.activeElement instanceof HTMLElement
@@ -517,19 +524,8 @@ export const TimelineView = memo(function TimelineView({
     mediaViewerReturnFocusRef.current = null;
     window.setTimeout(() => returnFocusTarget?.focus(), 0);
   }, []);
-  /** Anchor captured before the latest prepend batch was applied. */
-  const pendingAnchorRef = useRef<ScrollAnchor | null>(null);
-  /** True from prepend-apply until anchor restoration completed. */
-  const anchorRestorePendingRef = useRef(false);
   /** True while the live-room scroll anchor is being restored. */
   const roomScrollAnchorRestorePendingRef = useRef(false);
-  /**
-   * Last first-visible anchor captured while in free-scroll. Because
-   * `.timeline-view` uses `overflow-anchor: none`, the browser no longer
-   * corrects scroll position when an above-viewport row resizes. The height
-   * model commit consumes this stable local anchor before paint.
-   */
-  const freeScrollAnchorRef = useRef<ScrollAnchor | null>(null);
   /**
    * True while a programmatic jump (jump-to-event/bottom) owns the viewport.
    * A jump centers/targets a specific row and runs its own follow-up
@@ -540,14 +536,7 @@ export const TimelineView = memo(function TimelineView({
   const jumpViewportControlRef = useRef(false);
   /** Suppresses capture while programmatic scroll adjustments are running. */
   const suppressScrollAnchorCaptureRef = useRef(false);
-  /** Last reason-tagged programmatic scroll write, used to classify its echo. */
-  const programmaticScrollSignatureRef = useRef<{
-    scrollHeight: number;
-    scrollTop: number;
-    reason: TimelineScrollWriteReason;
-    token: number;
-  } | null>(null);
-  const programmaticScrollTokenRef = useRef(0);
+
   const lastPersistedViewportAnchorSignatureRef = useRef<string | null>(null);
   const restoredRoomScrollAnchorSignatureRef = useRef<string | null>(null);
   const anchorAsyncGenerationRef = useRef(0);
@@ -574,10 +563,6 @@ export const TimelineView = memo(function TimelineView({
   const pendingScrollFrameUserInputRef = useRef(false);
   /** Coalesces ResizeObserver-driven live-edge corrections. */
   const viewportIntentResizeFrameRef = useRef<TimelineScheduledFrame | null>(null);
-  /** Coalesces a structural display-projection correction to one frame. */
-  const projectionLayoutFrameRef = useRef<TimelineScheduledFrame | null>(null);
-  const pendingProjectionLayoutRef = useRef<PendingProjectionLayoutTransaction | null>(null);
-  const projectionRenderStateRef = useRef<TimelineProjectionSnapshot | null>(null);
   const scrollFollowUpFramesRef = useRef<Set<TimelineScheduledFrame>>(new Set());
   /** Accepted backward-pagination command awaiting a terminal timeline event. */
   const backfillRequestEpochRef = useRef<TimelineBackfillRequestEpoch | null>(null);
@@ -614,7 +599,7 @@ export const TimelineView = memo(function TimelineView({
   timelineKeyRef.current = timelineKey;
   const timelineKeyHash = timelineStoreKeyId(timelineKey);
   const timelineKeyHashRef = useRef(timelineKeyHash);
-  timelineKeyHashRef.current = timelineKeyHash;
+  useLayoutEffect(() => { timelineKeyHashRef.current = timelineKeyHash; }, [timelineKeyHash]);
   const sessionRoomScrollAnchorRef = useRef<TimelineScrollAnchor | null>(null);
   const initialRoomScrollAnchorPresentRef = useRef<boolean | null>(null);
   const roomReentrySessionModeRef = useRef<"none" | "live_edge" | "anchor">("none");
@@ -720,6 +705,21 @@ export const TimelineView = memo(function TimelineView({
   }, [items, profileUsers]);
   const timelineKeyState = getKeyState(store, timelineKey);
   const generation = timelineKeyState?.generation ?? 0;
+  const timelineGenerationRef = useRef(generation);
+  useLayoutEffect(() => { timelineGenerationRef.current = generation; }, [generation]);
+  const stableAnchor = viewportTransactionRef.current.stableAnchor;
+  const rememberStableAnchor = useCallback((anchor: ScrollAnchor | null, container: HTMLElement) => {
+    viewportTransactionRef.current.rememberStableAnchor({
+      key: timelineKeyHashRef.current, generation: timelineGenerationRef.current,
+      anchor, scrollTop: container.scrollTop
+    });
+  }, []);
+  const captureStableAnchor = useCallback((container: HTMLElement) => {
+    const previous = stableAnchor();
+    const fresh = captureFreeScrollAnchor(container);
+    const residual = previous ? measureAnchorDelta(container, previous) ?? 0 : 0;
+    rememberStableAnchor(fresh ? { ...fresh, offsetTop: fresh.offsetTop - residual } : null, container);
+  }, [rememberStableAnchor, stableAnchor]);
   const emitDiagnosticLog = useCallback(
     (source: string, message: string) => {
       onDiagnosticLogEntry?.({
@@ -815,7 +815,11 @@ export const TimelineView = memo(function TimelineView({
     cancelPendingScrollFrame();
     cancelScrollFollowUpFrames();
     viewportIntentResizeFrameRef.current = null;
-    projectionLayoutFrameRef.current = null;
+    viewportSettlementAttemptRef.current = null;
+    if (viewportSettlementFrameRef.current !== null) {
+      viewportSettlementFrameRef.current.cancel();
+      viewportSettlementFrameRef.current = null;
+    }
     return epoch;
   }, [cancelPendingScrollFrame, cancelScrollFollowUpFrames, timelineViewportScheduler]);
   const scheduleViewportFrame = useCallback(
@@ -858,6 +862,10 @@ export const TimelineView = memo(function TimelineView({
     },
     [clearMeasurementTimers, clearPendingMeasurementDiagnostics]
   );
+  useLayoutEffect(() => {
+    advanceViewportEpoch();
+    resetActiveMeasurementDeferral({ clearMountedIds: true });
+  }, [advanceViewportEpoch, generation, resetActiveMeasurementDeferral]);
   const readViewportMetrics = useCallback((): TimelineViewportMetrics => {
     const container = containerRef.current;
     if (!container) {
@@ -877,7 +885,7 @@ export const TimelineView = memo(function TimelineView({
       return false;
     }
     if (
-      anchorRestorePendingRef.current ||
+      viewportTransactionRef.current.active() !== null ||
       roomScrollAnchorRestorePendingRef.current ||
       (!options?.allowSuppressed && suppressScrollAnchorCaptureRef.current)
     ) {
@@ -910,68 +918,77 @@ export const TimelineView = memo(function TimelineView({
   }, [roomId, roomTimelineRoomId, transport]);
 
   const runWithScrollWriteReason = useCallback(
-    (reason: TimelineScrollWriteReason, action: () => void) => {
+    (reason: TimelineScrollWriteReason, action: () => void, transactionId: number | null = null) => {
+      const container = containerRef.current;
+      if (!container) return;
+      const owner = viewportTransactionRef.current;
+      if (transactionId === null) {
+        owner.invalidate(reason === "liveEdge" ? "live-edge" : "jump");
+        userScrollInputPendingRef.current = false;
+      }
       const asyncGeneration = anchorAsyncGenerationRef.current;
       suppressScrollAnchorCaptureRef.current = true;
-      const container = containerRef.current;
-      const beforeScrollTop = container?.scrollTop ?? 0;
-      let clearSuppressionToken = programmaticScrollTokenRef.current;
-      let clearSignatureToken: number | null = null;
-      action();
-      if (container && container.scrollTop !== beforeScrollTop) {
-        const token = programmaticScrollTokenRef.current + 1;
-        programmaticScrollTokenRef.current = token;
-        clearSuppressionToken = token;
-        clearSignatureToken = token;
-        programmaticScrollSignatureRef.current = {
-          scrollHeight: container.scrollHeight,
+      try {
+        const changed = owner.write({
+          key: timelineKeyHashRef.current,
+          generation,
+          transactionId,
           scrollTop: container.scrollTop,
-          reason,
-          token
-        };
-        updateScrollDiagnostics((current) => recordTimelineScrollWrite(current, reason));
+          scrollHeight: container.scrollHeight
+        }, () => {
+          action();
+          return { scrollTop: container.scrollTop, scrollHeight: container.scrollHeight };
+        });
+        if (changed) updateScrollDiagnostics((current) => recordTimelineScrollWrite(current, reason));
+        if (reason === "roomRestore") captureStableAnchor(container);
+      } finally {
+        const writeGeneration = owner.currentWriteGeneration();
+        scheduleViewportFrame(() => {
+          if (anchorAsyncGenerationRef.current === asyncGeneration && owner.currentWriteGeneration() === writeGeneration) {
+            suppressScrollAnchorCaptureRef.current = false;
+          }
+        });
       }
-      scheduleViewportFrame(() => {
-        if (anchorAsyncGenerationRef.current !== asyncGeneration) {
-          return;
-        }
-        if (programmaticScrollTokenRef.current === clearSuppressionToken) {
-          suppressScrollAnchorCaptureRef.current = false;
-        }
-        if (
-          clearSignatureToken !== null &&
-          programmaticScrollSignatureRef.current?.token === clearSignatureToken
-        ) {
-          programmaticScrollSignatureRef.current = null;
-        }
-      });
     },
-    [scheduleViewportFrame, updateScrollDiagnostics]
+    [captureStableAnchor, generation, scheduleViewportFrame, updateScrollDiagnostics]
   );
 
   const setViewportIntentToLiveEdge = useCallback(() => {
+    if (viewportIntentRef.current.kind !== "live-edge") viewportTransactionRef.current.invalidate("live-edge");
     viewportIntentRef.current = { kind: "live-edge" };
     timelineViewportSessionMemory.set(timelineKeyHash, { mode: "live-edge" });
   }, [timelineKeyHash]);
 
   const releaseDeferredPrepend = useCallback((): boolean => {
-    if (!deferredPrependPendingRef.current) {
+    const owner = viewportTransactionRef.current;
+    const transaction = owner.active();
+    if (!transaction || transaction.phase !== "waiting-prepend") {
       return false;
     }
     const container = containerRef.current;
-    const anchor =
-      pendingAnchorRef.current ?? (container ? captureFreeScrollAnchor(container) : null);
-    pendingAnchorRef.current = anchor;
-    anchorRestorePendingRef.current = anchor !== null;
-    deferredPrependPendingRef.current = false;
-    setDeferredPrependReleaseVersion((current) => current + 1);
+    if (container) {
+      const fresh = captureFreeScrollAnchor(container);
+      const pendingDelta = transaction.anchor ? measureAnchorDelta(container, transaction.anchor) : 0;
+      if (fresh && pendingDelta !== null) owner.rebase(transaction.id, { ...fresh, offsetTop: fresh.offsetTop - pendingDelta });
+    }
+    owner.markSettling(transaction.id);
+    setViewportTransactionRevision((current) => current + 1);
     return true;
   }, []);
 
   const flushPendingMeasurements = useCallback(
-    (reason: "idle" | "maxDefer") => {
+    (reason: "idle" | "maxDefer" | "layout") => {
+      // Timers from a previous render must not apply old-generation geometry or
+      // replace a transaction for the current timeline generation.
+      if (generation !== timelineGenerationRef.current) {
+        return;
+      }
+      if (userScrollInputPendingRef.current) {
+        viewportTransactionRef.current.accountForInput(containerRef.current?.scrollTop ?? 0);
+        if (reason !== "layout") userScrollInputPendingRef.current = false;
+      }
       const pending = pendingMeasuredHeightsRef.current;
-      if (pending.size === 0) {
+      if (pending.size === 0 && reason !== "layout") {
         clearMeasurementTimers();
         scrollActivityRef.current = "idle";
         clearPendingMeasurementDiagnostics();
@@ -1036,8 +1053,10 @@ export const TimelineView = memo(function TimelineView({
         changedRows += 1;
       }
       pending.clear();
-      clearMeasurementTimers();
-      scrollActivityRef.current = "idle";
+      if (reason !== "layout") {
+        clearMeasurementTimers();
+        scrollActivityRef.current = "idle";
+      }
       releaseDeferredPrepend();
 
       if (changedRows === 0) {
@@ -1057,17 +1076,33 @@ export const TimelineView = memo(function TimelineView({
         viewportIntentRef.current.kind === "free-scroll" &&
         !jumpViewportControlRef.current &&
         !roomScrollAnchorRestorePendingRef.current
-          ? pendingAnchorRef.current ?? freeScrollAnchorRef.current
+          ? stableAnchor()
           : null;
-      pendingHeightModelCommitRef.current = heightAnchor
-        ? { timelineKeyHash: timelineKeyHashRef.current, anchor: heightAnchor, changedRows }
-        : null;
+      const owner = viewportTransactionRef.current;
+      const transaction = owner.active();
+      if (
+        transaction &&
+        transaction.key === timelineKeyHashRef.current &&
+        transaction.generation === generation
+      ) {
+        owner.markMeasurementPending(transaction.id, rangeModelEpochRef.current + 1);
+      } else if (heightAnchor) {
+        const joined = owner.join({
+          key: timelineKeyHashRef.current,
+          generation,
+          anchor: heightAnchor,
+          scrollTop: container?.scrollTop ?? 0,
+          phase: "waiting-measurement",
+          layoutRevision: rangeModelEpochRef.current + 1
+        });
+        owner.markMeasurementPending(joined.id, rangeModelEpochRef.current + 1);
+      }
 
       itemHeightByDomIdRef.current = nextHeights;
       updateScrollDiagnostics((current) =>
         ({
           ...recordTimelineScrollMeasurementFlush(
-            recordTimelineScrollHeightCommit(current, "idleFlush"),
+            recordTimelineScrollHeightCommit(current, reason === "layout" ? "layout" : "idleFlush"),
             changedRows
           ),
           pendingMeasuredRows: 0
@@ -1082,25 +1117,31 @@ export const TimelineView = memo(function TimelineView({
     [
       clearMeasurementTimers,
       clearPendingMeasurementDiagnostics,
+      generation,
       emitDiagnosticLog,
       releaseDeferredPrepend,
       setViewportIntentToLiveEdge,
+      stableAnchor,
       updateScrollDiagnostics
     ]
   );
 
   const markScrollActivityActive = useCallback(() => {
+    const measurementEpoch = measurementEpochRef.current;
+    const flush = (reason: "idle" | "maxDefer") => {
+      if (measurementEpoch === measurementEpochRef.current) flushPendingMeasurements(reason);
+    };
     scrollActivityRef.current = "active";
     if (scrollIdleTimerRef.current !== null) {
       window.clearTimeout(scrollIdleTimerRef.current);
     }
     scrollIdleTimerRef.current = window.setTimeout(
-      () => flushPendingMeasurements("idle"),
+      () => flush("idle"),
       TIMELINE_SCROLL_IDLE_FLUSH_MS
     );
     if (scrollMaxDeferTimerRef.current === null) {
       scrollMaxDeferTimerRef.current = window.setTimeout(
-        () => flushPendingMeasurements("maxDefer"),
+        () => flush("maxDefer"),
         TIMELINE_SCROLL_MAX_DEFER_MS
       );
     }
@@ -1116,6 +1157,24 @@ export const TimelineView = memo(function TimelineView({
     userScrollInputPendingRef.current = false;
   }, [setViewportIntentToFreeScroll]);
 
+  const noteUserViewportInput = useCallback(() => {
+    const owner = viewportTransactionRef.current;
+    const container = containerRef.current;
+    const transaction = owner.active();
+    const scrollTop = container?.scrollTop ?? 0;
+    let rebased = transaction?.anchor ?? null;
+    if (transaction && !transaction.projectionCommitted && container && (rebased === null || scrollTop !== transaction.scrollTop)) {
+      const movement = scrollTop - transaction.scrollTop;
+      const measuredDelta = rebased ? measureAnchorDelta(container, rebased) : null;
+      const fresh = captureFreeScrollAnchor(container);
+      // Recapture the OLD projection, retaining any height displacement that
+      // still needs compensation rather than mistaking it for user movement.
+      if (fresh && (rebased === null || measuredDelta !== null)) rebased = { ...fresh, offsetTop: fresh.offsetTop - (measuredDelta === null ? 0 : measuredDelta + movement) };
+      else if (rebased) rebased = { ...rebased, offsetTop: rebased.offsetTop - movement };
+    }
+    owner.userInput(scrollTop);
+    if (transaction && !transaction.projectionCommitted && rebased) owner.rebase(transaction.id, rebased);
+  }, []);
   const markUserScrollInput = useCallback((options: { keepLiveEdgeAtBottom?: boolean } = {}) => {
     // Input belongs to the user even when it leaves the logical intent kind
     // unchanged (for example another free-scroll wheel event). A queued
@@ -1124,9 +1183,11 @@ export const TimelineView = memo(function TimelineView({
     // The programmatic write already completed synchronously. Its epoch-cancelled
     // cleanup frame must not leave later genuine anchor capture suppressed.
     suppressScrollAnchorCaptureRef.current = false;
-    programmaticScrollSignatureRef.current = null;
-    userScrollInputPendingRef.current = true;
     const container = containerRef.current;
+    if (viewportIntentRef.current.kind === "live-edge") viewportTransactionRef.current.invalidate("input");
+    noteUserViewportInput();
+    userScrollInputPendingRef.current = true;
+    markScrollActivityActive();
     if (
       options.keepLiveEdgeAtBottom &&
       container &&
@@ -1135,7 +1196,7 @@ export const TimelineView = memo(function TimelineView({
       return;
     }
     setViewportIntentToFreeScroll();
-  }, [advanceViewportEpoch, setViewportIntentToFreeScroll]);
+  }, [advanceViewportEpoch, markScrollActivityActive, noteUserViewportInput, setViewportIntentToFreeScroll]);
 
   const applyViewportIntent = useCallback((): boolean => {
     const container = containerRef.current;
@@ -1184,8 +1245,7 @@ export const TimelineView = memo(function TimelineView({
         // clearing alone would leave the timeline permanently blank.
         advanceViewportEpoch();
         recordTimelineResync();
-        pendingAnchorRef.current = null;
-        anchorRestorePendingRef.current = false;
+        viewportTransactionRef.current.invalidate("generation");
         roomScrollAnchorRestorePendingRef.current = false;
         viewportIntentRef.current = { kind: "free-scroll" };
         userScrollInputPendingRef.current = false;
@@ -1300,6 +1360,14 @@ export const TimelineView = memo(function TimelineView({
         }
         return;
       }
+      const application = "ItemsUpdated" in event
+        ? classifyTimelineItemsUpdatedApplication(renderedStoreRef.current, event.ItemsUpdated)
+        : null;
+      const stabilizeUpdate = application === "applied" || application === "missing_initial";
+      if (application === "generation_mismatch" || application === "awaiting_resync" ||
+          (application === "duplicate_batch" && !isAppLevelStore)) return;
+      // An App-owned cache may already have applied the batch before this
+      // listener runs. Its commit snapshot owns geometry capture in that case.
       emitTimelineEventDiagnosticLog(event, eventKey, emitDiagnosticLog);
       if ("SubmissionAccepted" in event || "SubmissionRejected" in event) {
         return;
@@ -1318,7 +1386,7 @@ export const TimelineView = memo(function TimelineView({
         scheduleBackfillEvaluation("initial_projection");
       }
       if (
-        "ItemsUpdated" in event &&
+        "ItemsUpdated" in event && stabilizeUpdate &&
         timelineDiffsContainReset(event.ItemsUpdated.diffs)
       ) {
         advanceViewportEpoch();
@@ -1407,25 +1475,26 @@ export const TimelineView = memo(function TimelineView({
             backfillRequestEpochRef.current = null;
           }
         }
-        if (batchContainsPrepend(event.ItemsUpdated.diffs)) {
+        if (stabilizeUpdate && batchContainsPrepend(event.ItemsUpdated.diffs)) {
           const container = containerRef.current;
-          if (container && !anchorRestorePendingRef.current) {
-            pendingAnchorRef.current = captureFreeScrollAnchor(container);
-          }
-          if (scrollActivityRef.current === "active") {
-            deferredPrependPendingRef.current = true;
-            anchorRestorePendingRef.current = true;
-          } else if (container) {
-            anchorRestorePendingRef.current = pendingAnchorRef.current !== null;
-          }
+          if (container && userScrollInputPendingRef.current) viewportTransactionRef.current.accountForInput(container.scrollTop);
+          if (container && !viewportTransactionRef.current.active()) captureStableAnchor(container);
+          const anchor = viewportTransactionRef.current.active()?.anchor ?? stableAnchor();
+          viewportTransactionRef.current.join({
+            key: timelineKeyHashRef.current,
+            generation: event.ItemsUpdated.generation,
+            anchor,
+            scrollTop: container?.scrollTop ?? 0,
+            phase: scrollActivityRef.current === "active" ? "waiting-prepend" : "settling"
+          });
+          setViewportTransactionRevision((current) => current + 1);
         }
         scheduleBackfillEvaluation("prepend_settled");
       }
 
       if ("ResyncRequired" in event) {
         advanceViewportEpoch();
-        pendingAnchorRef.current = null;
-        anchorRestorePendingRef.current = false;
+        viewportTransactionRef.current.invalidate("generation");
         roomScrollAnchorRestorePendingRef.current = false;
         viewportIntentRef.current = { kind: "free-scroll" };
         userScrollInputPendingRef.current = false;
@@ -1463,12 +1532,14 @@ export const TimelineView = memo(function TimelineView({
       }
   }, [
     advanceViewportEpoch,
+    captureStableAnchor,
     currentUserId,
     emitDiagnosticLog,
     isAppLevelStore,
     resetActiveMeasurementDeferral,
     scheduleBackfillEvaluation,
     setViewportIntentToLiveEdge,
+    stableAnchor,
     timelineKeyHash,
     transport
   ]);
@@ -1509,14 +1580,9 @@ export const TimelineView = memo(function TimelineView({
     );
     roomReentryDiagnosticKeyRef.current = null;
     anchorAsyncGenerationRef.current += 1;
-    pendingAnchorRef.current = null;
-    anchorRestorePendingRef.current = false;
-    deferredPrependPendingRef.current = false;
+    viewportTransactionRef.current.invalidate("key");
     committedVisibleRowsRef.current = null;
-    pendingHeightModelCommitRef.current = null;
-    heightCompensationRecordedVersionRef.current = null;
     roomScrollAnchorRestorePendingRef.current = false;
-    freeScrollAnchorRef.current = null;
     jumpViewportControlRef.current = false;
     suppressScrollAnchorCaptureRef.current = false;
     restoredRoomScrollAnchorSignatureRef.current = null;
@@ -1572,9 +1638,7 @@ export const TimelineView = memo(function TimelineView({
     resetActiveMeasurementDeferral({ clearMountedIds: true });
     itemHeightByDomIdRef.current = new Map();
     committedVisibleRowsRef.current = null;
-    deferredPrependPendingRef.current = false;
-    pendingHeightModelCommitRef.current = null;
-    heightCompensationRecordedVersionRef.current = null;
+    viewportTransactionRef.current.invalidate("key");
     avatarRequestRangeRef.current = EMPTY_TIMELINE_ITEM_INDEX_RANGE;
     setAvatarRequestRange(EMPTY_TIMELINE_ITEM_INDEX_RANGE);
     linkPreviewRequestRangeRef.current = EMPTY_TIMELINE_ITEM_INDEX_RANGE;
@@ -1593,11 +1657,10 @@ export const TimelineView = memo(function TimelineView({
       viewportIntentResizeFrameRef.current.cancel();
       viewportIntentResizeFrameRef.current = null;
     }
-    if (projectionLayoutFrameRef.current !== null) {
-      projectionLayoutFrameRef.current.cancel();
-      projectionLayoutFrameRef.current = null;
+    if (viewportSettlementFrameRef.current !== null) {
+      viewportSettlementFrameRef.current.cancel();
+      viewportSettlementFrameRef.current = null;
     }
-    pendingProjectionLayoutRef.current = null;
     setMeasuredHeightVersion((current) => current + 1);
     scheduleBackfillEvaluation("timeline_reset");
   }, [resetActiveMeasurementDeferral, scheduleBackfillEvaluation, timelineKeyHash]);
@@ -1605,11 +1668,9 @@ export const TimelineView = memo(function TimelineView({
   useEffect(
     () => () => {
       anchorAsyncGenerationRef.current += 1;
-      anchorRestorePendingRef.current = false;
-      deferredPrependPendingRef.current = false;
+      viewportTransactionRef.current.invalidate("unmount");
+      viewportSettlementAttemptRef.current = null;
       committedVisibleRowsRef.current = null;
-      pendingHeightModelCommitRef.current = null;
-      heightCompensationRecordedVersionRef.current = null;
       roomScrollAnchorRestorePendingRef.current = false;
       suppressScrollAnchorCaptureRef.current = false;
       viewportIntentRef.current = { kind: "free-scroll" };
@@ -1624,11 +1685,10 @@ export const TimelineView = memo(function TimelineView({
         viewportIntentResizeFrameRef.current.cancel();
         viewportIntentResizeFrameRef.current = null;
       }
-      if (projectionLayoutFrameRef.current !== null) {
-        projectionLayoutFrameRef.current.cancel();
-        projectionLayoutFrameRef.current = null;
+      if (viewportSettlementFrameRef.current !== null) {
+        viewportSettlementFrameRef.current.cancel();
+        viewportSettlementFrameRef.current = null;
       }
-      pendingProjectionLayoutRef.current = null;
     },
     [resetActiveMeasurementDeferral]
   );
@@ -1644,12 +1704,36 @@ export const TimelineView = memo(function TimelineView({
     );
     return projectTimelineDisplayRows(itemsWithGaps).filter((row) => !row.item.is_hidden);
   }, [items, timelineKeyState]);
+  const notSentTransactionIds = items.flatMap((item) => {
+    if (item.send_state?.kind !== "notSent" || !("Transaction" in item.id)) return [];
+    return [item.id.Transaction.transaction_id];
+  });
+  const backwardState = getPaginationState(store, timelineKey, "Backward");
+  const isPaginating = automaticBackfillEligible && backwardState === "Paginating";
+  const endReached = backwardState === "EndReached" && continuity.kind === "healthy" && continuity.authoritative_start;
+  const canRenderRoomNavigation = roomTimelineRoomId === roomId;
+  const canJumpToBottom = Boolean(navigationSnapshot?.can_jump_to_bottom &&
+    (navigationSnapshot.newer_event_count > 0 || navigationSnapshot.unread_event_count > 0));
+  const readStateStatusMessage = navigationSnapshot ? readStateStatusMessageForSync(navigationSnapshot.read_state_sync) : null;
+  const showPaginationSpinner = !suppressPaginationUi && isPaginating;
+  const showTimelineStart = presentationContext !== "thread" && !suppressPaginationUi && endReached;
+  const showUnsentBar = notSentTransactionIds.length > 0;
+  const anchoredNavigation = isAnchored ? onReturnToLive : undefined;
+  const chromeSignature = [
+    canRenderRoomNavigation, canJumpToBottom, canJumpToBottom ? navigationSnapshot?.newer_event_count ?? 0 : 0,
+    Boolean(anchoredNavigation), showPaginationSpinner, showTimelineStart,
+    showUnsentBar, readStateStatusMessage ?? ""
+  ].join("\u0000");
   const committedProjection =
-    committedVisibleRowsRef.current?.timelineKeyHash === timelineKeyHash
+    committedVisibleRowsRef.current?.timelineKeyHash === timelineKeyHash &&
+    committedVisibleRowsRef.current.generation === generation
       ? committedVisibleRowsRef.current.rows
       : projectedVisibleRows;
+  const pendingViewportTransaction = viewportTransactionRef.current.active();
   const deferPurePrepend =
     scrollActivityRef.current === "active" &&
+    (pendingViewportTransaction === null || pendingViewportTransaction.phase === "waiting-prepend") &&
+    !pendingViewportTransaction?.rangePrepared &&
     timelineRowsArePurePrepend(
       committedProjection.map((row) => row.row_id),
       projectedVisibleRows.map((row) => row.row_id)
@@ -1657,77 +1741,81 @@ export const TimelineView = memo(function TimelineView({
   const visibleRows = deferPurePrepend ? committedProjection : projectedVisibleRows;
   useLayoutEffect(() => {
     if (deferPurePrepend) {
-      deferredPrependPendingRef.current = true;
-      anchorRestorePendingRef.current = true;
+      const active = viewportTransactionRef.current.active();
+      if (active && (active.rangePrepared || active.phase !== "waiting-prepend")) {
+        setViewportTransactionRevision((revision) => revision + 1);
+        return;
+      }
+      const container = containerRef.current;
+      if (container && userScrollInputPendingRef.current) viewportTransactionRef.current.accountForInput(container.scrollTop);
+      if (container && !viewportTransactionRef.current.active()) captureStableAnchor(container);
+      viewportTransactionRef.current.join({
+        key: timelineKeyHash,
+        generation,
+        anchor: viewportTransactionRef.current.active()?.anchor ?? stableAnchor(),
+        scrollTop: container?.scrollTop ?? 0,
+        phase: "waiting-prepend"
+      });
       return;
     }
-    if (deferredPrependPendingRef.current) {
-      deferredPrependPendingRef.current = false;
+    const transaction = viewportTransactionRef.current.active();
+    if (transaction && transaction.key === timelineKeyHash && transaction.generation === generation) {
+      viewportTransactionRef.current.markProjectionCommitted(transaction.id, rangeModelEpochRef.current);
     }
     committedVisibleRowsRef.current = {
       timelineKeyHash,
+      generation,
       rows: projectedVisibleRows
     };
-  }, [deferPurePrepend, projectedVisibleRows, timelineKeyHash]);
+  }, [captureStableAnchor, deferPurePrepend, generation, projectedVisibleRows, stableAnchor, timelineKeyHash]);
   const projectionSnapshot = useMemo<TimelineProjectionSnapshot>(
     () => ({
       timelineKeyHash,
       generation,
       signature: timelineProjectionSignature(visibleRows),
+      chromeSignature,
       rows: visibleRows
     }),
-    [generation, timelineKeyHash, visibleRows]
+    [chromeSignature, generation, timelineKeyHash, visibleRows]
   );
   const captureProjectionLayoutTransaction = useCallback(
     (previous: TimelineProjectionSnapshot, next: TimelineProjectionSnapshot) => {
-      if (!projectionStructureChanged(previous, next)) {
+      if (next.timelineKeyHash !== previous.timelineKeyHash) {
+        viewportTransactionRef.current.invalidate("key");
         return;
       }
-      if (anchorRestorePendingRef.current) {
-        if (projectionLayoutFrameRef.current !== null) {
-          projectionLayoutFrameRef.current.cancel();
-          projectionLayoutFrameRef.current = null;
-        }
-        pendingProjectionLayoutRef.current = null;
+      if (next.generation !== previous.generation) {
+        viewportTransactionRef.current.invalidate("generation");
         return;
       }
-      if (
-        next.timelineKeyHash !== previous.timelineKeyHash ||
-        next.generation !== previous.generation
-      ) {
-        if (projectionLayoutFrameRef.current !== null) {
-          projectionLayoutFrameRef.current.cancel();
-          projectionLayoutFrameRef.current = null;
-        }
-        pendingProjectionLayoutRef.current = null;
-        return;
-      }
+      if (!projectionStructureChanged(previous, next)) return;
       const container = containerRef.current;
+      const owner = viewportTransactionRef.current;
+      if (container && userScrollInputPendingRef.current) owner.accountForInput(container.scrollTop);
       const stableRowIds = stableProjectionAnchorRowIds(previous.rows, next.rows);
+      const heldAnchor = owner.active()?.anchor ?? stableAnchor();
+      const heldAnchorSurvives = heldAnchor && stableRowIds.has(heldAnchor.itemId);
       const anchor =
-        container && viewportIntentRef.current.kind !== "live-edge"
+        !heldAnchorSurvives && container && viewportIntentRef.current.kind !== "live-edge"
           ? captureAnchor(container, {
               isEligible: (node) => stableRowIds.has(node.dataset["itemId"] ?? "")
             })
           : null;
-      if (projectionLayoutFrameRef.current !== null) {
-        projectionLayoutFrameRef.current.cancel();
-        projectionLayoutFrameRef.current = null;
-      }
-      pendingProjectionLayoutRef.current = {
-        timelineKeyHash: next.timelineKeyHash,
+      const pendingDelta = !heldAnchorSurvives && heldAnchor && container
+        ? measureAnchorDelta(container, heldAnchor) ?? 0 : 0;
+      const transactionInput = {
+        key: next.timelineKeyHash,
         generation: next.generation,
-        signature: next.signature,
-        viewportEpoch: timelineViewportScheduler.currentEpoch(),
-        mode: viewportIntentRef.current.kind === "live-edge" ? "live-edge" : "free-scroll",
-        anchor
+        anchor: heldAnchorSurvives ? heldAnchor : anchor ? { ...anchor, offsetTop: anchor.offsetTop - pendingDelta } : null,
+        scrollTop: container?.scrollTop ?? 0,
+        phase: "settling" as const,
+        layoutRevision: rangeModelEpochRef.current
       };
+      const transaction = heldAnchor && !heldAnchorSurvives ? owner.begin(transactionInput) : owner.join(transactionInput);
+      if (previous.chromeSignature !== next.chromeSignature) owner.markRangePrepared(transaction.id);
     },
-    [timelineViewportScheduler]
+    [stableAnchor]
   );
-  useLayoutEffect(() => {
-    projectionRenderStateRef.current = projectionSnapshot;
-  }, [projectionSnapshot]);
   const visibleItemDomIds = useMemo(
     () => new Set(visibleRows.map((row) => row.row_id)),
     [visibleRows]
@@ -1818,64 +1906,11 @@ export const TimelineView = memo(function TimelineView({
   useLayoutEffect(() => {
     commitVirtualRangeForMetrics(readViewportMetrics());
   }, [commitVirtualRangeForMetrics, readViewportMetrics]);
-  useLayoutEffect(() => {
-    const transaction = pendingHeightModelCommitRef.current;
-    if (transaction === null || transaction.timelineKeyHash !== timelineKeyHash) {
-      return;
-    }
-    pendingHeightModelCommitRef.current = null;
-    const container = containerRef.current;
-    if (
-      !container ||
-      viewportIntentRef.current.kind !== "free-scroll" ||
-      jumpViewportControlRef.current ||
-      roomScrollAnchorRestorePendingRef.current
-    ) {
-      return;
-    }
-    let delta: number | null = null;
-    runWithScrollWriteReason("backfillCompensation", () => {
-      delta = restoreAnchorWithDelta(container, transaction.anchor);
-    });
-    if (delta === null) {
-      return;
-    }
-    heightCompensationRecordedVersionRef.current = measuredHeightVersion;
-    const userInputPending =
-      pendingScrollFrameUserInputRef.current || userScrollInputPendingRef.current;
-    updateScrollDiagnostics((current) =>
-      recordTimelineScrollFrame(current, {
-        scrollActivity: scrollActivityRef.current,
-        viewportIntent: "freeScroll",
-        userInputPending,
-        virtualized: virtualWindow.virtualized,
-        startIndex: virtualWindow.startIndex,
-        endIndex: virtualWindow.endIndex,
-        paddingTop: virtualWindow.paddingTop,
-        paddingBottom: virtualWindow.paddingBottom,
-        changedMeasuredRowCount: transaction.changedRows,
-        heightDeltaAboveViewportPx: delta ?? 0,
-        heightDeltaInsideViewportPx: 0,
-        heightDeltaBelowViewportPx: 0,
-        anchorTopDeltaPx: delta ?? 0
-      })
-    );
-    freeScrollAnchorRef.current = captureFreeScrollAnchor(container);
-    updateViewportMetrics();
-  }, [
-    measuredHeightVersion,
-    runWithScrollWriteReason,
-    timelineKeyHash,
-    updateScrollDiagnostics,
-    updateViewportMetrics,
-    virtualWindow.endIndex,
-    virtualWindow.paddingBottom,
-    virtualWindow.paddingTop,
-    virtualWindow.startIndex,
-    virtualWindow.virtualized
-  ]);
   useEffect(() => {
-    if (heightCompensationRecordedVersionRef.current === measuredHeightVersion) {
+    if (
+      virtualWindow.virtualized &&
+      virtualWindow.endIndex === 0
+    ) {
       return;
     }
     const intentKind: TimelineViewportIntentKind =
@@ -2014,19 +2049,6 @@ export const TimelineView = memo(function TimelineView({
       });
     }
   }, [mediaDownloads, roomId, sideEffectItems, transport]);
-  const notSentTransactionIds = items.flatMap((item) => {
-    if (item.send_state?.kind !== "notSent" || !("Transaction" in item.id)) {
-      return [];
-    }
-    return [item.id.Transaction.transaction_id];
-  });
-  const backwardState = getPaginationState(store, timelineKey, "Backward");
-  const isPaginating =
-    automaticBackfillEligible && backwardState === "Paginating";
-  const endReached =
-    backwardState === "EndReached" &&
-    continuity.kind === "healthy" &&
-    continuity.authoritative_start;
   const roomSignals = liveSignals?.rooms[roomId] ?? null;
   // Read receipts and fully-read state remain canonical timeline facts. A
   // moved root only changes presentation; it must not cause the root id to be
@@ -2247,7 +2269,10 @@ export const TimelineView = memo(function TimelineView({
       return;
     }
 
+    let disposed = false;
+    let observationFrame: number | null = null;
     const observer = new ResizeObserver(() => {
+      if (disposed) return;
       if (viewportIntentRef.current.kind === "live-edge") {
         if (viewportIntentResizeFrameRef.current !== null) {
           viewportIntentResizeFrameRef.current.cancel();
@@ -2263,13 +2288,50 @@ export const TimelineView = memo(function TimelineView({
         });
         return;
       }
-      // Free-scroll height changes are corrected synchronously with the height
-      // model commit below. ResizeObserver is notification-only here; a queued
-      // frame would allow a visible jump and race the committed model.
+      if (timelineKeyHashRef.current !== timelineKeyHash || timelineGenerationRef.current !== generation ||
+          jumpViewportControlRef.current || roomScrollAnchorRestorePendingRef.current) return;
+      const container = containerRef.current;
+      const owner = viewportTransactionRef.current;
+      if (container && userScrollInputPendingRef.current) owner.accountForInput(container.scrollTop);
+      const anchor = owner.active()?.anchor ?? stableAnchor();
+      if (!container || !anchor) return;
+      const delta = measureAnchorDelta(container, anchor);
+      if (!owner.active() && delta !== null && Math.abs(delta) > VIEWPORT_ANCHOR_TOLERANCE_PX) {
+        owner.begin({ key: timelineKeyHash, generation, anchor, scrollTop: container.scrollTop, phase: "waiting-measurement" });
+      }
+      const active = owner.active();
+      if (active && (delta === null || Math.abs(delta) > VIEWPORT_ANCHOR_TOLERANCE_PX)) {
+        owner.markRangePrepared(active.id);
+        // Native ResizeObserver delivery is post-layout, pre-paint. Commit the
+        // same owner's measured layout now rather than showing a one-frame jump.
+        observer.disconnect();
+        try {
+          flushSync(() => {
+            flushPendingMeasurements("layout");
+            setViewportTransactionRevision((revision) => revision + 1);
+          });
+        } finally {
+          resumeObservation();
+        }
+      } else {
+        setViewportTransactionRevision((revision) => revision + 1);
+      }
     });
 
-    observer.observe(list);
+    function resumeObservation() {
+      if (disposed) return;
+      if (observationFrame !== null) window.cancelAnimationFrame(observationFrame);
+      // Observer lifetime, not input lifetime: a new wheel must not cancel
+      // reattachment. Initial observation also waits outside the RO delivery.
+      observationFrame = window.requestAnimationFrame(() => {
+        observationFrame = null;
+        if (!disposed) observer.observe(list!);
+      });
+    }
+    resumeObservation();
     return () => {
+      disposed = true;
+      if (observationFrame !== null) window.cancelAnimationFrame(observationFrame);
       observer.disconnect();
       if (viewportIntentResizeFrameRef.current !== null) {
         viewportIntentResizeFrameRef.current.cancel();
@@ -2278,6 +2340,9 @@ export const TimelineView = memo(function TimelineView({
     };
   }, [
     applyViewportIntent,
+    flushPendingMeasurements,
+    generation,
+    stableAnchor,
     reportViewportObservation,
     scheduleViewportFrame,
     timelineKeyHash,
@@ -2285,84 +2350,154 @@ export const TimelineView = memo(function TimelineView({
   ]);
 
   useLayoutEffect(() => {
-    const transaction = pendingProjectionLayoutRef.current;
+    const transaction = viewportTransactionRef.current.active();
     if (
       transaction === null ||
-      transaction.timelineKeyHash !== projectionSnapshot.timelineKeyHash ||
+      transaction.key !== projectionSnapshot.timelineKeyHash ||
       transaction.generation !== projectionSnapshot.generation ||
-      transaction.signature !== projectionSnapshot.signature
+      (transaction.phase === "waiting-measurement" && transaction.layoutRevision > rangeModelEpochRef.current) ||
+      deferPurePrepend
     ) {
       return;
     }
-    pendingProjectionLayoutRef.current = null;
-    const scheduledTransaction = transaction;
-    projectionLayoutFrameRef.current = scheduleViewportFrame(
-      () => {
-        if (projectionLayoutFrameRef.current !== null) {
-          projectionLayoutFrameRef.current = null;
-        }
-        scheduleBackfillEvaluation("layout_settled");
-        const current = projectionRenderStateRef.current;
-        if (
-          current === null ||
-          timelineViewportScheduler.currentEpoch() !== scheduledTransaction.viewportEpoch ||
-          current.timelineKeyHash !== scheduledTransaction.timelineKeyHash ||
-          current.generation !== scheduledTransaction.generation ||
-          current.signature !== scheduledTransaction.signature ||
-          (scheduledTransaction.mode === "live-edge" &&
-            viewportIntentRef.current.kind !== "live-edge") ||
-          (scheduledTransaction.mode === "free-scroll" &&
-            (viewportIntentRef.current.kind !== "free-scroll" || jumpViewportControlRef.current))
-        ) {
-          return;
-        }
-        const container = containerRef.current;
-        if (!container) {
-          return;
-        }
-        if (scheduledTransaction.mode === "live-edge") {
-          runWithScrollWriteReason("projectionCompensation", () => {
-            scrollContainerToBottom(container);
-          });
-        } else if (scheduledTransaction.anchor !== null) {
-          let restored = false;
-          runWithScrollWriteReason("projectionCompensation", () => {
-            restored = restoreAnchor(container, scheduledTransaction.anchor!);
-          });
-          if (!restored && virtualWindow.virtualized) {
-            const anchorIndex = visibleRows.findIndex(
-              (row) => row.row_id === scheduledTransaction.anchor?.itemId
-            );
-            if (anchorIndex >= 0) {
-              runWithScrollWriteReason("projectionCompensation", () => {
-                container.scrollTop = Math.max(
-                  0,
-                  viewportMetricsRef.current.listOffsetTop +
-                    (timelineHeightModel.offsets[anchorIndex] ?? 0) -
-                    scheduledTransaction.anchor!.offsetTop
-                );
-              });
-            }
+    viewportTransactionRef.current.markProjectionCommitted(transaction.id, rangeModelEpochRef.current);
+    const scheduledId = transaction.id;
+    const scheduledFence = { ...transaction };
+    if (viewportSettlementFrameRef.current !== null) {
+      viewportSettlementFrameRef.current.cancel();
+    }
+    const attempt = () => {
+      if (userScrollInputPendingRef.current) viewportTransactionRef.current.accountForInput(containerRef.current?.scrollTop ?? 0);
+      const current = viewportTransactionRef.current.active();
+      if (
+        !current ||
+        current.id !== scheduledId ||
+        scheduledFence.layoutRevision !== rangeModelEpochRef.current ||
+        !viewportTransactionRef.current.canWrite({
+          ...scheduledFence,
+          key: timelineKeyHashRef.current,
+          generation: timelineGenerationRef.current,
+          layoutRevision: rangeModelEpochRef.current
+        })
+      ) return;
+      const container = containerRef.current;
+      if (!container) {
+        viewportTransactionRef.current.invalidate("missing-anchor");
+        return;
+      }
+      const anchor = current.anchor;
+      let shouldWrite = false;
+      let target = container.scrollTop;
+      let estimatedMount = false;
+      let measured = viewportIntentRef.current.kind === "live-edge";
+      if (viewportIntentRef.current.kind === "live-edge") {
+        target = Math.max(0, container.scrollHeight - container.clientHeight);
+        shouldWrite = Math.abs(target - container.scrollTop) > SCROLL_EDGE_TOLERANCE_PX;
+      } else if (anchor) {
+        const delta = measureAnchorDelta(container, anchor);
+        if (delta !== null) {
+          measured = true;
+          if (pendingMeasuredHeightsRef.current.size > 0) return;
+          target = container.scrollTop + delta;
+          shouldWrite = Math.abs(delta) > VIEWPORT_ANCHOR_TOLERANCE_PX;
+        } else if (virtualWindow.virtualized) {
+          const anchorIndex = visibleRows.findIndex((row) => row.row_id === anchor.itemId);
+          if (anchorIndex >= 0 && !current.estimateWritten) {
+            viewportTransactionRef.current.markEstimateWritten(current.id);
+            target = Math.max(0, viewportMetricsRef.current.listOffsetTop + (timelineHeightModel.offsets[anchorIndex] ?? 0) - anchor.offsetTop);
+            shouldWrite = Math.abs(target - container.scrollTop) > VIEWPORT_ANCHOR_TOLERANCE_PX;
+            estimatedMount = true;
           }
         }
-        if (viewportIntentRef.current.kind !== "live-edge") {
-          freeScrollAnchorRef.current = captureFreeScrollAnchor(container);
+      }
+      if (estimatedMount) {
+        viewportTransactionRef.current.markRangePrepared(current.id);
+        if (shouldWrite) {
+          runWithScrollWriteReason("projectionCompensation", () => { container.scrollTop = target; }, current.id);
         }
+        const previousRange = virtualRangeRef.current;
+        const nextRange = commitVirtualRangeForMetrics(readViewportMetrics());
+        if (virtualRangeEquals(previousRange, nextRange)) setViewportTransactionRevision((revision) => revision + 1);
+        return;
+      }
+      if (!measured) {
+        viewportTransactionRef.current.invalidate("missing-anchor");
+        captureStableAnchor(container);
         updateViewportMetrics();
         reportViewportObservation();
-      },
-      scheduledTransaction.viewportEpoch
-    );
+        scheduleBackfillEvaluation("layout_settled");
+        return;
+      }
+      if (virtualWindow.virtualized) {
+        const previousRange = virtualRangeRef.current;
+        const preparedRange = commitVirtualRangeForMetrics({ ...readViewportMetrics(), scrollTop: target });
+        // Commit the target window and its measurements before the sole final
+        // write. Its layout continuation runs before paint, not another owner.
+        if (!virtualRangeEquals(previousRange, preparedRange)) {
+          viewportTransactionRef.current.markRangePrepared(current.id);
+          return;
+        }
+      }
+      const delta = target - container.scrollTop;
+      viewportTransactionRef.current.markSettled(current.id);
+      if (shouldWrite) {
+        runWithScrollWriteReason("projectionCompensation", () => { container.scrollTop = target; }, current.id);
+      }
+      updateScrollDiagnostics((diagnostics) => recordTimelineScrollFrame(diagnostics, {
+        scrollActivity: scrollActivityRef.current,
+        viewportIntent: viewportIntentRef.current.kind === "live-edge" ? "liveEdge" : "freeScroll",
+        userInputPending: userScrollInputPendingRef.current,
+        virtualized: virtualWindow.virtualized,
+        startIndex: virtualWindow.startIndex,
+        endIndex: virtualWindow.endIndex,
+        paddingTop: virtualWindow.paddingTop,
+        paddingBottom: virtualWindow.paddingBottom,
+        changedMeasuredRowCount: 0,
+        heightDeltaAboveViewportPx: delta,
+        heightDeltaInsideViewportPx: 0,
+        heightDeltaBelowViewportPx: 0,
+        anchorTopDeltaPx: delta
+      }));
+      if (viewportIntentRef.current.kind !== "live-edge") {
+        const fresh = captureFreeScrollAnchor(container);
+        const residual = anchor ? measureAnchorDelta(container, anchor) ?? 0 : 0;
+        rememberStableAnchor(fresh ? { ...fresh, offsetTop: fresh.offsetTop - residual } : null, container);
+      }
+      updateViewportMetrics();
+      reportViewportObservation();
+      scheduleBackfillEvaluation("layout_settled");
+    };
+    viewportSettlementAttemptRef.current = attempt;
+    viewportSettlementFrameRef.current = null;
+    if (!transaction.rangePrepared) {
+      let scheduled: TimelineScheduledFrame | null = null;
+      const frame: TimelineScheduledFrame = { cancel: () => scheduled?.cancel() };
+      viewportSettlementFrameRef.current = frame;
+      scheduled = scheduleViewportFrame(() => {
+        if (viewportSettlementFrameRef.current !== frame) return;
+        viewportSettlementFrameRef.current = null;
+        attempt();
+      });
+    }
   }, [
+    captureStableAnchor,
+    commitVirtualRangeForMetrics,
+    deferPurePrepend,
+    generation,
+    measuredHeightVersion,
     projectionSnapshot,
+    readViewportMetrics,
+    rememberStableAnchor,
     reportViewportObservation,
     runWithScrollWriteReason,
     scheduleBackfillEvaluation,
     scheduleViewportFrame,
+    timelineKeyHash,
     timelineHeightModel,
-    timelineViewportScheduler,
+    updateScrollDiagnostics,
     updateViewportMetrics,
-    virtualWindow.virtualized,
+    viewportTransactionRevision,
+    virtualWindow,
     visibleRows
   ]);
 
@@ -2440,7 +2575,7 @@ export const TimelineView = memo(function TimelineView({
           focusedTargetRestoreAppliedRef.current = initialLiveEdgeScrollKey;
           initialLiveEdgeScrollAppliedRef.current = initialLiveEdgeScrollKey;
           emitFocusedTargetRestoreDecision("dom", true);
-          freeScrollAnchorRef.current = captureFreeScrollAnchor(container);
+          captureStableAnchor(container);
         } else {
           const targetIndex = visibleRows.findIndex(
             (row) => row.activity_event_id === focusedTimelineTargetEventId
@@ -2474,7 +2609,7 @@ export const TimelineView = memo(function TimelineView({
                   mountedTarget.scrollIntoView({ block: "center", inline: "nearest" });
                 });
               }
-              freeScrollAnchorRef.current = captureFreeScrollAnchor(container);
+              captureStableAnchor(container);
               updateViewportMetrics();
               reportViewportObservation();
             });
@@ -2616,73 +2751,29 @@ export const TimelineView = memo(function TimelineView({
       }
       stickToBottomAfterMeasurementRef.current = false;
     }
-    if (anchorRestorePendingRef.current) {
-      const anchor = pendingAnchorRef.current;
-      let restored = false;
-      let followUpPending = false;
-      if (container && anchor) {
-        runWithScrollWriteReason("backfillCompensation", () => {
-          restored = restoreAnchor(container, anchor);
-        });
-      }
-      if (!restored && container && anchor && virtualWindow.virtualized) {
-        const anchorIndex = visibleRows.findIndex((row) => row.row_id === anchor.itemId);
-        if (anchorIndex >= 0) {
-          runWithScrollWriteReason("backfillCompensation", () => {
-            container.scrollTop = Math.max(
-              0,
-              viewportMetricsRef.current.listOffsetTop +
-                (timelineHeightModel.offsets[anchorIndex] ?? 0) -
-                anchor.offsetTop
-            );
-          });
-          followUpPending = true;
-          scheduleScrollFollowUpFrame(() => {
-            let followUpRestored = false;
-            runWithScrollWriteReason("backfillCompensation", () => {
-              followUpRestored = restoreAnchor(container, anchor);
-            });
-            if (followUpRestored) {
-              freeScrollAnchorRef.current = anchor;
-            }
-            pendingAnchorRef.current = null;
-            anchorRestorePendingRef.current = false;
-            updateViewportMetrics();
-            reportViewportObservation();
-            setProjectionSettlementRevision((current) => current + 1);
-            scheduleBackfillEvaluation("layout_settled");
-          });
-        }
-      }
-      if (!followUpPending) {
-        pendingAnchorRef.current = null;
-        // Restoration complete: the next automatic fill request is allowed again.
-        anchorRestorePendingRef.current = false;
-      }
-    }
     if (
       container &&
       viewportIntentRef.current.kind === "live-edge" &&
-      !anchorRestorePendingRef.current &&
+      viewportTransactionRef.current.active() === null &&
       !roomScrollAnchorRestorePendingRef.current
     ) {
       applyViewportIntent();
     } else if (
       container &&
-      !anchorRestorePendingRef.current &&
+      viewportTransactionRef.current.active() === null &&
       !roomScrollAnchorRestorePendingRef.current &&
-      !jumpViewportControlRef.current
+      !jumpViewportControlRef.current &&
+      stableAnchor() === null
     ) {
-      // Refresh the free-scroll anchor after layout/measurement commits so a
-      // later above-viewport resize (overflow-anchor: none) restores the
-      // viewport against the settled position rather than a stale pre-measure one.
-      freeScrollAnchorRef.current = captureFreeScrollAnchor(container);
+      captureStableAnchor(container);
     }
     updateViewportMetrics();
     reportViewportObservation();
   }, [
     advanceViewportEpoch,
     applyViewportIntent,
+    captureStableAnchor,
+    stableAnchor,
     generation,
     emitDiagnosticLog,
     focusedTimelineTargetEventId,
@@ -2744,6 +2835,12 @@ export const TimelineView = memo(function TimelineView({
       mountedItemDomIdsRef.current = new Set();
       return;
     }
+    if (containerRef.current && userScrollInputPendingRef.current) viewportTransactionRef.current.accountForInput(containerRef.current.scrollTop);
+    if (containerRef.current && stableAnchor() === null &&
+        viewportTransactionRef.current.active() === null && viewportIntentRef.current.kind === "free-scroll" &&
+        !jumpViewportControlRef.current && !roomScrollAnchorRestorePendingRef.current) {
+      captureStableAnchor(containerRef.current);
+    }
     const nextHeights = new Map(itemHeightByDomIdRef.current);
     const visibleDomIds = visibleItemDomIdsRef.current;
     let changed = false;
@@ -2781,7 +2878,7 @@ export const TimelineView = memo(function TimelineView({
     if (!changed) {
       return;
     }
-    if (scrollActivityRef.current === "active") {
+    if (scrollActivityRef.current === "active" && !viewportTransactionRef.current.active()?.rangePrepared) {
       for (const [domId, height] of nextHeights) {
         if (Math.abs((itemHeightByDomIdRef.current.get(domId) ?? 0) - height) > 1) {
           pendingMeasuredHeightsRef.current.set(domId, {
@@ -2823,30 +2920,54 @@ export const TimelineView = memo(function TimelineView({
       viewportIntentRef.current.kind === "free-scroll" &&
       !jumpViewportControlRef.current &&
       !roomScrollAnchorRestorePendingRef.current
-        ? pendingAnchorRef.current ?? freeScrollAnchorRef.current
+        ? stableAnchor()
         : null;
-    pendingHeightModelCommitRef.current = heightAnchor
-      ? {
-          timelineKeyHash: timelineKeyHashRef.current,
-          anchor: heightAnchor,
-          changedRows
-        }
-      : null;
+    const activeTransaction = viewportTransactionRef.current.active();
+    if (
+      activeTransaction &&
+      activeTransaction.key === timelineKeyHashRef.current &&
+      activeTransaction.generation === generation
+    ) {
+      viewportTransactionRef.current.markMeasurementPending(
+        activeTransaction.id,
+        rangeModelEpochRef.current + 1
+      );
+    } else if (heightAnchor) {
+      const transaction = viewportTransactionRef.current.join({
+        key: timelineKeyHashRef.current,
+        generation,
+        anchor: heightAnchor,
+        scrollTop: container?.scrollTop ?? 0,
+        phase: "waiting-measurement",
+        layoutRevision: rangeModelEpochRef.current + 1
+      });
+      viewportTransactionRef.current.markMeasurementPending(transaction.id, rangeModelEpochRef.current + 1);
+    }
     itemHeightByDomIdRef.current = nextHeights;
     updateScrollDiagnostics((current) =>
       recordTimelineScrollHeightCommit(current, "initial")
     );
     setMeasuredHeightVersion((current) => current + 1);
   }, [
+    captureStableAnchor,
+    generation,
     setViewportIntentToLiveEdge,
+    stableAnchor,
     updateScrollDiagnostics,
     virtualWindow.endIndex,
     virtualWindow.paddingBottom,
     virtualWindow.paddingTop,
     virtualWindow.startIndex,
     virtualWindow.virtualized,
+    viewportTransactionRevision,
     visibleItems
   ]);
+
+  // Mounted-window measurement above must acknowledge its model commit before
+  // the same transaction performs its final DOM correction, before paint.
+  useLayoutEffect(() => {
+    if (viewportTransactionRef.current.active()?.rangePrepared) viewportSettlementAttemptRef.current?.();
+  });
 
   const requestTimelineBackfill = useCallback(
     (
@@ -2919,9 +3040,7 @@ export const TimelineView = memo(function TimelineView({
       const projectedContentHeight = Math.round(timelineHeightModel.totalHeight);
       const maxScrollTop = Math.max(0, scrollHeight - clientHeight);
       const threshold = timelineBackfillThreshold(clientHeight, autoLoadOlderMessages);
-      const projectionSettled =
-        pendingProjectionLayoutRef.current === null &&
-        projectionLayoutFrameRef.current === null;
+      const projectionSettled = viewportTransactionRef.current.active() === null;
       const physicalVirtualLayoutSettled = !(
         virtualWindow.virtualized &&
         projectedContentHeight > clientHeight + SCROLL_EDGE_TOLERANCE_PX &&
@@ -2942,7 +3061,7 @@ export const TimelineView = memo(function TimelineView({
           physicalVirtualLayoutSettled &&
           virtualRangeEquals(virtualRangeRef.current, virtualRange),
         anchorSettled:
-          !anchorRestorePendingRef.current &&
+          viewportTransactionRef.current.active() === null &&
           !roomScrollAnchorRestorePendingRef.current,
         itemCount: items.length,
         projectedContentHeight,
@@ -3032,16 +3151,28 @@ export const TimelineView = memo(function TimelineView({
   ]);
   const onTimelineScroll = useCallback(() => {
     const container = containerRef.current;
-    const sig = programmaticScrollSignatureRef.current;
-    const isProgrammaticEcho =
-      sig !== null &&
-      container !== null &&
-      Math.abs(container.scrollTop - sig.scrollTop) <= SCROLL_EDGE_TOLERANCE_PX &&
-      Math.abs(container.scrollHeight - sig.scrollHeight) <= SCROLL_EDGE_TOLERANCE_PX;
-    if (!isProgrammaticEcho) {
+    const hadInputIntent = userScrollInputPendingRef.current;
+    const isProgrammaticEcho = Boolean(
+      container && viewportTransactionRef.current.isProgrammaticEcho({
+        key: timelineKeyHashRef.current,
+        generation,
+        hasPendingInput: hadInputIntent,
+        scrollTop: container.scrollTop,
+        scrollHeight: container.scrollHeight
+      })
+    );
+    // Layout can clamp scrollTop and deliver a delayed scroll notification.
+    // Without input intent, that must not cancel a pending live-edge resize
+    // correction. Free-scroll observations still account for momentum/input.
+    const invalidatesViewport = hadInputIntent || viewportIntentRef.current.kind !== "live-edge";
+    if (!isProgrammaticEcho && invalidatesViewport) {
+      advanceViewportEpoch();
+      suppressScrollAnchorCaptureRef.current = false;
+      noteUserViewportInput();
       markScrollActivityActive();
+      if (viewportTransactionRef.current.active()) setViewportTransactionRevision((revision) => revision + 1);
     }
-    const userInputPending = userScrollInputPendingRef.current;
+    const userInputPending = hadInputIntent || !isProgrammaticEcho;
     const actuallyAtBottom = Boolean(container && isScrolledToBottom(container));
     if (userInputPending && actuallyAtBottom) {
       setViewportIntentToLiveEdge();
@@ -3049,7 +3180,7 @@ export const TimelineView = memo(function TimelineView({
         userScrollInputPendingRef.current = false;
       }
     }
-    const isUserDrivenScroll = userInputPending && !isProgrammaticEcho;
+    const isUserDrivenScroll = hadInputIntent && !isProgrammaticEcho;
     pendingScrollFrameUserInputRef.current =
       pendingScrollFrameUserInputRef.current || isUserDrivenScroll;
     if (!isProgrammaticEcho && container) {
@@ -3080,9 +3211,10 @@ export const TimelineView = memo(function TimelineView({
       // a jump owns the viewport so its re-centering is not fought.
       if (
         viewportIntentRef.current.kind !== "live-edge" &&
-        !jumpViewportControlRef.current
+        !jumpViewportControlRef.current &&
+        viewportTransactionRef.current.active() === null
       ) {
-        freeScrollAnchorRef.current = captureFreeScrollAnchor(container);
+        captureStableAnchor(container);
       }
     }
     if (pendingScrollFrameRef.current === null) {
@@ -3131,8 +3263,12 @@ export const TimelineView = memo(function TimelineView({
       persistViewportAnchor();
     }
   }, [
+    advanceViewportEpoch,
+    captureStableAnchor,
+    generation,
     setViewportIntentToLiveEdge,
     markScrollActivityActive,
+    noteUserViewportInput,
     persistViewportAnchor,
     readViewportMetrics,
     reportViewportObservation,
@@ -3195,21 +3331,12 @@ export const TimelineView = memo(function TimelineView({
     onRegisterJumpToLatest?.(jumpToBottom);
     return () => onRegisterJumpToLatest?.(null);
   }, [jumpToBottom, onRegisterJumpToLatest]);
-  const canRenderRoomNavigation =
-    roomTimelineRoomId === roomId;
-  const canJumpToBottom = Boolean(
-    navigationSnapshot?.can_jump_to_bottom &&
-      (navigationSnapshot.newer_event_count > 0 || navigationSnapshot.unread_event_count > 0)
-  );
   const unreadMarkerEventId = navigationSnapshot?.first_unread_event_id ?? null;
   const readMarkerDisplayEventId =
     navigationSnapshot?.read_marker_display_event_id ??
     navigationSnapshot?.read_marker_event_id ??
     roomSignals?.fully_read_event_id ??
     null;
-  const readStateStatusMessage = navigationSnapshot
-    ? readStateStatusMessageForSync(navigationSnapshot.read_state_sync)
-    : null;
 
   return (
     <ProjectionSnapshotBoundary
@@ -3263,13 +3390,13 @@ export const TimelineView = memo(function TimelineView({
           </div>
         </div>
       ) : null}
-      {isAnchored && onReturnToLive ? (
+      {anchoredNavigation ? (
         <div className="timeline-navigation-bar">
           <div className="timeline-navigation-pills">
             <button
               className="timeline-navigation-pill"
               type="button"
-              onClick={() => invokeReturnToLiveSafely(onReturnToLive)}
+              onClick={() => invokeReturnToLiveSafely(anchoredNavigation)}
             >
               <ArrowDown size={14} aria-hidden="true" />
               <span>{t("shortcut.jumpToLatestMessage")}</span>
@@ -3277,12 +3404,12 @@ export const TimelineView = memo(function TimelineView({
           </div>
         </div>
       ) : null}
-      {!suppressPaginationUi && isPaginating ? (
+      {showPaginationSpinner ? (
         <div className="timeline-spinner" data-testid="timeline-spinner">
           {t("timeline.loading")}
         </div>
       ) : null}
-      {presentationContext !== "thread" && !suppressPaginationUi && endReached ? (
+      {showTimelineStart ? (
         <div className="timeline-start" data-testid="timeline-start">
           {t("timeline.conversationStart")}
         </div>
@@ -3300,7 +3427,7 @@ export const TimelineView = memo(function TimelineView({
           {readStateStatusMessage}
         </div>
       ) : null}
-      {notSentTransactionIds.length > 0 ? (
+      {showUnsentBar ? (
         <div className="timeline-send-bar" data-testid="timeline-send-bar">
           <span className="timeline-send-bar-label">
             {t("timeline.unsentBar")}

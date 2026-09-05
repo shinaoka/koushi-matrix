@@ -3,8 +3,7 @@ use koushi_state::{
     DisplaySettings, EmojiPreference, FontPreference, KeyboardSettings, LocaleSettings,
     MediaSettings, NotificationSettings, RoomListSort, RoomSummary, SettingsPatch,
     SettingsPersistenceState, SettingsValues, TextDirectionPreference, ThemePreference,
-    ThreadListOrder, TimelineSettings, TimelineThreadRootOrder, UiEvent, WindowSettings,
-    reduce,
+    ThreadListOrder, TimelineSettings, TimelineThreadRootOrder, UiEvent, WindowSettings, reduce,
 };
 
 fn dark_theme_patch() -> SettingsPatch {
@@ -979,10 +978,10 @@ fn close_to_tray_defaults_on_persists_and_backfills_for_legacy_stores() {
 
     // Whole-SettingsValues serde is the persistence format, so the opted-out
     // choice survives a save/load round trip.
-    let json = serde_json::to_string(&state.settings.values)
-        .expect("settings values should serialize");
-    let restored = serde_json::from_str::<SettingsValues>(&json)
-        .expect("settings values should deserialize");
+    let json =
+        serde_json::to_string(&state.settings.values).expect("settings values should serialize");
+    let restored =
+        serde_json::from_str::<SettingsValues>(&json).expect("settings values should deserialize");
     assert!(!restored.window.close_to_tray);
 
     // A settings file written before the section existed picks up the default.

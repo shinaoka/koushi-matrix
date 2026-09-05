@@ -1,9 +1,9 @@
 use super::event_wait::projection_timeline_item;
 use super::{
     AccountKey, AppCommand, AppState, CoreCommand, CoreConnection, CoreEvent, DisplaySettings,
-    Duration, PaginationDirection, PaginationState, RequestId, SearchCommand,
-    SearchCrawlerFailureKind, SearchCrawlerRoomState, SearchCrawlerSettings, SearchCrawlerSpeed,
-    SearchEvent, SearchScope, SettingsPatch, TimelineCommand, TimelineEvent, TimelineKey,
+    Duration, RequestId, SearchCommand, SearchCrawlerFailureKind, SearchCrawlerRoomState,
+    SearchCrawlerSettings, SearchCrawlerSpeed, SearchEvent, SearchScope, SettingsPatch,
+    TimelineEvent, TimelineKey,
 };
 
 /// Prove the search-history crawler contract through token-only stdout.
@@ -260,83 +260,25 @@ fn assert_hide_redacted_projection() -> Result<(), String> {
     Ok(())
 }
 
-/// Paginate backward in a loop until `EndReached`, asserting the state
-/// sequence. Returns `"end_reached"` on success.
-///
-/// The spec requires: emit Paginating, then (Idle | EndReached | Failed).
-/// We drive the loop ourselves: on Idle we re-submit Paginate; on EndReached
-/// we return; on Failed we return an error.
+#[path = "../../common/pagination_waiter.rs"]
+mod pagination_waiter;
+
+/// Paginate backward to `EndReached` with correlated admission and one deadline.
 pub(super) async fn wait_for_paginate_end_reached(
     conn: &mut CoreConnection,
     key: &TimelineKey,
     first_request_id: koushi_protocol::ids::RequestId,
     label: &str,
 ) -> Result<String, String> {
-    // We use the conn to submit additional Paginate commands inside the loop.
-    // Because conn is mutably borrowed for recv_event calls too, we rely on
-    // the fact that the runtime handles command + event independently. The
-    // pattern used here: record the first_request_id, process events, and
-    // when we need to re-paginate we note the request for next iteration.
-    let mut current_request_id = first_request_id;
-    let mut saw_paginating = false;
-
-    loop {
-        let event = tokio::time::timeout(Duration::from_secs(60), conn.recv_event())
-            .await
-            .map_err(|_| format!("{label}: timed out waiting for pagination state change"))?
-            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
-
-        match event {
-            CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
-                key: ref ev_key,
-                direction,
-                state,
-                ..
-            }) if ev_key == key && direction == PaginationDirection::Backward => {
-                match state {
-                    PaginationState::Paginating => {
-                        saw_paginating = true;
-                    }
-                    PaginationState::Idle => {
-                        if !saw_paginating {
-                            return Err(format!(
-                                "{label}: got Idle without first seeing Paginating"
-                            ));
-                        }
-                        // More history available — re-paginate.
-                        saw_paginating = false;
-                        current_request_id = conn.next_request_id();
-                        conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
-                            request_id: current_request_id,
-                            key: key.clone(),
-                            direction: PaginationDirection::Backward,
-                            event_count: 5,
-                        }))
-                        .await
-                        .map_err(|e| format!("{label}: re-paginate submit failed: {e}"))?;
-                    }
-                    PaginationState::EndReached => {
-                        if !saw_paginating {
-                            return Err(format!(
-                                "{label}: got EndReached without first seeing Paginating"
-                            ));
-                        }
-                        return Ok("end_reached".to_owned());
-                    }
-                    PaginationState::Failed { kind } => {
-                        return Err(format!("{label}: pagination failed: {kind:?}"));
-                    }
-                }
-            }
-            CoreEvent::OperationFailed {
-                request_id: ev_id,
-                failure,
-            } if ev_id == current_request_id => {
-                return Err(format!("{label} paginate failed: {failure:?}"));
-            }
-            _ => {}
-        }
-    }
+    pagination_waiter::wait_for_end_reached(
+        conn,
+        key,
+        first_request_id,
+        label,
+        5,
+        tokio::time::Instant::now() + Duration::from_secs(60),
+    )
+    .await
 }
 
 /// Poll `SearchCommand::Query` every 500ms until the Results event contains
