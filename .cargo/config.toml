@@ -1,2 +1,5 @@
 [build]
 target-dir = "target"
+
+[env]
+RUST_MIN_STACK = { value = "4194304", force = false }

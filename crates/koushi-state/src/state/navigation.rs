@@ -313,6 +313,14 @@ pub enum NavigationPreferenceUpdate {
 }
 
 impl NavigationState {
+    /// Return the durable navigation payload. Event navigation is an in-flight
+    /// operation and must never survive persistence or restore.
+    pub fn persistence_view(&self) -> Self {
+        let mut navigation = self.clone();
+        navigation.event_navigation = EventNavigationState::Idle;
+        navigation
+    }
+
     pub fn apply_preference_update(&mut self, update: NavigationPreferenceUpdate) -> bool {
         match update {
             NavigationPreferenceUpdate::SetHomeSelection { selection } => {

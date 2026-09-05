@@ -10,7 +10,8 @@ use super::composer::{
     composer_draft_transition_policy,
 };
 use super::navigation::{
-    NavigationPersistenceStatus, event_navigation_owner_cleanup_required, navigation_session_key,
+    NavigationPersistenceStatus, event_navigation_owner_cleanup_required,
+    is_internal_event_navigation_select, navigation_session_key,
 };
 use super::profile_display_diagnostics::{
     live_receipt_profile_diagnostic_event, profile_resolution_diagnostic_event,
@@ -108,6 +109,11 @@ impl super::AppActor {
         let previous_event_navigation = self.state.navigation.event_navigation;
         let previous_scheduled_session = scheduled_send_session_key(&self.state);
         let previous_scheduled_sends = self.state.scheduled_sends.clone();
+        let internal_event_navigation_select = is_internal_event_navigation_select(
+            self.pending_event_navigation.as_ref(),
+            &self.pending_select,
+            &action,
+        );
         let effects = reduce_with_unread_diagnostics(&mut self.state, action);
         if composer_draft_session_key(&self.state) != previous_session {
             self.composer_draft_reload_required = true;
@@ -169,24 +175,27 @@ impl super::AppActor {
         let mut deferred = DeferredReducerSideEffects {
             cancel_activity_resolution: activity_was_open
                 && matches!(self.state.activity, ActivityState::Closed { .. }),
-            cancel_event_navigation_owner: event_navigation_owner_cleanup_required(
-                &previous_event_navigation,
-                &self.state.navigation.event_navigation,
-            ),
+            cancel_event_navigation_owner: !internal_event_navigation_select
+                && event_navigation_owner_cleanup_required(
+                    &previous_event_navigation,
+                    &self.state.navigation.event_navigation,
+                ),
             composer_drafts_discarded: destructive_state_changed,
             ..DeferredReducerSideEffects::default()
         };
-        if previous_navigation != self.state.navigation {
+        let previous_persisted_navigation = previous_navigation.persistence_view();
+        let current_persisted_navigation = self.state.navigation.persistence_view();
+        if previous_persisted_navigation != current_persisted_navigation {
             let current_navigation_session = navigation_session_key(&self.state);
             let cleared_for_session_transition = previous_navigation_session.is_some()
                 && current_navigation_session.is_none()
-                && self.state.navigation == NavigationState::default();
+                && current_persisted_navigation == NavigationState::default();
             if !cleared_for_session_transition
                 && let Some(key_id) = current_navigation_session.or(previous_navigation_session)
             {
                 deferred.navigation = Some((
                     key_id,
-                    self.state.navigation.clone(),
+                    current_persisted_navigation,
                     explicit_navigation_preference_mutation,
                 ));
             }

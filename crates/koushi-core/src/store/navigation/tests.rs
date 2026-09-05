@@ -39,7 +39,10 @@ fn navigation_state_is_encrypted_and_rejects_corruption() {
         )]),
         room_scroll_anchors: std::collections::BTreeMap::new(),
         main_timeline_anchor: None,
-        event_navigation: Default::default(),
+        event_navigation: koushi_state::EventNavigationState::Opening {
+            generation: 7,
+            source: koushi_state::EventNavigationSource::Activity,
+        },
     };
 
     actor
@@ -67,7 +70,7 @@ fn navigation_state_is_encrypted_and_rejects_corruption() {
     let loaded = actor
         .load_navigation(&key_id)
         .expect("load encrypted navigation");
-    assert_eq!(loaded, navigation);
+    assert_eq!(loaded, navigation.persistence_view());
 
     let mut corrupted = bytes;
     let last = corrupted

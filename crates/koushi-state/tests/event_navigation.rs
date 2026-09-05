@@ -124,15 +124,13 @@ fn event_navigation_is_transient_when_navigation_is_persisted() {
         source: EventNavigationSource::Search,
     };
 
+    let persisted = navigation.persistence_view();
     let restored: koushi_state::NavigationState =
-        serde_json::from_value(serde_json::to_value(&navigation).expect("serialize navigation"))
+        serde_json::from_value(serde_json::to_value(&persisted).expect("serialize navigation"))
             .expect("deserialize navigation");
 
-    assert_eq!(restored.event_navigation, navigation.event_navigation);
-    assert_eq!(
-        serde_json::to_value(&navigation).expect("serialize navigation")["event_navigation"]["kind"],
-        "opening"
-    );
+    assert_eq!(restored.event_navigation, EventNavigationState::Idle);
+    assert_eq!(persisted.event_navigation, EventNavigationState::Idle);
 }
 
 #[test]

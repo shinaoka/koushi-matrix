@@ -347,6 +347,66 @@ fn navigation_preference_boundary_canonicalizes_empty_presentations() {
 }
 
 #[test]
+fn internal_event_navigation_select_is_fenced_by_its_request_queue() {
+    let pending = PendingEventNavigation {
+        request_id: RequestId {
+            connection_id: RuntimeConnectionId(3),
+            sequence: 30,
+        },
+        select_request_id: RequestId {
+            connection_id: RuntimeConnectionId(3),
+            sequence: 31,
+        },
+        room_id: "!room:example.invalid".to_owned(),
+        event_id: "$target".to_owned(),
+        source: EventNavigationSource::Activity,
+        generation: 7,
+    };
+    let mut pending_select = std::collections::HashMap::from([(
+        pending.room_id.clone(),
+        std::collections::VecDeque::from([pending.select_request_id]),
+    )]);
+    let action = AppAction::SelectRoom {
+        room_id: pending.room_id.clone(),
+    };
+
+    assert!(super::is_internal_event_navigation_select(
+        Some(&pending),
+        &pending_select,
+        &action
+    ));
+    pending_select
+        .get_mut(&pending.room_id)
+        .expect("room queue")
+        .pop_front();
+    assert!(!super::is_internal_event_navigation_select(
+        Some(&pending),
+        &pending_select,
+        &action
+    ));
+}
+
+#[test]
+fn superseding_event_navigation_removes_its_internal_room_selection() {
+    let request_id = RequestId {
+        connection_id: RuntimeConnectionId(8),
+        sequence: 1,
+    };
+    let mut pending_select = std::collections::HashMap::from([(
+        "!room-a:example.invalid".to_owned(),
+        std::collections::VecDeque::from([request_id]),
+    )]);
+
+    super::remove_pending_select_request(
+        &mut pending_select,
+        "!room-a:example.invalid",
+        request_id,
+    );
+
+    assert!(pending_select.is_empty());
+}
+
+#[test]
 fn outer_navigation_commands_supersede_event_navigation_immediately() {
     let request_id = |sequence| RequestId {
         connection_id: RuntimeConnectionId(3),

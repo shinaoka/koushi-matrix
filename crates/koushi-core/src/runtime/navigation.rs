@@ -35,6 +35,14 @@ pub(super) fn spawn_event_navigation_deadline(
     }))
 }
 
+async fn stop_event_navigation_task(task: &mut Option<super::AbortOnDrop<()>>) {
+    let Some(mut task) = task.take() else {
+        return;
+    };
+    task.abort();
+    let _ = task.take().await;
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct PendingEventNavigation {
     pub(super) request_id: RequestId,
@@ -81,6 +89,24 @@ pub(super) fn action_supersedes_event_navigation(action: &AppAction) -> bool {
             | AppAction::ReturnMainTimelineToLive { .. }
             | AppAction::CloseFocusedContext
     )
+}
+
+pub(super) fn is_internal_event_navigation_select(
+    pending: Option<&PendingEventNavigation>,
+    pending_select: &std::collections::HashMap<String, std::collections::VecDeque<RequestId>>,
+    action: &AppAction,
+) -> bool {
+    let AppAction::SelectRoom { room_id } = action else {
+        return false;
+    };
+    let Some(pending) = pending else {
+        return false;
+    };
+    pending.room_id == *room_id
+        && pending_select
+            .get(room_id)
+            .and_then(|queue| queue.front())
+            .is_some_and(|request_id| *request_id == pending.select_request_id)
 }
 
 fn take_committed_focused_navigation(
@@ -177,8 +203,8 @@ impl AppActor {
             return;
         };
         self.pending_event_navigation.take();
-        self.event_navigation_task.take();
-        self.event_navigation_deadline_task.take();
+        stop_event_navigation_task(&mut self.event_navigation_task).await;
+        stop_event_navigation_task(&mut self.event_navigation_deadline_task).await;
         let before_state = self.snapshot_tx.borrow().state.clone();
         let effects = reduce(
             &mut self.state,
@@ -210,8 +236,8 @@ impl AppActor {
             return;
         };
         self.pending_event_navigation.take();
-        self.event_navigation_task.take();
-        self.event_navigation_deadline_task.take();
+        stop_event_navigation_task(&mut self.event_navigation_task).await;
+        stop_event_navigation_task(&mut self.event_navigation_deadline_task).await;
         let outcome = match kind {
             koushi_state::EventNavigationFailureKind::TargetMissing => {
                 IntentOutcome::FailedNoOp(IntentNoOpReason::TimelineTargetMissing)
@@ -242,8 +268,8 @@ impl AppActor {
 
     pub(super) async fn cancel_event_navigation_owner(&mut self) {
         let pending = self.pending_event_navigation.take();
-        self.event_navigation_task.take();
-        self.event_navigation_deadline_task.take();
+        stop_event_navigation_task(&mut self.event_navigation_task).await;
+        stop_event_navigation_task(&mut self.event_navigation_deadline_task).await;
 
         let focused_matches = pending.as_ref().is_some_and(|pending| {
             self.pending_focused_navigation
@@ -260,17 +286,11 @@ impl AppActor {
         });
 
         if let Some(pending) = pending.as_ref() {
-            if let Some(queue) = self.pending_select.get_mut(&pending.room_id) {
-                if let Some(position) = queue
-                    .iter()
-                    .position(|request_id| *request_id == pending.select_request_id)
-                {
-                    queue.remove(position);
-                }
-                if queue.is_empty() {
-                    self.pending_select.remove(&pending.room_id);
-                }
-            }
+            remove_pending_select_request(
+                &mut self.pending_select,
+                &pending.room_id,
+                pending.select_request_id,
+            );
         }
 
         let should_clear = !matches!(
@@ -322,8 +342,8 @@ impl AppActor {
             return;
         };
         self.pending_event_navigation.take();
-        self.event_navigation_task.take();
-        self.event_navigation_deadline_task.take();
+        stop_event_navigation_task(&mut self.event_navigation_task).await;
+        stop_event_navigation_task(&mut self.event_navigation_deadline_task).await;
         let focused = self
             .pending_focused_navigation
             .as_ref()
@@ -390,20 +410,18 @@ impl AppActor {
             .pending_focused_navigation
             .take()
             .and_then(|pending| pending.generation.is_some().then_some(pending.key));
-        if let Some(previous) = self.pending_event_navigation.take() {
-            self.event_navigation_task.take();
-            self.event_navigation_deadline_task.take();
-            self.emit(CoreEvent::IntentLifecycle {
-                request_id: previous.request_id,
-                outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::Superseded),
-                published_generation: self.state_generation,
-            });
-            record(DiagnosticEvent::new(
-                DiagnosticLevel::Debug,
-                "core.event_navigation",
-                "superseded",
-            ));
-        }
+        let superseded = if let Some(previous) = self.pending_event_navigation.take() {
+            remove_pending_select_request(
+                &mut self.pending_select,
+                &previous.room_id,
+                previous.select_request_id,
+            );
+            stop_event_navigation_task(&mut self.event_navigation_task).await;
+            stop_event_navigation_task(&mut self.event_navigation_deadline_task).await;
+            Some(previous)
+        } else {
+            None
+        };
 
         let before_state = self.snapshot_tx.borrow().state.clone();
         let effects = reduce(
@@ -412,7 +430,21 @@ impl AppActor {
         );
         self.handle_ui_event_effects(&effects).await;
         let generation = self.state.navigation.event_navigation.generation();
-        self.publish_state_delta(&before_state);
+        let published_generation = self
+            .publish_state_delta(&before_state)
+            .unwrap_or(self.state_generation);
+        if let Some(previous) = superseded {
+            self.emit(CoreEvent::IntentLifecycle {
+                request_id: previous.request_id,
+                outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::Superseded),
+                published_generation,
+            });
+            record(DiagnosticEvent::new(
+                DiagnosticLevel::Debug,
+                "core.event_navigation",
+                "superseded",
+            ));
+        }
 
         let select_request_id = self.next_internal_request_id();
         self.pending_event_navigation = Some(PendingEventNavigation {
@@ -571,7 +603,7 @@ impl AppActor {
         else {
             return;
         };
-        self.event_navigation_task.take();
+        stop_event_navigation_task(&mut self.event_navigation_task).await;
 
         if !matches!(
             prepared.result,
@@ -701,12 +733,16 @@ impl AppActor {
             return;
         }
 
-        let pending_event_navigation = event_navigation_generation.map(|_| {
-            self.event_navigation_deadline_task.take();
-            self.pending_event_navigation
-                .take()
-                .expect("matching pending event navigation must exist")
-        });
+        let pending_event_navigation = if event_navigation_generation.is_some() {
+            stop_event_navigation_task(&mut self.event_navigation_deadline_task).await;
+            Some(
+                self.pending_event_navigation
+                    .take()
+                    .expect("matching pending event navigation must exist"),
+            )
+        } else {
+            None
+        };
         let Some(action) = focused_navigation_action_after_projection_commit(
             &mut self.pending_focused_navigation,
             &commit,
@@ -983,6 +1019,21 @@ pub(super) fn unsubscribe_replaced_timeline_key(
     replacement_key: TimelineKey,
 ) -> Option<TimelineKey> {
     current_key.filter(|current_key| current_key != &replacement_key)
+}
+
+fn remove_pending_select_request(
+    pending_select: &mut std::collections::HashMap<String, std::collections::VecDeque<RequestId>>,
+    room_id: &str,
+    request_id: RequestId,
+) {
+    if let Some(queue) = pending_select.get_mut(room_id) {
+        if let Some(position) = queue.iter().position(|candidate| *candidate == request_id) {
+            queue.remove(position);
+        }
+        if queue.is_empty() {
+            pending_select.remove(room_id);
+        }
+    }
 }
 
 pub(super) fn cancel_replaced_room_timeline_pagination_key(
