@@ -22,6 +22,7 @@ use koushi_protocol::failure::SyncFailureKind;
 use koushi_protocol::failure::{CoreFailure, RoomFailureKind, TimelineFailureKind};
 use koushi_protocol::ids::{RequestId, TimelineKey, TimelineKind};
 
+use super::RoomEventLookupResult;
 use super::actor::{AccountActor, trace_restore};
 use super::scheduled_send::admit_secure_backup_user_content;
 
@@ -448,40 +449,40 @@ impl AccountActor {
         request_id: RequestId,
         room_id: String,
         event_id: String,
-    ) -> bool {
+    ) -> crate::account::RoomEventLookupResult {
         #[cfg(test)]
         if let Some(fetch) = self.event_cache_fetch_override.take() {
             return match crate::executor::timeout(ROOM_EVENT_CACHE_TEST_TIMEOUT, fetch).await {
-                Ok(Ok(())) => {
+                Ok(Ok(result)) => {
                     Self::record_event_cache_repair(request_id, "done", "succeeded", "loaded");
-                    true
+                    result
                 }
                 Ok(Err(_)) => {
                     Self::record_event_cache_repair(request_id, "failed", "failed", "sdk");
-                    false
+                    crate::account::RoomEventLookupResult::Failed
                 }
                 Err(_) => {
                     Self::record_event_cache_repair(request_id, "failed", "failed", "timeout");
-                    false
+                    crate::account::RoomEventLookupResult::Failed
                 }
             };
         }
 
         let Some(session) = &self.session else {
-            Self::record_event_cache_repair(request_id, "skip", "skipped", "no_session");
-            return false;
+            Self::record_event_cache_repair(request_id, "failed", "failed", "no_session");
+            return crate::account::RoomEventLookupResult::Failed;
         };
         let Ok(parsed_room_id) = matrix_sdk::ruma::RoomId::parse(room_id.as_str()) else {
-            Self::record_event_cache_repair(request_id, "skip", "skipped", "invalid_room");
-            return false;
+            Self::record_event_cache_repair(request_id, "failed", "failed", "invalid_room");
+            return crate::account::RoomEventLookupResult::Failed;
         };
         let Ok(parsed_event_id) = matrix_sdk::ruma::EventId::parse(event_id.as_str()) else {
-            Self::record_event_cache_repair(request_id, "skip", "skipped", "invalid_event");
-            return false;
+            Self::record_event_cache_repair(request_id, "failed", "failed", "invalid_event");
+            return crate::account::RoomEventLookupResult::Failed;
         };
         let Some(room) = session.client().get_room(&parsed_room_id) else {
-            Self::record_event_cache_repair(request_id, "skip", "skipped", "room_missing");
-            return false;
+            Self::record_event_cache_repair(request_id, "failed", "failed", "room_missing");
+            return crate::account::RoomEventLookupResult::Failed;
         };
 
         match crate::executor::timeout(
@@ -502,15 +503,29 @@ impl AccountActor {
                     })
                     .await;
                 }
-                true
+                crate::account::RoomEventLookupResult::Located
             }
-            Ok(Err(_)) => {
-                Self::record_event_cache_repair(request_id, "failed", "failed", "sdk");
-                false
+            Ok(Err(error)) => {
+                let result = classify_room_event_lookup_error(error.client_api_error_kind());
+                match result {
+                    crate::account::RoomEventLookupResult::Missing => {
+                        Self::record_event_cache_repair(
+                            request_id,
+                            "failed",
+                            "missing",
+                            "not_found",
+                        );
+                    }
+                    crate::account::RoomEventLookupResult::Failed => {
+                        Self::record_event_cache_repair(request_id, "failed", "failed", "sdk");
+                    }
+                    crate::account::RoomEventLookupResult::Located => unreachable!(),
+                }
+                result
             }
             Err(_) => {
                 Self::record_event_cache_repair(request_id, "failed", "failed", "timeout");
-                false
+                crate::account::RoomEventLookupResult::Failed
             }
         }
     }
@@ -733,6 +748,19 @@ impl AccountActor {
     }
 }
 
+fn classify_room_event_lookup_error(
+    kind: Option<&matrix_sdk::ruma::api::error::ErrorKind>,
+) -> crate::account::RoomEventLookupResult {
+    if matches!(
+        kind,
+        Some(matrix_sdk::ruma::api::error::ErrorKind::NotFound)
+    ) {
+        crate::account::RoomEventLookupResult::Missing
+    } else {
+        crate::account::RoomEventLookupResult::Failed
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -740,9 +768,13 @@ mod tests {
 
     use std::time::Duration;
 
+    use matrix_sdk::ruma::api::error::ErrorKind;
     use tokio::sync::oneshot;
 
-    use super::composer_timeline_command_targets_active_session;
+    use super::{
+        classify_room_event_lookup_error, composer_timeline_command_targets_active_session,
+    };
+    use crate::account::RoomEventLookupResult;
     use crate::account::actor::AccountMessage;
     use crate::account::test_support::spawn_actor_with_dirs;
     use crate::executor;
@@ -793,7 +825,7 @@ mod tests {
         let data_dir = tempdir().expect("data tempdir");
         let (handle, _action_rx, _event_rx) =
             crate::account::test_support::spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
-        let (_fetch_tx, fetch_rx) = oneshot::channel::<()>();
+        let (_fetch_tx, fetch_rx) = oneshot::channel::<RoomEventLookupResult>();
         assert!(
             handle
                 .send(AccountMessage::ConfigureEventCacheFetchForTesting { fetch: fetch_rx })
@@ -822,11 +854,12 @@ mod tests {
                 .await
         );
 
-        assert!(
-            !executor::timeout(Duration::from_secs(1), response_rx)
+        assert_eq!(
+            executor::timeout(Duration::from_secs(1), response_rx)
                 .await
                 .expect("bounded event-cache response")
-                .expect("event-cache response channel")
+                .expect("event-cache response channel"),
+            RoomEventLookupResult::Failed
         );
         executor::timeout(Duration::from_secs(1), completion)
             .await
@@ -884,8 +917,9 @@ mod tests {
                 })
                 .await
         );
-        assert!(
-            !response_rx.await.expect("cache-repair response"),
+        assert_eq!(
+            response_rx.await.expect("cache-repair response"),
+            RoomEventLookupResult::Failed,
             "a cache miss must not be reported as successful"
         );
 
@@ -895,7 +929,7 @@ mod tests {
             .rev()
             .find(|record| {
                 record.event.source == "core.event_cache_repair"
-                    && record.event.stage == "skip"
+                    && record.event.stage == "failed"
                     && record.event.fields.iter().any(|field| {
                         field.key == "reason"
                             && field.value
@@ -904,12 +938,12 @@ mod tests {
             })
             .expect("event-cache repair should be collected without trace environment");
         assert_eq!(repair.event.source, "core.event_cache_repair");
-        assert_eq!(repair.event.stage, "skip");
+        assert_eq!(repair.event.stage, "failed");
         assert_eq!(
             repair.event.fields,
             vec![
                 koushi_diagnostics::DiagnosticField::request_id("request_id", 17, 23),
-                koushi_diagnostics::DiagnosticField::token("outcome", "skipped"),
+                koushi_diagnostics::DiagnosticField::token("outcome", "failed"),
                 koushi_diagnostics::DiagnosticField::token("reason", "no_session"),
             ]
         );
@@ -929,5 +963,21 @@ mod tests {
                 "serialized event must not contain forbidden diagnostic data: {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn classify_room_event_lookup_error_only_treats_not_found_as_missing() {
+        assert_eq!(
+            classify_room_event_lookup_error(Some(&ErrorKind::NotFound)),
+            RoomEventLookupResult::Missing
+        );
+        assert_eq!(
+            classify_room_event_lookup_error(Some(&ErrorKind::Forbidden)),
+            RoomEventLookupResult::Failed
+        );
+        assert_eq!(
+            classify_room_event_lookup_error(None),
+            RoomEventLookupResult::Failed
+        );
     }
 }

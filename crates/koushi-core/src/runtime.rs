@@ -1846,6 +1846,7 @@ impl AppActor {
                 projected_state_changed
             }
             CoreCommand::App(app_command) => match app_command {
+                AppCommand::NavigateToEvent { .. } => false,
                 AppCommand::Shutdown { .. } => {
                     unreachable!("shutdown is handled by the AppActor command disposition")
                 }
@@ -4146,7 +4147,10 @@ impl AppActor {
         {
             return false;
         }
-        response_rx.await.unwrap_or(false)
+        response_rx
+            .await
+            .map(|r| matches!(r, crate::account::RoomEventLookupResult::Located))
+            .unwrap_or(false)
     }
 
     fn current_account_key(&self) -> Option<AccountKey> {
