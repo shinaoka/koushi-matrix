@@ -158,6 +158,54 @@ fn background_flood_batch(batch_index: usize, kept_room_ids: &[&str]) -> Vec<App
 /// A SelectRoom command for a room that IS present in `state.rooms` must
 /// emit `IntentLifecycle { outcome: Committed }` for the matching request_id.
 #[tokio::test]
+async fn injected_select_room_projection_is_allowed_for_test_hooks() {
+    let source = include_str!("../../koushi-core/src/runtime.rs");
+    let inject_actions = source
+        .split_once("pub async fn inject_actions")
+        .map(|(_, source)| source)
+        .expect("inject_actions source");
+    assert!(
+        inject_actions.contains("let registered = {"),
+        "permit registration must finish before the action send"
+    );
+    assert!(
+        inject_actions.contains("};\n        if self.action_tx.send(actions).await"),
+        "the permit lock must be dropped before awaiting action delivery"
+    );
+
+    let runtime = CoreRuntime::start();
+    let mut conn = runtime.attach();
+    let initial_room = "!injected-initial:example.test";
+    let injected_room = "!injected-target:example.test";
+
+    runtime
+        .inject_actions(restore_ready_actions![AppAction::RoomListUpdated {
+            spaces: vec![],
+            rooms: vec![room_summary(initial_room), room_summary(injected_room)],
+        }])
+        .await;
+    wait_for_state(&mut conn, |state| {
+        matches!(state.session, SessionState::Ready(_))
+            && state.navigation.active_room_id.as_deref() == Some(initial_room)
+    })
+    .await;
+
+    runtime
+        .inject_actions(vec![AppAction::SelectRoom {
+            room_id: injected_room.to_owned(),
+        }])
+        .await;
+    let snapshot = wait_for_state(&mut conn, |state| {
+        state.navigation.active_room_id.as_deref() == Some(injected_room)
+    })
+    .await;
+    assert_eq!(
+        snapshot.navigation.active_room_id.as_deref(),
+        Some(injected_room)
+    );
+}
+
+#[tokio::test]
 async fn select_room_present_emits_committed() {
     use koushi_protocol::event::IntentOutcome;
 
