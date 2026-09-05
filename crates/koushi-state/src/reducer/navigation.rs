@@ -1,8 +1,8 @@
 use crate::{
     effect::{AppEffect, UiEvent},
     state::{
-        AppState, NavigationState, RoomListFilter, SearchScope, SearchState,
-        SpaceConversationSurface,
+        AppState, EventNavigationFailureKind, EventNavigationSource, EventNavigationState,
+        NavigationState, RoomListFilter, SearchScope, SearchState, SpaceConversationSurface,
     },
 };
 
@@ -123,11 +123,89 @@ pub(crate) fn handle_return_main_timeline_to_live(
     if state.navigation.active_room_id.as_deref() != Some(room_id.as_str()) {
         return Vec::new();
     }
-    if state.navigation.main_timeline_anchor.is_none() {
+    let event_navigation_active = !matches!(
+        state.navigation.event_navigation,
+        EventNavigationState::Idle
+    );
+    if state.navigation.main_timeline_anchor.is_none() && !event_navigation_active {
         return Vec::new();
     }
     state.navigation.main_timeline_anchor = None;
+    state.navigation.event_navigation = EventNavigationState::Idle;
     Vec::new()
+}
+
+pub(crate) fn handle_event_navigation_started(
+    state: &mut AppState,
+    source: EventNavigationSource,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+
+    let generation = state
+        .navigation
+        .event_navigation
+        .generation()
+        .saturating_add(1);
+    state.navigation.event_navigation = EventNavigationState::Opening { generation, source };
+    Vec::new()
+}
+
+pub(crate) fn handle_event_navigation_anchored(
+    state: &mut AppState,
+    generation: u64,
+) -> Vec<AppEffect> {
+    let Some(source) = event_navigation_opening_source(state, generation) else {
+        return Vec::new();
+    };
+    state.navigation.event_navigation = EventNavigationState::Anchored { generation, source };
+    Vec::new()
+}
+
+pub(crate) fn handle_event_navigation_live_fallback(
+    state: &mut AppState,
+    generation: u64,
+) -> Vec<AppEffect> {
+    let Some(source) = event_navigation_opening_source(state, generation) else {
+        return Vec::new();
+    };
+    state.navigation.event_navigation = EventNavigationState::LiveFallback { generation, source };
+    Vec::new()
+}
+
+pub(crate) fn handle_event_navigation_failed(
+    state: &mut AppState,
+    generation: u64,
+    kind: EventNavigationFailureKind,
+) -> Vec<AppEffect> {
+    let Some(source) = event_navigation_opening_source(state, generation) else {
+        return Vec::new();
+    };
+    state.navigation.event_navigation = EventNavigationState::Failed {
+        generation,
+        source,
+        failure_kind: kind,
+    };
+    Vec::new()
+}
+
+pub(crate) fn handle_event_navigation_cleared(state: &mut AppState) -> Vec<AppEffect> {
+    state.navigation.event_navigation = EventNavigationState::Idle;
+    Vec::new()
+}
+
+fn event_navigation_opening_source(
+    state: &AppState,
+    generation: u64,
+) -> Option<EventNavigationSource> {
+    match state.navigation.event_navigation {
+        EventNavigationState::Opening {
+            generation: current,
+            source,
+        } if current == generation => Some(source),
+        _ => None,
+    }
 }
 
 fn preserve_known_avatar_thumbnails(
@@ -143,6 +221,7 @@ fn preserve_known_avatar_thumbnails(
 
 fn normalize_navigation_state(mut navigation: NavigationState) -> NavigationState {
     prune_room_scroll_anchors(&mut navigation.room_scroll_anchors);
+    navigation.event_navigation = EventNavigationState::Idle;
     navigation
 }
 

@@ -1080,6 +1080,19 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::NavigationPreferenceUpdated { update } => {
             navigation::handle_navigation_preference_updated(state, update)
         }
+        AppAction::EventNavigationStarted { source } => {
+            navigation::handle_event_navigation_started(state, source)
+        }
+        AppAction::EventNavigationAnchored { generation } => {
+            navigation::handle_event_navigation_anchored(state, generation)
+        }
+        AppAction::EventNavigationLiveFallback { generation } => {
+            navigation::handle_event_navigation_live_fallback(state, generation)
+        }
+        AppAction::EventNavigationFailed { generation, kind } => {
+            navigation::handle_event_navigation_failed(state, generation, kind)
+        }
+        AppAction::EventNavigationCleared => navigation::handle_event_navigation_cleared(state),
         AppAction::TimelineScrollAnchorUpdated { room_id, anchor } => {
             navigation::handle_timeline_scroll_anchor_updated(state, room_id, anchor)
         }
@@ -2168,6 +2181,7 @@ pub(crate) fn select_active_room_for_navigation(
     state.focused_context = FocusedContextState::Closed;
     // #161: switching rooms resets the main pane to the live timeline.
     state.navigation.main_timeline_anchor = None;
+    state.navigation.event_navigation = crate::state::EventNavigationState::Idle;
     effects.push(AppEffect::SubscribeTimeline {
         room_id: room_id.clone(),
     });
@@ -2198,6 +2212,7 @@ pub(crate) fn clear_active_room_for_navigation(
     state.focused_context = FocusedContextState::Closed;
     // #161: clearing the active room resets the main pane to the live timeline.
     state.navigation.main_timeline_anchor = None;
+    state.navigation.event_navigation = crate::state::EventNavigationState::Idle;
     effects.push(AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
         room_id: previous_room_id,
     }));

@@ -1141,6 +1141,7 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
         )]),
         room_scroll_anchors: BTreeMap::new(),
         main_timeline_anchor: None,
+        event_navigation: koushi_state::EventNavigationState::Idle,
     };
 
     // room_interactions

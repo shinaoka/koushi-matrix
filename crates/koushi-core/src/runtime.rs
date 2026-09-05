@@ -27,17 +27,20 @@ use composer::{
     timeline_submission_revision_exhaustion,
 };
 use navigation::{
-    NavigationPersistenceStatus, NavigationReplacementRoomForCleanup, PendingFocusedNavigation,
+    EventNavigationPrepared, NavigationPersistenceStatus, NavigationReplacementRoomForCleanup,
+    PendingEventNavigation, PendingFocusedNavigation,
     cancel_replaced_room_timeline_link_previews_key, cancel_replaced_room_timeline_pagination_key,
-    effects_open_focused_timeline, focused_navigation_outcome_after_reduce,
-    navigation_replacement_room_for_cleanup, unsubscribe_replaced_timeline_key,
+    command_supersedes_event_navigation, effects_open_focused_timeline,
+    focused_navigation_outcome_after_reduce, navigation_replacement_room_for_cleanup,
+    unsubscribe_replaced_timeline_key,
 };
 use scheduled_send::scheduled_send_id;
 
 #[cfg(any(test, feature = "test-hooks"))]
 pub use connection::CoreConnectionTestControl;
 pub use connection::{
-    CommandSubmitError, CoreCommandHandle, CoreConnection, EventStreamLag, SelectRoomError,
+    CommandSubmitError, CoreCommandHandle, CoreConnection, EventNavigationError, EventStreamLag,
+    SelectRoomError,
 };
 pub use koushi_protocol::state_update::CoreCommandAdmission;
 pub use request_outcome::{
@@ -323,6 +326,8 @@ pub struct CoreRuntime {
     #[cfg_attr(not(any(test, feature = "test-hooks")), allow(dead_code))]
     action_tx: mpsc::Sender<Vec<AppAction>>,
     #[cfg(any(test, feature = "test-hooks"))]
+    injected_action_tx: mpsc::Sender<Vec<AppAction>>,
+    #[cfg(any(test, feature = "test-hooks"))]
     composer_draft_test_tx: mpsc::Sender<ComposerDraftTestMutation>,
     /// Account-runtime-owned source and prepared variant bytes. The WebView
     /// receives descriptors only; adapters may operate on this cache through
@@ -532,6 +537,10 @@ impl CoreRuntime {
         let (event_tx, _) = broadcast::channel(event_capacity);
         let (action_tx, action_rx) = mpsc::channel(ACTION_QUEUE_CAPACITY);
         #[cfg(any(test, feature = "test-hooks"))]
+        let (injected_action_tx, injected_action_rx) = mpsc::channel(ACTION_QUEUE_CAPACITY);
+        let (event_navigation_prepared_tx, event_navigation_prepared_rx) =
+            mpsc::unbounded_channel();
+        #[cfg(any(test, feature = "test-hooks"))]
         let (composer_draft_test_tx, composer_draft_test_rx) = mpsc::channel(1);
         let settings_store = SettingsStore::new(&data_dir);
         let composer_draft_leases = Arc::new(ComposerDraftLeaseRegistry::new());
@@ -583,6 +592,13 @@ impl CoreRuntime {
         let actor = AppActor {
             command_rx,
             action_rx,
+            #[cfg(any(test, feature = "test-hooks"))]
+            injected_action_rx: Some(injected_action_rx),
+            event_navigation_prepared_tx,
+            event_navigation_prepared_rx,
+            pending_event_navigation: None,
+            event_navigation_task: None,
+            event_navigation_deadline_task: None,
             focused_projection_rx: Some(focused_projection_rx),
             #[cfg(any(test, feature = "test-hooks"))]
             composer_draft_test_rx,
@@ -646,6 +662,8 @@ impl CoreRuntime {
             native_artifacts,
             action_tx,
             #[cfg(any(test, feature = "test-hooks"))]
+            injected_action_tx,
+            #[cfg(any(test, feature = "test-hooks"))]
             composer_draft_test_tx,
             media_preparation,
             media_staging,
@@ -674,7 +692,7 @@ impl CoreRuntime {
     /// them. Not part of the public production API.
     #[cfg(any(test, feature = "test-hooks"))]
     pub async fn inject_actions(&self, actions: Vec<AppAction>) {
-        let _ = self.action_tx.send(actions).await;
+        let _ = self.injected_action_tx.send(actions).await;
     }
 
     /// Test hook: inject one typed persisted-draft mutation and wait until the
@@ -793,6 +811,8 @@ impl CoreRuntime {
             native_artifacts: _,
             action_tx: _,
             #[cfg(any(test, feature = "test-hooks"))]
+                injected_action_tx: _,
+            #[cfg(any(test, feature = "test-hooks"))]
                 composer_draft_test_tx: _,
             media_preparation: _,
             media_staging: _,
@@ -818,6 +838,13 @@ enum SettingsLoadStatus {
 struct AppActor {
     command_rx: mpsc::Receiver<CoreCommandEnvelope>,
     action_rx: mpsc::Receiver<Vec<AppAction>>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    injected_action_rx: Option<mpsc::Receiver<Vec<AppAction>>>,
+    event_navigation_prepared_tx: mpsc::UnboundedSender<EventNavigationPrepared>,
+    event_navigation_prepared_rx: mpsc::UnboundedReceiver<EventNavigationPrepared>,
+    pending_event_navigation: Option<PendingEventNavigation>,
+    event_navigation_task: Option<AbortOnDrop<()>>,
+    event_navigation_deadline_task: Option<AbortOnDrop<()>>,
     focused_projection_rx:
         Option<mpsc::UnboundedReceiver<crate::timeline::FocusedProjectionCommitted>>,
     #[cfg(any(test, feature = "test-hooks"))]
@@ -864,6 +891,26 @@ struct AppActor {
     pending_date_navigation_request_id: Option<RequestId>,
 }
 
+#[derive(Clone, Copy)]
+enum ActionBatchOrigin {
+    Actor,
+    #[cfg(any(test, feature = "test-hooks"))]
+    TestInjected,
+}
+
+impl ActionBatchOrigin {
+    fn is_test_injected(self) -> bool {
+        #[cfg(any(test, feature = "test-hooks"))]
+        {
+            matches!(self, Self::TestInjected)
+        }
+        #[cfg(not(any(test, feature = "test-hooks")))]
+        {
+            false
+        }
+    }
+}
+
 enum CommandDisposition {
     Handle(CoreCommandEnvelope),
     Shutdown,
@@ -895,6 +942,58 @@ async fn receive_focused_projection_commit(
             *receiver = None;
             None
         }
+    }
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+async fn receive_injected_action_batch(
+    receiver: &mut Option<mpsc::Receiver<Vec<AppAction>>>,
+) -> Option<Vec<AppAction>> {
+    match receiver {
+        Some(receiver) => receiver.recv().await,
+        None => future::pending().await,
+    }
+}
+
+async fn receive_action_batch(
+    action_rx: &mut mpsc::Receiver<Vec<AppAction>>,
+    #[cfg(any(test, feature = "test-hooks"))] injected_action_rx: &mut Option<
+        mpsc::Receiver<Vec<AppAction>>,
+    >,
+) -> Option<(Vec<AppAction>, ActionBatchOrigin)> {
+    #[cfg(any(test, feature = "test-hooks"))]
+    {
+        let mut action_closed = false;
+        let mut injected_action_closed = false;
+        loop {
+            if action_closed && injected_action_closed {
+                return None;
+            }
+            tokio::select! {
+                actions = action_rx.recv(), if !action_closed => {
+                    match actions {
+                        Some(actions) => return Some((actions, ActionBatchOrigin::Actor)),
+                        None => action_closed = true,
+                    }
+                }
+                actions = receive_injected_action_batch(injected_action_rx), if !injected_action_closed => {
+                    match actions {
+                        Some(actions) => return Some((actions, ActionBatchOrigin::TestInjected)),
+                        None => {
+                            injected_action_closed = true;
+                            *injected_action_rx = None;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(not(any(test, feature = "test-hooks")))]
+    {
+        action_rx
+            .recv()
+            .await
+            .map(|actions| (actions, ActionBatchOrigin::Actor))
     }
 }
 
@@ -1012,6 +1111,13 @@ impl AppActor {
                         break;
                     }
                 }
+                event_navigation_prepared = self.event_navigation_prepared_rx.recv() => {
+                    if let Some(event_navigation_prepared) = event_navigation_prepared {
+                        self.handle_event_navigation_prepared(event_navigation_prepared).await;
+                    } else {
+                        break;
+                    }
+                }
                 focused_projection = receive_focused_projection_commit(
                     &mut self.focused_projection_rx
                 ) => {
@@ -1019,8 +1125,12 @@ impl AppActor {
                         self.handle_focused_projection_commit(focused_projection).await;
                     }
                 }
-                actions = self.action_rx.recv() => {
-                    let Some(actions) = actions else { break };
+                action_batch = receive_action_batch(
+                    &mut self.action_rx,
+                    #[cfg(any(test, feature = "test-hooks"))]
+                    &mut self.injected_action_rx,
+                ) => {
+                    let Some((actions, batch_origin)) = action_batch else { break };
                     #[cfg(any(test, feature = "test-hooks"))]
                     let composer_draft_test_completions =
                         self.apply_pending_composer_draft_test_mutations().await;
@@ -1043,6 +1153,17 @@ impl AppActor {
                         else {
                             continue;
                         };
+                        if let AppAction::SelectRoom { room_id } = &action
+                            && !self
+                                .pending_select
+                                .get(room_id)
+                                .is_some_and(|queue| !queue.is_empty())
+                            && !batch_origin.is_test_injected()
+                        {
+                            // A cancelled internal selection has no request owner left;
+                            // do not let its delayed actor projection resurrect the room.
+                            continue;
+                        }
                         // Load each session-owned view before later projections can
                         // mutate it, unless an earlier action in this batch captured a
                         // persistence fence that must be applied first post-commit.
@@ -1115,6 +1236,7 @@ impl AppActor {
                                     room_id: room_id.clone(),
                                     event_id: event_id.clone(),
                                     allow_live_fallback: true,
+                                    generation: None,
                                 });
                             }
                         }
@@ -1430,6 +1552,8 @@ impl AppActor {
                                 intent_outcome_token(&outcome),
                             )),
                         );
+                        self.handle_event_navigation_select_outcome(request_id, outcome.clone())
+                            .await;
                         self.emit(CoreEvent::IntentLifecycle {
                             request_id,
                             outcome,
@@ -1746,6 +1870,9 @@ impl AppActor {
             }
             return false;
         }
+        if command_supersedes_event_navigation(&command) {
+            self.cancel_event_navigation_owner().await;
+        }
 
         match command {
             CoreCommand::Account(account_command) => {
@@ -1846,6 +1973,22 @@ impl AppActor {
                 projected_state_changed
             }
             CoreCommand::App(app_command) => match app_command {
+                AppCommand::NavigateToEvent {
+                    request_id,
+                    room_id,
+                    event_id,
+                    source,
+                    missing_target_policy,
+                } => {
+                    self.handle_event_navigation_command(
+                        request_id,
+                        room_id,
+                        event_id,
+                        source,
+                        missing_target_policy,
+                    )
+                    .await
+                }
                 AppCommand::Shutdown { .. } => {
                     unreachable!("shutdown is handled by the AppActor command disposition")
                 }
@@ -2371,6 +2514,7 @@ impl AppActor {
                         room_id: room_id.clone(),
                         event_id: event_id.clone(),
                         allow_live_fallback,
+                        generation: None,
                     });
                     let effects = self
                         .reduce_app_action(AppAction::OpenFocusedContext { room_id, event_id })
@@ -2462,6 +2606,7 @@ impl AppActor {
                             room_id: room_id.clone(),
                             event_id: event_id.clone(),
                             allow_live_fallback: true,
+                            generation: None,
                         });
                         let effects = self
                             .reduce_app_action(AppAction::OpenFocusedContext {
@@ -4146,7 +4291,10 @@ impl AppActor {
         {
             return false;
         }
-        response_rx.await.unwrap_or(false)
+        response_rx
+            .await
+            .map(|r| matches!(r, crate::account::RoomEventLookupResult::Located))
+            .unwrap_or(false)
     }
 
     fn current_account_key(&self) -> Option<AccountKey> {

@@ -166,7 +166,16 @@ test("Activity renders Rust-owned streams and waits for mark-read snapshots", as
             ...snapshot.state.ui,
             navigation: {
               ...snapshot.state.ui.navigation,
-              active_room_id: String(roomId)
+              active_room_id: String(roomId),
+              main_timeline_anchor: { event_id: String(eventId) },
+              event_navigation: {
+                kind: "anchored",
+                generation:
+                  (snapshot.state.ui.navigation.event_navigation.kind === "idle"
+                    ? 0
+                    : snapshot.state.ui.navigation.event_navigation.generation) + 1,
+                source: "activity"
+              }
             },
             timeline: {
               ...snapshot.state.ui.timeline,

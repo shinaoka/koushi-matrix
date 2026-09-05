@@ -100,6 +100,9 @@ interface AppHarnessControl {
   invoke(command: string, args?: Record<string, unknown>): Promise<unknown>;
    
   setCommandResponse(command: string, response: any): void;
+  deferCommand(command: string): void;
+  resolveDeferredCommand(command: string, index: number, value: unknown): void;
+  rejectDeferredCommand(command: string, index: number): void;
   setNextTextSendPendingBody(body: string): void;
   setSnapshot(snapshot: DesktopSnapshot): void;
   pushCoreEvent(event: CoreEventPayload): Promise<void>;
@@ -282,6 +285,7 @@ function readySnapshot(
             home_selection: { kind: "activity" },
             space_local_presentations: {},
             legacy_frontend_preferences_imported: false,
+            event_navigation: { kind: "idle" },
             space_order: spaces.map((space) => space.space_id),
             last_room_by_space_id: {}
           },
@@ -1103,6 +1107,36 @@ function isDesktopSnapshotLike(value: unknown): value is DesktopSnapshot {
       Array.isArray(candidate.state.domain?.spaces) &&
       Array.isArray(candidate.state.domain?.invites)
   );
+}
+
+type DeferredCommand = {
+  resolve: (value: unknown) => void;
+  reject: (reason?: unknown) => void;
+};
+const deferredCommands = new Map<string, DeferredCommand[]>();
+
+function deferCommand(command: string): void {
+  mock.setCommandResponse(command, () =>
+    new Promise<unknown>((resolve, reject) => {
+      const pending = deferredCommands.get(command) ?? [];
+      pending.push({ resolve, reject });
+      deferredCommands.set(command, pending);
+    })
+  );
+}
+
+function resolveDeferredCommand(command: string, index: number, value: unknown): void {
+  const pending = deferredCommands.get(command) ?? [];
+  const [entry] = pending.splice(index, 1);
+  if (pending.length === 0) deferredCommands.delete(command);
+  if (entry) entry.resolve(value);
+}
+
+function rejectDeferredCommand(command: string, index: number): void {
+  const pending = deferredCommands.get(command) ?? [];
+  const [entry] = pending.splice(index, 1);
+  if (pending.length === 0) deferredCommands.delete(command);
+  if (entry) entry.reject(new Error("synthetic deferred rejection"));
 }
 
 // Snapshot-returning commands the App calls. Default snapshot stays ready so
@@ -2629,7 +2663,14 @@ mock.setCommandResponse(
           navigation: {
             ...currentSnapshot.state.ui.navigation,
             active_room_id: roomId,
-            main_timeline_anchor: { event_id: eventId }
+            main_timeline_anchor: { event_id: eventId },
+            event_navigation: {
+              kind: "anchored",
+              generation: (currentSnapshot.state.ui.navigation.event_navigation.kind === "idle"
+                ? 0
+                : currentSnapshot.state.ui.navigation.event_navigation.generation) + 1,
+              source: "search"
+            }
           },
           timeline: {
             ...currentSnapshot.state.ui.timeline,
@@ -2673,6 +2714,14 @@ mock.setCommandResponse(
           navigation: {
             ...currentSnapshot.state.ui.navigation,
             active_room_id: roomId,
+            main_timeline_anchor: { event_id: eventId },
+            event_navigation: {
+              kind: "anchored",
+              generation: (currentSnapshot.state.ui.navigation.event_navigation.kind === "idle"
+                ? 0
+                : currentSnapshot.state.ui.navigation.event_navigation.generation) + 1,
+              source: "activity"
+            },
             room_scroll_anchors: {
               ...(currentSnapshot.state.ui.navigation.room_scroll_anchors ?? {}),
               [roomId]: {
@@ -2706,6 +2755,13 @@ mock.setCommandResponse(
     const next = currentSnapshot;
     next.state.ui.navigation.active_room_id = roomId;
     next.state.ui.navigation.main_timeline_anchor = { event_id: eventId };
+    next.state.ui.navigation.event_navigation = {
+      kind: "anchored",
+      generation: (next.state.ui.navigation.event_navigation.kind === "idle"
+        ? 0
+        : next.state.ui.navigation.event_navigation.generation) + 1,
+      source: "pinned"
+    };
     next.state.ui.timeline.room_id = roomId;
     next.state.ui.timeline.is_subscribed = true;
     next.state.ui.focused_context = { kind: "closed" };
@@ -3502,6 +3558,9 @@ const harnessControl: AppHarnessControl = {
       const value = typeof response === "function" ? response(args) : response;
       return normalizeHarnessCommandResponse(value);
     }),
+  deferCommand,
+  resolveDeferredCommand,
+  rejectDeferredCommand,
   setNextTextSendPendingBody: (body) => {
     nextTextSendPendingBody = body;
   },

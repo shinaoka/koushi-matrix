@@ -138,7 +138,8 @@ pub use room_interactions::{
 
 // ── Re-exports: navigation ──────────────────────────────────────────────────
 pub use navigation::{
-    FocusedContextState, HomeSelection, MAX_SPACE_LOCAL_PRESENTATIONS, MainTimelineAnchor,
+    EventNavigationFailureKind, EventNavigationSource, EventNavigationState, FocusedContextState,
+    HomeSelection, MAX_SPACE_LOCAL_PRESENTATIONS, MainTimelineAnchor, MissingTargetPolicy,
     NavigationPreferenceUpdate, NavigationState, RoomListEntryKind, RoomListFailureKind,
     RoomListFilter, RoomListProjection, RoomListProjectionItem, RoomListReadiness, RoomListSort,
     RoomListSource, SpaceConversationSurface, SpaceLocalPresentation, SpaceLocalPresentations,

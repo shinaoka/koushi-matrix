@@ -16,7 +16,6 @@ import {
 import { t } from "../i18n/messages";
 import type {
   DesktopSnapshot,
-  PinnedEventNavigation,
   ScheduledSendCapability,
   ScheduledSendItem,
   SearchResult,
@@ -388,16 +387,12 @@ function PinnedEventsList({
   pinnedEvents,
   profileUsers = {},
   onOpen,
-  navigation = null,
-  onRetry,
   onUnpin
 }: {
   roomId: string;
   pinnedEvents: DesktopSnapshot["state"]["domain"]["room_interactions"][string]["pinned_events"];
   profileUsers?: Record<string, UserProfile>;
   onOpen?: (roomId: string, eventId: string, threadRootEventId: string | null) => void;
-  navigation?: PinnedEventNavigation | null;
-  onRetry?: (roomId: string, eventId: string, threadRootEventId: string | null) => void;
   onUnpin: (roomId: string, eventId: string) => void;
 }) {
   return (
@@ -429,7 +424,6 @@ function PinnedEventsList({
                   ? t("timeline.pinnedEventUnableToDecrypt")
                   : t("timeline.pinnedMessage"))
               }
-              disabled={navigation?.event_id === event.event_id && navigation.status === "loading"}
               onClick={() =>
                 onOpen?.(roomId, event.event_id, event.thread_root_event_id ?? null)
               }
@@ -461,24 +455,6 @@ function PinnedEventsList({
               ) : null}
               </span>
             </button>
-            {navigation?.event_id === event.event_id ? (
-              <span className="pinned-event-navigation-status" role="status">
-                {navigation.status === "loading"
-                  ? t("timeline.pinnedNavigationLoading")
-                  : t("timeline.pinnedNavigationFailed")}
-                {navigation.status === "failed" && onRetry ? (
-                  <button
-                    className="pinned-event-retry"
-                    type="button"
-                    onClick={() =>
-                      onRetry(roomId, event.event_id, event.thread_root_event_id ?? null)
-                    }
-                  >
-                    {t("timeline.pinnedNavigationRetry")}
-                  </button>
-                ) : null}
-              </span>
-            ) : null}
             <button
               className="pinned-event-action"
               type="button"

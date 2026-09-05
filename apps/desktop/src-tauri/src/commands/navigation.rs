@@ -6,6 +6,8 @@ use super::timeline::{
     build_update_navigation_scroll_anchor_command,
 };
 use super::*;
+use koushi_core::EventNavigationError;
+
 #[tauri::command]
 pub async fn update_navigation_preference(
     update: koushi_state::NavigationPreferenceUpdate,
@@ -130,7 +132,14 @@ pub async fn open_activity_event(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    open_anchored_timeline(room_id, event_id, app, state, true).await
+    navigate_to_event(
+        room_id,
+        event_id,
+        koushi_state::EventNavigationSource::Activity,
+        app,
+        state,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -140,7 +149,14 @@ pub async fn open_pinned_event(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    open_anchored_timeline(room_id, event_id, app, state, false).await
+    navigate_to_event(
+        room_id,
+        event_id,
+        koushi_state::EventNavigationSource::Pinned,
+        app,
+        state,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -150,78 +166,37 @@ pub async fn select_search_result(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    open_anchored_timeline(room_id, event_id, app, state, true).await
+    navigate_to_event(
+        room_id,
+        event_id,
+        koushi_state::EventNavigationSource::Search,
+        app,
+        state,
+    )
+    .await
 }
 
-async fn open_anchored_timeline(
+async fn navigate_to_event(
     room_id: String,
     event_id: String,
+    source: koushi_state::EventNavigationSource,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
-    allow_live_fallback: bool,
 ) -> Result<FrontendCommandSettlement, String> {
     let mut event_conn = state.runtime.attach();
-    let operation_snapshot = event_conn.versioned_snapshot();
-    let account_key = account_key_from_app_state(&operation_snapshot.state);
-    let close_room_id = operation_snapshot.state.navigation.active_room_id.clone();
-    let close_baseline_generation = operation_snapshot.generation;
-    let close_deadline = tokio::time::Instant::now() + FOCUSED_CONTEXT_EVENT_TIMEOUT;
-
-    let close_request_id = event_conn.next_request_id();
-    event_conn
-        .command(CoreCommand::App(AppCommand::CloseFocusedContext {
-            request_id: close_request_id,
-        }))
+    let snapshot = event_conn
+        .navigate_to_event_and_wait(
+            room_id,
+            event_id,
+            source,
+            event_navigation_policy(source),
+            FOCUSED_CONTEXT_EVENT_TIMEOUT,
+        )
         .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_focused_context_closed(
-        &mut event_conn,
-        close_request_id,
-        account_key.clone(),
-        close_room_id,
-        close_baseline_generation,
-        close_deadline,
-    )
-    .await?;
-
-    event_conn
-        .select_room_and_wait(room_id.clone(), SELECT_ROOM_EVENT_TIMEOUT)
-        .await
-        .map_err(invoke_error_from_select_room_error)?;
-
-    let anchor_baseline_generation = event_conn.versioned_snapshot().generation;
-    let anchor_key = TimelineKey {
-        account_key,
-        kind: koushi_protocol::TimelineKind::Focused {
-            room_id: room_id.clone(),
-            event_id: event_id.clone(),
-        },
-    };
-    let anchor_deadline = tokio::time::Instant::now() + FOCUSED_CONTEXT_EVENT_TIMEOUT;
-    let open_request_id = event_conn.next_request_id();
-    event_conn
-        .command(CoreCommand::App(AppCommand::OpenAnchoredTimeline {
-            request_id: open_request_id,
-            room_id: room_id.clone(),
-            event_id: event_id.clone(),
-            allow_live_fallback,
-        }))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    let anchored_snapshot = wait_for_main_timeline_anchor(
-        &mut event_conn,
-        open_request_id,
-        anchor_key,
-        event_id,
-        allow_live_fallback,
-        anchor_baseline_generation,
-        anchor_deadline,
-    )
-    .await?;
-
+        .map_err(invoke_error_from_event_navigation_error)?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     Ok(FrontendCommandSettlement::from_published_generation(
-        anchored_snapshot.generation,
+        snapshot.generation,
     ))
 }
 
@@ -310,6 +285,44 @@ pub async fn update_navigation_scroll_anchor(
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     Ok(())
+}
+
+fn event_navigation_policy(
+    source: koushi_state::EventNavigationSource,
+) -> koushi_core::EventNavigationMissingTargetPolicy {
+    match source {
+        koushi_state::EventNavigationSource::Activity
+        | koushi_state::EventNavigationSource::Search => {
+            koushi_core::EventNavigationMissingTargetPolicy::LiveFallback
+        }
+        koushi_state::EventNavigationSource::Pinned => {
+            koushi_core::EventNavigationMissingTargetPolicy::Fail
+        }
+    }
+}
+
+fn invoke_error_from_event_navigation_error(error: koushi_core::EventNavigationError) -> String {
+    match error {
+        EventNavigationError::CommandSubmit(_) => "event navigation command submit failed".to_owned(),
+        EventNavigationError::Rejected => "event navigation rejected".to_owned(),
+        EventNavigationError::Failed(kind) => match kind {
+            koushi_state::EventNavigationFailureKind::TargetMissing => {
+                "event navigation target unavailable".to_owned()
+            }
+            koushi_state::EventNavigationFailureKind::RoomUnavailable => {
+                "event navigation room unavailable".to_owned()
+            }
+            koushi_state::EventNavigationFailureKind::SessionUnavailable => {
+                "event navigation session unavailable".to_owned()
+            }
+            koushi_state::EventNavigationFailureKind::Timeline => {
+                "event navigation failed".to_owned()
+            }
+        },
+        EventNavigationError::EventStreamClosed | EventNavigationError::Timeout => {
+            "event navigation did not complete".to_owned()
+        }
+    }
 }
 
 pub(super) fn invoke_error_from_select_room_error(error: koushi_core::SelectRoomError) -> String {
@@ -437,40 +450,6 @@ async fn wait_for_focused_context(
     }
 }
 
-async fn wait_for_main_timeline_anchor(
-    event_conn: &mut CoreConnection,
-    request_id: RequestId,
-    key: TimelineKey,
-    event_id: String,
-    allow_live_fallback: bool,
-    baseline_generation: u64,
-    deadline: tokio::time::Instant,
-) -> Result<koushi_protocol::state_update::VersionedAppStateSnapshot, String> {
-    let outcome = event_conn
-        .wait_for_request_outcome(
-            OutcomeCorrelation::Request(request_id),
-            RequestOutcomeExpectation::MainTimelineAnchor {
-                request_id,
-                key,
-                event_id,
-                allow_live_fallback,
-            },
-            baseline_generation,
-            deadline,
-        )
-        .await
-        .map_err(|error| match error {
-            RequestOutcomeError::OperationFailed { failure } => {
-                invoke_error_from_core_failure("main timeline anchor", failure)
-            }
-            error => invoke_error_from_request_outcome("main timeline anchor", error),
-        })?;
-    match outcome {
-        RequestOutcome::MainTimelineAnchor { snapshot } => Ok(snapshot),
-        _ => Err("main timeline anchor returned an invalid outcome".to_owned()),
-    }
-}
-
 pub(super) fn build_update_navigation_preference_command(
     request_id: koushi_protocol::RequestId,
     update: koushi_state::NavigationPreferenceUpdate,
@@ -515,187 +494,4 @@ pub(super) const SELECT_ROOM_EVENT_TIMEOUT: std::time::Duration =
 const FOCUSED_CONTEXT_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::commands::contracts::fake_request_id;
-
-    #[test]
-    fn open_timeline_at_timestamp_command_routes_through_app_command() {
-        let command = build_open_timeline_at_timestamp_command(
-            fake_request_id(40),
-            "!room:example.org".to_owned(),
-            1_718_000_000_000,
-        );
-
-        match command {
-            CoreCommand::App(AppCommand::OpenTimelineAtTimestamp {
-                request_id,
-                room_id,
-                timestamp_ms,
-            }) => {
-                assert_eq!(request_id, fake_request_id(40));
-                assert_eq!(room_id, "!room:example.org");
-                assert_eq!(timestamp_ms, 1_718_000_000_000);
-                let debug = format!(
-                    "{:?}",
-                    AppCommand::OpenTimelineAtTimestamp {
-                        request_id,
-                        room_id,
-                        timestamp_ms,
-                    }
-                );
-                assert!(!debug.contains("!room:example.org"), "{debug}");
-                assert!(!debug.contains("1718000000000"), "{debug}");
-            }
-            other => panic!("unexpected command: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn observe_timeline_viewport_command_routes_viewport_facts_only() {
-        let account_key = AccountKey("@alice:example.org".to_owned());
-        let command = build_observe_timeline_viewport_command(
-            fake_request_id(41),
-            account_key.clone(),
-            "!room:example.org".to_owned(),
-            Some("$first".to_owned()),
-            Some("$last".to_owned()),
-            vec![koushi_core::TimelineGapId {
-                topology_revision: 7,
-                ordinal: 2,
-            }],
-            false,
-            None,
-        );
-        let debug = format!("{command:?}");
-        assert!(!debug.contains("!room:example.org"), "{debug}");
-        assert!(!debug.contains("$first"), "{debug}");
-        assert!(!debug.contains("$last"), "{debug}");
-
-        match command {
-            CoreCommand::Timeline(TimelineCommand::ObserveViewport {
-                request_id,
-                key,
-                observation,
-            }) => {
-                assert_eq!(request_id, fake_request_id(41));
-                assert_eq!(key.account_key, account_key);
-                assert_eq!(
-                    key.kind,
-                    koushi_protocol::TimelineKind::Room {
-                        room_id: "!room:example.org".to_owned()
-                    }
-                );
-                assert_eq!(
-                    observation.first_visible_event_id.as_deref(),
-                    Some("$first")
-                );
-                assert_eq!(observation.last_visible_event_id.as_deref(), Some("$last"));
-                assert_eq!(
-                    observation.visible_gap_ids,
-                    vec![koushi_core::TimelineGapId {
-                        topology_revision: 7,
-                        ordinal: 2,
-                    }]
-                );
-                assert!(!observation.at_bottom);
-            }
-            other => panic!("unexpected command: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn observe_timeline_viewport_routes_thread_identity() {
-        let command = build_observe_timeline_viewport_command(
-            fake_request_id(43),
-            AccountKey("@alice:example.org".to_owned()),
-            "!room:example.org".to_owned(),
-            Some("$reply".to_owned()),
-            Some("$reply".to_owned()),
-            Vec::new(),
-            true,
-            Some("$root".to_owned()),
-        );
-        let CoreCommand::Timeline(TimelineCommand::ObserveViewport { key, .. }) = command else {
-            panic!("expected observe viewport command");
-        };
-        assert_eq!(
-            key.kind,
-            koushi_protocol::TimelineKind::Thread {
-                room_id: "!room:example.org".to_owned(),
-                root_event_id: "$root".to_owned(),
-            }
-        );
-    }
-
-    #[test]
-    fn observe_timeline_viewport_parses_full_range_topology_revision() {
-        let visible_gap_ids: Vec<koushi_core::TimelineGapId> =
-            serde_json::from_value(serde_json::json!([{
-                "topology_revision": "14695981039346656037",
-                "ordinal": 0,
-            }]))
-            .expect("Tauri viewport gap ids parse from their JSON wire shape");
-
-        let command = build_observe_timeline_viewport_command(
-            fake_request_id(42),
-            AccountKey("@alice:example.org".to_owned()),
-            "!room:example.org".to_owned(),
-            None,
-            None,
-            visible_gap_ids,
-            false,
-            None,
-        );
-
-        let CoreCommand::Timeline(TimelineCommand::ObserveViewport { observation, .. }) = command
-        else {
-            panic!("expected observe viewport command");
-        };
-        assert_eq!(
-            observation.visible_gap_ids,
-            vec![koushi_core::TimelineGapId {
-                topology_revision: 14_695_981_039_346_656_037,
-                ordinal: 0,
-            }]
-        );
-    }
-
-    #[tokio::test]
-    async fn focused_context_close_wait_uses_core_outcome_guards() {
-        let (mut connection, control) = CoreConnection::new_for_testing(4);
-        let request_id = fake_request_id(44);
-        let account_key = AccountKey("@alice:example.org".to_owned());
-        let room_id = Some("!room:example.org".to_owned());
-        let mut state = koushi_state::AppState::default();
-        state.session = koushi_state::SessionState::Ready(koushi_state::SessionInfo {
-            homeserver: "https://example.org".to_owned(),
-            user_id: account_key.0.clone(),
-            device_id: "DEVICE".to_owned(),
-            authentication_method: Default::default(),
-        });
-        state.navigation.active_room_id = room_id.clone();
-        state.focused_context = koushi_state::FocusedContextState::Closed;
-        control.send_event(CoreEvent::IntentLifecycle {
-            request_id,
-            outcome: IntentOutcome::Committed,
-            published_generation: 1,
-        });
-        control.send_snapshot(koushi_protocol::state_update::VersionedAppStateSnapshot {
-            generation: 1,
-            state,
-        });
-
-        let snapshot = wait_for_focused_context_closed(
-            &mut connection,
-            request_id,
-            account_key,
-            room_id,
-            0,
-            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
-        )
-        .await
-        .expect("focused close should settle through Core");
-        assert_eq!(snapshot.generation, 1);
-    }
-}
+mod tests;

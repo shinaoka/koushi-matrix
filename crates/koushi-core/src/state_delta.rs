@@ -275,14 +275,29 @@ mod tests {
     }
 
     #[test]
-    fn state_delta_omits_sidebar_when_navigation_change_does_not_change_sidebar_projection() {
+    fn navigation_delta_retains_event_navigation() {
         let previous = AppState::default();
         let mut next = previous.clone();
         next.navigation.active_room_id = Some("!room:example.invalid".to_owned());
+        next.navigation.event_navigation = koushi_state::EventNavigationState::Opening {
+            generation: 1,
+            source: koushi_state::EventNavigationSource::Activity,
+        };
 
         let delta = build_state_delta(1, &previous, &next).expect("navigation changed");
 
-        assert!(delta.changed.navigation.is_some());
+        assert_eq!(delta.changed.navigation, Some(next.navigation.clone()));
+        assert_eq!(
+            delta
+                .changed
+                .navigation
+                .as_ref()
+                .map(|navigation| navigation.event_navigation),
+            Some(koushi_state::EventNavigationState::Opening {
+                generation: 1,
+                source: koushi_state::EventNavigationSource::Activity,
+            })
+        );
         assert!(delta.changed.sidebar.is_none());
     }
 }

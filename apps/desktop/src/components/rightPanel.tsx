@@ -21,7 +21,6 @@ import type {
   SpaceLocalPresentation,
   SpaceMemberRoleOption,
   SecureBackupSetupIntent,
-  PinnedEventNavigation,
   ThreadOpenIntent,
   ThreadsListScope
 } from "../domain/types";
@@ -101,8 +100,6 @@ export function ContextualRightPanel({
   onOpenFiles,
   onOpenPinnedEvent = () => undefined,
   onUnpinPinnedEvent = () => undefined,
-  pinnedNavigation = null,
-  onRetryPinnedEvent = () => undefined,
   onOpenSpaceMembers,
   onOpenContextMenu,
   onDiagnostic,
@@ -229,8 +226,6 @@ export function ContextualRightPanel({
   onOpenFiles: (scope: FilesViewScope) => void;
   onOpenPinnedEvent?: (roomId: string, eventId: string, threadRootEventId: string | null) => void;
   onUnpinPinnedEvent?: (roomId: string, eventId: string) => void;
-  pinnedNavigation?: PinnedEventNavigation | null;
-  onRetryPinnedEvent?: (roomId: string, eventId: string, threadRootEventId: string | null) => void;
   onOpenSpaceMembers?: () => void;
   onOpenContextMenu?: OpenContextMenu;
   onDiagnostic?: (message: string) => void;
@@ -729,8 +724,6 @@ export function ContextualRightPanel({
             pinnedEvents={pinnedEvents}
             profileUsers={snapshot.state.domain.profile.users}
             onOpen={onOpenPinnedEvent}
-            navigation={pinnedNavigation}
-            onRetry={onRetryPinnedEvent}
             onUnpin={onUnpinPinnedEvent}
           />
         ) : (
