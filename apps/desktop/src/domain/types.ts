@@ -1181,13 +1181,6 @@ export interface PinnedEvent {
   thread_root_event_id?: string | null;
 }
 
-export interface PinnedEventNavigation {
-  room_id: string;
-  event_id: string;
-  thread_root_event_id: string | null;
-  status: "loading" | "failed";
-}
-
 export type PinOp = "pin" | "unpin";
 
 export type PinOperationState =

@@ -235,6 +235,19 @@ impl AppActor {
         else {
             return;
         };
+        let focused = self
+            .pending_focused_navigation
+            .as_ref()
+            .filter(|focused| {
+                focused.projection_request_id == request_id
+                    && focused.generation == Some(TimelineGeneration(generation))
+            })
+            .is_some()
+            .then(|| {
+                self.pending_focused_navigation
+                    .take()
+                    .expect("matching focused navigation must exist")
+            });
         self.pending_event_navigation.take();
         stop_event_navigation_task(&mut self.event_navigation_task).await;
         stop_event_navigation_task(&mut self.event_navigation_deadline_task).await;
@@ -251,10 +264,16 @@ impl AppActor {
             }
         };
         let before_state = self.snapshot_tx.borrow().state.clone();
-        let effects = reduce(
+        let mut effects = Vec::new();
+        if focused.as_ref().is_some_and(|focused| {
+            self.current_focused_context_timeline_key().as_ref() == Some(&focused.key)
+        }) {
+            effects.extend(reduce(&mut self.state, AppAction::CloseFocusedContext));
+        }
+        effects.extend(reduce(
             &mut self.state,
             AppAction::EventNavigationFailed { generation, kind },
-        );
+        ));
         self.handle_ui_event_effects(&effects).await;
         let published_generation = self
             .publish_state_delta(&before_state)
@@ -264,6 +283,16 @@ impl AppActor {
             outcome,
             published_generation,
         });
+        if let Some(focused) = focused {
+            self.send_timeline_command_or_fail(
+                pending.request_id,
+                TimelineCommand::Unsubscribe {
+                    request_id: pending.request_id,
+                    key: focused.key,
+                },
+            )
+            .await;
+        }
     }
 
     pub(super) async fn cancel_event_navigation_owner(&mut self) {

@@ -13,9 +13,7 @@ use crate::native_artifact::{NativeArtifactError, NativeArtifactKind, NativeArti
 use koushi_protocol::command::{
     AppCommand, CoreCommand, EventNavigationMissingTargetPolicy, RoomCommand,
 };
-#[cfg(test)]
-use koushi_protocol::event::IntentOutcome;
-use koushi_protocol::event::{CoreEvent, IntentNoOpReason};
+use koushi_protocol::event::{CoreEvent, IntentNoOpReason, IntentOutcome};
 use koushi_protocol::ids::{RequestId, RuntimeConnectionId};
 use koushi_protocol::state_update::{
     AppStateSnapshot, CoreCommandAdmission, VersionedAppStateSnapshot,
@@ -895,22 +893,39 @@ impl CoreConnection {
             }
         };
 
-        if let Some(result) = terminal(&self.versioned_snapshot()) {
-            return result;
-        }
+        let mut event_stream_open = true;
+        let mut snapshot_stream_open = true;
         loop {
             if let Some(result) = terminal(&self.versioned_snapshot()) {
                 return result;
             }
-            match tokio::time::timeout_at(deadline, self.snapshot_rx.changed()).await {
-                Ok(Ok(())) => {
-                    let _ = self.snapshot_rx.borrow_and_update();
-                }
-                Ok(Err(_)) => {
-                    return terminal(&self.versioned_snapshot())
-                        .unwrap_or(Err(EventNavigationError::EventStreamClosed));
-                }
-                Err(_) => {
+            if !event_stream_open && !snapshot_stream_open {
+                return Err(EventNavigationError::EventStreamClosed);
+            }
+
+            tokio::select! {
+                event = self.event_rx.recv(), if event_stream_open => match event {
+                    Ok(CoreEvent::IntentLifecycle {
+                        request_id: lifecycle_request_id,
+                        outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::Superseded),
+                        ..
+                    }) if lifecycle_request_id == request_id => {
+                        return Ok(self.versioned_snapshot());
+                    }
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => {
+                        event_stream_open = false;
+                    }
+                },
+                changed = self.snapshot_rx.changed(), if snapshot_stream_open => match changed {
+                    Ok(()) => {
+                        let _ = self.snapshot_rx.borrow_and_update();
+                    }
+                    Err(_) => {
+                        snapshot_stream_open = false;
+                    }
+                },
+                _ = tokio::time::sleep_until(deadline) => {
                     return terminal(&self.versioned_snapshot())
                         .unwrap_or(Err(EventNavigationError::Timeout));
                 }
@@ -1070,5 +1085,7 @@ fn composer_draft_has_content(
     }
 }
 
+#[cfg(test)]
+mod event_navigation_tests;
 #[cfg(test)]
 mod tests;

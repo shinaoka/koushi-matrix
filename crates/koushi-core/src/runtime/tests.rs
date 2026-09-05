@@ -2241,6 +2241,302 @@ async fn wait_for_runtime_session(
     .unwrap_or_else(|_| panic!("session transition timed out during {stage}"));
 }
 
+fn app_actor_event_navigation_fixture(
+    data_dir: &std::path::Path,
+    state: AppState,
+) -> (
+    AppActor,
+    mpsc::Receiver<AccountMessage>,
+    broadcast::Receiver<CoreEvent>,
+    watch::Receiver<VersionedAppStateSnapshot>,
+) {
+    let (account_tx, account_rx) = mpsc::channel(8);
+    let (navigation_projection, navigation_projection_rx) =
+        crate::timeline::NavigationProjectionIngress::channel();
+    drop(navigation_projection_rx);
+    let account_actor = AccountActorHandle::for_app_actor_test(account_tx, navigation_projection);
+    let session_key = match &state.session {
+        SessionState::Ready(info) => session_key_id_from_info(info),
+        _ => panic!("event-navigation fixture needs a ready session"),
+    };
+    let (_command_tx, command_rx) = mpsc::channel(1);
+    let (_action_tx, action_rx) = mpsc::channel(1);
+    let (_composer_draft_test_tx, composer_draft_test_rx) = mpsc::channel(1);
+    let (event_tx, event_rx) = broadcast::channel(16);
+    let (snapshot_tx, snapshot_rx) = watch::channel(VersionedAppStateSnapshot {
+        generation: 0,
+        state: state.clone(),
+    });
+    let composer_draft_leases = Arc::new(ComposerDraftLeaseRegistry::new());
+    let composer_draft_lease_changes = composer_draft_leases.subscribe();
+    let (composer_draft_rejected_tx, composer_draft_rejected_rx) = mpsc::unbounded_channel();
+    let (_focused_projection_tx, focused_projection_rx) = mpsc::unbounded_channel();
+    let (event_navigation_prepared_tx, event_navigation_prepared_rx) = mpsc::unbounded_channel();
+    let actor = AppActor {
+        command_rx,
+        action_rx,
+        event_navigation_prepared_tx,
+        event_navigation_prepared_rx,
+        pending_event_navigation: None,
+        event_navigation_generation: 0,
+        event_navigation_task: None,
+        event_navigation_deadline_task: None,
+        focused_projection_rx: Some(focused_projection_rx),
+        composer_draft_test_rx,
+        event_tx,
+        snapshot_tx,
+        state,
+        settings_store: SettingsStore::new(data_dir),
+        settings_load_status: SettingsLoadStatus::Loaded,
+        composer_draft_store_actor: StoreActor::new(data_dir.to_owned()),
+        composer_draft_load_status: ComposerDraftLoadStatus::Loaded(session_key.clone()),
+        composer_draft_reload_required: false,
+        navigation_loaded_for: Some(session_key.clone()),
+        navigation_persistence_status: NavigationPersistenceStatus::Loaded(session_key.clone()),
+        scheduled_sends_loaded_for: Some(session_key.clone()),
+        room_preferences_loaded_for: Some(session_key),
+        state_generation: 0,
+        pending_composer_draft_persist: None,
+        composer_draft_leases,
+        composer_draft_lease_changes,
+        composer_draft_rejected_tx,
+        composer_draft_rejected_rx,
+        pending_composer_acceptances: HashMap::new(),
+        pending_command_admissions: Vec::new(),
+        account_actor,
+        activity_projection: ActivityProjection::default(),
+        activity_resolution_generation: 0,
+        next_internal_request_sequence: 1,
+        navigation_projection_generation: 0,
+        pending_select: HashMap::new(),
+        pending_focused_navigation: None,
+        latest_focused_projection_generation: HashMap::new(),
+        pending_date_navigation_request_id: None,
+    };
+    (actor, account_rx, event_rx, snapshot_rx)
+}
+
+#[tokio::test(start_paused = true)]
+async fn current_event_navigation_deadline_failure_clears_focused_owner_and_fences_stale_work() {
+    let data_dir = tempfile::tempdir().expect("runtime data directory");
+    let room_id = "!focused-room:example.invalid".to_owned();
+    let event_id = "$focused-event:example.invalid".to_owned();
+    let account_key = AccountKey("@synthetic:example.invalid".to_owned());
+    let generation = 7;
+    let request_id = RequestId {
+        connection_id: RuntimeConnectionId(836),
+        sequence: 1,
+    };
+    let focused_key = TimelineKey {
+        account_key: account_key.clone(),
+        kind: TimelineKind::Focused {
+            room_id: room_id.clone(),
+            event_id: event_id.clone(),
+        },
+    };
+    let mut state = AppState {
+        session: SessionState::Ready(SessionInfo {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: account_key.0.clone(),
+            device_id: "SYNTHETIC".to_owned(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        }),
+        focused_context: koushi_state::FocusedContextState::Open {
+            room_id: room_id.clone(),
+            event_id: event_id.clone(),
+            is_subscribed: true,
+        },
+        ..AppState::default()
+    };
+    state.navigation.active_room_id = Some(room_id.clone());
+    state.navigation.event_navigation = koushi_state::EventNavigationState::Opening {
+        generation,
+        source: koushi_state::EventNavigationSource::Activity,
+    };
+
+    let (mut actor, mut account_rx, mut event_rx, mut snapshot_rx) =
+        app_actor_event_navigation_fixture(data_dir.path(), state);
+    let pending = PendingEventNavigation {
+        request_id,
+        select_request_id: RequestId {
+            connection_id: request_id.connection_id,
+            sequence: 2,
+        },
+        room_id: room_id.clone(),
+        event_id: event_id.clone(),
+        source: koushi_state::EventNavigationSource::Activity,
+        generation,
+    };
+    let prepared = EventNavigationPrepared {
+        request_id,
+        room_id: room_id.clone(),
+        event_id: event_id.clone(),
+        generation,
+        result: crate::account::RoomEventLookupResult::Failed,
+    };
+    actor.pending_event_navigation = Some(pending.clone());
+    actor.pending_focused_navigation = Some(PendingFocusedNavigation {
+        projection_request_id: request_id,
+        key: focused_key.clone(),
+        room_id: room_id.clone(),
+        event_id: event_id.clone(),
+        allow_live_fallback: true,
+        generation: Some(TimelineGeneration(generation)),
+    });
+    actor.event_navigation_deadline_task =
+        Some(crate::runtime::navigation::spawn_event_navigation_deadline(
+            actor.event_navigation_prepared_tx.clone(),
+            prepared.clone(),
+            crate::runtime::navigation::EVENT_NAVIGATION_TIMEOUT,
+        ));
+    tokio::task::yield_now().await;
+    tokio::time::advance(crate::runtime::navigation::EVENT_NAVIGATION_TIMEOUT).await;
+    let deadline_prepared = actor
+        .event_navigation_prepared_rx
+        .recv()
+        .await
+        .expect("current deadline should prepare a failure");
+    assert_eq!(deadline_prepared, prepared);
+
+    actor
+        .handle_event_navigation_prepared(deadline_prepared)
+        .await;
+
+    assert!(matches!(
+        actor.state.navigation.event_navigation,
+        koushi_state::EventNavigationState::Failed {
+            generation: current_generation,
+            source: koushi_state::EventNavigationSource::Activity,
+            failure_kind: koushi_state::EventNavigationFailureKind::Timeline,
+        } if current_generation == generation
+    ));
+    assert!(actor.pending_event_navigation.is_none());
+    assert!(actor.pending_focused_navigation.is_none());
+    let failed_snapshot = snapshot_rx.borrow_and_update().clone();
+    assert!(matches!(
+        failed_snapshot.state.navigation.event_navigation,
+        koushi_state::EventNavigationState::Failed {
+            generation: current_generation,
+            source: koushi_state::EventNavigationSource::Activity,
+            failure_kind: koushi_state::EventNavigationFailureKind::Timeline,
+        } if current_generation == generation
+    ));
+
+    let published = event_rx.recv().await.expect("failure snapshot event");
+    let published_generation = match published {
+        CoreEvent::StateDelta(delta) => delta.generation,
+        _ => panic!("failure lifecycle must follow its state publication"),
+    };
+    assert_eq!(published_generation, failed_snapshot.generation);
+    let lifecycle = event_rx.recv().await.expect("failure lifecycle event");
+    assert!(matches!(
+        lifecycle,
+        CoreEvent::IntentLifecycle {
+            request_id: lifecycle_request_id,
+            outcome: IntentOutcome::FailedNoOp(IntentNoOpReason::RoomNotInState),
+            published_generation: lifecycle_generation,
+        } if lifecycle_request_id == request_id && lifecycle_generation == published_generation
+    ));
+    assert!(matches!(
+        event_rx.try_recv(),
+        Err(broadcast::error::TryRecvError::Empty)
+    ));
+
+    match account_rx
+        .recv()
+        .await
+        .expect("focused unsubscribe command")
+    {
+        AccountMessage::TimelineCommand(
+            koushi_protocol::command::TimelineCommand::Unsubscribe {
+                request_id: unsubscribe_request_id,
+                key,
+            },
+        ) => {
+            assert_eq!(unsubscribe_request_id, request_id);
+            assert_eq!(key, focused_key);
+        }
+        _ => panic!("expected the focused timeline unsubscribe"),
+    }
+    assert!(matches!(
+        account_rx.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+
+    let newer_generation = generation + 1;
+    let newer_request_id = RequestId {
+        connection_id: request_id.connection_id,
+        sequence: 3,
+    };
+    let newer_room_id = "!newer-room:example.invalid".to_owned();
+    let newer_event_id = "$newer-event:example.invalid".to_owned();
+    let newer_key = TimelineKey {
+        account_key: AccountKey("@synthetic:example.invalid".to_owned()),
+        kind: TimelineKind::Focused {
+            room_id: newer_room_id.clone(),
+            event_id: newer_event_id.clone(),
+        },
+    };
+    let before_newer_opening = actor.state.clone();
+    reduce(
+        &mut actor.state,
+        AppAction::EventNavigationStarted {
+            source: koushi_state::EventNavigationSource::Search,
+        },
+    );
+    actor.state.focused_context = koushi_state::FocusedContextState::Open {
+        room_id: newer_room_id.clone(),
+        event_id: newer_event_id.clone(),
+        is_subscribed: true,
+    };
+    actor.pending_event_navigation = Some(PendingEventNavigation {
+        request_id: newer_request_id,
+        select_request_id: RequestId {
+            connection_id: newer_request_id.connection_id,
+            sequence: 4,
+        },
+        room_id: newer_room_id.clone(),
+        event_id: newer_event_id.clone(),
+        source: koushi_state::EventNavigationSource::Search,
+        generation: newer_generation,
+    });
+    actor.pending_focused_navigation = Some(PendingFocusedNavigation {
+        projection_request_id: newer_request_id,
+        key: newer_key,
+        room_id: newer_room_id,
+        event_id: newer_event_id,
+        allow_live_fallback: true,
+        generation: Some(TimelineGeneration(newer_generation)),
+    });
+    actor.publish_state_delta(&before_newer_opening);
+    let _ = event_rx.recv().await.expect("newer opening publication");
+    let pending_event_after_opening = actor.pending_event_navigation.clone();
+    let pending_focused_after_opening = actor.pending_focused_navigation.clone();
+
+    actor.handle_event_navigation_prepared(prepared).await;
+
+    assert!(matches!(
+        actor.state.navigation.event_navigation,
+        koushi_state::EventNavigationState::Opening {
+            generation: current_generation,
+            source: koushi_state::EventNavigationSource::Search,
+        } if current_generation == newer_generation
+    ));
+    assert_eq!(actor.pending_event_navigation, pending_event_after_opening);
+    assert_eq!(
+        actor.pending_focused_navigation,
+        pending_focused_after_opening
+    );
+    assert!(matches!(
+        event_rx.try_recv(),
+        Err(broadcast::error::TryRecvError::Empty)
+    ));
+    assert!(matches!(
+        account_rx.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+}
+
 async fn wait_for_runtime_sync_running(runtime: &CoreRuntime, stage: &'static str) {
     let mut snapshot_rx = runtime.snapshot_rx.clone();
     tokio::time::timeout(std::time::Duration::from_secs(10), async {

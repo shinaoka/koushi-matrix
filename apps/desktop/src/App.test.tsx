@@ -1715,6 +1715,19 @@ describe("desktop integration source guards", () => {
     expect(searchSource).not.toContain('setRightPanelMode("search")');
   });
 
+  test("pinned event navigation delegates failure and presentation to Rust", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const openPinnedStart = source.indexOf("async function openPinnedEvent");
+    const openPinnedEnd = source.indexOf("async function closeThreadsListPanel", openPinnedStart);
+    const openPinnedSource = source.slice(openPinnedStart, openPinnedEnd);
+
+    expect(openPinnedSource).toContain("api.openPinnedEvent(roomId, eventId)");
+    expect(openPinnedSource).not.toContain("setPinnedNavigation");
+    expect(openPinnedSource).not.toContain('status: "failed"');
+    expect(source).not.toContain("pinnedNavigation");
+    expect(source).not.toContain("onRetryPinnedEvent");
+  });
+
   test("search result selection is snapshot-driven and does not scroll the DOM", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     const selectSearchResultStart = source.indexOf("function selectSearchResult");

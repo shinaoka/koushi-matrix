@@ -172,8 +172,7 @@ import type {
   SettingsPatch,
   SpaceMemberRoleOption,
   ThreadOpenIntent,
-  ThreadsListScope,
-  PinnedEventNavigation
+  ThreadsListScope
 } from "./domain/types";
 import { stageAttachmentFiles } from "./domain/attachmentIngestion";
 import { createLatestMutationOperationQueue } from "./domain/latestAsyncResult";
@@ -1001,7 +1000,6 @@ export function App() {
   const [loginPasswordFilled, setLoginPasswordFilled] = useState(false);
   const [recoverySecretFilled, setRecoverySecretFilled] = useState(false);
   const [rightPanelMode, setRightPanelMode] = useState<RightPanelMode>("closed");
-  const [pinnedNavigation, setPinnedNavigation] = useState<PinnedEventNavigation | null>(null);
   const [selectedProfileUserId, setSelectedProfileUserId] = useState<string | null>(null);
   const [peoplePanelScope, setPeoplePanelScope] = useState<PeoplePanelScope | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
@@ -4244,7 +4242,6 @@ export function App() {
 
   async function openPinnedMessagesPanel(roomId: string) {
     if (!roomId) return;
-    setPinnedNavigation(null);
     await closeFocusedContextIfHiddenBy("pinned");
     setRightPanelMode("pinned");
   }
@@ -4254,53 +4251,17 @@ export function App() {
     eventId: string,
     threadRootEventId: string | null
   ) {
-    setPinnedNavigation({
-      room_id: roomId,
-      event_id: eventId,
-      thread_root_event_id: threadRootEventId,
-      status: "loading"
-    });
     if (threadRootEventId) {
-      try {
-        if (snapshot?.state.ui.navigation.active_room_id !== roomId) {
-          await selectRoom(roomId);
-        }
-        await openThread(roomId, threadRootEventId, {
-          pinnedReply: { event_id: eventId }
-        });
-        setPinnedNavigation(null);
-      } catch {
-        setPinnedNavigation({
-          room_id: roomId,
-          event_id: eventId,
-          thread_root_event_id: threadRootEventId,
-          status: "failed"
-        });
+      if (snapshot?.state.ui.navigation.active_room_id !== roomId && !(await selectRoom(roomId))) {
+        return;
       }
+      await openThread(roomId, threadRootEventId, {
+        pinnedReply: { event_id: eventId }
+      });
       return;
     }
 
-    try {
-      await settleCommand(api.openPinnedEvent(roomId, eventId));
-      setPrimaryView("timeline");
-      setRightPanelMode("pinned");
-      setPinnedNavigation(null);
-    } catch {
-      setPinnedNavigation({
-        room_id: roomId,
-        event_id: eventId,
-        thread_root_event_id: null,
-        status: "failed"
-      });
-    }
-  }
-
-  function retryPinnedEvent(
-    roomId: string,
-    eventId: string,
-    threadRootEventId: string | null
-  ) {
-    runInBackground(openPinnedEvent(roomId, eventId, threadRootEventId));
+    await settleCommand(api.openPinnedEvent(roomId, eventId));
   }
 
   async function closeThreadsListPanel() {
@@ -6068,8 +6029,6 @@ export function App() {
           onUnpinPinnedEvent={(roomId, eventId) => {
             runInBackground(unpinPinnedEvent(roomId, eventId));
           }}
-          pinnedNavigation={pinnedNavigation}
-          onRetryPinnedEvent={retryPinnedEvent}
           onOpenContextMenu={openContextMenu}
           onOpenSpaceMembers={
             activeSpace
