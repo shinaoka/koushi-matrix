@@ -61,6 +61,7 @@ Add independent `readme-screenshot` job to `.github/workflows/ci.yml`, using the
 
 ```sh
 test -d "$GITHUB_WORKSPACE/.git"
+git config --global --add safe.directory "$GITHUB_WORKSPACE"
 git -C "$GITHUB_WORKSPACE" diff --exit-code -- assets/screenshots/koushi-main.png
 test -z "$(git -C "$GITHUB_WORKSPACE" status --porcelain -- assets/screenshots)"
 ```
