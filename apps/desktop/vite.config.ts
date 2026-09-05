@@ -16,7 +16,7 @@ export default defineConfig(({ mode }) => ({
   },
   clearScreen: false,
   test: {
-    // e2e/ belongs to Playwright (headless-Chromium DOM tier), not Vitest.
-    exclude: ["e2e/**", "node_modules/**", "dist/**"]
+    // Playwright specs belong to the headless-Chromium DOM tier, not Vitest.
+    exclude: ["e2e/**", "e2e-docs/**", "node_modules/**", "dist/**"]
   }
 }));

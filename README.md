@@ -4,6 +4,8 @@
   <img src="assets/branding/koushi-wordmark.svg" alt="Koushi logo: a bright photon node on a lattice with light running through the grid" width="372">
 </p>
 
+<img src="assets/screenshots/koushi-main.png" alt="Koushi desktop client showing a three-pane Matrix room with spaces, rooms, messages, replies, reactions, and an empty composer" width="800">
+
 A desktop client for [Matrix](https://matrix.org), the open protocol for
 secure, decentralized communication.
 
@@ -168,6 +170,34 @@ build completes. Bundling requires the Tauri Linux system dependencies
 `pkg-config` on Debian/Ubuntu). Installed-app data is stored under
 `~/.local/share/koushi-desktop`; credentials use the freedesktop Secret
 Service (GNOME Keyring / KWallet) with the service name `koushi-desktop`.
+
+## Deterministic README screenshot
+
+From the repository root, regenerate the checked-in screenshot in the pinned
+Playwright container. The container runs as root so an existing root-owned
+`node_modules` or output file cannot block regeneration; the exit trap restores
+ownership to the invoking user.
+
+```bash
+image=mcr.microsoft.com/playwright:v1.60.0-noble
+for run in 1 2; do
+  docker run --rm --init --shm-size=2g --user 0:0 \
+    -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+    -v "$PWD:/work" -w /work "$image" \
+    bash -e -u -o pipefail -s <<'EOF'
+trap 'chown -R "$HOST_UID:$HOST_GID" /work/apps/desktop/node_modules /work/apps/desktop/test-results /work/assets/screenshots 2>/dev/null || true' EXIT
+npm --prefix apps/desktop ci
+npm --prefix apps/desktop run docs:screenshot
+EOF
+  sha256sum assets/screenshots/koushi-main.png
+done
+```
+
+Both runs must print the same SHA-256. CI asserts `@playwright/test` is exactly
+`1.60.0`, regenerates the image, and rejects any byte or porcelain difference.
+When bumping Playwright, update the package manifest and lockfile, the image
+version, and the exact version assertion together; then run the pinned command
+twice again and require identical hashes before updating this documentation.
 
 ## Open The Desktop Shell
 
