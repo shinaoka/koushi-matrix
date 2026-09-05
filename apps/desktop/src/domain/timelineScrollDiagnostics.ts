@@ -32,7 +32,7 @@ export type TimelineViewportIntentKind =
 
 export type TimelineScrollWriteReason = (typeof WRITE_REASONS)[number];
 
-export type TimelineScrollHeightCommitReason = "initial" | "idleFlush" | "timelineReset";
+export type TimelineScrollHeightCommitReason = "initial" | "idleFlush" | "layout" | "timelineReset";
 
 export type TimelineScrollRowKind = (typeof ROW_KINDS)[number];
 

@@ -1398,29 +1398,44 @@ test("measurement commit compensates the local anchor before paint", async ({ pa
   });
   await page.evaluate(() => window.__harness.resetScrollDiagnostics());
 
-  await page.addStyleTag({
-    content: `
-      [data-frame-item-id="${targets.growId}"] .message-body::after {
-        content: "";
-        display: block;
-        block-size: 96px;
-      }
-    `
-  });
-  await expect
-    .poll(() =>
-      page.evaluate(() => window.__harness.scrollDiagnostics()?.measurementFlushes ?? 0)
-    )
-    .toBeGreaterThan(0);
-
-  const afterTop = await anchor.evaluate((node) => node.getBoundingClientRect().top);
-  expect(Math.abs(afterTop - beforeTop)).toBeLessThanOrEqual(ANCHOR_PIXEL_TOLERANCE);
-  const diagnostics = await page.evaluate(() => window.__harness.scrollDiagnostics());
-  expect(diagnostics?.heightModelCommits ?? 0).toBeGreaterThan(0);
-  // Not `latestFrame`: frames with no measured-row change follow the commit
-  // immediately, so reading the last frame races them (green locally, red on a
-  // CI runner). The cumulative counter answers the same question.
-  expect(diagnostics?.changedMeasuredRows ?? 0).toBeGreaterThan(0);
+  // A cumulative flush can belong to initial virtualization, not this resize.
+  // Read geometry on the actual grown row's native, before-paint notification.
+  const probe = await page.evaluateHandle(({ growId, anchorId }) => {
+    const grown = document.querySelector<HTMLElement>(`[data-frame-item-id="${growId}"]`);
+    const target = document.querySelector<HTMLElement>(`[data-item-id="${anchorId}"]`);
+    if (!grown || !target) throw new Error("resize probe target missing");
+    const beforeHeight = grown.getBoundingClientRect().height;
+    const result = { top: null as number | null, disconnect: () => observer.disconnect() };
+    const observer = new ResizeObserver(() => {
+      // The row's minimum height can absorb part of the pseudo-element.
+      if (grown.getBoundingClientRect().height <= beforeHeight + 1) return;
+      result.top = target.getBoundingClientRect().top;
+      observer.disconnect();
+    });
+    observer.observe(grown);
+    const style = document.createElement("style");
+    style.textContent = `[data-frame-item-id="${growId}"] .message-body::after {
+      content: ""; display: block; block-size: 96px;
+    }`;
+    document.head.append(style);
+    return result;
+  }, targets);
+  try {
+    await page.screenshot({ path: test.info().outputPath("measurement-frame.png") });
+    // Wait only for notification, never for geometry to eventually converge.
+    await expect.poll(() => probe.evaluate(value => value.top !== null)).toBe(true);
+    const afterTop = await probe.evaluate(value => value.top!);
+    expect(Math.abs(afterTop - beforeTop)).toBeLessThanOrEqual(ANCHOR_PIXEL_TOLERANCE);
+  } finally {
+    await probe.evaluate(value => value.disconnect());
+    await probe.dispose();
+  }
+  // Diagnostics publish separately; wait for them only AFTER asserting the
+  // geometry captured before paint. They never gate the geometry sample.
+  await expect.poll(async () => {
+    const diagnostics = await page.evaluate(() => window.__harness.scrollDiagnostics());
+    return Math.min(diagnostics?.heightModelCommits ?? 0, diagnostics?.changedMeasuredRows ?? 0);
+  }).toBeGreaterThan(0);
 });
 
 test("active upward input keeps the anchor stable when prepend arrives", async ({ page }) => {

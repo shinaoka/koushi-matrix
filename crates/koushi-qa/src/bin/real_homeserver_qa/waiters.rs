@@ -4,9 +4,8 @@ use super::credentials::RealCredentials;
 use super::event_source::{QaEventDeadline, QaEventSource, QaSnapshotEventSource};
 use super::{
     AccountCommand, AccountEvent, AccountKey, AppState, CoreCommand, CoreConnection, CoreEvent,
-    CoreFailure, PaginationDirection, PaginationState, RecoveryRequest, RequestId, RoomEvent,
-    SearchCommand, SearchEvent, SearchScope, SessionState, SyncEvent, TimelineCommand,
-    TimelineEvent, TimelineKey,
+    CoreFailure, RecoveryRequest, RequestId, RoomEvent, SearchCommand, SearchEvent, SearchScope,
+    SessionState, SyncEvent, TimelineEvent, TimelineKey,
 };
 use std::time::Duration;
 
@@ -667,7 +666,11 @@ pub(super) async fn wait_for_redact_diff(
     }
 }
 
-/// Drive pagination until EndReached, re-issuing when Idle.
+#[cfg(any(debug_assertions, test))]
+#[path = "../common/pagination_waiter.rs"]
+mod pagination_waiter;
+
+/// Drive correlated pagination until EndReached, respecting gap-repair admission.
 #[cfg(any(debug_assertions, test))]
 pub(super) async fn wait_for_paginate_end_reached(
     conn: &mut CoreConnection,
@@ -676,56 +679,15 @@ pub(super) async fn wait_for_paginate_end_reached(
     label: &str,
     timeout: Duration,
 ) -> Result<String, String> {
-    let mut current_request_id = first_request_id;
-    let mut saw_paginating = false;
-
-    loop {
-        let event = tokio::time::timeout(timeout, conn.recv_event())
-            .await
-            .map_err(|_| format!("{label}: timed out waiting for EndReached pagination state"))?
-            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
-
-        match event {
-            CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
-                key: ref ev_key,
-                direction,
-                state,
-                ..
-            }) if ev_key == key && direction == PaginationDirection::Backward => match state {
-                PaginationState::Paginating => {
-                    saw_paginating = true;
-                }
-                PaginationState::Idle => {
-                    if !saw_paginating {
-                        return Err(format!("{label}: Idle without prior Paginating"));
-                    }
-                    saw_paginating = false;
-                    current_request_id = conn.next_request_id();
-                    conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
-                        request_id: current_request_id,
-                        key: key.clone(),
-                        direction: PaginationDirection::Backward,
-                        event_count: 10,
-                    }))
-                    .await
-                    .map_err(|e| format!("{label}: re-paginate submit failed: {e}"))?;
-                }
-                PaginationState::EndReached => {
-                    return Ok("end_reached".to_owned());
-                }
-                PaginationState::Failed { kind } => {
-                    return Err(format!("{label}: pagination failed: {kind:?}"));
-                }
-            },
-            CoreEvent::OperationFailed {
-                request_id: ev_id,
-                failure,
-            } if ev_id == current_request_id => {
-                return Err(format!("{label}: paginate operation failed: {failure:?}"));
-            }
-            _ => {}
-        }
-    }
+    pagination_waiter::wait_for_end_reached(
+        conn,
+        key,
+        first_request_id,
+        label,
+        10,
+        tokio::time::Instant::now() + timeout,
+    )
+    .await
 }
 
 /// Wait for a session restore, handling an optional recovery requirement.

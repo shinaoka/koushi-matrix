@@ -1436,7 +1436,7 @@ pub(super) struct SendQueueLocalEcho {
     pub(super) sdk_transaction_id: String,
 }
 
-#[derive(Debug)]
+// No Debug: expected message text and transaction identities are private.
 struct SendFlowWaiter {
     request_id: koushi_protocol::ids::RequestId,
     key: TimelineKey,
@@ -1474,8 +1474,23 @@ impl SendFlowWaiter {
                 diffs,
                 ..
             }) if ev_key == &self.key => {
-                self.observe_local_echo(diffs);
+                for diff in &diffs {
+                    let items = match diff {
+                        TimelineDiff::PushBack { item }
+                        | TimelineDiff::PushFront { item }
+                        | TimelineDiff::Insert { item, .. }
+                        | TimelineDiff::Set { item, .. } => std::slice::from_ref(item),
+                        TimelineDiff::Reset { items } => items.as_slice(),
+                        _ => continue,
+                    };
+                    self.observe_local_echo(items);
+                }
             }
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: ref ev_key,
+                items,
+                ..
+            }) if ev_key == &self.key => self.observe_local_echo(&items),
             CoreEvent::Timeline(TimelineEvent::SendCompleted {
                 request_id: ev_id,
                 key: ref ev_key,
@@ -1483,10 +1498,7 @@ impl SendFlowWaiter {
                 event_id,
             }) if ev_id == self.request_id && ev_key == &self.key => {
                 if transaction_id != self.expected_client_txn_id {
-                    return Err(format!(
-                        "send completed txn_id mismatch: expected {}, got {}",
-                        self.expected_client_txn_id, transaction_id
-                    ));
+                    return Err("send completed transaction mismatch".to_owned());
                 }
                 self.send_transaction_id = Some(transaction_id);
                 self.event_id = Some(event_id);
@@ -1509,15 +1521,8 @@ impl SendFlowWaiter {
         Ok(())
     }
 
-    fn observe_local_echo(&mut self, diffs: Vec<koushi_protocol::event::TimelineDiff>) {
-        for diff in &diffs {
-            let item = match diff {
-                koushi_protocol::event::TimelineDiff::PushBack { item }
-                | koushi_protocol::event::TimelineDiff::PushFront { item }
-                | koushi_protocol::event::TimelineDiff::Insert { item, .. }
-                | koushi_protocol::event::TimelineDiff::Set { item, .. } => item,
-                _ => continue,
-            };
+    fn observe_local_echo(&mut self, items: &[TimelineItem]) {
+        for item in items {
             if item
                 .body
                 .as_ref()
@@ -2695,3 +2700,7 @@ pub(super) fn projection_timeline_item(event_id: &str, is_redacted: bool) -> Tim
 #[cfg(test)]
 #[path = "event_wait_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "event_wait_send_flow_reset_tests.rs"]
+mod send_flow_reset_tests;

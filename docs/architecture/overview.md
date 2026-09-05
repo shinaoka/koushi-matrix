@@ -1281,10 +1281,27 @@ UI responsibilities:
   layout and diagnostics only. It is safe to drop on unmount and has no
   DesktopApi acknowledgement, retry/backoff delivery owner, navigation/repair
   consequence, or Core timeout.
-- Before a backward pagination request can affect the viewport, capture an
-  anchor item (first visible stable item ID plus pixel offset, or an equivalent
-  bottom-aligned strategy). After applying the diff and after React commits the
-  DOM update, restore that anchor in `requestAnimationFrame`/layout effect.
+- Preserve free-scroll layout with one renderer-local viewport stabilization
+  transaction, not independent prepend, projection and measurement corrections.
+  Capture the first visible stable row and pixel offset before layout changes.
+  One transaction owns the renderer-side prepend/projection phase, virtual
+  mounting, measurement and final anchor restoration; at most one transaction is
+  active for a timeline generation. Timeline-key replacement, timeline-generation
+  replacement, an explicit jump, a live-edge transition or starting a replacement
+  transaction invalidates the older transaction and every callback or write it
+  scheduled. Every genuine user scroll advances an input revision. Before every
+  stabilization `scrollTop` write, a callback must validate its captured timeline
+  key, timeline generation, transaction/write generation and input revision
+  against the current values; any mismatch cancels the write or rebases from a
+  current anchor. After the relevant committed layout settles, the transaction
+  may apply at most one final compensation. If virtual mounting first requires
+  an estimated-offset write, its one bounded DOM correction is that final
+  compensation and belongs to the same transaction. Programmatic scroll echoes
+  may be classified as such only against the exact current transaction/write
+  generation; an unscoped last-scroll signature is prohibited. Later independent resize observations use
+  the same owner and a current anchor, never resurrect a completed capture.
+  Lifecycle diagnostics expose closed phase/cancellation/rebase reasons and
+  renderer-local counters only, never timeline key hashes or Matrix identities.
 - Decide backward pagination through one state evaluator. Automatic demand is
   either a settled underfilled viewport (both projected and DOM height models)
   or near-top prefetch; an explicit top request additionally requires genuine
