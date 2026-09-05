@@ -60,8 +60,9 @@ Keep all nine fixed timestamps within 2026-03-10 UTC and prepend exactly one exi
 Add independent `readme-screenshot` job to `.github/workflows/ci.yml`, using the pinned Playwright container. It verifies the resolved Playwright package is exactly 1.60.0, installs exact lockfile dependencies, runs `npm run docs:screenshot` from `apps/desktop`, then checks the repository-root path from the checkout root:
 
 ```sh
-git diff --exit-code -- assets/screenshots/koushi-main.png
-test -z "$(git status --porcelain assets/screenshots)"
+test -d "$GITHUB_WORKSPACE/.git"
+git -C "$GITHUB_WORKSPACE" diff --exit-code -- assets/screenshots/koushi-main.png
+test -z "$(git -C "$GITHUB_WORKSPACE" status --porcelain -- assets/screenshots)"
 ```
 
 On mismatch it may upload the generated PNG only as a debugging artifact. It must never commit/push and must not depend on GUI, homeserver, or native IPC jobs.
