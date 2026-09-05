@@ -152,7 +152,8 @@ async fn composer_lease_command_admission_settles_after_publication() {
 
 #[tokio::test]
 async fn closed_command_sender_returns_typed_failure() {
-    let (connection, _control) = CoreConnection::new_for_testing(1);
+    let (connection, control) = CoreConnection::new_for_testing(1);
+    drop(control);
 
     assert_eq!(
         connection
