@@ -19,6 +19,7 @@ fn focused_projection_fixture(sequence: u64) -> PendingFocusedNavigation {
         room_id: "!room:example.invalid".to_owned(),
         event_id: "$target".to_owned(),
         allow_live_fallback: true,
+        generation: None,
     }
 }
 

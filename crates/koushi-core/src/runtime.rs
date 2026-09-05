@@ -27,7 +27,8 @@ use composer::{
     timeline_submission_revision_exhaustion,
 };
 use navigation::{
-    NavigationPersistenceStatus, NavigationReplacementRoomForCleanup, PendingFocusedNavigation,
+    EventNavigationPrepared, NavigationPersistenceStatus, NavigationReplacementRoomForCleanup,
+    PendingEventNavigation, PendingFocusedNavigation,
     cancel_replaced_room_timeline_link_previews_key, cancel_replaced_room_timeline_pagination_key,
     effects_open_focused_timeline, focused_navigation_outcome_after_reduce,
     navigation_replacement_room_for_cleanup, unsubscribe_replaced_timeline_key,
@@ -532,6 +533,8 @@ impl CoreRuntime {
         // sync bursts never overflow the RoomActor's drop-on-full try_send.
         let (event_tx, _) = broadcast::channel(event_capacity);
         let (action_tx, action_rx) = mpsc::channel(ACTION_QUEUE_CAPACITY);
+        let (event_navigation_prepared_tx, event_navigation_prepared_rx) =
+            mpsc::unbounded_channel();
         #[cfg(any(test, feature = "test-hooks"))]
         let (composer_draft_test_tx, composer_draft_test_rx) = mpsc::channel(1);
         let settings_store = SettingsStore::new(&data_dir);
@@ -584,6 +587,11 @@ impl CoreRuntime {
         let actor = AppActor {
             command_rx,
             action_rx,
+            event_navigation_prepared_tx,
+            event_navigation_prepared_rx,
+            pending_event_navigation: None,
+            event_navigation_generation: 0,
+            event_navigation_task: None,
             focused_projection_rx: Some(focused_projection_rx),
             #[cfg(any(test, feature = "test-hooks"))]
             composer_draft_test_rx,
@@ -819,6 +827,11 @@ enum SettingsLoadStatus {
 struct AppActor {
     command_rx: mpsc::Receiver<CoreCommandEnvelope>,
     action_rx: mpsc::Receiver<Vec<AppAction>>,
+    event_navigation_prepared_tx: mpsc::UnboundedSender<EventNavigationPrepared>,
+    event_navigation_prepared_rx: mpsc::UnboundedReceiver<EventNavigationPrepared>,
+    pending_event_navigation: Option<PendingEventNavigation>,
+    event_navigation_generation: u64,
+    event_navigation_task: Option<AbortOnDrop<()>>,
     focused_projection_rx:
         Option<mpsc::UnboundedReceiver<crate::timeline::FocusedProjectionCommitted>>,
     #[cfg(any(test, feature = "test-hooks"))]
@@ -1013,6 +1026,13 @@ impl AppActor {
                         break;
                     }
                 }
+                event_navigation_prepared = self.event_navigation_prepared_rx.recv() => {
+                    if let Some(event_navigation_prepared) = event_navigation_prepared {
+                        self.handle_event_navigation_prepared(event_navigation_prepared).await;
+                    } else {
+                        break;
+                    }
+                }
                 focused_projection = receive_focused_projection_commit(
                     &mut self.focused_projection_rx
                 ) => {
@@ -1116,6 +1136,7 @@ impl AppActor {
                                     room_id: room_id.clone(),
                                     event_id: event_id.clone(),
                                     allow_live_fallback: true,
+                                    generation: None,
                                 });
                             }
                         }
@@ -1431,6 +1452,8 @@ impl AppActor {
                                 intent_outcome_token(&outcome),
                             )),
                         );
+                        self.handle_event_navigation_select_outcome(request_id, outcome.clone())
+                            .await;
                         self.emit(CoreEvent::IntentLifecycle {
                             request_id,
                             outcome,
@@ -1847,7 +1870,22 @@ impl AppActor {
                 projected_state_changed
             }
             CoreCommand::App(app_command) => match app_command {
-                AppCommand::NavigateToEvent { .. } => false,
+                AppCommand::NavigateToEvent {
+                    request_id,
+                    room_id,
+                    event_id,
+                    source,
+                    missing_target_policy,
+                } => {
+                    self.handle_event_navigation_command(
+                        request_id,
+                        room_id,
+                        event_id,
+                        source,
+                        missing_target_policy,
+                    )
+                    .await
+                }
                 AppCommand::Shutdown { .. } => {
                     unreachable!("shutdown is handled by the AppActor command disposition")
                 }
@@ -2373,6 +2411,7 @@ impl AppActor {
                         room_id: room_id.clone(),
                         event_id: event_id.clone(),
                         allow_live_fallback,
+                        generation: None,
                     });
                     let effects = self
                         .reduce_app_action(AppAction::OpenFocusedContext { room_id, event_id })
@@ -2464,6 +2503,7 @@ impl AppActor {
                             room_id: room_id.clone(),
                             event_id: event_id.clone(),
                             allow_live_fallback: true,
+                            generation: None,
                         });
                         let effects = self
                             .reduce_app_action(AppAction::OpenFocusedContext {

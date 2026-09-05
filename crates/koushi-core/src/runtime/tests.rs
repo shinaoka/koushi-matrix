@@ -1073,9 +1073,15 @@ async fn committed_room_cleanup_bypasses_a_saturated_account_mailbox() {
     let composer_draft_lease_changes = composer_draft_leases.subscribe();
     let (composer_draft_rejected_tx, composer_draft_rejected_rx) = mpsc::unbounded_channel();
     let (_focused_projection_tx, focused_projection_rx) = mpsc::unbounded_channel();
+    let (event_navigation_prepared_tx, event_navigation_prepared_rx) = mpsc::unbounded_channel();
     let actor = AppActor {
         command_rx,
         action_rx,
+        event_navigation_prepared_tx,
+        event_navigation_prepared_rx,
+        pending_event_navigation: None,
+        event_navigation_generation: 0,
+        event_navigation_task: None,
         focused_projection_rx: Some(focused_projection_rx),
         composer_draft_test_rx,
         event_tx,
@@ -1240,9 +1246,15 @@ async fn same_batch_select_room_settles_only_final_selection() {
     let composer_draft_lease_changes = composer_draft_leases.subscribe();
     let (composer_draft_rejected_tx, composer_draft_rejected_rx) = mpsc::unbounded_channel();
     let (_focused_projection_tx, focused_projection_rx) = mpsc::unbounded_channel();
+    let (event_navigation_prepared_tx, event_navigation_prepared_rx) = mpsc::unbounded_channel();
     let actor = AppActor {
         command_rx,
         action_rx,
+        event_navigation_prepared_tx,
+        event_navigation_prepared_rx,
+        pending_event_navigation: None,
+        event_navigation_generation: 0,
+        event_navigation_task: None,
         focused_projection_rx: Some(focused_projection_rx),
         composer_draft_test_rx,
         event_tx,
