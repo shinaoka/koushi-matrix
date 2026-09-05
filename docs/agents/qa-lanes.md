@@ -238,6 +238,23 @@ or live-homeserver scenario.
 Harness and spec rules that have each caused a real failure are collected in
 [troubleshooting.md](troubleshooting.md#browser-headless-harness).
 
+## Documentation screenshot lane
+
+The README screenshot lane renders the real React `<App />` in the existing
+browser harness with synthetic state only. It is not native GUI, Tauri IPC, or
+homeserver proof, and it must not be used as a substitute for those lanes.
+
+Run the deterministic generator from the repository root in the pinned
+Playwright container documented in `README.md`:
+
+```bash
+npm --prefix apps/desktop run docs:screenshot
+```
+
+The focused config uses port 5184, one worker, UTC, light theme, and a 2x
+scale factor. The checked-in PNG is the only output under test; CI regenerates
+it and rejects any byte or git-status difference.
+
 ## Real-account lanes
 
 Attended, credential-bearing, and destructive if misused. These consume device

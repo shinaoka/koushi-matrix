@@ -53,6 +53,27 @@ jobs:
       - name: Domain-crate platform-dep check
         run: npm run lint:domain-deps
 
+  readme-screenshot:
+    name: README screenshot
+    runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v1.60.0-noble
+      options: --user 0:0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install desktop dependencies
+        run: npm --prefix apps/desktop ci
+      - name: Assert pinned Playwright version
+        run: node -e 'const p=require("./apps/desktop/node_modules/@playwright/test/package.json"); if (p.version !== "1.60.0") throw new Error(`Unexpected @playwright/test ${p.version}`);'
+      - name: Generate README screenshot
+        working-directory: ${{ github.workspace }}
+        run: npm --prefix apps/desktop run docs:screenshot
+      - name: Reject screenshot changes
+        working-directory: ${{ github.workspace }}
+        run: |
+          git diff --exit-code -- assets/screenshots/koushi-main.png
+          test -z "$(git status --porcelain -- assets/screenshots)"
+
   browser-headless:
     name: Browser headless (Playwright DOM tier)
     runs-on: ubuntu-latest
