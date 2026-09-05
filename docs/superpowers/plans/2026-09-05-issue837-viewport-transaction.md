@@ -1,6 +1,6 @@
 # Unified renderer viewport stabilization (#837)
 
-Status: implementation and focused regressions complete; final full-diff review and merge gates pending.
+Status: implementation and deliverable reviews complete; local gates passed; CI and merge status are tracked in GitHub.
 
 ## Scope and ownership
 
@@ -370,7 +370,7 @@ configured by the frontend CI workflow; behavioral acceptance is mandatory.
   row ~1551px above a 422px viewport. The helper now positions its measured row
   and asserts viewport intersection before selecting the anchor. Its tolerance
   was not relaxed; all four App anchor cases passed afterward.
-- Latest complete Vitest run: 106 files / 1244 tests passed with default test
+- Latest complete Vitest run: 106 files / 1246 tests passed with default test
   deadlines and four local workers. Typecheck, lint, lockfile audit (zero
   vulnerabilities), and production build passed. Earlier local diagnostic runs
   used longer per-test deadlines only while investigating host load; no checked-in
@@ -433,5 +433,28 @@ configured by the frontend CI workflow; behavioral acceptance is mandatory.
   `KOUSHI_PLAYWRIGHT_EXTRA_ARGS='--disable-gpu --enable-unsafe-swiftshader'`.
   Browser configuration, pixel tolerances and checked-in deadlines are unchanged.
 
-Final full-browser result, post-integration delta review and PR evidence remain
-pending and must be recorded before completion.
+### Final integration verification
+
+- Integrated upstream `55b99dfa` in merge `5061e72e`. Renderer/controller/QA
+  implementation bytes were unchanged by that merge; new upstream Rust formatting
+  required one additional braces-only change in the navigation adapter.
+- Final narrow-delta Flash review returned **Correct-to-merge** in its bounded
+  timeout checkpoint. Scope: post-geometry diagnostic publication wait and the
+  inert formatting change, not a new whole-implementation approval.
+- Complete browser tier: **289 passed**, 6.7 minutes, using the documented local
+  software-rendering option. No retries and no relaxed geometry assertions.
+- Complete Vitest: **1246 passed / 106 files**.
+- Fresh Rust tests: Core **943 passed / 8 ignored**; SDK **143**; desktop/Tauri
+  **127**; State package **786**; headless QA **96**; real-homeserver QA unit tests
+  **17**. Compilation was completed separately after a bounded QA compile timeout;
+  no timeout was counted as a passing test.
+- Typecheck, lint, production build, rustfmt, secret scan, domain/Tauri boundary
+  guards, Rust test-structure guard, SDK submodule guard and dependency audit
+  passed after integration.
+- The original worktree's four modified files remain untouched.
+
+- Final post-integration local SDK + Core timeline lane: **Tuwunel and Synapse
+  passed**, including `timeline=ok`, `timeline_nav=ok`, and `restore_cleanup=ok`.
+
+GitHub PR, required CI and merge state remain authoritative for issue completion;
+local verification alone is not a merge or issue-closure claim.
