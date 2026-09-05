@@ -413,6 +413,7 @@ test("short initial load stays stable when the user scrolls up slightly", async 
 test("short variable-height load stays stable when the user scrolls up slightly", async ({ page }) => {
   await page.goto("/harness.html?variableHeights=true");
   await page.waitForSelector("[data-testid=timeline-view]");
+  await expect(page.getByTestId("timeline-view")).toHaveCSS("overflow-anchor", "none");
 
   await page.evaluate(
     ({ key, items }) => {
@@ -1430,12 +1431,11 @@ test("measurement commit compensates the local anchor before paint", async ({ pa
     await probe.evaluate(value => value.disconnect());
     await probe.dispose();
   }
-  // Diagnostics publish separately; wait for them only AFTER asserting the
-  // geometry captured before paint. They never gate the geometry sample.
-  await expect.poll(async () => {
-    const diagnostics = await page.evaluate(() => window.__harness.scrollDiagnostics());
-    return Math.min(diagnostics?.heightModelCommits ?? 0, diagnostics?.changedMeasuredRows ?? 0);
-  }).toBeGreaterThan(0);
+  // Secondary coverage: the actual commit must record its changed rows.
+  // These counters never gate the before-paint geometry sample.
+  const diagnostics = await page.evaluate(() => window.__harness.scrollDiagnostics());
+  expect(diagnostics?.heightModelCommits ?? 0).toBeGreaterThan(0);
+  expect(diagnostics?.changedMeasuredRows ?? 0).toBeGreaterThan(0);
 });
 
 test("active upward input keeps the anchor stable when prepend arrives", async ({ page }) => {

@@ -425,9 +425,10 @@ configured by the frontend CI workflow; behavioral acceptance is mandatory.
   ResizeObserver callback, before paint, with the unchanged 2px tolerance.
 - Flash reviewed this test-only delta: **Correct-to-merge**, conditional on the
   full browser tier. It cannot falsely pass by waiting for geometry convergence.
-  A later full run passed the geometry assertion but found separately published
-  diagnostics still at zero; only those secondary counters are now awaited
-  after the already-captured before-paint geometry assertion.
+  A later full run passed geometry but found a zero diagnostic counter. The
+  initial publication-timing hypothesis was subsequently disproved: flushes
+  synchronously published diagnostics but omitted changed-row observations.
+  See the CI follow-up below; no diagnostic polling remains.
 - Local native rendering also stalled without any observer notifications. Use
   the existing documented software-rendering opt-in from `playwright.config.ts`:
   `KOUSHI_PLAYWRIGHT_EXTRA_ARGS='--disable-gpu --enable-unsafe-swiftshader'`.
@@ -438,9 +439,10 @@ configured by the frontend CI workflow; behavioral acceptance is mandatory.
 - Integrated upstream `55b99dfa` in merge `5061e72e`. Renderer/controller/QA
   implementation bytes were unchanged by that merge; new upstream Rust formatting
   required one additional braces-only change in the navigation adapter.
-- Final narrow-delta Flash review returned **Correct-to-merge** in its bounded
-  timeout checkpoint. Scope: post-geometry diagnostic publication wait and the
-  inert formatting change, not a new whole-implementation approval.
+- A timed-out narrow-delta review checkpoint was not accepted as gate evidence.
+  A completed, scoped Flash rereview subsequently returned **Correct-to-merge**;
+  its verdict is recorded in PR #844. The later counter correction has its own
+  completed delta review below.
 - Complete browser tier: **289 passed**, 6.7 minutes, using the documented local
   software-rendering option. No retries and no relaxed geometry assertions.
 - Complete Vitest: **1246 passed / 106 files**.
@@ -458,3 +460,28 @@ configured by the frontend CI workflow; behavioral acceptance is mandatory.
 
 GitHub PR, required CI and merge state remain authoritative for issue completion;
 local verification alone is not a merge or issue-closure claim.
+
+### PR #844 CI follow-up
+
+- Run `33984140385`: eight jobs passed; browser tier had 288 passes and a 5px
+  drift in the existing short variable-height test. Its harness did not load
+  production CSS. A new contract assertion reproduced `overflow-anchor: auto`
+  where production requires `none`: the browser was a second anchoring owner.
+  The shared harness now disables native anchoring on the viewport; the 2px
+  geometry oracle remains unchanged. The focused regression passed.
+- With that contract corrected, native resize geometry passed before paint,
+  with one actual projection-compensation write and one height commit. The
+  changed-row counter nevertheless stayed zero. A direct helper regression
+  reproduced `flush(3)` reporting zero changed-row observations. The helper now
+  includes flush observations in its cumulative counter, just as it includes
+  frame observations. Repeated observations are explicitly not deduplicated.
+- Removed the secondary-counter wait: both counters are checked directly after
+  the before-paint geometry assertion. This corrects the diagnostic source,
+  rather than relying on unrelated initial measurements to satisfy the test.
+- Completed read-only Flash delta review (low): **Correct-to-merge**, no blocking
+  findings. The viewport transaction/controller algorithm was not changed.
+  The reviewer noted a harmless inner CSS selector difference; the matching
+  scroller-level opt-out disables native anchoring for the entire subtree.
+- Focused geometry and counter regressions, Vitest 1246, lint and build passed.
+  Complete browser tier after these corrections: **289 passed**, 5.9 minutes.
+  Replacement CI results are recorded in the PR.
