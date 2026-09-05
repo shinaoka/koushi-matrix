@@ -53,10 +53,18 @@ fn reducer_clearing_event_navigation_requires_owner_cleanup() {
     };
     let idle = EventNavigationState::Idle;
 
-    assert!(super::event_navigation_owner_cleanup_required(&opening, &idle));
-    assert!(super::event_navigation_owner_cleanup_required(&failed, &idle));
-    assert!(!super::event_navigation_owner_cleanup_required(&opening, &failed));
-    assert!(!super::event_navigation_owner_cleanup_required(&idle, &idle));
+    assert!(super::event_navigation_owner_cleanup_required(
+        &opening, &idle
+    ));
+    assert!(super::event_navigation_owner_cleanup_required(
+        &failed, &idle
+    ));
+    assert!(!super::event_navigation_owner_cleanup_required(
+        &opening, &failed
+    ));
+    assert!(!super::event_navigation_owner_cleanup_required(
+        &idle, &idle
+    ));
     assert!(!super::event_navigation_owner_cleanup_required(
         &opening,
         &EventNavigationState::Opening {

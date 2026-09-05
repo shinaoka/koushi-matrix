@@ -31,7 +31,10 @@ impl StoreActor {
             }
             Err(_) => return Err(CoreFailure::StoreUnavailable),
         };
-        Ok(decrypt_navigation_payload(&self.load_unlock_secret(key_id)?, &bytes)?.persistence_view())
+        Ok(
+            decrypt_navigation_payload(&self.load_unlock_secret(key_id)?, &bytes)?
+                .persistence_view(),
+        )
     }
 
     pub fn save_navigation(
