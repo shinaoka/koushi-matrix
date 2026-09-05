@@ -10,16 +10,15 @@ Last amended: 2026-09-05.
 
 ## Read Order And Authority
 
-Read these files before changing behavior:
-
-1. `REPOSITORY_RULES.md` - durable repository rules and prohibitions.
-2. `docs/architecture/overview.md` - long-term product architecture, layer
-   ownership, runtime model, security model, and QA model.
-3. `docs/architecture/state-machine.md` - normative reducer state machines,
-   transitions, and guards.
-4. `docs/policies/engineering-rules.md` - detailed policy extension for
-   secrets, logging, GUI automation, async/runtime rules, and build gates.
-5. The relevant dated implementation plan under `docs/superpowers/plans/`.
+Read this root rule book before changing behavior. Then read the applicable
+sections of `docs/architecture/overview.md` for layer/runtime changes,
+`docs/architecture/state-machine.md` for transitions and guards,
+`docs/architecture/i18n.md` for product text and locale/display changes, and
+`docs/policies/engineering-rules.md` for security, runtime, and gate policy.
+Use `docs/agents/plans.md` to find a relevant dated plan when one governs the
+work. This is task-scoped reading, not a requirement to read every linked
+reference in full; questions and documentation-only edits need the applicable
+contracts rather than unrelated feature specifications.
 
 `AGENTS.md` is the operational entry file and stays small enough to load every
 session: it holds the current runtime/QA contract and routes to `docs/agents/`,
@@ -552,11 +551,12 @@ The main agent owns integration of the following shared surfaces. Subagents may
 read them but must not append to them without main-agent coordination:
 
 - `crates/koushi-state/src/{state.rs,action.rs,reducer.rs}`
-- `crates/koushi-core/src/{command.rs,event.rs,runtime.rs}`
-- `apps/desktop/src-tauri/src/{dto.rs,commands.rs}`
+- `crates/koushi-protocol/src/{command.rs,command/,event.rs,event/,state_update.rs}`
+- `crates/koushi-core/src/runtime.rs`
+- `apps/desktop/src-tauri/src/{dto.rs,dto/,commands/}`
 - `apps/desktop/src/{App.tsx,components/TimelineView.tsx,i18n/messages.ts,styles.css}`
 - `apps/desktop/src/domain/{types.ts,coreEvents.ts,coreEvents.generated.json}`
-- Browser-headless GUI-operation specs and Tauri IPC mocks
+- Browser-headless GUI-operation specs, Tauri IPC mocks, and Linux GUI QA scripts
 
 To reduce conflicts on these files:
 
@@ -620,19 +620,20 @@ To reduce conflicts on these files:
 
 ## Review And Audit
 
-- **Non-frontier models must receive frontier-model review for substantial work.**
-  When a cheaper or non-frontier agent (e.g., a fast implementation subagent)
-  completes a significant change — especially after parallel implementation,
-  AgentSwarm work, or changes to shared hot files — a frontier model must
-  review the diff against the canon (`REPOSITORY_RULES.md`,
-  `docs/architecture/overview.md`, `docs/architecture/state-machine.md` when
-  reducers change, `docs/policies/engineering-rules.md`, `AGENTS.md`, and the
-  relevant dated plan). The review must include the verification output and
-  any security/privacy-sensitive surfaces.
-- **External review tools are not used.** Do not schedule, run, or wait on an
-  external CLI reviewer. The reviewing frontier model is the agent already in
-  the session: it reads the finished diff against the canon itself. Do not
-  suggest an external review as a next step or treat its absence as a gap.
+- **The main agent owns review and acceptance.** Read the finished diff,
+  including new files, against the applicable canon and verification evidence.
+  Delegated output is a draft, not accepted evidence. Routine changes use
+  self-review and deterministic checks; delegation alone does not impose a
+  separate repository-level design-document or two-review ceremony.
+- **Independent review follows risk, not model branding.** Changes to crypto,
+  authorization, unsafe/FFI contracts, consequential concurrency, or major
+  cross-layer boundaries require read-only independent review of the design
+  before implementation and the integrated diff afterwards. Fix blocking
+  findings and record the verdicts. Use an available subagent review tool;
+  a different model family is preferred. Explicit user or higher-priority
+  agent requirements may impose additional review gates and still apply.
+  If required review is unavailable, report the blocker rather than claiming
+  the change is ready.
 - **Review focus areas.** The auditor must prioritize, in order:
   1. Consistency with repository rules and canon documents.
   2. Consistency with Rust/Tauri best practices and the existing codebase.
@@ -648,11 +649,10 @@ To reduce conflicts on these files:
 - **Review findings are implementation tasks, not optional suggestions.** The
   implementing agent or the main agent must address blocking issues and
   re-run the relevant gates before landing the change on `main`.
-- **Frontier-model-authored implementation is reviewed by its own author.** Run
-  the full gate set and read the finished diff against the canon before claiming
-  completion. If the frontier model is uncertain about a cross-boundary
-  decision, it must escalate to the user or pause before proceeding rather than
-  deferring the judgement to a later reviewer.
+- **Self-review is required regardless of author.** Run the applicable gate
+  set and read the finished diff before claiming completion. Independent review
+  does not replace this check. Escalate unresolved cross-boundary decisions to
+  the user rather than deferring them until after landing.
 - **Audit scope is proportional to risk.** A narrow module-local patch may
   need only a quick diff check; a parallel Phase A integration that touches
   shared enums, reducers, command/event variants, Tauri DTOs, TypeScript wire,

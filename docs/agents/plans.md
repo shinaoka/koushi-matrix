@@ -1,7 +1,7 @@
 # Implementation Plan Index
 
-Which dated plan governs which area. Read the relevant plan before implementing
-in that area; it is step 6 of the read order in [AGENTS.md](../../AGENTS.md).
+Which dated plan governs which area. Read the relevant plan when it governs
+the work; use the task-scoped routing in [AGENTS.md](../../AGENTS.md).
 
 Plans are historical once their phase ships — they record the intended sequence
 and the deliberate limits of that phase, not the current contract. When a plan

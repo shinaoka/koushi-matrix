@@ -53,36 +53,45 @@ object (evaluating 'e.state.basic_operation.kind')`. Headless tests that use the
 browser fake or mock IPC will NOT catch this — they build their own snapshots.
 Only the real Tauri lane or the `dto.rs` serialization-contract test does.
 
-When any `AppState` field, DTO, or command/event variant changes, update **all**
-of these in the same change:
+When an `AppState` field, DTO, or command/event variant changes, check every
+applicable mirror below and update affected surfaces in the same change.
+An unchanged surface needs no mechanical edit:
 
-1. `crates/koushi-state` state/action/reducer
-2. `apps/desktop/src-tauri/src/dto.rs` and its serialization-contract tests
+1. `crates/koushi-state` state/action/reducer and the public
+   `crates/koushi-protocol/src/{command.rs,event.rs,state_update.rs}` contracts
+2. `apps/desktop/src-tauri/src/dto.rs`, `dto/`, and serialization-contract tests
 3. `apps/desktop/src/domain/types.ts`
 4. `apps/desktop/src/domain/coreEvents.ts`
 5. `apps/desktop/src/domain/coreEvents.generated.json`
-6. `apps/desktop/src/backend/browserFakeApi.ts`
+6. Relevant explicit transport fixtures under `apps/desktop/src/backend/browser/`
 7. `apps/desktop/src/test/tauriIpcMock.ts`
 8. `apps/desktop/src/test/appHarnessMain.tsx`
 9. Any Rust/TS fixture that constructs the changed struct
 
-The core-event wire-contract test lives in `apps/desktop/src-tauri/src/lib.rs`;
-timeline item DTO fields must keep it in sync with `coreEvents.ts` and
-`coreEvents.generated.json`.
+The core-event wire-contract test lives in
+`apps/desktop/src-tauri/src/core_event_forwarder/tests.rs`; timeline item DTO
+fields must keep it in sync with `coreEvents.ts` and `coreEvents.generated.json`.
 
 Headless browser mocks and browser fakes do **not** inherit Rust snapshot fields
 automatically. The real WebView consumes the Tauri DTO while headless tests often
 consume the TypeScript fakes, so updating only one side leaves a green browser
 tier and a crashing Tauri lane.
 
-A snapshot field change breaks TWO checked-in artifacts, and they are regenerated
-differently:
+A snapshot field change can affect two checked-in artifacts, with different
+update procedures (this section owns those procedures):
 
 - `apps/desktop/src-tauri/tests/golden/frontend_app_state.json` is rewritten by
   `UPDATE_GOLDEN=1 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib frontend_app_state_golden`.
-- `apps/desktop/src/domain/coreEvents.generated.json` has no such switch and must
-  be edited to match `serialize_core_event`. Fixing only the first leaves the
-  CoreEvent contract test red, which is what happened on 2026-07-25.
+- `apps/desktop/src/domain/coreEvents.generated.json` is regenerated from the
+  Rust serialization exercised by the wire-contract test:
+  `UPDATE_CORE_EVENT_GOLDEN=1 cargo test -p koushi-desktop --lib core_event_wire_format_matches_checked_in_contract_artifact`.
+  Update the Rust contract cases for the intended shape first, regenerate rather
+  than hand-editing JSON, inspect the resulting diff, then rerun the test without
+  the update variable. The update run writes the artifact and returns before
+  the equality assertion; it is not verification by itself.
+
+Likewise, rerun the frontend snapshot golden test without `UPDATE_GOLDEN` after
+regeneration. Neither update switch substitutes for checking the intended shape.
 
 Populate the golden fixture with data that exercises the new shape. An empty
 array or a `None` proves nothing a scalar field would not also satisfy, so a
