@@ -66,10 +66,8 @@ jobs:
       - name: Assert pinned Playwright version
         run: node -e 'const p=require("./apps/desktop/node_modules/@playwright/test/package.json"); if (p.version !== "1.60.0") throw new Error(`Unexpected @playwright/test ${p.version}`);'
       - name: Generate README screenshot
-        working-directory: ${{ github.workspace }}
         run: npm --prefix apps/desktop run docs:screenshot
       - name: Reject screenshot changes
-        working-directory: ${{ github.workspace }}
         run: |
           git diff --exit-code -- assets/screenshots/koushi-main.png
           test -z "$(git status --porcelain -- assets/screenshots)"
