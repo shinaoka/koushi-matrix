@@ -544,15 +544,47 @@ export function checkDesktopFailureWaiterContract() {
 
 export function checkDesktopActivityNavigationContract() {
   const rule = "desktop.activity.navigation_contract";
-  const body = rustItemBody(readTauriSource("commands/navigation.rs"), "async fn open_anchored_timeline");
+  const source = readTauriSource("commands/navigation.rs");
+  const routes = [
+    ["open_activity_event", rustItemBody(source, "pub async fn open_activity_event")],
+    ["open_pinned_event", rustItemBody(source, "pub async fn open_pinned_event")],
+    ["select_search_result", rustItemBody(source, "pub async fn select_search_result")]
+  ];
+  const helper = rustItemBody(source, "async fn navigate_to_event");
+  const policy = rustItemBody(source, "fn event_navigation_policy");
   const failures = [];
-  for (const marker of ["CloseFocusedContext", "wait_for_focused_context_closed", "select_room_and_wait", "OpenAnchoredTimeline", "wait_for_main_timeline_anchor"]) {
-    if (!body?.includes(marker)) failures.push(sourceContractFailure(rule, `missing ${marker}`));
+  for (const [name, body] of routes) {
+    if (!body?.includes("navigate_to_event(")) {
+      failures.push(sourceContractFailure(rule, `${name} does not route through navigate_to_event`));
+    }
   }
-  for (const marker of ["build_subscribe_timeline_command", "EnterAnchoredTimeline", "wait_for_focused_timeline_event", "build_update_navigation_scroll_anchor_command"]) {
-    if (body?.includes(marker)) failures.push(sourceContractFailure(rule, `forbidden ${marker}`));
+  if (!helper?.includes("navigate_to_event_and_wait")) {
+    failures.push(sourceContractFailure(rule, "navigate_to_event lacks Core waiter delegation"));
   }
-  failures.push(...orderedMarkers(rule, body ?? "", ["CloseFocusedContext", "wait_for_focused_context_closed", "select_room_and_wait", "OpenAnchoredTimeline", "wait_for_main_timeline_anchor"]));
+  for (const marker of [
+    "EventNavigationSource::Activity",
+    "EventNavigationSource::Search",
+    "EventNavigationSource::Pinned",
+    "EventNavigationMissingTargetPolicy::LiveFallback",
+    "EventNavigationMissingTargetPolicy::Fail"
+  ]) {
+    if (!policy?.includes(marker)) failures.push(sourceContractFailure(rule, `event navigation policy lacks ${marker}`));
+  }
+  const eventPath = routes.map(([, body]) => body ?? "").concat(helper ?? "").join("\n");
+  for (const marker of [
+    "open_anchored_timeline",
+    "CloseFocusedContext",
+    "wait_for_focused_context_closed",
+    "select_room_and_wait",
+    "OpenAnchoredTimeline",
+    "wait_for_main_timeline_anchor",
+    "build_subscribe_timeline_command",
+    "EnterAnchoredTimeline",
+    "wait_for_focused_timeline_event",
+    "build_update_navigation_scroll_anchor_command"
+  ]) {
+    if (eventPath.includes(marker)) failures.push(sourceContractFailure(rule, `event navigation contains forbidden ${marker}`));
+  }
   return failures;
 }
 
@@ -748,11 +780,10 @@ export function checkDesktopNavigationContract() {
   if (!paginate?.includes("trace_tauri_timeline_command(\"submit\", \"paginate_backwards\"")) failures.push(sourceContractFailure(rule, "backfill submit trace is missing"));
   if (!previews?.includes("trace_tauri_timeline_command(\"submit\", \"load_link_previews\"")) failures.push(sourceContractFailure(rule, "link-preview submit trace is missing"));
   const search = rustItemBody(source, "pub async fn select_search_result");
-  const anchored = rustItemBody(source, "async fn open_anchored_timeline");
-  if (!search?.includes("open_anchored_timeline")) failures.push(sourceContractFailure(rule, "search-result navigation lacks open_anchored_timeline"));
-  for (const marker of ["CloseFocusedContext", "OpenAnchoredTimeline", "select_room_and_wait", "wait_for_main_timeline_anchor", "state.runtime.attach"]) if (!anchored?.includes(marker)) failures.push(sourceContractFailure(rule, `anchored navigation lacks ${marker}`));
-  for (const marker of ["EnterAnchoredTimeline", "wait_for_focused_timeline_event", "build_subscribe_timeline_command"]) if (anchored?.includes(marker)) failures.push(sourceContractFailure(rule, `anchored navigation contains forbidden ${marker}`));
-  failures.push(...orderedMarkers(rule, anchored ?? "", ["select_room_and_wait", "OpenAnchoredTimeline", "wait_for_main_timeline_anchor"]));
+  const eventNavigation = rustItemBody(source, "async fn navigate_to_event");
+  if (!search?.includes("navigate_to_event(")) failures.push(sourceContractFailure(rule, "search-result navigation lacks navigate_to_event"));
+  if (!eventNavigation?.includes("navigate_to_event_and_wait")) failures.push(sourceContractFailure(rule, "event navigation lacks Core waiter delegation"));
+  for (const marker of ["open_anchored_timeline", "CloseFocusedContext", "OpenAnchoredTimeline", "select_room_and_wait", "wait_for_main_timeline_anchor", "EnterAnchoredTimeline", "wait_for_focused_timeline_event", "build_subscribe_timeline_command"]) if (eventNavigation?.includes(marker)) failures.push(sourceContractFailure(rule, `event navigation contains forbidden ${marker}`));
   const close = rustItemBody(source, "pub async fn close_focused_context");
   for (const marker of ["CloseFocusedContext", "update_qa_window_title_from_state", "FrontendCommandSettlement::from_published_generation"]) if (!close?.includes(marker)) failures.push(sourceContractFailure(rule, `close_focused_context lacks ${marker}`));
   failures.push(...orderedMarkers(rule, close ?? "", ["CloseFocusedContext", "wait_for_focused_context_closed", "FrontendCommandSettlement::from_published_generation"]));
