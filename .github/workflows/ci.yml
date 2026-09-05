@@ -69,8 +69,9 @@ jobs:
         run: npm --prefix apps/desktop run docs:screenshot
       - name: Reject screenshot changes
         run: |
-          git diff --exit-code -- assets/screenshots/koushi-main.png
-          test -z "$(git status --porcelain -- assets/screenshots)"
+          test -d "$GITHUB_WORKSPACE/.git"
+          git -C "$GITHUB_WORKSPACE" diff --exit-code -- assets/screenshots/koushi-main.png
+          test -z "$(git -C "$GITHUB_WORKSPACE" status --porcelain -- assets/screenshots)"
 
   browser-headless:
     name: Browser headless (Playwright DOM tier)
