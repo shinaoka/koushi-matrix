@@ -239,11 +239,11 @@ pub(crate) enum AccountMessage {
         request_id: RequestId,
         room_id: String,
         event_id: String,
-        response_tx: oneshot::Sender<bool>,
+        response_tx: oneshot::Sender<super::RoomEventLookupResult>,
     },
     #[cfg(test)]
     ConfigureEventCacheFetchForTesting {
-        fetch: oneshot::Receiver<()>,
+        fetch: oneshot::Receiver<super::RoomEventLookupResult>,
     },
     RepairRoomTimeline {
         request_id: RequestId,
@@ -955,7 +955,7 @@ pub struct AccountActor {
     /// Mutated only from the actor loop; no shared lock needed.
     pub(super) avatar_cache: HashMap<String, AvatarThumbnailState>,
     #[cfg(test)]
-    pub(super) event_cache_fetch_override: Option<oneshot::Receiver<()>>,
+    pub(super) event_cache_fetch_override: Option<oneshot::Receiver<super::RoomEventLookupResult>>,
     /// In-flight fetches: mxc_uri -> waiting request_ids (single-flight dedup).
     /// The first `DownloadAvatarThumbnail` for a given mxc spawns a task and
     /// records its `request_id` here; subsequent ones for the same mxc while
@@ -1536,10 +1536,10 @@ impl AccountActor {
                     event_id,
                     response_tx,
                 } => {
-                    let cached = self
+                    let result = self
                         .handle_ensure_room_event_cached(request_id, room_id, event_id)
                         .await;
-                    let _ = response_tx.send(cached);
+                    let _ = response_tx.send(result);
                 }
                 AccountMessage::RepairRoomTimeline {
                     request_id,

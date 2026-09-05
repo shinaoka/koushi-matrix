@@ -1,5 +1,12 @@
 //! AccountActor ownership façade.
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RoomEventLookupResult {
+    Located,
+    Missing,
+    Failed,
+}
+
 mod account_management;
 mod actor;
 mod local_data_cleanup;

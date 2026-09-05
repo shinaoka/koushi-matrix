@@ -44,6 +44,125 @@ fn scripted_connection(
     )
 }
 
+fn event_navigation_snapshot(
+    generation: u64,
+    event_navigation: EventNavigationState,
+) -> VersionedAppStateSnapshot {
+    let mut state = AppState::default();
+    state.navigation.event_navigation = event_navigation;
+    VersionedAppStateSnapshot { generation, state }
+}
+
+fn event_navigation_request(
+    connection: &mut CoreConnection,
+) -> impl std::future::Future<Output = Result<VersionedAppStateSnapshot, EventNavigationError>> + '_
+{
+    connection.navigate_to_event_and_wait(
+        "!room:example.invalid".to_owned(),
+        "$event:example.invalid".to_owned(),
+        EventNavigationSource::Activity,
+        EventNavigationMissingTargetPolicy::Fail,
+        Duration::from_secs(1),
+    )
+}
+
+#[tokio::test]
+async fn event_navigation_same_generation_succeeds() {
+    let (mut connection, mut control) = CoreConnection::new_for_testing(4);
+    let mut waiter = Box::pin(event_navigation_request(&mut connection));
+    assert!(waiter.as_mut().now_or_never().is_none());
+    let _ = control.recv_command().await.expect("navigation command");
+    let snapshot = event_navigation_snapshot(
+        1,
+        EventNavigationState::Anchored {
+            generation: 1,
+            source: EventNavigationSource::Activity,
+        },
+    );
+    control.send_snapshot(snapshot.clone());
+    assert_eq!(waiter.await, Ok(snapshot));
+}
+
+#[tokio::test]
+async fn event_navigation_same_generation_failure_is_typed() {
+    let (mut connection, mut control) = CoreConnection::new_for_testing(4);
+    let mut waiter = Box::pin(event_navigation_request(&mut connection));
+    assert!(waiter.as_mut().now_or_never().is_none());
+    let _ = control.recv_command().await.expect("navigation command");
+    control.send_snapshot(event_navigation_snapshot(
+        1,
+        EventNavigationState::Failed {
+            generation: 1,
+            source: EventNavigationSource::Activity,
+            failure_kind: EventNavigationFailureKind::Timeline,
+        },
+    ));
+    assert_eq!(
+        waiter.await,
+        Err(EventNavigationError::Failed(
+            EventNavigationFailureKind::Timeline
+        ))
+    );
+}
+
+#[tokio::test]
+async fn event_navigation_newer_generation_is_benign_success() {
+    let (mut connection, mut control) = CoreConnection::new_for_testing(4);
+    let mut waiter = Box::pin(event_navigation_request(&mut connection));
+    assert!(waiter.as_mut().now_or_never().is_none());
+    let _ = control.recv_command().await.expect("navigation command");
+    let snapshot = event_navigation_snapshot(
+        2,
+        EventNavigationState::Opening {
+            generation: 2,
+            source: EventNavigationSource::Search,
+        },
+    );
+    control.send_snapshot(snapshot.clone());
+    assert_eq!(waiter.await, Ok(snapshot));
+}
+
+#[tokio::test]
+async fn event_navigation_generation_overflow_is_rejected() {
+    let (mut connection, mut control) = CoreConnection::new_for_testing(4);
+    control.send_snapshot(event_navigation_snapshot(
+        1,
+        EventNavigationState::Opening {
+            generation: u64::MAX,
+            source: EventNavigationSource::Activity,
+        },
+    ));
+    assert_eq!(
+        event_navigation_request(&mut connection).await,
+        Err(EventNavigationError::Rejected)
+    );
+}
+
+#[tokio::test]
+async fn event_navigation_times_out_without_terminal_snapshot() {
+    let (mut connection, mut control) = CoreConnection::new_for_testing(4);
+    let mut waiter = Box::pin(connection.navigate_to_event_and_wait(
+        "!room:example.invalid".to_owned(),
+        "$event:example.invalid".to_owned(),
+        EventNavigationSource::Activity,
+        EventNavigationMissingTargetPolicy::Fail,
+        Duration::from_millis(1),
+    ));
+    assert!(waiter.as_mut().now_or_never().is_none());
+    let _ = control.recv_command().await.expect("navigation command");
+    assert_eq!(waiter.await, Err(EventNavigationError::Timeout));
+}
+
+#[tokio::test]
+async fn event_navigation_closed_stream_is_reported() {
+    let (mut connection, mut control) = CoreConnection::new_for_testing(4);
+    let mut waiter = Box::pin(event_navigation_request(&mut connection));
+    assert!(waiter.as_mut().now_or_never().is_none());
+    let _ = control.recv_command().await.expect("navigation command");
+    drop(control);
+    assert_eq!(waiter.await, Err(EventNavigationError::EventStreamClosed));
+}
+
 #[tokio::test]
 async fn unrelated_command_cannot_claim_a_native_artifact_registration() {
     let (mut connection, mut command_rx, _event_tx, _snapshot_tx) = scripted_connection(1);

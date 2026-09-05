@@ -1693,6 +1693,41 @@ describe("desktop integration source guards", () => {
     expect(source).not.toContain("recoveryRequired");
   });
 
+  test("event navigation presentation is owned by the current Rust terminal", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const eventNavigationStart = source.indexOf("const eventNavigation =");
+    const eventNavigationEffectEnd = source.indexOf("const homeSelection =", eventNavigationStart);
+    const eventNavigationSource = source.slice(eventNavigationStart, eventNavigationEffectEnd);
+    const openActivityStart = source.indexOf("function openActivityRow");
+    const openActivityEnd = source.indexOf("function selectSearchResult", openActivityStart);
+    const searchSource = source.slice(openActivityEnd, source.indexOf("function runContextMenuAction", openActivityEnd));
+
+    expect(eventNavigationStart).toBeGreaterThanOrEqual(0);
+    expect(eventNavigationSource).toContain('eventNavigation?.kind !== "anchored"');
+    expect(eventNavigationSource).toContain('eventNavigation?.kind !== "liveFallback"');
+    expect(source).toContain('eventNavigation?.kind === "failed"');
+    expect(eventNavigationSource).toContain('setPrimaryView("timeline")');
+    expect(eventNavigationSource).toContain('eventNavigation.source === "search"');
+    expect(eventNavigationSource).toContain('eventNavigation.source === "activity"');
+    expect(eventNavigationSource).not.toContain("navigationFailure");
+    expect(eventNavigationSource).not.toContain("api.");
+    expect(searchSource).not.toContain('setPrimaryView("timeline")');
+    expect(searchSource).not.toContain('setRightPanelMode("search")');
+  });
+
+  test("pinned event navigation delegates failure and presentation to Rust", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const openPinnedStart = source.indexOf("async function openPinnedEvent");
+    const openPinnedEnd = source.indexOf("async function closeThreadsListPanel", openPinnedStart);
+    const openPinnedSource = source.slice(openPinnedStart, openPinnedEnd);
+
+    expect(openPinnedSource).toContain("api.openPinnedEvent(roomId, eventId)");
+    expect(openPinnedSource).not.toContain("setPinnedNavigation");
+    expect(openPinnedSource).not.toContain('status: "failed"');
+    expect(source).not.toContain("pinnedNavigation");
+    expect(source).not.toContain("onRetryPinnedEvent");
+  });
+
   test("search result selection is snapshot-driven and does not scroll the DOM", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     const selectSearchResultStart = source.indexOf("function selectSearchResult");
@@ -1700,8 +1735,6 @@ describe("desktop integration source guards", () => {
     const selectSearchResultSource = source.slice(selectSearchResultStart, selectSearchResultEnd);
 
     expect(selectSearchResultSource).toContain("api.selectSearchResult(roomId, eventId)");
-    expect(selectSearchResultSource).toContain('setRightPanelMode("search")');
-    expect(selectSearchResultSource).toContain('setPrimaryView("timeline")');
     expect(selectSearchResultSource).not.toContain("selectRoom(");
     expect(selectSearchResultSource).not.toContain('setSearchQuery("")');
     expect(selectSearchResultSource).not.toContain("document.querySelector");
@@ -1907,8 +1940,8 @@ describe("desktop integration source guards", () => {
     expect(openActivityRoomStart).toBeGreaterThanOrEqual(0);
     expect(openRowSource).toContain('row.kind === "roomUnread"');
     expect(openRowSource).toContain("openActivityRoom(row.room_id)");
-    expect(openActivityRoomSource).toContain("api.closeFocusedContext()");
     expect(openActivityRoomSource).toContain("await selectRoom(roomId)");
+    expect(openActivityRoomSource).not.toContain("api.closeFocusedContext()");
     expect(openActivityRoomSource).not.toContain("setTimelineLiveEdgeReset");
     expect(openActivityRoomSource).not.toContain("timelineLiveEdgeReset");
 

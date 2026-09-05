@@ -2,13 +2,15 @@ use std::fmt;
 
 use koushi_state::{
     ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentSort, ComposerDocument,
-    ComposerDraftRevision, FilesViewScope, InviteScopeSelection, JapaneseCatalogProfile,
-    LocalEncryptionHealth, NativeAttentionDispatchId, NativeAttentionSoundOutcome,
-    NativeAttentionState, NavigationPreferenceUpdate, RoomListFilter, SettingsPatch,
-    StagedUploadCompressionChoice, StagedUploadItem, TimelineScrollAnchor,
+    ComposerDraftRevision, EventNavigationSource, FilesViewScope, InviteScopeSelection,
+    JapaneseCatalogProfile, LocalEncryptionHealth, NativeAttentionDispatchId,
+    NativeAttentionSoundOutcome, NativeAttentionState, NavigationPreferenceUpdate, RoomListFilter,
+    SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem, TimelineScrollAnchor,
 };
 
 use crate::ids::RequestId;
+
+pub use koushi_state::MissingTargetPolicy as EventNavigationMissingTargetPolicy;
 
 pub enum AppCommand {
     Shutdown {
@@ -102,6 +104,13 @@ pub enum AppCommand {
         request_id: RequestId,
         room_id: String,
         event_id: String,
+    },
+    NavigateToEvent {
+        request_id: RequestId,
+        room_id: String,
+        event_id: String,
+        source: EventNavigationSource,
+        missing_target_policy: EventNavigationMissingTargetPolicy,
     },
     /// Starts a main-pane Focused navigation settled by the matching
     /// actor-owned projection commit.
@@ -396,6 +405,19 @@ impl fmt::Debug for AppCommand {
                 .field("request_id", request_id)
                 .field("room_id", room_id)
                 .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::NavigateToEvent {
+                request_id,
+                source,
+                missing_target_policy,
+                ..
+            } => formatter
+                .debug_struct("NavigateToEvent")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("event_id", &"EventId(..)")
+                .field("source", source)
+                .field("missing_target_policy", missing_target_policy)
                 .finish(),
             Self::OpenAnchoredTimeline { request_id, .. } => formatter
                 .debug_struct("OpenAnchoredTimeline")

@@ -108,7 +108,9 @@ lockfile is the reproducible security boundary: changing only an existing
 isolated branch so other developers and `origin/main` are unaffected until the
 change is reviewed and merged.
 
-## Rust debug information and target cleanup
+## Rust test stack and debug information
+
+The repository Cargo config defaults Cargo-launched tests to `RUST_MIN_STACK=4194304` with `force=false`. This avoids debug-profile libtest stack cliffs while allowing developers and CI to override it; it does not affect packaged desktop processes launched outside Cargo.
 
 Full debug symbols are not needed for ordinary Rust tests, headless QA, or local
 iteration. Prefer line tables so backtraces retain file/line locations without

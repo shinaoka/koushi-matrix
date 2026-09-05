@@ -31,7 +31,10 @@ impl StoreActor {
             }
             Err(_) => return Err(CoreFailure::StoreUnavailable),
         };
-        decrypt_navigation_payload(&self.load_unlock_secret(key_id)?, &bytes)
+        Ok(
+            decrypt_navigation_payload(&self.load_unlock_secret(key_id)?, &bytes)?
+                .persistence_view(),
+        )
     }
 
     pub fn save_navigation(
@@ -57,8 +60,10 @@ impl StoreActor {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|_| CoreFailure::StoreUnavailable)?;
         }
-        let payload =
-            encrypt_navigation_payload(&self.load_or_create_unlock_secret(key_id)?, navigation)?;
+        let payload = encrypt_navigation_payload(
+            &self.load_or_create_unlock_secret(key_id)?,
+            &navigation.persistence_view(),
+        )?;
         atomic_replace(&path, &payload)?;
         match std::fs::remove_file(&legacy_path) {
             Ok(()) => Ok(()),
@@ -79,7 +84,9 @@ impl StoreActor {
             }
             Err(_) => return Err(CoreFailure::StoreUnavailable),
         };
-        serde_json::from_str(&json).map_err(|_| CoreFailure::StoreUnavailable)
+        serde_json::from_str(&json)
+            .map(|navigation: NavigationState| navigation.persistence_view())
+            .map_err(|_| CoreFailure::StoreUnavailable)
     }
 
     fn account_navigation_file(&self, key_id: &SessionKeyId) -> PathBuf {

@@ -162,6 +162,7 @@ fn handle_room_list_updated_with_crawler(
             state.thread = ThreadPaneState::Closed;
             state.thread_attention = ThreadAttentionState::Closed;
             state.threads_list = ThreadsListState::Closed;
+            state.navigation.event_navigation = crate::state::EventNavigationState::Idle;
 
             effects.push(AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
                 room_id: previous_room_id,

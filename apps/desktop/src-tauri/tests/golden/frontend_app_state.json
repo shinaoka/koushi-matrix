@@ -833,6 +833,9 @@
       "navigation": {
         "active_room_id": "!room:example.invalid",
         "active_space_id": "!space:example.invalid",
+        "event_navigation": {
+          "kind": "idle"
+        },
         "home_selection": {
           "kind": "directMessage",
           "room_id": "!dm:example.invalid"

@@ -172,8 +172,7 @@ import type {
   SettingsPatch,
   SpaceMemberRoleOption,
   ThreadOpenIntent,
-  ThreadsListScope,
-  PinnedEventNavigation
+  ThreadsListScope
 } from "./domain/types";
 import { stageAttachmentFiles } from "./domain/attachmentIngestion";
 import { createLatestMutationOperationQueue } from "./domain/latestAsyncResult";
@@ -1001,7 +1000,6 @@ export function App() {
   const [loginPasswordFilled, setLoginPasswordFilled] = useState(false);
   const [recoverySecretFilled, setRecoverySecretFilled] = useState(false);
   const [rightPanelMode, setRightPanelMode] = useState<RightPanelMode>("closed");
-  const [pinnedNavigation, setPinnedNavigation] = useState<PinnedEventNavigation | null>(null);
   const [selectedProfileUserId, setSelectedProfileUserId] = useState<string | null>(null);
   const [peoplePanelScope, setPeoplePanelScope] = useState<PeoplePanelScope | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
@@ -1051,11 +1049,31 @@ export function App() {
   // selected hit.
   const mainTimelineAnchorEventId =
     snapshot?.state.ui.navigation.main_timeline_anchor?.event_id ?? null;
+  const eventNavigation = snapshot?.state.ui.navigation.event_navigation;
   useEffect(() => {
-    if (mainTimelineAnchorEventId && rightPanelMode === "focusedContext") {
+    if (eventNavigation?.kind !== "anchored" && eventNavigation?.kind !== "liveFallback") {
+      return;
+    }
+    setPrimaryView("timeline");
+    setRightPanelMode(
+      eventNavigation.source === "activity"
+        ? "closed"
+        : eventNavigation.source === "search"
+          ? "search"
+          : "pinned"
+    );
+  }, [eventNavigation]);
+  useEffect(() => {
+    const eventNavigationOwnsPresentation =
+      eventNavigation?.kind === "anchored" || eventNavigation?.kind === "liveFallback";
+    if (
+      mainTimelineAnchorEventId &&
+      rightPanelMode === "focusedContext" &&
+      !eventNavigationOwnsPresentation
+    ) {
       setRightPanelMode("closed");
     }
-  }, [mainTimelineAnchorEventId, rightPanelMode]);
+  }, [eventNavigation?.kind, mainTimelineAnchorEventId, rightPanelMode]);
   const homeSelection =
     snapshot?.state.ui.navigation.home_selection ?? DEFAULT_HOME_SELECTION;
   const [directorySearchDraft, setDirectorySearchDraft] = useState("");
@@ -1069,7 +1087,6 @@ export function App() {
     "user" | "notRecognized" | null
   >(null);
   const [newDmDialogOpen, setNewDmDialogOpen] = useState(false);
-  const [navigationFailure, setNavigationFailure] = useState(false);
   const [resetLocalDataConfirmOpen, setResetLocalDataConfirmOpen] = useState(false);
   const logoutConfirmationInFlightRef = useRef(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
@@ -2746,7 +2763,6 @@ export function App() {
     const transitionStartedAt = Date.now();
     const homeSelectionKind = selection.kind;
     const currentSnapshot = snapshotRef.current;
-    setNavigationFailure(false);
     invalidatePeoplePanelForNavigation();
     const navigationRequestId = ++spaceNavigationIntentEpochRef.current;
     setContextMenu(null);
@@ -2777,7 +2793,6 @@ export function App() {
         source: "home.transition",
         message: `stage=after_composer_drain elapsed_ms=${composerDrainFinishedAt - composerDrainStartedAt} outcome=blocked`
       });
-      setNavigationFailure(true);
       return;
     }
     const composerDrainFinishedAt = Date.now();
@@ -2801,9 +2816,7 @@ export function App() {
         (candidate) => candidate.room_id === selection.room_id && candidate.is_dm
       );
       if (room) {
-        if (!(await selectRoom(selection.room_id))) {
-          setNavigationFailure(true);
-        }
+        await selectRoom(selection.room_id);
         return;
       }
     }
@@ -2846,10 +2859,8 @@ export function App() {
       await openHomeActivityView("home_rail");
       return;
     }
-    setNavigationFailure(false);
     const navigationRequestId = ++spaceNavigationIntentEpochRef.current;
     if (!(await drainActiveComposerScopesForNavigation(true, true))) {
-      setNavigationFailure(true);
       return;
     }
     if (spaceNavigationIntentEpochRef.current !== navigationRequestId) return;
@@ -2870,7 +2881,6 @@ export function App() {
       invalidatePeoplePanelForNavigation();
     }
     const navigationRequestId = ++roomNavigationIntentEpochRef.current;
-    setNavigationFailure(false);
     appendDiagnosticLog({
       timestampMs: transitionStartedAt,
       source: "room.transition",
@@ -2892,7 +2902,6 @@ export function App() {
           source: "room.transition",
           message: `stage=after_composer_drain elapsed_ms=${Date.now() - composerDrainStartedAt} outcome=blocked elapsed_ms_since_start=${Date.now() - transitionStartedAt}`
         });
-        setNavigationFailure(true);
         return false;
       }
       appendDiagnosticLog({
@@ -2913,7 +2922,6 @@ export function App() {
     try {
       nextSnapshot = await settleCommandSnapshot(api.selectRoom(roomId));
     } catch {
-      setNavigationFailure(true);
       return false;
     }
     if (roomNavigationIntentEpochRef.current !== navigationRequestId) {
@@ -2928,10 +2936,8 @@ export function App() {
       message: `stage=after_api_select elapsed_ms=${Date.now() - transitionStartedAt} committed_active=${nextSnapshot.state.ui.navigation.active_room_id === roomId} timeline_matches=${nextSnapshot.state.ui.timeline.room_id === nextSnapshot.state.ui.navigation.active_room_id}`
     });
     if (!committed) {
-      setNavigationFailure(true);
       return false;
     }
-    setNavigationFailure(false);
     const primaryViewUpdateStartedAt = Date.now();
     appendDiagnosticLog({
       timestampMs: primaryViewUpdateStartedAt,
@@ -4198,7 +4204,6 @@ export function App() {
       (thread.room_id !== roomId || thread.root_event_id !== rootEventId)
     ) {
       if (!(await drainActiveComposerScopesForNavigation(false, true))) {
-        setNavigationFailure(true);
         return false;
       }
     }
@@ -4206,7 +4211,6 @@ export function App() {
       await closeFocusedContextIfHiddenBy("thread");
       await settleCommand(api.openThread(roomId, rootEventId, intent));
     } catch {
-      setNavigationFailure(true);
       return false;
     }
     const current = getAppStoreSnapshot();
@@ -4215,10 +4219,8 @@ export function App() {
       current.state.ui.thread.room_id === roomId &&
       current.state.ui.thread.root_event_id === rootEventId;
     if (!opened) {
-      setNavigationFailure(true);
       return false;
     }
-    setNavigationFailure(false);
     setRightPanelMode("thread");
     return true;
   }
@@ -4240,7 +4242,6 @@ export function App() {
 
   async function openPinnedMessagesPanel(roomId: string) {
     if (!roomId) return;
-    setPinnedNavigation(null);
     await closeFocusedContextIfHiddenBy("pinned");
     setRightPanelMode("pinned");
   }
@@ -4250,53 +4251,17 @@ export function App() {
     eventId: string,
     threadRootEventId: string | null
   ) {
-    setPinnedNavigation({
-      room_id: roomId,
-      event_id: eventId,
-      thread_root_event_id: threadRootEventId,
-      status: "loading"
-    });
     if (threadRootEventId) {
-      try {
-        if (snapshot?.state.ui.navigation.active_room_id !== roomId) {
-          await selectRoom(roomId);
-        }
-        await openThread(roomId, threadRootEventId, {
-          pinnedReply: { event_id: eventId }
-        });
-        setPinnedNavigation(null);
-      } catch {
-        setPinnedNavigation({
-          room_id: roomId,
-          event_id: eventId,
-          thread_root_event_id: threadRootEventId,
-          status: "failed"
-        });
+      if (snapshot?.state.ui.navigation.active_room_id !== roomId && !(await selectRoom(roomId))) {
+        return;
       }
+      await openThread(roomId, threadRootEventId, {
+        pinnedReply: { event_id: eventId }
+      });
       return;
     }
 
-    try {
-      await settleCommand(api.openPinnedEvent(roomId, eventId));
-      setPrimaryView("timeline");
-      setRightPanelMode("pinned");
-      setPinnedNavigation(null);
-    } catch {
-      setPinnedNavigation({
-        room_id: roomId,
-        event_id: eventId,
-        thread_root_event_id: null,
-        status: "failed"
-      });
-    }
-  }
-
-  function retryPinnedEvent(
-    roomId: string,
-    eventId: string,
-    threadRootEventId: string | null
-  ) {
-    runInBackground(openPinnedEvent(roomId, eventId, threadRootEventId));
+    await settleCommand(api.openPinnedEvent(roomId, eventId));
   }
 
   async function closeThreadsListPanel() {
@@ -5209,66 +5174,26 @@ export function App() {
   function openActivityRow(roomId: string, eventId: string, threadRootEventId: string | null) {
     runInBackground(
       (async () => {
-        setNavigationFailure(false);
         if (threadRootEventId) {
-          if (!(await drainActiveComposerScopesForNavigation(true, true))) {
-            setNavigationFailure(true);
-            return;
-          }
-          if (!(await selectRoom(roomId))) {
-            setNavigationFailure(true);
-            return;
-          }
-          if (!(await openThread(roomId, threadRootEventId, "existingThread"))) {
-            setNavigationFailure(true);
-            return;
-          }
+          if (!(await drainActiveComposerScopesForNavigation(true, true))) return;
+          if (!(await selectRoom(roomId))) return;
+          if (!(await openThread(roomId, threadRootEventId, "existingThread"))) return;
           setPrimaryView("timeline");
           return;
         }
-        try {
-          await settleCommand(api.openActivityEvent(roomId, eventId));
-        } catch {
-          setNavigationFailure(true);
-          return;
-        }
-        setPrimaryView("timeline");
-        setRightPanelMode("closed");
+        await settleCommand(api.openActivityEvent(roomId, eventId));
       })()
     );
   }
 
   async function openActivityRoom(roomId: string) {
-    setNavigationFailure(false);
-    try {
-      const closedSnapshot = await settleCommandSnapshot(api.closeFocusedContext());
-      if (
-        closedSnapshot.state.ui.navigation.active_room_id === roomId &&
-        closedSnapshot.state.ui.timeline.room_id === roomId
-      ) {
-        setPrimaryView("timeline");
-        setRightPanelMode("closed");
-        return;
-      }
-
-      if (!(await selectRoom(roomId))) {
-        setNavigationFailure(true);
-        return;
-      }
-      setPrimaryView("timeline");
+    if (await selectRoom(roomId)) {
       setRightPanelMode("closed");
-    } catch {
-      setNavigationFailure(true);
     }
   }
 
   function selectSearchResult(roomId: string, eventId: string) {
-    void settleCommand(api.selectSearchResult(roomId, eventId))
-      .then(() => {
-        setPrimaryView("timeline");
-        setRightPanelMode("search");
-      })
-      .catch(() => undefined);
+    runInBackground(settleCommand(api.selectSearchResult(roomId, eventId)));
   }
 
   function runContextMenuAction(actionId: ContextMenuActionId) {
@@ -5787,7 +5712,7 @@ export function App() {
           runtimeAlertRetrying={secureBackupInspectionRetrying}
           runtimeAlerts={runtimeAlerts}
         />
-        {navigationFailure ? (
+        {eventNavigation?.kind === "failed" ? (
           <p className="navigation-failure" role="alert">
             {t("navigation.failed")}
           </p>
@@ -6104,8 +6029,6 @@ export function App() {
           onUnpinPinnedEvent={(roomId, eventId) => {
             runInBackground(unpinPinnedEvent(roomId, eventId));
           }}
-          pinnedNavigation={pinnedNavigation}
-          onRetryPinnedEvent={retryPinnedEvent}
           onOpenContextMenu={openContextMenu}
           onOpenSpaceMembers={
             activeSpace

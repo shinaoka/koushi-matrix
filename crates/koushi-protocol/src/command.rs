@@ -35,6 +35,7 @@ impl CoreCommand {
                 | AppCommand::OpenThread { request_id, .. }
                 | AppCommand::CloseThread { request_id }
                 | AppCommand::OpenFocusedContext { request_id, .. }
+                | AppCommand::NavigateToEvent { request_id, .. }
                 | AppCommand::OpenAnchoredTimeline { request_id, .. }
                 | AppCommand::EnterAnchoredTimeline { request_id, .. }
                 | AppCommand::OpenTimelineAtTimestamp { request_id, .. }
@@ -238,7 +239,7 @@ pub use account::{
     AccountCommand, RoomKeyExportRequest, RoomKeyImportRequest,
     SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SetAvatarRequest,
 };
-pub use app::AppCommand;
+pub use app::{AppCommand, EventNavigationMissingTargetPolicy};
 pub use room::{CreateRoomOptions, CreateRoomParentSpace, CreateRoomVisibility, RoomCommand};
 pub use search::{SearchCommand, SearchScope, ThreadsListCommand};
 pub use timeline::{

@@ -5,6 +5,105 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EventNavigationSource {
+    Activity,
+    Search,
+    Pinned,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MissingTargetPolicy {
+    LiveFallback,
+    Fail,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum EventNavigationState {
+    Idle,
+    Opening {
+        generation: u64,
+        source: EventNavigationSource,
+    },
+    Anchored {
+        generation: u64,
+        source: EventNavigationSource,
+    },
+    LiveFallback {
+        generation: u64,
+        source: EventNavigationSource,
+    },
+    Failed {
+        generation: u64,
+        source: EventNavigationSource,
+        #[serde(rename = "failureKind")]
+        failure_kind: EventNavigationFailureKind,
+    },
+}
+
+impl Default for EventNavigationState {
+    fn default() -> Self {
+        Self::Idle
+    }
+}
+
+impl EventNavigationState {
+    pub fn generation(self) -> u64 {
+        match self {
+            Self::Idle => 0,
+            Self::Opening { generation, .. }
+            | Self::Anchored { generation, .. }
+            | Self::LiveFallback { generation, .. }
+            | Self::Failed { generation, .. } => generation,
+        }
+    }
+}
+
+impl fmt::Debug for EventNavigationState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Idle => formatter.write_str("EventNavigationState::Idle"),
+            Self::Opening { generation, source } => formatter
+                .debug_struct("EventNavigationOpening")
+                .field("generation", generation)
+                .field("source", source)
+                .finish(),
+            Self::Anchored { generation, source } => formatter
+                .debug_struct("EventNavigationAnchored")
+                .field("generation", generation)
+                .field("source", source)
+                .finish(),
+            Self::LiveFallback { generation, source } => formatter
+                .debug_struct("EventNavigationLiveFallback")
+                .field("generation", generation)
+                .field("source", source)
+                .finish(),
+            Self::Failed {
+                generation,
+                source,
+                failure_kind,
+            } => formatter
+                .debug_struct("EventNavigationFailed")
+                .field("generation", generation)
+                .field("source", source)
+                .field("failure_kind", failure_kind)
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EventNavigationFailureKind {
+    TargetMissing,
+    RoomUnavailable,
+    SessionUnavailable,
+    Timeline,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TimelineScrollAnchorEdge {
@@ -83,6 +182,8 @@ pub struct NavigationState {
     pub room_scroll_anchors: BTreeMap<String, TimelineScrollAnchor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub main_timeline_anchor: Option<MainTimelineAnchor>,
+    #[serde(default)]
+    pub event_navigation: EventNavigationState,
 }
 
 impl Default for NavigationState {
@@ -98,6 +199,7 @@ impl Default for NavigationState {
             last_selection_by_space_id: BTreeMap::new(),
             room_scroll_anchors: BTreeMap::new(),
             main_timeline_anchor: None,
+            event_navigation: EventNavigationState::Idle,
         }
     }
 }
@@ -128,6 +230,7 @@ impl fmt::Debug for NavigationState {
                 "main_timeline_anchored",
                 &self.main_timeline_anchor.is_some(),
             )
+            .field("event_navigation", &self.event_navigation)
             .finish()
     }
 }
@@ -210,6 +313,14 @@ pub enum NavigationPreferenceUpdate {
 }
 
 impl NavigationState {
+    /// Return the durable navigation payload. Event navigation is an in-flight
+    /// operation and must never survive persistence or restore.
+    pub fn persistence_view(&self) -> Self {
+        let mut navigation = self.clone();
+        navigation.event_navigation = EventNavigationState::Idle;
+        navigation
+    }
+
     pub fn apply_preference_update(&mut self, update: NavigationPreferenceUpdate) -> bool {
         match update {
             NavigationPreferenceUpdate::SetHomeSelection { selection } => {

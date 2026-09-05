@@ -566,6 +566,7 @@ describe("appStore projection cache", () => {
                 home_selection: { kind: "activity" },
                 space_local_presentations: {},
                 legacy_frontend_preferences_imported: false,
+                event_navigation: { kind: "idle" },
                 last_room_by_space_id: {},
                 space_order: []
               }
@@ -643,6 +644,7 @@ describe("appStore projection cache", () => {
                 home_selection: { kind: "activity" },
                 space_local_presentations: {},
                 legacy_frontend_preferences_imported: false,
+                event_navigation: { kind: "idle" },
                 last_room_by_space_id: {},
                 space_order: []
               }
@@ -986,7 +988,8 @@ function makeSnapshot(): DesktopSnapshot {
           active_room_id: "!room-alpha:example.invalid",
           home_selection: { kind: "activity" },
           space_local_presentations: {},
-          legacy_frontend_preferences_imported: false
+          legacy_frontend_preferences_imported: false,
+          event_navigation: { kind: "idle" }
         },
         room_list: {
           readiness: { kind: "ready", source: "cache", generation: 0 },
