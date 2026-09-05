@@ -7,6 +7,42 @@ use koushi_state::{
 };
 
 #[test]
+fn navigate_to_event_is_correlated_and_redacts_identifiers() {
+    let request_id = fake_rid(76);
+    let command = AppCommand::NavigateToEvent {
+        request_id,
+        room_id: "!private-room:example.invalid".to_owned(),
+        event_id: "$private-event:example.invalid".to_owned(),
+        source: koushi_state::EventNavigationSource::Activity,
+        missing_target_policy: EventNavigationMissingTargetPolicy::LiveFallback,
+    };
+
+    assert_eq!(CoreCommand::App(command).request_id(), request_id);
+    let debug = format!(
+        "{:?}",
+        AppCommand::NavigateToEvent {
+            request_id,
+            room_id: "!private-room:example.invalid".to_owned(),
+            event_id: "$private-event:example.invalid".to_owned(),
+            source: koushi_state::EventNavigationSource::Activity,
+            missing_target_policy: EventNavigationMissingTargetPolicy::LiveFallback,
+        }
+    );
+    assert!(debug.contains("Activity"), "{debug}");
+    assert!(debug.contains("LiveFallback"), "{debug}");
+    assert_eq!(
+        serde_json::to_string(&EventNavigationSource::Activity).unwrap(),
+        "\"activity\""
+    );
+    assert_eq!(
+        serde_json::to_string(&EventNavigationMissingTargetPolicy::LiveFallback).unwrap(),
+        "\"liveFallback\""
+    );
+    assert!(!debug.contains("!private-room:example.invalid"), "{debug}");
+    assert!(!debug.contains("$private-event:example.invalid"), "{debug}");
+}
+
+#[test]
 fn open_thread_command_retains_typed_intent_and_redacts_identifiers() {
     let request_id = fake_rid(75);
     let command = AppCommand::OpenThread {
