@@ -485,3 +485,25 @@ local verification alone is not a merge or issue-closure claim.
 - Focused geometry and counter regressions, Vitest 1246, lint and build passed.
   Complete browser tier after these corrections: **289 passed**, 5.9 minutes.
   Replacement CI results are recorded in the PR.
+
+### Passive layout-scroll cancellation
+
+- Replacement CI `33985685777` exposed initial live-edge failures *before*
+  user input: 5px and 700px remained below the live edge. Harness parity alone
+  was not sufficient. The same two browser tests passed in a local pinned
+  Playwright Ubuntu container; this did not establish correctness.
+- Parent traced `onTimelineScroll`: an unclassified passive scroll called
+  `advanceViewportEpoch`, cancelling a ResizeObserver-scheduled live-edge
+  correction. A transient shorter layout can clamp scrollTop and deliver its
+  scroll notification after the final layout has grown again.
+- Deterministic component regressions for both 5px and 700px reproduced RED:
+  a queued correction was lost without wheel/key/touch/scrollbar intent.
+  The shared input boundary now preserves live-edge correction in that case;
+  free-scroll observations still account for momentum and genuine input.
+  Both tests are GREEN, and the existing genuine-wheel cancellation test
+  remains GREEN. No thresholds, timeouts or correction owners were added.
+- Per the user's explicit instruction, the parent implemented and self-reviewed
+  this fix; no further implementation or review was delegated.
+- Full Vitest: **1248 passed / 106 files**; lint and production build passed.
+  Full browser tier in the pinned Playwright Ubuntu container (2 CPUs):
+  **289 passed**, 6.8 minutes. Replacement CI results are recorded in the PR.

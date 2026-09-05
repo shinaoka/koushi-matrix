@@ -42,6 +42,40 @@ afterEach(() => {
 });
 
 describe("TimelineView", () => {
+  it.each([5, 700])("retains live-edge resize correction after a passive %ipx clamp notification", (gap) => {
+    const scheduler = createManualTimelineViewportScheduler();
+    const resizeCallbacks: Array<() => void> = [];
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) {
+        resizeCallbacks.push(() => callback([], this as unknown as ResizeObserver));
+      }
+      observe() {}
+      disconnect() {}
+    });
+    let listener: ((payload: CoreEventPayload) => void) | null = null;
+    render(<TimelineView timelineKey={KEY} roomId="!room:example.invalid"
+      transport={baseTransport({ listenCoreEvents(callback) { listener = callback; return () => undefined; } })}
+      onReply={() => undefined} viewportScheduler={scheduler} />);
+    const timeline = screen.getByTestId("timeline-view");
+    Object.defineProperties(timeline, {
+      scrollHeight: { value: 2000, configurable: true },
+      clientHeight: { value: 600, configurable: true },
+      scrollTop: { value: 0, writable: true, configurable: true }
+    });
+    act(() => listener?.({ kind: "Timeline", event: { InitialItems: {
+      request_id: null, key: KEY, generation: 1, items: [message("$latest", "Latest")]
+    } } }));
+    act(() => scheduler.flushAll());
+    expect(timeline.scrollTop).toBe(1400);
+    fireEvent.scroll(timeline); // Consume the preceding owned write's echo.
+    // A transient shorter layout clamps scrollTop; the final layout has grown
+    // again before the browser delivers that clamp's scroll notification.
+    timeline.scrollTop = 1400 - gap;
+    act(() => resizeCallbacks.at(-1)?.());
+    fireEvent.scroll(timeline); // No wheel, key, touch or scrollbar intent.
+    act(() => scheduler.flushAll());
+    expect(timeline.scrollTop).toBe(1400);
+  });
   it("drops a stale live-edge follow-up after user viewport input", () => {
     const scheduler = createManualTimelineViewportScheduler();
     let listener: ((payload: CoreEventPayload) => void) | null = null;

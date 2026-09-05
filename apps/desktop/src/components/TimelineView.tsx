@@ -3161,7 +3161,11 @@ export const TimelineView = memo(function TimelineView({
         scrollHeight: container.scrollHeight
       })
     );
-    if (!isProgrammaticEcho) {
+    // Layout can clamp scrollTop and deliver a delayed scroll notification.
+    // Without input intent, that must not cancel a pending live-edge resize
+    // correction. Free-scroll observations still account for momentum/input.
+    const invalidatesViewport = hadInputIntent || viewportIntentRef.current.kind !== "live-edge";
+    if (!isProgrammaticEcho && invalidatesViewport) {
       advanceViewportEpoch();
       suppressScrollAnchorCaptureRef.current = false;
       noteUserViewportInput();
