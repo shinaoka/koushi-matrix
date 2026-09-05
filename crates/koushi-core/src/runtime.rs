@@ -37,7 +37,8 @@ use scheduled_send::scheduled_send_id;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use connection::CoreConnectionTestControl;
 pub use connection::{
-    CommandSubmitError, CoreCommandHandle, CoreConnection, EventStreamLag, SelectRoomError,
+    CommandSubmitError, CoreCommandHandle, CoreConnection, EventNavigationError, EventStreamLag,
+    SelectRoomError,
 };
 pub use koushi_protocol::state_update::CoreCommandAdmission;
 pub use request_outcome::{

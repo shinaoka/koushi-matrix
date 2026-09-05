@@ -10,7 +10,9 @@ use crate::event_projection::{
 };
 use crate::media_staging::MediaStagingService;
 use crate::native_artifact::{NativeArtifactError, NativeArtifactKind, NativeArtifactPort};
-use koushi_protocol::command::{CoreCommand, RoomCommand};
+use koushi_protocol::command::{
+    AppCommand, CoreCommand, EventNavigationMissingTargetPolicy, RoomCommand,
+};
 #[cfg(test)]
 use koushi_protocol::event::IntentOutcome;
 use koushi_protocol::event::{CoreEvent, IntentNoOpReason};
@@ -19,6 +21,7 @@ use koushi_protocol::state_update::{
     AppStateSnapshot, CoreCommandAdmission, VersionedAppStateSnapshot,
 };
 use koushi_state::ComposerDraftRevision;
+use koushi_state::{EventNavigationFailureKind, EventNavigationSource, EventNavigationState};
 use std::{
     sync::{
         Arc,
@@ -50,6 +53,20 @@ pub enum CommandSubmitError {
 /// selection succeeds once the requested room is visible in the latest versioned
 /// watch snapshot. Other requests and lagged broadcast events are ignored or
 /// recovered from that snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum EventNavigationError {
+    #[error("event navigation command could not be submitted: {0}")]
+    CommandSubmit(#[source] CommandSubmitError),
+    #[error("event navigation command was rejected")]
+    Rejected,
+    #[error("event navigation failed: {0:?}")]
+    Failed(EventNavigationFailureKind),
+    #[error("core event stream closed")]
+    EventStreamClosed,
+    #[error("event navigation timed out")]
+    Timeout,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum SelectRoomError {
     #[error("room selection command could not be submitted: {0}")]
@@ -354,12 +371,32 @@ impl CoreCommandHandle {
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
 pub struct CoreConnectionTestControl {
+    command_rx: mpsc::Receiver<CoreCommandEnvelope>,
     event_tx: broadcast::Sender<CoreEvent>,
     snapshot_tx: watch::Sender<VersionedAppStateSnapshot>,
 }
 
 #[cfg(any(test, feature = "test-hooks"))]
 impl CoreConnectionTestControl {
+    #[doc(hidden)]
+    pub async fn recv_command(&mut self) -> Option<CoreCommand> {
+        self.command_rx.recv().await.map(|envelope| match envelope {
+            CoreCommandEnvelope::Public {
+                command, admission, ..
+            } => {
+                if let Some(admission) = admission {
+                    let admitted_generation = self.snapshot_tx.borrow().generation;
+                    let _ = admission.send(CoreCommandAdmission {
+                        admitted_generation,
+                    });
+                }
+                command
+            }
+            #[cfg(any(test, feature = "test-hooks"))]
+            CoreCommandEnvelope::Qa(_) => unreachable!("test control received QA command"),
+        })
+    }
+
     #[doc(hidden)]
     pub fn send_event(&self, event: CoreEvent) {
         let _ = self.event_tx.send(event);
@@ -375,7 +412,7 @@ impl CoreConnection {
     #[cfg(any(test, feature = "test-hooks"))]
     #[doc(hidden)]
     pub fn new_for_testing(event_capacity: usize) -> (Self, CoreConnectionTestControl) {
-        let (command_tx, _command_rx) = mpsc::channel(1);
+        let (command_tx, command_rx) = mpsc::channel(1);
         let (event_tx, event_rx) = broadcast::channel(event_capacity);
         let (snapshot_tx, snapshot_rx) = watch::channel(VersionedAppStateSnapshot {
             generation: 0,
@@ -395,6 +432,7 @@ impl CoreConnection {
                 next_sequence: AtomicU64::new(1),
             },
             CoreConnectionTestControl {
+                command_rx,
                 event_tx,
                 snapshot_tx,
             },
@@ -807,6 +845,79 @@ impl CoreConnection {
     /// Select `room_id` and wait until the latest versioned watch snapshot names
     /// it as the active room. The typed outcome service owns the event/snapshot
     /// settlement; this method preserves the historical error surface.
+    pub async fn navigate_to_event_and_wait(
+        &mut self,
+        room_id: String,
+        event_id: String,
+        source: EventNavigationSource,
+        missing_target_policy: EventNavigationMissingTargetPolicy,
+        timeout: Duration,
+    ) -> Result<VersionedAppStateSnapshot, EventNavigationError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let baseline = self.snapshot().navigation.event_navigation.generation();
+        let generation = baseline
+            .checked_add(1)
+            .ok_or(EventNavigationError::Rejected)?;
+        let request_id = self.next_request_id();
+        tokio::time::timeout_at(
+            deadline,
+            self.command(CoreCommand::App(AppCommand::NavigateToEvent {
+                request_id,
+                room_id,
+                event_id,
+                source,
+                missing_target_policy,
+            })),
+        )
+        .await
+        .map_err(|_| EventNavigationError::Timeout)?
+        .map_err(EventNavigationError::CommandSubmit)?;
+
+        let terminal = |snapshot: &VersionedAppStateSnapshot| {
+            if snapshot.state.navigation.event_navigation.generation() > generation {
+                return Some(Ok(snapshot.clone()));
+            }
+            match snapshot.state.navigation.event_navigation {
+                EventNavigationState::Anchored {
+                    generation: current,
+                    ..
+                }
+                | EventNavigationState::LiveFallback {
+                    generation: current,
+                    ..
+                } if current == generation => Some(Ok(snapshot.clone())),
+                EventNavigationState::Failed {
+                    generation: current,
+                    failure_kind,
+                    ..
+                } if current == generation => Some(Err(EventNavigationError::Failed(failure_kind))),
+                _ => None,
+            }
+        };
+
+        if let Some(result) = terminal(&self.versioned_snapshot()) {
+            return result;
+        }
+        loop {
+            if let Some(result) = terminal(&self.versioned_snapshot()) {
+                return result;
+            }
+            match tokio::time::timeout_at(deadline, self.snapshot_rx.changed()).await {
+                Ok(Ok(())) => {
+                    let _ = self.snapshot_rx.borrow_and_update();
+                }
+                Ok(Err(_)) => {
+                    return terminal(&self.versioned_snapshot())
+                        .unwrap_or(Err(EventNavigationError::EventStreamClosed));
+                }
+                Err(_) => {
+                    return terminal(&self.versioned_snapshot())
+                        .unwrap_or(Err(EventNavigationError::Timeout));
+                }
+            }
+        }
+    }
+
     pub async fn select_room_and_wait(
         &mut self,
         room_id: String,
