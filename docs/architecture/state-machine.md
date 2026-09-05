@@ -725,6 +725,37 @@ code without a matching command-success correlation.
   the newer navigation succeeded. Invite acceptance and direct join delegate to
   this shared selection path and never switch the pane independently.
 
+Event navigation is a Rust-owned outer operation. Its lifecycle is normative:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Opening: accept intent / generation += 1
+    Opening --> Opening: newer outer navigation accepted / old Superseded
+    Opening --> Anchored: exact generation + request + target + projection identity
+    Opening --> LiveFallback: exact owner + authoritative Missing + Activity/Search policy
+    Opening --> Failed: exact owner + current timeout or coarse current failure
+    Opening --> Idle: room/thread/date-jump/return-live/logout/account/session/room cleanup
+    Anchored --> Opening: newer intent
+    LiveFallback --> Opening: newer intent
+    Failed --> Opening: newer intent
+    Anchored --> Idle: outer navigation cleanup
+    LiveFallback --> Idle: outer navigation cleanup
+    Failed --> Idle: outer navigation cleanup
+```
+
+Event-navigation completions are admitted only for the current generation,
+request, target, and focused projection identity. Only an authoritative SDK
+missing result, or a settled focused projection without the target, permits the
+Activity/Search live fallback; transport, timeout, storage, and other SDK
+errors remain failures. AppActor owns the focused-context deadline and publishes
+`Failed` for a current timeout. A newer outer operation supersedes the prior
+owner across room, thread, date-jump, return-live, Activity, Search, and Pinned
+navigation; displaced work settles benignly and cannot mutate presentation,
+ownership, or the waiter. Rust publishes every terminal or clear state before
+releasing its public waiter. The operation is transient and is not persisted
+with navigation preferences.
+
 ```mermaid
 stateDiagram-v2
     [*] --> NoRoom

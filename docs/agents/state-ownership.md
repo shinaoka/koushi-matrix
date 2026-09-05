@@ -531,6 +531,22 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   sort rows, infer low-priority exclusion, auto-clear Unread on tab view, or
   repair mark-read results locally.
 
+### Activity Event Navigation
+
+- Rust owns the Activity, Search, and Pinned event-navigation lifecycle and
+  failure state, including the outer cancellation contract with room selection,
+  thread-row navigation, date jumps, explicit return-to-live, and one another.
+  The last accepted outer navigation intent wins; displaced work is benign and
+  cannot change the primary view, right panel, focused subscription, failure,
+  or waiter.
+- Tauri and React must not orchestrate the close/select/open/wait sequence or
+  own epochs, shared failure state, or promise arbitration. They dispatch typed
+  intents and render only the current Rust terminal (`Anchored`, `LiveFallback`,
+  or `Failed`).
+- The thread inner navigation machine remains separate. Thread-row navigation
+  still participates in the Rust-owned outer cancellation contract and cannot
+  let a stale event-navigation completion settle it.
+
 ## Rooms, tags, and the sidebar
 
 - `RoomSummary.tags` is the Rust-owned source of truth for Matrix `m.tag`
