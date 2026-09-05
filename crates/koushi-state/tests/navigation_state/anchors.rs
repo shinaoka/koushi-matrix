@@ -84,6 +84,7 @@ fn navigation_state_round_trips_scroll_anchors_through_serde() {
             },
         )]),
         main_timeline_anchor: None,
+        event_navigation: koushi_state::EventNavigationState::Idle,
     };
 
     let encoded = serde_json::to_string(&navigation).expect("serialize navigation");
