@@ -1,4 +1,5 @@
 use super::*;
+use crate::timeline::FocusedProjectionCommitted;
 use std::collections::BTreeMap;
 
 use koushi_protocol::event::{AccountEvent, RoomEvent, TimelineEvent};
@@ -2246,21 +2247,25 @@ fn app_actor_event_navigation_fixture(
     state: AppState,
 ) -> (
     AppActor,
+    mpsc::Sender<CoreCommandEnvelope>,
+    mpsc::Sender<Vec<AppAction>>,
     mpsc::Receiver<AccountMessage>,
     broadcast::Receiver<CoreEvent>,
     watch::Receiver<VersionedAppStateSnapshot>,
+    watch::Receiver<Option<crate::timeline::NavigationProjectionIntent>>,
+    mpsc::UnboundedSender<EventNavigationPrepared>,
+    mpsc::UnboundedSender<FocusedProjectionCommitted>,
 ) {
     let (account_tx, account_rx) = mpsc::channel(8);
     let (navigation_projection, navigation_projection_rx) =
         crate::timeline::NavigationProjectionIngress::channel();
-    drop(navigation_projection_rx);
     let account_actor = AccountActorHandle::for_app_actor_test(account_tx, navigation_projection);
     let session_key = match &state.session {
         SessionState::Ready(info) => session_key_id_from_info(info),
         _ => panic!("event-navigation fixture needs a ready session"),
     };
-    let (_command_tx, command_rx) = mpsc::channel(1);
-    let (_action_tx, action_rx) = mpsc::channel(1);
+    let (command_tx, command_rx) = mpsc::channel(1);
+    let (action_tx, action_rx) = mpsc::channel(1);
     let (_composer_draft_test_tx, composer_draft_test_rx) = mpsc::channel(1);
     let (event_tx, event_rx) = broadcast::channel(16);
     let (snapshot_tx, snapshot_rx) = watch::channel(VersionedAppStateSnapshot {
@@ -2270,12 +2275,12 @@ fn app_actor_event_navigation_fixture(
     let composer_draft_leases = Arc::new(ComposerDraftLeaseRegistry::new());
     let composer_draft_lease_changes = composer_draft_leases.subscribe();
     let (composer_draft_rejected_tx, composer_draft_rejected_rx) = mpsc::unbounded_channel();
-    let (_focused_projection_tx, focused_projection_rx) = mpsc::unbounded_channel();
+    let (focused_projection_tx, focused_projection_rx) = mpsc::unbounded_channel();
     let (event_navigation_prepared_tx, event_navigation_prepared_rx) = mpsc::unbounded_channel();
     let actor = AppActor {
         command_rx,
         action_rx,
-        event_navigation_prepared_tx,
+        event_navigation_prepared_tx: event_navigation_prepared_tx.clone(),
         event_navigation_prepared_rx,
         pending_event_navigation: None,
         event_navigation_generation: 0,
@@ -2313,7 +2318,1115 @@ fn app_actor_event_navigation_fixture(
         latest_focused_projection_generation: HashMap::new(),
         pending_date_navigation_request_id: None,
     };
-    (actor, account_rx, event_rx, snapshot_rx)
+    (
+        actor,
+        command_tx,
+        action_tx,
+        account_rx,
+        event_rx,
+        snapshot_rx,
+        navigation_projection_rx,
+        event_navigation_prepared_tx,
+        focused_projection_tx,
+    )
+}
+
+async fn run_app_actor_cross_room_missing_navigation(
+    source: koushi_state::EventNavigationSource,
+    missing_target_policy: koushi_protocol::command::EventNavigationMissingTargetPolicy,
+) -> AppState {
+    let data_dir = tempfile::tempdir().expect("runtime data directory");
+    let room_a = "!missing-event-room-a:example.invalid";
+    let room_b = "!missing-event-room-b:example.invalid";
+    let event_id = "$missing-event:example.invalid";
+    let account_key = AccountKey("@synthetic:example.invalid".to_owned());
+    let mut state = AppState {
+        session: SessionState::Ready(SessionInfo {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: account_key.0.clone(),
+            device_id: "SYNTHETIC".to_owned(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        }),
+        ..AppState::default()
+    };
+    state.rooms = vec![
+        unread_diagnostic_room(room_a),
+        unread_diagnostic_room(room_b),
+    ];
+    state.navigation.active_room_id = Some(room_a.to_owned());
+    state.timeline.room_id = Some(room_a.to_owned());
+
+    let (
+        actor,
+        command_tx,
+        action_tx,
+        mut account_rx,
+        mut event_rx,
+        mut snapshot_rx,
+        mut navigation_projection_rx,
+        _event_navigation_prepared_tx,
+        _focused_projection_tx,
+    ) = app_actor_event_navigation_fixture(data_dir.path(), state);
+    let actor_task = tokio::spawn(actor.run());
+    let request_id = RequestId {
+        connection_id: RuntimeConnectionId(836),
+        sequence: 1,
+    };
+    command_tx
+        .send(CoreCommandEnvelope::Public {
+            command: CoreCommand::App(AppCommand::NavigateToEvent {
+                request_id,
+                room_id: room_b.to_owned(),
+                event_id: event_id.to_owned(),
+                source,
+                missing_target_policy,
+            }),
+            composer_permit: None,
+            admission: None,
+        })
+        .await
+        .expect("event navigation command");
+    let _ = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if matches!(
+                account_rx.recv().await.expect("internal select message"),
+                AccountMessage::RoomCommand(koushi_protocol::command::RoomCommand::SelectRoom {
+                    room_id,
+                    ..
+                }) if room_id == room_b
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("internal select should be routed");
+    action_tx
+        .send(vec![AppAction::SelectRoom {
+            room_id: room_b.to_owned(),
+        }])
+        .await
+        .expect("internal room projection action");
+    let _ = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let snapshot = snapshot_rx.borrow().state.clone();
+            if snapshot.navigation.active_room_id.as_deref() == Some(room_b)
+                && snapshot.timeline.room_id.as_deref() == Some(room_b)
+                && matches!(
+                    snapshot.navigation.event_navigation,
+                    koushi_state::EventNavigationState::Opening { .. }
+                )
+            {
+                break;
+            }
+            snapshot_rx
+                .changed()
+                .await
+                .expect("room projection snapshot");
+        }
+    })
+    .await
+    .expect("event navigation remains Opening after room projection");
+    let projection = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            navigation_projection_rx
+                .changed()
+                .await
+                .expect("room projection channel");
+            if let Some(projection) = navigation_projection_rx.borrow_and_update().clone() {
+                break projection;
+            }
+        }
+    })
+    .await
+    .expect("room subscription projection");
+    assert!(matches!(
+        projection.key.kind,
+        TimelineKind::Room { ref room_id } if room_id == room_b
+    ));
+
+    loop {
+        match tokio::time::timeout(Duration::from_secs(1), account_rx.recv())
+            .await
+            .expect("lookup should be routed")
+            .expect("lookup message")
+        {
+            AccountMessage::EnsureRoomEventCached { response_tx, .. } => {
+                response_tx
+                    .send(crate::account::RoomEventLookupResult::Missing)
+                    .expect("missing lookup response");
+                break;
+            }
+            _ => {}
+        }
+    }
+    let terminal = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let snapshot = snapshot_rx.borrow().state.clone();
+            let terminal = match source {
+                koushi_state::EventNavigationSource::Activity
+                | koushi_state::EventNavigationSource::Search => matches!(
+                    snapshot.navigation.event_navigation,
+                    koushi_state::EventNavigationState::LiveFallback {
+                        source: current_source,
+                        ..
+                    } if current_source == source
+                ),
+                koushi_state::EventNavigationSource::Pinned => matches!(
+                    snapshot.navigation.event_navigation,
+                    koushi_state::EventNavigationState::Failed {
+                        source: current_source,
+                        failure_kind: koushi_state::EventNavigationFailureKind::TargetMissing,
+                        ..
+                    } if current_source == source
+                ),
+            };
+            if terminal {
+                break snapshot;
+            }
+            snapshot_rx.changed().await.expect("terminal snapshot");
+        }
+    })
+    .await
+    .expect("missing target should settle the source policy");
+    let expected_outcome = match source {
+        koushi_state::EventNavigationSource::Activity
+        | koushi_state::EventNavigationSource::Search => {
+            IntentOutcome::BenignNoOp(IntentNoOpReason::TimelineTargetMissing)
+        }
+        koushi_state::EventNavigationSource::Pinned => {
+            IntentOutcome::FailedNoOp(IntentNoOpReason::TimelineTargetMissing)
+        }
+    };
+    loop {
+        if let CoreEvent::IntentLifecycle {
+            request_id: lifecycle_request_id,
+            outcome,
+            ..
+        } = event_rx.recv().await.expect("event stream remains open")
+            && lifecycle_request_id == request_id
+        {
+            assert_eq!(outcome, expected_outcome);
+            break;
+        }
+    }
+    assert_eq!(terminal.navigation.active_room_id.as_deref(), Some(room_b));
+    assert!(matches!(
+        account_rx.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+    actor_task.abort();
+    let _ = actor_task.await;
+    terminal
+}
+
+#[tokio::test]
+async fn app_actor_cross_room_missing_activity_search_fallback_and_pinned_failure() {
+    let activity = run_app_actor_cross_room_missing_navigation(
+        koushi_state::EventNavigationSource::Activity,
+        koushi_protocol::command::EventNavigationMissingTargetPolicy::LiveFallback,
+    )
+    .await;
+    assert!(matches!(
+        activity.navigation.event_navigation,
+        koushi_state::EventNavigationState::LiveFallback {
+            source: koushi_state::EventNavigationSource::Activity,
+            ..
+        }
+    ));
+
+    let search = run_app_actor_cross_room_missing_navigation(
+        koushi_state::EventNavigationSource::Search,
+        koushi_protocol::command::EventNavigationMissingTargetPolicy::LiveFallback,
+    )
+    .await;
+    assert!(matches!(
+        search.navigation.event_navigation,
+        koushi_state::EventNavigationState::LiveFallback {
+            source: koushi_state::EventNavigationSource::Search,
+            ..
+        }
+    ));
+
+    let pinned = run_app_actor_cross_room_missing_navigation(
+        koushi_state::EventNavigationSource::Pinned,
+        koushi_protocol::command::EventNavigationMissingTargetPolicy::Fail,
+    )
+    .await;
+    assert!(matches!(
+        pinned.navigation.event_navigation,
+        koushi_state::EventNavigationState::Failed {
+            source: koushi_state::EventNavigationSource::Pinned,
+            failure_kind: koushi_state::EventNavigationFailureKind::TargetMissing,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn event_navigation_preserves_opening_through_internal_room_selection() {
+    let data_dir = tempfile::tempdir().expect("runtime data directory");
+    let room_a = "!event-navigation-room-a:example.invalid";
+    let room_b = "!event-navigation-room-b:example.invalid";
+    let event_id = "$event-navigation-target:example.invalid";
+    let account_key = AccountKey("@synthetic:example.invalid".to_owned());
+    let mut state = AppState {
+        session: SessionState::Ready(SessionInfo {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: account_key.0.clone(),
+            device_id: "SYNTHETIC".to_owned(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        }),
+        ..AppState::default()
+    };
+    state.rooms = vec![
+        unread_diagnostic_room(room_a),
+        unread_diagnostic_room(room_b),
+    ];
+    state.navigation.active_room_id = Some(room_a.to_owned());
+    state.timeline.room_id = Some(room_a.to_owned());
+
+    let (
+        actor,
+        command_tx,
+        action_tx,
+        mut account_rx,
+        _event_rx,
+        mut snapshot_rx,
+        mut navigation_projection_rx,
+        _event_navigation_prepared_tx,
+        focused_projection_tx,
+    ) = app_actor_event_navigation_fixture(data_dir.path(), state);
+    let actor_task = tokio::spawn(actor.run());
+    let request_id = RequestId {
+        connection_id: RuntimeConnectionId(836),
+        sequence: 1,
+    };
+    command_tx
+        .send(CoreCommandEnvelope::Public {
+            command: CoreCommand::App(AppCommand::NavigateToEvent {
+                request_id,
+                room_id: room_b.to_owned(),
+                event_id: event_id.to_owned(),
+                source: koushi_state::EventNavigationSource::Activity,
+                missing_target_policy:
+                    koushi_protocol::command::EventNavigationMissingTargetPolicy::LiveFallback,
+            }),
+            composer_permit: None,
+            admission: None,
+        })
+        .await
+        .expect("event navigation command");
+
+    let internal_select = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            match account_rx.recv().await.expect("internal select message") {
+                AccountMessage::RoomCommand(
+                    koushi_protocol::command::RoomCommand::SelectRoom {
+                        request_id: select_request_id,
+                        room_id,
+                    },
+                ) => break (select_request_id, room_id),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("internal room selection should be routed");
+    assert_eq!(internal_select.1, room_b);
+
+    let opening_after_command = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if matches!(
+                snapshot_rx.borrow().state.navigation.event_navigation,
+                koushi_state::EventNavigationState::Opening {
+                    source: koushi_state::EventNavigationSource::Activity,
+                    ..
+                }
+            ) {
+                return snapshot_rx.borrow().state.clone();
+            }
+            snapshot_rx
+                .changed()
+                .await
+                .expect("opening snapshot should be published");
+        }
+    })
+    .await
+    .expect("event navigation should enter Opening");
+    let _ = opening_after_command;
+
+    action_tx
+        .send(vec![AppAction::SelectRoom {
+            room_id: room_b.to_owned(),
+        }])
+        .await
+        .expect("internal room projection action");
+    let after_internal_select = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let snapshot = snapshot_rx.borrow().state.clone();
+            if snapshot.navigation.active_room_id.as_deref() == Some(room_b)
+                && snapshot.timeline.room_id.as_deref() == Some(room_b)
+            {
+                return snapshot;
+            }
+            snapshot_rx
+                .changed()
+                .await
+                .expect("room selection snapshot should be published");
+        }
+    })
+    .await
+    .expect("internal room selection should project");
+    assert!(matches!(
+        after_internal_select.navigation.event_navigation,
+        koushi_state::EventNavigationState::Opening {
+            source: koushi_state::EventNavigationSource::Activity,
+            ..
+        }
+    ));
+
+    let projection = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if navigation_projection_rx.changed().await.is_err() {
+                panic!("room projection channel should remain open");
+            }
+            if let Some(projection) = navigation_projection_rx.borrow_and_update().clone() {
+                break projection;
+            }
+        }
+    })
+    .await
+    .expect("room timeline projection should be admitted");
+    assert!(matches!(
+        projection.key.kind,
+        TimelineKind::Room { ref room_id } if room_id == room_b
+    ));
+
+    loop {
+        match tokio::time::timeout(Duration::from_secs(1), account_rx.recv())
+            .await
+            .expect("lookup should be routed")
+            .expect("lookup message")
+        {
+            AccountMessage::EnsureRoomEventCached { response_tx, .. } => {
+                response_tx
+                    .send(crate::account::RoomEventLookupResult::Located)
+                    .expect("lookup response");
+                break;
+            }
+            _ => {}
+        }
+    }
+    let focused_key = loop {
+        match tokio::time::timeout(Duration::from_secs(1), account_rx.recv())
+            .await
+            .expect("focused subscription should be routed")
+            .expect("focused subscription message")
+        {
+            AccountMessage::TimelineCommand(
+                koushi_protocol::command::TimelineCommand::Subscribe { key, .. },
+            ) => break key,
+            _ => {}
+        }
+    };
+    focused_projection_tx
+        .send(FocusedProjectionCommitted {
+            projection_request_id: request_id,
+            key: focused_key,
+            actor_generation: 1,
+            timeline_generation: TimelineGeneration(1),
+            item_count: 1,
+            target_present: true,
+        })
+        .expect("focused projection commit");
+
+    let anchored = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let snapshot = snapshot_rx.borrow().state.clone();
+            if matches!(
+                snapshot.navigation.event_navigation,
+                koushi_state::EventNavigationState::Anchored {
+                    source: koushi_state::EventNavigationSource::Activity,
+                    ..
+                }
+            ) {
+                return snapshot;
+            }
+            snapshot_rx
+                .changed()
+                .await
+                .expect("anchored snapshot should be published");
+        }
+    })
+    .await
+    .expect("located event should anchor");
+    assert_eq!(anchored.navigation.active_room_id.as_deref(), Some(room_b));
+    actor_task.abort();
+    let _ = actor_task.await;
+}
+
+#[tokio::test]
+async fn event_navigation_external_room_selection_fences_stale_work() {
+    let data_dir = tempfile::tempdir().expect("runtime data directory");
+    let room_a = "!stale-event-room-a:example.invalid";
+    let room_b = "!stale-event-room-b:example.invalid";
+    let event_id = "$stale-event:example.invalid";
+    let account_key = AccountKey("@synthetic:example.invalid".to_owned());
+    let mut state = AppState {
+        session: SessionState::Ready(SessionInfo {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: account_key.0.clone(),
+            device_id: "SYNTHETIC".to_owned(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        }),
+        ..AppState::default()
+    };
+    state.rooms = vec![
+        unread_diagnostic_room(room_a),
+        unread_diagnostic_room(room_b),
+    ];
+    state.navigation.active_room_id = Some(room_a.to_owned());
+    state.timeline.room_id = Some(room_a.to_owned());
+
+    let (
+        actor,
+        command_tx,
+        action_tx,
+        mut account_rx,
+        mut event_rx,
+        mut snapshot_rx,
+        _navigation_projection_rx,
+        event_navigation_prepared_tx,
+        focused_projection_tx,
+    ) = app_actor_event_navigation_fixture(data_dir.path(), state);
+    let actor_task = tokio::spawn(actor.run());
+    let event_request_id = RequestId {
+        connection_id: RuntimeConnectionId(836),
+        sequence: 1,
+    };
+    command_tx
+        .send(CoreCommandEnvelope::Public {
+            command: CoreCommand::App(AppCommand::NavigateToEvent {
+                request_id: event_request_id,
+                room_id: room_a.to_owned(),
+                event_id: event_id.to_owned(),
+                source: koushi_state::EventNavigationSource::Activity,
+                missing_target_policy:
+                    koushi_protocol::command::EventNavigationMissingTargetPolicy::LiveFallback,
+            }),
+            composer_permit: None,
+            admission: None,
+        })
+        .await
+        .expect("event navigation command");
+    let _ = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if matches!(
+                account_rx.recv().await.expect("internal select message"),
+                AccountMessage::RoomCommand(koushi_protocol::command::RoomCommand::SelectRoom {
+                    room_id,
+                    ..
+                }) if room_id == room_a
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("internal select should be routed");
+
+    let room_request_id = RequestId {
+        connection_id: RuntimeConnectionId(836),
+        sequence: 2,
+    };
+    command_tx
+        .send(CoreCommandEnvelope::Public {
+            command: CoreCommand::Room(koushi_protocol::command::RoomCommand::SelectRoom {
+                request_id: room_request_id,
+                room_id: room_b.to_owned(),
+            }),
+            composer_permit: None,
+            admission: None,
+        })
+        .await
+        .expect("external room selection command");
+    let _ = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if matches!(
+                account_rx.recv().await.expect("external select message"),
+                AccountMessage::RoomCommand(koushi_protocol::command::RoomCommand::SelectRoom {
+                    request_id,
+                    room_id,
+                }) if request_id == room_request_id && room_id == room_b
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("external select should be routed");
+    let superseded = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let CoreEvent::IntentLifecycle {
+                request_id,
+                outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::Superseded),
+                ..
+            } = event_rx.recv().await.expect("event stream remains open")
+                && request_id == event_request_id
+            {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(superseded.is_ok(), "event waiter must settle as Superseded");
+
+    action_tx
+        .send(vec![AppAction::SelectRoom {
+            room_id: room_b.to_owned(),
+        }])
+        .await
+        .expect("external room projection action");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if snapshot_rx
+                .borrow()
+                .state
+                .navigation
+                .active_room_id
+                .as_deref()
+                == Some(room_b)
+            {
+                break;
+            }
+            snapshot_rx.changed().await.expect("room snapshot");
+        }
+    })
+    .await
+    .expect("external room should commit");
+
+    action_tx
+        .send(vec![AppAction::SelectRoom {
+            room_id: room_a.to_owned(),
+        }])
+        .await
+        .expect("delayed stale select action");
+    event_navigation_prepared_tx
+        .send(EventNavigationPrepared {
+            request_id: event_request_id,
+            room_id: room_a.to_owned(),
+            event_id: event_id.to_owned(),
+            generation: 1,
+            result: crate::account::RoomEventLookupResult::Failed,
+        })
+        .expect("delayed stale lookup");
+    focused_projection_tx
+        .send(FocusedProjectionCommitted {
+            projection_request_id: event_request_id,
+            key: TimelineKey {
+                account_key,
+                kind: TimelineKind::Focused {
+                    room_id: room_a.to_owned(),
+                    event_id: event_id.to_owned(),
+                },
+            },
+            actor_generation: 1,
+            timeline_generation: TimelineGeneration(1),
+            item_count: 1,
+            target_present: true,
+        })
+        .expect("delayed stale focused commit");
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        snapshot_rx
+            .borrow()
+            .state
+            .navigation
+            .active_room_id
+            .as_deref(),
+        Some(room_b)
+    );
+    assert!(matches!(
+        snapshot_rx.borrow().state.navigation.event_navigation,
+        koushi_state::EventNavigationState::Idle
+    ));
+    actor_task.abort();
+    let _ = actor_task.await;
+}
+
+async fn run_event_navigation_latest_source_case(
+    first_source: koushi_state::EventNavigationSource,
+    second_source: koushi_state::EventNavigationSource,
+    second_policy: koushi_protocol::command::EventNavigationMissingTargetPolicy,
+) {
+    let data_dir = tempfile::tempdir().expect("runtime data directory");
+    let room_a = "!latest-event-room-a:example.invalid";
+    let room_b = "!latest-event-room-b:example.invalid";
+    let event_a = "$latest-event-a:example.invalid";
+    let event_b = "$latest-event-b:example.invalid";
+    let account_key = AccountKey("@synthetic:example.invalid".to_owned());
+    let mut state = AppState {
+        session: SessionState::Ready(SessionInfo {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: account_key.0.clone(),
+            device_id: "SYNTHETIC".to_owned(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        }),
+        ..AppState::default()
+    };
+    state.rooms = vec![
+        unread_diagnostic_room(room_a),
+        unread_diagnostic_room(room_b),
+    ];
+    state.navigation.active_room_id = Some(room_a.to_owned());
+    state.timeline.room_id = Some(room_a.to_owned());
+
+    let (
+        actor,
+        command_tx,
+        action_tx,
+        mut account_rx,
+        mut event_rx,
+        mut snapshot_rx,
+        _navigation_projection_rx,
+        event_navigation_prepared_tx,
+        focused_projection_tx,
+    ) = app_actor_event_navigation_fixture(data_dir.path(), state);
+    let actor_task = tokio::spawn(actor.run());
+    let first_request_id = RequestId {
+        connection_id: RuntimeConnectionId(836),
+        sequence: 1,
+    };
+    let second_request_id = RequestId {
+        connection_id: RuntimeConnectionId(836),
+        sequence: 2,
+    };
+    for (request_id, room_id, event_id, source, policy) in [
+        (
+            first_request_id,
+            room_a,
+            event_a,
+            first_source,
+            koushi_protocol::command::EventNavigationMissingTargetPolicy::LiveFallback,
+        ),
+        (
+            second_request_id,
+            room_b,
+            event_b,
+            second_source,
+            second_policy,
+        ),
+    ] {
+        command_tx
+            .send(CoreCommandEnvelope::Public {
+                command: CoreCommand::App(AppCommand::NavigateToEvent {
+                    request_id,
+                    room_id: room_id.to_owned(),
+                    event_id: event_id.to_owned(),
+                    source,
+                    missing_target_policy: policy,
+                }),
+                composer_permit: None,
+                admission: None,
+            })
+            .await
+            .expect("event navigation command");
+        if request_id == first_request_id {
+            let _ = tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    if matches!(
+                        account_rx.recv().await.expect("first internal select"),
+                        AccountMessage::RoomCommand(koushi_protocol::command::RoomCommand::SelectRoom {
+                            room_id,
+                            ..
+                        }) if room_id == room_a
+                    ) {
+                        break;
+                    }
+                }
+            })
+            .await
+            .expect("first internal select should be routed");
+        }
+    }
+    let _ = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if matches!(
+                account_rx.recv().await.expect("second internal select"),
+                AccountMessage::RoomCommand(koushi_protocol::command::RoomCommand::SelectRoom {
+                    request_id,
+                    room_id,
+                }) if request_id.connection_id == RuntimeConnectionId(0) && room_id == room_b
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("second internal select should be routed");
+    let _ = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let CoreEvent::IntentLifecycle {
+                request_id,
+                outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::Superseded),
+                ..
+            } = event_rx.recv().await.expect("event stream remains open")
+                && request_id == first_request_id
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("first source should settle as Superseded");
+
+    action_tx
+        .send(vec![AppAction::SelectRoom {
+            room_id: room_b.to_owned(),
+        }])
+        .await
+        .expect("second internal room projection action");
+    let _ = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let snapshot = snapshot_rx.borrow().state.clone();
+            if snapshot.navigation.active_room_id.as_deref() == Some(room_b)
+                && matches!(
+                    snapshot.navigation.event_navigation,
+                    koushi_state::EventNavigationState::Opening {
+                        source: current_source,
+                        ..
+                    } if current_source == second_source
+                )
+            {
+                break;
+            }
+            snapshot_rx
+                .changed()
+                .await
+                .expect("second opening snapshot");
+        }
+    })
+    .await
+    .expect("latest source should remain Opening");
+    action_tx
+        .send(vec![AppAction::SelectRoom {
+            room_id: room_a.to_owned(),
+        }])
+        .await
+        .expect("delayed first select action");
+    event_navigation_prepared_tx
+        .send(EventNavigationPrepared {
+            request_id: first_request_id,
+            room_id: room_a.to_owned(),
+            event_id: event_a.to_owned(),
+            generation: 1,
+            result: crate::account::RoomEventLookupResult::Failed,
+        })
+        .expect("delayed first lookup");
+    focused_projection_tx
+        .send(FocusedProjectionCommitted {
+            projection_request_id: first_request_id,
+            key: TimelineKey {
+                account_key,
+                kind: TimelineKind::Focused {
+                    room_id: room_a.to_owned(),
+                    event_id: event_a.to_owned(),
+                },
+            },
+            actor_generation: 1,
+            timeline_generation: TimelineGeneration(1),
+            item_count: 1,
+            target_present: true,
+        })
+        .expect("delayed first focused commit");
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        snapshot_rx
+            .borrow()
+            .state
+            .navigation
+            .active_room_id
+            .as_deref(),
+        Some(room_b)
+    );
+
+    loop {
+        match tokio::time::timeout(Duration::from_secs(1), account_rx.recv())
+            .await
+            .expect("latest lookup should be routed")
+            .expect("latest lookup message")
+        {
+            AccountMessage::EnsureRoomEventCached { response_tx, .. } => {
+                response_tx
+                    .send(crate::account::RoomEventLookupResult::Missing)
+                    .expect("latest missing response");
+                break;
+            }
+            _ => {}
+        }
+    }
+    let final_state = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let snapshot = snapshot_rx.borrow().state.clone();
+            let terminal = match second_source {
+                koushi_state::EventNavigationSource::Activity
+                | koushi_state::EventNavigationSource::Search => matches!(
+                    snapshot.navigation.event_navigation,
+                    koushi_state::EventNavigationState::LiveFallback {
+                        source: current_source,
+                        ..
+                    } if current_source == second_source
+                ),
+                koushi_state::EventNavigationSource::Pinned => matches!(
+                    snapshot.navigation.event_navigation,
+                    koushi_state::EventNavigationState::Failed {
+                        source: current_source,
+                        failure_kind: koushi_state::EventNavigationFailureKind::TargetMissing,
+                        ..
+                    } if current_source == second_source
+                ),
+            };
+            if terminal {
+                break snapshot;
+            }
+            snapshot_rx
+                .changed()
+                .await
+                .expect("latest terminal snapshot");
+        }
+    })
+    .await
+    .expect("latest source should settle");
+    let expected_outcome = match second_source {
+        koushi_state::EventNavigationSource::Activity
+        | koushi_state::EventNavigationSource::Search => {
+            IntentOutcome::BenignNoOp(IntentNoOpReason::TimelineTargetMissing)
+        }
+        koushi_state::EventNavigationSource::Pinned => {
+            IntentOutcome::FailedNoOp(IntentNoOpReason::TimelineTargetMissing)
+        }
+    };
+    loop {
+        if let CoreEvent::IntentLifecycle {
+            request_id,
+            outcome,
+            ..
+        } = event_rx.recv().await.expect("latest event stream")
+            && request_id == second_request_id
+        {
+            assert_eq!(outcome, expected_outcome);
+            break;
+        }
+    }
+    assert_eq!(
+        final_state.navigation.active_room_id.as_deref(),
+        Some(room_b)
+    );
+    actor_task.abort();
+    let _ = actor_task.await;
+}
+
+#[tokio::test]
+async fn app_actor_latest_event_source_and_policy_wins() {
+    run_event_navigation_latest_source_case(
+        koushi_state::EventNavigationSource::Activity,
+        koushi_state::EventNavigationSource::Search,
+        koushi_protocol::command::EventNavigationMissingTargetPolicy::LiveFallback,
+    )
+    .await;
+    run_event_navigation_latest_source_case(
+        koushi_state::EventNavigationSource::Search,
+        koushi_state::EventNavigationSource::Pinned,
+        koushi_protocol::command::EventNavigationMissingTargetPolicy::Fail,
+    )
+    .await;
+}
+
+async fn run_event_navigation_external_supersession_case(command: CoreCommand) {
+    let data_dir = tempfile::tempdir().expect("runtime data directory");
+    let room_a = "!external-event-room-a:example.invalid";
+    let room_b = "!external-event-room-b:example.invalid";
+    let event_id = "$external-event:example.invalid";
+    let account_key = AccountKey("@synthetic:example.invalid".to_owned());
+    let mut state = AppState {
+        session: SessionState::Ready(SessionInfo {
+            homeserver: "https://example.invalid".to_owned(),
+            user_id: account_key.0.clone(),
+            device_id: "SYNTHETIC".to_owned(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        }),
+        ..AppState::default()
+    };
+    state.rooms = vec![
+        unread_diagnostic_room(room_a),
+        unread_diagnostic_room(room_b),
+    ];
+    state.navigation.active_room_id = Some(room_a.to_owned());
+    state.timeline.room_id = Some(room_a.to_owned());
+
+    let (
+        actor,
+        command_tx,
+        action_tx,
+        mut account_rx,
+        mut event_rx,
+        snapshot_rx,
+        _navigation_projection_rx,
+        event_navigation_prepared_tx,
+        focused_projection_tx,
+    ) = app_actor_event_navigation_fixture(data_dir.path(), state);
+    let actor_task = tokio::spawn(actor.run());
+    let event_request_id = RequestId {
+        connection_id: RuntimeConnectionId(836),
+        sequence: 1,
+    };
+    command_tx
+        .send(CoreCommandEnvelope::Public {
+            command: CoreCommand::App(AppCommand::NavigateToEvent {
+                request_id: event_request_id,
+                room_id: room_a.to_owned(),
+                event_id: event_id.to_owned(),
+                source: koushi_state::EventNavigationSource::Activity,
+                missing_target_policy:
+                    koushi_protocol::command::EventNavigationMissingTargetPolicy::LiveFallback,
+            }),
+            composer_permit: None,
+            admission: None,
+        })
+        .await
+        .expect("event navigation command");
+    let _ = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if matches!(
+                account_rx.recv().await.expect("internal select message"),
+                AccountMessage::RoomCommand(koushi_protocol::command::RoomCommand::SelectRoom {
+                    room_id,
+                    ..
+                }) if room_id == room_a
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("internal select should be routed");
+
+    command_tx
+        .send(CoreCommandEnvelope::Public {
+            command,
+            composer_permit: None,
+            admission: None,
+        })
+        .await
+        .expect("external navigation command");
+    let _ = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let CoreEvent::IntentLifecycle {
+                request_id,
+                outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::Superseded),
+                ..
+            } = event_rx.recv().await.expect("event stream remains open")
+                && request_id == event_request_id
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("event waiter should settle as Superseded");
+    assert!(matches!(
+        snapshot_rx.borrow().state.navigation.event_navigation,
+        koushi_state::EventNavigationState::Idle
+    ));
+
+    action_tx
+        .send(vec![AppAction::SelectRoom {
+            room_id: room_a.to_owned(),
+        }])
+        .await
+        .expect("delayed stale select action");
+    event_navigation_prepared_tx
+        .send(EventNavigationPrepared {
+            request_id: event_request_id,
+            room_id: room_a.to_owned(),
+            event_id: event_id.to_owned(),
+            generation: 1,
+            result: crate::account::RoomEventLookupResult::Failed,
+        })
+        .expect("delayed stale lookup");
+    focused_projection_tx
+        .send(FocusedProjectionCommitted {
+            projection_request_id: event_request_id,
+            key: TimelineKey {
+                account_key,
+                kind: TimelineKind::Focused {
+                    room_id: room_a.to_owned(),
+                    event_id: event_id.to_owned(),
+                },
+            },
+            actor_generation: 1,
+            timeline_generation: TimelineGeneration(1),
+            item_count: 1,
+            target_present: true,
+        })
+        .expect("delayed stale focused commit");
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        snapshot_rx
+            .borrow()
+            .state
+            .navigation
+            .active_room_id
+            .as_deref(),
+        Some(room_a)
+    );
+    assert!(matches!(
+        snapshot_rx.borrow().state.navigation.event_navigation,
+        koushi_state::EventNavigationState::Idle
+    ));
+    actor_task.abort();
+    let _ = actor_task.await;
+}
+
+#[tokio::test]
+async fn event_navigation_external_room_thread_and_date_cancel_stale_work() {
+    let room_b = "!external-event-room-b:example.invalid";
+    let commands = [
+        CoreCommand::Room(koushi_protocol::command::RoomCommand::SelectRoom {
+            request_id: RequestId {
+                connection_id: RuntimeConnectionId(836),
+                sequence: 2,
+            },
+            room_id: room_b.to_owned(),
+        }),
+        CoreCommand::App(AppCommand::OpenThread {
+            request_id: RequestId {
+                connection_id: RuntimeConnectionId(836),
+                sequence: 2,
+            },
+            room_id: room_b.to_owned(),
+            root_event_id: "$external-root:example.invalid".to_owned(),
+            intent: koushi_state::ThreadOpenIntent::ExistingThread,
+        }),
+        CoreCommand::App(AppCommand::OpenTimelineAtTimestamp {
+            request_id: RequestId {
+                connection_id: RuntimeConnectionId(836),
+                sequence: 2,
+            },
+            room_id: room_b.to_owned(),
+            timestamp_ms: 1_700_000_000_000,
+        }),
+    ];
+    for command in commands {
+        run_event_navigation_external_supersession_case(command).await;
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -2354,8 +3467,17 @@ async fn current_event_navigation_deadline_failure_clears_focused_owner_and_fenc
         source: koushi_state::EventNavigationSource::Activity,
     };
 
-    let (mut actor, mut account_rx, mut event_rx, mut snapshot_rx) =
-        app_actor_event_navigation_fixture(data_dir.path(), state);
+    let (
+        mut actor,
+        _command_tx,
+        _action_tx,
+        mut account_rx,
+        mut event_rx,
+        mut snapshot_rx,
+        _navigation_projection_rx,
+        _event_navigation_prepared_tx,
+        _focused_projection_tx,
+    ) = app_actor_event_navigation_fixture(data_dir.path(), state);
     let pending = PendingEventNavigation {
         request_id,
         select_request_id: RequestId {

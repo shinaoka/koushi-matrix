@@ -905,6 +905,12 @@ impl CoreConnection {
 
             tokio::select! {
                 event = self.event_rx.recv(), if event_stream_open => match event {
+                    Ok(CoreEvent::OperationFailed {
+                        request_id: failed_request_id,
+                        ..
+                    }) if failed_request_id == request_id => {
+                        return Err(EventNavigationError::Rejected);
+                    }
                     Ok(CoreEvent::IntentLifecycle {
                         request_id: lifecycle_request_id,
                         outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::Superseded),

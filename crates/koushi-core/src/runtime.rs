@@ -1067,6 +1067,16 @@ impl AppActor {
                         else {
                             continue;
                         };
+                        if let AppAction::SelectRoom { room_id } = &action
+                            && !self
+                                .pending_select
+                                .get(room_id)
+                                .is_some_and(|queue| !queue.is_empty())
+                        {
+                            // A cancelled internal selection has no request owner left;
+                            // do not let its delayed actor projection resurrect the room.
+                            continue;
+                        }
                         // Load each session-owned view before later projections can
                         // mutate it, unless an earlier action in this batch captured a
                         // persistence fence that must be applied first post-commit.

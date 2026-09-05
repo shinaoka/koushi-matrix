@@ -115,6 +115,11 @@ impl super::AppActor {
             &action,
         );
         let effects = reduce_with_unread_diagnostics(&mut self.state, action);
+        if internal_event_navigation_select {
+            // Room selection owns the room/timeline projection, but its ordinary
+            // reducer transition must not close the outer event-navigation owner.
+            self.state.navigation.event_navigation = previous_event_navigation;
+        }
         if composer_draft_session_key(&self.state) != previous_session {
             self.composer_draft_reload_required = true;
         }
