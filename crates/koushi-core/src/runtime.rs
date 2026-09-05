@@ -66,7 +66,7 @@ use koushi_state::{
     admit_space_member_cancellation, admit_space_member_invite, admit_space_member_role,
     admit_space_members_load, reduce,
 };
-use tokio::sync::{Mutex, broadcast, mpsc, oneshot, watch};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::account::{AccountActorHandle, AccountMessage};
 use crate::activity_resolution::ActivityResolutionRequest;
@@ -326,7 +326,7 @@ pub struct CoreRuntime {
     #[cfg_attr(not(any(test, feature = "test-hooks")), allow(dead_code))]
     action_tx: mpsc::Sender<Vec<AppAction>>,
     #[cfg(any(test, feature = "test-hooks"))]
-    injected_select_room_permits: Arc<Mutex<HashMap<String, usize>>>,
+    injected_action_tx: mpsc::Sender<Vec<AppAction>>,
     #[cfg(any(test, feature = "test-hooks"))]
     composer_draft_test_tx: mpsc::Sender<ComposerDraftTestMutation>,
     /// Account-runtime-owned source and prepared variant bytes. The WebView
@@ -536,10 +536,10 @@ impl CoreRuntime {
         // sync bursts never overflow the RoomActor's drop-on-full try_send.
         let (event_tx, _) = broadcast::channel(event_capacity);
         let (action_tx, action_rx) = mpsc::channel(ACTION_QUEUE_CAPACITY);
+        #[cfg(any(test, feature = "test-hooks"))]
+        let (injected_action_tx, injected_action_rx) = mpsc::channel(ACTION_QUEUE_CAPACITY);
         let (event_navigation_prepared_tx, event_navigation_prepared_rx) =
             mpsc::unbounded_channel();
-        #[cfg(any(test, feature = "test-hooks"))]
-        let injected_select_room_permits = Arc::new(Mutex::new(HashMap::new()));
         #[cfg(any(test, feature = "test-hooks"))]
         let (composer_draft_test_tx, composer_draft_test_rx) = mpsc::channel(1);
         let settings_store = SettingsStore::new(&data_dir);
@@ -593,7 +593,7 @@ impl CoreRuntime {
             command_rx,
             action_rx,
             #[cfg(any(test, feature = "test-hooks"))]
-            injected_select_room_permits: Arc::clone(&injected_select_room_permits),
+            injected_action_rx: Some(injected_action_rx),
             event_navigation_prepared_tx,
             event_navigation_prepared_rx,
             pending_event_navigation: None,
@@ -662,7 +662,7 @@ impl CoreRuntime {
             native_artifacts,
             action_tx,
             #[cfg(any(test, feature = "test-hooks"))]
-            injected_select_room_permits,
+            injected_action_tx,
             #[cfg(any(test, feature = "test-hooks"))]
             composer_draft_test_tx,
             media_preparation,
@@ -692,28 +692,7 @@ impl CoreRuntime {
     /// them. Not part of the public production API.
     #[cfg(any(test, feature = "test-hooks"))]
     pub async fn inject_actions(&self, actions: Vec<AppAction>) {
-        let registered = {
-            let mut permits = self.injected_select_room_permits.lock().await;
-            let mut registered = HashMap::new();
-            for action in &actions {
-                if let AppAction::SelectRoom { room_id } = action {
-                    *permits.entry(room_id.clone()).or_default() += 1;
-                    *registered.entry(room_id.clone()).or_default() += 1;
-                }
-            }
-            registered
-        };
-        if self.action_tx.send(actions).await.is_err() {
-            let mut permits = self.injected_select_room_permits.lock().await;
-            for (room_id, count) in registered {
-                if let Some(available) = permits.get_mut(&room_id) {
-                    *available = available.saturating_sub(count);
-                    if *available == 0 {
-                        permits.remove(&room_id);
-                    }
-                }
-            }
-        }
+        let _ = self.injected_action_tx.send(actions).await;
     }
 
     /// Test hook: inject one typed persisted-draft mutation and wait until the
@@ -832,7 +811,7 @@ impl CoreRuntime {
             native_artifacts: _,
             action_tx: _,
             #[cfg(any(test, feature = "test-hooks"))]
-                injected_select_room_permits: _,
+                injected_action_tx: _,
             #[cfg(any(test, feature = "test-hooks"))]
                 composer_draft_test_tx: _,
             media_preparation: _,
@@ -859,6 +838,8 @@ enum SettingsLoadStatus {
 struct AppActor {
     command_rx: mpsc::Receiver<CoreCommandEnvelope>,
     action_rx: mpsc::Receiver<Vec<AppAction>>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    injected_action_rx: Option<mpsc::Receiver<Vec<AppAction>>>,
     event_navigation_prepared_tx: mpsc::UnboundedSender<EventNavigationPrepared>,
     event_navigation_prepared_rx: mpsc::UnboundedReceiver<EventNavigationPrepared>,
     pending_event_navigation: Option<PendingEventNavigation>,
@@ -903,13 +884,31 @@ struct AppActor {
     /// every submitted command receives a terminal `IntentLifecycle` outcome.
     /// Private-data-free: stores opaque ids only, never room names or content.
     pending_select: HashMap<String, std::collections::VecDeque<RequestId>>,
-    #[cfg(any(test, feature = "test-hooks"))]
-    injected_select_room_permits: Arc<Mutex<HashMap<String, usize>>>,
     /// Main-pane Focused navigation awaiting proof that the WebView canonical
     /// store applied the actor-owned InitialItems projection.
     pending_focused_navigation: Option<PendingFocusedNavigation>,
     latest_focused_projection_generation: HashMap<TimelineKey, (u64, TimelineGeneration)>,
     pending_date_navigation_request_id: Option<RequestId>,
+}
+
+#[derive(Clone, Copy)]
+enum ActionBatchOrigin {
+    Actor,
+    #[cfg(any(test, feature = "test-hooks"))]
+    TestInjected,
+}
+
+impl ActionBatchOrigin {
+    fn is_test_injected(self) -> bool {
+        #[cfg(any(test, feature = "test-hooks"))]
+        {
+            matches!(self, Self::TestInjected)
+        }
+        #[cfg(not(any(test, feature = "test-hooks")))]
+        {
+            false
+        }
+    }
 }
 
 enum CommandDisposition {
@@ -943,6 +942,58 @@ async fn receive_focused_projection_commit(
             *receiver = None;
             None
         }
+    }
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+async fn receive_injected_action_batch(
+    receiver: &mut Option<mpsc::Receiver<Vec<AppAction>>>,
+) -> Option<Vec<AppAction>> {
+    match receiver {
+        Some(receiver) => receiver.recv().await,
+        None => future::pending().await,
+    }
+}
+
+async fn receive_action_batch(
+    action_rx: &mut mpsc::Receiver<Vec<AppAction>>,
+    #[cfg(any(test, feature = "test-hooks"))] injected_action_rx: &mut Option<
+        mpsc::Receiver<Vec<AppAction>>,
+    >,
+) -> Option<(Vec<AppAction>, ActionBatchOrigin)> {
+    #[cfg(any(test, feature = "test-hooks"))]
+    {
+        let mut action_closed = false;
+        let mut injected_action_closed = false;
+        loop {
+            if action_closed && injected_action_closed {
+                return None;
+            }
+            tokio::select! {
+                actions = action_rx.recv(), if !action_closed => {
+                    match actions {
+                        Some(actions) => return Some((actions, ActionBatchOrigin::Actor)),
+                        None => action_closed = true,
+                    }
+                }
+                actions = receive_injected_action_batch(injected_action_rx), if !injected_action_closed => {
+                    match actions {
+                        Some(actions) => return Some((actions, ActionBatchOrigin::TestInjected)),
+                        None => {
+                            injected_action_closed = true;
+                            *injected_action_rx = None;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(not(any(test, feature = "test-hooks")))]
+    {
+        action_rx
+            .recv()
+            .await
+            .map(|actions| (actions, ActionBatchOrigin::Actor))
     }
 }
 
@@ -1074,8 +1125,12 @@ impl AppActor {
                         self.handle_focused_projection_commit(focused_projection).await;
                     }
                 }
-                actions = self.action_rx.recv() => {
-                    let Some(actions) = actions else { break };
+                action_batch = receive_action_batch(
+                    &mut self.action_rx,
+                    #[cfg(any(test, feature = "test-hooks"))]
+                    &mut self.injected_action_rx,
+                ) => {
+                    let Some((actions, batch_origin)) = action_batch else { break };
                     #[cfg(any(test, feature = "test-hooks"))]
                     let composer_draft_test_completions =
                         self.apply_pending_composer_draft_test_mutations().await;
@@ -1098,37 +1153,12 @@ impl AppActor {
                         else {
                             continue;
                         };
-                        #[cfg(any(test, feature = "test-hooks"))]
                         if let AppAction::SelectRoom { room_id } = &action
                             && !self
                                 .pending_select
                                 .get(room_id)
                                 .is_some_and(|queue| !queue.is_empty())
-                        {
-                            let injected = {
-                                let mut permits = self.injected_select_room_permits.lock().await;
-                                if let Some(count) = permits.get_mut(room_id) {
-                                    *count -= 1;
-                                    if *count == 0 {
-                                        permits.remove(room_id);
-                                    }
-                                    true
-                                } else {
-                                    false
-                                }
-                            };
-                            if !injected {
-                                // A cancelled internal selection has no request owner left;
-                                // do not let its delayed actor projection resurrect the room.
-                                continue;
-                            }
-                        }
-                        #[cfg(not(any(test, feature = "test-hooks")))]
-                        if let AppAction::SelectRoom { room_id } = &action
-                            && !self
-                                .pending_select
-                                .get(room_id)
-                                .is_some_and(|queue| !queue.is_empty())
+                            && !batch_origin.is_test_injected()
                         {
                             // A cancelled internal selection has no request owner left;
                             // do not let its delayed actor projection resurrect the room.

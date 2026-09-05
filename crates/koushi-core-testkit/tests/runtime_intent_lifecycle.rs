@@ -159,20 +159,6 @@ fn background_flood_batch(batch_index: usize, kept_room_ids: &[&str]) -> Vec<App
 /// emit `IntentLifecycle { outcome: Committed }` for the matching request_id.
 #[tokio::test]
 async fn injected_select_room_projection_is_allowed_for_test_hooks() {
-    let source = include_str!("../../koushi-core/src/runtime.rs");
-    let inject_actions = source
-        .split_once("pub async fn inject_actions")
-        .map(|(_, source)| source)
-        .expect("inject_actions source");
-    assert!(
-        inject_actions.contains("let registered = {"),
-        "permit registration must finish before the action send"
-    );
-    assert!(
-        inject_actions.contains("};\n        if self.action_tx.send(actions).await"),
-        "the permit lock must be dropped before awaiting action delivery"
-    );
-
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
     let initial_room = "!injected-initial:example.test";

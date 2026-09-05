@@ -115,6 +115,45 @@ async fn wait_for_runtime_snapshot(
     .expect("runtime state should reach the expected operation boundary")
 }
 
+#[tokio::test]
+async fn action_batch_channel_closure_keeps_the_other_lane_alive() {
+    let (actor_tx, mut actor_rx) = mpsc::channel(1);
+    let (injected_tx, injected_rx) = mpsc::channel(1);
+    let mut injected_rx = Some(injected_rx);
+    drop(actor_tx);
+    injected_tx
+        .send(Vec::new())
+        .await
+        .expect("injected lane remains usable after actor lane closes");
+    assert!(matches!(
+        receive_action_batch(&mut actor_rx, &mut injected_rx)
+            .await
+            .expect("injected lane batch"),
+        (actions, ActionBatchOrigin::TestInjected) if actions.is_empty()
+    ));
+    drop(injected_tx);
+    assert!(
+        receive_action_batch(&mut actor_rx, &mut injected_rx)
+            .await
+            .is_none()
+    );
+
+    let (actor_tx, mut actor_rx) = mpsc::channel(1);
+    let (_injected_tx, injected_rx) = mpsc::channel(1);
+    let mut injected_rx = Some(injected_rx);
+    actor_tx
+        .send(Vec::new())
+        .await
+        .expect("actor lane remains usable after injected lane closes");
+    drop(actor_tx);
+    assert!(matches!(
+        receive_action_batch(&mut actor_rx, &mut injected_rx)
+            .await
+            .expect("actor lane batch"),
+        (actions, ActionBatchOrigin::Actor) if actions.is_empty()
+    ));
+}
+
 async fn close_account_actor_for_runtime_test(runtime: &CoreRuntime) {
     let (acknowledged_tx, acknowledged_rx) = oneshot::channel();
     assert!(
@@ -1055,6 +1094,7 @@ async fn committed_room_cleanup_bypasses_a_saturated_account_mailbox() {
 
     let (command_tx, command_rx) = mpsc::channel(1);
     let (action_tx, action_rx) = mpsc::channel(1);
+    let (_injected_action_tx, injected_action_rx) = mpsc::channel(1);
     let (_composer_draft_test_tx, composer_draft_test_rx) = mpsc::channel(1);
     let (event_tx, mut event_rx) = broadcast::channel(16);
     let (snapshot_tx, mut snapshot_rx) = watch::channel(VersionedAppStateSnapshot {
@@ -1078,6 +1118,7 @@ async fn committed_room_cleanup_bypasses_a_saturated_account_mailbox() {
     let actor = AppActor {
         command_rx,
         action_rx,
+        injected_action_rx: Some(injected_action_rx),
         event_navigation_prepared_tx,
         event_navigation_prepared_rx,
         pending_event_navigation: None,
@@ -1111,7 +1152,6 @@ async fn committed_room_cleanup_bypasses_a_saturated_account_mailbox() {
         next_internal_request_sequence: 1,
         navigation_projection_generation: 0,
         pending_select,
-        injected_select_room_permits: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         pending_focused_navigation: None,
         latest_focused_projection_generation: HashMap::new(),
         pending_date_navigation_request_id: None,
@@ -1217,6 +1257,7 @@ async fn same_batch_select_room_settles_only_final_selection() {
 
     let (command_tx, command_rx) = mpsc::channel(1);
     let (action_tx, action_rx) = mpsc::channel(1);
+    let (_injected_action_tx, injected_action_rx) = mpsc::channel(1);
     let (_composer_draft_test_tx, composer_draft_test_rx) = mpsc::channel(1);
     let (event_tx, mut event_rx) = broadcast::channel(16);
     let (snapshot_tx, mut snapshot_rx) = watch::channel(VersionedAppStateSnapshot {
@@ -1252,6 +1293,7 @@ async fn same_batch_select_room_settles_only_final_selection() {
     let actor = AppActor {
         command_rx,
         action_rx,
+        injected_action_rx: Some(injected_action_rx),
         event_navigation_prepared_tx,
         event_navigation_prepared_rx,
         pending_event_navigation: None,
@@ -1285,7 +1327,6 @@ async fn same_batch_select_room_settles_only_final_selection() {
         next_internal_request_sequence: 1,
         navigation_projection_generation: 0,
         pending_select,
-        injected_select_room_permits: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         pending_focused_navigation: None,
         latest_focused_projection_generation: HashMap::new(),
         pending_date_navigation_request_id: None,
@@ -2266,6 +2307,7 @@ fn app_actor_event_navigation_fixture(
     };
     let (command_tx, command_rx) = mpsc::channel(1);
     let (action_tx, action_rx) = mpsc::channel(1);
+    let (_injected_action_tx, injected_action_rx) = mpsc::channel(1);
     let (_composer_draft_test_tx, composer_draft_test_rx) = mpsc::channel(1);
     let (event_tx, event_rx) = broadcast::channel(16);
     let (snapshot_tx, snapshot_rx) = watch::channel(VersionedAppStateSnapshot {
@@ -2280,6 +2322,7 @@ fn app_actor_event_navigation_fixture(
     let actor = AppActor {
         command_rx,
         action_rx,
+        injected_action_rx: Some(injected_action_rx),
         event_navigation_prepared_tx: event_navigation_prepared_tx.clone(),
         event_navigation_prepared_rx,
         pending_event_navigation: None,
@@ -2313,7 +2356,6 @@ fn app_actor_event_navigation_fixture(
         next_internal_request_sequence: 1,
         navigation_projection_generation: 0,
         pending_select: HashMap::new(),
-        injected_select_room_permits: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         pending_focused_navigation: None,
         latest_focused_projection_generation: HashMap::new(),
         pending_date_navigation_request_id: None,
