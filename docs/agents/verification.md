@@ -57,6 +57,22 @@ echo "EXIT=$?"` and report that number. A 2026-07-25 change claimed a green
 
 A subagent's "gates passed" claim is not evidence — re-run the gate yourself.
 
+## Verification by stage
+
+- **Iteration:** start with the smallest reproducing check and expand to the
+  affected integration/feature matrix once it passes. The first command need
+  not be the entire CI suite.
+- **Before review:** read the full diff, including untracked/new files, and run
+  checks for the changed contracts. Use the checklist below and the relevant
+  state-ownership section; installed generic review skills do not define this
+  repository's artifact-update commands or gate matrix.
+- **Before merge:** run the local gates in
+  [engineering rules](../policies/engineering-rules.md#build-dependencies-qa-gates)
+  and inspect required CI results. For documentation-only changes under that
+  policy, run `node scripts/check-agents-docs.mjs` when touching this tree,
+  check affected links and command references, and run `git diff --check`.
+  Do not claim unrun product suites passed.
+
 ## Running focused tests
 
 - When running focused Rust crate unit tests, add `--lib` unless integration
@@ -119,9 +135,12 @@ exposed seven integration-test expectation failures that an earlier
 ## Diff self-review
 
 Before opening a PR or requesting a review, read the branch's own finished
-diff and judge it against the canon yourself, using the `preflight-review`
-skill checklist (production-path trace, contract mirrors, async/ownership,
-terminal semantics, verify-first integrity, local gate matrix).
+diff and judge it against the applicable canon yourself. Trace changed
+production paths, contract mirrors, async/ownership and terminal semantics;
+confirm verify-first evidence and the applicable local gate matrix. The
+`preflight-review` skill can supply general prompts, but use this repository's
+[artifact instructions](state-ownership.md#snapshot-and-wire-contract-mirrors)
+for exact update procedures.
 
 ```bash
 git diff origin/main...HEAD
@@ -158,14 +177,9 @@ Follow the normative design-simplicity rules in
 `docs/policies/engineering-rules.md`: do not add defensive machinery without a
 reproduced failure or named invariant.
 
-Operationally, all agents—including `gpt-5.6-sol`, which tends to overcompensate
-with defensive machinery—must add no defensive machinery absent a reproduced
-failure or named invariant. Retry loops, persisted incident buffers, fallback
-services, classification state machines, and speculative diagnostics require that
-evidence; put the smallest guard at the authoritative boundary. This is agent
-guidance, not a product contract, and never weakens required security, privacy,
-trust-boundary validation, data-loss prevention, accessibility, or explicitly
-approved requirements.
+Put the smallest necessary guard at the authoritative boundary. This never
+weakens security, privacy, trust-boundary validation, data-loss prevention,
+accessibility, or explicitly approved requirements.
 
 ## Issue #738 flake measurement
 
@@ -236,16 +250,11 @@ primitive. Do not add a per-file exception or local composition workaround.
   `TimelineView.tsx`, `styles.css`, canon docs, commits, issue comments, and
   close decisions. Cheap-agent output is a draft to verify, not accepted
   evidence by itself.
-- Do not let two agents edit shared hot files concurrently. Treat
-  `crates/koushi-state/src/{state.rs,action.rs,reducer.rs}`,
-  `crates/koushi-core/src/{command.rs,event.rs,runtime.rs}`,
-  `apps/desktop/src-tauri/src/{dto.rs,commands.rs}`,
-  `apps/desktop/src/{App.tsx,components/TimelineView.tsx,i18n/messages.ts,styles.css}`,
-  browser-headless specs, and Linux GUI QA scripts as main-agent integration
-  points unless the task explicitly grants a narrow patch.
-- Review prompts for cheap agents must ask for consistency with
-  `REPOSITORY_RULES.md`, `docs/architecture/overview.md`,
-  `docs/architecture/state-machine.md` when reducers or state machines change,
-  `docs/policies/engineering-rules.md`, `AGENTS.md`, and the relevant dated
-  implementation plan. A silent, timed-out, or budget-exceeded cheap-agent run
-  is not review evidence.
+- Do not let two agents edit shared hot files concurrently. Use the canonical
+  [shared-surface list](../../REPOSITORY_RULES.md#shared-hot-files) rather than
+  duplicating it here; coordinate ownership before granting a narrow patch.
+- Review prompts name the applicable canon sections and follow
+  [Review And Audit](../../REPOSITORY_RULES.md#review-and-audit). A silent,
+  timed-out, or budget-exceeded run is not review evidence. Higher-priority
+  agent instructions may add review requirements; repository guidance does
+  not cancel them.

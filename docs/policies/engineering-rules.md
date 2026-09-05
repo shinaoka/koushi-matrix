@@ -988,8 +988,9 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
    `--allow-empty-timeline` only for sparse test accounts validating
    login/room-list/panel automation.
 
-Operational setup (Accessibility/Automation/Screen Recording permissions,
-PTY handling, prompt line order) is documented in `AGENTS.md`.
+Operational setup and failure diagnosis are documented in
+[environment](../agents/environment.md) and
+[troubleshooting](../agents/troubleshooting.md).
 
 ## Desktop Text Input And IME Safety
 
@@ -1060,12 +1061,15 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
    tracking upstream. Every SDK gitlink bump must keep the guarded submodule
    checkout in sync and update the root `Cargo.lock` when dependency resolution
    changes.
-2. Local Tuwunel toolchain caveats (install flags such as
-   `RUMA_UNSTABLE_EXHAUSTIVE_TYPES=1` and macOS `--no-default-features`) are
-   tracked in `AGENTS.md` and the QA scripts, not hand-run.
-3. Required local gates before merge: crate tests (`koushi-state`,
-   `-auth`, `-core`), frontend tests + typecheck, and
-   `qa:headless-local -- --server=both`.
+2. Local Tuwunel toolchain caveats are tracked in
+   [environment](../agents/environment.md) and the QA scripts, not hand-run.
+3. Required local gates before merging product changes: crate tests
+   (`koushi-state`, `-auth`, `-core`), frontend tests + typecheck, and
+   `qa:headless-local -- --server=both`. During iteration, use focused checks
+   first; this does not waive merge gates. Documentation-only changes that do
+   not change executable code, dependencies, or QA runner contracts run the
+   affected documentation checks and `git diff --check`; product suites are
+   not local prerequisites for those changes. Required CI checks still apply.
 4. Real homeserver QA is a release/preflight gate (network + approved
    credentials), not an every-CI gate.
    It is also required before GUI-level confidence claims and after changes
@@ -1117,8 +1121,8 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
    and plans implement it; when implementation reveals a design problem,
    amend the overview first.
 3. Durable rules discovered during operations are promoted from `AGENTS.md`
-   into `REPOSITORY_RULES.md` or this document; AGENTS.md keeps the
-   troubleshooting detail.
+   into `REPOSITORY_RULES.md` or this document; `docs/agents/` keeps the
+   operational detail and `AGENTS.md` routes to it.
 4. Docs, examples, and fixtures use synthetic data only (see Secrets rules).
 5. State-machine diagrams are normative. Every reducer state machine in
    `reduce(AppState, AppAction)` — its states, transitions, and guards — is
@@ -1135,7 +1139,7 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
 6. For umbrella issue work, each child issue completion must record
    implementation discoveries in the right place: durable architecture/rule
    changes in `docs/architecture/`, `REPOSITORY_RULES.md`, or this document;
-   operational setup/failure notes in `AGENTS.md`; and QA scenario contracts in
+   operational setup/failure notes in `docs/agents/`; and QA scenario contracts in
    `docs/qa/`. Closing an issue without syncing the learned rule is a process
    defect.
 7. Concurrent Phase A work must follow the merge-conflict-avoidance rules in
@@ -1150,17 +1154,14 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
    `node_modules/`) must be cleaned up at the same time. Shared build
    directories such as a shared `CARGO_TARGET_DIR` must not be deleted. See
    `REPOSITORY_RULES.md` `Worktree And Build Artifact Cleanup`.
-9. Non-frontier-agent implementation requires frontier-model review at the end
-   of substantial work, particularly after AgentSwarm or parallel Phase A
-   changes. The review checks the diff against the canon and verification
-   output, and its findings must be addressed before landing on `main`. The
-   auditor must prioritize repository-rule consistency, Rust/Tauri best
-   practices, and security/privacy risks, and must propose canon amendments
-   when a finding is caused by a rule gap. See `REPOSITORY_RULES.md`
-   `Review And Audit`.
+9. Review ownership, risk-based independent review, finding resolution, and
+   canon-update proposals follow
+   [Review And Audit](../../REPOSITORY_RULES.md#review-and-audit).
+   Do not maintain a separate model-tier review policy here.
 # Current sync contract (Issue #412)
 
 The only supported desktop sync engine is Element X-compatible Simplified
 Sliding Sync. Do not add legacy `/sync` fallback, backend probing/forcing, or
-backend-selection state to product, QA, or diagnostics code. Historical rules
-below are retained for audit context and are superseded by this contract.
+backend-selection state to product, QA, or diagnostics code. Retired QA
+vocabulary and superseded behavior are recorded in
+[history](../agents/history.md), not runnable guidance here.
