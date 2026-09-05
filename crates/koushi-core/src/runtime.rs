@@ -591,7 +591,6 @@ impl CoreRuntime {
             event_navigation_prepared_tx,
             event_navigation_prepared_rx,
             pending_event_navigation: None,
-            event_navigation_generation: 0,
             event_navigation_task: None,
             event_navigation_deadline_task: None,
             focused_projection_rx: Some(focused_projection_rx),
@@ -832,7 +831,6 @@ struct AppActor {
     event_navigation_prepared_tx: mpsc::UnboundedSender<EventNavigationPrepared>,
     event_navigation_prepared_rx: mpsc::UnboundedReceiver<EventNavigationPrepared>,
     pending_event_navigation: Option<PendingEventNavigation>,
-    event_navigation_generation: u64,
     event_navigation_task: Option<AbortOnDrop<()>>,
     event_navigation_deadline_task: Option<AbortOnDrop<()>>,
     focused_projection_rx:
