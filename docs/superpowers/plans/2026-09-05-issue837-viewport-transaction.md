@@ -2,6 +2,12 @@
 
 Status: implementation and deliverable reviews complete; local gates passed; CI and merge status are tracked in GitHub.
 
+Historical implementation record. A recurrence on the latest build led to the
+[timeline viewport redesign proposal](../specs/2026-09-05-timeline-viewport-redesign.md).
+Use that proposal for replacement planning; its feasibility gates have not yet
+selected a library or changed production behavior. The verification below is
+evidence for the tested scenarios, not proof against all native scroll orderings.
+
 ## Scope and ownership
 
 Replace the overlapping renderer prepend, projection and measurement compensation

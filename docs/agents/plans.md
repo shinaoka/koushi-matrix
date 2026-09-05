@@ -8,6 +8,15 @@ and the deliberate limits of that phase, not the current contract. When a plan
 and [state-ownership.md](state-ownership.md) disagree about today's behavior, the
 code and the canon win; fix whichever document is wrong.
 
+## Timeline viewport replacement proposal
+
+[Timeline viewport redesign](../superpowers/specs/2026-09-05-timeline-viewport-redesign.md)
+defines the proposed replacement for #837/#844: one list engine, explicit
+renderer intents, comparative native-motion verification, and large-room
+acceptance including Core/media costs. Production behavior is unchanged;
+library selection and the normative algorithm amendment require the documented
+feasibility gate. Historical plans below are not the new implementation brief.
+
 ## Runtime and roadmap
 
 - Headless core runtime:

@@ -1213,6 +1213,14 @@ continuing to apply later diffs as if the stream were complete.
 
 ## Timeline Viewport And Scrollback
 
+Replacement proposal: [Timeline viewport redesign](../superpowers/specs/2026-09-05-timeline-viewport-redesign.md)
+records the single-list-engine target, upstream comparison, removal map and
+large-room acceptance gates following the #837/#844 recurrence. The current
+normative implementation contract below remains in force until the proposal's
+feasibility gate selects an engine and this section is amended before production
+replacement. The proposal does not establish a fixed recurrence or a supported
+large-room capacity.
+
 Timeline scrollback uses a two-layer contract: core owns Matrix ordering,
 subscriptions, diffs, and pagination state; React owns render lists, viewport
 measurement, and DOM anchoring.
