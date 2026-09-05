@@ -39,6 +39,34 @@ fn focused_projection_commit(
 }
 
 #[test]
+fn reducer_clearing_event_navigation_requires_owner_cleanup() {
+    use koushi_state::{EventNavigationFailureKind, EventNavigationSource, EventNavigationState};
+
+    let opening = EventNavigationState::Opening {
+        generation: 1,
+        source: EventNavigationSource::Activity,
+    };
+    let failed = EventNavigationState::Failed {
+        generation: 1,
+        source: EventNavigationSource::Activity,
+        failure_kind: EventNavigationFailureKind::Timeline,
+    };
+    let idle = EventNavigationState::Idle;
+
+    assert!(super::event_navigation_owner_cleanup_required(&opening, &idle));
+    assert!(super::event_navigation_owner_cleanup_required(&failed, &idle));
+    assert!(!super::event_navigation_owner_cleanup_required(&opening, &failed));
+    assert!(!super::event_navigation_owner_cleanup_required(&idle, &idle));
+    assert!(!super::event_navigation_owner_cleanup_required(
+        &opening,
+        &EventNavigationState::Opening {
+            generation: 2,
+            source: EventNavigationSource::Search,
+        },
+    ));
+}
+
+#[test]
 fn focused_projection_commit_settles_without_renderer_evidence() {
     let expected = focused_projection_fixture(20);
     let mut pending = Some(expected.clone());
@@ -316,6 +344,206 @@ fn navigation_preference_boundary_canonicalizes_empty_presentations() {
             ..
         }
     ));
+}
+
+#[test]
+fn outer_navigation_commands_supersede_event_navigation_immediately() {
+    let request_id = |sequence| RequestId {
+        connection_id: RuntimeConnectionId(3),
+        sequence,
+    };
+    let cases = [
+        (
+            "select room",
+            koushi_protocol::command::CoreCommand::Room(
+                koushi_protocol::command::RoomCommand::SelectRoom {
+                    request_id: request_id(30),
+                    room_id: "!room:example.invalid".to_owned(),
+                },
+            ),
+            true,
+        ),
+        (
+            "open thread",
+            koushi_protocol::command::CoreCommand::App(
+                koushi_protocol::command::AppCommand::OpenThread {
+                    request_id: request_id(31),
+                    room_id: "!room:example.invalid".to_owned(),
+                    root_event_id: "$root:example.invalid".to_owned(),
+                    intent: koushi_state::ThreadOpenIntent::ExistingThread,
+                },
+            ),
+            true,
+        ),
+        (
+            "open anchored timeline",
+            koushi_protocol::command::CoreCommand::App(
+                koushi_protocol::command::AppCommand::OpenAnchoredTimeline {
+                    request_id: request_id(32),
+                    room_id: "!room:example.invalid".to_owned(),
+                    event_id: "$event:example.invalid".to_owned(),
+                    allow_live_fallback: true,
+                },
+            ),
+            true,
+        ),
+        (
+            "open timeline at timestamp",
+            koushi_protocol::command::CoreCommand::App(
+                koushi_protocol::command::AppCommand::OpenTimelineAtTimestamp {
+                    request_id: request_id(33),
+                    room_id: "!room:example.invalid".to_owned(),
+                    timestamp_ms: 1_700_000_000_000,
+                },
+            ),
+            true,
+        ),
+        (
+            "close focused context",
+            koushi_protocol::command::CoreCommand::App(
+                koushi_protocol::command::AppCommand::CloseFocusedContext {
+                    request_id: request_id(34),
+                },
+            ),
+            true,
+        ),
+        (
+            "navigate to event",
+            koushi_protocol::command::CoreCommand::App(
+                koushi_protocol::command::AppCommand::NavigateToEvent {
+                    request_id: request_id(35),
+                    room_id: "!room:example.invalid".to_owned(),
+                    event_id: "$event:example.invalid".to_owned(),
+                    source: koushi_state::EventNavigationSource::Search,
+                    missing_target_policy:
+                        koushi_protocol::command::EventNavigationMissingTargetPolicy::LiveFallback,
+                },
+            ),
+            false,
+        ),
+        (
+            "update settings",
+            koushi_protocol::command::CoreCommand::App(
+                koushi_protocol::command::AppCommand::UpdateSettings {
+                    request_id: request_id(36),
+                    patch: koushi_state::SettingsPatch::default(),
+                },
+            ),
+            false,
+        ),
+    ];
+
+    for (name, command, expected) in cases {
+        assert_eq!(
+            super::command_supersedes_event_navigation(&command),
+            expected,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn outer_navigation_actions_cancel_event_navigation_owner() {
+    let cases = [
+        (
+            "select room",
+            AppAction::SelectRoom {
+                room_id: "!room:example.invalid".to_owned(),
+            },
+            true,
+        ),
+        (
+            "open thread",
+            AppAction::OpenThread {
+                room_id: "!room:example.invalid".to_owned(),
+                root_event_id: "$root:example.invalid".to_owned(),
+                intent: koushi_state::ThreadOpenIntent::ExistingThread,
+            },
+            true,
+        ),
+        (
+            "enter anchored timeline",
+            AppAction::EnterAnchoredTimeline {
+                room_id: "!room:example.invalid".to_owned(),
+                event_id: "$event:example.invalid".to_owned(),
+            },
+            true,
+        ),
+        (
+            "return main timeline to live",
+            AppAction::ReturnMainTimelineToLive {
+                room_id: "!room:example.invalid".to_owned(),
+            },
+            true,
+        ),
+        (
+            "close focused context",
+            AppAction::CloseFocusedContext,
+            true,
+        ),
+        (
+            "settings refresh",
+            AppAction::SettingsLoaded {
+                values: koushi_state::SettingsValues::default(),
+            },
+            false,
+        ),
+        (
+            "activity refresh",
+            AppAction::ActivitySnapshotLoaded {
+                request_id: 1,
+                active_tab: koushi_state::ActivityTab::default(),
+                recent: koushi_state::ActivityStream::default(),
+                unread: koushi_state::ActivityStream::default(),
+                excluded_room_ids: Vec::new(),
+            },
+            false,
+        ),
+    ];
+
+    for (name, action, expected) in cases {
+        assert_eq!(
+            super::action_supersedes_event_navigation(&action),
+            expected,
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn event_navigation_deadline_is_latest_wins() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let duration = std::time::Duration::from_secs(5);
+    let a = EventNavigationPrepared {
+        request_id: RequestId {
+            connection_id: RuntimeConnectionId(7),
+            sequence: 1,
+        },
+        room_id: "!room-a:example.invalid".to_owned(),
+        event_id: "$event-a:example.invalid".to_owned(),
+        generation: 11,
+        result: crate::account::RoomEventLookupResult::Failed,
+    };
+    let b = EventNavigationPrepared {
+        request_id: RequestId {
+            connection_id: RuntimeConnectionId(7),
+            sequence: 2,
+        },
+        room_id: "!room-b:example.invalid".to_owned(),
+        event_id: "$event-b:example.invalid".to_owned(),
+        generation: 12,
+        result: crate::account::RoomEventLookupResult::Failed,
+    };
+
+    let a_handle = super::spawn_event_navigation_deadline(tx.clone(), a.clone(), duration);
+    a_handle.abort();
+    drop(a_handle);
+    let _b_handle = super::spawn_event_navigation_deadline(tx, b.clone(), duration);
+
+    tokio::time::advance(duration).await;
+    let received = rx.recv().await.expect("B deadline result");
+    assert_eq!(received, b);
+    assert!(rx.try_recv().is_err());
 }
 
 fn focused_key(event_id: &str) -> TimelineKey {

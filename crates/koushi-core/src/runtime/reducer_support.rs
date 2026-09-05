@@ -9,7 +9,9 @@ use super::composer::{
     ComposerDraftTransitionPolicy, active_composer_targets, composer_draft_session_key,
     composer_draft_transition_policy,
 };
-use super::navigation::{NavigationPersistenceStatus, navigation_session_key};
+use super::navigation::{
+    NavigationPersistenceStatus, event_navigation_owner_cleanup_required, navigation_session_key,
+};
 use super::profile_display_diagnostics::{
     live_receipt_profile_diagnostic_event, profile_resolution_diagnostic_event,
     record_native_attention_recomputed,
@@ -47,6 +49,7 @@ fn reduce_with_unread_diagnostics(state: &mut AppState, action: AppAction) -> Ve
 #[derive(Default)]
 pub(super) struct DeferredReducerSideEffects {
     cancel_activity_resolution: bool,
+    cancel_event_navigation_owner: bool,
     navigation: Option<(koushi_protocol::SessionKeyId, NavigationState, bool)>,
     composer_drafts: Option<(koushi_protocol::SessionKeyId, ComposerDraftStore)>,
     composer_drafts_discarded: bool,
@@ -102,6 +105,7 @@ impl super::AppActor {
         let previous_composer_targets = active_composer_targets(&self.state);
         let previous_navigation_session = navigation_session_key(&self.state);
         let previous_navigation = self.state.navigation.clone();
+        let previous_event_navigation = self.state.navigation.event_navigation;
         let previous_scheduled_session = scheduled_send_session_key(&self.state);
         let previous_scheduled_sends = self.state.scheduled_sends.clone();
         let effects = reduce_with_unread_diagnostics(&mut self.state, action);
@@ -165,6 +169,10 @@ impl super::AppActor {
         let mut deferred = DeferredReducerSideEffects {
             cancel_activity_resolution: activity_was_open
                 && matches!(self.state.activity, ActivityState::Closed { .. }),
+            cancel_event_navigation_owner: event_navigation_owner_cleanup_required(
+                &previous_event_navigation,
+                &self.state.navigation.event_navigation,
+            ),
             composer_drafts_discarded: destructive_state_changed,
             ..DeferredReducerSideEffects::default()
         };
@@ -236,6 +244,9 @@ impl super::AppActor {
         &mut self,
         deferred: DeferredReducerSideEffects,
     ) {
+        if deferred.cancel_event_navigation_owner {
+            self.cancel_event_navigation_owner().await;
+        }
         if deferred.cancel_activity_resolution {
             let _ = self
                 .account_actor

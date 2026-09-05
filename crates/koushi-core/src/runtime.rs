@@ -30,8 +30,9 @@ use navigation::{
     EventNavigationPrepared, NavigationPersistenceStatus, NavigationReplacementRoomForCleanup,
     PendingEventNavigation, PendingFocusedNavigation,
     cancel_replaced_room_timeline_link_previews_key, cancel_replaced_room_timeline_pagination_key,
-    effects_open_focused_timeline, focused_navigation_outcome_after_reduce,
-    navigation_replacement_room_for_cleanup, unsubscribe_replaced_timeline_key,
+    command_supersedes_event_navigation, effects_open_focused_timeline,
+    focused_navigation_outcome_after_reduce, navigation_replacement_room_for_cleanup,
+    unsubscribe_replaced_timeline_key,
 };
 use scheduled_send::scheduled_send_id;
 
@@ -592,6 +593,7 @@ impl CoreRuntime {
             pending_event_navigation: None,
             event_navigation_generation: 0,
             event_navigation_task: None,
+            event_navigation_deadline_task: None,
             focused_projection_rx: Some(focused_projection_rx),
             #[cfg(any(test, feature = "test-hooks"))]
             composer_draft_test_rx,
@@ -832,6 +834,7 @@ struct AppActor {
     pending_event_navigation: Option<PendingEventNavigation>,
     event_navigation_generation: u64,
     event_navigation_task: Option<AbortOnDrop<()>>,
+    event_navigation_deadline_task: Option<AbortOnDrop<()>>,
     focused_projection_rx:
         Option<mpsc::UnboundedReceiver<crate::timeline::FocusedProjectionCommitted>>,
     #[cfg(any(test, feature = "test-hooks"))]
@@ -1769,6 +1772,9 @@ impl AppActor {
                     .unregister_native_artifact(request_id, kind);
             }
             return false;
+        }
+        if command_supersedes_event_navigation(&command) {
+            self.cancel_event_navigation_owner().await;
         }
 
         match command {

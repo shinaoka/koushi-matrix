@@ -3,7 +3,9 @@
 use super::{AppActor, composer_draft_session_key};
 use crate::executor;
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
-use koushi_protocol::command::{EventNavigationMissingTargetPolicy, TimelineCommand};
+use koushi_protocol::command::{
+    AppCommand, CoreCommand, EventNavigationMissingTargetPolicy, RoomCommand, TimelineCommand,
+};
 use koushi_protocol::event::{CoreEvent, IntentNoOpReason, IntentOutcome};
 use koushi_protocol::failure::{CoreFailure, TimelineFailureKind};
 use koushi_protocol::ids::{RequestId, TimelineGeneration, TimelineKey, TimelineKind};
@@ -20,12 +22,26 @@ pub(super) enum NavigationPersistenceStatus {
     LoadFailed(koushi_protocol::SessionKeyId),
 }
 
+pub(super) const EVENT_NAVIGATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+pub(super) fn spawn_event_navigation_deadline(
+    tx: tokio::sync::mpsc::UnboundedSender<EventNavigationPrepared>,
+    prepared: EventNavigationPrepared,
+    duration: std::time::Duration,
+) -> super::AbortOnDrop<()> {
+    super::AbortOnDrop::new(executor::spawn(async move {
+        executor::sleep(duration).await;
+        let _ = tx.send(prepared);
+    }))
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct PendingEventNavigation {
     pub(super) request_id: RequestId,
     pub(super) select_request_id: RequestId,
     pub(super) room_id: String,
     pub(super) event_id: String,
+    pub(super) source: EventNavigationSource,
     pub(super) generation: u64,
 }
 
@@ -46,6 +62,25 @@ pub(super) struct PendingFocusedNavigation {
     pub(super) event_id: String,
     pub(super) allow_live_fallback: bool,
     pub(super) generation: Option<TimelineGeneration>,
+}
+
+pub(super) fn event_navigation_owner_cleanup_required(
+    previous: &koushi_state::EventNavigationState,
+    current: &koushi_state::EventNavigationState,
+) -> bool {
+    !matches!(previous, koushi_state::EventNavigationState::Idle)
+        && matches!(current, koushi_state::EventNavigationState::Idle)
+}
+
+pub(super) fn action_supersedes_event_navigation(action: &AppAction) -> bool {
+    matches!(
+        action,
+        AppAction::SelectRoom { .. }
+            | AppAction::OpenThread { .. }
+            | AppAction::EnterAnchoredTimeline { .. }
+            | AppAction::ReturnMainTimelineToLive { .. }
+            | AppAction::CloseFocusedContext
+    )
 }
 
 fn take_committed_focused_navigation(
@@ -143,6 +178,7 @@ impl AppActor {
         };
         self.pending_event_navigation.take();
         self.event_navigation_task.take();
+        self.event_navigation_deadline_task.take();
         let before_state = self.snapshot_tx.borrow().state.clone();
         let effects = reduce(
             &mut self.state,
@@ -175,6 +211,7 @@ impl AppActor {
         };
         self.pending_event_navigation.take();
         self.event_navigation_task.take();
+        self.event_navigation_deadline_task.take();
         let outcome = match kind {
             koushi_state::EventNavigationFailureKind::TargetMissing => {
                 IntentOutcome::FailedNoOp(IntentNoOpReason::TimelineTargetMissing)
@@ -203,6 +240,72 @@ impl AppActor {
         });
     }
 
+    pub(super) async fn cancel_event_navigation_owner(&mut self) {
+        let pending = self.pending_event_navigation.take();
+        self.event_navigation_task.take();
+        self.event_navigation_deadline_task.take();
+
+        let focused_matches = pending.as_ref().is_some_and(|pending| {
+            self.pending_focused_navigation
+                .as_ref()
+                .is_some_and(|focused| {
+                    focused.generation == Some(TimelineGeneration(pending.generation))
+                })
+        });
+        let focused_key = focused_matches.then(|| {
+            self.pending_focused_navigation
+                .take()
+                .expect("matching focused navigation must exist")
+                .key
+        });
+
+        if let Some(pending) = pending.as_ref() {
+            if let Some(queue) = self.pending_select.get_mut(&pending.room_id) {
+                if let Some(position) = queue
+                    .iter()
+                    .position(|request_id| *request_id == pending.select_request_id)
+                {
+                    queue.remove(position);
+                }
+                if queue.is_empty() {
+                    self.pending_select.remove(&pending.room_id);
+                }
+            }
+        }
+
+        let should_clear = !matches!(
+            self.state.navigation.event_navigation,
+            koushi_state::EventNavigationState::Idle
+        );
+        let published_generation = if should_clear {
+            let before_state = self.snapshot_tx.borrow().state.clone();
+            let effects = reduce(&mut self.state, AppAction::EventNavigationCleared);
+            self.handle_ui_event_effects(&effects).await;
+            self.publish_state_delta(&before_state)
+                .unwrap_or(self.state_generation)
+        } else {
+            self.state_generation
+        };
+
+        if let Some(pending) = pending {
+            self.emit(CoreEvent::IntentLifecycle {
+                request_id: pending.request_id,
+                outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::Superseded),
+                published_generation,
+            });
+            if let Some(key) = focused_key {
+                self.send_timeline_command_or_fail(
+                    pending.request_id,
+                    TimelineCommand::Unsubscribe {
+                        request_id: pending.request_id,
+                        key,
+                    },
+                )
+                .await;
+            }
+        }
+    }
+
     async fn settle_event_navigation_superseded(
         &mut self,
         select_request_id: RequestId,
@@ -220,6 +323,7 @@ impl AppActor {
         };
         self.pending_event_navigation.take();
         self.event_navigation_task.take();
+        self.event_navigation_deadline_task.take();
         let focused = self
             .pending_focused_navigation
             .as_ref()
@@ -287,6 +391,8 @@ impl AppActor {
             .take()
             .and_then(|pending| pending.generation.is_some().then_some(pending.key));
         if let Some(previous) = self.pending_event_navigation.take() {
+            self.event_navigation_task.take();
+            self.event_navigation_deadline_task.take();
             self.emit(CoreEvent::IntentLifecycle {
                 request_id: previous.request_id,
                 outcome: IntentOutcome::BenignNoOp(IntentNoOpReason::Superseded),
@@ -313,9 +419,21 @@ impl AppActor {
             request_id,
             select_request_id,
             room_id: room_id.clone(),
-            event_id,
+            event_id: event_id.clone(),
+            source,
             generation,
         });
+        self.event_navigation_deadline_task = Some(spawn_event_navigation_deadline(
+            self.event_navigation_prepared_tx.clone(),
+            EventNavigationPrepared {
+                request_id,
+                room_id: room_id.clone(),
+                event_id,
+                generation,
+                result: crate::account::RoomEventLookupResult::Failed,
+            },
+            EVENT_NAVIGATION_TIMEOUT,
+        ));
         if let Some(key) = focused_key {
             self.send_timeline_command_or_fail(
                 select_request_id,
@@ -396,17 +514,8 @@ impl AppActor {
             }
         };
         if let Some(kind) = failure_kind {
-            self.pending_event_navigation = None;
-            let before_state = self.snapshot_tx.borrow().state.clone();
-            let effects = reduce(
-                &mut self.state,
-                AppAction::EventNavigationFailed {
-                    generation: pending.generation,
-                    kind,
-                },
-            );
-            self.publish_state_delta(&before_state);
-            self.handle_app_effects(select_request_id, effects).await;
+            self.settle_event_navigation_failure(pending.request_id, pending.generation, kind)
+                .await;
             return;
         }
 
@@ -449,7 +558,7 @@ impl AppActor {
         &mut self,
         prepared: EventNavigationPrepared,
     ) {
-        let Some(_pending) = self
+        let Some(pending) = self
             .pending_event_navigation
             .as_ref()
             .filter(|pending| {
@@ -468,7 +577,6 @@ impl AppActor {
             prepared.result,
             crate::account::RoomEventLookupResult::Located
         ) {
-            self.pending_event_navigation = None;
             let kind = match prepared.result {
                 crate::account::RoomEventLookupResult::Missing
                     if matches!(
@@ -523,16 +631,19 @@ impl AppActor {
             key,
             room_id: prepared.room_id.clone(),
             event_id: prepared.event_id.clone(),
-            allow_live_fallback: true,
+            allow_live_fallback: matches!(
+                pending.source,
+                EventNavigationSource::Activity | EventNavigationSource::Search
+            ),
             generation: Some(TimelineGeneration(prepared.generation)),
         });
-        self.pending_event_navigation = None;
         let before_state = self.snapshot_tx.borrow().state.clone();
         let (effects, deferred) = self.reduce_app_action_state(AppAction::OpenFocusedContext {
             room_id: prepared.room_id,
             event_id: prepared.event_id,
         });
         if !effects_open_focused_timeline(&effects) {
+            self.pending_focused_navigation.take();
             self.settle_event_navigation_failure(
                 prepared.request_id,
                 prepared.generation,
@@ -591,6 +702,7 @@ impl AppActor {
         }
 
         let pending_event_navigation = event_navigation_generation.map(|_| {
+            self.event_navigation_deadline_task.take();
             self.pending_event_navigation
                 .take()
                 .expect("matching pending event navigation must exist")
@@ -1026,6 +1138,19 @@ fn normalize_bounded_text(value: Option<String>, max_scalars: usize) -> Option<S
 
 pub(super) fn navigation_session_key(state: &AppState) -> Option<koushi_protocol::SessionKeyId> {
     composer_draft_session_key(state)
+}
+
+pub(super) fn command_supersedes_event_navigation(command: &CoreCommand) -> bool {
+    matches!(
+        command,
+        CoreCommand::Room(RoomCommand::SelectRoom { .. })
+            | CoreCommand::App(
+                AppCommand::OpenThread { .. }
+                    | AppCommand::OpenAnchoredTimeline { .. }
+                    | AppCommand::OpenTimelineAtTimestamp { .. }
+                    | AppCommand::CloseFocusedContext { .. }
+            )
+    )
 }
 
 pub(super) fn effects_open_focused_timeline(effects: &[AppEffect]) -> bool {
