@@ -1,6 +1,6 @@
 # Issue #835 deterministic README screenshot
 
-Status: design review required before implementation.
+Status: design approved and implemented. reviewer-flash design round 1 required F1–F8 corrections; round 2 was Correct-to-merge. The canonical-divider/Shell scope correction was accepted before final implementation. reviewer-flash full-diff review reported no Critical or Important findings and Correct-to-merge, subject to the one-time visual gate completed below.
 
 ## Outcome
 
@@ -74,6 +74,17 @@ On mismatch it may upload the generated PNG only as a debugging artifact. It mus
 - Composer empty and caret-free.
 - Bundled Inter rendering is evident.
 - No `Harness Room`, `example.invalid`, runner path, dialog, warning, or private data visible.
+
+## Verification evidence
+
+Two independent runs in `mcr.microsoft.com/playwright:v1.60.0-noble` generated the identical SHA-256:
+
+```text
+run 1  0db4d5a37eb6537829ce29e7b2488caf6c4ca62e0a4d193ee11ccb9c31de525d
+run 2  0db4d5a37eb6537829ce29e7b2488caf6c4ca62e0a4d193ee11ccb9c31de525d
+```
+
+The committed PNG is 2560×1600. Image-capable inspection confirmed readable three-pane composition at README scale, no right/bottom clipping, selected space/room, unread/favourite/DM rows, the March 10 date divider, reply, thread summary, reactions, edited marker, empty unfocused composer, closed right panel, bundled-font rendering, and no visible harness IDs, `example.invalid`, runner path, or private data.
 
 ## Exclusions
 
