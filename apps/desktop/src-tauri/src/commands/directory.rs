@@ -36,12 +36,12 @@ pub async fn query_directory(
         )
         .await
         .map_err(|error| invoke_error_from_request_outcome("directory query", error))?;
-    let RequestOutcome::Directory { snapshot, .. } = outcome else {
+    let RequestOutcome::Directory { generation, .. } = outcome else {
         return Err("directory query returned an invalid outcome".to_owned());
     };
     update_qa_window_title_from_state(&app, state.inner()).await;
     Ok(FrontendCommandSettlement::from_published_generation(
-        snapshot.generation,
+        generation,
     ))
 }
 
@@ -86,13 +86,13 @@ pub async fn join_directory_room(
     else {
         return Err("room join returned an invalid outcome".to_owned());
     };
-    let selected_snapshot = event_conn
+    let selected_generation = event_conn
         .select_room_and_wait(joined_room_id.clone(), SELECT_ROOM_EVENT_TIMEOUT)
         .await
         .map_err(invoke_error_from_select_room_error)?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     Ok(FrontendCommandSettlement::from_published_generation(
-        selected_snapshot.generation,
+        selected_generation,
     ))
 }
 
@@ -129,12 +129,12 @@ pub async fn preview_join_target(
         )
         .await
         .map_err(|error| invoke_error_from_request_outcome("directory preview", error))?;
-    let RequestOutcome::Directory { snapshot, .. } = outcome else {
+    let RequestOutcome::Directory { generation, .. } = outcome else {
         return Err("directory preview returned an invalid outcome".to_owned());
     };
     update_qa_window_title_from_state(&app, state.inner()).await;
     Ok(FrontendCommandSettlement::from_published_generation(
-        snapshot.generation,
+        generation,
     ))
 }
 

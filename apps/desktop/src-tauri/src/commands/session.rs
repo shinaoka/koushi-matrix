@@ -99,10 +99,10 @@ pub async fn discover_login_methods(
         )
         .await
         .map_err(|error| invoke_error_from_request_outcome("login discovery", error))?;
-    let RequestOutcome::AuthDiscovery { snapshot, .. } = outcome else {
+    let RequestOutcome::AuthDiscovery { generation, .. } = outcome else {
         return Err("login discovery returned an invalid outcome".to_owned());
     };
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -211,11 +211,11 @@ pub async fn complete_oidc_login(
         )
         .await
         .map_err(|error| invoke_error_from_request_outcome("OIDC login", error))?;
-    let RequestOutcome::Authenticated { snapshot, .. } = outcome else {
+    let RequestOutcome::Authenticated { generation, .. } = outcome else {
         return Err("OIDC login returned an invalid outcome".to_owned());
     };
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -234,8 +234,8 @@ pub async fn submit_login(
         password: AuthSecret::new(password),
         device_display_name,
     };
-    let snapshot = submit_login_request(app, state.inner(), login_request, platform).await?;
-    Ok(command_settlement(snapshot))
+    let generation = submit_login_request(app, state.inner(), login_request, platform).await?;
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -244,9 +244,9 @@ pub async fn submit_soft_logout_reauth(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
-    let snapshot =
+    let generation =
         submit_soft_logout_reauth_request(app, state.inner(), AuthSecret::new(password)).await?;
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -309,13 +309,13 @@ pub async fn switch_account(
         )
         .await
         .map_err(|error| invoke_error_from_request_outcome("account switch", error))?;
-    let RequestOutcome::Authenticated { snapshot, .. } = outcome else {
+    let RequestOutcome::Authenticated { generation, .. } = outcome else {
         return Err("account switch returned an invalid outcome".to_owned());
     };
     // AccountKey canonically identifies the account by user_id.
     let _ = (homeserver, device_id);
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -391,11 +391,11 @@ pub async fn logout(
         )
         .await
         .map_err(|error| invoke_error_from_request_outcome("logout", error))?;
-    let RequestOutcome::SignedOut { snapshot, .. } = outcome else {
+    let RequestOutcome::SignedOut { generation, .. } = outcome else {
         return Err("logout returned an invalid outcome".to_owned());
     };
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -442,7 +442,7 @@ pub(super) async fn submit_login_request(
     state: &CoreRuntimeState,
     login_request: LoginRequest,
     platform: DisplayPlatform,
-) -> Result<koushi_protocol::state_update::VersionedAppStateSnapshot, String> {
+) -> Result<u64, String> {
     submit_login_and_wait_for_authenticated(app, state, login_request, platform).await
 }
 
@@ -450,7 +450,7 @@ pub(super) async fn submit_soft_logout_reauth_request(
     app: AppHandle,
     state: &CoreRuntimeState,
     password: AuthSecret,
-) -> Result<koushi_protocol::state_update::VersionedAppStateSnapshot, String> {
+) -> Result<u64, String> {
     let mut wait_conn = state.runtime.attach();
     let baseline_generation = wait_conn.state_generation();
     let account_key = account_key_from_app_state(&wait_conn.snapshot());
@@ -473,11 +473,11 @@ pub(super) async fn submit_soft_logout_reauth_request(
         )
         .await
         .map_err(|error| invoke_error_from_request_outcome("reauthentication", error))?;
-    let RequestOutcome::Authenticated { snapshot, .. } = outcome else {
+    let RequestOutcome::Authenticated { generation, .. } = outcome else {
         return Err("reauthentication returned an invalid outcome".to_owned());
     };
     update_qa_window_title_from_state(&app, state).await;
-    Ok(snapshot)
+    Ok(generation)
 }
 
 const LOGIN_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
@@ -487,7 +487,7 @@ async fn submit_login_and_wait_for_authenticated(
     state: &CoreRuntimeState,
     login_request: LoginRequest,
     platform: DisplayPlatform,
-) -> Result<koushi_protocol::state_update::VersionedAppStateSnapshot, String> {
+) -> Result<u64, String> {
     // Use a dedicated connection so the event cursor is attached before the
     // login command is submitted and the correlated LoggedIn event cannot be
     // missed by this product path.
@@ -514,11 +514,11 @@ async fn submit_login_and_wait_for_authenticated(
         )
         .await
         .map_err(|error| invoke_error_from_request_outcome("login", error))?;
-    let RequestOutcome::Authenticated { snapshot, .. } = outcome else {
+    let RequestOutcome::Authenticated { generation, .. } = outcome else {
         return Err("login returned an invalid outcome".to_owned());
     };
     update_qa_window_title_from_state(&app, state).await;
-    Ok(snapshot)
+    Ok(generation)
 }
 
 /// How long the adapter waits for the `SavedSessionsListed` answer before

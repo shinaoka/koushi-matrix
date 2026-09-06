@@ -548,75 +548,82 @@ impl CoreConnection {
     }
 
     /// Stage bytes through the Core-owned media preparation service.
+    /// Return the published generation after this operation settles.
     pub async fn stage_upload_bytes(
         &mut self,
         target: koushi_state::ComposerTarget,
         items: Vec<crate::media_preparation::StageUploadBytesInput>,
-    ) -> Result<VersionedAppStateSnapshot, crate::media_staging::MediaStagingError> {
+    ) -> Result<u64, crate::media_staging::MediaStagingError> {
         let service = Arc::clone(&self.media_staging);
         service.stage_upload_bytes(self, target, items).await
     }
 
+    /// Return the published generation after this operation settles.
     pub async fn select_staged_upload_output(
         &mut self,
         target: koushi_state::ComposerTarget,
         staged_id: String,
         selection: koushi_state::StagedUploadOutputSelection,
-    ) -> Result<VersionedAppStateSnapshot, crate::media_staging::MediaStagingError> {
+    ) -> Result<u64, crate::media_staging::MediaStagingError> {
         let service = Arc::clone(&self.media_staging);
         service
             .select_staged_upload_output(self, target, staged_id, selection)
             .await
     }
 
+    /// Return the published generation after this operation settles.
     pub async fn retry_staged_upload_preparation(
         &mut self,
         target: koushi_state::ComposerTarget,
         staged_id: String,
-    ) -> Result<VersionedAppStateSnapshot, crate::media_staging::MediaStagingError> {
+    ) -> Result<u64, crate::media_staging::MediaStagingError> {
         let service = Arc::clone(&self.media_staging);
         service
             .retry_staged_upload_preparation(self, target, staged_id)
             .await
     }
 
+    /// Return the published generation after this operation settles.
     pub async fn update_staged_upload_caption(
         &mut self,
         target: koushi_state::ComposerTarget,
         staged_id: String,
         caption: Option<koushi_state::ComposerDocument>,
-    ) -> Result<VersionedAppStateSnapshot, crate::media_staging::MediaStagingError> {
+    ) -> Result<u64, crate::media_staging::MediaStagingError> {
         let service = Arc::clone(&self.media_staging);
         service
             .update_caption(self, target, staged_id, caption)
             .await
     }
 
+    /// Return the published generation after this operation settles.
     pub async fn update_staged_upload_compression(
         &mut self,
         target: koushi_state::ComposerTarget,
         staged_id: String,
         compression_choice: koushi_state::StagedUploadCompressionChoice,
-    ) -> Result<VersionedAppStateSnapshot, crate::media_staging::MediaStagingError> {
+    ) -> Result<u64, crate::media_staging::MediaStagingError> {
         let service = Arc::clone(&self.media_staging);
         service
             .update_compression(self, target, staged_id, compression_choice)
             .await
     }
 
+    /// Return the published generation after this operation settles.
     pub async fn use_original_staged_upload(
         &mut self,
         target: koushi_state::ComposerTarget,
         staged_id: String,
-    ) -> Result<VersionedAppStateSnapshot, crate::media_staging::MediaStagingError> {
+    ) -> Result<u64, crate::media_staging::MediaStagingError> {
         let service = Arc::clone(&self.media_staging);
         service.use_original(self, target, staged_id).await
     }
 
+    /// Return the published generation after this operation settles.
     pub async fn clear_upload_staging(
         &mut self,
         target: koushi_state::ComposerTarget,
-    ) -> Result<VersionedAppStateSnapshot, crate::media_staging::MediaStagingError> {
+    ) -> Result<u64, crate::media_staging::MediaStagingError> {
         let service = Arc::clone(&self.media_staging);
         service.clear(self, target).await
     }
@@ -950,11 +957,21 @@ impl CoreConnection {
         }
     }
 
+    /// Select a room and return its settled published generation.
+    /// Read current state separately when inspection is required.
+    ///
+    /// ```
+    /// # async fn select(connection: &mut koushi_core::CoreConnection, room_id: String) {
+    /// let generation: u64 = connection
+    ///     .select_room_and_wait(room_id, std::time::Duration::from_secs(1))
+    ///     .await.expect("room selection settled");
+    /// # }
+    /// ```
     pub async fn select_room_and_wait(
         &mut self,
         room_id: String,
         timeout: Duration,
-    ) -> Result<VersionedAppStateSnapshot, SelectRoomError> {
+    ) -> Result<u64, SelectRoomError> {
         let deadline = tokio::time::Instant::now() + timeout;
         let baseline_generation = self.state_generation();
         let request_id = self.next_request_id();
@@ -983,7 +1000,9 @@ impl CoreConnection {
             )
             .await
         {
-            Ok(super::request_outcome::RequestOutcome::RoomSelected { snapshot }) => Ok(snapshot),
+            Ok(super::request_outcome::RequestOutcome::RoomSelected { generation }) => {
+                Ok(generation)
+            }
             Ok(_) => Err(SelectRoomError::Timeout),
             Err(super::request_outcome::RequestOutcomeError::OperationFailed { failure }) => {
                 Err(SelectRoomError::OperationFailed(failure))

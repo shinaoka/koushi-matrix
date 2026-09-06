@@ -115,7 +115,14 @@ pub enum PreparedUploadSendError {
 
 pub struct PreparedUploadSendResult {
     pub accepted_revision: ComposerDraftRevision,
-    pub snapshot: koushi_protocol::state_update::VersionedAppStateSnapshot,
+    /// Published generation at acceptance; state is inspected separately.
+    ///
+    /// ```
+    /// # fn inspect(result: &koushi_core::media_staging::PreparedUploadSendResult) {
+    /// let generation: u64 = result.generation;
+    /// # }
+    /// ```
+    pub generation: u64,
 }
 
 #[derive(Clone)]
@@ -212,12 +219,13 @@ impl MediaStagingService {
 
     /// Publish Preparing, prepare bytes off-lock, then publish the exact
     /// prepared result through the existing AppCommand/reducer path.
+    /// Return the published generation after this operation settles.
     pub async fn stage_upload_bytes(
         &self,
         connection: &mut CoreConnection,
         target: ComposerTarget,
         items: Vec<StageUploadBytesInput>,
-    ) -> Result<koushi_protocol::state_update::VersionedAppStateSnapshot, MediaStagingError> {
+    ) -> Result<u64, MediaStagingError> {
         let _admission = self.admit_target(&target).await;
         validate_batch(&items)?;
         let initial = connection.snapshot();
@@ -324,13 +332,14 @@ impl MediaStagingService {
         .await
     }
 
+    /// Return the published generation after this operation settles.
     pub async fn select_staged_upload_output(
         &self,
         connection: &mut CoreConnection,
         target: ComposerTarget,
         staged_id: String,
         selection: StagedUploadOutputSelection,
-    ) -> Result<koushi_protocol::state_update::VersionedAppStateSnapshot, MediaStagingError> {
+    ) -> Result<u64, MediaStagingError> {
         let _admission = self.admit_target(&target).await;
         let initial = connection.snapshot();
         let policy = authoritative_policy(&initial);
@@ -420,12 +429,13 @@ impl MediaStagingService {
             .await
     }
 
+    /// Return the published generation after this operation settles.
     pub async fn retry_staged_upload_preparation(
         &self,
         connection: &mut CoreConnection,
         target: ComposerTarget,
         staged_id: String,
-    ) -> Result<koushi_protocol::state_update::VersionedAppStateSnapshot, MediaStagingError> {
+    ) -> Result<u64, MediaStagingError> {
         let _admission = self.admit_target(&target).await;
         let initial = connection.snapshot();
         let policy = authoritative_policy(&initial);
@@ -474,7 +484,7 @@ impl MediaStagingService {
         replacement.caption = current_item.caption.clone();
         replacement.compression_choice = current_item.compression_choice;
         if replacement == *current_item {
-            return Ok(connection.versioned_snapshot());
+            return Ok(connection.state_generation());
         }
         {
             let mut transition = self.preparation.transition().await;
@@ -485,12 +495,13 @@ impl MediaStagingService {
             .await
     }
 
+    /// Return the published generation after this operation settles.
     pub async fn use_original(
         &self,
         connection: &mut CoreConnection,
         target: ComposerTarget,
         staged_id: String,
-    ) -> Result<koushi_protocol::state_update::VersionedAppStateSnapshot, MediaStagingError> {
+    ) -> Result<u64, MediaStagingError> {
         let _admission = self.admit_target(&target).await;
         let snapshot = connection.snapshot();
         let account = account_key(&snapshot);
@@ -510,13 +521,14 @@ impl MediaStagingService {
             .await
     }
 
+    /// Return the published generation after this operation settles.
     pub async fn update_caption(
         &self,
         connection: &mut CoreConnection,
         target: ComposerTarget,
         staged_id: String,
         caption: Option<ComposerDocument>,
-    ) -> Result<koushi_protocol::state_update::VersionedAppStateSnapshot, MediaStagingError> {
+    ) -> Result<u64, MediaStagingError> {
         let _admission = self.admit_target(&target).await;
         let snapshot = connection.snapshot();
         let account = account_key(&snapshot);
@@ -553,13 +565,14 @@ impl MediaStagingService {
         .await
     }
 
+    /// Return the published generation after this operation settles.
     pub async fn update_compression(
         &self,
         connection: &mut CoreConnection,
         target: ComposerTarget,
         staged_id: String,
         compression_choice: StagedUploadCompressionChoice,
-    ) -> Result<koushi_protocol::state_update::VersionedAppStateSnapshot, MediaStagingError> {
+    ) -> Result<u64, MediaStagingError> {
         let _admission = self.admit_target(&target).await;
         let snapshot = connection.snapshot();
         let account = account_key(&snapshot);
@@ -595,11 +608,12 @@ impl MediaStagingService {
         .await
     }
 
+    /// Return the published generation after this operation settles.
     pub async fn clear(
         &self,
         connection: &mut CoreConnection,
         target: ComposerTarget,
-    ) -> Result<koushi_protocol::state_update::VersionedAppStateSnapshot, MediaStagingError> {
+    ) -> Result<u64, MediaStagingError> {
         let _admission = self.admit_target(&target).await;
         let snapshot = connection.snapshot();
         let account = account_key(&snapshot);
@@ -608,7 +622,7 @@ impl MediaStagingService {
         };
         if items.is_empty() {
             self.preparation.reconcile_snapshot(&snapshot).await;
-            return Ok(connection.versioned_snapshot());
+            return Ok(connection.state_generation());
         }
         let request_id = connection.next_request_id();
         let baseline = connection.state_generation();
@@ -630,7 +644,9 @@ impl MediaStagingService {
                 false,
             )
             .await?;
-        self.preparation.reconcile_snapshot(&result.state).await;
+        // Reconcile current state, which may be newer than the settled generation.
+        let snapshot = connection.snapshot();
+        self.preparation.reconcile_snapshot(&snapshot).await;
         Ok(result)
     }
 
@@ -843,10 +859,12 @@ impl MediaStagingService {
             .map_err(PreparedUploadSendError::Outcome)?;
         match outcome {
             RequestOutcome::ComposerAccepted {
-                revision, snapshot, ..
+                revision,
+                generation,
+                ..
             } => Ok(PreparedUploadSendResult {
                 accepted_revision: revision,
-                snapshot,
+                generation,
             }),
             _ => Err(PreparedUploadSendError::Outcome(
                 RequestOutcomeError::InvalidOutcome,
@@ -891,7 +909,7 @@ impl MediaStagingService {
         items: Vec<StagedUploadItem>,
         expected_ids: Vec<String>,
         allow_initial: bool,
-    ) -> Result<koushi_protocol::state_update::VersionedAppStateSnapshot, MediaStagingError> {
+    ) -> Result<u64, MediaStagingError> {
         let request_id = connection.next_request_id();
         let baseline = connection.state_generation();
         connection
@@ -921,7 +939,7 @@ impl MediaStagingService {
         target: ComposerTarget,
         staged_id: String,
         selection: StagedUploadOutputSelection,
-    ) -> Result<koushi_protocol::state_update::VersionedAppStateSnapshot, MediaStagingError> {
+    ) -> Result<u64, MediaStagingError> {
         let expected_ids = active_ids(&connection.snapshot(), &target)?;
         let request_id = connection.next_request_id();
         let baseline = connection.state_generation();
@@ -953,7 +971,7 @@ impl MediaStagingService {
         target: ComposerTarget,
         staged_id: String,
         replacement: StagedUploadItem,
-    ) -> Result<koushi_protocol::state_update::VersionedAppStateSnapshot, MediaStagingError> {
+    ) -> Result<u64, MediaStagingError> {
         let current = connection.snapshot();
         let mut items = active_items(&current, &target)
             .ok_or(MediaStagingError::TargetInactive)?
@@ -981,7 +999,7 @@ impl MediaStagingService {
         staged_ids: Vec<String>,
         baseline_generation: u64,
         allow_initial: bool,
-    ) -> Result<koushi_protocol::state_update::VersionedAppStateSnapshot, MediaStagingError> {
+    ) -> Result<u64, MediaStagingError> {
         match connection
             .wait_for_request_outcome(
                 OutcomeCorrelation::Request(request_id),
@@ -998,7 +1016,7 @@ impl MediaStagingService {
             .await
             .map_err(MediaStagingError::Outcome)?
         {
-            RequestOutcome::UploadStaging { snapshot, .. } => Ok(snapshot),
+            RequestOutcome::UploadStaging { generation, .. } => Ok(generation),
             _ => Err(MediaStagingError::Outcome(
                 RequestOutcomeError::InvalidOutcome,
             )),

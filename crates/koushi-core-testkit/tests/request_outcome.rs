@@ -80,7 +80,7 @@ async fn event_before_projection_waits_for_authoritative_snapshot_and_returns_ge
         2,
         tokio::time::Instant::now() + Duration::from_secs(1),
     );
-    tokio::pin!(waiter);
+    let mut waiter = Box::pin(waiter);
     control.send_event(CoreEvent::Room(RoomEvent::RoomCreated {
         request_id,
         room_id: room_id.to_owned(),
@@ -92,9 +92,10 @@ async fn event_before_projection_waits_for_authoritative_snapshot_and_returns_ge
         RequestOutcome::RoomCreated {
             request_id,
             room_id: room_id.to_owned(),
-            snapshot: published,
+            generation: published.generation,
         }
     );
+    assert_eq!(connection.versioned_snapshot(), published);
 }
 
 #[tokio::test]
@@ -116,7 +117,7 @@ async fn initial_snapshot_can_satisfy_idempotent_room_selection() {
         )
         .await;
     assert!(
-        matches!(&outcome, Ok(RequestOutcome::RoomSelected { snapshot }) if snapshot.generation == 0),
+        matches!(&outcome, Ok(RequestOutcome::RoomSelected { generation }) if *generation == 0_u64),
         "unexpected outcome: {outcome:?}"
     );
 }
@@ -141,7 +142,7 @@ async fn baseline_generation_fences_projection_until_newer_snapshot() {
         3,
         tokio::time::Instant::now() + Duration::from_secs(1),
     );
-    tokio::pin!(waiter);
+    let mut waiter = Box::pin(waiter);
     assert!(waiter.as_mut().now_or_never().is_none());
     control.send_event(CoreEvent::Room(RoomEvent::RoomCreated {
         request_id,
@@ -154,7 +155,7 @@ async fn baseline_generation_fences_projection_until_newer_snapshot() {
     control.send_snapshot(published.clone());
     assert!(matches!(
         waiter.await,
-        Ok(RequestOutcome::RoomCreated { snapshot, .. }) if snapshot.generation == 4
+        Ok(RequestOutcome::RoomCreated { generation, .. }) if generation == 4
     ));
 }
 
@@ -327,7 +328,7 @@ async fn disconnect_and_timeout_perform_final_snapshot_check() {
     control.send_snapshot(selected_snapshot(room_id, 1));
     drop(control);
     assert!(
-        matches!(operation.await, Ok(RequestOutcome::RoomSelected { snapshot }) if snapshot.generation == 1)
+        matches!(operation.await, Ok(RequestOutcome::RoomSelected { generation }) if generation == 1)
     );
 
     let (mut connection, control) = CoreConnection::new_for_testing(4);
@@ -346,7 +347,7 @@ async fn disconnect_and_timeout_perform_final_snapshot_check() {
     tokio::time::sleep(Duration::from_millis(5)).await;
     control.send_snapshot(selected_snapshot("!timeout:example.invalid", 2));
     assert!(
-        matches!(operation.await, Ok(RequestOutcome::RoomSelected { snapshot }) if snapshot.generation == 2)
+        matches!(operation.await, Ok(RequestOutcome::RoomSelected { generation }) if generation == 2)
     );
 }
 

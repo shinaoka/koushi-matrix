@@ -108,7 +108,7 @@ pub async fn select_room(
         ))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
-    let snapshot = wait_for_room_operation(
+    let generation = wait_for_room_operation(
         &mut event_conn,
         refresh_request_id,
         baseline.generation,
@@ -121,7 +121,7 @@ pub async fn select_room(
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     Ok(FrontendCommandSettlement::from_published_generation(
-        snapshot.generation,
+        generation,
     ))
 }
 
@@ -218,7 +218,7 @@ pub async fn close_focused_context(
         }))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
-    let snapshot = wait_for_focused_context_closed(
+    let generation = wait_for_focused_context_closed(
         &mut event_conn,
         request_id,
         account_key,
@@ -229,7 +229,7 @@ pub async fn close_focused_context(
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     Ok(FrontendCommandSettlement::from_published_generation(
-        snapshot.generation,
+        generation,
     ))
 }
 
@@ -254,7 +254,7 @@ pub async fn open_timeline_at_timestamp(
         ))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
-    let snapshot = wait_for_focused_context(
+    let generation = wait_for_focused_context(
         &mut event_conn,
         request_id,
         account_key,
@@ -266,7 +266,7 @@ pub async fn open_timeline_at_timestamp(
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     Ok(FrontendCommandSettlement::from_published_generation(
-        snapshot.generation,
+        generation,
     ))
 }
 
@@ -392,7 +392,7 @@ async fn wait_for_focused_context_closed(
     room_id: Option<String>,
     baseline_generation: u64,
     deadline: tokio::time::Instant,
-) -> Result<koushi_protocol::state_update::VersionedAppStateSnapshot, String> {
+) -> Result<u64, String> {
     let outcome = event_conn
         .wait_for_request_outcome(
             OutcomeCorrelation::Request(request_id),
@@ -413,7 +413,7 @@ async fn wait_for_focused_context_closed(
             error => invoke_error_from_request_outcome("focused context close", error),
         })?;
     match outcome {
-        RequestOutcome::FocusedContext { snapshot } => Ok(snapshot),
+        RequestOutcome::FocusedContext { generation } => Ok(generation),
         _ => Err("focused context close returned an invalid outcome".to_owned()),
     }
 }
@@ -426,7 +426,7 @@ async fn wait_for_focused_context(
     event_id: Option<String>,
     baseline_generation: u64,
     deadline: tokio::time::Instant,
-) -> Result<koushi_protocol::state_update::VersionedAppStateSnapshot, String> {
+) -> Result<u64, String> {
     let outcome = event_conn
         .wait_for_request_outcome(
             OutcomeCorrelation::Request(request_id),
@@ -447,7 +447,7 @@ async fn wait_for_focused_context(
             error => invoke_error_from_request_outcome("focused context open", error),
         })?;
     match outcome {
-        RequestOutcome::FocusedContext { snapshot } => Ok(snapshot),
+        RequestOutcome::FocusedContext { generation } => Ok(generation),
         _ => Err("focused context open returned an invalid outcome".to_owned()),
     }
 }

@@ -283,11 +283,16 @@ Submission correlations require both the originating request and
 `SubmissionId`. Lag is either recoverable or terminal according to the closed
 expectation variant, and `Lagged`, `Disconnected`, `TimedOut`, operation
 failure, and typed no-op outcomes remain distinct. `select_room_and_wait` is a
-compatibility wrapper over this service.
+convenience wrapper over this service.
 
-This is Phase A runtime infrastructure only: it adds no `AppState`,
-`AppAction`, reducer, or reducer transition. Tauri waiters and their product
-loops are intentionally not migrated until the later phases of issue #755.
+Settlement outcomes return the committed published generation and their existing
+matched request/result identities, not an embedded AppState. Core convenience
+methods that only settle an operation return that generation; callers needing
+state inspect it explicitly. Tauri converts the generation into its existing
+settlement DTO. This intentionally narrows the Rust result API without changing
+wire settlement shapes or the synchronous watch-based predicate ordering above.
+It adds no `AppState`, `AppAction`, reducer or reducer transition and does not yet
+remove the watch or complete scoped publication.
 
 ### Core-owned staged upload orchestration (Phase B, issue #755)
 
@@ -312,8 +317,8 @@ The service serializes operations per `ComposerTarget` without holding the
 global preparation registry during encoding. It also owns prepared-preview byte
 lookup and prepared-send admission/correlation. Tauri handlers only deserialize
 inputs, convert opaque composer tokens, call these Core methods, and serialize
-the settled snapshot or preview bytes; they contain no batch, MIME, preparation,
-selection-generation, registry-merge, replacement, or send policy.
+the settled published generation or preview bytes; they contain no batch, MIME,
+preparation, selection-generation, registry-merge, replacement, or send policy.
 
 ### Core-owned composer transport identities (Phase D, issue #755)
 
