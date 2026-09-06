@@ -168,13 +168,38 @@ pub enum AppEffect {
     EmitUiEvent(UiEvent),
 }
 
+/// Display-label identities retained by a profile mutation.
+///
+/// An empty list denotes a profile change that does not change display labels.
+/// Debug output includes the count, never the identities.
+///
+/// ```
+/// use koushi_state::ProfileDisplayChange;
+/// let change = ProfileDisplayChange { user_ids: vec!["@example:example.invalid".into()] };
+/// assert!(!format!("{change:?}").contains("@example"));
+/// ```
+#[derive(Clone, Default, Eq, PartialEq)]
+pub struct ProfileDisplayChange {
+    /// Candidates to resolve; publication deduplicates repeated identities.
+    pub user_ids: Vec<String>,
+}
+
+impl std::fmt::Debug for ProfileDisplayChange {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProfileDisplayChange")
+            .field("user_count", &self.user_ids.len())
+            .finish()
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UiEvent {
     SessionChanged,
     AuthChanged,
     SettingsChanged,
     LinkPreviewSettingsChanged,
-    ProfileChanged,
+    ProfileChanged(ProfileDisplayChange),
     RoomListChanged,
     InviteWorkflowChanged,
     FocusedContextChanged,

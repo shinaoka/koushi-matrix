@@ -92,8 +92,12 @@ fn avatar(mxc_uri: &str) -> AvatarImage {
     }
 }
 
-fn profile_changed() -> Vec<AppEffect> {
-    vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)]
+fn profile_changed(user_id: &str) -> Vec<AppEffect> {
+    vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged(
+        koushi_state::ProfileDisplayChange {
+            user_ids: vec![user_id.to_owned()],
+        },
+    ))]
 }
 
 #[test]
@@ -175,7 +179,7 @@ fn avatar_thumbnail_update_refreshes_all_matching_receipt_copies() {
     assert_eq!(
         effects,
         vec![
-            AppEffect::EmitUiEvent(UiEvent::ProfileChanged),
+            AppEffect::EmitUiEvent(UiEvent::ProfileChanged(Default::default())),
             AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged),
         ]
     );
@@ -321,7 +325,7 @@ fn own_profile_updates_are_rust_owned_and_require_ready_session() {
     );
 
     assert_eq!(state.profile.own, profile);
-    assert_eq!(effects, profile_changed());
+    assert_eq!(effects, profile_changed("@qa:localhost"));
 }
 
 #[test]
@@ -528,7 +532,7 @@ fn local_user_aliases_load_set_clear_and_settle_with_request_correlation() {
             .map(String::as_str),
         Some("Bobby")
     );
-    assert_eq!(effects, profile_changed());
+    assert_eq!(effects, profile_changed("@bob:localhost"));
 
     let effects = reduce(
         &mut state,
@@ -550,7 +554,7 @@ fn local_user_aliases_load_set_clear_and_settle_with_request_correlation() {
         state.profile.local_alias_update,
         LocalUserAliasUpdateState::Saving { request_id: 7 }
     );
-    assert_eq!(effects, profile_changed());
+    assert_eq!(effects, profile_changed("@bob:localhost"));
 
     reduce(
         &mut state,
@@ -574,16 +578,23 @@ fn local_user_aliases_load_set_clear_and_settle_with_request_correlation() {
         LocalUserAliasUpdateState::Saving { request_id: 7 }
     );
 
-    reduce(
+    let effects = reduce(
         &mut state,
         AppAction::LocalUserAliasUpdateSucceeded { request_id: 7 },
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged(
+            Default::default()
+        ))],
+        "status completion must not relabel users"
     );
     assert_eq!(
         state.profile.local_alias_update,
         LocalUserAliasUpdateState::Idle
     );
 
-    reduce(
+    let effects = reduce(
         &mut state,
         AppAction::LocalUserAliasUpdateRequested {
             request_id: 9,
@@ -592,6 +603,33 @@ fn local_user_aliases_load_set_clear_and_settle_with_request_correlation() {
         },
     );
     assert!(!state.profile.local_aliases.contains_key("@bob:localhost"));
+    assert_eq!(
+        effects,
+        profile_changed("@bob:localhost"),
+        "removal must retain the deleted alias identity"
+    );
+
+    reduce(
+        &mut state,
+        AppAction::LocalUserAliasesLoaded {
+            aliases: BTreeMap::from([("@old:localhost".to_owned(), "Old".to_owned())]),
+        },
+    );
+    let effects = reduce(
+        &mut state,
+        AppAction::LocalUserAliasesLoaded {
+            aliases: BTreeMap::from([("@new:localhost".to_owned(), "New".to_owned())]),
+        },
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged(
+            koushi_state::ProfileDisplayChange {
+                user_ids: vec!["@old:localhost".to_owned(), "@new:localhost".to_owned()],
+            }
+        ))],
+        "replacement must include removed and newly loaded aliases"
+    );
 }
 
 #[test]
@@ -1222,7 +1260,7 @@ fn ignored_users_load_filters_invites_and_presence() {
     assert!(
         effects
             .iter()
-            .any(|effect| matches!(effect, AppEffect::EmitUiEvent(UiEvent::ProfileChanged)))
+            .any(|effect| matches!(effect, AppEffect::EmitUiEvent(UiEvent::ProfileChanged(_))))
     );
     assert!(
         effects
@@ -1256,7 +1294,7 @@ fn ignored_user_update_request_is_optimistic_and_sets_saving_state() {
     assert!(
         effects
             .iter()
-            .any(|effect| matches!(effect, AppEffect::EmitUiEvent(UiEvent::ProfileChanged)))
+            .any(|effect| matches!(effect, AppEffect::EmitUiEvent(UiEvent::ProfileChanged(_))))
     );
 }
 
@@ -1298,7 +1336,7 @@ fn ignored_user_update_failed_reverts_optimistic_mutation() {
     assert!(
         effects
             .iter()
-            .any(|effect| matches!(effect, AppEffect::EmitUiEvent(UiEvent::ProfileChanged)))
+            .any(|effect| matches!(effect, AppEffect::EmitUiEvent(UiEvent::ProfileChanged(_))))
     );
     assert!(
         effects
@@ -1402,7 +1440,7 @@ fn profile_state_clears_with_session_views() {
     assert!(
         effects
             .iter()
-            .any(|effect| matches!(effect, AppEffect::EmitUiEvent(UiEvent::ProfileChanged)))
+            .any(|effect| matches!(effect, AppEffect::EmitUiEvent(UiEvent::ProfileChanged(_))))
     );
 }
 

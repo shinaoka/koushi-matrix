@@ -925,6 +925,7 @@ async fn local_alias_clear_command_emits_target_display_label_update() {
                 .iter()
                 .any(|label| label.user_id == user_id && label.display_label == user_id)
         {
+            assert_eq!(labels.len(), 1, "alias clear must publish only its target");
             saw_clear_update = true;
             break;
         }

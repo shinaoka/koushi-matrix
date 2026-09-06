@@ -372,7 +372,11 @@ fn local_alias_update_refreshes_open_dm_room_labels_and_notification_candidate()
             .map(|candidate| candidate.room_display_name.as_str()),
         Some("Alice Local")
     );
-    assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::ProfileChanged)));
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, AppEffect::EmitUiEvent(UiEvent::ProfileChanged(_))))
+    );
     assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::RoomListChanged)));
     assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::NativeAttentionChanged)));
 }

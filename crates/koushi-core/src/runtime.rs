@@ -1891,15 +1891,10 @@ impl AppActor {
                         return false;
                     }
                 }
-                let display_label_user_id = match &account_command {
-                    AccountCommand::SetLocalUserAlias { user_id, .. } => Some(user_id.as_str()),
-                    _ => None,
-                };
                 let current_session_status_already_checking = matches!(
                     self.state.current_session_status,
                     koushi_state::CurrentSessionStatusState::Checking { .. }
                 );
-                let display_label_user_ids = display_label_user_id.into_iter().collect::<Vec<_>>();
                 let effects =
                     if let Some(action) = account_command_projected_action(&account_command) {
                         self.reduce_app_action(action).await
@@ -1921,11 +1916,7 @@ impl AppActor {
                     }
                     return projected_state_changed;
                 }
-                self.handle_ui_event_effects_with_display_label_users(
-                    &effects,
-                    &display_label_user_ids,
-                )
-                .await;
+                self.handle_ui_event_effects(&effects).await;
                 let requires_projection_acceptance = matches!(
                     &account_command,
                     AccountCommand::BootstrapSecureBackup { .. }
@@ -3875,7 +3866,7 @@ impl AppActor {
                     self.persist_room_preferences(&preferences).await;
                 }
                 AppEffect::EmitUiEvent(ui_event) => {
-                    self.handle_ui_event_effect(&ui_event, &[]).await;
+                    self.handle_ui_event_effect(&ui_event).await;
                 }
                 AppEffect::RejectProvisionalSession => {
                     let _ = self
@@ -4151,19 +4142,9 @@ impl AppActor {
     }
 
     async fn handle_ui_event_effects(&self, effects: &[AppEffect]) {
-        self.handle_ui_event_effects_with_display_label_users(effects, &[])
-            .await;
-    }
-
-    async fn handle_ui_event_effects_with_display_label_users(
-        &self,
-        effects: &[AppEffect],
-        additional_user_ids: &[&str],
-    ) {
         for effect in effects {
             if let AppEffect::EmitUiEvent(ui_event) = effect {
-                self.handle_ui_event_effect(ui_event, additional_user_ids)
-                    .await;
+                self.handle_ui_event_effect(ui_event).await;
             } else if let AppEffect::NotifySearchCrawlerRoomsAvailable { room_ids, settings } =
                 effect
             {
@@ -4192,9 +4173,9 @@ impl AppActor {
         }
     }
 
-    async fn handle_ui_event_effect(&self, ui_event: &UiEvent, additional_user_ids: &[&str]) {
-        if *ui_event == UiEvent::ProfileChanged {
-            self.emit_timeline_display_label_updates(additional_user_ids);
+    async fn handle_ui_event_effect(&self, ui_event: &UiEvent) {
+        if let UiEvent::ProfileChanged(change) = ui_event {
+            self.emit_timeline_display_label_updates(&change.user_ids);
         }
         if *ui_event == UiEvent::SettingsChanged {
             self.emit_timeline_display_policy_update();
@@ -4240,12 +4221,12 @@ impl AppActor {
         .await;
     }
 
-    fn emit_timeline_display_label_updates(&self, additional_user_ids: &[&str]) {
+    fn emit_timeline_display_label_updates(&self, user_ids: &[String]) {
         let own_user_id = crate::event_projection::timeline_projection_own_user_id(&self.state);
         let labels = crate::event_projection::derive_display_label_updates_for_user_ids(
             &self.state.profile,
             own_user_id,
-            additional_user_ids.iter().copied(),
+            user_ids.iter().map(String::as_str),
         );
         if !labels.is_empty() {
             self.emit(CoreEvent::Timeline(TimelineEvent::DisplayLabelsUpdated {

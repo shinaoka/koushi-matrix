@@ -1880,7 +1880,9 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
         effects.push(AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged));
     }
     if had_profile {
-        effects.push(AppEffect::EmitUiEvent(UiEvent::ProfileChanged));
+        effects.push(AppEffect::EmitUiEvent(UiEvent::ProfileChanged(
+            Default::default(),
+        )));
     }
     if had_room_interactions {
         effects.push(AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged));
@@ -1983,13 +1985,16 @@ pub(crate) fn refresh_native_attention_candidate_display_projection(state: &mut 
 }
 
 pub(crate) fn profile_changed_effects(
+    user_ids: Vec<String>,
     room_management_changed: bool,
     room_list_changed: bool,
     native_attention_changed: bool,
     live_signals_changed: bool,
     space_members_changed: bool,
 ) -> Vec<AppEffect> {
-    let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)];
+    let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged(
+        crate::ProfileDisplayChange { user_ids },
+    ))];
     if room_list_changed {
         effects.push(AppEffect::EmitUiEvent(UiEvent::RoomListChanged));
     }
