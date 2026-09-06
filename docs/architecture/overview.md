@@ -99,7 +99,12 @@ Crate responsibilities:
   by raw identity fields and apply Rust-provided labels, but it must not
   recompute alias precedence. React may render the DTO and dispatch typed alias
   commands only; it must not maintain a separate alias cache or write aliases to
-  Matrix profile/events.
+  Matrix profile/events. Profile mutations retain display-label identities in
+  their existing Rust change notification. Routine label publication resolves
+  only those identities; status/image-only notifications do not trigger all-user
+  relabeling. Alias removal retains its target identity after deletion. An
+  explicit alias-store replacement accounts for both old and new keys. Initial
+  event projection and session/timeline reset remain their existing owners.
 - `SettingsState` is serializable Rust product state owned by
   `koushi-state` and persisted by `koushi-core` through a
   non-secret settings store. React may apply settings to presentation, but it

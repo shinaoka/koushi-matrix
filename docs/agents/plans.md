@@ -10,6 +10,9 @@ code and the canon win; fix whichever document is wrong.
 
 ## Runtime and roadmap
 
+- Profile display-label mutation identities (#840):
+  [2026-09-06-issue840-profile-change-identities.md](../superpowers/plans/2026-09-06-issue840-profile-change-identities.md)
+
 - Bounded AppActor command turns (#840):
   [2026-09-06-issue840-command-turns.md](../superpowers/plans/2026-09-06-issue840-command-turns.md)
 

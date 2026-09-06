@@ -881,7 +881,16 @@ fn derive_display_label_updates_resolves_from_profile_state() {
     // own user id for resolve_user_display_name own-user fallback
     let own_user_id = Some("@me:example.invalid");
 
-    let updates = derive_display_label_updates(&state.profile, own_user_id);
+    let updates = derive_display_label_updates_for_user_ids(
+        &state.profile,
+        own_user_id,
+        [
+            "@alice:example.invalid",
+            "@bob:example.invalid",
+            "@carol:example.invalid",
+            "@me:example.invalid",
+        ],
+    );
 
     // Alice: alias present -> label = alias
     let alice = updates
@@ -911,10 +920,29 @@ fn derive_display_label_updates_resolves_from_profile_state() {
         .expect("own user in updates");
     assert_eq!(me.display_label, "My Name");
 
+    for index in 0..1500 {
+        let user_id = format!("@unrelated-{index}:example.invalid");
+        state.profile.users.insert(
+            user_id.clone(),
+            koushi_state::UserProfile {
+                user_id,
+                display_name: Some("Unrelated".to_owned()),
+                display_label: "Unrelated".to_owned(),
+                original_display_label: "Unrelated".to_owned(),
+                mention_search_terms: Vec::new(),
+                avatar: None,
+            },
+        );
+    }
     let updates = derive_display_label_updates_for_user_ids(
         &state.profile,
         own_user_id,
         ["@unknown:example.invalid"].into_iter(),
+    );
+    assert_eq!(
+        updates.len(),
+        1,
+        "unrelated cached users must not be republished"
     );
     let unknown = updates
         .iter()

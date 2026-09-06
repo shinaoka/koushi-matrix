@@ -285,7 +285,11 @@ fn local_alias_update_refreshes_open_room_member_display_labels() {
     assert_eq!(
         effects,
         vec![
-            AppEffect::EmitUiEvent(UiEvent::ProfileChanged),
+            AppEffect::EmitUiEvent(UiEvent::ProfileChanged(
+                koushi_state::ProfileDisplayChange {
+                    user_ids: vec!["@target:example.invalid".to_owned()]
+                }
+            )),
             AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged),
         ]
     );
@@ -338,7 +342,11 @@ fn own_profile_update_success_refreshes_open_room_member_display_labels() {
     assert_eq!(
         effects,
         vec![
-            AppEffect::EmitUiEvent(UiEvent::ProfileChanged),
+            AppEffect::EmitUiEvent(UiEvent::ProfileChanged(
+                koushi_state::ProfileDisplayChange {
+                    user_ids: vec!["@user-a:example.invalid".to_owned()]
+                }
+            )),
             AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged),
         ]
     );

@@ -103,17 +103,10 @@ fn timeline_sender_label(
     )
 }
 
-pub(crate) fn derive_display_label_updates(
-    profile: &ProfileState,
-    own_user_id: Option<&str>,
-) -> Vec<TimelineDisplayLabelUpdate> {
-    derive_display_label_updates_for_user_ids(profile, own_user_id, std::iter::empty::<&str>())
-}
-
 pub(crate) fn derive_display_label_updates_for_user_ids<'a>(
     profile: &ProfileState,
     own_user_id: Option<&str>,
-    additional_user_ids: impl IntoIterator<Item = &'a str>,
+    user_ids: impl IntoIterator<Item = &'a str>,
 ) -> Vec<TimelineDisplayLabelUpdate> {
     let mut seen = std::collections::BTreeSet::new();
     let mut updates = Vec::new();
@@ -126,16 +119,7 @@ pub(crate) fn derive_display_label_updates_for_user_ids<'a>(
             display_label: resolve_user_display_name(profile, user_id, None, own_user_id),
         });
     };
-    for uid in profile.local_aliases.keys() {
-        push(uid);
-    }
-    for uid in profile.users.keys() {
-        push(uid);
-    }
-    if let Some(uid) = own_user_id {
-        push(uid);
-    }
-    for uid in additional_user_ids {
+    for uid in user_ids {
         push(uid);
     }
     updates

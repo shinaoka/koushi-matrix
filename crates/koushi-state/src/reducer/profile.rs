@@ -40,6 +40,7 @@ pub(crate) fn handle_own_profile_updated(
     );
     let space_members_changed = super::space_members::refresh_member_display_projection(state);
     profile_changed_effects(
+        own_user_id.into_iter().collect(),
         room_members_changed,
         room_list_changed,
         native_attention_changed,
@@ -69,6 +70,7 @@ pub(crate) fn handle_user_profiles_updated(
     for profile in profiles_map.values_mut() {
         super::avatar::preserve_avatar_thumbnail(&known, &mut profile.avatar);
     }
+    let display_user_ids = profiles_map.keys().cloned().collect();
     for (user_id, mut profile) in profiles_map {
         if let Some(existing) = state.profile.users.get_mut(&user_id) {
             if profile
@@ -104,6 +106,7 @@ pub(crate) fn handle_user_profiles_updated(
     );
     let space_members_changed = super::space_members::refresh_member_display_projection(state);
     profile_changed_effects(
+        display_user_ids,
         room_members_changed,
         room_list_changed,
         native_attention_changed,
@@ -121,6 +124,7 @@ pub(crate) fn handle_local_user_aliases_loaded(
     }
 
     let own_user_id = session_user_id(state).map(str::to_owned);
+    let mut display_user_ids: Vec<String> = state.profile.local_aliases.keys().cloned().collect();
     state.profile.local_aliases = aliases
         .into_iter()
         .filter_map(|(user_id, alias)| {
@@ -128,6 +132,7 @@ pub(crate) fn handle_local_user_aliases_loaded(
                 .map(|normalized| (user_id, normalized))
         })
         .collect();
+    display_user_ids.extend(state.profile.local_aliases.keys().cloned());
     state.profile.local_alias_update = crate::state::LocalUserAliasUpdateState::Idle;
     crate::state::refresh_profile_user_display_projection(
         &mut state.profile,
@@ -146,6 +151,7 @@ pub(crate) fn handle_local_user_aliases_loaded(
     );
     let space_members_changed = super::space_members::refresh_member_display_projection(state);
     profile_changed_effects(
+        display_user_ids,
         room_members_changed,
         room_list_changed,
         native_attention_changed,
@@ -165,6 +171,7 @@ pub(crate) fn handle_local_user_alias_update_requested(
     }
 
     let own_user_id = session_user_id(state).map(str::to_owned);
+    let display_user_ids = vec![user_id.clone()];
     if let Some(alias) = crate::state::normalize_local_user_alias(alias) {
         state.profile.local_aliases.insert(user_id, alias);
     } else {
@@ -189,6 +196,7 @@ pub(crate) fn handle_local_user_alias_update_requested(
     );
     let space_members_changed = super::space_members::refresh_member_display_projection(state);
     profile_changed_effects(
+        display_user_ids,
         room_members_changed,
         room_list_changed,
         native_attention_changed,
@@ -206,7 +214,9 @@ pub(crate) fn handle_local_user_alias_update_succeeded(
     }
 
     state.profile.local_alias_update = crate::state::LocalUserAliasUpdateState::Idle;
-    vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)]
+    vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged(
+        Default::default(),
+    ))]
 }
 
 pub(crate) fn handle_local_user_alias_update_failed(
@@ -225,7 +235,7 @@ pub(crate) fn handle_local_user_alias_update_failed(
         recoverable: true,
     });
     vec![
-        AppEffect::EmitUiEvent(UiEvent::ProfileChanged),
+        AppEffect::EmitUiEvent(UiEvent::ProfileChanged(Default::default())),
         AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
     ]
 }
@@ -248,7 +258,9 @@ pub(crate) fn handle_ignored_users_loaded(
         .presence
         .retain(|user_id, _| !ignored.contains(user_id));
 
-    let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)];
+    let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged(
+        Default::default(),
+    ))];
 
     if state.room_list.active_filter == RoomListFilter::Invites {
         recompute_room_list_projection(state);
@@ -280,7 +292,9 @@ pub(crate) fn handle_ignored_user_update_requested(
     state.profile.ignored_user_update = crate::state::IgnoredUserUpdateState::Saving { request_id };
     state.live_signals.presence.remove(&user_id);
 
-    let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)];
+    let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged(
+        Default::default(),
+    ))];
 
     if state.room_list.active_filter == RoomListFilter::Invites {
         recompute_room_list_projection(state);
@@ -300,7 +314,9 @@ pub(crate) fn handle_ignored_user_update_succeeded(
     }
 
     state.profile.ignored_user_update = crate::state::IgnoredUserUpdateState::Idle;
-    vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)]
+    vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged(
+        Default::default(),
+    ))]
 }
 
 pub(crate) fn handle_ignored_user_update_failed(
@@ -328,7 +344,7 @@ pub(crate) fn handle_ignored_user_update_failed(
         recoverable: true,
     });
     vec![
-        AppEffect::EmitUiEvent(UiEvent::ProfileChanged),
+        AppEffect::EmitUiEvent(UiEvent::ProfileChanged(Default::default())),
         AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
     ]
 }
@@ -358,7 +374,9 @@ pub(crate) fn handle_profile_update_requested(
             byte_count,
         },
     };
-    vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)]
+    vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged(
+        Default::default(),
+    ))]
 }
 
 pub(crate) fn handle_profile_update_succeeded(
@@ -390,6 +408,7 @@ pub(crate) fn handle_profile_update_succeeded(
     );
     let space_members_changed = super::space_members::refresh_member_display_projection(state);
     profile_changed_effects(
+        own_user_id.into_iter().collect(),
         room_members_changed,
         room_list_changed,
         native_attention_changed,
@@ -414,7 +433,7 @@ pub(crate) fn handle_profile_update_failed(
         recoverable: true,
     });
     vec![
-        AppEffect::EmitUiEvent(UiEvent::ProfileChanged),
+        AppEffect::EmitUiEvent(UiEvent::ProfileChanged(Default::default())),
         AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
     ]
 }
@@ -470,7 +489,9 @@ pub(crate) fn handle_avatar_thumbnail_updated(
 
     let mut effects = Vec::new();
     if profile_changed {
-        effects.push(AppEffect::EmitUiEvent(UiEvent::ProfileChanged));
+        effects.push(AppEffect::EmitUiEvent(UiEvent::ProfileChanged(
+            Default::default(),
+        )));
     }
     if room_list_changed {
         effects.push(AppEffect::EmitUiEvent(UiEvent::RoomListChanged));

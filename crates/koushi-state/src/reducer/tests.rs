@@ -583,7 +583,11 @@ fn avatar_thumbnail_updates_rust_owned_snapshots() {
         },
     );
 
-    assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::ProfileChanged)));
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, AppEffect::EmitUiEvent(UiEvent::ProfileChanged(_))))
+    );
     assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::RoomListChanged)));
     assert_eq!(
         state

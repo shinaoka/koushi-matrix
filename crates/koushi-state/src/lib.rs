@@ -24,7 +24,7 @@ pub use composer_shortcuts::{
     parse_slash_command, resolve_composer_key_action, resolve_composer_send_intent,
     resolve_composer_send_intent_with_options,
 };
-pub use effect::{AppEffect, UiEvent};
+pub use effect::{AppEffect, ProfileDisplayChange, UiEvent};
 pub use locale_profile::{
     CatalogLocale, DisplayPlatform, LocaleDirection, LocaleDisplayProfile, ModifierLabelProfile,
     PseudoLocaleMode, cjk_display_sort_key, normalize_cjk_search_text,
