@@ -98,7 +98,7 @@ architectural RED tests from this PR, leaving both explicitly outstanding.
   Core doctests: 3 passed (including changed return/field examples); QA binaries:
   96 + 17 passed with `--features qa-bin --bins`.
 - SDK/domain/Tauri/protocol boundaries, Rust test structure, agent docs, formatting
-  and diff checks passed. No frontend source or wire type changed.
+  and diff checks passed. No frontend production code or wire type changed.
 - Parent full-diff audit preserved all old state assertions using separate
   inspection plus generation equality. The real expired-deadline assertion passed
   both before and after migration. No heap/performance acceptance claim is made.
@@ -110,6 +110,23 @@ subject to CI**, no Critical/Important findings. Complete reviewed patch SHA-256
 Two minor suggestions addressed: assert clear's returned generation in the existing
 controlled test (PASS, 0.01 s), and rename two scalar test variables. No semantic
 change or additional review round required.
+
+## CI follow-up
+
+Initial head `7e8992de`, run `34034948760`, failed the pre-existing scrollback
+manual-pagination test (1 failed / 1247 passed). Log:
+`/tmp/issue840-outcome-frontend-ci.log`. Its setup awaited a container that exists
+before InitialItems commits. Added an explicit wait for the seeded Latest row;
+retained the same wheel/scroll operations, pagination assertion and tolerances.
+Parent audited this two-line test-only precondition correction; no production
+change or new review round.
+
+Full Vitest: 1248 passed, 14.95 s; local 2-CPU/2-worker run: 1248 passed, 79.54 s.
+The first CPU-affinity-only run timed out at 120 s without bounded worker count;
+no descendants survived. Narrowed to the 29-test file with two workers (PASS,
+7.06 s), then the full two-worker run above. No checked-in worker or timeout
+setting was changed. Typecheck, full lint/IME/semantic-owner gates and frontend
+build passed. Logs: `/tmp/issue840-outcome-{vitest,vitest-2cpu-bounded,typecheck,lint,build}.log`.
 
 This is not completion of #840. Routine watch clones, publication, scoped models,
 resource demand and #839/#846 acceptance remain in the integration ledger.
