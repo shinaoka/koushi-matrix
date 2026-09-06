@@ -2095,7 +2095,7 @@ fn live_event_receipts_from_sdk_item(
     };
     let event_id = event_item.event_id()?.to_string();
     let receipts = event_item
-        .read_receipts()
+        .read_receipt_snapshot()
         .iter()
         .map(|(user_id, receipt)| LiveReadReceipt {
             user_id: user_id.to_string(),
