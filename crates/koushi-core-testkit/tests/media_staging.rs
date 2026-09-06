@@ -87,6 +87,9 @@ async fn staging_publishes_preparing_then_ready_and_normalizes_mime() {
         .stage_upload_bytes(target(), vec![item("one", b"bytes")])
         .await
         .expect("staging should settle");
+    let snapshot_generation = snapshot;
+    let snapshot = connection.versioned_snapshot();
+    assert_eq!(snapshot.generation, snapshot_generation);
     assert!(snapshot.generation > before.generation);
     let staged = &snapshot.state.timeline.staged_uploads;
     assert_eq!(staged.len(), 1);
@@ -131,6 +134,9 @@ async fn caption_survives_preparation_and_replacement() {
         .stage_upload_bytes(&mut connection, target(), vec![item("one", b"bytes")])
         .await
         .expect("staging should settle");
+    let staged_generation = staged;
+    let staged = connection.versioned_snapshot();
+    assert_eq!(staged.generation, staged_generation);
     let caption = ComposerDocument::new(vec![ComposerInline::Text {
         text: "synthetic caption".to_owned(),
     }]);
@@ -144,6 +150,9 @@ async fn caption_survives_preparation_and_replacement() {
         )
         .await
         .expect("caption should settle");
+    let captioned_generation = captioned;
+    let captioned = connection.versioned_snapshot();
+    assert_eq!(captioned.generation, captioned_generation);
     assert_eq!(
         captioned.state.timeline.staged_uploads[0].caption,
         Some(caption)
@@ -159,15 +168,19 @@ async fn empty_preparation_is_a_typed_failure_and_clear_releases_bytes() {
         .stage_upload_bytes(&mut connection, target(), vec![item("empty", b"")])
         .await
         .expect("empty input settles as a failed item");
+    let snapshot_generation = snapshot;
+    let snapshot = connection.versioned_snapshot();
+    assert_eq!(snapshot.generation, snapshot_generation);
     assert!(matches!(
         snapshot.state.timeline.staged_uploads[0].preparation,
         koushi_state::StagedUploadPreparation::Failed { .. }
     ));
-    runtime
+    let cleared_generation = runtime
         .media_staging()
         .clear(&mut connection, target())
         .await
         .expect("clear should settle");
+    assert_eq!(connection.state_generation(), cleared_generation);
     let stats = runtime.media_preparation().stats().await;
     assert_eq!(stats.source_count, 0);
     assert_eq!(stats.variant_count, 0);
@@ -195,6 +208,9 @@ async fn select_retry_original_and_compression_are_targeted_operations() {
         )
         .await
         .expect("selection should prepare and settle");
+    let selected_generation = selected;
+    let selected = connection.versioned_snapshot();
+    assert_eq!(selected.generation, selected_generation);
     let selected_item = &selected.state.timeline.staged_uploads[0];
     assert!(matches!(
         selected_item.preparation,
@@ -212,6 +228,9 @@ async fn select_retry_original_and_compression_are_targeted_operations() {
         )
         .await
         .expect("compression choice should settle");
+    let compressed_generation = compressed;
+    let compressed = connection.versioned_snapshot();
+    assert_eq!(compressed.generation, compressed_generation);
     assert_eq!(
         compressed.state.timeline.staged_uploads[0].compression_choice,
         StagedUploadCompressionChoice::Compressed {
@@ -223,6 +242,9 @@ async fn select_retry_original_and_compression_are_targeted_operations() {
         .use_original_staged_upload(target(), "image".to_owned())
         .await
         .expect("original adoption should settle");
+    let original_generation = original;
+    let original = connection.versioned_snapshot();
+    assert_eq!(original.generation, original_generation);
     assert_eq!(
         original.state.timeline.staged_uploads[0].mime_type,
         "image/png"
@@ -236,6 +258,9 @@ async fn select_retry_original_and_compression_are_targeted_operations() {
         .retry_staged_upload_preparation(target(), "failed".to_owned())
         .await
         .expect("retry should settle even when the source remains invalid");
+    let generation = retry;
+    let retry = connection.versioned_snapshot();
+    assert_eq!(retry.generation, generation);
     assert!(matches!(
         retry
             .state
@@ -288,6 +313,9 @@ async fn thread_target_isolated_from_main_target() {
         .stage_upload_bytes(thread, vec![item("thread-item", b"thread")])
         .await
         .expect("thread staging should settle");
+    let snapshot_generation = snapshot;
+    let snapshot = connection.versioned_snapshot();
+    assert_eq!(snapshot.generation, snapshot_generation);
     assert!(snapshot.state.timeline.staged_uploads.is_empty());
     assert!(matches!(
         snapshot.state.thread,
@@ -324,6 +352,9 @@ async fn positions_are_nonzero_unique_and_second_batches_settle_in_order() {
         )
         .await
         .expect("second batch should settle");
+    let second_generation = second;
+    let second = connection.versioned_snapshot();
+    assert_eq!(second.generation, second_generation);
     let items = &second.state.timeline.staged_uploads;
     assert_eq!(
         items
@@ -398,6 +429,9 @@ async fn blocked_preparation_preserves_caption_and_releases_removed_bytes() {
     .await;
     barrier.release();
     let settled = task.await.unwrap().expect("staging should settle");
+    let settled_generation = settled;
+    let settled = connection.versioned_snapshot();
+    assert_eq!(settled.generation, settled_generation);
     assert_eq!(
         settled.state.timeline.staged_uploads[0].caption,
         Some(caption)

@@ -43,10 +43,10 @@ async fn submit_invite_workflow_command(
         )
         .await
         .map_err(|error| invoke_error_from_request_outcome(context, error))?;
-    let RequestOutcome::InviteWorkflow { snapshot, .. } = outcome else {
+    let RequestOutcome::InviteWorkflow { generation, .. } = outcome else {
         return Err(format!("{context} returned an invalid outcome"));
     };
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 async fn submit_room_operation(
@@ -61,7 +61,7 @@ async fn submit_room_operation(
     let baseline = event_conn.versioned_snapshot();
     let account_key = account_key_from_app_state(&baseline.state);
     submit_core_command(state, command).await?;
-    let snapshot = wait_for_room_operation(
+    let generation = wait_for_room_operation(
         &mut event_conn,
         request_id,
         baseline.generation,
@@ -72,7 +72,7 @@ async fn submit_room_operation(
         context,
     )
     .await?;
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -106,10 +106,10 @@ pub async fn open_invite_workflow(
         )
         .await
         .map_err(|error| invoke_error_from_request_outcome("invite workflow open", error))?;
-    let RequestOutcome::InviteWorkflow { snapshot, .. } = outcome else {
+    let RequestOutcome::InviteWorkflow { generation, .. } = outcome else {
         return Err("invite workflow open returned an invalid outcome".to_owned());
     };
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -139,10 +139,10 @@ pub async fn close_invite_workflow(
         )
         .await
         .map_err(|error| invoke_error_from_request_outcome("invite workflow close", error))?;
-    let RequestOutcome::InviteWorkflow { snapshot, .. } = outcome else {
+    let RequestOutcome::InviteWorkflow { generation, .. } = outcome else {
         return Err("invite workflow close returned an invalid outcome".to_owned());
     };
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -178,10 +178,10 @@ pub async fn search_invite_targets(
         )
         .await
         .map_err(|error| invoke_error_from_request_outcome("invite target search", error))?;
-    let RequestOutcome::InviteWorkflow { snapshot, .. } = outcome else {
+    let RequestOutcome::InviteWorkflow { generation, .. } = outcome else {
         return Err("invite target search returned an invalid outcome".to_owned());
     };
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -458,7 +458,7 @@ pub async fn refresh_pinned_events(
         ))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
-    let snapshot = wait_for_room_operation(
+    let generation = wait_for_room_operation(
         &mut event_conn,
         request_id,
         baseline.generation,
@@ -470,7 +470,7 @@ pub async fn refresh_pinned_events(
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -490,7 +490,7 @@ pub async fn load_room_settings(
         ))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
-    let snapshot = wait_for_room_operation(
+    let generation = wait_for_room_operation(
         &mut event_conn,
         request_id,
         baseline.generation,
@@ -502,7 +502,7 @@ pub async fn load_room_settings(
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -524,7 +524,7 @@ pub async fn load_space_members(
         ))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
-    let snapshot = wait_for_room_operation(
+    let generation = wait_for_room_operation(
         &mut event_conn,
         request_id,
         baseline.generation,
@@ -536,7 +536,7 @@ pub async fn load_space_members(
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -596,7 +596,7 @@ pub async fn update_room_setting(
         ))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
-    let snapshot = wait_for_room_operation(
+    let generation = wait_for_room_operation(
         &mut event_conn,
         request_id,
         baseline.generation,
@@ -608,7 +608,7 @@ pub async fn update_room_setting(
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -634,7 +634,7 @@ pub async fn moderate_room_member(
         ))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
-    let snapshot = wait_for_room_operation(
+    let generation = wait_for_room_operation(
         &mut event_conn,
         request_id,
         baseline.generation,
@@ -649,7 +649,7 @@ pub async fn moderate_room_member(
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -673,7 +673,7 @@ pub async fn update_room_member_role(
         ))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
-    let snapshot = wait_for_room_operation(
+    let generation = wait_for_room_operation(
         &mut event_conn,
         request_id,
         baseline.generation,
@@ -685,7 +685,7 @@ pub async fn update_room_member_role(
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -714,11 +714,11 @@ pub async fn create_room(
         )
         .await
         .map_err(|error| invoke_error_from_request_outcome("room creation", error))?;
-    let RequestOutcome::RoomCreated { snapshot, .. } = outcome else {
+    let RequestOutcome::RoomCreated { generation, .. } = outcome else {
         return Err("room creation returned an invalid outcome".to_owned());
     };
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -747,11 +747,11 @@ pub async fn create_space(
         )
         .await
         .map_err(|error| invoke_error_from_request_outcome("space creation", error))?;
-    let RequestOutcome::SpaceCreated { snapshot, .. } = outcome else {
+    let RequestOutcome::SpaceCreated { generation, .. } = outcome else {
         return Err("space creation returned an invalid outcome".to_owned());
     };
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -803,11 +803,11 @@ pub async fn join_room(
         )
         .await
         .map_err(|error| invoke_error_from_request_outcome("room join", error))?;
-    let RequestOutcome::RoomJoined { snapshot, .. } = outcome else {
+    let RequestOutcome::RoomJoined { generation, .. } = outcome else {
         return Err("room join returned an invalid outcome".to_owned());
     };
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -824,7 +824,7 @@ pub async fn accept_invite(
         .command(build_accept_invite_command(request_id, room_id.clone()))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
-    let snapshot = wait_for_room_operation(
+    let generation = wait_for_room_operation(
         &mut event_conn,
         request_id,
         baseline.generation,
@@ -836,7 +836,7 @@ pub async fn accept_invite(
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -853,7 +853,7 @@ pub async fn decline_invite(
         .command(build_decline_invite_command(request_id, room_id.clone()))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
-    let snapshot = wait_for_room_operation(
+    let generation = wait_for_room_operation(
         &mut event_conn,
         request_id,
         baseline.generation,
@@ -865,7 +865,7 @@ pub async fn decline_invite(
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -899,12 +899,12 @@ pub async fn start_direct_message(
     let RequestOutcome::DirectMessageStarted { room_id, .. } = outcome else {
         return Err("direct message start returned an invalid outcome".to_owned());
     };
-    let selected_snapshot = event_conn
+    let selected_generation = event_conn
         .select_room_and_wait(room_id.clone(), SELECT_ROOM_EVENT_TIMEOUT)
         .await
         .map_err(super::navigation::invoke_error_from_select_room_error)?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(command_settlement(selected_snapshot))
+    Ok(command_settlement(selected_generation))
 }
 
 #[tauri::command]
@@ -926,7 +926,7 @@ pub async fn invite_user(
         ))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
-    let snapshot = wait_for_room_operation(
+    let generation = wait_for_room_operation(
         &mut event_conn,
         request_id,
         baseline.generation,
@@ -938,7 +938,7 @@ pub async fn invite_user(
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -962,7 +962,7 @@ pub async fn invite_user_to_space(
         ))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
-    let snapshot = wait_for_room_operation(
+    let generation = wait_for_room_operation(
         &mut event_conn,
         request_id,
         baseline.generation,
@@ -977,7 +977,7 @@ pub async fn invite_user_to_space(
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -1009,7 +1009,7 @@ pub async fn update_space_member_role(
         ))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
-    let snapshot = wait_for_room_operation(
+    let generation = wait_for_room_operation(
         &mut event_conn,
         request_id,
         baseline.generation,
@@ -1024,7 +1024,7 @@ pub async fn update_space_member_role(
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -1048,7 +1048,7 @@ pub async fn cancel_space_invite(
         ))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
-    let snapshot = wait_for_room_operation(
+    let generation = wait_for_room_operation(
         &mut event_conn,
         request_id,
         baseline.generation,
@@ -1063,7 +1063,7 @@ pub async fn cancel_space_invite(
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 #[tauri::command]
@@ -1087,7 +1087,7 @@ pub async fn invite_targets(
         ))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
-    let snapshot = wait_for_room_operation(
+    let generation = wait_for_room_operation(
         &mut event_conn,
         request_id,
         baseline.generation,
@@ -1099,7 +1099,7 @@ pub async fn invite_targets(
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    Ok(command_settlement(snapshot))
+    Ok(command_settlement(generation))
 }
 
 pub(super) async fn wait_for_room_operation(
@@ -1111,7 +1111,7 @@ pub(super) async fn wait_for_room_operation(
     operation: RoomOperationKind,
     timeout: std::time::Duration,
     context: &'static str,
-) -> Result<koushi_protocol::state_update::VersionedAppStateSnapshot, String> {
+) -> Result<u64, String> {
     let outcome = event_conn
         .wait_for_request_outcome(
             OutcomeCorrelation::Request(operation_request_id),
@@ -1126,10 +1126,10 @@ pub(super) async fn wait_for_room_operation(
         )
         .await
         .map_err(|error| invoke_error_from_request_outcome(context, error))?;
-    let RequestOutcome::RoomOperation { snapshot, .. } = outcome else {
+    let RequestOutcome::RoomOperation { generation, .. } = outcome else {
         return Err(format!("{context} returned an invalid outcome"));
     };
-    Ok(snapshot)
+    Ok(generation)
 }
 
 pub(super) fn build_update_space_member_role_command(

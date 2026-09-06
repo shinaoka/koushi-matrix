@@ -63,6 +63,9 @@ async fn prepared_preview_is_core_owned_and_target_fenced() {
         .stage_upload_bytes(target(), vec![image("preview")])
         .await
         .expect("image should stage");
+    let staged_generation = staged;
+    let staged = connection.versioned_snapshot();
+    assert_eq!(staged.generation, staged_generation);
     let variant_id = match &staged.state.timeline.staged_uploads[0].preparation {
         koushi_state::StagedUploadPreparation::Ready { variants, .. } => {
             variants[0].variant_id.clone()

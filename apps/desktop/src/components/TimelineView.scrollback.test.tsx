@@ -1077,6 +1077,8 @@ describe("TimelineView", () => {
       }
     });
 
+    // The container exists before InitialItems commits; wait for the seeded row.
+    await screen.findByText("Latest");
     const timeline = await screen.findByTestId("timeline-view");
     Object.defineProperty(timeline, "scrollTop", {
       value: 0,

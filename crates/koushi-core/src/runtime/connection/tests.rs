@@ -267,7 +267,11 @@ async fn committed_lifecycle_waits_for_the_matching_published_snapshot() {
     snapshot_tx
         .send(published.clone())
         .expect("publish selected snapshot");
-    assert_eq!(waiter.await.expect("settled selection"), published);
+    assert_eq!(
+        waiter.await.expect("settled selection"),
+        published.generation
+    );
+    assert_eq!(connection.versioned_snapshot(), published);
 }
 
 #[tokio::test]
@@ -302,7 +306,11 @@ async fn select_room_waiter_recovers_lag_from_latest_watch_snapshot() {
         .send(published.clone())
         .expect("publish selected snapshot");
 
-    assert_eq!(waiter.await.expect("lag recovery settlement"), published);
+    assert_eq!(
+        waiter.await.expect("lag recovery settlement"),
+        published.generation
+    );
+    assert_eq!(connection.versioned_snapshot(), published);
 }
 
 #[tokio::test]
@@ -399,7 +407,11 @@ async fn unrelated_request_failures_do_not_settle_room_selection() {
     snapshot_tx
         .send(published.clone())
         .expect("publish selected snapshot");
-    assert_eq!(waiter.await.expect("settled selection"), published);
+    assert_eq!(
+        waiter.await.expect("settled selection"),
+        published.generation
+    );
+    assert_eq!(connection.versioned_snapshot(), published);
 }
 
 #[tokio::test]
@@ -416,7 +428,11 @@ async fn closed_event_stream_returns_a_final_matching_snapshot() {
         .expect("publish final selected snapshot");
 
     drop(event_tx);
-    assert_eq!(waiter.await.expect("final watch settlement"), published);
+    assert_eq!(
+        waiter.await.expect("final watch settlement"),
+        published.generation
+    );
+    assert_eq!(connection.versioned_snapshot(), published);
 }
 
 #[tokio::test]
