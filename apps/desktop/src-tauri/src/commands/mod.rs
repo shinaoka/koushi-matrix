@@ -178,10 +178,8 @@ async fn submit_core_command_with_native_artifact(
     }
 }
 
-pub(crate) fn command_settlement(
-    snapshot: koushi_protocol::state_update::VersionedAppStateSnapshot,
-) -> FrontendCommandSettlement {
-    FrontendCommandSettlement::from_published_generation(snapshot.generation)
+pub(crate) fn command_settlement(generation: u64) -> FrontendCommandSettlement {
+    FrontendCommandSettlement::from_published_generation(generation)
 }
 
 pub(crate) fn invoke_error_from_core_failure(context: &str, failure: CoreFailure) -> String {

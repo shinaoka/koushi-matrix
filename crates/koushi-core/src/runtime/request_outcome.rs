@@ -221,91 +221,91 @@ pub enum RequestOutcome {
     },
     AuthDiscovery {
         request_id: RequestId,
-        snapshot: VersionedAppStateSnapshot,
+        generation: u64,
     },
     Authenticated {
         request_id: RequestId,
-        snapshot: VersionedAppStateSnapshot,
+        generation: u64,
     },
     SignedOut {
         request_id: RequestId,
-        snapshot: VersionedAppStateSnapshot,
+        generation: u64,
     },
     SavedSessions {
         request_id: RequestId,
         sessions: Vec<koushi_state::SessionInfo>,
     },
     RoomSelected {
-        snapshot: VersionedAppStateSnapshot,
+        generation: u64,
     },
     FocusedContext {
-        snapshot: VersionedAppStateSnapshot,
+        generation: u64,
     },
     MainTimelineAnchor {
-        snapshot: VersionedAppStateSnapshot,
+        generation: u64,
     },
     RoomCreated {
         request_id: RequestId,
         room_id: String,
-        snapshot: VersionedAppStateSnapshot,
+        generation: u64,
     },
     SpaceCreated {
         request_id: RequestId,
         space_id: String,
-        snapshot: VersionedAppStateSnapshot,
+        generation: u64,
     },
     DirectMessageStarted {
         request_id: RequestId,
         room_id: String,
-        snapshot: VersionedAppStateSnapshot,
+        generation: u64,
     },
     RoomJoined {
         request_id: RequestId,
         room_id: String,
-        snapshot: VersionedAppStateSnapshot,
+        generation: u64,
     },
     InviteWorkflow {
         request_id: RequestId,
-        snapshot: VersionedAppStateSnapshot,
+        generation: u64,
     },
     Directory {
         request_id: RequestId,
-        snapshot: VersionedAppStateSnapshot,
+        generation: u64,
     },
     RoomOperation {
         request_id: RequestId,
-        snapshot: VersionedAppStateSnapshot,
+        generation: u64,
     },
     Search {
         request_id: RequestId,
-        snapshot: VersionedAppStateSnapshot,
+        generation: u64,
     },
     UploadStaging {
         request_id: RequestId,
-        snapshot: VersionedAppStateSnapshot,
+        generation: u64,
     },
     ComposerAccepted {
         request_id: RequestId,
         revision: ComposerDraftRevision,
-        snapshot: VersionedAppStateSnapshot,
+        generation: u64,
     },
     SubmissionAccepted {
         request_id: RequestId,
         submission_id: SubmissionId,
         transaction_id: String,
-        snapshot: VersionedAppStateSnapshot,
+        generation: u64,
     },
     SubmissionRejected {
         request_id: RequestId,
         submission_id: SubmissionId,
         kind: koushi_protocol::failure::TimelineFailureKind,
-        snapshot: VersionedAppStateSnapshot,
+        generation: u64,
     },
     PreparedMediaQueued {
         request_id: RequestId,
         key: TimelineKey,
         transaction_id: String,
-        snapshot: VersionedAppStateSnapshot,
+        generation: u64,
     },
 }
 
@@ -770,7 +770,7 @@ impl EventProgress {
                     request_id: *request_id,
                     submission_id: submission_id.clone(),
                     transaction_id: transaction_id.clone(),
-                    snapshot: snapshot.clone(),
+                    generation: snapshot.generation,
                 })
             }
             (
@@ -793,7 +793,7 @@ impl EventProgress {
                     request_id: *request_id,
                     submission_id: submission_id.clone(),
                     kind: *kind,
-                    snapshot: snapshot.clone(),
+                    generation: snapshot.generation,
                 })
             }
             (
@@ -812,7 +812,7 @@ impl EventProgress {
                     request_id: *request_id,
                     key: key.clone(),
                     transaction_id: transaction_id.clone(),
-                    snapshot: snapshot.clone(),
+                    generation: snapshot.generation,
                 })
             }
             (
@@ -821,7 +821,7 @@ impl EventProgress {
                 | RequestOutcomeExpectation::DirectoryPreview { .. },
             ) => Some(RequestOutcome::Directory {
                 request_id: *request_id,
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             }),
             (
                 Self::RoomOperation { request_id, .. },
@@ -829,7 +829,7 @@ impl EventProgress {
             ) if room_operation_is_event_terminal(operation) => {
                 Some(RequestOutcome::RoomOperation {
                     request_id: *request_id,
-                    snapshot: snapshot.clone(),
+                    generation: snapshot.generation,
                 })
             }
             _ => None,
@@ -1781,7 +1781,7 @@ fn snapshot_outcome(
             && account_matches(&snapshot.state, account_key.as_ref()) =>
         {
             Some(RequestOutcome::RoomSelected {
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         RequestOutcomeExpectation::SignedOut {
@@ -1791,7 +1791,7 @@ fn snapshot_outcome(
         } if matches!(snapshot.state.session, SessionState::SignedOut) => {
             Some(RequestOutcome::SignedOut {
                 request_id: *request_id,
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         RequestOutcomeExpectation::FocusedContextClosed {
@@ -1805,7 +1805,7 @@ fn snapshot_outcome(
             && snapshot.state.navigation.main_timeline_anchor.is_none() =>
         {
             Some(RequestOutcome::FocusedContext {
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         RequestOutcomeExpectation::SearchClosed {
@@ -1818,7 +1818,7 @@ fn snapshot_outcome(
         {
             Some(RequestOutcome::Search {
                 request_id: *request_id,
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         RequestOutcomeExpectation::UploadStaging {
@@ -1832,7 +1832,7 @@ fn snapshot_outcome(
         {
             Some(RequestOutcome::UploadStaging {
                 request_id: *request_id,
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         RequestOutcomeExpectation::ComposerAccepted {
@@ -1847,7 +1847,7 @@ fn snapshot_outcome(
             Some(RequestOutcome::ComposerAccepted {
                 request_id: *request_id,
                 revision: composer_draft_revision(&snapshot.state, target),
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         _ => None,
@@ -1913,7 +1913,7 @@ fn snapshot_outcome_for_progress(
         {
             Some(RequestOutcome::AuthDiscovery {
                 request_id: *request_id,
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         (
@@ -1930,7 +1930,7 @@ fn snapshot_outcome_for_progress(
         {
             Some(RequestOutcome::Authenticated {
                 request_id: *request_id,
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         (
@@ -1945,7 +1945,7 @@ fn snapshot_outcome_for_progress(
         {
             Some(RequestOutcome::SignedOut {
                 request_id: *request_id,
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         (
@@ -1964,7 +1964,7 @@ fn snapshot_outcome_for_progress(
             Some(RequestOutcome::RoomCreated {
                 request_id: *request_id,
                 room_id: room_id.clone(),
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         (
@@ -1983,7 +1983,7 @@ fn snapshot_outcome_for_progress(
             Some(RequestOutcome::SpaceCreated {
                 request_id: *request_id,
                 space_id: space_id.clone(),
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         (
@@ -2002,7 +2002,7 @@ fn snapshot_outcome_for_progress(
             Some(RequestOutcome::DirectMessageStarted {
                 request_id: *request_id,
                 room_id: room_id.clone(),
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         (
@@ -2023,7 +2023,7 @@ fn snapshot_outcome_for_progress(
             Some(RequestOutcome::RoomJoined {
                 request_id: *request_id,
                 room_id: room_id.clone(),
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         (
@@ -2040,7 +2040,7 @@ fn snapshot_outcome_for_progress(
             && room_target_matches(&snapshot.state, room_id.as_deref()) =>
         {
             Some(RequestOutcome::FocusedContext {
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         (
@@ -2055,7 +2055,7 @@ fn snapshot_outcome_for_progress(
             && focused_context_matches(&snapshot.state, room_id, event_id.as_deref()) =>
         {
             Some(RequestOutcome::FocusedContext {
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         (
@@ -2069,7 +2069,7 @@ fn snapshot_outcome_for_progress(
             && account_matches(&snapshot.state, account_key.as_ref()) =>
         {
             Some(RequestOutcome::RoomSelected {
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         (
@@ -2089,7 +2089,7 @@ fn snapshot_outcome_for_progress(
             } =>
         {
             Some(RequestOutcome::MainTimelineAnchor {
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         (
@@ -2118,7 +2118,7 @@ fn snapshot_outcome_for_progress(
         {
             Some(RequestOutcome::RoomOperation {
                 request_id: *expected_request_id,
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         (
@@ -2147,7 +2147,7 @@ fn snapshot_outcome_for_progress(
         {
             Some(RequestOutcome::RoomOperation {
                 request_id: *expected_request_id,
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         (
@@ -2169,7 +2169,7 @@ fn snapshot_outcome_for_progress(
         {
             Some(RequestOutcome::InviteWorkflow {
                 request_id: *request_id,
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         (
@@ -2187,7 +2187,7 @@ fn snapshot_outcome_for_progress(
         {
             Some(RequestOutcome::Directory {
                 request_id: *expected_request_id,
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         (
@@ -2203,7 +2203,7 @@ fn snapshot_outcome_for_progress(
         {
             Some(RequestOutcome::Search {
                 request_id: *request_id,
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         (
@@ -2218,7 +2218,7 @@ fn snapshot_outcome_for_progress(
         {
             Some(RequestOutcome::Search {
                 request_id: *request_id,
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         (
@@ -2253,7 +2253,7 @@ fn snapshot_outcome_for_progress(
                 request_id: *request_id,
                 submission_id: submission_id.clone(),
                 transaction_id: transaction_id.clone(),
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         (
@@ -2276,7 +2276,7 @@ fn snapshot_outcome_for_progress(
                 request_id: *request_id,
                 submission_id: submission_id.clone(),
                 kind: *kind,
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         (
@@ -2295,7 +2295,7 @@ fn snapshot_outcome_for_progress(
                 request_id: *request_id,
                 key: event_key.clone(),
                 transaction_id: transaction_id.clone(),
-                snapshot: snapshot.clone(),
+                generation: snapshot.generation,
             })
         }
         _ => None,

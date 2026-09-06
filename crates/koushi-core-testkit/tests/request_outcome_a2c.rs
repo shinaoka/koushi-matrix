@@ -85,7 +85,7 @@ async fn upload_staging_requires_exact_ids_target_account_and_newer_snapshot() {
         1,
         tokio::time::Instant::now() + Duration::from_secs(1),
     );
-    tokio::pin!(waiter);
+    let mut waiter = Box::pin(waiter);
 
     let mut wrong_account = ready_state("@bob:example.invalid");
     wrong_account.timeline.room_id = Some("!room-a:example.invalid".to_owned());
@@ -123,9 +123,10 @@ async fn upload_staging_requires_exact_ids_target_account_and_newer_snapshot() {
         waiter.await,
         Ok(RequestOutcome::UploadStaging {
             request_id,
-            snapshot: published,
+            generation: published.generation,
         })
     );
+    assert_eq!(connection.versioned_snapshot(), published);
 }
 
 #[tokio::test]
@@ -145,7 +146,7 @@ async fn composer_acceptance_requires_exact_account_target_revision_and_returns_
         1,
         tokio::time::Instant::now() + Duration::from_secs(1),
     );
-    tokio::pin!(waiter);
+    let mut waiter = Box::pin(waiter);
 
     control.send_snapshot(versioned(
         state_with_revision("@bob:example.invalid", "!room-a:example.invalid", 3),
@@ -173,9 +174,10 @@ async fn composer_acceptance_requires_exact_account_target_revision_and_returns_
         Ok(RequestOutcome::ComposerAccepted {
             request_id,
             revision: 3.into(),
-            snapshot: published,
+            generation: published.generation,
         })
     );
+    assert_eq!(connection.versioned_snapshot(), published);
 }
 
 #[tokio::test]
@@ -194,7 +196,6 @@ async fn composer_terminal_lag_still_checks_the_final_authoritative_snapshot() {
         1,
         tokio::time::Instant::now() + Duration::from_secs(1),
     );
-    tokio::pin!(waiter);
     control.send_event(CoreEvent::OperationFailed {
         request_id: request(30),
         failure: koushi_core::CoreFailure::SessionRequired,
@@ -210,8 +211,9 @@ async fn composer_terminal_lag_still_checks_the_final_authoritative_snapshot() {
     control.send_snapshot(published.clone());
     assert!(matches!(
         waiter.await,
-        Ok(RequestOutcome::ComposerAccepted { snapshot, .. }) if snapshot == published
+        Ok(RequestOutcome::ComposerAccepted { generation, .. }) if generation == published.generation
     ));
+    assert_eq!(connection.versioned_snapshot(), published);
 }
 
 #[tokio::test]
@@ -249,7 +251,7 @@ async fn submission_acceptance_and_rejection_require_exact_key_account_target() 
         1,
         tokio::time::Instant::now() + Duration::from_secs(1),
     );
-    tokio::pin!(waiter);
+    let mut waiter = Box::pin(waiter);
 
     control.send_event(CoreEvent::Timeline(TimelineEvent::SubmissionAccepted {
         request_id,
@@ -269,7 +271,7 @@ async fn submission_acceptance_and_rejection_require_exact_key_account_target() 
     }));
     assert!(matches!(
         waiter.await,
-        Ok(RequestOutcome::SubmissionAccepted { snapshot, .. }) if snapshot.generation == 2
+        Ok(RequestOutcome::SubmissionAccepted { generation, .. }) if generation == 2
     ));
 
     let (mut connection, control) = CoreConnection::new_for_testing(8);
@@ -330,7 +332,7 @@ async fn prepared_media_queue_requires_exact_request_transaction_key_and_returns
         0,
         tokio::time::Instant::now() + Duration::from_secs(1),
     );
-    tokio::pin!(waiter);
+    let mut waiter = Box::pin(waiter);
     let published = versioned(ready_state("@alice:example.invalid"), 4);
     control.send_snapshot(published.clone());
     control.send_event(CoreEvent::Timeline(TimelineEvent::MediaSendQueued {
@@ -349,9 +351,10 @@ async fn prepared_media_queue_requires_exact_request_transaction_key_and_returns
     }));
     assert!(matches!(
         waiter.await,
-        Ok(RequestOutcome::PreparedMediaQueued { key, snapshot, .. })
-            if key == expected_key && snapshot == published
+        Ok(RequestOutcome::PreparedMediaQueued { key, generation, .. })
+            if key == expected_key && generation == published.generation
     ));
+    assert_eq!(connection.versioned_snapshot(), published);
 }
 
 #[tokio::test]
@@ -380,7 +383,6 @@ async fn submission_acceptance_survives_already_settled_snapshot_coalescing() {
         1,
         tokio::time::Instant::now() + Duration::from_secs(1),
     );
-    tokio::pin!(waiter);
     control.send_event(CoreEvent::Timeline(TimelineEvent::SubmissionAccepted {
         request_id,
         key,
@@ -389,8 +391,9 @@ async fn submission_acceptance_survives_already_settled_snapshot_coalescing() {
     }));
     assert!(matches!(
         waiter.await,
-        Ok(RequestOutcome::SubmissionAccepted { snapshot, .. }) if snapshot == settled_snapshot
+        Ok(RequestOutcome::SubmissionAccepted { generation, .. }) if generation == settled_snapshot.generation
     ));
+    assert_eq!(connection.versioned_snapshot(), settled_snapshot);
 }
 
 #[tokio::test]

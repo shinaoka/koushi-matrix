@@ -35,7 +35,7 @@ async fn timeline_wait_wrappers_delegate_to_core_outcome_service() {
         generation: 2,
         state: accepted_state,
     });
-    let (revision, snapshot) = wait_for_composer_draft_acceptance(
+    let (revision, generation) = wait_for_composer_draft_acceptance(
         &mut connection,
         request_id,
         account_key.clone(),
@@ -46,7 +46,7 @@ async fn timeline_wait_wrappers_delegate_to_core_outcome_service() {
     .await
     .expect("composer wrapper");
     assert_eq!(revision, 3.into());
-    assert_eq!(snapshot.generation, 2);
+    assert_eq!(generation, 2);
 
     let (mut connection, control) = CoreConnection::new_for_testing(8);
     let request_id = connection.next_request_id();

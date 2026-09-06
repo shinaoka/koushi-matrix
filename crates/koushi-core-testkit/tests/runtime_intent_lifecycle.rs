@@ -262,6 +262,9 @@ async fn select_room_and_wait_returns_the_authoritative_published_snapshot() {
         .select_room_and_wait(target.to_owned(), Duration::from_secs(1))
         .await
         .expect("selection should settle on the published snapshot");
+    let generation = settled;
+    let settled = conn.versioned_snapshot();
+    assert_eq!(settled.generation, generation);
 
     assert_eq!(
         settled.state.navigation.active_room_id.as_deref(),
@@ -292,9 +295,38 @@ async fn select_room_and_wait_accepts_the_already_active_snapshot_without_new_ge
         .select_room_and_wait(room_id.to_owned(), Duration::from_secs(1))
         .await
         .expect("already active room should settle from authoritative state");
+    let generation = settled;
+    let settled = conn.versioned_snapshot();
+    assert_eq!(settled.generation, generation);
 
     assert_eq!(settled.state, ready);
     assert_eq!(settled.generation, before_generation);
+
+    // Preserve the existing initial-predicate precedence over an expired deadline.
+    // An asynchronous replacement must not turn this already settled read into a timeout.
+    use koushi_core::runtime::{OutcomeCorrelation, RequestOutcome, RequestOutcomeExpectation};
+    let request_id = conn.next_request_id();
+    let outcome = conn
+        .wait_for_request_outcome(
+            OutcomeCorrelation::Request(request_id),
+            RequestOutcomeExpectation::RoomSelected {
+                request_id,
+                room_id: room_id.to_owned(),
+                account_key: None,
+                allow_initial: true,
+            },
+            before_generation,
+            tokio::time::Instant::now() - Duration::from_secs(1),
+        )
+        .await
+        .expect("already satisfied initial predicate wins over expired deadline");
+    let RequestOutcome::RoomSelected { generation } = outcome else {
+        panic!("expected room selection outcome");
+    };
+    let snapshot = conn.versioned_snapshot();
+    assert_eq!(snapshot.state, ready);
+    assert_eq!(snapshot.generation, generation);
+    assert_eq!(generation, before_generation);
 }
 
 #[tokio::test]

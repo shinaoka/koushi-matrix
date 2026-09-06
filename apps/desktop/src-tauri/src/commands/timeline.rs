@@ -793,13 +793,7 @@ async fn wait_for_composer_draft_acceptance(
     target: koushi_state::ComposerTarget,
     expected_revision: koushi_state::ComposerDraftRevision,
     baseline_generation: u64,
-) -> Result<
-    (
-        koushi_state::ComposerDraftRevision,
-        koushi_protocol::state_update::VersionedAppStateSnapshot,
-    ),
-    String,
-> {
+) -> Result<(koushi_state::ComposerDraftRevision, u64), String> {
     match event_conn
         .wait_for_request_outcome(
             OutcomeCorrelation::Request(request_id),
@@ -816,8 +810,10 @@ async fn wait_for_composer_draft_acceptance(
         .map_err(|error| invoke_error_from_request_outcome("composer draft acceptance", error))?
     {
         RequestOutcome::ComposerAccepted {
-            revision, snapshot, ..
-        } => Ok((revision, snapshot)),
+            revision,
+            generation,
+            ..
+        } => Ok((revision, generation)),
         _ => Err("composer draft acceptance: invalid request outcome".to_owned()),
     }
 }
@@ -847,22 +843,26 @@ async fn wait_for_submission_settlement(
         )
         .await
         .map_err(submission_failure_from_outcome_error)?;
-    let (outcome, transaction_id, snapshot) = match outcome {
+    let (outcome, transaction_id, generation) = match outcome {
         RequestOutcome::SubmissionAccepted {
             transaction_id,
-            snapshot,
+            generation,
             ..
-        } => (SubmissionOutcome::Accepted, Some(transaction_id), snapshot),
-        RequestOutcome::SubmissionRejected { kind, snapshot, .. } => {
-            (SubmissionOutcome::Rejected { kind }, None, snapshot)
-        }
+        } => (
+            SubmissionOutcome::Accepted,
+            Some(transaction_id),
+            generation,
+        ),
+        RequestOutcome::SubmissionRejected {
+            kind, generation, ..
+        } => (SubmissionOutcome::Rejected { kind }, None, generation),
         _ => return Err(SubmissionFailure::SubmitFailed),
     };
     Ok(SubmissionResponse {
         outcome,
         submission_id,
         transaction_id,
-        settlement: command_settlement(snapshot),
+        settlement: command_settlement(generation),
     })
 }
 
@@ -1244,7 +1244,7 @@ pub async fn send_prepared_uploads(
     update_qa_window_title_from_state(&app, state.inner()).await;
     Ok(ComposerDraftAcceptanceResponse {
         accepted_revision: settled.accepted_revision,
-        settlement: command_settlement(settled.snapshot),
+        settlement: command_settlement(settled.generation),
     })
 }
 

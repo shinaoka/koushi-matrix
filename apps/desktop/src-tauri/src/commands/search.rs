@@ -111,8 +111,8 @@ pub(crate) async fn submit_search_production_path(
         .await
         .map_err(|error| invoke_error_from_request_outcome("search", error))?;
     match outcome {
-        RequestOutcome::Search { snapshot, .. } => Ok(
-            FrontendCommandSettlement::from_published_generation(snapshot.generation),
+        RequestOutcome::Search { generation, .. } => Ok(
+            FrontendCommandSettlement::from_published_generation(generation),
         ),
         _ => Err("search returned an invalid outcome".to_owned()),
     }
@@ -144,12 +144,12 @@ pub async fn close_search(
         )
         .await
         .map_err(|error| invoke_error_from_request_outcome("search close", error))?;
-    let RequestOutcome::Search { snapshot, .. } = outcome else {
+    let RequestOutcome::Search { generation, .. } = outcome else {
         return Err("search close returned an invalid outcome".to_owned());
     };
     update_qa_window_title_from_state(&app, state.inner()).await;
     Ok(FrontendCommandSettlement::from_published_generation(
-        snapshot.generation,
+        generation,
     ))
 }
 

@@ -193,7 +193,7 @@ async fn focused_context_close_wait_uses_core_outcome_guards() {
         state,
     });
 
-    let snapshot = wait_for_focused_context_closed(
+    let generation = wait_for_focused_context_closed(
         &mut connection,
         request_id,
         account_key,
@@ -203,5 +203,5 @@ async fn focused_context_close_wait_uses_core_outcome_guards() {
     )
     .await
     .expect("focused close should settle through Core");
-    assert_eq!(snapshot.generation, 1);
+    assert_eq!(generation, 1);
 }
