@@ -154,7 +154,9 @@ fn intent_outcome_token(outcome: &IntentOutcome) -> &'static str {
 /// A loop iteration that takes hundreds of ms (e.g. a full `self.state.clone()`
 /// of a 100+ room account) starves the
 /// command arm, which is why `select_room` can time out under large-account
-/// sync. Logs the arm, items handled, the state-clone cost, and total time.
+/// sync. Logs the arm, items handled, explicit pre-state clone time, and total
+/// time. Command turns do not clone state for measurement; their zero clone
+/// field does not exclude publication copies from the total duration.
 fn app_loop_trace(arm: &'static str, count: u32, clone_ms: u128, total: std::time::Duration) {
     let total_ms = total.as_millis();
     if total_ms < 100 {
@@ -1074,19 +1076,18 @@ impl AppActor {
                 command = self.command_rx.recv() => {
                     let Some(command) = command else { break };
                     let loop_started = std::time::Instant::now();
-                    let _clone_probe = self.state.clone();
-                    let clone_ms = loop_started.elapsed().as_millis();
                     let mut state_changed = match command_disposition(command) {
                         CommandDisposition::Handle(command) => self.handle_command(command).await,
                         CommandDisposition::Shutdown => break,
                     };
                     let mut handled = 1u32;
                     let mut shutdown = false;
-                    // Coalesce: drain whatever is already queued before
-                    // emitting a single StateDelta for the batch. Shutdown is
+                    // Coalesce at most 32 commands before returning to event
+                    // selection. Check the cap before dequeuing. Shutdown is
                     // an ordered barrier: publish preceding changes, then stop
                     // without handling duplicate or later commands.
-                    while let Ok(next) = self.command_rx.try_recv() {
+                    while handled < 32 {
+                        let Ok(next) = self.command_rx.try_recv() else { break };
                         match command_disposition(next) {
                             CommandDisposition::Handle(next) => {
                                 state_changed |= self.handle_command(next).await;
@@ -1106,7 +1107,7 @@ impl AppActor {
                         self.publish_state_change(&published_state);
                     }
                     self.settle_command_admissions();
-                    app_loop_trace("command", handled, clone_ms, loop_started.elapsed());
+                    app_loop_trace("command", handled, 0, loop_started.elapsed());
                     if shutdown {
                         break;
                     }

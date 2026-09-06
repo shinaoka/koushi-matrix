@@ -2234,6 +2234,90 @@ async fn first_shutdown_publishes_preceding_state_and_ignores_duplicate_and_late
 }
 
 #[tokio::test]
+async fn command_turn_publishes_before_dequeuing_command_33() {
+    let data_dir = tempfile::tempdir().expect("runtime data dir");
+    let runtime = CoreRuntime::start_with_data_dir(data_dir.path().to_owned());
+    let mut connection = runtime.attach();
+
+    // No await until all envelopes are queued on this current-thread runtime.
+    for index in 0..33 {
+        let patch = if index < 32 {
+            SettingsPatch {
+                thread_list_order: Some(koushi_state::ThreadListOrder::RootChronology),
+                ..SettingsPatch::default()
+            }
+        } else {
+            SettingsPatch {
+                room_list_sort: Some(koushi_state::RoomListSort::RecentFirst),
+                ..SettingsPatch::default()
+            }
+        };
+        runtime
+            .command_tx
+            .try_send(CoreCommandEnvelope::Public {
+                command: CoreCommand::App(AppCommand::UpdateSettings {
+                    request_id: connection.next_request_id(),
+                    patch,
+                }),
+                composer_permit: None,
+                admission: None,
+            })
+            .expect("queued settings command");
+    }
+    runtime
+        .command_tx
+        .try_send(CoreCommandEnvelope::Public {
+            command: CoreCommand::App(AppCommand::Shutdown {
+                request_id: connection.next_request_id(),
+            }),
+            composer_permit: None,
+            admission: None,
+        })
+        .expect("queued shutdown barrier");
+
+    for expected_sort in [
+        koushi_state::RoomListSort::Activity,
+        koushi_state::RoomListSort::RecentFirst,
+    ] {
+        let settings = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let CoreEvent::StateDelta(delta) = connection
+                    .recv_event()
+                    .await
+                    .expect("settings event before shutdown")
+                    && let Some(settings) = delta.changed.settings
+                {
+                    break settings;
+                }
+            }
+        })
+        .await
+        .expect("bounded settings publication");
+        assert_eq!(
+            settings.values.thread_list_order,
+            koushi_state::ThreadListOrder::RootChronology
+        );
+        assert_eq!(
+            settings.values.room_list_sort, expected_sort,
+            "the first turn must publish before command 33 changes room order"
+        );
+    }
+    wait_for_app_actor_shutdown(&runtime).await;
+    {
+        let snapshot = runtime.snapshot_rx.borrow();
+        assert_eq!(
+            snapshot.state.settings.values.thread_list_order,
+            koushi_state::ThreadListOrder::RootChronology
+        );
+        assert_eq!(
+            snapshot.state.settings.values.room_list_sort,
+            koushi_state::RoomListSort::RecentFirst
+        );
+    }
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 async fn explicit_shutdown_is_a_barrier_before_same_data_dir_reopen() {
     let data_dir = tempfile::tempdir().expect("runtime data dir");
     let runtime = CoreRuntime::start_with_data_dir(data_dir.path().to_owned());

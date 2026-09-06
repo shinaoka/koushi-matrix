@@ -10,6 +10,9 @@ code and the canon win; fix whichever document is wrong.
 
 ## Runtime and roadmap
 
+- Bounded AppActor command turns (#840):
+  [2026-09-06-issue840-command-turns.md](../superpowers/plans/2026-09-06-issue840-command-turns.md)
+
 - Headless core runtime:
   [2026-06-12-headless-core-runtime-implementation.md](../superpowers/plans/2026-06-12-headless-core-runtime-implementation.md)
 - Phase 10+ product surface and release roadmap:

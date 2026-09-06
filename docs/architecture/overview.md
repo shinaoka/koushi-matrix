@@ -970,7 +970,11 @@ relay that model, not fight it.
     discrete events use bounded channels with a defined recovery path (drop +
     full versioned snapshot and timeline replay). A slow, missing, stale, or
     unmounted UI must not stall Core product progress or grow memory without
-    bound.
+    bound. A command batch handles at most 32 commands before returning to the
+    actor's event selection. The limit is checked before dequeuing the next
+    envelope; FIFO order, intermediate intent commit points and ordered shutdown
+    barriers remain intact. This is a command-count bound, not a handler-latency
+    guarantee.
 12. **SDK handles are dropped inside a Tokio runtime context.** Store-backed
     SDK clients panic (`deadpool-runtime`) when dropped outside one. Shutdown
     paths and QA binaries must respect this.
