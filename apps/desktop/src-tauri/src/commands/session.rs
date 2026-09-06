@@ -80,7 +80,7 @@ pub async fn discover_login_methods(
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
     let mut wait_conn = state.inner().runtime.attach();
-    let baseline_generation = wait_conn.versioned_snapshot().generation;
+    let baseline_generation = wait_conn.state_generation();
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(
         state.inner(),
@@ -112,7 +112,7 @@ pub async fn start_oidc_login(
     state: State<'_, CoreRuntimeState>,
 ) -> Result<OidcBrowserLaunchResponse, String> {
     let mut wait_conn = state.inner().runtime.attach();
-    let baseline_generation = wait_conn.versioned_snapshot().generation;
+    let baseline_generation = wait_conn.state_generation();
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(
         state.inner(),
@@ -186,7 +186,7 @@ pub async fn complete_oidc_login(
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
     let mut wait_conn = state.inner().runtime.attach();
-    let baseline_generation = wait_conn.versioned_snapshot().generation;
+    let baseline_generation = wait_conn.state_generation();
     let account_key = account_key_from_app_state(&wait_conn.snapshot());
     let account_key = (!account_key.0.is_empty()).then_some(account_key);
     let request_id = next_request_id(state.inner()).await;
@@ -259,7 +259,7 @@ pub async fn list_saved_sessions(
     }
 
     let mut wait_conn = state.inner().runtime.attach();
-    let baseline_generation = wait_conn.versioned_snapshot().generation;
+    let baseline_generation = wait_conn.state_generation();
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(
         state.inner(),
@@ -290,7 +290,7 @@ pub async fn switch_account(
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendCommandSettlement, String> {
     let mut wait_conn = state.inner().runtime.attach();
-    let baseline_generation = wait_conn.versioned_snapshot().generation;
+    let baseline_generation = wait_conn.state_generation();
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(
         state.inner(),
@@ -452,7 +452,7 @@ pub(super) async fn submit_soft_logout_reauth_request(
     password: AuthSecret,
 ) -> Result<koushi_protocol::state_update::VersionedAppStateSnapshot, String> {
     let mut wait_conn = state.runtime.attach();
-    let baseline_generation = wait_conn.versioned_snapshot().generation;
+    let baseline_generation = wait_conn.state_generation();
     let account_key = account_key_from_app_state(&wait_conn.snapshot());
     let request_id = next_request_id(state).await;
     submit_core_command(
@@ -492,7 +492,7 @@ async fn submit_login_and_wait_for_authenticated(
     // login command is submitted and the correlated LoggedIn event cannot be
     // missed by this product path.
     let mut wait_conn = state.runtime.attach();
-    let baseline_generation = wait_conn.versioned_snapshot().generation;
+    let baseline_generation = wait_conn.state_generation();
     let account_key = account_key_from_app_state(&wait_conn.snapshot());
     let account_key = (!account_key.0.is_empty()).then_some(account_key);
     let login_request_id = next_request_id(state).await;

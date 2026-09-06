@@ -41,7 +41,7 @@ async fn command_admission_is_not_settled_at_queue_acceptance() {
 async fn command_admission_settles_after_state_publication() {
     let room_id = "!admission-room:example.invalid";
     let (_runtime, connection, _, _data_dir, _credential_dir) = ready_room_conn(room_id).await;
-    let before = connection.versioned_snapshot().generation;
+    let before = connection.state_generation();
 
     let admission = connection
         .command_with_admission(set_reply_target(
@@ -55,6 +55,7 @@ async fn command_admission_settles_after_state_publication() {
 
     assert!(admission.admitted_generation > before);
     assert_eq!(admission.admitted_generation, published.generation);
+    assert_eq!(connection.state_generation(), published.generation);
     assert!(matches!(
         published.state.timeline.composer.mode,
         ComposerMode::Reply { .. }
@@ -98,7 +99,7 @@ async fn no_delta_routing_returns_the_current_published_generation() {
         .command_with_admission(set_reply_target(&connection, room_id, event_id))
         .await
         .expect("first command admission");
-    let before = connection.versioned_snapshot().generation;
+    let before = connection.state_generation();
 
     let admission = connection
         .command_with_admission(set_reply_target(&connection, room_id, event_id))
@@ -106,7 +107,7 @@ async fn no_delta_routing_returns_the_current_published_generation() {
         .expect("idempotent command admission");
 
     assert_eq!(admission.admitted_generation, before);
-    assert_eq!(connection.versioned_snapshot().generation, before);
+    assert_eq!(connection.state_generation(), before);
 }
 
 #[tokio::test]
@@ -144,10 +145,7 @@ async fn composer_lease_command_admission_settles_after_publication() {
         .await
         .expect("composer command admission");
 
-    assert_eq!(
-        admission.admitted_generation,
-        connection.versioned_snapshot().generation
-    );
+    assert_eq!(admission.admitted_generation, connection.state_generation());
 }
 
 #[tokio::test]

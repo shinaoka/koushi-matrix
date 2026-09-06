@@ -10,6 +10,9 @@ code and the canon win; fix whichever document is wrong.
 
 ## Runtime and roadmap
 
+- Scalar state-generation reads (#840):
+  [2026-09-06-issue840-scalar-generations.md](../superpowers/plans/2026-09-06-issue840-scalar-generations.md)
+
 - Profile display-label mutation identities (#840):
   [2026-09-06-issue840-profile-change-identities.md](../superpowers/plans/2026-09-06-issue840-profile-change-identities.md)
 

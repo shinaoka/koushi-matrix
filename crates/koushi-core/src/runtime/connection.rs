@@ -826,6 +826,17 @@ impl CoreConnection {
         self.snapshot_rx.borrow().state.clone()
     }
 
+    /// Current published state generation, without cloning account state.
+    ///
+    /// ```
+    /// # fn observe(connection: &koushi_core::CoreConnection) {
+    /// let generation: u64 = connection.state_generation();
+    /// # }
+    /// ```
+    pub fn state_generation(&self) -> u64 {
+        self.snapshot_rx.borrow().generation
+    }
+
     /// Latest state snapshot with the generation used by `StateDelta`.
     pub fn versioned_snapshot(&self) -> VersionedAppStateSnapshot {
         self.snapshot_rx.borrow().clone()
@@ -945,7 +956,7 @@ impl CoreConnection {
         timeout: Duration,
     ) -> Result<VersionedAppStateSnapshot, SelectRoomError> {
         let deadline = tokio::time::Instant::now() + timeout;
-        let baseline_generation = self.versioned_snapshot().generation;
+        let baseline_generation = self.state_generation();
         let request_id = self.next_request_id();
         tokio::time::timeout_at(
             deadline,
