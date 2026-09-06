@@ -531,7 +531,7 @@ impl MediaStagingService {
         let caption = caption
             .and_then(|document| (!document.plain_body().trim().is_empty()).then_some(document));
         let request_id = connection.next_request_id();
-        let baseline = connection.versioned_snapshot().generation;
+        let baseline = connection.state_generation();
         connection
             .command(CoreCommand::App(AppCommand::UpdateStagedUploadCaption {
                 request_id,
@@ -571,7 +571,7 @@ impl MediaStagingService {
         }
         let expected_ids = active_ids(&snapshot, &target)?;
         let request_id = connection.next_request_id();
-        let baseline = connection.versioned_snapshot().generation;
+        let baseline = connection.state_generation();
         connection
             .command(CoreCommand::App(
                 AppCommand::UpdateStagedUploadCompression {
@@ -611,7 +611,7 @@ impl MediaStagingService {
             return Ok(connection.versioned_snapshot());
         }
         let request_id = connection.next_request_id();
-        let baseline = connection.versioned_snapshot().generation;
+        let baseline = connection.state_generation();
         connection
             .command(CoreCommand::App(AppCommand::ClearUploadStaging {
                 request_id,
@@ -744,7 +744,7 @@ impl MediaStagingService {
             } else {
                 UploadMediaKind::File
             };
-            let baseline = connection.versioned_snapshot().generation;
+            let baseline = connection.state_generation();
             connection
                 .command(CoreCommand::Timeline(TimelineCommand::UploadAndSendMedia {
                     request_id,
@@ -813,7 +813,7 @@ impl MediaStagingService {
             return Err(PreparedUploadSendError::DraftRevision);
         }
         let request_id = connection.next_request_id();
-        let baseline = connection.versioned_snapshot().generation;
+        let baseline = connection.state_generation();
         connection
             .command_with_composer_lease(
                 generation,
@@ -893,7 +893,7 @@ impl MediaStagingService {
         allow_initial: bool,
     ) -> Result<koushi_protocol::state_update::VersionedAppStateSnapshot, MediaStagingError> {
         let request_id = connection.next_request_id();
-        let baseline = connection.versioned_snapshot().generation;
+        let baseline = connection.state_generation();
         connection
             .command(CoreCommand::App(AppCommand::SetUploadStaging {
                 request_id,
@@ -924,7 +924,7 @@ impl MediaStagingService {
     ) -> Result<koushi_protocol::state_update::VersionedAppStateSnapshot, MediaStagingError> {
         let expected_ids = active_ids(&connection.snapshot(), &target)?;
         let request_id = connection.next_request_id();
-        let baseline = connection.versioned_snapshot().generation;
+        let baseline = connection.state_generation();
         connection
             .command(CoreCommand::App(AppCommand::SelectStagedUploadOutput {
                 request_id,

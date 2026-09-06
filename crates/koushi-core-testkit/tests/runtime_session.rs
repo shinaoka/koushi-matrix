@@ -516,7 +516,7 @@ async fn authoritative_trust_loss_publishes_one_atomic_reset_delta_after_setup_q
     })
     .await;
     assert!(matches!(setup_state.session, SessionState::Ready(_)));
-    let setup_generation = connection.versioned_snapshot().generation;
+    let setup_generation = connection.state_generation();
 
     runtime
         .inject_actions(vec![AppAction::AuthoritativeDeviceTrustChanged {

@@ -256,7 +256,7 @@ async fn select_room_and_wait_returns_the_authoritative_published_snapshot() {
         .into_iter()
         .find(|room_id| Some(*room_id) != ready.navigation.active_room_id.as_deref())
         .expect("a non-active room should exist");
-    let before_generation = conn.versioned_snapshot().generation;
+    let before_generation = conn.state_generation();
 
     let settled = conn
         .select_room_and_wait(target.to_owned(), Duration::from_secs(1))
@@ -286,7 +286,7 @@ async fn select_room_and_wait_accepts_the_already_active_snapshot_without_new_ge
             && state.navigation.active_room_id.as_deref() == Some(room_id)
     })
     .await;
-    let before_generation = conn.versioned_snapshot().generation;
+    let before_generation = conn.state_generation();
 
     let settled = conn
         .select_room_and_wait(room_id.to_owned(), Duration::from_secs(1))

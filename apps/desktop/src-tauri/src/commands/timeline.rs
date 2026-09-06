@@ -1028,7 +1028,7 @@ pub async fn send_text(
         &target,
     )
     .map_err(|_| SubmissionFailure::SubmitFailed)?;
-    let baseline_generation = event_conn.versioned_snapshot().generation;
+    let baseline_generation = event_conn.state_generation();
     let request_id = event_conn.next_request_id();
     let account_key = account_key_from_app_state(&event_conn.snapshot());
     let submission_id = SubmissionId::new(submission_id);
@@ -1084,7 +1084,7 @@ pub async fn schedule_send(
     let expected_revision =
         next_composer_draft_acceptance_revision(&event_conn.snapshot(), &target, draft_revision)?;
     let account_key = account_key_from_app_state(&event_conn.snapshot());
-    let baseline_generation = event_conn.versioned_snapshot().generation;
+    let baseline_generation = event_conn.state_generation();
     let _terminal_permit = acquire_terminal_composer_permit(
         &event_conn,
         generation,
@@ -1875,7 +1875,7 @@ pub async fn send_reply(
         &target,
     )
     .map_err(|_| SubmissionFailure::SubmitFailed)?;
-    let baseline_generation = event_conn.versioned_snapshot().generation;
+    let baseline_generation = event_conn.state_generation();
     let request_id = event_conn.next_request_id();
     let account_key = account_key_from_app_state(&event_conn.snapshot());
     let submission_id = SubmissionId::new(submission_id);
@@ -1948,7 +1948,7 @@ pub async fn send_thread_reply(
         &target,
     )
     .map_err(|_| SubmissionFailure::SubmitFailed)?;
-    let baseline_generation = event_conn.versioned_snapshot().generation;
+    let baseline_generation = event_conn.state_generation();
     let request_id = event_conn.next_request_id();
     let account_key = account_key_from_app_state(&event_conn.snapshot());
     let submission_id = SubmissionId::new(submission_id);
