@@ -10,6 +10,9 @@ code and the canon win; fix whichever document is wrong.
 
 ## Runtime and roadmap
 
+- Shared SDK receipt snapshots (#839/#840):
+  [2026-09-06-issue839-sdk-receipt-sharing.md](../superpowers/plans/2026-09-06-issue839-sdk-receipt-sharing.md)
+
 - Scalar state-generation reads (#840):
   [2026-09-06-issue840-scalar-generations.md](../superpowers/plans/2026-09-06-issue840-scalar-generations.md)
 
