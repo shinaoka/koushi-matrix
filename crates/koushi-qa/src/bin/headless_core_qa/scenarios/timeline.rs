@@ -56,6 +56,7 @@ use super::{
     UNIX_EPOCH, UploadMediaKind, UploadMediaRequest, UploadMediaThumbnail,
     build_formatted_message_draft, reduce, resolve_composer_key_action,
 };
+use koushi_protocol::TimelineGeneration;
 
 pub(super) async fn run_timeline_stress_stage(
     config: &QaConfig,
@@ -2428,7 +2429,7 @@ pub(super) async fn run_timeline_reconnect_scenario_impl(config: &QaConfig) -> R
             seed_body.to_owned(),
         )?;
     }
-    let reopened_before_later = None;
+
     if let Some(baseline) = room_absent_checkpoint_baseline {
         let initial_live_tail_snapshot_baseline = initial_live_tail_snapshot_baseline
             .expect("persisted-gap live-tail snapshot baseline must be armed before refresh");
@@ -2687,17 +2688,12 @@ pub(super) async fn run_timeline_reconnect_scenario_impl(config: &QaConfig) -> R
         .await?;
         return Ok(());
     }
-    let reopened_items = match reopened_before_later {
-        Some(items) => items,
-        None => {
-            subscribe_timeline_for_qa(
-                &mut conn_a,
-                &key_a,
-                "timeline_reconnect reopen unsubscribed A room",
-            )
-            .await?
-        }
-    };
+    let reopened_items = subscribe_reconnect_timeline_for_qa(
+        &mut conn_a,
+        &key_a,
+        "timeline_reconnect reopen unsubscribed A room",
+    )
+    .await?;
     wait_for_reconnect_projection(
         &mut conn_a,
         &key_a,
@@ -4699,44 +4695,240 @@ impl ReconnectProjection {
     }
 }
 
-fn observe_reconnect_pagination_state(
-    request_id: Option<RequestId>,
-    expected_request_id: RequestId,
-    state: &PaginationState,
-    saw_paginating: &mut bool,
-    terminal: &mut bool,
-    label: &str,
-) -> Result<(), String> {
-    if request_id != Some(expected_request_id) {
-        return Ok(());
-    }
-    match state {
-        PaginationState::Paginating => *saw_paginating = true,
-        PaginationState::Idle | PaginationState::EndReached => {
-            if !*saw_paginating {
-                return Err(format!(
-                    "{label}: pagination terminal arrived before Paginating"
-                ));
-            }
-            *terminal = true;
-        }
-        PaginationState::Failed { .. } => {
-            return Err(format!("{label}: pagination failed"));
-        }
-    }
-    Ok(())
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReconnectPaginationStep {
+    Wait,
+    Retry,
+    Terminal,
 }
 
-async fn wait_for_reconnect_projection(
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReconnectPaginationPhase {
+    AwaitingAcceptance,
+    Paginating,
+    AwaitingGapRelease,
+    Terminal,
+}
+
+struct ReconnectPaginationWaiter {
+    request_id: RequestId,
+    phase: ReconnectPaginationPhase,
+    saw_paginating: bool,
+    actor_generation: u64,
+    projection_generation: TimelineGeneration,
+    repair_generation: Option<u64>,
+}
+
+impl ReconnectPaginationWaiter {
+    fn with_initial_projection(
+        request_id: RequestId,
+        actor_generation: u64,
+        projection_generation: TimelineGeneration,
+    ) -> Self {
+        Self {
+            request_id,
+            phase: ReconnectPaginationPhase::AwaitingAcceptance,
+            saw_paginating: false,
+            actor_generation,
+            projection_generation,
+            repair_generation: None,
+        }
+    }
+
+    fn start_request(&mut self, request_id: RequestId) {
+        self.request_id = request_id;
+        self.phase = ReconnectPaginationPhase::AwaitingAcceptance;
+        self.saw_paginating = false;
+        self.repair_generation = None;
+    }
+
+    fn observe(
+        &mut self,
+        key: &TimelineKey,
+        event: &CoreEvent,
+        label: &str,
+    ) -> Result<ReconnectPaginationStep, String> {
+        match event {
+            CoreEvent::OperationFailed { request_id, .. } if *request_id == self.request_id => {
+                Err(format!("{label}: pagination operation failed"))
+            }
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: event_key,
+                actor_generation,
+                generation,
+                ..
+            }) if event_key == key => {
+                self.observe_actor_generation(*actor_generation, label)?;
+                if *generation < self.projection_generation {
+                    return Err(format!("{label}: stale initial projection"));
+                }
+                self.projection_generation = *generation;
+                Ok(ReconnectPaginationStep::Wait)
+            }
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: event_key,
+                generation,
+                diffs,
+                ..
+            }) if event_key == key => {
+                if *generation != self.projection_generation {
+                    return Err(format!("{label}: diff projection generation mismatch"));
+                }
+                if self.phase == ReconnectPaginationPhase::AwaitingAcceptance
+                    && diffs.iter().any(|diff| {
+                        matches!(
+                            diff,
+                            TimelineDiff::PushFront { .. }
+                                | TimelineDiff::Insert { index: 0, .. }
+                                | TimelineDiff::Reset { .. }
+                        )
+                    })
+                {
+                    // The canonical acceptance proof also includes a front
+                    // insertion or Reset, without requiring a Paginating event.
+                    self.phase = ReconnectPaginationPhase::Paginating;
+                }
+                Ok(ReconnectPaginationStep::Wait)
+            }
+            CoreEvent::Timeline(TimelineEvent::GapPositionsUpdated {
+                key: event_key,
+                actor_generation,
+                generation,
+                ..
+            }) if event_key == key => {
+                self.observe_actor_generation(*actor_generation, label)?;
+                self.repair_generation = Some(
+                    self.repair_generation
+                        .map_or(*generation, |current| current.max(*generation)),
+                );
+                Ok(ReconnectPaginationStep::Wait)
+            }
+            CoreEvent::Timeline(TimelineEvent::GapRepairReleased {
+                key: event_key,
+                actor_generation,
+                generation,
+            }) if event_key == key
+                && self.phase == ReconnectPaginationPhase::AwaitingGapRelease =>
+            {
+                self.observe_actor_generation(*actor_generation, label)?;
+                if self
+                    .repair_generation
+                    .is_some_and(|current| *generation < current)
+                {
+                    return Ok(ReconnectPaginationStep::Wait);
+                }
+                self.phase = ReconnectPaginationPhase::AwaitingAcceptance;
+                self.repair_generation = None;
+                Ok(ReconnectPaginationStep::Retry)
+            }
+            CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+                request_id: Some(request_id),
+                key: event_key,
+                direction: PaginationDirection::Backward,
+                state,
+                ..
+            }) if event_key == key && *request_id == self.request_id => match state {
+                _ if self.phase == ReconnectPaginationPhase::Terminal => {
+                    Ok(ReconnectPaginationStep::Wait)
+                }
+                PaginationState::Failed { .. } => Err(format!("{label}: pagination failed")),
+                PaginationState::Paginating
+                    if self.phase == ReconnectPaginationPhase::AwaitingAcceptance =>
+                {
+                    self.phase = ReconnectPaginationPhase::Paginating;
+                    self.saw_paginating = true;
+                    Ok(ReconnectPaginationStep::Wait)
+                }
+                PaginationState::Idle if self.phase == ReconnectPaginationPhase::Paginating => {
+                    self.phase = ReconnectPaginationPhase::Terminal;
+                    Ok(ReconnectPaginationStep::Terminal)
+                }
+                PaginationState::Idle
+                    if self.phase == ReconnectPaginationPhase::AwaitingAcceptance =>
+                {
+                    // Gap repair owns the scheduler. The terminal is not acceptance
+                    // evidence; wait for its explicit release before retrying.
+                    self.phase = ReconnectPaginationPhase::AwaitingGapRelease;
+                    Ok(ReconnectPaginationStep::Wait)
+                }
+                PaginationState::EndReached => {
+                    if self.phase != ReconnectPaginationPhase::Paginating {
+                        return Err(format!(
+                            "{label}: pagination terminal arrived before Paginating"
+                        ));
+                    }
+                    self.phase = ReconnectPaginationPhase::Terminal;
+                    Ok(ReconnectPaginationStep::Terminal)
+                }
+                _ => Ok(ReconnectPaginationStep::Wait),
+            },
+            _ => Ok(ReconnectPaginationStep::Wait),
+        }
+    }
+
+    fn saw_paginating(&self) -> bool {
+        self.saw_paginating
+    }
+
+    fn observe_actor_generation(&self, actor_generation: u64, label: &str) -> Result<(), String> {
+        if self.actor_generation != actor_generation {
+            return Err(format!("{label}: actor generation replaced"));
+        }
+        Ok(())
+    }
+}
+
+async fn subscribe_reconnect_timeline_for_qa(
     conn: &mut CoreConnection,
     key: &TimelineKey,
-    initial_items: &[TimelineItem],
-    expected_bodies: &[String],
     label: &str,
-) -> Result<(), String> {
-    let mut projection = ReconnectProjection::from_initial(initial_items, expected_bodies, label)?;
+) -> Result<(Vec<TimelineItem>, u64, TimelineGeneration), String> {
+    let request_id = conn.next_request_id();
+    let deadline = tokio::time::Instant::now() + TIMELINE_INITIAL_EVENT_TIMEOUT;
+    tokio::time::timeout_at(
+        deadline,
+        conn.command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+            request_id,
+            key: key.clone(),
+            initial_backfill: koushi_protocol::command::InitialBackfillPolicy::Disabled,
+        })),
+    )
+    .await
+    .map_err(|_| format!("{label}: timeline subscribe submit timed out"))?
+    .map_err(|_| format!("{label}: submit timeline subscribe failed"))?;
+    loop {
+        let event = tokio::time::timeout_at(deadline, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for initial projection"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+        match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                cause_request_id: Some(cause_request_id),
+                key: event_key,
+                actor_generation,
+                generation,
+                items,
+                ..
+            }) if event_key == *key && cause_request_id == request_id => {
+                return Ok((items, actor_generation, generation));
+            }
+            CoreEvent::OperationFailed {
+                request_id: event_request_id,
+                ..
+            } if event_request_id == request_id => {
+                return Err(format!("{label}: timeline subscribe failed"));
+            }
+            _ => {}
+        }
+    }
+}
 
-    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+async fn submit_reconnect_page(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    deadline: tokio::time::Instant,
+    label: &str,
+) -> Result<RequestId, String> {
     let request_id = conn.next_request_id();
     tokio::time::timeout_at(
         deadline,
@@ -4750,8 +4942,22 @@ async fn wait_for_reconnect_projection(
     .await
     .map_err(|_| format!("{label}: pagination submit timed out"))?
     .map_err(|_| format!("{label}: pagination submit failed"))?;
+    Ok(request_id)
+}
 
-    let mut saw_paginating = false;
+async fn wait_for_reconnect_projection(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    initial: &(Vec<TimelineItem>, u64, TimelineGeneration),
+    expected_bodies: &[String],
+    label: &str,
+) -> Result<(), String> {
+    let mut projection = ReconnectProjection::from_initial(&initial.0, expected_bodies, label)?;
+
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    let request_id = submit_reconnect_page(conn, key, deadline, label).await?;
+    let mut waiter =
+        ReconnectPaginationWaiter::with_initial_projection(request_id, initial.1, initial.2);
     let mut terminal = false;
     loop {
         if terminal && projection.is_complete() {
@@ -4759,40 +4965,30 @@ async fn wait_for_reconnect_projection(
         }
         let event = tokio::time::timeout_at(deadline, conn.recv_event())
             .await
-            .map_err(|_| projection.timeout_error(label, saw_paginating, terminal))?
+            .map_err(|_| projection.timeout_error(label, waiter.saw_paginating(), terminal))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+        let step = waiter.observe(key, &event, label)?;
         match event {
             CoreEvent::Timeline(TimelineEvent::InitialItems {
-                key: ref event_key,
+                key: event_key,
                 items,
                 ..
-            }) if event_key == key => projection.replace(items, label)?,
+            }) if event_key == *key => projection.replace(items, label)?,
             CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
-                key: ref event_key,
+                key: event_key,
                 diffs,
                 ..
-            }) if event_key == key => projection.apply_batch(&diffs, label)?,
-            CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
-                request_id: event_request_id,
-                key: ref event_key,
-                direction: PaginationDirection::Backward,
-                state,
-                ..
-            }) if event_key == key => observe_reconnect_pagination_state(
-                event_request_id,
-                request_id,
-                &state,
-                &mut saw_paginating,
-                &mut terminal,
-                label,
-            )?,
-            CoreEvent::OperationFailed {
-                request_id: event_request_id,
-                ..
-            } if event_request_id == request_id => {
-                return Err(format!("{label}: pagination operation failed"));
-            }
+            }) if event_key == *key => projection.apply_batch(&diffs, label)?,
             _ => {}
+        }
+        match step {
+            ReconnectPaginationStep::Wait => {}
+            ReconnectPaginationStep::Terminal => terminal = true,
+            ReconnectPaginationStep::Retry => {
+                let request_id = submit_reconnect_page(conn, key, deadline, label).await?;
+                waiter.start_request(request_id);
+                terminal = false;
+            }
         }
     }
 }

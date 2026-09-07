@@ -1,24 +1,159 @@
 use super::{
-    QaVisibleGapCapture, ReconnectProjection, RoomThreadSummaryObserver,
-    assert_room_timeline_projects_root_activity_and_summary, assert_thread_reply_relation,
-    observe_reconnect_pagination_state, select_visible_gap_for_qa,
+    QaVisibleGapCapture, ReconnectPaginationStep, ReconnectPaginationWaiter, ReconnectProjection,
+    RoomThreadSummaryObserver, assert_room_timeline_projects_root_activity_and_summary,
+    assert_thread_reply_relation, select_visible_gap_for_qa,
     thread_initial_items_need_paginate_backfill, thread_reply_should_repaginate_on_idle,
     timeline_item_has_thread_summary_reply, timeline_item_has_visible_payload,
 };
 use crate::contracts::{
-    reconnect_test_bodies, reconnect_test_items, reconnect_test_request, synthetic_timeline_item,
+    ScriptedQaEventSource, reconnect_test_bodies, reconnect_test_items, reconnect_test_request,
+    synthetic_timeline_item,
 };
 use crate::diagnostics::QaCannedMessagesPage;
-use crate::event_wait::{find_timeline_item_with_body, projection_timeline_item};
+use crate::event_wait::{QaEventSource, find_timeline_item_with_body, projection_timeline_item};
 use crate::registry::{
     QaScenario, QaStage, TIMELINE_RECONNECT_EXPECTED_BODY_COUNT, final_tokens_for_scenario,
     stages_for_scenario,
 };
 use crate::{
-    PaginationState, TimelineDiff, TimelineGapId, TimelineGapPosition, TimelineItemId,
-    TimelineMessageActions,
+    AccountKey, CoreEvent, PaginationDirection, PaginationState, TimelineDiff, TimelineGapId,
+    TimelineGapPosition, TimelineItemId, TimelineKey, TimelineMessageActions,
 };
-use koushi_protocol::event::ThreadSummaryDto;
+use koushi_protocol::TimelineGeneration;
+use koushi_protocol::event::{ThreadSummaryDto, TimelineEvent};
+
+fn key() -> TimelineKey {
+    TimelineKey::room(
+        AccountKey("fixture:example.invalid".into()),
+        "!room:example.invalid",
+    )
+}
+
+fn pagination_state(
+    request_id: Option<koushi_protocol::ids::RequestId>,
+    state: PaginationState,
+) -> CoreEvent {
+    CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+        request_id,
+        key: key(),
+        direction: PaginationDirection::Backward,
+        state,
+        prepend_expected: None,
+    })
+}
+
+fn reconnect_waiter(request_id: koushi_protocol::ids::RequestId) -> ReconnectPaginationWaiter {
+    ReconnectPaginationWaiter::with_initial_projection(request_id, 7, TimelineGeneration(10))
+}
+
+fn reconnect_initial_event(
+    actor_generation: u64,
+    generation: u64,
+    items: Vec<crate::TimelineItem>,
+) -> CoreEvent {
+    let request_id = reconnect_test_request(generation);
+    CoreEvent::Timeline(TimelineEvent::InitialItems {
+        request_id: Some(request_id),
+        cause_request_id: Some(request_id),
+        key: key(),
+        actor_generation,
+        generation: TimelineGeneration(generation),
+        items,
+    })
+}
+
+#[test]
+fn reconnect_rejects_stale_projection_and_actor_before_applying_items() {
+    let mut waiter = reconnect_waiter(reconnect_test_request(1));
+    assert!(
+        waiter
+            .observe(&key(), &reconnect_initial_event(6, 10, vec![]), "test")
+            .is_err()
+    );
+    assert!(
+        waiter
+            .observe(&key(), &reconnect_initial_event(7, 9, vec![]), "test")
+            .is_err()
+    );
+    let stale_diff = CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+        key: key(),
+        generation: TimelineGeneration(9),
+        batch_id: koushi_protocol::TimelineBatchId(1),
+        diffs: vec![TimelineDiff::Clear],
+    });
+    assert!(waiter.observe(&key(), &stale_diff, "test").is_err());
+}
+
+#[test]
+fn reconnect_ignores_old_requests_and_pre_terminal_release() {
+    let request = reconnect_test_request(1);
+    let mut waiter = reconnect_waiter(request);
+    let release = CoreEvent::Timeline(TimelineEvent::GapRepairReleased {
+        key: key(),
+        actor_generation: 7,
+        generation: 4,
+    });
+    assert_eq!(
+        waiter.observe(&key(), &release, "test").unwrap(),
+        ReconnectPaginationStep::Wait
+    );
+    assert_eq!(
+        waiter
+            .observe(
+                &key(),
+                &pagination_state(Some(reconnect_test_request(2)), PaginationState::Paginating),
+                "test"
+            )
+            .unwrap(),
+        ReconnectPaginationStep::Wait
+    );
+    assert!(!waiter.saw_paginating());
+    waiter
+        .observe(
+            &key(),
+            &pagination_state(Some(request), PaginationState::Idle),
+            "test",
+        )
+        .unwrap();
+    assert_eq!(
+        waiter.observe(&key(), &release, "test").unwrap(),
+        ReconnectPaginationStep::Retry
+    );
+    assert_eq!(
+        waiter.observe(&key(), &release, "test").unwrap(),
+        ReconnectPaginationStep::Wait
+    );
+    let failed = CoreEvent::OperationFailed {
+        request_id: request,
+        failure: koushi_protocol::CoreFailure::SessionRequired,
+    };
+    assert!(waiter.observe(&key(), &failed, "test").is_err());
+}
+
+#[test]
+fn reconnect_front_insertion_is_acceptance_evidence() {
+    let request = reconnect_test_request(1);
+    let mut waiter = reconnect_waiter(request);
+    let insertion = CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+        key: key(),
+        generation: TimelineGeneration(10),
+        batch_id: koushi_protocol::TimelineBatchId(1),
+        diffs: vec![TimelineDiff::PushFront {
+            item: reconnect_test_items([0]).remove(0),
+        }],
+    });
+    waiter.observe(&key(), &insertion, "test").unwrap();
+    assert_eq!(
+        waiter
+            .observe(
+                &key(),
+                &pagination_state(Some(request), PaginationState::Idle),
+                "test"
+            )
+            .unwrap(),
+        ReconnectPaginationStep::Terminal
+    );
+}
 
 #[test]
 fn reconnect_initial_projection_rejects_missing_newest_body() {
@@ -64,31 +199,30 @@ fn reconnect_initial_projection_requires_mandatory_pagination() {
 #[test]
 fn reconnect_pagination_requires_paginating_before_terminal() {
     let request_id = reconnect_test_request(1);
-    let mut saw_paginating = false;
-    let mut terminal = false;
+    let mut waiter = reconnect_waiter(request_id);
 
-    observe_reconnect_pagination_state(
-        Some(request_id),
-        request_id,
-        &PaginationState::Paginating,
-        &mut saw_paginating,
-        &mut terminal,
-        "reconnect test",
-    )
-    .expect("Paginating should be accepted");
-    assert!(saw_paginating);
-    assert!(!terminal);
+    assert_eq!(
+        waiter
+            .observe(
+                &key(),
+                &pagination_state(Some(request_id), PaginationState::Paginating),
+                "reconnect test"
+            )
+            .expect("Paginating should be accepted"),
+        ReconnectPaginationStep::Wait
+    );
+    assert!(waiter.saw_paginating());
 
-    observe_reconnect_pagination_state(
-        Some(request_id),
-        request_id,
-        &PaginationState::Idle,
-        &mut saw_paginating,
-        &mut terminal,
-        "reconnect test",
-    )
-    .expect("Idle after Paginating should be accepted");
-    assert!(terminal);
+    assert_eq!(
+        waiter
+            .observe(
+                &key(),
+                &pagination_state(Some(request_id), PaginationState::Idle),
+                "reconnect test"
+            )
+            .expect("Idle after Paginating should be accepted"),
+        ReconnectPaginationStep::Terminal
+    );
 }
 
 #[test]
@@ -147,22 +281,183 @@ fn reconnect_projection_applies_destructive_diffs_exactly_and_rejects_duplicates
 }
 
 #[test]
-fn reconnect_terminal_before_paginating_is_rejected() {
+fn reconnect_busy_idle_is_a_retry_fence_not_failure() {
     let request_id = reconnect_test_request(2);
-    let mut saw_paginating = false;
-    let mut terminal = false;
-    let error = observe_reconnect_pagination_state(
-        Some(request_id),
-        request_id,
-        &PaginationState::EndReached,
-        &mut saw_paginating,
-        &mut terminal,
-        "reconnect test",
-    )
-    .expect_err("terminal before Paginating must fail");
+    let mut waiter = reconnect_waiter(request_id);
+
+    assert_eq!(
+        waiter
+            .observe(
+                &key(),
+                &pagination_state(Some(request_id), PaginationState::Idle),
+                "reconnect test"
+            )
+            .expect("gap-repair admission rejection must wait for release"),
+        ReconnectPaginationStep::Wait
+    );
+    assert!(!waiter.saw_paginating());
+}
+
+#[test]
+fn reconnect_busy_idle_retries_once_after_matching_release() {
+    let request_id = reconnect_test_request(3);
+    let mut waiter = reconnect_waiter(request_id);
+
+    assert_eq!(
+        waiter
+            .observe(
+                &key(),
+                &pagination_state(Some(request_id), PaginationState::Idle),
+                "reconnect test"
+            )
+            .unwrap(),
+        ReconnectPaginationStep::Wait
+    );
+    assert_eq!(
+        waiter
+            .observe(
+                &key(),
+                &CoreEvent::Timeline(TimelineEvent::GapPositionsUpdated {
+                    key: key(),
+                    actor_generation: 7,
+                    generation: 4,
+                    positions: Vec::new(),
+                }),
+                "reconnect test",
+            )
+            .unwrap(),
+        ReconnectPaginationStep::Wait
+    );
+    let error = waiter
+        .observe(
+            &key(),
+            &CoreEvent::Timeline(TimelineEvent::GapRepairReleased {
+                key: key(),
+                actor_generation: 8,
+                generation: 4,
+            }),
+            "reconnect test",
+        )
+        .expect_err("a release from a replacement actor must fail explicitly");
+    assert!(error.contains("actor generation replaced"));
+
+    let mut waiter = reconnect_waiter(request_id);
+    waiter
+        .observe(
+            &key(),
+            &pagination_state(Some(request_id), PaginationState::Idle),
+            "reconnect test",
+        )
+        .unwrap();
+    assert_eq!(
+        waiter
+            .observe(
+                &key(),
+                &CoreEvent::Timeline(TimelineEvent::GapPositionsUpdated {
+                    key: key(),
+                    actor_generation: 7,
+                    generation: 4,
+                    positions: Vec::new(),
+                }),
+                "reconnect test",
+            )
+            .unwrap(),
+        ReconnectPaginationStep::Wait
+    );
+    assert_eq!(
+        waiter
+            .observe(
+                &key(),
+                &CoreEvent::Timeline(TimelineEvent::GapRepairReleased {
+                    key: key(),
+                    actor_generation: 7,
+                    generation: 3,
+                }),
+                "reconnect test",
+            )
+            .unwrap(),
+        ReconnectPaginationStep::Wait
+    );
+    assert_eq!(
+        waiter
+            .observe(
+                &key(),
+                &CoreEvent::Timeline(TimelineEvent::GapRepairReleased {
+                    key: key(),
+                    actor_generation: 7,
+                    generation: 4,
+                }),
+                "reconnect test",
+            )
+            .unwrap(),
+        ReconnectPaginationStep::Retry
+    );
+    waiter.start_request(reconnect_test_request(4));
+    assert_eq!(
+        waiter
+            .observe(
+                &key(),
+                &pagination_state(Some(reconnect_test_request(4)), PaginationState::Paginating),
+                "reconnect test",
+            )
+            .unwrap(),
+        ReconnectPaginationStep::Wait
+    );
+    assert_eq!(
+        waiter
+            .observe(
+                &key(),
+                &pagination_state(Some(reconnect_test_request(4)), PaginationState::EndReached),
+                "reconnect test",
+            )
+            .unwrap(),
+        ReconnectPaginationStep::Terminal
+    );
+}
+
+#[test]
+fn reconnect_duplicate_terminal_does_not_regress_completed_request() {
+    let request = reconnect_test_request(1);
+    let mut waiter = reconnect_waiter(request);
+    waiter
+        .observe(
+            &key(),
+            &pagination_state(Some(request), PaginationState::Paginating),
+            "test",
+        )
+        .unwrap();
+    waiter
+        .observe(
+            &key(),
+            &pagination_state(Some(request), PaginationState::EndReached),
+            "test",
+        )
+        .unwrap();
+    assert_eq!(
+        waiter
+            .observe(
+                &key(),
+                &pagination_state(Some(request), PaginationState::EndReached),
+                "test"
+            )
+            .unwrap(),
+        ReconnectPaginationStep::Wait
+    );
+}
+
+#[test]
+fn reconnect_terminal_before_paginating_is_rejected() {
+    let request_id = reconnect_test_request(5);
+    let mut waiter = reconnect_waiter(request_id);
+    let error = waiter
+        .observe(
+            &key(),
+            &pagination_state(Some(request_id), PaginationState::EndReached),
+            "reconnect test",
+        )
+        .expect_err("terminal before Paginating must fail");
 
     assert!(error.contains("before Paginating"));
-    assert!(!terminal);
 }
 
 #[test]
@@ -174,28 +469,28 @@ fn reconnect_terminal_can_precede_the_final_diff() {
         "reconnect test",
     )
     .expect("20-body newest-window initial projection should be valid");
-    let request_id = reconnect_test_request(3);
-    let mut saw_paginating = false;
-    let mut terminal = false;
-    observe_reconnect_pagination_state(
-        Some(request_id),
-        request_id,
-        &PaginationState::Paginating,
-        &mut saw_paginating,
-        &mut terminal,
-        "reconnect test",
-    )
-    .unwrap();
-    observe_reconnect_pagination_state(
-        Some(request_id),
-        request_id,
-        &PaginationState::EndReached,
-        &mut saw_paginating,
-        &mut terminal,
-        "reconnect test",
-    )
-    .unwrap();
-    assert!(terminal);
+    let request_id = reconnect_test_request(6);
+    let mut waiter = reconnect_waiter(request_id);
+    assert_eq!(
+        waiter
+            .observe(
+                &key(),
+                &pagination_state(Some(request_id), PaginationState::Paginating),
+                "reconnect test",
+            )
+            .unwrap(),
+        ReconnectPaginationStep::Wait
+    );
+    assert_eq!(
+        waiter
+            .observe(
+                &key(),
+                &pagination_state(Some(request_id), PaginationState::EndReached),
+                "reconnect test",
+            )
+            .unwrap(),
+        ReconnectPaginationStep::Terminal
+    );
     projection
         .apply_batch(
             &[TimelineDiff::PushBack {
