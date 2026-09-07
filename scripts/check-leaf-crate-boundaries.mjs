@@ -46,6 +46,8 @@ export const coreLocalIntegrationTargets = [
   "link_preview.rs",
   "media_save.rs",
   "native_artifact_boundary.rs",
+  // Exercise the production runtime without the testkit's test-hooks feature.
+  "runtime_stack.rs",
   "sliding_sync_diagnostics.rs"
 ];
 

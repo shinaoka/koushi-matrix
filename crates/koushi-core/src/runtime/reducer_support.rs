@@ -80,10 +80,17 @@ impl DeferredReducerSideEffects {
 }
 
 impl super::AppActor {
-    pub(super) async fn reduce_app_action(&mut self, action: AppAction) -> Vec<AppEffect> {
-        let (effects, deferred) = self.reduce_app_action_state(action);
-        self.apply_deferred_reducer_side_effects(deferred).await;
-        effects
+    // Keep this future off the command dispatcher's debug stack: each match
+    // arm otherwise embeds another large reducer future temporary.
+    pub(super) fn reduce_app_action(
+        &mut self,
+        action: AppAction,
+    ) -> impl std::future::Future<Output = Vec<AppEffect>> + '_ {
+        Box::pin(async move {
+            let (effects, deferred) = self.reduce_app_action_state(action);
+            self.apply_deferred_reducer_side_effects(deferred).await;
+            effects
+        })
     }
 
     pub(super) fn reduce_app_action_state(

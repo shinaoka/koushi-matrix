@@ -500,7 +500,18 @@ export async function runLocalMessageActionsScenario() {
     const hideRedactedComposer = await session.browser.$(MESSAGE_COMPOSER_SELECTOR);
     await hideRedactedComposer.waitForDisplayed({ timeout: timeoutMs });
     await hideRedactedComposer.click();
-    await hideRedactedComposer.setValue(hideRedactedBody);
+    await hideRedactedComposer.clearValue();
+    // WebKit's bulk element-send-keys loses Shift/case in this editable.
+    // Exercise real key presses, including explicit modifier lifetimes.
+    for (const character of hideRedactedBody) {
+      const key = session.browser.action("key");
+      const uppercase = /[A-Z]/.test(character);
+      if (uppercase) key.down("\uE008");
+      key.down(character.toLowerCase()).up(character.toLowerCase());
+      if (uppercase) key.up("\uE008");
+      await key.perform();
+    }
+    await waitForEditableValue(session.browser, MESSAGE_COMPOSER_SELECTOR, hideRedactedBody, timeoutMs, "redaction seed input");
     await session.browser.keys("Enter");
     await waitForComposerSendSettled(
       session.browser,
@@ -515,6 +526,25 @@ export async function runLocalMessageActionsScenario() {
       "local GUI hide redacted seed message render"
     );
     await clickLatestMessageRedactButtonByText(session.browser, hideRedactedBody, timeoutMs);
+    const userSettings = await session.browser.$('button[aria-label="User settings"]');
+    await userSettings.waitForDisplayed({ timeout: timeoutMs });
+    await userSettings.click();
+    const hideDeletedToggleSelector =
+      '//button[@role="switch" and @aria-label="Hide deleted messages"]';
+    const hideDeletedToggle = await session.browser.$(hideDeletedToggleSelector);
+    await hideDeletedToggle.waitForDisplayed({ timeout: timeoutMs });
+    // The Rust default hides redacted messages. Reveal them before checking
+    // their placeholder, then re-enable hiding to verify both projections.
+    await waitForElementAttribute(session.browser, hideDeletedToggleSelector, "aria-checked", "true", timeoutMs, "default hide redacted setting");
+    await hideDeletedToggle.click();
+    await waitForElementAttribute(
+      session.browser,
+      hideDeletedToggleSelector,
+      "aria-checked",
+      "false",
+      timeoutMs,
+      "hide redacted setting before toggle"
+    );
     await waitForElementCountGreaterThan(
       session.browser,
       '.message[data-redacted="true"]',
@@ -527,22 +557,6 @@ export async function runLocalMessageActionsScenario() {
       ["Message redacted"],
       timeoutMs,
       "local GUI redacted message placeholder"
-    );
-
-    const userSettings = await session.browser.$('button[aria-label="User settings"]');
-    await userSettings.waitForDisplayed({ timeout: timeoutMs });
-    await userSettings.click();
-    const hideDeletedToggleSelector =
-      '//button[@role="switch" and @aria-label="Hide deleted messages"]';
-    const hideDeletedToggle = await session.browser.$(hideDeletedToggleSelector);
-    await hideDeletedToggle.waitForDisplayed({ timeout: timeoutMs });
-    await waitForElementAttribute(
-      session.browser,
-      hideDeletedToggleSelector,
-      "aria-checked",
-      "false",
-      timeoutMs,
-      "hide redacted setting before toggle"
     );
     await hideDeletedToggle.click();
     await waitForElementAttribute(
