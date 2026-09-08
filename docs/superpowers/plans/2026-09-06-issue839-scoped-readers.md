@@ -1596,3 +1596,9 @@ passes (`/tmp/umbrella-ci-342419-browser.log`,
 `/tmp/umbrella-anchor-stepping-typecheck.log`). Exact-head CI
 `34244924920` then passed all nine required jobs at `f29d8c03072d3ea808280402d1b2a9bad253ec07`,
 including the browser-headless anchor suite and the updated event-listener lock.
+The subsequent plan-only commit `fd676dfc` is also verified by exact-head CI
+`34246880910`, which again passes all nine required jobs; the branch, remote,
+and PR head match this commit and the worktree remains clean. This confirms
+that the receipt-diagnostic serialization and anchor-stepping corrections are
+stable in the full required matrix, while the native macOS, maximum-stress,
+advisory-policy, review, and merge blockers above remain open.
