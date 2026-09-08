@@ -74,6 +74,16 @@ npm --prefix apps/desktop run qa:headless-local -- --run \
   --timeout-ms=600000 --cargo-profile=release
 ```
 
+The stress send oracle is intentionally stricter than the runtime send contract.
+The production state machine permits a `SendCompleted` event to replace the
+matching pending row atomically with its event-ID row when a server omits or
+lags the SDK local-echo diff. `timeline_stress` is instead an interoperability
+and load diagnostic: every submitted send must produce the exact local echo,
+matching `SendCompleted`, and a non-empty event ID. A no-local-echo result is
+therefore product-compatible but is still a stress failure; do not weaken the
+waiter or report the lane green. Preserve its coordinate and server/SDK trace
+for the contract decision.
+
 The `send_queue` scenario injects offline failure through a stdlib TCP proxy
 inside the Rust QA binary and must be built with `koushi-qa`'s `--features
 qa-bin`; plain `cargo test` does not compile that binary.

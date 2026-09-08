@@ -1350,7 +1350,13 @@ diff and agents-doc checks remain green
 `/tmp/umbrella-final-agents-stress-followup-2.log`). The latest post-audit
 diff and agents-doc checks also pass
 (`/tmp/umbrella-final-diff-stress-followup-5.log`,
-`/tmp/umbrella-final-agents-stress-followup-5.log`).
+`/tmp/umbrella-final-agents-stress-followup-5.log`). The QA lane documentation now
+formally distinguishes the product-compatible no-local-echo state-machine path
+from the deliberately stricter `timeline_stress` diagnostic oracle: each stress
+send still requires its exact local echo, matching `SendCompleted`, and event ID;
+a missing echo remains a recorded failure rather than a weakened assertion
+(`/tmp/umbrella-no-local-echo-contract-docs.log`,
+`/tmp/umbrella-no-local-echo-contract-diff.log`).
 - #846's approved design still explicitly leaves production unchanged until a
   comparative Virtua/React-Virtuoso feasibility gate and native-motion test
   select an engine. The current branch retains the existing viewport controller
