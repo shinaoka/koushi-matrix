@@ -1389,12 +1389,14 @@ a missing echo remains a recorded failure rather than a weakened assertion
   (`/tmp/umbrella-ownership-deletion-audit-current.log`). The combined state-delta
   regression and full workspace evidence remain green
   (`/tmp/umbrella-final-workspace-after-combined-live-delta.log`). Final
-  formatting, diff, Rust test-structure, agents-doc, SDK, and ownership checks
+  formatting, diff, Rust test-structure, agents-docs, SDK, and ownership checks
   pass. Current `feat/umbrella-completion` HEAD is
-  `077ec490339c73b8bb91f2cb410aa872a2943f51`; worktree and remote match with no
-  untracked files, and CI run `34231276865` passes all nine required jobs. PR
-  #857 is open Draft with `mergeStateStatus: CLEAN` and currently has no reviews
-  or comments.
+  `94bf5ae6f43e8c7bcea2167274b1c5ec77e86ec6`; worktree and remote match with no
+  untracked files, and exact-head CI run `34260714373` passes all nine required
+  jobs. PR #857 is open Draft with `mergeStateStatus: CLEAN` and currently has
+  no reviews or comments. Native macOS viewport evidence, maximum stress
+  resolution, explicit dependency policy, review, and merge remain open as
+  recorded below.
 
 A search-crawler delta audit found one remaining whole-slice path: changing
 `last_active` previously cloned the complete crawler room map. The protocol,
