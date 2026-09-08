@@ -1,7 +1,7 @@
 use super::diagnostics::{
     gate_session_phase, invite_observer_diagnostic_summary, runtime_sync_diagnostic_summary,
-    session_state_diagnostic_label, sync_diagnostic_summary, sync_event_diagnostic_label,
-    sync_state_diagnostic_label, trust_admission_diagnostic_summary,
+    send_lifecycle_diagnostic_summary, session_state_diagnostic_label, sync_diagnostic_summary,
+    sync_event_diagnostic_label, sync_state_diagnostic_label, trust_admission_diagnostic_summary,
 };
 use super::registry::{
     E2EE_EVENT_TIMEOUT, EVENT_TIMEOUT, LOGIN_EVENT_TIMEOUT, ROOM_LIST_EVENT_TIMEOUT,
@@ -1632,8 +1632,9 @@ pub(super) async fn wait_for_send_flow_completion_with_timeout(
             .await
             .map_err(|_| {
                 format!(
-                    "{label}: timed out waiting for send flow completion ({})",
-                    waiter.status_summary()
+                    "{label}: timed out waiting for send flow completion ({}; send_lifecycle={})",
+                    waiter.status_summary(),
+                    send_lifecycle_diagnostic_summary(&koushi_diagnostics::snapshot())
                 )
             })?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;

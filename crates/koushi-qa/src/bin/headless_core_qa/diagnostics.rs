@@ -230,6 +230,60 @@ pub(super) fn diagnostic_token_field(
     })
 }
 
+fn diagnostic_u64_field(
+    event: &koushi_diagnostics::DiagnosticEvent,
+    key: &'static str,
+) -> Option<u64> {
+    event.fields.iter().find_map(|field| {
+        if field.key != key {
+            return None;
+        }
+        match field.value {
+            koushi_diagnostics::DiagnosticValue::Count(value)
+            | koushi_diagnostics::DiagnosticValue::Correlation(value)
+            | koushi_diagnostics::DiagnosticValue::Milliseconds(value) => Some(value),
+            _ => None,
+        }
+    })
+}
+
+/// Summarize the privacy-safe send lifecycle ring for a failed QA waiter.
+///
+/// `core.send` records contain only numeric correlations, fixed vocabulary, and
+/// elapsed timings. Restricting the projection to those fields keeps the useful
+/// per-send ordering evidence without printing room, user, transaction, or body
+/// identifiers.
+pub(super) fn send_lifecycle_diagnostic_summary(
+    snapshot: &koushi_diagnostics::DiagnosticSnapshot,
+) -> String {
+    let mut entries = snapshot
+        .records
+        .iter()
+        .rev()
+        .filter(|record| record.event.source == "core.send")
+        .take(24)
+        .map(|record| {
+            let event = &record.event;
+            format!(
+                "corr={} stage={} kind={} outcome={} mode={} elapsed_ms={} delta_ms={}",
+                diagnostic_u64_field(event, "correlation").unwrap_or(0),
+                event.stage,
+                diagnostic_token_field(event, "send_kind").unwrap_or("unknown"),
+                diagnostic_token_field(event, "outcome").unwrap_or("none"),
+                diagnostic_token_field(event, "delivery_mode").unwrap_or("none"),
+                diagnostic_u64_field(event, "elapsed_since_submission_ms").unwrap_or(0),
+                diagnostic_u64_field(event, "elapsed_since_previous_ms").unwrap_or(0),
+            )
+        })
+        .collect::<Vec<_>>();
+    entries.reverse();
+    if entries.is_empty() {
+        "none".to_owned()
+    } else {
+        entries.join(";")
+    }
+}
+
 pub(super) fn invite_observer_diagnostic_summary(
     snapshot: &koushi_diagnostics::DiagnosticSnapshot,
 ) -> String {

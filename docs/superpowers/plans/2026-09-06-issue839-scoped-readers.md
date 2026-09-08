@@ -1499,3 +1499,28 @@ screenshot: the new Rust-demand avatar path intentionally applies deterministic
 per-sender colors. Re-running `docs:screenshot` produced a stable 2560×1600
 asset, and a second local generation matches it byte-for-byte; the refreshed
 `assets/screenshots/koushi-main.png` is included in the next commit.
+
+The strict send waiter exposed a concrete direct-send race. `TimelineCommand::SendText`
+and `SendReply` now install a bounded manager-owned pending projection and wait
+for the generation-fenced actor refresh ACK before starting the SDK enqueue.
+The actor no longer retires that fallback before the canonical transaction is
+published; pre-bind SDK local echoes are tracked and reconciled when the SDK
+transaction is bound. This preserves the strict local-echo plus terminal oracle
+without sleeps or weakened expectations. The regression test
+`local_echo_before_sdk_bind_retires_the_fallback_after_binding` passes, as do
+Tuwunel `1×10×100` (1,001 messages) and `4×10×100` (4,001 messages)
+(`/tmp/umbrella-timeline-stress-direct-projection-ack2.log`,
+`/tmp/umbrella-timeline-stress-prebind-marker-trace-4x10x100.log`). A fresh
+Synapse `1×10×20` lane passes 201 messages
+(`/tmp/umbrella-timeline-stress-direct-projection-synapse-1x10x20.log`).
+The full `10×10×100` Tuwunel attempt progressed through space 8 and then failed
+creating room 9 with `RoomOperationFailed { kind: Network }`; no send assertion
+was relaxed (`/tmp/umbrella-timeline-stress-max-final-tuwunel.log`).
+
+A fresh Synapse `1×10×100` run now reaches `s0/r6/m89` with
+`local_echo=true local_echo_send_state=Sending send_completed=false event_id=false`.
+Its lifecycle ring shows the local echo and projection merge completed before
+terminal delivery; the Synapse access log records two long-poll requests at
+32.977s and 30.108s, both disconnected before response serialization. This is
+the same 30-second transport/long-poll outlier as the earlier Synapse run, not
+an absent local-echo projection (`/tmp/umbrella-timeline-stress-final-synapse-1x10x100.log`).
