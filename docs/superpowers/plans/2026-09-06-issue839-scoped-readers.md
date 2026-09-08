@@ -1385,8 +1385,8 @@ diff and agents-doc checks also pass
   (`/tmp/umbrella-final-workspace-after-combined-live-delta.log`). Final
   formatting, diff, Rust test-structure, agents-doc, SDK, and ownership checks
   pass. Current `feat/umbrella-completion` HEAD is
-  `225678d63bb9c66d23ed2406826154328c648f02`; worktree and remote match with no
-  untracked files, and CI run `34227958563` passes all nine required jobs. PR
+  `1d27996c9246083ace093acf0476a03ed1ed337b`; worktree and remote match with no
+  untracked files, and CI run `34229566698` passes all nine required jobs. PR
   #857 is open Draft with `mergeStateStatus: CLEAN` and currently has no reviews
   or comments.
 
