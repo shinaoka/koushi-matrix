@@ -1391,8 +1391,8 @@ a missing echo remains a recorded failure rather than a weakened assertion
   (`/tmp/umbrella-final-workspace-after-combined-live-delta.log`). Final
   formatting, diff, Rust test-structure, agents-docs, SDK, and ownership checks
   pass. Current `feat/umbrella-completion` HEAD is
-  `94bf5ae6f43e8c7bcea2167274b1c5ec77e86ec6`; worktree and remote match with no
-  untracked files, and exact-head CI run `34260714373` passes all nine required
+  `d1163a78d6cd9e66e5c92ff09bdb5b15eb5e36db`; worktree and remote match with no
+  untracked files, and exact-head CI run `34262931198` passes all nine required
   jobs. PR #857 is open Draft with `mergeStateStatus: CLEAN` and currently has
   no reviews or comments. Native macOS viewport evidence, maximum stress
   resolution, explicit dependency policy, review, and merge remain open as
