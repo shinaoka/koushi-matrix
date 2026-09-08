@@ -1542,7 +1542,19 @@ existing warning-level advisory set (including yanked `chacha20`), while
 `cargo deny check`, `cargo machete`, the Core/SDK/state/desktop focused suites,
 formatting, and `git diff --check` pass. The obsolete quick-xml exceptions were
 removed from `deny.toml`; the change is committed as `5f06a429` and pushed for
-fresh exact-head CI verification. The follow-up CI run `34219287338` passed all
+fresh exact-head CI verification. A current `cargo audit --json` check found
+that `event-listener 5.4.1` had a compatible fixed release, so the lockfile was
+updated to `5.4.2`; the audit warning set no longer includes
+`RUSTSEC-2026-0221`. The Core library suite passes 1,011/1,011 and the fast
+send-queue lane passes 7/7 after this change (`/tmp/umbrella-cargo-audit-event-listener.json`,
+`/tmp/umbrella-event-listener-core-test.log`,
+`/tmp/umbrella-event-listener-send-test.log`,
+`/tmp/umbrella-event-listener-deny.log`,
+`/tmp/umbrella-event-listener-machete.log`). Remaining audit warnings are
+transitive `bitmaps`/`glib`/`lru` unsoundness or unmaintained crates without a
+safe workspace-level replacement; they remain an explicit upstream/SDK policy
+blocker rather than being hidden by a broad ignore. The follow-up CI run
+`34219287338` passed all
 nine required jobs at submitted head `206fdd5f1ebae6d777f2341f8a82ab2c7791c8c3`.
 Its only prior failure was the frontend `TimelineView.anchor-race` test timing
 out under shared-runner load; the test was locally reproduced, its existing
