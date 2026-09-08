@@ -1560,4 +1560,10 @@ Its only prior failure was the frontend `TimelineView.anchor-race` test timing
 out under shared-runner load; the test was locally reproduced, its existing
 assertions were retained, and an explicit 15-second test timeout was added in
 `206fdd5f`. Focused and full frontend tests pass locally, and the current
-worktree and remote branch are identical and clean.
+worktree and remote branch are identical and clean. A final production-path
+preflight audit traced `ReceiptReaders` → `TimelineItemRow` → `TimelineView`'s
+committed `ReceiptSourceRef` through the six registered Tauri reader commands,
+`CoreRuntimeState`/`ReaderSubscription`, `AppActor` bounded window/profile/resource
+publication, and ACK/retirement; it also confirmed the App-level timeline store
+is the sole reducer owner while TimelineView retains only viewport/side effects.
+Evidence: `/tmp/umbrella-preflight-review-current.md`.
