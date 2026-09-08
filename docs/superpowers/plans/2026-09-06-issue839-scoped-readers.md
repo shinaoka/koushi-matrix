@@ -1679,3 +1679,20 @@ no timeout, sleep, retry, or expectation was changed in response. A fresh
 exact-head run is still required for the current submitted documentation
 commit, after which no further code or documentation changes are planned while
 the external native/review/policy decisions remain open.
+
+The required fresh run `34273641056` for `1ae3cf8` passed all nine jobs. Before
+that CI result, a local Synapse `1x10x100` stress characterization was rerun
+with the strict waiter unchanged and failed at coordinate `s0 r7 m3` only after
+observing the local echo: `SendCompleted` and event ID were still absent at the
+60-second waiter deadline. The privacy-safe send ring recorded the immediately
+preceding send completing in 38 ms, while the stalled send reached local echo
+in 0–1 ms and recorded no SDK terminal stage. Synapse recorded 708 successful
+message-send PUTs, with 707 normal responses and one client-disconnected,
+zero-byte `200!` response taking 30.128 seconds; the server log says the
+connection was lost before response serialization. The sanitized per-send and
+server evidence is retained in `/tmp/umbrella-synapse-stress-trace-current.md`.
+This confirms a transport/server response outlier rather than a missing local
+echo, and no retry or relaxed assertion is justified. A `1x1x1` Synapse lane
+also passes end-to-end. The maximum `10x10x100` stress contract, native macOS
+viewport evidence, dependency policy, external review, Draft removal, and
+merge remain open; this plan does not claim completion.
