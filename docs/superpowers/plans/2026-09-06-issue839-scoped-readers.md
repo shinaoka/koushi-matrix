@@ -1624,4 +1624,12 @@ plan update remains the only pending verification change. Exact-head CI
 `c1ca8dfa`, including the adjusted fast send lane; the worktree, remote, and
 PR head are synchronized and clean. No further local corrective change is
 justified while the native macOS, maximum-stress contract, advisory-policy,
-review, and merge decisions remain unavailable.
+review, and merge decisions remain unavailable. A fresh audit on this tree
+confirms zero vulnerability entries and identifies the remaining unsound
+warnings as transitive `bitmaps 3.2.1` (SDK `imbl`), `glib 0.18.5` (Linux GTK/
+WebKit), and `lru 0.16.4` (vendored `tantivy`/`matrix-sdk-search`), plus the
+inherited yanked `chacha20 0.10.1` and unmaintained crates; no safe direct
+workspace upgrade exists. The exact dependency graph and required release
+accept/defer decision are recorded in
+`/tmp/umbrella-dependency-disposition-current.md`, so this is now an explicit
+maintainer policy blocker rather than an unexamined audit result.
