@@ -356,6 +356,223 @@ fn session_lock_reason_state_delta_crosses_the_frontend_boundary_and_clears_expl
 }
 
 #[test]
+fn room_live_signal_delta_crosses_the_frontend_boundary() {
+    let previous = booted_app_state();
+    let mut next = previous.clone();
+    next.live_signals.rooms.insert(
+        "!room:example.invalid".to_owned(),
+        koushi_state::RoomLiveSignals::default(),
+    );
+
+    let delta = koushi_core::build_state_delta(10, &previous, &next)
+        .expect("room live-signal changes should produce a state delta");
+    let value = serde_json::to_value(FrontendDesktopSnapshotDelta::from(delta))
+        .expect("room live-signal delta should serialize");
+
+    assert_eq!(
+        value["changed"]["state"]["domain"]["live_signals_rooms"]["!room:example.invalid"],
+        json!({
+            "receipts_by_event": {},
+            "fully_read_event_id": null,
+            "typing_user_ids": [],
+            "typing_users": []
+        })
+    );
+    assert!(value["changed"]["state"]["domain"]["live_signals"].is_null());
+}
+
+#[test]
+fn room_live_signal_metadata_delta_crosses_the_frontend_boundary() {
+    let mut previous = booted_app_state();
+    previous.live_signals.rooms.insert(
+        "!room:example.invalid".to_owned(),
+        koushi_state::RoomLiveSignals {
+            receipts_by_event: std::collections::BTreeMap::from([(
+                "$event:example.invalid".to_owned(),
+                koushi_state::LiveEventReceiptSummary {
+                    total_count: 1,
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        },
+    );
+    let mut next = previous.clone();
+    next.live_signals
+        .rooms
+        .get_mut("!room:example.invalid")
+        .unwrap()
+        .fully_read_event_id = Some("$read:example.invalid".to_owned());
+
+    let delta = koushi_core::build_state_delta(10, &previous, &next)
+        .expect("room metadata changes should produce a state delta");
+    let value = serde_json::to_value(FrontendDesktopSnapshotDelta::from(delta))
+        .expect("room metadata delta should serialize");
+    let domain = &value["changed"]["state"]["domain"];
+
+    assert_eq!(
+        domain["live_signals_room_metadata_by_id"]["!room:example.invalid"]["fully_read_event_id"],
+        json!("$read:example.invalid")
+    );
+    assert!(domain["live_signals_rooms"].is_null());
+    assert!(domain["live_signals_receipts_by_room_event"].is_null());
+}
+
+#[test]
+fn receipt_event_delta_crosses_the_frontend_boundary_without_full_room() {
+    let mut previous = booted_app_state();
+    previous.live_signals.rooms.insert(
+        "!room:example.invalid".to_owned(),
+        koushi_state::RoomLiveSignals {
+            receipts_by_event: std::collections::BTreeMap::from([(
+                "$event:example.invalid".to_owned(),
+                koushi_state::LiveEventReceiptSummary {
+                    total_count: 1,
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        },
+    );
+    let mut next = previous.clone();
+    next.live_signals
+        .rooms
+        .get_mut("!room:example.invalid")
+        .unwrap()
+        .receipts_by_event
+        .get_mut("$event:example.invalid")
+        .unwrap()
+        .total_count = 2;
+
+    let delta = koushi_core::build_state_delta(10, &previous, &next)
+        .expect("receipt event changes should produce a state delta");
+    let value = serde_json::to_value(FrontendDesktopSnapshotDelta::from(delta))
+        .expect("receipt event delta should serialize");
+    let domain = &value["changed"]["state"]["domain"];
+
+    assert_eq!(
+        domain["live_signals_receipts_by_room_event"]["!room:example.invalid"]["$event:example.invalid"]
+            ["total_count"],
+        json!(2)
+    );
+    assert!(domain["live_signals_rooms"].is_null());
+    assert!(domain["live_signals"].is_null());
+}
+
+#[test]
+fn profile_scalar_delta_crosses_the_frontend_boundary_without_full_profile() {
+    let previous = booted_app_state();
+    let mut next = previous.clone();
+    next.profile.own.display_name = Some("Own User".to_owned());
+    next.profile
+        .local_aliases
+        .insert("@user:example.invalid".to_owned(), "Alias".to_owned());
+    next.profile
+        .ignored_user_ids
+        .insert("@ignored:example.invalid".to_owned());
+    next.profile.update = koushi_state::ProfileUpdateState::SettingDisplayName {
+        request_id: 9,
+        display_name: Some("Own User".to_owned()),
+    };
+
+    let delta = koushi_core::build_state_delta(10, &previous, &next)
+        .expect("profile changes should produce a state delta");
+    let value = serde_json::to_value(FrontendDesktopSnapshotDelta::from(delta))
+        .expect("profile delta should serialize");
+    let domain = &value["changed"]["state"]["domain"];
+
+    assert_eq!(domain["profile_own"]["display_name"], json!("Own User"));
+    assert_eq!(
+        domain["profile_local_aliases_by_id"]["@user:example.invalid"],
+        json!("Alias")
+    );
+    assert_eq!(
+        domain["profile_ignored_user_ids_by_id"]["@ignored:example.invalid"],
+        json!(true)
+    );
+    assert_eq!(
+        domain["profile_update"]["kind"],
+        json!("settingDisplayName")
+    );
+    assert!(domain["profile"].is_null());
+}
+
+#[test]
+fn live_signal_presence_delta_crosses_the_frontend_boundary() {
+    let previous = booted_app_state();
+    let mut next = previous.clone();
+    next.live_signals.presence.insert(
+        "@reader:example.invalid".to_owned(),
+        koushi_state::PresenceKind::Online,
+    );
+
+    let delta = koushi_core::build_state_delta(10, &previous, &next)
+        .expect("presence changes should produce a state delta");
+    let value = serde_json::to_value(FrontendDesktopSnapshotDelta::from(delta))
+        .expect("presence delta should serialize");
+
+    assert_eq!(
+        value["changed"]["state"]["domain"]["live_signals_presence_by_user"]["@reader:example.invalid"],
+        json!("online")
+    );
+    assert!(value["changed"]["state"]["domain"]["live_signals"].is_null());
+}
+
+#[test]
+fn search_crawler_room_delta_crosses_the_frontend_boundary() {
+    let previous = booted_app_state();
+    let mut next = previous.clone();
+    next.search_crawler.rooms.insert(
+        "!room-crawler:example.invalid".to_owned(),
+        koushi_state::SearchCrawlerRoomState::Running {
+            processed: 4,
+            indexed: 3,
+        },
+    );
+
+    let delta = koushi_core::build_state_delta(10, &previous, &next)
+        .expect("search crawler room changes should produce a state delta");
+    let value = serde_json::to_value(FrontendDesktopSnapshotDelta::from(delta))
+        .expect("search crawler room delta should serialize");
+
+    assert_eq!(
+        value["changed"]["state"]["domain"]["search_crawler_rooms_by_id"]["!room-crawler:example.invalid"],
+        json!({"kind": "running", "processed": 4, "indexed": 3})
+    );
+    assert!(value["changed"]["state"]["domain"]["search_crawler"].is_null());
+}
+
+#[test]
+fn search_crawler_last_active_delta_crosses_the_frontend_boundary() {
+    let previous = booted_app_state();
+    let mut next = previous.clone();
+    next.search_crawler.last_active = Some(koushi_state::SearchCrawlerLastActive {
+        room_id: "!room-crawler:example.invalid".to_owned(),
+        updated_at_ms: 1_800_000_001_000,
+        status: koushi_state::SearchCrawlerLastActiveStatus::Completed,
+        processed: 4,
+        indexed: 3,
+    });
+
+    let delta = koushi_core::build_state_delta(11, &previous, &next)
+        .expect("search crawler last-active changes should produce a state delta");
+    let value = serde_json::to_value(FrontendDesktopSnapshotDelta::from(delta))
+        .expect("search crawler last-active delta should serialize");
+
+    assert_eq!(
+        value["changed"]["state"]["domain"]["search_crawler_last_active"],
+        json!({
+            "room_id": "!room-crawler:example.invalid",
+            "updated_at_ms": 1_800_000_001_000_u64,
+            "status": "completed",
+            "processed": 4,
+            "indexed": 3
+        })
+    );
+    assert!(value["changed"]["state"]["domain"]["search_crawler"].is_null());
+}
+
+#[test]
 fn account_management_url_clear_crosses_the_frontend_boundary_as_null() {
     let previous = booted_app_state();
     let mut next = previous.clone();

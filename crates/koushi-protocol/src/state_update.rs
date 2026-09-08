@@ -1,16 +1,18 @@
 //! Public state snapshot and incremental update DTOs.
 
 use koushi_state::{
-    AccountManagementCapabilities, AccountManagementState, AccountManagementUrl, ActivityState,
-    AppError, AuthDiscoveryState, BasicOperationState, CjkTextPolicyState,
+    AccountManagementCapabilities, AccountManagementState, AccountManagementUrl, ActivityRow,
+    ActivityState, AppError, AuthDiscoveryState, BasicOperationState, CjkTextPolicyState,
     CurrentSessionStatusState, DeviceCleanupState, DirectoryState, E2eeTrustState, FilesViewState,
-    FocusedContextState, InvitePreview, InviteWorkflowState, LinkPreviewSettingsState,
-    LiveSignalsState, LocalEncryptionState, MentionCandidatesState, NativeAttentionState,
-    NavigationState, ProfileState, QrLoginState, RoomInteractionState, RoomListProjection,
-    RoomManagementState, RoomNotificationSettings, RoomPreferencesState, RoomSummary,
-    SearchCrawlerState, SearchState, SecureBackupGateState, SessionState, SettingsState,
-    SidebarModel, SoftLogoutReauthState, SpaceMembersState, SpaceSummary, SyncState,
-    ThreadAttentionState, ThreadPaneState, ThreadsListState, TimelinePaneState,
+    FocusedContextState, IgnoredUserUpdateState, InvitePreview, InviteWorkflowState,
+    LinkPreviewSettingsState, LiveEventReceiptSummary, LiveSignalsState, LiveTypingUser,
+    LocalEncryptionState, LocalUserAliasUpdateState, MentionCandidatesState, NativeAttentionState,
+    NavigationState, OwnProfile, PresenceKind, ProfileState, ProfileUpdateState, QrLoginState,
+    RoomInteractionState, RoomListProjection, RoomLiveSignals, RoomManagementState,
+    RoomNotificationSettings, RoomPreferencesState, RoomSummary, SearchCrawlerLastActive,
+    SearchCrawlerRoomState, SearchCrawlerState, SearchState, SecureBackupGateState, SessionState,
+    SettingsState, SidebarModel, SoftLogoutReauthState, SpaceMembersState, SpaceSummary, SyncState,
+    ThreadAttentionState, ThreadPaneState, ThreadsListState, TimelinePaneState, UserProfile,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -26,6 +28,14 @@ pub struct VersionedAppStateSnapshot {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CoreCommandAdmission {
     pub admitted_generation: u64,
+}
+
+/// Non-receipt room signals that can change without replacing receipt rows.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RoomLiveSignalMetadata {
+    pub fully_read_event_id: Option<String>,
+    pub typing_user_ids: Vec<String>,
+    pub typing_users: Vec<LiveTypingUser>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -51,20 +61,45 @@ pub struct StateDeltaChangedSlices {
     pub link_preview_settings: Option<LinkPreviewSettingsState>,
     pub room_preferences: Option<RoomPreferencesState>,
     pub profile: Option<ProfileState>,
+    /// Own-profile replacement; global and room-local observations remain scoped separately.
+    pub profile_own: Option<OwnProfile>,
+    /// Global profile-user replacements; room-local observations remain scoped separately.
+    pub profile_users_by_id: Option<BTreeMap<String, Option<UserProfile>>>,
+    /// Room-local profile replacements, nested by room and user.
+    pub profile_room_users_by_room:
+        Option<BTreeMap<String, Option<BTreeMap<String, Option<UserProfile>>>>>,
+    pub profile_local_aliases_by_id: Option<BTreeMap<String, Option<String>>>,
+    /// `true` adds the user to the ignored set; `false` removes it.
+    pub profile_ignored_user_ids_by_id: Option<BTreeMap<String, bool>>,
+    pub profile_local_alias_update: Option<LocalUserAliasUpdateState>,
+    pub profile_ignored_user_update: Option<IgnoredUserUpdateState>,
+    pub profile_update: Option<ProfileUpdateState>,
     pub space_members: Option<SpaceMembersState>,
     pub sync: Option<SyncState>,
     pub navigation: Option<NavigationState>,
     pub spaces: Option<Vec<SpaceSummary>>,
+    /// Space-local replacements when the space ordering is unchanged.
+    pub spaces_by_id: Option<BTreeMap<String, Option<SpaceSummary>>>,
     pub rooms: Option<Vec<RoomSummary>>,
+    /// Room-local replacements when the room ordering is unchanged.
+    pub rooms_by_id: Option<BTreeMap<String, Option<RoomSummary>>>,
     pub invites: Option<Vec<InvitePreview>>,
+    /// Invite-local replacements when invite ordering is unchanged.
+    pub invites_by_id: Option<BTreeMap<String, Option<InvitePreview>>>,
     pub invite_workflow: Option<InviteWorkflowState>,
     pub room_list: Option<RoomListProjection>,
     pub room_notification_settings: Option<HashMap<String, RoomNotificationSettings>>,
+    pub room_notification_settings_by_id:
+        Option<BTreeMap<String, Option<RoomNotificationSettings>>>,
     pub room_interactions: Option<BTreeMap<String, RoomInteractionState>>,
+    pub room_interactions_by_id: Option<BTreeMap<String, Option<RoomInteractionState>>>,
     pub directory: Option<DirectoryState>,
     pub room_management: Option<RoomManagementState>,
     pub mention_candidates: Option<MentionCandidatesState>,
     pub activity: Option<ActivityState>,
+    /// Activity-row replacements when both stream orders and stream metadata are unchanged.
+    pub activity_recent_rows_by_id: Option<BTreeMap<String, Option<ActivityRow>>>,
+    pub activity_unread_rows_by_id: Option<BTreeMap<String, Option<ActivityRow>>>,
     pub timeline: Option<TimelinePaneState>,
     pub thread: Option<ThreadPaneState>,
     pub thread_attention: Option<ThreadAttentionState>,
@@ -72,9 +107,22 @@ pub struct StateDeltaChangedSlices {
     pub focused_context: Option<FocusedContextState>,
     pub search: Option<SearchState>,
     pub search_crawler: Option<SearchCrawlerState>,
+    pub search_crawler_rooms_by_id: Option<BTreeMap<String, Option<SearchCrawlerRoomState>>>,
+    pub search_crawler_last_active: Option<Option<SearchCrawlerLastActive>>,
     pub files_view: Option<FilesViewState>,
     pub basic_operation: Option<BasicOperationState>,
     pub live_signals: Option<LiveSignalsState>,
+    /// Room-local live-signal replacements; `None` removes a room entry.
+    /// Receipt-only changes use `live_signals_receipts_by_room_event` instead.
+    pub live_signals_rooms: Option<BTreeMap<String, Option<RoomLiveSignals>>>,
+    /// Receipt-summary replacements nested by room and event. This avoids
+    /// cloning the other events in a room for a receipt move/update.
+    pub live_signals_receipts_by_room_event:
+        Option<BTreeMap<String, BTreeMap<String, Option<LiveEventReceiptSummary>>>>,
+    /// Non-receipt room metadata replacements for existing room entries.
+    pub live_signals_room_metadata_by_id: Option<BTreeMap<String, Option<RoomLiveSignalMetadata>>>,
+    /// User-local presence replacements; `None` removes a user entry.
+    pub live_signals_presence_by_user: Option<BTreeMap<String, Option<PresenceKind>>>,
     pub e2ee_trust: Option<E2eeTrustState>,
     pub local_encryption: Option<LocalEncryptionState>,
     pub native_attention: Option<NativeAttentionState>,

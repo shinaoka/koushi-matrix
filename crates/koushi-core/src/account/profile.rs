@@ -26,7 +26,25 @@ use super::actor::{AccountActor, AccountMessage};
 /// Maximum number of concurrent avatar thumbnail downloads. Bounded to avoid
 /// flooding the SDK media layer with parallel requests during large room joins.
 pub(super) const AVATAR_DOWNLOAD_CONCURRENCY: usize = 6;
+pub(super) const AVATAR_DOWNLOAD_QUEUE_CAPACITY: usize = 256;
 const AVATAR_DOWNLOAD_MAX_ATTEMPTS: usize = 2;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AvatarAdmission {
+    Active,
+    Pending,
+    Capacity,
+}
+
+fn avatar_admission(active_fetches: usize, pending_fetches: usize) -> AvatarAdmission {
+    if active_fetches < AVATAR_DOWNLOAD_CONCURRENCY {
+        AvatarAdmission::Active
+    } else if pending_fetches < AVATAR_DOWNLOAD_QUEUE_CAPACITY {
+        AvatarAdmission::Pending
+    } else {
+        AvatarAdmission::Capacity
+    }
+}
 
 const ACCOUNT_HYDRATION_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -360,12 +378,65 @@ impl AccountActor {
         }
     }
 
+    fn spawn_avatar_fetch(&mut self, mxc_uri: String, request_sequence: u64) {
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        self.avatar_active_fetches += 1;
+        let generation = self.avatar_session_generation;
+        let semaphore = self.avatar_download_semaphore.clone();
+        let tx = self.self_tx.clone();
+        let mxc_uri_clone = mxc_uri;
+        let abort_key = mxc_uri_clone.clone();
+
+        let abort_handle = self.avatar_fetch_tasks.spawn(async move {
+            // The actor starts no more than AVATAR_DOWNLOAD_CONCURRENCY tasks;
+            // the semaphore remains a defensive SDK-side concurrency fence.
+            let _permit = semaphore.acquire().await;
+            let thumbnail = retry_avatar_thumbnail_fetch(|| {
+                download_avatar_thumbnail(&session, &mxc_uri_clone)
+            })
+            .await
+            .unwrap_or_else(|kind| AvatarThumbnailState::Failed {
+                request_id: request_sequence,
+                kind,
+            });
+            // Best-effort: if the actor is already shut down, the send fails
+            // silently — that is correct because the session is gone anyway.
+            let _ = tx
+                .send(AccountMessage::AvatarFetched {
+                    mxc_uri: mxc_uri_clone,
+                    generation,
+                    thumbnail,
+                })
+                .await;
+        });
+        self.avatar_fetch_abort_handles
+            .insert(abort_key, abort_handle);
+    }
+
+    fn start_pending_avatar_fetches(&mut self) {
+        while self.avatar_active_fetches < AVATAR_DOWNLOAD_CONCURRENCY {
+            let Some(mxc_uri) = self.avatar_pending.pop_front() else {
+                return;
+            };
+            if let Some(request_sequence) = self
+                .avatar_inflight
+                .get(&mxc_uri)
+                .and_then(|waiters| waiters.first())
+                .map(|request_id| request_id.sequence)
+            {
+                self.spawn_avatar_fetch(mxc_uri, request_sequence);
+            }
+        }
+    }
+
     /// Non-blocking, cache-first avatar thumbnail handler (Stage R1).
     ///
     /// 1. Cache hit (`Ready` or terminal `Failed`): emit immediately; no SDK call.
     /// 2. Already in-flight: return; the completing task will emit.
-    /// 3. Otherwise: insert into `avatar_inflight`, spawn one bounded task that
-    ///    owns at most two network attempts and posts `AvatarFetched` back.
+    /// 3. Otherwise: admit one distinct URI into the six-task active queue or
+    ///    the bounded 256-entry pending queue; no waiting task is spawned.
     pub(super) async fn handle_download_avatar_thumbnail(
         &mut self,
         request_id: RequestId,
@@ -393,12 +464,26 @@ impl AccountActor {
         //    request_id so the completing task will emit a terminal event for
         //    every waiter, then return without spawning a second task.
         if let Some(waiters) = self.avatar_inflight.get_mut(&mxc_uri) {
-            waiters.push(request_id);
+            if waiters.len() < AVATAR_DOWNLOAD_QUEUE_CAPACITY {
+                waiters.push(request_id);
+                return;
+            }
+            let thumbnail = AvatarThumbnailState::Failed {
+                request_id: request_id.sequence,
+                kind: AvatarThumbnailFailureKind::Capacity,
+            };
+            self.emit(CoreEvent::Account(
+                AccountEvent::AvatarThumbnailDownloaded {
+                    request_id,
+                    mxc_uri,
+                    thumbnail,
+                },
+            ));
             return;
         }
 
         // 3. No session — emit failure synchronously rather than spawning.
-        let Some(session) = self.session.clone() else {
+        if self.session.is_none() {
             let thumbnail = AvatarThumbnailState::Failed {
                 request_id: request_id.sequence,
                 kind: AvatarThumbnailFailureKind::Sdk,
@@ -416,39 +501,39 @@ impl AccountActor {
                 },
             ));
             return;
-        };
+        }
 
-        // 4. Spawn a bounded fetch task; return immediately.
-        // Record the originating request_id as the first waiter.
+        // 4. Admit the first waiter. Active work starts immediately; excess
+        // distinct resources wait in the bounded queue without a task/permit.
         self.avatar_inflight
             .insert(mxc_uri.clone(), vec![request_id]);
-        let generation = self.avatar_session_generation;
-        let semaphore = self.avatar_download_semaphore.clone();
-        let tx = self.self_tx.clone();
-        let mxc_uri_clone = mxc_uri.clone();
-
-        self.avatar_fetch_tasks.spawn(async move {
-            // Acquire a permit before hitting the SDK so at most
-            // AVATAR_DOWNLOAD_CONCURRENCY fetches run concurrently.
-            let _permit = semaphore.acquire().await;
-            let thumbnail = retry_avatar_thumbnail_fetch(|| {
-                download_avatar_thumbnail(&session, &mxc_uri_clone)
-            })
-            .await
-            .unwrap_or_else(|kind| AvatarThumbnailState::Failed {
-                request_id: request_id.sequence,
-                kind,
-            });
-            // Best-effort: if the actor is already shut down, the send fails
-            // silently — that is correct because the session is gone anyway.
-            let _ = tx
-                .send(AccountMessage::AvatarFetched {
-                    mxc_uri: mxc_uri_clone,
-                    generation,
-                    thumbnail,
-                })
+        match avatar_admission(self.avatar_active_fetches, self.avatar_pending.len()) {
+            AvatarAdmission::Active => {
+                self.spawn_avatar_fetch(mxc_uri, request_id.sequence);
+            }
+            AvatarAdmission::Pending => {
+                self.avatar_pending.push_back(mxc_uri);
+            }
+            AvatarAdmission::Capacity => {
+                self.avatar_inflight.remove(&mxc_uri);
+                let thumbnail = AvatarThumbnailState::Failed {
+                    request_id: request_id.sequence,
+                    kind: AvatarThumbnailFailureKind::Capacity,
+                };
+                self.send_actions(vec![AppAction::AvatarThumbnailUpdated {
+                    mxc_uri: mxc_uri.clone(),
+                    thumbnail: thumbnail.clone(),
+                }])
                 .await;
-        });
+                self.emit(CoreEvent::Account(
+                    AccountEvent::AvatarThumbnailDownloaded {
+                        request_id,
+                        mxc_uri,
+                        thumbnail,
+                    },
+                ));
+            }
+        }
     }
 
     /// Called when a spawned avatar-fetch task completes.  Updates the cache,
@@ -479,9 +564,13 @@ impl AccountActor {
         if generation != self.avatar_session_generation {
             return;
         }
-
-        // Remove and collect all waiting request_ids for this mxc.
-        let waiters = self.avatar_inflight.remove(&mxc_uri).unwrap_or_default();
+        // A canceled task can still have a completion message queued before
+        // the actor processes the cancellation. Do not resurrect that demand.
+        let Some(waiters) = self.avatar_inflight.remove(&mxc_uri) else {
+            return;
+        };
+        self.avatar_active_fetches = self.avatar_active_fetches.saturating_sub(1);
+        self.avatar_fetch_abort_handles.remove(&mxc_uri);
 
         // Cache the result so subsequent requests for the same URI are served
         // from memory. Ready and terminal Failed entries both settle duplicate
@@ -510,6 +599,36 @@ impl AccountActor {
                 },
             ));
         }
+        self.start_pending_avatar_fetches();
+    }
+
+    /// Cancel one renderer waiter. The fetch remains alive while another
+    /// renderer still depends on the same MXC; otherwise remove the demand
+    /// from the pending queue or abort its active task.
+    pub(super) fn cancel_avatar_thumbnail(&mut self, target_request_id: RequestId, mxc_uri: &str) {
+        let should_abort = match self.avatar_inflight.get_mut(mxc_uri) {
+            Some(waiters) => {
+                let previous_len = waiters.len();
+                waiters.retain(|request_id| *request_id != target_request_id);
+                waiters.len() != previous_len && waiters.is_empty()
+            }
+            None => false,
+        };
+        if !should_abort {
+            return;
+        }
+
+        let was_pending = self.avatar_pending.iter().any(|uri| uri == mxc_uri);
+        self.avatar_inflight.remove(mxc_uri);
+        if was_pending {
+            self.avatar_pending.retain(|uri| uri != mxc_uri);
+        } else {
+            self.avatar_active_fetches = self.avatar_active_fetches.saturating_sub(1);
+            if let Some(abort_handle) = self.avatar_fetch_abort_handles.remove(mxc_uri) {
+                abort_handle.abort();
+            }
+        }
+        self.start_pending_avatar_fetches();
     }
 
     /// Non-blocking reap of completed/aborted avatar-fetch JoinSet entries.
@@ -529,7 +648,10 @@ impl AccountActor {
         // JoinSet aborts all its tasks AND discards their entries, so cancelled
         // tasks do not linger across repeated request -> session-clear cycles.
         self.avatar_fetch_tasks = tokio::task::JoinSet::new();
+        self.avatar_fetch_abort_handles.clear();
         self.avatar_inflight.clear();
+        self.avatar_pending.clear();
+        self.avatar_active_fetches = 0;
         self.avatar_cache.clear();
         clear_renderable_thumbnail_cache();
         // Replace the semaphore so any task that manages to run after abort
@@ -720,7 +842,8 @@ mod tests {
     use koushi_state::{AvatarThumbnailFailureKind, AvatarThumbnailState};
 
     use super::{
-        avatar_thumbnail_for_request, download_avatar_thumbnail, retry_avatar_thumbnail_fetch,
+        AvatarAdmission, avatar_admission, avatar_thumbnail_for_request, download_avatar_thumbnail,
+        retry_avatar_thumbnail_fetch,
     };
 
     use crate::renderable_thumbnail::clear_renderable_thumbnail_cache;
@@ -729,6 +852,29 @@ mod tests {
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
     use std::{fs, path::Path};
     use tempfile::tempdir;
+
+    #[test]
+    fn avatar_admission_never_exceeds_active_or_pending_bounds() {
+        assert_eq!(avatar_admission(0, 0), AvatarAdmission::Active);
+        assert_eq!(
+            avatar_admission(super::AVATAR_DOWNLOAD_CONCURRENCY, 0),
+            AvatarAdmission::Pending
+        );
+        assert_eq!(
+            avatar_admission(
+                super::AVATAR_DOWNLOAD_CONCURRENCY,
+                super::AVATAR_DOWNLOAD_QUEUE_CAPACITY - 1
+            ),
+            AvatarAdmission::Pending
+        );
+        assert_eq!(
+            avatar_admission(
+                super::AVATAR_DOWNLOAD_CONCURRENCY,
+                super::AVATAR_DOWNLOAD_QUEUE_CAPACITY
+            ),
+            AvatarAdmission::Capacity
+        );
+    }
 
     fn ready_thumbnail() -> AvatarThumbnailState {
         AvatarThumbnailState::Ready {
@@ -836,6 +982,7 @@ mod tests {
 
     #[tokio::test]
     async fn avatar_download_survives_restart_and_offline_via_keyed_sdk_media_store() {
+        let _cache_guard = crate::renderable_thumbnail::test_cache_lock();
         let server = MatrixMockServer::new().await;
         server.mock_versions().ok().mount().await;
         server

@@ -1676,10 +1676,14 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             request_id,
             message,
         } => basic_operation::handle_basic_operation_failed(state, request_id, message),
-        AppAction::LiveRoomReceiptsUpdated {
+        AppAction::LiveRoomReceiptSummariesUpdated {
             room_id,
             receipts_by_event,
-        } => live_signals::handle_live_room_receipts_updated(state, room_id, receipts_by_event),
+        } => live_signals::handle_live_room_receipt_summaries_updated(
+            state,
+            room_id,
+            receipts_by_event,
+        ),
         AppAction::LiveRoomProfilesObserved { room_id, profiles } => {
             live_signals::handle_live_room_profiles_observed(state, room_id, profiles)
         }

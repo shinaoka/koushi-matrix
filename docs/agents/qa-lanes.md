@@ -60,10 +60,23 @@ fixtures deliberately keep the shared credential store because they prove
 restoration of that exact device.
 
 `--scenario=all` runs the aggregate lane. `--scenario=timeline_stress` requires
-`--core` and must be the only scenario in the run. The `send_queue` scenario
-injects offline failure through a stdlib TCP proxy inside the Rust QA binary
-and must be built with `koushi-qa`'s `--features qa-bin`; plain `cargo test`
-does not compile that binary.
+`--core` and must be the only scenario in the run. The bounded maximum stress
+characterization is 10 spaces × 10 rooms × 100 messages (100 rooms and 10,001
+messages including the blank-formatted-row probe). Run that required scale
+explicitly, for example:
+
+```bash
+KOUSHI_QA_STRESS_SPACES=10 \
+KOUSHI_QA_STRESS_ROOMS_PER_SPACE=10 \
+KOUSHI_QA_STRESS_MESSAGES_PER_ROOM=100 \
+npm --prefix apps/desktop run qa:headless-local -- --run \
+  --server=tuwunel --core --scenario=timeline_stress \
+  --timeout-ms=600000 --cargo-profile=release
+```
+
+The `send_queue` scenario injects offline failure through a stdlib TCP proxy
+inside the Rust QA binary and must be built with `koushi-qa`'s `--features
+qa-bin`; plain `cargo test` does not compile that binary.
 
 | Scenario | Proves | Evidence tokens |
 | --- | --- | --- |
@@ -160,6 +173,7 @@ scenario run. See [environment.md](environment.md#reusing-a-debug-build) for the
 | `local-activity` | Activity rail entry and tab switching | `gui_local_activity_open=ok`, `gui_local_activity_unread_tab=ok`, `gui_local_activity_recent_tab=ok` |
 | `local-explore` | real Explore search and Join over a synthetic public-room fixture | `gui_local_explore_query=ok`, `gui_local_explore_join=ok` |
 | `local-message-actions` | hover-gated action menu, source/forward, redaction, `Hide deleted messages` toggle to `TimelineItem.is_hidden` | — |
+| `local-receipt-readers` | five real helper users, a real read receipt, compact `3 + 2` reader affordance, Tauri subscribe/receive/ACK and keyboard close | `gui_local_reader_subscribe=ok`, `gui_local_reader_close=ok` |
 | `local-pins` | pin affordances | — |
 | `local-message-types` | injects `m.emote`, `m.notice`, and formatted spoiler events; checks `data-message-kind`, collapsed spoiler, reveal | — |
 | `local-composer` | mention autocomplete from `ProfileState.users`, Bold toolbar, slash input, then Rust-owned `send=sent` plus composer clear | `gui_local_mention=ok`, `gui_local_markdown=ok`, `gui_local_slash=ok` |

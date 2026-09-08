@@ -37,14 +37,21 @@ const SNAPSHOT_READ_COMMANDS = new Set([
   "settlement_snapshot",
   "resync_snapshot"
 ]);
+const RESOURCE_COMMANDS = new Set(["read_receipt_reader_resource"]);
+const REQUEST_COMMANDS = new Set(["download_avatar_thumbnail"]);
 const VOID_COMMANDS = new Set([
   "download_avatar_thumbnail",
+  "cancel_avatar_thumbnail",
   "download_media",
   "query_mention_candidates",
   "release_composer_draft_lease",
   "send_read_receipt",
   "set_fully_read",
-  "set_typing"
+  "set_typing",
+  "receive_receipt_reader",
+  "update_receipt_reader_window",
+  "ack_receipt_reader",
+  "close_receipt_reader"
 ]);
 const ADMISSION_COMMANDS = new Set(
   `retry_sliding_sync_capability change_homeserver submit_recovery start_device_cleanup submit_device_cleanup_uia erase_local_data_anyway restart_sync update_settings import_legacy_settings update_navigation_preference rebuild_search_index set_room_url_preview_override dismiss_directory_preview select_room_list_filter mark_room_as_read mark_room_as_unread set_room_notification_mode refresh_current_session_status submit_account_management_uia load_account_management_capabilities change_password deactivate_account probe_local_encryption_health reset_local_data bootstrap_cross_signing enable_key_backup export_room_keys import_room_keys bootstrap_secure_backup recover_secure_backup retry_secure_backup_inspection change_secure_backup_passphrase accept_verification start_own_user_sas retry_current_device_trust_discovery mismatch_sas_verification start_session_bootstrap confirm_session_bootstrap_saved confirm_sas_verification cancel_verification reset_identity cancel_identity_reset submit_identity_reset_password submit_identity_reset_oauth select_space reorder_spaces cancel_scheduled_send reschedule_scheduled_send retry_send cancel_send send_reaction redact_reaction set_presence set_display_name set_local_user_alias ignore_user unignore_user report_user report_content report_room set_avatar edit_message redact_message load_message_source request_room_key request_late_decryption forward_message load_link_previews hide_link_preview leave_room forget_room open_activity close_activity set_activity_tab paginate_activity retry_activity_resolution mark_activity_read set_composer_draft open_thread close_thread open_threads_list close_threads_list paginate_threads_list open_files_view close_files_view set_thread_composer_draft start_room_crawl stop_room_crawl repair_room_timeline set_space_child set_composer_reply_target cancel_composer_reply`
@@ -56,7 +63,8 @@ function isSnapshot(value: unknown): value is { state_generation?: number } {
 }
 
 function normalizeCommandResponse(command: string, value: unknown, generation = 0): unknown {
-  if (SNAPSHOT_READ_COMMANDS.has(command)) return value;
+  if (REQUEST_COMMANDS.has(command)) return typeof value === "string" ? value : "1";
+  if (SNAPSHOT_READ_COMMANDS.has(command) || RESOURCE_COMMANDS.has(command)) return value;
   if (VOID_COMMANDS.has(command)) return undefined;
   if (command === "start_oidc_login" && value && typeof value === "object") {
     return {
@@ -150,6 +158,10 @@ export class TauriIpcMock {
       return Promise.resolve(resolved).then((value) =>
         this.normalizeResponse(command, value) as T
       );
+    }
+
+    if (command === "read_receipt_reader_resource") {
+      return Promise.resolve(null as T);
     }
 
     if (command === "observe_viewport_sync") {

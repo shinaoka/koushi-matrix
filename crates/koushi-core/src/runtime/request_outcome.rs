@@ -681,9 +681,6 @@ enum EventProgress {
     RoomOperation {
         request_id: RequestId,
         room_id: String,
-        event_id: Option<String>,
-        user_id: Option<String>,
-        action: Option<koushi_state::RoomModerationAction>,
         generation: Option<u64>,
     },
     InviteBatch {
@@ -1218,9 +1215,6 @@ fn room_operation_progress(
             EventProgress::RoomOperation {
                 request_id,
                 room_id: space_id,
-                event_id: Some(child_room_id),
-                user_id: None,
-                action: None,
                 generation: None,
             }
         }
@@ -1235,9 +1229,6 @@ fn room_operation_progress(
             EventProgress::RoomOperation {
                 request_id,
                 room_id,
-                event_id: None,
-                user_id: Some(user_id),
-                action: None,
                 generation: None,
             }
         }
@@ -1251,9 +1242,6 @@ fn room_operation_progress(
             EventProgress::RoomOperation {
                 request_id,
                 room_id,
-                event_id: None,
-                user_id: None,
-                action: None,
                 generation: None,
             }
         }
@@ -1267,9 +1255,6 @@ fn room_operation_progress(
             EventProgress::RoomOperation {
                 request_id,
                 room_id,
-                event_id: None,
-                user_id: None,
-                action: None,
                 generation: None,
             }
         }
@@ -1283,9 +1268,6 @@ fn room_operation_progress(
             EventProgress::RoomOperation {
                 request_id,
                 room_id,
-                event_id: None,
-                user_id: None,
-                action: None,
                 generation: None,
             }
         }
@@ -1300,9 +1282,6 @@ fn room_operation_progress(
             EventProgress::RoomOperation {
                 request_id,
                 room_id,
-                event_id: None,
-                user_id: None,
-                action: None,
                 generation: None,
             }
         }
@@ -1316,9 +1295,6 @@ fn room_operation_progress(
             EventProgress::RoomOperation {
                 request_id,
                 room_id,
-                event_id: None,
-                user_id: None,
-                action: None,
                 generation: None,
             }
         }
@@ -1332,9 +1308,6 @@ fn room_operation_progress(
             EventProgress::RoomOperation {
                 request_id,
                 room_id,
-                event_id: None,
-                user_id: None,
-                action: None,
                 generation: None,
             }
         }
@@ -1348,9 +1321,6 @@ fn room_operation_progress(
             EventProgress::RoomOperation {
                 request_id,
                 room_id,
-                event_id: None,
-                user_id: None,
-                action: None,
                 generation: None,
             }
         }
@@ -1365,9 +1335,6 @@ fn room_operation_progress(
             EventProgress::RoomOperation {
                 request_id,
                 room_id,
-                event_id: None,
-                user_id: None,
-                action: None,
                 generation: None,
             }
         }
@@ -1382,9 +1349,6 @@ fn room_operation_progress(
             EventProgress::RoomOperation {
                 request_id,
                 room_id,
-                event_id: None,
-                user_id: None,
-                action: None,
                 generation: None,
             }
         }
@@ -1399,9 +1363,6 @@ fn room_operation_progress(
             EventProgress::RoomOperation {
                 request_id,
                 room_id,
-                event_id: Some(event_id),
-                user_id: None,
-                action: None,
                 generation: None,
             }
         }
@@ -1416,9 +1377,6 @@ fn room_operation_progress(
             EventProgress::RoomOperation {
                 request_id,
                 room_id,
-                event_id: Some(event_id),
-                user_id: None,
-                action: None,
                 generation: None,
             }
         }
@@ -1433,9 +1391,6 @@ fn room_operation_progress(
             EventProgress::RoomOperation {
                 request_id,
                 room_id,
-                event_id: None,
-                user_id: None,
-                action: None,
                 generation: None,
             }
         }
@@ -1449,9 +1404,6 @@ fn room_operation_progress(
             EventProgress::RoomOperation {
                 request_id,
                 room_id: settings.room_id,
-                event_id: None,
-                user_id: None,
-                action: None,
                 generation: None,
             }
         }
@@ -1465,9 +1417,6 @@ fn room_operation_progress(
             EventProgress::RoomOperation {
                 request_id,
                 room_id: settings.room_id,
-                event_id: None,
-                user_id: None,
-                action: None,
                 generation: None,
             }
         }
@@ -1489,9 +1438,6 @@ fn room_operation_progress(
             EventProgress::RoomOperation {
                 request_id,
                 room_id,
-                event_id: None,
-                user_id: Some(target_user_id),
-                action: Some(action),
                 generation: None,
             }
         }
@@ -1507,9 +1453,6 @@ fn room_operation_progress(
             EventProgress::RoomOperation {
                 request_id,
                 room_id,
-                event_id: None,
-                user_id: Some(target_user_id),
-                action: None,
                 generation: None,
             }
         }
@@ -1523,9 +1466,6 @@ fn room_operation_progress(
             EventProgress::RoomOperation {
                 request_id,
                 room_id: expected_room_id.clone(),
-                event_id: None,
-                user_id: None,
-                action: None,
                 generation: Some(generation),
             }
         }
@@ -1555,9 +1495,6 @@ fn room_operation_progress(
             EventProgress::RoomOperation {
                 request_id,
                 room_id: space_id,
-                event_id: None,
-                user_id: Some(user_id),
-                action: None,
                 generation: Some(generation),
             }
         }
@@ -1587,9 +1524,6 @@ fn room_operation_progress(
             EventProgress::RoomOperation {
                 request_id,
                 room_id: space_id,
-                event_id: None,
-                user_id: Some(user_id),
-                action: None,
                 generation: Some(generation),
             }
         }
@@ -1619,9 +1553,6 @@ fn room_operation_progress(
             EventProgress::RoomOperation {
                 request_id,
                 room_id: space_id,
-                event_id: None,
-                user_id: Some(user_id),
-                action: None,
                 generation: Some(generation),
             }
         }

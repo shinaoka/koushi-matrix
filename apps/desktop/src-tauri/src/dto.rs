@@ -11,21 +11,25 @@
 
 use std::collections::BTreeMap;
 
-use koushi_protocol::{CoreCommandAdmission, StateDelta, VersionedAppStateSnapshot};
+use koushi_protocol::{
+    CoreCommandAdmission, RoomLiveSignalMetadata, StateDelta, VersionedAppStateSnapshot,
+};
 use koushi_state::{
     AccountManagementCapabilities, AccountManagementState, AccountManagementUrl, ActivityState,
     AppError, AppState, AuthDiscoveryState, BasicOperationState, CjkTextPolicyState, ComposerState,
     CurrentSessionStatusState, DeviceCleanupState, DirectoryState, DisplayPlatform, E2eeTrustState,
-    FilesViewState, FocusedContextState, InvitePreview, InviteWorkflowState,
-    LinkPreviewSettingsState, LiveSignalsState, LocalEncryptionState, LocaleDisplayProfile,
-    MentionCandidatesState, NativeAttentionCapabilities, NativeAttentionState, NavigationState,
-    ProfileState, ProvisionalPhase, QrLoginState, RoomInteractionState, RoomListProjection,
-    RoomManagementState, RoomNotificationSettings, RoomPreferencesState, RoomSummary,
+    FilesViewState, FocusedContextState, IgnoredUserUpdateState, InvitePreview,
+    InviteWorkflowState, LinkPreviewSettingsState, LiveEventReceiptSummary, LiveSignalsState,
+    LocalEncryptionState, LocalUserAliasUpdateState, LocaleDisplayProfile, MentionCandidatesState,
+    NativeAttentionCapabilities, NativeAttentionState, NavigationState, OwnProfile, PresenceKind,
+    ProfileState, ProfileUpdateState, ProvisionalPhase, QrLoginState, RoomInteractionState,
+    RoomListProjection, RoomLiveSignals, RoomManagementState, RoomNotificationSettings,
+    RoomPreferencesState, RoomSummary, SearchCrawlerLastActive, SearchCrawlerRoomState,
     SearchCrawlerState, SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState,
     SecureBackupGateState, SessionLockReason, SessionState, SettingsState, SidebarModel,
     SoftLogoutReauthState, SpaceMembersState, SpaceSummary, StagedUploadItem, SyncState,
     ThreadAttentionState, ThreadPaneState, ThreadsListState, TimelinePaneState,
-    TypographyDisplayProfile, VerificationGateRejectReason, VerificationGateState,
+    TypographyDisplayProfile, UserProfile, VerificationGateRejectReason, VerificationGateState,
     VerificationMethod, native_attention_capabilities_for_platform, resolve_locale_display_profile,
     resolve_typography_display_profile,
 };
@@ -232,22 +236,50 @@ pub struct FrontendDomainStateChangedSlices {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<ProfileState>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_own: Option<OwnProfile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_users_by_id: Option<BTreeMap<String, Option<UserProfile>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_local_aliases_by_id: Option<BTreeMap<String, Option<String>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_ignored_user_ids_by_id: Option<BTreeMap<String, bool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_local_alias_update: Option<LocalUserAliasUpdateState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_ignored_user_update: Option<IgnoredUserUpdateState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_update: Option<ProfileUpdateState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_room_users_by_room:
+        Option<BTreeMap<String, Option<BTreeMap<String, Option<UserProfile>>>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub space_members: Option<SpaceMembersState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sync: Option<FrontendSyncState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spaces: Option<Vec<SpaceSummary>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub spaces_by_id: Option<BTreeMap<String, Option<SpaceSummary>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub rooms: Option<Vec<RoomSummary>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub rooms_by_id: Option<BTreeMap<String, Option<RoomSummary>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub invites: Option<Vec<InvitePreview>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invites_by_id: Option<BTreeMap<String, Option<InvitePreview>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub invite_workflow: Option<InviteWorkflowState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub room_notification_settings:
         Option<std::collections::HashMap<String, RoomNotificationSettings>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub room_notification_settings_by_id:
+        Option<BTreeMap<String, Option<RoomNotificationSettings>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub room_interactions: Option<BTreeMap<String, RoomInteractionState>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub room_interactions_by_id: Option<BTreeMap<String, Option<RoomInteractionState>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub directory: Option<DirectoryState>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -263,7 +295,20 @@ pub struct FrontendDomainStateChangedSlices {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub search_crawler: Option<SearchCrawlerState>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub search_crawler_rooms_by_id: Option<BTreeMap<String, Option<SearchCrawlerRoomState>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search_crawler_last_active: Option<Option<SearchCrawlerLastActive>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub live_signals: Option<LiveSignalsState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_signals_rooms: Option<BTreeMap<String, Option<RoomLiveSignals>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_signals_receipts_by_room_event:
+        Option<BTreeMap<String, BTreeMap<String, Option<LiveEventReceiptSummary>>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_signals_room_metadata_by_id: Option<BTreeMap<String, Option<RoomLiveSignalMetadata>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_signals_presence_by_user: Option<BTreeMap<String, Option<PresenceKind>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub e2ee_trust: Option<E2eeTrustState>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -293,14 +338,27 @@ impl FrontendDomainStateChangedSlices {
             && self.locale_profile.is_none()
             && self.typography_profile.is_none()
             && self.profile.is_none()
+            && self.profile_own.is_none()
+            && self.profile_users_by_id.is_none()
+            && self.profile_room_users_by_room.is_none()
+            && self.profile_local_aliases_by_id.is_none()
+            && self.profile_ignored_user_ids_by_id.is_none()
+            && self.profile_local_alias_update.is_none()
+            && self.profile_ignored_user_update.is_none()
+            && self.profile_update.is_none()
             && self.space_members.is_none()
             && self.sync.is_none()
             && self.spaces.is_none()
+            && self.spaces_by_id.is_none()
             && self.rooms.is_none()
+            && self.rooms_by_id.is_none()
             && self.invites.is_none()
+            && self.invites_by_id.is_none()
             && self.invite_workflow.is_none()
             && self.room_notification_settings.is_none()
+            && self.room_notification_settings_by_id.is_none()
             && self.room_interactions.is_none()
+            && self.room_interactions_by_id.is_none()
             && self.directory.is_none()
             && self.room_management.is_none()
             && self.mention_candidates.is_none()
@@ -308,7 +366,13 @@ impl FrontendDomainStateChangedSlices {
             && self.thread_attention.is_none()
             && self.search.is_none()
             && self.search_crawler.is_none()
+            && self.search_crawler_rooms_by_id.is_none()
+            && self.search_crawler_last_active.is_none()
             && self.live_signals.is_none()
+            && self.live_signals_rooms.is_none()
+            && self.live_signals_receipts_by_room_event.is_none()
+            && self.live_signals_room_metadata_by_id.is_none()
+            && self.live_signals_presence_by_user.is_none()
             && self.e2ee_trust.is_none()
             && self.local_encryption.is_none()
             && self.native_attention.is_none()
@@ -384,14 +448,27 @@ impl From<StateDelta> for FrontendDesktopSnapshotDelta {
         domain.link_preview_settings = changed.link_preview_settings;
         domain.room_preferences = changed.room_preferences;
         domain.profile = changed.profile;
+        domain.profile_own = changed.profile_own;
+        domain.profile_users_by_id = changed.profile_users_by_id;
+        domain.profile_room_users_by_room = changed.profile_room_users_by_room;
+        domain.profile_local_aliases_by_id = changed.profile_local_aliases_by_id;
+        domain.profile_ignored_user_ids_by_id = changed.profile_ignored_user_ids_by_id;
+        domain.profile_local_alias_update = changed.profile_local_alias_update;
+        domain.profile_ignored_user_update = changed.profile_ignored_user_update;
+        domain.profile_update = changed.profile_update;
         domain.space_members = changed.space_members;
         domain.sync = changed.sync.map(Into::into);
         domain.spaces = changed.spaces;
+        domain.spaces_by_id = changed.spaces_by_id;
         domain.rooms = changed.rooms;
+        domain.rooms_by_id = changed.rooms_by_id;
         domain.invites = changed.invites;
+        domain.invites_by_id = changed.invites_by_id;
         domain.invite_workflow = changed.invite_workflow;
         domain.room_notification_settings = changed.room_notification_settings;
+        domain.room_notification_settings_by_id = changed.room_notification_settings_by_id;
         domain.room_interactions = changed.room_interactions;
+        domain.room_interactions_by_id = changed.room_interactions_by_id;
         domain.directory = changed.directory;
         domain.room_management = changed.room_management;
         domain.mention_candidates = changed.mention_candidates;
@@ -399,7 +476,13 @@ impl From<StateDelta> for FrontendDesktopSnapshotDelta {
         domain.thread_attention = changed.thread_attention;
         domain.search = changed.search.map(Into::into);
         domain.search_crawler = changed.search_crawler;
+        domain.search_crawler_rooms_by_id = changed.search_crawler_rooms_by_id;
+        domain.search_crawler_last_active = changed.search_crawler_last_active;
         domain.live_signals = changed.live_signals;
+        domain.live_signals_rooms = changed.live_signals_rooms;
+        domain.live_signals_receipts_by_room_event = changed.live_signals_receipts_by_room_event;
+        domain.live_signals_room_metadata_by_id = changed.live_signals_room_metadata_by_id;
+        domain.live_signals_presence_by_user = changed.live_signals_presence_by_user;
         domain.e2ee_trust = changed.e2ee_trust;
         domain.local_encryption = changed.local_encryption;
         if let Some(mut native_attention) = changed.native_attention {

@@ -12,6 +12,7 @@ mod viewport_sync;
 mod window_state;
 
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -41,8 +42,12 @@ use crate::window_state::{
 use koushi_core::renderable_thumbnail::{
     cleanup_legacy_plaintext_thumbnail_dirs, lookup_renderable_thumbnail,
 };
-use koushi_core::{CoreConnection, CoreRuntime, NativeArtifactRegistry};
+use koushi_core::{
+    CoreConnection, CoreRuntime, NativeArtifactRegistry, ReaderSubscription,
+    ReaderSubscriptionCloser,
+};
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel};
+use koushi_protocol::view::ViewScopeId;
 use koushi_protocol::{AccountCommand, AppCommand, CoreCommand};
 
 // Must stay in sync with `OIDC_REDIRECT_URI` in koushi-core. The scheme is
@@ -74,6 +79,12 @@ const SKIP_KEYCHAIN_PERSISTENCE_ENV: &str = "KOUSHI_SKIP_KEYCHAIN_PERSISTENCE";
 /// `timeline_items_count`: `AppState` snapshots never embed timeline lists
 /// (Async rule 4). The count needed for `qa_window_title` is tracked here
 /// via a Tauri-side counter updated by the event forwarding loop.
+#[derive(Clone)]
+pub(crate) struct ReaderSubscriptionEntry {
+    pub(crate) subscription: Arc<TokioMutex<ReaderSubscription>>,
+    pub(crate) close: ReaderSubscriptionCloser,
+}
+
 pub struct CoreRuntimeState {
     pub(crate) runtime: CoreRuntime,
     /// Command-dispatch connection. Uses `tokio::sync::Mutex` so the guard can
@@ -102,6 +113,7 @@ pub struct CoreRuntimeState {
     pub(crate) viewport_sync_generation: viewport_sync::ViewportSyncGeneration,
     /// Graceful-quit barrier; see [`quit_request_action`].
     pub(crate) quit_stage: AtomicU8,
+    pub(crate) reader_subscriptions: TokioMutex<HashMap<ViewScopeId, ReaderSubscriptionEntry>>,
 }
 
 fn restore_session_enabled_from_env_value(value: Option<&str>) -> bool {
@@ -677,6 +689,7 @@ pub fn run() {
                 native_window_focus_generation: AtomicU64::new(0),
                 viewport_sync_generation: viewport_sync::ViewportSyncGeneration::default(),
                 quit_stage: AtomicU8::new(QuitStage::Idle.repr()),
+                reader_subscriptions: TokioMutex::new(HashMap::new()),
             };
             app.manage(core_state);
             install_oidc_deep_link_handler(app)?;
@@ -995,6 +1008,7 @@ pub fn run() {
             commands::profile::report_room,
             commands::profile::set_avatar,
             commands::profile::download_avatar_thumbnail,
+            commands::profile::cancel_avatar_thumbnail,
             commands::room::leave_room,
             commands::room::forget_room,
             commands::room::set_room_tag,
@@ -1023,6 +1037,12 @@ pub fn run() {
             commands::views::paginate_threads_list,
             commands::views::open_thread,
             commands::views::close_thread,
+            commands::views::subscribe_receipt_reader,
+            commands::views::receive_receipt_reader,
+            commands::views::read_receipt_reader_resource,
+            commands::views::update_receipt_reader_window,
+            commands::views::ack_receipt_reader,
+            commands::views::close_receipt_reader,
             commands::search::submit_search,
             commands::search::close_search,
             commands::search::start_room_crawl,

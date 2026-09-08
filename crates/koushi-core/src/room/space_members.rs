@@ -241,6 +241,7 @@ async fn reconcile_space_invite_cancellation(
     })
 }
 
+#[cfg(test)]
 fn record_core_space_members_projection(
     trigger: &'static str,
     generation: u64,

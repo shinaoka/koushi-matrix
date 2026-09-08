@@ -1,9 +1,10 @@
 use koushi_state::{
     AppAction, AppEffect, AppState, AvatarImage, AvatarThumbnailState, InvitePreview,
     LiveEventReceipts, LiveReadReceipt, LocalUserAliasUpdateState, OwnProfile,
-    ProfileResolutionInput, ProfileResolutionSource, ProfileUpdateRequest, ProfileUpdateState,
-    RoomSummary, RoomTags, SessionInfo, SessionState, SpaceSummary, UiEvent, UserProfile, reduce,
-    resolve_optional_user_display_name, resolve_people_label, resolve_user_display_name,
+    ProfileDisplayChange, ProfileResolutionInput, ProfileResolutionSource, ProfileUpdateRequest,
+    ProfileUpdateState, RoomSummary, RoomTags, SessionInfo, SessionState, SpaceSummary, UiEvent,
+    UserProfile, reduce, resolve_optional_user_display_name, resolve_people_label,
+    resolve_user_display_name,
 };
 use std::collections::BTreeMap;
 
@@ -137,8 +138,9 @@ fn avatar_thumbnail_update_refreshes_all_matching_receipt_copies() {
     ] {
         reduce(
             &mut state,
-            AppAction::LiveRoomReceiptsUpdated {
+            AppAction::LiveRoomReceiptsWindowReconciled {
                 room_id: room_id.to_owned(),
+                scoped_event_ids: Vec::new(),
                 receipts_by_event: vec![LiveEventReceipts {
                     event_id: event_id.to_owned(),
                     receipts: vec![
@@ -179,7 +181,9 @@ fn avatar_thumbnail_update_refreshes_all_matching_receipt_copies() {
     assert_eq!(
         effects,
         vec![
-            AppEffect::EmitUiEvent(UiEvent::ProfileChanged(Default::default())),
+            AppEffect::EmitUiEvent(UiEvent::ProfileChanged(ProfileDisplayChange {
+                user_ids: vec!["@reader:localhost".to_owned()],
+            },)),
             AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged),
         ]
     );
@@ -928,8 +932,9 @@ fn local_user_aliases_override_read_receipt_reader_labels() {
 
     reduce(
         &mut state,
-        AppAction::LiveRoomReceiptsUpdated {
+        AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: "!room:localhost".to_owned(),
+            scoped_event_ids: Vec::new(),
             receipts_by_event: vec![LiveEventReceipts {
                 event_id: "$event:localhost".to_owned(),
                 receipts: vec![LiveReadReceipt {
@@ -980,8 +985,9 @@ fn relevant_room_observation_precedes_global_cache_for_seen_receipts() {
     );
     reduce(
         &mut state,
-        AppAction::LiveRoomReceiptsUpdated {
+        AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: "!room:localhost".to_owned(),
+            scoped_event_ids: Vec::new(),
             receipts_by_event: vec![LiveEventReceipts {
                 event_id: "$room-seen:localhost".to_owned(),
                 receipts: vec![LiveReadReceipt {
@@ -1009,8 +1015,9 @@ fn profile_cache_updates_existing_receipt_after_space_child_observation() {
     let mut state = ready_state();
     reduce(
         &mut state,
-        AppAction::LiveRoomReceiptsUpdated {
+        AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: "!child:localhost".to_owned(),
+            scoped_event_ids: Vec::new(),
             receipts_by_event: vec![LiveEventReceipts {
                 event_id: "$seen:localhost".to_owned(),
                 receipts: vec![LiveReadReceipt {
@@ -1122,8 +1129,9 @@ fn receipt_window_reconcile_clears_missing_scoped_events_and_preserves_outside_s
     ] {
         reduce(
             &mut state,
-            AppAction::LiveRoomReceiptsUpdated {
+            AppAction::LiveRoomReceiptsWindowReconciled {
                 room_id: "!room:localhost".to_owned(),
+                scoped_event_ids: Vec::new(),
                 receipts_by_event: vec![LiveEventReceipts {
                     event_id: event_id.to_owned(),
                     receipts: vec![LiveReadReceipt {

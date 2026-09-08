@@ -92,9 +92,112 @@ pub struct EventStreamLag {
     pub skipped: u64,
 }
 
+/// A cancellation signal for an attached reader subscription.
+#[derive(Clone)]
+pub struct ReaderSubscriptionCloser(watch::Sender<bool>);
+
+impl ReaderSubscriptionCloser {
+    /// Stop a pending receive without requiring the subscription mutex.
+    pub fn close(&self) {
+        self.0.send_replace(true);
+    }
+}
+
 /// One attached consumer: allocates request ids, submits commands, and
 /// observes the shared event stream plus the latest snapshot.
+pub struct ReaderSubscription {
+    consumer: crate::view_scope_lifecycle::ViewConsumer,
+    scope: crate::view_scope_lifecycle::OwnedViewScope,
+    close_tx: watch::Sender<bool>,
+    close_rx: watch::Receiver<bool>,
+}
+
+impl ReaderSubscription {
+    pub fn id(&self) -> koushi_protocol::view::ViewScopeId {
+        self.scope.id()
+    }
+
+    pub fn close_handle(&self) -> ReaderSubscriptionCloser {
+        ReaderSubscriptionCloser(self.close_tx.clone())
+    }
+
+    pub async fn next_delivery(&mut self) -> Option<koushi_protocol::view::ViewDelivery> {
+        let mut close_rx = self.close_rx.clone();
+        let delivery = tokio::select! {
+            _ = wait_for_reader_close(&mut close_rx) => return None,
+            delivery = self.scope.next_delivery() => delivery?,
+        };
+        if *self.close_rx.borrow() {
+            return None;
+        }
+        match delivery {
+            crate::view_scope_lifecycle::ScopeDelivery::Model { revision, model } => {
+                Some(koushi_protocol::view::ViewDelivery::Model {
+                    scope: self.scope.id(),
+                    revision,
+                    model: model.model.clone(),
+                })
+            }
+            crate::view_scope_lifecycle::ScopeDelivery::Retired(reason) => {
+                Some(koushi_protocol::view::ViewDelivery::Retired {
+                    scope: self.scope.id(),
+                    reason,
+                })
+            }
+        }
+    }
+
+    pub fn ack_model(
+        &self,
+        revision: koushi_protocol::view::ViewRevision,
+    ) -> Result<(), crate::view_scope_lifecycle::ScopeError> {
+        self.consumer.ack_model(self.scope.id(), revision)
+    }
+
+    pub fn update_window(
+        &self,
+        request: koushi_protocol::view::ReaderWindowRequest,
+    ) -> Result<(), crate::view_scope_lifecycle::ScopeError> {
+        self.scope.update_reader_window(
+            request.installed_revision,
+            request.sequence,
+            request.target,
+            request.limit,
+        )
+    }
+
+    /// Read an installed resource only through this consumer's live scope.
+    /// Bytes are copied after Core has checked ownership and revision.
+    pub fn resource_content(
+        &self,
+        revision: koushi_protocol::view::ViewRevision,
+        source_ref: &str,
+    ) -> Result<
+        Option<crate::renderable_thumbnail::RenderableThumbnailContent>,
+        crate::view_scope_lifecycle::ScopeError,
+    > {
+        if *self.close_rx.borrow() {
+            return Err(crate::view_scope_lifecycle::ScopeError::Closed);
+        }
+        self.consumer
+            .resource(self.scope.id(), revision, source_ref)
+            .map(|lease| lease.map(|lease| lease.content()))
+    }
+}
+
+async fn wait_for_reader_close(close_rx: &mut watch::Receiver<bool>) {
+    if *close_rx.borrow() {
+        return;
+    }
+    while close_rx.changed().await.is_ok() {
+        if *close_rx.borrow() {
+            return;
+        }
+    }
+}
+
 pub struct CoreConnection {
+    view_scopes: crate::view_scope_lifecycle::ViewScopeRegistry,
     connection_id: RuntimeConnectionId,
     command_tx: mpsc::Sender<CoreCommandEnvelope>,
     composer_draft_leases: Arc<ComposerDraftLeaseRegistry>,
@@ -141,6 +244,7 @@ impl CoreRuntime {
     /// `RuntimeConnectionId` is the only id its commands may carry.
     pub fn attach(&self) -> CoreConnection {
         CoreConnection {
+            view_scopes: self.view_scopes.clone(),
             connection_id: RuntimeConnectionId(
                 self.next_connection_id.fetch_add(1, Ordering::Relaxed),
             ),
@@ -301,6 +405,14 @@ impl CoreCommandHandle {
                 composer_permit,
                 admission: _,
             } => (command, composer_permit),
+            CoreCommandEnvelope::ReadReceiptWindow { .. }
+            | CoreCommandEnvelope::ReaderPrepared(_) => {
+                unreachable!("composer admission creates a public command")
+            }
+            #[cfg(test)]
+            CoreCommandEnvelope::ResolveReceiptWindow { .. } => {
+                unreachable!("composer admission creates a public command")
+            }
             #[cfg(any(test, feature = "test-hooks"))]
             CoreCommandEnvelope::Qa(_) => {
                 unreachable!("composer admission creates a public command")
@@ -392,6 +504,14 @@ impl CoreConnectionTestControl {
             }
             #[cfg(any(test, feature = "test-hooks"))]
             CoreCommandEnvelope::Qa(_) => unreachable!("test control received QA command"),
+            CoreCommandEnvelope::ReadReceiptWindow { .. }
+            | CoreCommandEnvelope::ReaderPrepared(_) => {
+                unreachable!("test control expected a public command")
+            }
+            #[cfg(test)]
+            CoreCommandEnvelope::ResolveReceiptWindow { .. } => {
+                unreachable!("test control expected a public command")
+            }
         })
     }
 
@@ -407,6 +527,100 @@ impl CoreConnectionTestControl {
 }
 
 impl CoreConnection {
+    pub(crate) fn view_consumer(
+        &self,
+    ) -> Result<crate::view_scope_lifecycle::ViewConsumer, crate::view_scope_lifecycle::ScopeError>
+    {
+        self.view_scopes.consumer(self.connection_id)
+    }
+
+    pub fn subscribe_reader(
+        &self,
+        source: koushi_protocol::view::ReceiptSourceRef,
+        start: u64,
+        limit: koushi_protocol::view::ReaderWindowLimit,
+    ) -> Result<ReaderSubscription, crate::view_scope_lifecycle::ScopeError> {
+        let consumer = self.view_consumer()?;
+        let scope = consumer.open_reader(source, start, limit)?;
+        let (close_tx, close_rx) = watch::channel(false);
+        Ok(ReaderSubscription {
+            consumer,
+            scope,
+            close_tx,
+            close_rx,
+        })
+    }
+
+    /// Return an authorized byte owner; callers copy transport bytes outside registry locks.
+    #[cfg(test)]
+    pub(crate) fn view_resource(
+        &self,
+        consumer: &crate::view_scope_lifecycle::ViewConsumer,
+        scope: koushi_protocol::view::ViewScopeId,
+        revision: koushi_protocol::view::ViewRevision,
+        source_ref: &str,
+    ) -> Result<
+        Option<crate::renderable_thumbnail::RenderableThumbnailLease>,
+        crate::view_scope_lifecycle::ScopeError,
+    > {
+        if !consumer.is_current_for(&self.view_scopes, self.connection_id) {
+            return Err(crate::view_scope_lifecycle::ScopeError::NotOwned);
+        }
+        consumer.resource(scope, revision, source_ref)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn read_receipt_window(
+        &self,
+        consumer: &crate::view_scope_lifecycle::ViewConsumer,
+        source: koushi_protocol::view::ReceiptSourceRef,
+        start: u64,
+        limit: koushi_protocol::view::ReaderWindowLimit,
+    ) -> Result<crate::timeline::ResolvedReceiptWindow, crate::view_scope_lifecycle::ScopeError>
+    {
+        use crate::view_scope_lifecycle::ScopeError;
+        let work = async {
+            if !consumer.is_current_for(&self.view_scopes, self.connection_id) {
+                return Err(ScopeError::NotOwned);
+            }
+            let (response, result) = oneshot::channel();
+            self.command_tx
+                .send(CoreCommandEnvelope::ReadReceiptWindow {
+                    source: source.clone(),
+                    start,
+                    limit,
+                    response,
+                })
+                .await
+                .map_err(|_| ScopeError::Closed)?;
+            let window = result.await.map_err(|_| ScopeError::Closed)??;
+            if !consumer.is_current_for(&self.view_scopes, self.connection_id) {
+                return Err(ScopeError::Closed);
+            }
+            let (response, result) = oneshot::channel();
+            self.command_tx
+                .send(CoreCommandEnvelope::ResolveReceiptWindow {
+                    source,
+                    window,
+                    response,
+                })
+                .await
+                .map_err(|_| ScopeError::Closed)?;
+            let window = result.await.map_err(|_| ScopeError::Closed)??;
+            let _source = window
+                .acquire_source()
+                .ok_or(ScopeError::SourceUnavailable)?;
+            if !consumer.is_current_for(&self.view_scopes, self.connection_id) {
+                return Err(ScopeError::Closed);
+            }
+            Ok(window)
+        };
+        tokio::select! {
+            _ = consumer.cancelled() => Err(ScopeError::Closed),
+            result = work => result,
+        }
+    }
+
     #[cfg(any(test, feature = "test-hooks"))]
     #[doc(hidden)]
     pub fn new_for_testing(event_capacity: usize) -> (Self, CoreConnectionTestControl) {
@@ -418,6 +632,7 @@ impl CoreConnection {
         });
         (
             Self {
+                view_scopes: crate::view_scope_lifecycle::ViewScopeRegistry::default(),
                 connection_id: RuntimeConnectionId(41),
                 command_tx,
                 composer_draft_leases: Arc::new(ComposerDraftLeaseRegistry::new()),

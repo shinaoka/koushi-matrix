@@ -141,11 +141,35 @@ pub async fn download_avatar_thumbnail(
     mxc_uri: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(
         state.inner(),
         build_download_avatar_thumbnail_command(request_id, mxc_uri),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    Ok(request_id.sequence.to_string())
+}
+
+#[tauri::command]
+pub async fn cancel_avatar_thumbnail(
+    mxc_uri: String,
+    request_sequence: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<(), String> {
+    let request_id = next_request_id(state.inner()).await;
+    let target_sequence = request_sequence
+        .parse::<u64>()
+        .map_err(|_| "avatar request sequence is invalid".to_owned())?;
+    let target_request_id = koushi_protocol::RequestId {
+        connection_id: request_id.connection_id,
+        sequence: target_sequence,
+    };
+    submit_core_command(
+        state.inner(),
+        build_cancel_avatar_thumbnail_command(request_id, target_request_id, mxc_uri),
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
@@ -253,5 +277,45 @@ pub(super) fn build_download_avatar_thumbnail_command(
     })
 }
 
+pub(super) fn build_cancel_avatar_thumbnail_command(
+    request_id: koushi_protocol::RequestId,
+    target_request_id: koushi_protocol::RequestId,
+    mxc_uri: String,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::CancelAvatarThumbnail {
+        request_id,
+        target_request_id,
+        mxc_uri,
+    })
+}
+
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancel_avatar_thumbnail_command_keeps_target_request_identity() {
+        let request_id = koushi_protocol::RequestId {
+            connection_id: koushi_protocol::RuntimeConnectionId(3),
+            sequence: 8,
+        };
+        let target_request_id = koushi_protocol::RequestId {
+            connection_id: koushi_protocol::RuntimeConnectionId(3),
+            sequence: 7,
+        };
+        assert!(matches!(
+            build_cancel_avatar_thumbnail_command(
+                request_id,
+                target_request_id,
+                "mxc://example.invalid/avatar".to_owned()
+            ),
+            CoreCommand::Account(AccountCommand::CancelAvatarThumbnail {
+                request_id: actual_request_id,
+                target_request_id: actual_target_request_id,
+                mxc_uri
+            }) if actual_request_id == request_id
+                && actual_target_request_id == target_request_id
+                && mxc_uri == "mxc://example.invalid/avatar"
+        ));
+    }
+}

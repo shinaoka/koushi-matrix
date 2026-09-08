@@ -201,13 +201,14 @@ impl LiveRoomListReconciliation {
         self.pending.is_some()
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn is_authoritative(&self, current_entries: usize) -> bool {
+        self.authoritative && self.is_complete(current_entries)
+    }
+
     fn take_projection_ack(&mut self) -> Option<(u64, u64, oneshot::Sender<RoomListReconcileAck>)> {
         let (backend_generation, response_sequence, ready_tx) = self.pending.as_mut()?;
         Some((*backend_generation, *response_sequence, ready_tx.take()?))
-    }
-
-    fn is_authoritative(&self, current_entries: usize) -> bool {
-        self.authoritative && self.is_complete(current_entries)
     }
 
     fn finish_if_complete(
@@ -791,9 +792,9 @@ async fn run_live_room_list_observation_with_sources(
                 // accumulator that later index-based diffs address. Keep it in a
                 // separate one-shot vector so `current` stays owned by the
                 // dynamic-adapter diff stream.
-                let mut observed_snapshot: Option<
+                let observed_snapshot: Option<
                     eyeball_im::Vector<matrix_sdk_ui::room_list_service::RoomListItem>,
-                > = None;
+                >;
                 match command {
                     RoomListObservationCommand::Refresh => {
                         // Read through the same live service that owns the

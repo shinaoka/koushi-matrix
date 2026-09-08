@@ -41,7 +41,15 @@ command-watermark resync only; normal command returns carry typed Core
 settlement/admission generations, not state. A delta generation gap forces one
 full-snapshot reset plus timeline projection reset/replay before later deltas
 apply. A command generation is a resync watermark and never renderer-delivery,
-DOM-paint, or product-progress evidence.
+DOM-paint, or product-progress evidence. Room-local live signals and stable-order
+room/Space/invite lists cross this lane as identity-keyed replacement maps with
+explicit null removals; full ordered slices are reserved for order changes.
+Profile users and room-local profile users use the same scoped replacement rule.
+Open Activity stream rows use `activity_recent_rows_by_id` and
+`activity_unread_rows_by_id` replacement maps only when row identity order,
+tab/mark-read state, and stream pagination/resolution metadata remain stable;
+row insertion/reordering or any state/metadata transition publishes the full
+Activity slice.
 
 ### Core request outcomes (Phase A, issue #755)
 
@@ -2314,7 +2322,7 @@ stateDiagram-v2
   mimetype and byte count, never bytes.
 - Avatar images store the MXC URI as Rust-owned metadata. React must not render
   an MXC URI directly; it renders an image only when Rust/platform-owned media
-  handling has settled `AvatarThumbnailState::Ready { source_url, .. }`.
+  handling has settled `AvatarThumbnailState::Ready { source_ref, .. }`.
   `NotRequested`, `Loading`, and `Failed` render the colored-initial fallback.
 - Avatar thumbnail fields settle through Rust-owned snapshot actions. The
   existing `AvatarThumbnailUpdated` action updates every matching avatar copy by
@@ -2323,11 +2331,17 @@ stateDiagram-v2
   `LiveSignalsChanged` after existing profile/room-list effects. Duplicate
   thumbnail state and unrelated MXCs are inert; no new action or renderer-side
   profile join is required.
+- Visible avatar demand is a bounded renderer request: intersection cleanup
+  releases its reference, Tauri returns only an opaque decimal request sequence,
+  and Core cancels the matching waiter or active/queued fetch without publishing
+  a terminal event for the released demand. Shared MXCs remain single-flight
+  until their final consumer releases them; account teardown still uses the
+  session-generation fence.
 - The existing timeline media download contract emits byte counts only and does
-  not put downloaded bytes in React state. Avatar thumbnail source URLs must
-  remain app-owned handles or source URLs produced by Rust/platform media
-  handling; decrypted bytes, encrypted media keys, local filesystem paths, and
-  raw SDK errors stay outside snapshots and QA output.
+  not put downloaded bytes in React state. Avatar thumbnail source references
+  are opaque app-owned handles produced by Rust/platform media handling;
+  decrypted bytes, encrypted media keys, local filesystem paths, and raw SDK
+  errors stay outside snapshots and QA output.
 
 ## Ignore, Block, And Report
 
@@ -2375,25 +2389,25 @@ DOM hover state, timers, or local component state.
 stateDiagram-v2
     [*] --> Empty
     Empty --> RoomSignals: LiveRoomSignalsUpdated
-    Empty --> RoomSignals: LiveRoomReceiptsUpdated
+    Empty --> RoomSignals: LiveRoomReceiptSummariesUpdated
     Empty --> RoomSignals: LiveRoomReceiptsWindowReconciled
     Empty --> RoomSignals: FullyReadMarkerUpdated
     Empty --> RoomSignals: TypingUsersUpdated
     Empty --> PresenceSignals: PresenceUpdated
     RoomSignals --> RoomSignals: LiveRoomSignalsUpdated
-    RoomSignals --> RoomSignals: LiveRoomReceiptsUpdated
+    RoomSignals --> RoomSignals: LiveRoomReceiptSummariesUpdated
     RoomSignals --> RoomSignals: LiveRoomReceiptsWindowReconciled
     RoomSignals --> RoomSignals: FullyReadMarkerUpdated
     RoomSignals --> RoomSignals: TypingUsersUpdated
     RoomSignals --> RoomAndPresence: PresenceUpdated
     PresenceSignals --> PresenceSignals: PresenceUpdated
     PresenceSignals --> RoomAndPresence: LiveRoomSignalsUpdated
-    PresenceSignals --> RoomAndPresence: LiveRoomReceiptsUpdated
+    PresenceSignals --> RoomAndPresence: LiveRoomReceiptSummariesUpdated
     PresenceSignals --> RoomAndPresence: LiveRoomReceiptsWindowReconciled
     PresenceSignals --> RoomAndPresence: FullyReadMarkerUpdated
     PresenceSignals --> RoomAndPresence: TypingUsersUpdated
     RoomAndPresence --> RoomAndPresence: LiveRoomSignalsUpdated
-    RoomAndPresence --> RoomAndPresence: LiveRoomReceiptsUpdated
+    RoomAndPresence --> RoomAndPresence: LiveRoomReceiptSummariesUpdated
     RoomAndPresence --> RoomAndPresence: LiveRoomReceiptsWindowReconciled
     RoomAndPresence --> RoomAndPresence: FullyReadMarkerUpdated
     RoomAndPresence --> RoomAndPresence: TypingUsersUpdated
@@ -2408,9 +2422,10 @@ stateDiagram-v2
 - `LiveRoomSignalsUpdated { room_id, update }` replaces the room's full
   live-signal snapshot. The reducer normalizes duplicate receipts by user,
   sorts receipt event entries, and sorts/deduplicates typing user ids.
-- `LiveRoomReceiptsUpdated { room_id, receipts_by_event }` is a partial merge
-  into the room receipt map. It does not clear typing users or the fully-read
-  marker.
+- `LiveRoomReceiptSummariesUpdated { room_id, receipts_by_event }` merges
+  bounded live summaries into the room receipt map. Each entry contains at most
+  the compact reader cap and an exact total; it does not clear typing users or
+  the fully-read marker.
 - `LiveRoomReceiptsWindowReconciled { room_id, scoped_event_ids,
   receipts_by_event }` is an authoritative replacement only for the stable
   event-ID union of the actor's old and replacement timeline windows. It first

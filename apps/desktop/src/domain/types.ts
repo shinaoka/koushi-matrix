@@ -855,7 +855,12 @@ export type AvatarThumbnailState =
     }
   | { kind: "failed"; request_id: number; failureKind: AvatarThumbnailFailureKind };
 
-export type AvatarThumbnailFailureKind = "network" | "forbidden" | "unsupported" | "sdk";
+export type AvatarThumbnailFailureKind =
+  | "network"
+  | "forbidden"
+  | "unsupported"
+  | "sdk"
+  | "capacity";
 
 export type ProfileUpdateState =
   | { kind: "idle" }
@@ -1738,6 +1743,12 @@ export type BasicOperationState =
 export interface LiveSignalsState {
   rooms: Record<string, RoomLiveSignals>;
   presence: Record<string, PresenceKind>;
+}
+
+export interface RoomLiveSignalMetadata {
+  fully_read_event_id: string | null;
+  typing_user_ids: string[];
+  typing_users: LiveTypingUser[];
 }
 
 export interface RoomLiveSignals {

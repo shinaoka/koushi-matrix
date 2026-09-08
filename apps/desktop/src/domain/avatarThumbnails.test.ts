@@ -23,6 +23,20 @@ describe("avatar thumbnail demand discovery", () => {
     ).toEqual([]);
   });
 
+  test("does not request room-list avatars from the account-wide snapshot", () => {
+    const snapshot = readyDesktopSnapshotFixture();
+    snapshot.state.domain.profile.own.avatar = null;
+    snapshot.state.domain.rooms[0]!.avatar = {
+      mxc_uri: "mxc://example.invalid/offscreen-room",
+      thumbnail: { kind: "notRequested" }
+    };
+
+    expect(planSnapshotAvatarThumbnailRequests(snapshot, new Set())).toEqual({
+      requestMxcUris: [],
+      requestedMxcUris: new Set()
+    });
+  });
+
   test.each(["loading", "ready", "failed"] as const)(
     "does not retry a %s Rust-owned terminal or in-flight state",
     (kind) => {

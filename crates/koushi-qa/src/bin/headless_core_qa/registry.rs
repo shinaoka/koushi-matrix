@@ -67,11 +67,14 @@ const DEFAULT_STRESS_ROOMS_PER_SPACE: usize = 2;
 
 const DEFAULT_STRESS_MESSAGES_PER_ROOM: usize = 8;
 
-const MAX_STRESS_SPACE_COUNT: usize = 6;
+// The hard ceiling admits the required 100-room / 10,000-message stress
+// characterization while keeping all caller-controlled fixture dimensions
+// bounded (the empty-formatted probe adds one additional event).
+const MAX_STRESS_SPACE_COUNT: usize = 10;
 
-const MAX_STRESS_ROOMS_PER_SPACE: usize = 8;
+const MAX_STRESS_ROOMS_PER_SPACE: usize = 10;
 
-const MAX_STRESS_MESSAGES_PER_ROOM: usize = 80;
+const MAX_STRESS_MESSAGES_PER_ROOM: usize = 100;
 
 const ENV_STRESS_SPACE_COUNT: &str = "KOUSHI_QA_STRESS_SPACES";
 

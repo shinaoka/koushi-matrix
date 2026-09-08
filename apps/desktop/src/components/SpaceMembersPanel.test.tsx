@@ -123,9 +123,10 @@ function profile(userId: string, avatar: UserProfile["avatar"]): UserProfile {
 
 describe("SpaceMembersPanel space invite search (#508)", () => {
   const candidate = (
-    status: InviteTargetCandidate["status"] = "selectable"
+    status: InviteTargetCandidate["status"] = "selectable",
+    userId = "@new:example.invalid"
   ): InviteTargetCandidate => ({
-    user_id: "@new:example.invalid",
+    user_id: userId,
     display_label: "New Person",
     original_display_label: "New Person",
     avatar: null,
@@ -168,7 +169,7 @@ describe("SpaceMembersPanel space invite search (#508)", () => {
     const onInviteSearchCandidate = vi.fn();
     const onSearchInviteTargets = vi.fn(async () => [
       candidate("alreadyInDestination"),
-      candidate()
+      candidate("selectable", "@other-new:example.invalid")
     ]);
     const { rerender } = render(
       <SpaceMembersPanel

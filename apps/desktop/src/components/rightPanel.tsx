@@ -262,7 +262,7 @@ export function ContextualRightPanel({
     reason: string | null
   ) => void;
   onSetLocalUserAlias?: (userId: string, alias: string | null) => void;
-  onRequestMemberAvatarThumbnail?: (mxcUri: string) => void | Promise<void>;
+  onRequestMemberAvatarThumbnail?: (mxcUri: string) => void | Promise<void | (() => void)>;
   onSetRoomNotificationMode?: (roomId: string, mode: RoomNotificationMode) => void;
   onStartDirectMessage?: (userId: string) => void;
   onUpdateMemberRole?: (

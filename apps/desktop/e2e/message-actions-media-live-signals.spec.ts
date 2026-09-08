@@ -182,7 +182,7 @@ test("a timeline sender avatar renders after a Rust profile thumbnail update", a
         mxc_uri: mxcUri,
         thumbnail: {
           kind: "ready" as const,
-          source_ref: "data:image/gif;base64,R0lGODlhAQABAAAAACw=",
+          source_ref: "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=",
           width: 1,
           height: 1,
           mime_type: "image/gif"
@@ -983,7 +983,7 @@ test("ready receipt thumbnails replace initials in place without changing marker
     if (!reader.avatar) throw new Error("seeded reader avatar missing");
     reader.avatar.thumbnail = {
       kind: "ready",
-      source_ref: "data:image/gif;base64,R0lGODlhAQABAAAAACw=",
+      source_ref: "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=",
       width: 1,
       height: 1,
       mime_type: "image/gif"
@@ -1048,7 +1048,7 @@ test("read receipt avatars render from Rust projection with overflow and tooltip
                         thumbnail: {
                           kind: "ready",
                           source_ref:
-                            "data:image/gif;base64,R0lGODlhAQABAAAAACw=",
+                            "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=",
                           width: 1,
                           height: 1,
                           mime_type: "image/gif"
@@ -1187,7 +1187,7 @@ test("Seen popup keeps each reader on one compact line (#360)", async ({ page })
   const layout = await popup.evaluate((element) => {
     const styles = getComputedStyle(element);
     const fontSize = Number.parseFloat(styles.fontSize);
-    const rows = Array.from(element.children).map((child) => {
+    const rows = Array.from(element.querySelectorAll('[role="listitem"]')).map((child) => {
       const rect = child.getBoundingClientRect();
       return { height: rect.height, width: rect.width };
     });
@@ -1196,7 +1196,7 @@ test("Seen popup keeps each reader on one compact line (#360)", async ({ page })
       Number.parseFloat(styles.paddingBlockEnd) +
       Number.parseFloat(styles.borderBlockStartWidth) +
       Number.parseFloat(styles.borderBlockEndWidth) +
-      Number.parseFloat(styles.rowGap || "0") * Math.max(rows.length - 1, 0);
+      Number.parseFloat(styles.rowGap || "0");
     return {
       chromeHeight,
       fontSize,

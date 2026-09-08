@@ -58,10 +58,14 @@ const PENDING_LOGIN_CAP: u8 = 8;
 pub(crate) enum PendingLoginCleanupEvidence {
     NoRequestSent,
     ServerRejectedBeforeSession,
+    #[cfg(any(test, feature = "test-hooks"))]
     Timeout,
+    #[cfg(any(test, feature = "test-hooks"))]
     TransportFailure,
     BrowserCancellation,
+    #[cfg(any(test, feature = "test-hooks"))]
     CallbackLoss,
+    #[cfg(any(test, feature = "test-hooks"))]
     TokenExchangeAmbiguous,
 }
 
@@ -399,6 +403,7 @@ impl<'a> PendingLoginJournalOwner<'a> {
         Ok(report)
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn records(&self) -> Result<Vec<PendingLoginRecord>, CoreFailure> {
         let records = self.load()?;
         self.validate(&records)?;
@@ -939,14 +944,6 @@ impl StoreActor {
         self.local_store_migration_owner()
             .migrate(key_id, store_id, MigrationFault::None)
             .map(|_| ())
-    }
-
-    fn account_store_dir(&self, key_id: &SessionKeyId) -> PathBuf {
-        self.account_root_dir(key_id).join("store")
-    }
-
-    fn account_cache_dir(&self, key_id: &SessionKeyId) -> PathBuf {
-        self.account_root_dir(key_id).join("cache")
     }
 
     fn account_search_index_dir(&self, key_id: &SessionKeyId) -> PathBuf {

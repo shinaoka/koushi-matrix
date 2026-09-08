@@ -183,7 +183,7 @@ pub(super) struct TimelineActorGenerationActivation {
     previous_generation: Option<u64>,
 }
 
-pub(super) struct TimelineActorGenerationLease {
+pub(crate) struct TimelineActorGenerationLease {
     gate: Arc<TimelineActorGenerationGate>,
     key: TimelineKey,
     generation: u64,

@@ -272,6 +272,14 @@ pub enum AccountCommand {
         request_id: RequestId,
         mxc_uri: String,
     },
+    /// Cancel one renderer-owned avatar demand. The target request identifies
+    /// the waiter, while the command request remains the current connection's
+    /// normal command identity.
+    CancelAvatarThumbnail {
+        request_id: RequestId,
+        target_request_id: RequestId,
+        mxc_uri: String,
+    },
     IgnoreUser {
         request_id: RequestId,
         user_id: String,
@@ -622,6 +630,16 @@ impl fmt::Debug for AccountCommand {
             Self::DownloadAvatarThumbnail { request_id, .. } => formatter
                 .debug_struct("DownloadAvatarThumbnail")
                 .field("request_id", request_id)
+                .field("mxc_uri", &"MxcUri(..)")
+                .finish(),
+            Self::CancelAvatarThumbnail {
+                request_id,
+                target_request_id,
+                ..
+            } => formatter
+                .debug_struct("CancelAvatarThumbnail")
+                .field("request_id", request_id)
+                .field("target_request_id", target_request_id)
                 .field("mxc_uri", &"MxcUri(..)")
                 .finish(),
             Self::IgnoreUser { request_id, .. } => formatter

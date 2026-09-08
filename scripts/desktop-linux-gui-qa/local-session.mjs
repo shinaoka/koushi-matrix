@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkInstalledHomeserver,createRoom,freePort,inviteUser as inviteUserToRoom,joinRoom,registerUser,sendRoomFormattedMessage,sendRoomMessage,setDisplayName,startHomeserver,stopProcess,tuwunelConfig,waitForHomeserver } from "../lib/local-homeserver-qa.mjs";
+import { checkInstalledHomeserver,createRoom,freePort,inviteUser as inviteUserToRoom,joinRoom,registerUser,sendReadMarkers,sendRoomFormattedMessage,sendRoomMessage,setDisplayName,startHomeserver,stopProcess,tuwunelConfig,waitForHomeserver } from "../lib/local-homeserver-qa.mjs";
 import { writeSensitivePayloadToPath } from "../lib/sensitive-fifo.mjs";
 import { parseQaTitle,qaStatusHasSendSuccess,qaStatusIsReady,safeTimestamp,timestamp } from "./evidence.mjs";
 import { artifactRoot,desktopDir,guiScenario,timeoutMs } from "./options.mjs";
@@ -71,7 +71,11 @@ export async function startLocalGuiScenario() {
     aliasLocalDisplayName: null,
     primaryUserId: null,
     seedRoomId: null,
-    seedInviteRoomName: null
+    seedInviteRoomName: null,
+    readerDisplayNames: [],
+    readerSeedBody: null,
+    readerHelpers: [],
+    readerEventId: null
   };
 
   try {
@@ -166,6 +170,49 @@ export async function startLocalGuiScenario() {
           `qa-timeline-nav-seed-${index}-${userSuffix}`
         );
       }
+    }
+
+    if (guiScenario === "local-receipt-readers") {
+      const helperPassword = `koushi-desktop-helper-${userSuffix}`;
+      session.readerDisplayNames = Array.from(
+        { length: 5 },
+        (_, index) => `Receipt Reader ${index + 1}`
+      );
+      session.readerSeedBody = "QA receipt reader seed";
+      const helpers = [];
+      for (let index = 0; index < session.readerDisplayNames.length; index += 1) {
+        const helperRegistration = await registerUser(
+          homeserver,
+          `qa_receipt_reader_${index}_${userSuffix}`,
+          helperPassword
+        );
+        const helperAccessToken = helperRegistration.access_token;
+        const helperUserId = helperRegistration.user_id;
+        if (!helperAccessToken || !helperUserId) {
+          throw new Error("local GUI receipt-reader setup did not return helper credentials");
+        }
+        await setDisplayName(
+          homeserver,
+          helperAccessToken,
+          helperUserId,
+          session.readerDisplayNames[index]
+        );
+        await inviteUserToRoom(homeserver, accessToken, seedRoomId, helperUserId);
+        await joinRoom(homeserver, helperAccessToken, seedRoomId);
+        helpers.push({ accessToken: helperAccessToken, userId: helperUserId });
+      }
+      const sent = await sendRoomMessage(
+        homeserver,
+        accessToken,
+        seedRoomId,
+        session.readerSeedBody,
+        `qa-receipt-reader-${userSuffix}`
+      );
+      if (!sent.event_id) {
+        throw new Error("local GUI receipt-reader setup did not return the seed event id");
+      }
+      session.readerHelpers = helpers;
+      session.readerEventId = sent.event_id;
     }
 
     if (guiScenario === "local-message-types") {

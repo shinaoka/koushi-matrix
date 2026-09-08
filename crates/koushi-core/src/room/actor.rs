@@ -8,9 +8,9 @@ use super::operations::{RoomOperationTestControl, RoomOperationTestControlSlot};
 use super::space_members::{SpaceMemberDemand, SpaceMemberRefreshFence};
 use crate::account_work::AccountWorkScheduler;
 use crate::executor;
-use crate::timeline::{
-    RoomMembershipTransition, TimelineSubscriptionResidencyHandle, VisibleRoomObservation,
-};
+use crate::timeline::TimelineSubscriptionResidencyHandle;
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::timeline::{RoomMembershipTransition, VisibleRoomObservation};
 use koushi_protocol::command::RoomCommand;
 use koushi_protocol::event::CoreEvent;
 use koushi_protocol::failure::CoreFailure;
@@ -175,6 +175,7 @@ pub(super) struct TimelineResidencyBinding {
 pub struct RoomActorHandle {
     pub(crate) tx: mpsc::Sender<RoomMessage>,
     timeline_residency: watch::Sender<Option<TimelineResidencyBinding>>,
+    #[cfg(any(test, feature = "test-hooks"))]
     session: watch::Sender<Option<Arc<MatrixClientSession>>>,
     #[cfg(any(test, feature = "test-hooks"))]
     room_operation_test_control: RoomOperationTestControlSlot,
@@ -483,6 +484,7 @@ impl RoomActor {
         RoomActorHandle {
             tx,
             timeline_residency,
+            #[cfg(any(test, feature = "test-hooks"))]
             session: session_slot,
             #[cfg(any(test, feature = "test-hooks"))]
             room_operation_test_control,

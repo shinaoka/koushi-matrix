@@ -46,6 +46,7 @@ export const coreLocalIntegrationTargets = [
   "link_preview.rs",
   "media_save.rs",
   "native_artifact_boundary.rs",
+  "runtime_stack.rs",
   "sliding_sync_diagnostics.rs"
 ];
 

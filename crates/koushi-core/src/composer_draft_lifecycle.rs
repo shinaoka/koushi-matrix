@@ -7,7 +7,9 @@ use std::{
 use koushi_protocol::SessionKeyId;
 use koushi_protocol::ids::RequestId;
 use koushi_state::{ComposerDraftRevision, ComposerTarget};
-use tokio::sync::{mpsc, oneshot, watch};
+#[cfg(test)]
+use tokio::sync::oneshot;
+use tokio::sync::{mpsc, watch};
 
 #[derive(Clone, Eq, Hash, PartialEq)]
 pub struct ComposerDraftScope {

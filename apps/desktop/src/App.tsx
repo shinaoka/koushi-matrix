@@ -141,8 +141,7 @@ import {
 } from "./domain/qaSendSmoke";
 import {
   AVATAR_THUMBNAIL_DOWNLOADS_ENABLED,
-  planSnapshotAvatarThumbnailRequests,
-  requestAvatarThumbnailWithDedupe
+  planSnapshotAvatarThumbnailRequests
 } from "./domain/avatarThumbnails";
 import type {
   ActivityMarkReadTarget,
@@ -917,8 +916,7 @@ export function App() {
     const ownerChanged = composerDraftLifecycleOwnerRef.current !== owner;
     if (ownerChanged) {
       retireComposerRendererGeneration();
-      requestedAvatarMxcsRef.current.clear();
-      requestedMemberAvatarMxcsRef.current.clear();
+      avatarOwnerResetRef.current = true;
     }
     submissionAccountOwnerRef.current = owner;
     composerDraftLifecycleOwnerRef.current = owner;
@@ -1142,7 +1140,17 @@ export function App() {
   const qaSendBaselineErrorCount = useRef(0);
   const initialHomeSelectionApplied = useRef(false);
   const requestedAvatarMxcsRef = useRef<Set<string>>(new Set());
-  const requestedMemberAvatarMxcsRef = useRef<Set<string>>(new Set());
+  const avatarOwnerResetRef = useRef(false);
+  const avatarDemandsRef = useRef(
+    new Map<
+      string,
+      {
+        consumers: number;
+        request: Promise<string | void>;
+        requestSequence: string | null;
+      }
+    >()
+  );
   const settingsMigrationInFlightRef = useRef(false);
   const navigationMigrationInFlightRef = useRef<Set<string>>(new Set());
 
@@ -1507,45 +1515,136 @@ export function App() {
     );
   }, [snapshot?.state.ui.timeline.room_id]);
 
+  const cancelAvatarDemandRequest = useCallback((mxcUri: string, requestSequence: string) => {
+    if (!tauriTimelineTransport?.cancelAvatarThumbnail) return;
+    void tauriTimelineTransport.cancelAvatarThumbnail(mxcUri, requestSequence).catch(() => undefined);
+  }, []);
+
+  const releaseAvatarDemand = useCallback(
+    (mxcUri: string) => {
+      const normalizedMxcUri = mxcUri.trim();
+      const entry = avatarDemandsRef.current.get(normalizedMxcUri);
+      if (!entry) return;
+      entry.consumers -= 1;
+      if (entry.consumers > 0) return;
+      avatarDemandsRef.current.delete(normalizedMxcUri);
+      const cancelWhenKnown = (requestSequence: string | void) => {
+        if (typeof requestSequence === "string") {
+          cancelAvatarDemandRequest(normalizedMxcUri, requestSequence);
+        }
+      };
+      if (entry.requestSequence !== null) {
+        cancelWhenKnown(entry.requestSequence);
+      } else {
+        void entry.request.then(cancelWhenKnown, () => undefined);
+      }
+    },
+    [cancelAvatarDemandRequest]
+  );
+
+  const cancelAllAvatarDemands = useCallback(() => {
+    const entries = [...avatarDemandsRef.current.entries()];
+    avatarDemandsRef.current.clear();
+    for (const [mxcUri, entry] of entries) {
+      if (entry.requestSequence !== null) {
+        cancelAvatarDemandRequest(mxcUri, entry.requestSequence);
+      } else {
+        void entry.request.then(
+          (requestSequence) => {
+            if (typeof requestSequence === "string") {
+              cancelAvatarDemandRequest(mxcUri, requestSequence);
+            }
+          },
+          () => undefined
+        );
+      }
+    }
+  }, [cancelAvatarDemandRequest]);
+
+  const acquireAvatarDemand = useCallback((mxcUri: string): Promise<string | void> => {
+    const normalizedMxcUri = mxcUri.trim();
+    if (!normalizedMxcUri || !tauriTimelineTransport?.downloadAvatarThumbnail) {
+      return Promise.resolve();
+    }
+    const existing = avatarDemandsRef.current.get(normalizedMxcUri);
+    if (existing) {
+      existing.consumers += 1;
+      return existing.request;
+    }
+
+    const entry = {
+      consumers: 1,
+      request: Promise.resolve() as Promise<string | void>,
+      requestSequence: null as string | null
+    };
+    const request = Promise.resolve(tauriTimelineTransport.downloadAvatarThumbnail(normalizedMxcUri))
+      .then((requestSequence) => {
+        entry.requestSequence = typeof requestSequence === "string" ? requestSequence : null;
+        return requestSequence;
+      })
+      .catch((error) => {
+        if (avatarDemandsRef.current.get(normalizedMxcUri) === entry) {
+          avatarDemandsRef.current.delete(normalizedMxcUri);
+        }
+        throw error;
+      });
+    entry.request = request;
+    avatarDemandsRef.current.set(normalizedMxcUri, entry);
+    return request;
+  }, []);
+
   useEffect(() => {
     if (!snapshot || !tauriTimelineTransport?.downloadAvatarThumbnail) {
       requestedAvatarMxcsRef.current.clear();
-      requestedMemberAvatarMxcsRef.current.clear();
+      cancelAllAvatarDemands();
       return;
     }
     // #116 perf gate: avatar downloads are disabled by default to prevent the
     // AccountActor command flood that froze room selection.
-    if (!AVATAR_THUMBNAIL_DOWNLOADS_ENABLED) {
-      return;
+    if (!AVATAR_THUMBNAIL_DOWNLOADS_ENABLED) return;
+    if (avatarOwnerResetRef.current) {
+      cancelAllAvatarDemands();
+      requestedAvatarMxcsRef.current.clear();
+      avatarOwnerResetRef.current = false;
     }
 
-    const plan = planSnapshotAvatarThumbnailRequests(
-      snapshot,
-      requestedAvatarMxcsRef.current
-    );
+    const previousRequestedMxcUris = requestedAvatarMxcsRef.current;
+    const plan = planSnapshotAvatarThumbnailRequests(snapshot, previousRequestedMxcUris);
+    for (const mxcUri of previousRequestedMxcUris) {
+      if (!plan.requestedMxcUris.has(mxcUri)) releaseAvatarDemand(mxcUri);
+    }
     requestedAvatarMxcsRef.current = plan.requestedMxcUris;
 
     for (const mxcUri of plan.requestMxcUris) {
-      if (requestedMemberAvatarMxcsRef.current.has(mxcUri)) {
-        continue;
-      }
-      void tauriTimelineTransport.downloadAvatarThumbnail(mxcUri).catch(() => {
+      void acquireAvatarDemand(mxcUri).catch(() => {
         requestedAvatarMxcsRef.current.delete(mxcUri);
       });
     }
-  }, [snapshot]);
+  }, [acquireAvatarDemand, cancelAllAvatarDemands, releaseAvatarDemand, snapshot]);
 
-  const requestMemberAvatarThumbnail = useCallback((mxcUri: string): Promise<void> => {
-    if (!AVATAR_THUMBNAIL_DOWNLOADS_ENABLED || !tauriTimelineTransport?.downloadAvatarThumbnail) {
-      return Promise.resolve();
-    }
-    return requestAvatarThumbnailWithDedupe(
-      mxcUri,
-      requestedAvatarMxcsRef.current,
-      requestedMemberAvatarMxcsRef.current,
-      tauriTimelineTransport.downloadAvatarThumbnail
-    );
-  }, []);
+  const requestMemberAvatarThumbnail = useCallback(
+    (mxcUri: string): Promise<() => void> => {
+      if (!AVATAR_THUMBNAIL_DOWNLOADS_ENABLED || !tauriTimelineTransport?.downloadAvatarThumbnail) {
+        return Promise.resolve(() => undefined);
+      }
+      const normalizedMxcUri = mxcUri.trim();
+      const request = acquireAvatarDemand(normalizedMxcUri);
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        releaseAvatarDemand(normalizedMxcUri);
+      };
+      return request.then(
+        () => release,
+        (error) => {
+          release();
+          throw error;
+        }
+      );
+    },
+    [acquireAvatarDemand, releaseAvatarDemand]
+  );
 
   function handleShortcutAction(shortcutId: string): boolean {
     switch (shortcutId) {
@@ -5732,6 +5831,9 @@ export function App() {
             runInBackground(reorderSpaces(spaceIds));
           }}
           onSelectSpace={selectSpace}
+          onRequestAvatarThumbnail={
+            AVATAR_THUMBNAIL_DOWNLOADS_ENABLED ? requestMemberAvatarThumbnail : undefined
+          }
         />
         <Sidebar
           activeRoomId={snapshot.state.ui.navigation.active_room_id}
@@ -5769,6 +5871,9 @@ export function App() {
           onUpdateSettings={(patch) => {
             runInBackground(updateSettings(patch));
           }}
+          onRequestAvatarThumbnail={
+            AVATAR_THUMBNAIL_DOWNLOADS_ENABLED ? requestMemberAvatarThumbnail : undefined
+          }
         />
         <button
           className="app-grid-resizer"
@@ -5870,6 +5975,9 @@ export function App() {
             showSearchResults={false}
             snapshot={snapshot}
             timelineTransport={appTimelineTransport}
+            onRequestAvatarThumbnail={
+              AVATAR_THUMBNAIL_DOWNLOADS_ENABLED ? requestMemberAvatarThumbnail : undefined
+            }
             onReturnToLive={async () => {
               // #161: leave the anchored (jump-to-date) main-pane view. Closing
               // the focused context clears navigation.main_timeline_anchor in

@@ -22,7 +22,6 @@ use koushi_protocol::failure::SyncFailureKind;
 use koushi_protocol::failure::{CoreFailure, RoomFailureKind, TimelineFailureKind};
 use koushi_protocol::ids::{RequestId, TimelineKey, TimelineKind};
 
-use super::RoomEventLookupResult;
 use super::actor::{AccountActor, trace_restore};
 use super::scheduled_send::admit_secure_backup_user_content;
 
@@ -179,15 +178,6 @@ impl AccountActor {
             Some(formatting_options),
         )
         .await;
-    }
-
-    pub(super) async fn route_leased_timeline_command(
-        &mut self,
-        command: TimelineCommand,
-        composer_permit: ForwardedComposerDraftPermit,
-    ) {
-        self.route_timeline_command_with_permit(command, Some(composer_permit))
-            .await;
     }
 
     pub(super) async fn route_leased_timeline_command_with_formatting_options(

@@ -684,7 +684,8 @@ export function WorkspaceRail({
   onOpenContextMenu,
   onOpenUserSettings,
   onReorderSpaces,
-  onSelectSpace
+  onSelectSpace,
+  onRequestAvatarThumbnail
 }: {
   snapshot: DesktopSnapshot;
   onCreateSpace: () => void;
@@ -692,6 +693,7 @@ export function WorkspaceRail({
   onOpenUserSettings: () => void;
   onReorderSpaces: (spaceIds: string[]) => void;
   onSelectSpace: (spaceId: string | null) => void;
+  onRequestAvatarThumbnail?: (mxcUri: string) => void | Promise<void | (() => void)>;
 }) {
   const [draggedSpaceId, setDraggedSpaceId] = useState<string | null>(null);
   const [dragOverSpaceId, setDragOverSpaceId] = useState<string | null>(null);
@@ -792,6 +794,7 @@ export function WorkspaceRail({
                     colorSeed={space.space_id}
                     fallback={localIcon || elementAvatarInitial(fallbackName) || "?"}
                     fallbackMode={localIcon ? "compactLabel" : "elementSpace"}
+                    onRequestAvatarThumbnail={onRequestAvatarThumbnail}
                   />
                 </button>
               )}
@@ -839,7 +842,8 @@ export function Sidebar({
   spaceMemberCounts,
   onJoinRoom,
   onSelectRoom,
-  onUpdateSettings = () => undefined
+  onUpdateSettings = () => undefined,
+  onRequestAvatarThumbnail
 }: {
   activeRoomId: string | null;
   activeView: PrimaryView;
@@ -857,6 +861,7 @@ export function Sidebar({
   onJoinRoom?: (roomId: string) => void;
   onSelectRoom: (roomId: string) => void;
   onUpdateSettings?: (patch: SettingsPatch) => void;
+  onRequestAvatarThumbnail?: (mxcUri: string) => void | Promise<void | (() => void)>;
 }) {
   const sections = snapshot.sidebar.sections;
   const roomListReadiness = snapshot.state.ui.room_list.readiness;
@@ -1035,6 +1040,7 @@ export function Sidebar({
             onOpenContextMenu={onOpenContextMenu}
             onSelectRoom={onSelectRoom}
             onToggleCollapsed={() => toggleSection("not_joined")}
+            onRequestAvatarThumbnail={onRequestAvatarThumbnail}
           />
         ) : null}
         {roomCategoryRooms.length > 0 && visibleCategoryRooms.length === 0 ? (
@@ -1055,6 +1061,7 @@ export function Sidebar({
           showWhenEmpty={true}
           onOpenContextMenu={onOpenContextMenu}
           onSelectRoom={onSelectRoom}
+          onRequestAvatarThumbnail={onRequestAvatarThumbnail}
         />
         {!accountHomeActive ? (
           <RoomSection
@@ -1069,6 +1076,7 @@ export function Sidebar({
             onOpenContextMenu={onOpenContextMenu}
             onSelectRoom={onSelectRoom}
             onToggleCollapsed={() => toggleSection("favourites")}
+            onRequestAvatarThumbnail={onRequestAvatarThumbnail}
           />
         ) : null}
         <RoomSection
@@ -1083,6 +1091,7 @@ export function Sidebar({
           onOpenContextMenu={onOpenContextMenu}
           onSelectRoom={onSelectRoom}
           onToggleCollapsed={() => toggleSection("low_priority")}
+          onRequestAvatarThumbnail={onRequestAvatarThumbnail}
         />
       </div>
     </aside>
@@ -1253,7 +1262,8 @@ function RoomSection({
   onJoinRoom,
   onSelectInvite,
   onSelectRoom,
-  onToggleCollapsed
+  onToggleCollapsed,
+  onRequestAvatarThumbnail
 }: {
   activeRoomId: string | null;
   collapsed: boolean;
@@ -1270,6 +1280,7 @@ function RoomSection({
   onSelectInvite?: () => void;
   onSelectRoom: (roomId: string) => void;
   onToggleCollapsed?: () => void;
+  onRequestAvatarThumbnail?: (mxcUri: string) => void | Promise<void | (() => void)>;
 }) {
   if (!showWhenEmpty && rooms.length === 0) {
     return null;
@@ -1298,6 +1309,7 @@ function RoomSection({
               onOpenContextMenu={onOpenContextMenu}
               onSelectInvite={onSelectInvite}
               onSelectRoom={onSelectRoom}
+              onRequestAvatarThumbnail={onRequestAvatarThumbnail}
             />
           ))
         : null}
@@ -1404,7 +1416,8 @@ function RoomButton({
   onJoinRoom,
   onOpenContextMenu,
   onSelectInvite,
-  onSelectRoom
+  onSelectRoom,
+  onRequestAvatarThumbnail
 }: {
   activeRoomId: string | null;
   kind: "room" | "dm" | "invite" | "notJoined";
@@ -1415,6 +1428,7 @@ function RoomButton({
   onOpenContextMenu: OpenContextMenu;
   onSelectInvite?: () => void;
   onSelectRoom: (roomId: string) => void;
+  onRequestAvatarThumbnail?: (mxcUri: string) => void | Promise<void | (() => void)>;
 }) {
   const sourceRoom = roomById.get(room.room_id);
   const dmUserIds = sourceRoom?.dm_user_ids ?? [];
@@ -1469,6 +1483,7 @@ function RoomButton({
           className={`room-avatar ${kind === "dm" ? "is-user" : "is-room"}`}
           colorSeed={room.room_id}
           fallback={initials(room.display_name)}
+          onRequestAvatarThumbnail={onRequestAvatarThumbnail}
         />
         {isOnlineDm ? <span className="room-presence-dot" aria-hidden="true" /> : null}
       </span>
@@ -1488,24 +1503,102 @@ function RoomButton({
   );
 }
 
+function useVisibleAvatarThumbnailRequest(
+  avatar: RoomListItem["avatar"],
+  onRequestAvatarThumbnail:
+    | ((mxcUri: string) => void | Promise<void | (() => void)>)
+    | undefined
+): RefObject<HTMLSpanElement | null> {
+  const avatarRef = useRef<HTMLSpanElement>(null);
+  const requestedAvatarUriRef = useRef<string | null>(null);
+  const previousThumbnailKindRef = useRef<string | null>(null);
+  const mxcUri = avatar?.mxc_uri ?? null;
+  const thumbnailKind = avatar?.thumbnail.kind ?? null;
+
+  useEffect(() => {
+    if (
+      thumbnailKind === "notRequested" &&
+      (previousThumbnailKindRef.current !== "notRequested" ||
+        requestedAvatarUriRef.current !== mxcUri)
+    ) {
+      requestedAvatarUriRef.current = null;
+    }
+    previousThumbnailKindRef.current = thumbnailKind;
+    if (
+      !onRequestAvatarThumbnail ||
+      !mxcUri ||
+      thumbnailKind !== "notRequested" ||
+      !avatarRef.current ||
+      requestedAvatarUriRef.current === mxcUri ||
+      typeof IntersectionObserver === "undefined"
+    ) {
+      return undefined;
+    }
+
+    const row = avatarRef.current;
+    const requestUri = mxcUri;
+    let disposed = false;
+    let release: (() => void) | undefined;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (
+          requestedAvatarUriRef.current === requestUri ||
+          !entries.some((entry) => entry.isIntersecting)
+        ) {
+          return;
+        }
+        requestedAvatarUriRef.current = requestUri;
+        observer.disconnect();
+        try {
+          void Promise.resolve(onRequestAvatarThumbnail(requestUri))
+            .then((nextRelease) => {
+              if (disposed) nextRelease?.();
+              else if (nextRelease) release = nextRelease;
+            })
+            .catch(() => undefined);
+        } catch {
+          // Demand admission failures are represented by the Rust state/event.
+        }
+      },
+      { root: row.closest(".sidebar-scroll") }
+    );
+    observer.observe(row);
+    return () => {
+      disposed = true;
+      observer.disconnect();
+      release?.();
+    };
+  }, [mxcUri, onRequestAvatarThumbnail, thumbnailKind]);
+
+  return avatarRef;
+}
+
 export function EntityAvatar({
   avatar,
   className,
   colorSeed,
   fallback,
-  fallbackMode = "initials"
+  fallbackMode = "initials",
+  onRequestAvatarThumbnail,
+  sourceUrl
 }: {
   avatar: RoomListItem["avatar"];
   className: string;
   colorSeed?: string | null;
   fallback: string;
   fallbackMode?: "initials" | "compactLabel" | "elementSpace";
+  onRequestAvatarThumbnail?: (mxcUri: string) => void | Promise<void | (() => void)>;
+  /** Explicit resource URL; null suppresses the unscoped thumbnail fallback. */
+  sourceUrl?: string | null;
 }) {
-  const sourceUrl =
-    avatar?.thumbnail.kind === "ready"
-      ? renderableThumbnailSourceUrl(avatar.thumbnail.source_ref)
-      : null;
-  const { displaySourceUrl, onImageError, onImageLoad } = useRecoverableImageSource(sourceUrl);
+  const avatarRef = useVisibleAvatarThumbnailRequest(avatar, onRequestAvatarThumbnail);
+  const resolvedSourceUrl =
+    sourceUrl !== undefined
+      ? sourceUrl
+      : avatar?.thumbnail.kind === "ready"
+        ? renderableThumbnailSourceUrl(avatar.thumbnail.source_ref)
+        : null;
+  const { displaySourceUrl, onImageError, onImageLoad } = useRecoverableImageSource(resolvedSourceUrl);
   const showImage = Boolean(displaySourceUrl);
   const colorClassName = avatarColorClass(colorSeed || fallback);
   const fallbackClassName =
@@ -1523,7 +1616,7 @@ export function EntityAvatar({
   const elementColor =
     fallbackMode === "elementSpace" ? elementAvatarColorIndex(colorSeed || fallback) : undefined;
   return (
-    <span className={className} aria-hidden="true">
+    <span ref={avatarRef} className={className} aria-hidden="true">
       {showImage ? (
         <img
           src={displaySourceUrl ?? undefined}

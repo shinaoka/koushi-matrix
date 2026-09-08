@@ -359,6 +359,7 @@ struct SendEnqueueSuccess {
 }
 
 impl SendEnqueueSuccess {
+    #[cfg(test)]
     fn terminal_only(sdk_transaction_id: String) -> Self {
         Self {
             sdk_transaction_id,
@@ -2204,6 +2205,7 @@ impl SendLifecycleTrace {
         }
     }
 
+    #[cfg(test)]
     fn correlation(&self) -> u64 {
         self.state
             .lock()
@@ -2520,6 +2522,7 @@ impl SendCompletionRegistration {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn bind(&mut self, sdk_transaction_id: String) {
         let _ = self.bind_with_handle(sdk_transaction_id, None);
     }

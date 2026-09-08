@@ -10,6 +10,9 @@ code and the canon win; fix whichever document is wrong.
 
 ## Runtime and roadmap
 
+- Scoped receipt-reader vertical (#839/#840/#846):
+  [2026-09-06-issue839-scoped-readers.md](../superpowers/plans/2026-09-06-issue839-scoped-readers.md)
+
 - Shared SDK receipt snapshots (#839/#840):
   [2026-09-06-issue839-sdk-receipt-sharing.md](../superpowers/plans/2026-09-06-issue839-sdk-receipt-sharing.md)
 

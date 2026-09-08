@@ -36,8 +36,8 @@ use super::super::diagnostics::{
     FullyReadReceiptContext, private_read_receipt_event_id_for_fully_read,
 };
 use super::super::item_projection::{
-    build_live_receipt_observation_actions, collect_live_event_receipts_from_diff,
-    emit_live_receipt_observation_actions, live_receipt_observation_actions_from_sdk_receipts,
+    build_live_receipt_observation_actions, emit_live_receipt_observation_actions,
+    live_event_receipts_from_endpoint_changes, live_receipt_observation_actions_from_sdk_receipts,
 };
 use super::super::manager::TimelineMessage;
 use super::super::navigation::TimelineActorGenerationGate;
@@ -2289,7 +2289,9 @@ async fn koushi_timeline_builder_projects_sdk_read_receipts() {
     .build()
     .await
     .expect("timeline");
-    let (_initial_items, mut stream) = timeline.subscribe().await;
+    let (initial_items, mut stream) = timeline.subscribe().await;
+    let mut endpoints =
+        super::super::receipt_endpoints::ReceiptEndpointMirror::new(initial_items.iter());
 
     let factory = EventFactory::new().room(room_id);
     server
@@ -2314,10 +2316,8 @@ async fn koushi_timeline_builder_projects_sdk_read_receipts() {
         .await;
 
     let diffs = assert_next_with_timeout!(stream);
-    let mut receipts_by_event = Vec::new();
-    for diff in &diffs {
-        collect_live_event_receipts_from_diff(diff, &mut receipts_by_event);
-    }
+    let receipts_by_event =
+        live_event_receipts_from_endpoint_changes(endpoints.apply_batch(&diffs), &endpoints);
 
     let second = receipts_by_event
         .iter()
@@ -2357,7 +2357,7 @@ fn live_receipt_observation_action_builder_is_pure_and_orders_profiles_first() {
         [
             AppAction::LiveRoomProfilesObserved { profiles, .. },
             AppAction::UserProfilesUpdated { profiles: cached },
-            AppAction::LiveRoomReceiptsUpdated { .. },
+            AppAction::LiveRoomReceiptSummariesUpdated { .. },
         ] if profiles[0].display_label == "Bob"
             && cached[0].display_label == "Bob"
     ));
@@ -2398,7 +2398,9 @@ async fn local_receipt_observation_helper_builds_profile_then_receipt_actions() 
     .build()
     .await
     .expect("timeline");
-    let (_initial_items, mut stream) = timeline.subscribe().await;
+    let (initial_items, mut stream) = timeline.subscribe().await;
+    let mut endpoints =
+        super::super::receipt_endpoints::ReceiptEndpointMirror::new(initial_items.iter());
     let factory = EventFactory::new().room(room_id);
     server
         .sync_room(
@@ -2422,10 +2424,8 @@ async fn local_receipt_observation_helper_builds_profile_then_receipt_actions() 
         .await;
 
     let diffs = assert_next_with_timeout!(stream);
-    let mut receipts_by_event = Vec::new();
-    for diff in &diffs {
-        collect_live_event_receipts_from_diff(diff, &mut receipts_by_event);
-    }
+    let receipts_by_event =
+        live_event_receipts_from_endpoint_changes(endpoints.apply_batch(&diffs), &endpoints);
     let observed_receipts = receipts_by_event
         .iter()
         .find(|entry| {
@@ -2452,8 +2452,9 @@ async fn local_receipt_observation_helper_builds_profile_then_receipt_actions() 
     };
     reduce(
         &mut state,
-        AppAction::LiveRoomReceiptsUpdated {
+        AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: room_id.to_string(),
+            scoped_event_ids: Vec::new(),
             receipts_by_event: vec![observed_receipts.clone()],
         },
     );
@@ -2484,7 +2485,7 @@ async fn local_receipt_observation_helper_builds_profile_then_receipt_actions() 
     ));
     assert!(matches!(
         action_batch.last(),
-        Some(AppAction::LiveRoomReceiptsUpdated { room_id: observed_room_id, .. })
+        Some(AppAction::LiveRoomReceiptSummariesUpdated { room_id: observed_room_id, .. })
             if observed_room_id == room_id.as_str()
     ));
 
@@ -2561,8 +2562,9 @@ async fn production_receipt_diff_delivery_refreshes_unknown_with_room_profile() 
     };
     reduce(
         &mut state,
-        AppAction::LiveRoomReceiptsUpdated {
+        AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: room_id.to_string(),
+            scoped_event_ids: Vec::new(),
             receipts_by_event: receipts.clone(),
         },
     );
@@ -2608,7 +2610,7 @@ async fn production_receipt_diff_delivery_refreshes_unknown_with_room_profile() 
         [
             AppAction::LiveRoomProfilesObserved { profiles, .. },
             AppAction::UserProfilesUpdated { profiles: cached },
-            AppAction::LiveRoomReceiptsUpdated { .. },
+            AppAction::LiveRoomReceiptSummariesUpdated { .. },
         ] if profiles.iter().any(|profile| {
             profile.user_id == bob.as_str()
                 && profile.display_name.as_deref() == Some("Relevant room member")
@@ -2697,7 +2699,7 @@ async fn production_receipt_diff_delivery_uses_global_cache_when_local_lookup_mi
     let action_batch = action_rx.recv().await.expect("receipt fallback batch");
     assert!(matches!(
         action_batch.as_slice(),
-        [AppAction::LiveRoomReceiptsUpdated { .. }]
+        [AppAction::LiveRoomReceiptSummariesUpdated { .. }]
     ));
     for action in action_batch {
         reduce(&mut state, action);
@@ -2708,6 +2710,183 @@ async fn production_receipt_diff_delivery_uses_global_cache_when_local_lookup_mi
         .display_name
         .as_deref(),
         Some("Global cache")
+    );
+}
+
+#[tokio::test]
+async fn scoped_receipt_window_prepares_only_its_selected_profiles() {
+    let _diagnostic_lock = koushi_diagnostics::test_support::lock();
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let room_id = matrix_sdk::ruma::room_id!("!bounded-profile:example.test");
+    server.sync_joined_room(&client, room_id).await;
+    let session = MatrixClientSession::from_client_for_testing(
+        client,
+        SessionInfo {
+            homeserver: "http://example.invalid".into(),
+            user_id: matrix_sdk_test::ALICE.to_string(),
+            device_id: "DEVICE".into(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        },
+    );
+    let mut window = crate::timeline::RawReceiptWindow {
+        total_count: 1500,
+        start: 0,
+        profiles: Vec::new(),
+        owner: None,
+        epoch: std::sync::Weak::new(),
+        receipts: (0..3)
+            .map(|i| LiveReadReceipt {
+                user_id: format!("@reader-{i}:example.test"),
+                display_name: None,
+                original_display_label: String::new(),
+                avatar: None,
+                timestamp_ms: Some(i),
+            })
+            .collect(),
+    };
+    let before = koushi_diagnostics::test_support::detail_snapshot()
+        .records
+        .len();
+    let (mut reply, _receiver) = tokio::sync::oneshot::channel();
+    assert!(
+        crate::timeline::item_projection::prepare_receipt_window_profiles(
+            &session,
+            room_id.as_str(),
+            &mut window,
+            &mut reply,
+        )
+        .await
+    );
+    assert_eq!(window.total_count, 1500);
+    assert_eq!(window.receipts.len(), 3);
+    let mut profiles = koushi_state::ProfileState::default();
+    profiles
+        .local_aliases
+        .insert(window.receipts[0].user_id.clone(), "Current alias".into());
+    window.resolve_profiles(&profiles, room_id.as_str(), None);
+    assert_eq!(
+        window.receipts[0].display_name.as_deref(),
+        Some("Current alias")
+    );
+    assert_eq!(window.total_count, 1500);
+    let snapshot = koushi_diagnostics::test_support::detail_snapshot();
+    let requested = snapshot
+        .records
+        .iter()
+        .skip(before)
+        .filter(|record| record.event.source == "core.read_receipt_profile")
+        .flat_map(|record| &record.event.fields)
+        .find_map(|field| match field.value {
+            DiagnosticValue::Count(count) if field.key == "requested_user_count" => Some(count),
+            _ => None,
+        })
+        .expect("production profile lookup count");
+    assert_eq!(requested, 3);
+    let before_cancel = snapshot.records.len();
+    let (mut cancelled, receiver) = tokio::sync::oneshot::channel();
+    drop(receiver);
+    assert!(
+        !crate::timeline::item_projection::prepare_receipt_window_profiles(
+            &session,
+            room_id.as_str(),
+            &mut window,
+            &mut cancelled,
+        )
+        .await
+    );
+    let after = koushi_diagnostics::test_support::detail_snapshot();
+    assert!(
+        !after
+            .records
+            .iter()
+            .skip(before_cancel)
+            .any(|record| record.event.source == "core.read_receipt_profile")
+    );
+}
+
+#[tokio::test]
+async fn compact_receipt_profile_lookup_is_bounded_for_1500_readers() {
+    let _diagnostic_lock = koushi_diagnostics::test_support::lock();
+    use koushi_state::{AppState, SessionAuthenticationMethod, SessionState, reduce};
+    use matrix_sdk::ruma::room_id;
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+    use matrix_sdk_test::ALICE;
+
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let room_id = room_id!("!receipt-scale:example.test");
+    server.sync_joined_room(&client, room_id).await;
+    let session = MatrixClientSession::from_client_for_testing(
+        client,
+        SessionInfo {
+            homeserver: "http://example.invalid".to_owned(),
+            user_id: ALICE.to_string(),
+            device_id: "DEVICE".to_owned(),
+            authentication_method: SessionAuthenticationMethod::Unknown,
+        },
+    );
+    let event_id = "$receipt-scale:example.test";
+    let receipts = vec![LiveEventReceipts {
+        event_id: event_id.to_owned(),
+        receipts: (0..1500)
+            .map(|index| LiveReadReceipt {
+                user_id: format!("@reader-{index}:example.test"),
+                display_name: None,
+                original_display_label: String::new(),
+                avatar: None,
+                timestamp_ms: Some(index),
+            })
+            .collect(),
+    }];
+    let key = TimelineKey::room(AccountKey(ALICE.to_string()), room_id.to_string());
+    let generations = Arc::new(TimelineActorGenerationGate::default());
+    let actor_generation = generations.activate_after_quiescence(&key).await.generation;
+    let (action_tx, mut action_rx) = mpsc::channel(1);
+    let records_before = koushi_diagnostics::test_support::detail_snapshot()
+        .records
+        .len();
+    assert!(
+        emit_live_receipt_observation_actions(
+            &session,
+            &action_tx,
+            &generations,
+            &key,
+            actor_generation,
+            room_id.as_str(),
+            receipts,
+        )
+        .await
+    );
+    let mut state = AppState {
+        session: SessionState::Ready(session.info.clone()),
+        ..AppState::default()
+    };
+    for action in action_rx.recv().await.expect("receipt actions") {
+        reduce(&mut state, action);
+    }
+    assert_eq!(
+        state.live_signals.rooms[room_id.as_str()].receipts_by_event[event_id].total_count,
+        1500
+    );
+
+    let snapshot = koushi_diagnostics::test_support::detail_snapshot();
+    let requested = snapshot
+        .records
+        .iter()
+        .skip(records_before)
+        .filter(|record| record.event.source == "core.read_receipt_profile")
+        .flat_map(|record| &record.event.fields)
+        .find_map(|field| match field.value {
+            DiagnosticValue::Count(count) if field.key == "requested_user_count" => Some(count),
+            _ => None,
+        })
+        .expect("production profile-lookup count");
+    // No full-reader surface is open: five or more readers show three plus a count.
+    assert!(
+        requested <= 3,
+        "compact receipt profile lookup must be bounded, requested {requested}"
     );
 }
 
@@ -2765,7 +2944,7 @@ async fn production_receipt_diff_delivery_sends_receipts_when_local_lookup_fails
     let action_batch = action_rx.recv().await.expect("failed lookup receipt batch");
     assert!(matches!(
         action_batch.as_slice(),
-        [AppAction::LiveRoomReceiptsUpdated { .. }]
+        [AppAction::LiveRoomReceiptSummariesUpdated { .. }]
     ));
     assert!(
         koushi_diagnostics::test_support::detail_snapshot()

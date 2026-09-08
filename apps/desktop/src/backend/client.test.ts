@@ -605,6 +605,23 @@ describe("TauriDesktopApi", () => {
     });
   });
 
+  test("reads receipt resources through the scoped installed revision", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    const api = new TauriDesktopApi();
+    await api.readReceiptReaderResource(
+      "scope-7",
+      "revision-9",
+      "avatar/0000000000000001"
+    );
+
+    expect(invoke).toHaveBeenCalledWith("read_receipt_reader_resource", {
+      scope: "scope-7",
+      revision: "revision-9",
+      sourceRef: "avatar/0000000000000001"
+    });
+  });
+
   test("passes activity actions to Rust-owned activity commands", async () => {
     vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
 

@@ -120,6 +120,7 @@ impl CoreCommand {
                 | AccountCommand::SetLocalUserAlias { request_id, .. }
                 | AccountCommand::SetAvatar { request_id, .. }
                 | AccountCommand::DownloadAvatarThumbnail { request_id, .. }
+                | AccountCommand::CancelAvatarThumbnail { request_id, .. }
                 | AccountCommand::IgnoreUser { request_id, .. }
                 | AccountCommand::UnignoreUser { request_id, .. }
                 | AccountCommand::ReportUser { request_id, .. }

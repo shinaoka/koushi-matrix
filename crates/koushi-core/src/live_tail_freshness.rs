@@ -144,6 +144,7 @@ where
         actions
     }
 
+    #[cfg(test)]
     pub(crate) fn mark_unproven(&mut self, key: K, epoch: u64) -> Vec<LiveTailSchedulerAction<K>> {
         if self.known_epoch_is_newer(&key, epoch) {
             return Vec::new();

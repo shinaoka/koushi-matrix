@@ -1,9 +1,7 @@
 use crate::client_session::{build_client, oidc_client_registration_data};
 use crate::e2ee::install_room_key_diagnostic_observer;
 use crate::{MatrixClientSession, MatrixClientStoreConfig, logout};
-use koushi_state::{
-    AuthSecret, DelegatedAuthLinks, LoginFlow, LoginFlowKind, LoginRequest, SessionInfo,
-};
+use koushi_state::{DelegatedAuthLinks, LoginFlow, LoginFlowKind, LoginRequest, SessionInfo};
 use matrix_sdk::utils::UrlOrQuery;
 use serde::Deserialize;
 use std::{fmt, net::IpAddr, time::Duration};

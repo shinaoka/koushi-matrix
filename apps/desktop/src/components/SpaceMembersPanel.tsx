@@ -28,7 +28,7 @@ export interface SpaceMembersPanelProps {
   canInvite: boolean;
   onClose?: () => void;
   profileUsers?: Record<string, UserProfile>;
-  onRequestAvatarThumbnail?: (mxcUri: string) => void | Promise<void>;
+  onRequestAvatarThumbnail?: (mxcUri: string) => void | Promise<void | (() => void)>;
   childRoomLabels?: ReadonlyMap<string, string>;
   onInviteUser: (userId: string) => void;
   /** Invite a brand-new user to the Space (space-only membership, #508). */
@@ -590,7 +590,7 @@ interface SpaceMemberRowProps {
   onCancelInvite: (userId: string) => void;
   onUpdateRole: (entry: SpaceMemberEntry, option: SpaceMemberRoleOption) => void;
   roleSelectRefs: MutableRefObject<Map<string, HTMLSelectElement>>;
-  onRequestAvatarThumbnail?: (mxcUri: string) => void | Promise<void>;
+  onRequestAvatarThumbnail?: (mxcUri: string) => void | Promise<void | (() => void)>;
 }
 
 function SpaceMemberRow({
@@ -668,6 +668,8 @@ function SpaceMemberRow({
     const row = rowRef.current;
     const mxcUri = avatar.mxc_uri;
     const avatarViewport = avatarViewportRef.current;
+    let disposed = false;
+    let release: (() => void) | undefined;
     const observer = new IntersectionObserver(
       (entries) => {
         if (
@@ -678,13 +680,26 @@ function SpaceMemberRow({
         }
         requestedAvatarUriRef.current = mxcUri;
         observer.disconnect();
-        void onRequestAvatarThumbnail(mxcUri);
+        try {
+          void Promise.resolve(onRequestAvatarThumbnail(mxcUri))
+            .then((nextRelease) => {
+              if (disposed) nextRelease?.();
+              else if (nextRelease) release = nextRelease;
+            })
+            .catch(() => undefined);
+        } catch {
+          // Demand admission failures are represented by the Rust state/event.
+        }
       },
       { root: avatarViewport }
     );
     observer.observe(row);
 
-    return () => observer.disconnect();
+    return () => {
+      disposed = true;
+      observer.disconnect();
+      release?.();
+    };
   }, [
     avatar?.mxc_uri,
     avatarThumbnailFailureKind,

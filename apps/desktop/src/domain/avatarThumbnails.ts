@@ -60,13 +60,9 @@ export function planSnapshotAvatarThumbnailRequests(
 
 function collectNotRequestedAvatarMxcUris(snapshot: DesktopSnapshot): Set<string> {
   const candidates = new Set<string>();
-  // profile.users remains visibility-driven to avoid eager member-list downloads.
-  const avatars: Array<AvatarImage | null> = [
-    snapshot.state.domain.profile.own.avatar,
-    ...snapshot.state.domain.rooms.map((room) => room.avatar),
-    ...snapshot.state.domain.spaces.map((space) => space.avatar),
-    ...snapshot.state.domain.invites.map((invite) => invite.avatar)
-  ];
+  // Room, Space, and invite rows report demand from their rendered viewport;
+  // keeping them here would eagerly request every account-wide icon.
+  const avatars: Array<AvatarImage | null> = [snapshot.state.domain.profile.own.avatar];
 
   for (const avatar of avatars) {
     if (avatar?.thumbnail.kind === "notRequested") candidates.add(avatar.mxc_uri);

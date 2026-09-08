@@ -2,7 +2,9 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use koushi_state::{AppAction, LiveEventReceipts};
+#[cfg(test)]
+use koushi_state::AppAction;
+use koushi_state::LiveEventReceipts;
 
 use matrix_sdk_ui::timeline::{
     EncryptedMessage, EventTimelineItem, TimelineFocus, TimelineItem as SdkTimelineItem,
@@ -492,7 +494,8 @@ impl TimelineActor {
                 .set_pending_inputs(pending_items, suppressed);
         }
 
-        let receipts_action = Self::live_receipts_action_from_sdk_diffs(&self.key, &sdk_diffs);
+        let receipt_changes = self.receipt_endpoints.apply_batch(&sdk_diffs);
+        let receipts_action = self.live_receipts_from_endpoints(receipt_changes);
         let search_messages = sdk_diffs
             .iter()
             .flat_map(|diff| self.search_index_messages_for_diff(diff))
@@ -707,10 +710,7 @@ impl TimelineActor {
             return;
         }
 
-        if let Some(AppAction::LiveRoomReceiptsUpdated {
-            room_id,
-            receipts_by_event,
-        }) = receipts_action
+        if let Some((room_id, receipts_by_event)) = receipts_action
             && !emit_live_receipt_observation_actions(
                 self.session.as_ref(),
                 &self.action_tx,
@@ -1107,6 +1107,8 @@ impl TimelineActor {
                 self.position_tx
                     .send_replace(Arc::clone(&recovery_position_index));
                 self.generation = recovery_generation;
+                self.receipt_endpoints =
+                    super::receipt_endpoints::ReceiptEndpointMirror::new(current_items.iter());
                 self.next_batch_id = TimelineBatchId(0);
                 self.gap_repair.clear_projected_gaps();
                 replace_authoritative_cache(&mut self.media_sources, replacement_media_sources);
@@ -1312,6 +1314,7 @@ fn authoritative_search_removals(
         .collect()
 }
 
+#[cfg(test)]
 fn authoritative_receipts_action(
     room_id: &str,
     reconciliation: &AuthoritativeWindowReconciliation,
@@ -1469,6 +1472,8 @@ pub(super) async fn run_diff_relay(
             utd_event_ids.insert(event_id.to_string());
         }
     }
+    // Tracking keeps only bounded IDs; do not pin the initial SDK item versions.
+    drop(initial_items);
 
     loop {
         let Some(diffs) = diff_stream.next().await else {

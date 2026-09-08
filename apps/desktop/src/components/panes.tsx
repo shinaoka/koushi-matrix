@@ -718,6 +718,7 @@ export function TimelinePane({
   onScheduleSend,
   onSendText,
   onSetLocalUserAlias,
+  onRequestAvatarThumbnail,
   onUnpinPinnedEvent: _onUnpinPinnedEvent,
   onOpenPinnedMessages = () => undefined,
   onOpenPeople,
@@ -770,6 +771,8 @@ export function TimelinePane({
   /** Localized transient notice rendered above the main composer (#450). */
   composerNotice?: string | null;
   onSetLocalUserAlias: (userId: string, alias: string | null) => void;
+  /** Core-owned visible avatar demand callback shared with sidebar/member surfaces. */
+  onRequestAvatarThumbnail?: (mxcUri: string) => void | Promise<void | (() => void)>;
   /** Kept for fixture compatibility; pinned unpin actions live in the panel. */
   onUnpinPinnedEvent?: (roomId: string, eventId: string) => void;
   onOpenPinnedMessages?: () => void;
@@ -1056,6 +1059,7 @@ export function TimelinePane({
               mentionCandidates={mentionCandidates}
               mentionCandidatesLoading={mentionCandidatesLoading}
               onMentionQueryChange={onMentionQueryChangeStable}
+              onRequestAvatarThumbnail={onRequestAvatarThumbnail}
               continuity={snapshot.state.ui.timeline.continuity ?? { kind: "unknown" }}
               density={snapshot.state.domain.settings.values.appearance.density}
               roomScrollAnchor={

@@ -2,7 +2,46 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { scheduleTimelineFrame } from "./TimelineViewportVirtualization";
+import type { TimelineItem } from "../../domain/coreEvents";
+import {
+  buildTimelineHeightModel,
+  calculateTimelineVirtualRange,
+  scheduleTimelineFrame,
+  TIMELINE_ESTIMATED_ITEM_HEIGHT_PX,
+  TIMELINE_VIRTUALIZATION_THRESHOLD
+} from "./TimelineViewportVirtualization";
+
+describe("timeline viewport virtualization", () => {
+  it("keeps a 100,000-event history bounded to one rendered window", () => {
+    const rows = Array.from({ length: 100_000 }, (_, index) => ({
+      row_id: `row-${index}`,
+      item: {} as TimelineItem,
+      content_event_id: null,
+      activity_event_id: null,
+      gap_id: null,
+      content_timestamp_ms: null,
+      display_timestamp_ms: null,
+      kind: "event" as const
+    }));
+    const model = buildTimelineHeightModel(
+      rows,
+      new Map(),
+      TIMELINE_ESTIMATED_ITEM_HEIGHT_PX
+    );
+    const range = calculateTimelineVirtualRange({
+      visibleItemsLength: rows.length,
+      metrics: { scrollTop: 0, clientHeight: 600, listOffsetTop: 0 },
+      model
+    });
+
+    expect(rows.length).toBe(100_000);
+    expect(range.virtualized).toBe(true);
+    expect(range.endIndex - range.startIndex).toBeLessThanOrEqual(
+      TIMELINE_VIRTUALIZATION_THRESHOLD
+    );
+    expect(range.paddingBottom).toBeGreaterThan(0);
+  });
+});
 
 describe("scheduleTimelineFrame teardown", () => {
   it("uses captured browser capabilities after window teardown", () => {

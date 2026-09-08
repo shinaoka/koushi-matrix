@@ -64,6 +64,53 @@ describe("appStore projection cache", () => {
     expect(projected.state.domain.profile).toBe(previous.state.domain.profile);
   });
 
+  test("merges activity row replacements without replacing stream metadata", () => {
+    const previous = makeSnapshot();
+    const row = {
+      kind: "event" as const,
+      room_id: "!room-activity:example.invalid",
+      room_label: "Activity Room",
+      timestamp_ms: 1,
+      unread: true,
+      highlight: false,
+      context_label: "",
+      event_id: "$activity:example.invalid",
+      thread_root_event_id: null,
+      sender_id: "@user:example.invalid",
+      sender_label: "User",
+      sender_avatar: null,
+      preview: "old"
+    };
+    previous.state.domain.activity = {
+      kind: "open",
+      active_tab: "recent",
+      recent: { rows: [row], next_batch: null, resolution: { kind: "idle" } },
+      unread: { rows: [], next_batch: null, resolution: { kind: "idle" } },
+      mark_read: { kind: "idle" }
+    };
+    const replacement = { ...row, preview: "new" };
+    const projected = applyDeltaToState(previous, {
+      generation: 1,
+      changed: {
+        state: {
+          domain: {
+            activity_recent_rows_by_id: {
+              "event:$activity:example.invalid": replacement
+            }
+          }
+        }
+      }
+    });
+
+    expect(projected).not.toBeNull();
+    if (!projected) return;
+    expect(projected.state.domain.activity.kind).toBe("open");
+    if (projected.state.domain.activity.kind !== "open") return;
+    expect(projected.state.domain.activity.recent.rows).toEqual([replacement]);
+    expect(projected.state.domain.activity.recent.next_batch).toBeNull();
+    expect(projected.state.domain.activity.unread.rows).toEqual([]);
+  });
+
   test("keeps domain, sidebar, timeline, and thread stable when the composer draft changes", () => {
     const previous = makeSnapshot();
     const next = structuredClone(previous);
@@ -435,6 +482,509 @@ describe("appStore projection cache", () => {
     expect(projected.state.domain.rooms).toBe(previous.state.domain.rooms);
     expect(projected.state.ui).toBe(previous.state.ui);
     expect(projected.sidebar).toBe(previous.sidebar);
+  });
+
+  test("merges search-crawler room deltas without replacing the whole slice", () => {
+    const previous = makeSnapshot();
+    const oldRoom = { kind: "running" as const, processed: 1, indexed: 0 };
+    previous.state.domain.search_crawler.rooms["!old-crawler:example.invalid"] = oldRoom;
+    const nextRoom = { kind: "completed" as const, indexed: 4 };
+    const delta = {
+      generation: 1,
+      changed: {
+        state: {
+          domain: {
+            search_crawler_rooms_by_id: {
+              "!old-crawler:example.invalid": null,
+              "!new-crawler:example.invalid": nextRoom
+            }
+          }
+        }
+      }
+    };
+
+    const projected = applyDeltaToState(previous, delta);
+
+    expect(projected?.state.domain.search_crawler.rooms).toEqual({
+      "!new-crawler:example.invalid": nextRoom
+    });
+    expect(projected?.state.domain.search_crawler).not.toBe(previous.state.domain.search_crawler);
+    expect(projected?.state.domain.rooms).toBe(previous.state.domain.rooms);
+  });
+
+  test("merges search-crawler last-active deltas without replacing room state", () => {
+    const previous = makeSnapshot();
+    const oldRoom = { kind: "running" as const, processed: 1, indexed: 0 };
+    previous.state.domain.search_crawler.rooms["!crawler:example.invalid"] = oldRoom;
+    previous.state.domain.search_crawler.last_active = {
+      room_id: "!crawler:example.invalid",
+      updated_at_ms: 1_800_000_000_000,
+      status: "running",
+      processed: 1,
+      indexed: 0
+    };
+    const nextLastActive = {
+      room_id: "!crawler:example.invalid",
+      updated_at_ms: 1_800_000_001_000,
+      status: "completed" as const,
+      processed: 4,
+      indexed: 3
+    };
+    const delta = {
+      generation: 1,
+      changed: {
+        state: {
+          domain: {
+            search_crawler_last_active: nextLastActive
+          }
+        }
+      }
+    };
+
+    const projected = applyDeltaToState(previous, delta);
+
+    expect(projected?.state.domain.search_crawler.last_active).toEqual(nextLastActive);
+    expect(projected?.state.domain.search_crawler.rooms).toBe(
+      previous.state.domain.search_crawler.rooms
+    );
+    expect(projected?.state.domain.search_crawler).not.toBe(
+      previous.state.domain.search_crawler
+    );
+  });
+
+  test("merges live-signal presence deltas without replacing room state", () => {
+    const previous = makeSnapshot();
+    const oldRoom = {
+      receipts_by_event: {},
+      fully_read_event_id: null,
+      typing_user_ids: [],
+      typing_users: []
+    };
+    previous.state.domain.live_signals.rooms["!room:example.invalid"] = oldRoom;
+    previous.state.domain.live_signals.presence["@reader:example.invalid"] = "away";
+    previous.state.domain.live_signals.presence["@new-reader:example.invalid"] = "offline";
+    const delta = {
+      generation: 1,
+      changed: {
+        state: {
+          domain: {
+            live_signals_presence_by_user: {
+              "@reader:example.invalid": "online" as const,
+              "@new-reader:example.invalid": null
+            }
+          }
+        }
+      }
+    };
+
+    const projected = applyDeltaToState(previous, delta);
+
+    expect(projected?.state.domain.live_signals.presence).toEqual({
+      "@reader:example.invalid": "online"
+    });
+    expect(projected?.state.domain.live_signals.rooms).toBe(
+      previous.state.domain.live_signals.rooms
+    );
+    expect(projected?.state.domain.live_signals).not.toBe(
+      previous.state.domain.live_signals
+    );
+  });
+
+  test("merges room-local live-signal deltas without replacing the whole slice", () => {
+    const previous = makeSnapshot();
+    const oldRoom = {
+      receipts_by_event: {},
+      fully_read_event_id: null,
+      typing_user_ids: [],
+      typing_users: []
+    };
+    previous.state.domain.live_signals.rooms["!old:example.invalid"] = oldRoom;
+    const nextRoom = {
+      receipts_by_event: {},
+      fully_read_event_id: "$event:example.invalid",
+      typing_user_ids: [],
+      typing_users: []
+    };
+    const delta = {
+      generation: 1,
+      changed: {
+        state: {
+          domain: {
+            live_signals_rooms: {
+              "!old:example.invalid": null,
+              "!new:example.invalid": nextRoom
+            }
+          }
+        }
+      }
+    };
+
+    const projected = applyDeltaToState(previous, delta);
+
+    expect(projected?.state.domain.live_signals.rooms).toEqual({
+      "!new:example.invalid": nextRoom
+    });
+    expect(projected?.state.domain.live_signals).not.toBe(previous.state.domain.live_signals);
+    expect(projected?.state.domain.profile).toBe(previous.state.domain.profile);
+  });
+
+  test("merges room live-signal metadata without replacing receipt events", () => {
+    const previous = makeSnapshot();
+    const room = {
+      receipts_by_event: {
+        "$event:example.invalid": { readers: [], total_count: 1, overflow_count: 0 }
+      },
+      fully_read_event_id: null,
+      typing_user_ids: [],
+      typing_users: []
+    };
+    previous.state.domain.live_signals.rooms["!room:example.invalid"] = room;
+    const delta = {
+      generation: 1,
+      changed: {
+        state: {
+          domain: {
+            live_signals_room_metadata_by_id: {
+              "!room:example.invalid": {
+                fully_read_event_id: "$read:example.invalid",
+                typing_user_ids: ["@typing:example.invalid"],
+                typing_users: []
+              }
+            }
+          }
+        }
+      }
+    };
+
+    const projected = applyDeltaToState(previous, delta);
+
+    expect(projected?.state.domain.live_signals.rooms["!room:example.invalid"]).toEqual({
+      ...room,
+      fully_read_event_id: "$read:example.invalid",
+      typing_user_ids: ["@typing:example.invalid"]
+    });
+    expect(
+      projected?.state.domain.live_signals.rooms["!room:example.invalid"].receipts_by_event
+    ).toBe(room.receipts_by_event);
+  });
+
+  test("merges receipt-event deltas without replacing unrelated room events", () => {
+    const previous = makeSnapshot();
+    const oldRoom = {
+      receipts_by_event: {
+        "$changed:example.invalid": { readers: [], total_count: 1, overflow_count: 0 },
+        "$removed:example.invalid": { readers: [], total_count: 2, overflow_count: 0 }
+      },
+      fully_read_event_id: null,
+      typing_user_ids: [],
+      typing_users: []
+    };
+    const unrelatedRoom = {
+      receipts_by_event: {},
+      fully_read_event_id: null,
+      typing_user_ids: [],
+      typing_users: []
+    };
+    previous.state.domain.live_signals.rooms["!room:example.invalid"] = oldRoom;
+    previous.state.domain.live_signals.rooms["!other:example.invalid"] = unrelatedRoom;
+    const changed = {
+      readers: [],
+      total_count: 3,
+      overflow_count: 0
+    };
+    const added = {
+      readers: [],
+      total_count: 4,
+      overflow_count: 0
+    };
+    const delta = {
+      generation: 1,
+      changed: {
+        state: {
+          domain: {
+            live_signals_receipts_by_room_event: {
+              "!room:example.invalid": {
+                "$changed:example.invalid": changed,
+                "$removed:example.invalid": null,
+                "$added:example.invalid": added
+              }
+            }
+          }
+        }
+      }
+    };
+
+    const projected = applyDeltaToState(previous, delta);
+
+    expect(projected?.state.domain.live_signals.rooms["!room:example.invalid"]).toEqual({
+      ...oldRoom,
+      receipts_by_event: {
+        "$changed:example.invalid": changed,
+        "$added:example.invalid": added
+      }
+    });
+    expect(projected?.state.domain.live_signals.rooms["!other:example.invalid"]).toBe(
+      unrelatedRoom
+    );
+    expect(projected?.state.domain.live_signals.rooms).not.toBe(
+      previous.state.domain.live_signals.rooms
+    );
+  });
+
+  test("merges one room profile-user delta without replacing other rooms", () => {
+    const previous = makeSnapshot();
+    const userId = "@alpha-user:example.invalid";
+    previous.state.domain.profile.room_users["!room-alpha:example.invalid"] = {
+      [userId]: previous.state.domain.profile.users[userId]
+    };
+    const updatedUser = {
+      ...previous.state.domain.profile.users[userId],
+      display_label: "Room Alpha User"
+    };
+    const delta = {
+      generation: 1,
+      changed: {
+        state: {
+          domain: {
+            profile_room_users_by_room: {
+              "!room-alpha:example.invalid": { [userId]: updatedUser }
+            }
+          }
+        }
+      }
+    };
+
+    const projected = applyDeltaToState(previous, delta);
+
+    expect(
+      projected?.state.domain.profile.room_users["!room-alpha:example.invalid"][userId]
+    ).toEqual(updatedUser);
+    expect(projected?.state.domain.profile.room_users).not.toBe(
+      previous.state.domain.profile.room_users
+    );
+  });
+
+  test("merges one global profile-user delta without replacing profile state", () => {
+    const previous = makeSnapshot();
+    const userId = "@alpha-user:example.invalid";
+    const updatedUser = {
+      ...previous.state.domain.profile.users[userId],
+      display_label: "Renamed Alpha User"
+    };
+    const delta = {
+      generation: 1,
+      changed: {
+        state: {
+          domain: {
+            profile_users_by_id: {
+              [userId]: updatedUser
+            }
+          }
+        }
+      }
+    };
+
+    const projected = applyDeltaToState(previous, delta);
+
+    expect(projected?.state.domain.profile.users[userId]).toEqual(updatedUser);
+    expect(projected?.state.domain.profile).not.toBe(previous.state.domain.profile);
+    expect(projected?.state.domain.profile.room_users).toBe(
+      previous.state.domain.profile.room_users
+    );
+  });
+
+  test("merges profile scalar and local collection deltas independently", () => {
+    const previous = makeSnapshot();
+    const userId = "@delta-user:example.invalid";
+    const delta = {
+      generation: 1,
+      changed: {
+        state: {
+          domain: {
+            profile_own: { display_name: "Own User", avatar: null },
+            profile_local_aliases_by_id: { [userId]: "Alias" },
+            profile_ignored_user_ids_by_id: { [userId]: true },
+            profile_local_alias_update: { kind: "saving" as const, request_id: 7 },
+            profile_ignored_user_update: { kind: "saving" as const, request_id: 8 },
+            profile_update: {
+              kind: "settingDisplayName" as const,
+              request_id: 9,
+              display_name: "Own User"
+            }
+          }
+        }
+      }
+    };
+
+    const projected = applyDeltaToState(previous, delta);
+
+    expect(projected?.state.domain.profile.own.display_name).toBe("Own User");
+    expect(projected?.state.domain.profile.local_aliases[userId]).toBe("Alias");
+    expect(projected?.state.domain.profile.ignored_user_ids).toContain(userId);
+    expect(projected?.state.domain.profile.local_alias_update).toEqual({
+      kind: "saving",
+      request_id: 7
+    });
+    expect(projected?.state.domain.profile.ignored_user_update).toEqual({
+      kind: "saving",
+      request_id: 8
+    });
+    expect(projected?.state.domain.profile.update).toEqual({
+      kind: "settingDisplayName",
+      request_id: 9,
+      display_name: "Own User"
+    });
+    expect(projected?.state.domain.profile.users).toBe(previous.state.domain.profile.users);
+    expect(projected?.state.domain.profile.room_users).toBe(
+      previous.state.domain.profile.room_users
+    );
+  });
+
+  test("merges space-local room-list deltas without replacing unchanged spaces", () => {
+    const previous = makeSnapshot();
+    const updatedSpace = {
+      ...previous.state.domain.spaces[0],
+      display_name: "Renamed Space"
+    };
+    const delta = {
+      generation: 1,
+      changed: {
+        state: {
+          domain: {
+            spaces_by_id: {
+              [updatedSpace.space_id]: updatedSpace
+            }
+          }
+        }
+      }
+    };
+
+    const projected = applyDeltaToState(previous, delta);
+
+    expect(projected?.state.domain.spaces[0]).toEqual(updatedSpace);
+    expect(projected?.state.domain.spaces).not.toBe(previous.state.domain.spaces);
+  });
+
+  test("merges room policy maps without replacing unrelated entries", () => {
+    const previous = makeSnapshot();
+    previous.state.domain.room_notification_settings["!room-alpha:example.invalid"] = {
+      mode: { kind: "all" },
+      operation: { kind: "idle" as const }
+    };
+    previous.state.domain.room_interactions["!room-alpha:example.invalid"] = {
+      pinned_events: [],
+      pin_operation: { kind: "idle" }
+    };
+    const delta = {
+      generation: 1,
+      changed: {
+        state: {
+          domain: {
+            room_notification_settings_by_id: {
+              "!room-alpha:example.invalid": {
+                mode: { kind: "mentions" as const },
+                operation: { kind: "idle" as const }
+              }
+            },
+            room_interactions_by_id: {
+              "!room-alpha:example.invalid": {
+                pinned_events: [],
+                pin_operation: { kind: "idle" as const }
+              }
+            }
+          }
+        }
+      }
+    };
+
+    const projected = applyDeltaToState(previous, delta);
+
+    expect(projected?.state.domain.room_notification_settings["!room-alpha:example.invalid"].mode)
+      .toEqual({ kind: "mentions" });
+    expect(projected?.state.domain.room_interactions["!room-alpha:example.invalid"]).toEqual({
+      pinned_events: [],
+      pin_operation: { kind: "idle" }
+    });
+  });
+
+  test("merges invite-local room-list deltas without replacing unchanged invites", () => {
+    const previous = makeSnapshot();
+    const invite = {
+      room_id: "!invite:example.invalid",
+      display_name: "Invite",
+      avatar: null,
+      topic: null,
+      inviter_display_name: "Inviter",
+      inviter_user_id: "@inviter:example.invalid",
+      is_dm: false
+    };
+    previous.state.domain.invites.push(invite);
+    const updatedInvite = { ...invite, topic: "Updated topic" };
+    const delta = {
+      generation: 1,
+      changed: {
+        state: {
+          domain: {
+            invites_by_id: {
+              [updatedInvite.room_id]: updatedInvite
+            }
+          }
+        }
+      }
+    };
+
+    const projected = applyDeltaToState(previous, delta);
+
+    expect(projected?.state.domain.invites[0]).toEqual(updatedInvite);
+    expect(projected?.state.domain.invites).not.toBe(previous.state.domain.invites);
+  });
+
+  test("removes a room from a scoped room-list delta", () => {
+    const previous = makeSnapshot();
+    const delta = {
+      generation: 1,
+      changed: {
+        state: {
+          domain: {
+            rooms_by_id: {
+              "!room-alpha:example.invalid": null
+            }
+          }
+        }
+      }
+    };
+
+    const projected = applyDeltaToState(previous, delta);
+
+    expect(projected?.state.domain.rooms.map((room) => room.room_id)).toEqual([
+      "!room-beta:example.invalid"
+    ]);
+  });
+
+  test("merges room-local room-list deltas without replacing unchanged rooms", () => {
+    const previous = makeSnapshot();
+    const updatedRoom = {
+      ...previous.state.domain.rooms[0],
+      unread_count: 4
+    };
+    const delta = {
+      generation: 1,
+      changed: {
+        state: {
+          domain: {
+            rooms_by_id: {
+              [updatedRoom.room_id]: updatedRoom
+            }
+          }
+        }
+      }
+    };
+
+    const projected = applyDeltaToState(previous, delta);
+
+    expect(projected?.state.domain.rooms[0]).toEqual(updatedRoom);
+    expect(projected?.state.domain.rooms[1]).toBe(previous.state.domain.rooms[1]);
+    expect(projected?.state.domain.rooms).not.toBe(previous.state.domain.rooms);
   });
 
   test("applies reconnecting and recovered sync state deltas", () => {

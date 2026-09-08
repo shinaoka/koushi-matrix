@@ -65,6 +65,24 @@ enum SupportedLanguage {
     Rtl,
 }
 
+/// Resolve the shared catalog policy without toolkit/platform modifier information.
+///
+/// ```
+/// use koushi_state::{CatalogLocale, LocaleSettings, resolve_catalog_locale};
+/// let mut settings = LocaleSettings::default();
+/// assert_eq!(resolve_catalog_locale(&settings), CatalogLocale::En);
+/// settings.language_tag = Some("ja-JP".into());
+/// assert_eq!(resolve_catalog_locale(&settings), CatalogLocale::Ja);
+/// ```
+pub fn resolve_catalog_locale(settings: &LocaleSettings) -> CatalogLocale {
+    catalog_locale(
+        settings
+            .language_tag
+            .as_deref()
+            .and_then(parse_language_tag),
+    )
+}
+
 pub fn resolve_locale_display_profile(
     settings: &LocaleSettings,
     platform: DisplayPlatform,

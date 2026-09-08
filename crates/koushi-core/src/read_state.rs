@@ -45,6 +45,7 @@ impl ReadPersistenceEntry {
         std::slice::from_ref(&self.event_id)
     }
 
+    #[cfg(test)]
     pub(crate) fn event_id(&self) -> &str {
         self.event_id.as_str()
     }
@@ -201,6 +202,7 @@ impl ReadWaiterId {
         Self(value)
     }
 
+    #[cfg(test)]
     pub(crate) fn get(self) -> u64 {
         self.0
     }
@@ -226,10 +228,12 @@ impl ReadOperationFence {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn session_generation(self) -> u64 {
         self.session_generation
     }
 
+    #[cfg(test)]
     pub(crate) fn operation_generation(self) -> u64 {
         self.operation_generation
     }
@@ -328,44 +332,6 @@ impl ReadAdmissionResult {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ReadEvidenceStatus {
-    Updated,
-    IgnoredOlderEvidence,
-    UnknownTarget,
-    StaleSession,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ReadEvidenceResult {
-    status: ReadEvidenceStatus,
-    superseded_operation: Option<ReadOperationFence>,
-    candidate_count: usize,
-    waiter_count: usize,
-}
-
-impl ReadEvidenceResult {
-    pub(crate) fn status(self) -> ReadEvidenceStatus {
-        self.status
-    }
-
-    pub(crate) fn updated(self) -> bool {
-        self.status == ReadEvidenceStatus::Updated
-    }
-
-    pub(crate) fn superseded_operation(self) -> Option<ReadOperationFence> {
-        self.superseded_operation
-    }
-
-    pub(crate) fn candidate_count(self) -> usize {
-        self.candidate_count
-    }
-
-    pub(crate) fn waiter_count(self) -> usize {
-        self.waiter_count
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ReadWakeResult {
     Start(ReadOperation),
@@ -388,6 +354,7 @@ impl ReadNetworkFailure {
         }
     }
 
+    #[cfg(test)]
     pub(crate) const fn with_retry_after(
         kind: ReadStateFailureKind,
         retry_after: std::time::Duration,
@@ -521,10 +488,6 @@ impl ReadCompletionResult {
         self.settlements.as_slice()
     }
 
-    pub(crate) fn failure_kind(&self) -> Option<ReadStateFailureKind> {
-        self.failure_kind
-    }
-
     pub(crate) fn diagnostic(&self) -> ReadCompletionDiagnostic {
         let settled_waiter_count = self.settlements.len();
         match self.disposition {
@@ -596,6 +559,7 @@ impl ReadStateEngine {
         self.session_generation
     }
 
+    #[cfg(test)]
     pub(crate) fn last_operation_generation(&self) -> u64 {
         self.operation_generation
     }
@@ -768,39 +732,18 @@ impl ReadStateEngine {
         key: &ReadStateKey,
         event_id: &str,
         evidence: ReadPositionEvidence,
-    ) -> ReadEvidenceResult {
+    ) {
         if session_generation != self.session_generation {
-            let (candidate_count, waiter_count) = self.counts(key);
-            return ReadEvidenceResult {
-                status: ReadEvidenceStatus::StaleSession,
-                superseded_operation: None,
-                candidate_count,
-                waiter_count,
-            };
+            return;
         }
         let Some(state) = self.keys.get_mut(key) else {
-            return ReadEvidenceResult {
-                status: ReadEvidenceStatus::UnknownTarget,
-                superseded_operation: None,
-                candidate_count: 0,
-                waiter_count: 0,
-            };
+            return;
         };
         let Some(desired) = state.desired.as_mut() else {
-            return ReadEvidenceResult {
-                status: ReadEvidenceStatus::UnknownTarget,
-                superseded_operation: None,
-                candidate_count: 0,
-                waiter_count: 0,
-            };
+            return;
         };
         if desired.target.event_id != event_id {
-            return ReadEvidenceResult {
-                status: ReadEvidenceStatus::UnknownTarget,
-                superseded_operation: None,
-                candidate_count: 1,
-                waiter_count: waiter_count(state),
-            };
+            return;
         }
 
         if desired
@@ -808,21 +751,10 @@ impl ReadStateEngine {
             .position
             .is_some_and(|known| evidence_is_older(evidence, known))
         {
-            return ReadEvidenceResult {
-                status: ReadEvidenceStatus::IgnoredOlderEvidence,
-                superseded_operation: None,
-                candidate_count: 1,
-                waiter_count: waiter_count(state),
-            };
+            return;
         }
 
         desired.target.position = Some(evidence);
-        ReadEvidenceResult {
-            status: ReadEvidenceStatus::Updated,
-            superseded_operation: None,
-            candidate_count: 1,
-            waiter_count: waiter_count(state),
-        }
     }
 
     pub(crate) fn wake(&mut self, key: &ReadStateKey) -> ReadWakeResult {
@@ -1089,13 +1021,6 @@ impl ReadStateEngine {
             .get(key)
             .and_then(|state| state.desired.as_ref())
             .is_some_and(|desired| desired.target.event_id == event_id)
-    }
-
-    pub(crate) fn desired_target(&self, key: &ReadStateKey) -> Option<&ReadTarget> {
-        self.keys
-            .get(key)
-            .and_then(|state| state.desired.as_ref())
-            .map(|desired| &desired.target)
     }
 
     pub(crate) fn last_failure(&self, key: &ReadStateKey) -> Option<ReadNetworkFailure> {

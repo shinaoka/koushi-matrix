@@ -419,7 +419,6 @@ impl AccountActor {
             .expect("matching Sliding Sync admission remains pending");
         match pending {
             PendingSlidingSyncAdmission::NewLogin {
-                core_request_id,
                 login_session,
                 persistable,
                 key_id,

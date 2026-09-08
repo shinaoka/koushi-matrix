@@ -70,7 +70,7 @@ fn state_delta_forwarding_emits_core_event_changed_slices() {
     assert_eq!(forwarded[0].payload["kind"], json!("delta"));
     assert_eq!(forwarded[0].payload["generation"], json!(1));
     assert_eq!(
-        forwarded[0].payload["changed"]["state"]["domain"]["search_crawler"]["rooms"]["!crawler:example.invalid"]
+        forwarded[0].payload["changed"]["state"]["domain"]["search_crawler_rooms_by_id"]["!crawler:example.invalid"]
             ["kind"],
         json!("queued")
     );

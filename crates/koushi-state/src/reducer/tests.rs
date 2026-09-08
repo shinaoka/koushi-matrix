@@ -1,8 +1,8 @@
 use super::*;
 use crate::state::{
-    AvatarImage, AvatarThumbnailState, LiveEventReceiptSummary, LiveEventReceipts, LiveReadReceipt,
-    MediaTransferProgress, OperationFailureKind, PresenceKind, RoomLatestEventSummary,
-    RoomLiveSignals, TimelineMediaDownloadState, UserProfile,
+    AvatarImage, AvatarThumbnailState, LiveEventReceiptSummary, LiveEventReceiptSummaryUpdate,
+    LiveEventReceipts, LiveReadReceipt, MediaTransferProgress, OperationFailureKind, PresenceKind,
+    RoomLatestEventSummary, RoomLiveSignals, TimelineMediaDownloadState, UserProfile,
 };
 
 fn ready_state() -> AppState {
@@ -588,6 +588,14 @@ fn avatar_thumbnail_updates_rust_owned_snapshots() {
             .iter()
             .any(|effect| matches!(effect, AppEffect::EmitUiEvent(UiEvent::ProfileChanged(_))))
     );
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        AppEffect::EmitUiEvent(UiEvent::ProfileChanged(change))
+            if change.user_ids == vec![
+                "@alice:example.invalid".to_owned(),
+                "@bob:example.invalid".to_owned()
+            ]
+    )));
     assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::RoomListChanged)));
     assert_eq!(
         state
@@ -628,6 +636,48 @@ fn avatar_thumbnail_updates_rust_owned_snapshots() {
             .map(|avatar| &avatar.thumbnail),
         Some(&thumbnail)
     );
+}
+
+#[test]
+fn avatar_thumbnail_update_invalidates_live_receipt_reader_dependencies() {
+    let mut state = ready_state();
+    let mxc_uri = "mxc://example.invalid/live-reader";
+    state.live_signals.rooms.insert(
+        "!room:example.invalid".to_owned(),
+        RoomLiveSignals {
+            receipts_by_event: [(
+                "$event:example.invalid".to_owned(),
+                LiveEventReceiptSummary {
+                    readers: vec![LiveReadReceipt {
+                        user_id: "@bob:example.invalid".to_owned(),
+                        display_name: Some("Bob".to_owned()),
+                        original_display_label: "Bob".to_owned(),
+                        avatar: Some(test_avatar(mxc_uri)),
+                        timestamp_ms: Some(1),
+                    }],
+                    total_count: 1,
+                    overflow_count: 0,
+                },
+            )]
+            .into(),
+            ..RoomLiveSignals::default()
+        },
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::AvatarThumbnailUpdated {
+            mxc_uri: mxc_uri.to_owned(),
+            thumbnail: ready_avatar_thumbnail("live-reader"),
+        },
+    );
+
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        AppEffect::EmitUiEvent(UiEvent::ProfileChanged(change))
+            if change.user_ids == vec!["@bob:example.invalid".to_owned()]
+    )));
+    assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)));
 }
 
 #[test]
@@ -770,13 +820,45 @@ fn loading_persisted_space_order_reorders_existing_spaces() {
 }
 
 #[test]
+fn bounded_live_receipt_summary_preserves_exact_total() {
+    let mut state = ready_state();
+    let readers = (0..3)
+        .map(|index| LiveReadReceipt {
+            user_id: format!("@reader-{index}:example.invalid"),
+            display_name: None,
+            original_display_label: String::new(),
+            avatar: None,
+            timestamp_ms: Some(index),
+        })
+        .collect();
+
+    reduce(
+        &mut state,
+        AppAction::LiveRoomReceiptSummariesUpdated {
+            room_id: "!room:example.invalid".to_owned(),
+            receipts_by_event: vec![LiveEventReceiptSummaryUpdate {
+                event_id: "$event:example.invalid".to_owned(),
+                readers,
+                total_count: 5,
+            }],
+        },
+    );
+
+    let summary = &state.live_signals.rooms["!room:example.invalid"].receipts_by_event["$event:example.invalid"];
+    assert_eq!(summary.readers.len(), 3);
+    assert_eq!(summary.total_count, 5);
+    assert_eq!(summary.overflow_count, 2);
+}
+
+#[test]
 fn live_signal_actions_update_rust_owned_state() {
     let mut state = ready_state();
 
     let effects = reduce(
         &mut state,
-        AppAction::LiveRoomReceiptsUpdated {
+        AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: "!room:example.invalid".to_owned(),
+            scoped_event_ids: Vec::new(),
             receipts_by_event: vec![LiveEventReceipts {
                 event_id: "$event:example.invalid".to_owned(),
                 receipts: vec![LiveReadReceipt {
@@ -1390,8 +1472,9 @@ fn live_read_receipts_project_reader_profiles_order_and_overflow() {
 
     let effects = reduce(
         &mut state,
-        AppAction::LiveRoomReceiptsUpdated {
+        AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: "!room:example.invalid".to_owned(),
+            scoped_event_ids: Vec::new(),
             receipts_by_event: vec![LiveEventReceipts {
                 event_id: "$event:example.invalid".to_owned(),
                 receipts: vec![

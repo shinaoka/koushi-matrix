@@ -450,16 +450,26 @@ pub(crate) fn handle_avatar_thumbnail_updated(
     let mut profile_changed = false;
     let mut room_list_changed = false;
     let mut live_signals_changed = false;
+    let mut changed_user_ids = Vec::new();
 
-    profile_changed |=
-        update_avatar_thumbnail(&mut state.profile.own.avatar, &mxc_uri, thumbnail.clone());
+    if update_avatar_thumbnail(&mut state.profile.own.avatar, &mxc_uri, thumbnail.clone()) {
+        profile_changed = true;
+        if let Some(user_id) = session_user_id(state) {
+            changed_user_ids.push(user_id.to_owned());
+        }
+    }
     for user in state.profile.users.values_mut() {
-        profile_changed |= update_avatar_thumbnail(&mut user.avatar, &mxc_uri, thumbnail.clone());
+        if update_avatar_thumbnail(&mut user.avatar, &mxc_uri, thumbnail.clone()) {
+            profile_changed = true;
+            changed_user_ids.push(user.user_id.clone());
+        }
     }
     for room_users in state.profile.room_users.values_mut() {
         for user in room_users.values_mut() {
-            profile_changed |=
-                update_avatar_thumbnail(&mut user.avatar, &mxc_uri, thumbnail.clone());
+            if update_avatar_thumbnail(&mut user.avatar, &mxc_uri, thumbnail.clone()) {
+                profile_changed = true;
+                changed_user_ids.push(user.user_id.clone());
+            }
         }
     }
 
@@ -477,20 +487,27 @@ pub(crate) fn handle_avatar_thumbnail_updated(
     for room in state.live_signals.rooms.values_mut() {
         for summary in room.receipts_by_event.values_mut() {
             for reader in &mut summary.readers {
-                live_signals_changed |=
-                    update_avatar_thumbnail(&mut reader.avatar, &mxc_uri, thumbnail.clone());
+                if update_avatar_thumbnail(&mut reader.avatar, &mxc_uri, thumbnail.clone()) {
+                    live_signals_changed = true;
+                    changed_user_ids.push(reader.user_id.clone());
+                }
             }
         }
     }
+
+    changed_user_ids.sort_unstable();
+    changed_user_ids.dedup();
 
     if room_list_changed {
         recompute_room_list_projection(state);
     }
 
     let mut effects = Vec::new();
-    if profile_changed {
+    if profile_changed || !changed_user_ids.is_empty() {
         effects.push(AppEffect::EmitUiEvent(UiEvent::ProfileChanged(
-            Default::default(),
+            crate::ProfileDisplayChange {
+                user_ids: changed_user_ids,
+            },
         )));
     }
     if room_list_changed {

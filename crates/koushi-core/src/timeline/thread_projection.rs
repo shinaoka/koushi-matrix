@@ -1029,7 +1029,7 @@ fn thread_root_projection_activity_from_item(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum ThreadSummaryActivityObservation {
+pub(crate) enum ThreadSummaryActivityObservation {
     Activity(ThreadRootProjectionActivity),
     Invalidated {
         root_event_id: String,

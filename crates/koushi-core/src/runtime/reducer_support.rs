@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_state::{
@@ -21,6 +21,56 @@ use super::scheduled_send::{DeferredScheduledSendPersist, scheduled_send_session
 
 use crate::account::AccountMessage;
 use crate::unread_trace;
+
+fn live_receipt_source_changes(action: &AppAction) -> Option<(String, Vec<String>)> {
+    match action {
+        AppAction::LiveRoomReceiptSummariesUpdated {
+            room_id,
+            receipts_by_event,
+        } => Some((
+            room_id.clone(),
+            receipts_by_event
+                .iter()
+                .map(|summary| summary.event_id.clone())
+                .collect(),
+        )),
+        AppAction::LiveRoomReceiptsWindowReconciled {
+            room_id,
+            scoped_event_ids,
+            receipts_by_event,
+        } => {
+            let mut event_ids = scoped_event_ids.clone();
+            event_ids.extend(
+                receipts_by_event
+                    .iter()
+                    .map(|summary| summary.event_id.clone()),
+            );
+            event_ids.sort_unstable();
+            event_ids.dedup();
+            Some((room_id.clone(), event_ids))
+        }
+        _ => None,
+    }
+}
+
+fn live_room_profile_changes(
+    state: &AppState,
+    action: &AppAction,
+) -> Option<(String, BTreeMap<String, Option<koushi_state::UserProfile>>)> {
+    let AppAction::LiveRoomProfilesObserved { room_id, profiles } = action else {
+        return None;
+    };
+    let existing = state.profile.room_users.get(room_id);
+    let mut before = BTreeMap::new();
+    for profile in profiles {
+        before.entry(profile.user_id.clone()).or_insert_with(|| {
+            existing
+                .and_then(|profiles| profiles.get(&profile.user_id))
+                .cloned()
+        });
+    }
+    Some((room_id.clone(), before))
+}
 
 fn reduce_with_unread_diagnostics(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
     let room_list_trace = match &action {
@@ -80,10 +130,15 @@ impl DeferredReducerSideEffects {
 }
 
 impl super::AppActor {
-    pub(super) async fn reduce_app_action(&mut self, action: AppAction) -> Vec<AppEffect> {
-        let (effects, deferred) = self.reduce_app_action_state(action);
-        self.apply_deferred_reducer_side_effects(deferred).await;
-        effects
+    pub(super) fn reduce_app_action(
+        &mut self,
+        action: AppAction,
+    ) -> impl std::future::Future<Output = Vec<AppEffect>> + '_ {
+        Box::pin(async move {
+            let (effects, deferred) = self.reduce_app_action_state(action);
+            self.apply_deferred_reducer_side_effects(deferred).await;
+            effects
+        })
     }
 
     pub(super) fn reduce_app_action_state(
@@ -114,13 +169,75 @@ impl super::AppActor {
             &self.pending_select,
             &action,
         );
+        let previous_receipt_locale = koushi_protocol::view::ReceiptTimestampLocale::from(
+            koushi_state::resolve_catalog_locale(&self.state.settings.values.locale),
+        );
+        let receipt_source_changes = live_receipt_source_changes(&action);
+        let room_profile_changes = live_room_profile_changes(&self.state, &action);
+        let avatar_thumbnail_change = match &action {
+            AppAction::AvatarThumbnailUpdated { mxc_uri, .. } => Some(mxc_uri.clone()),
+            _ => None,
+        };
         let effects = reduce_with_unread_diagnostics(&mut self.state, action);
+        if let Some(mxc_uri) = avatar_thumbnail_change.as_deref()
+            && effects.iter().any(|effect| {
+                matches!(
+                    effect,
+                    koushi_state::AppEffect::EmitUiEvent(
+                        koushi_state::UiEvent::ProfileChanged(_)
+                            | koushi_state::UiEvent::RoomListChanged
+                            | koushi_state::UiEvent::LiveSignalsChanged
+                    )
+                )
+            })
+        {
+            self.view_scopes.reader_avatar_thumbnail_changed(mxc_uri);
+        }
+        if let Some((room_id, before)) = room_profile_changes {
+            let changed_users: Vec<_> = before
+                .into_iter()
+                .filter_map(|(user_id, previous)| {
+                    let current = self
+                        .state
+                        .profile
+                        .room_users
+                        .get(&room_id)
+                        .and_then(|profiles| profiles.get(&user_id));
+                    (previous.as_ref() != current).then_some(user_id)
+                })
+                .collect();
+            if !changed_users.is_empty() {
+                self.view_scopes
+                    .reader_room_profiles_changed(&room_id, &changed_users);
+            }
+        }
+        if let Some((room_id, event_ids)) = receipt_source_changes.as_ref()
+            && !event_ids.is_empty()
+            && let koushi_state::SessionState::Ready(info) = &self.state.session
+        {
+            for event_id in event_ids {
+                self.view_scopes
+                    .reader_receipt_source_changed(&info.user_id, room_id, event_id);
+            }
+        }
+        for effect in &effects {
+            if let AppEffect::EmitUiEvent(koushi_state::UiEvent::ProfileChanged(change)) = effect {
+                self.view_scopes.reader_profiles_changed(&change.user_ids);
+            }
+        }
+        let receipt_locale = koushi_protocol::view::ReceiptTimestampLocale::from(
+            koushi_state::resolve_catalog_locale(&self.state.settings.values.locale),
+        );
+        if receipt_locale != previous_receipt_locale {
+            self.view_scopes.reader_locale_changed();
+        }
         if internal_event_navigation_select {
             // Room selection owns the room/timeline projection, but its ordinary
             // reducer transition must not close the outer event-navigation owner.
             self.state.navigation.event_navigation = previous_event_navigation;
         }
         if composer_draft_session_key(&self.state) != previous_session {
+            self.view_scopes.retire_session();
             self.composer_draft_reload_required = true;
         }
         if previous_navigation.space_order != self.state.navigation.space_order

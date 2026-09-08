@@ -724,12 +724,9 @@
             "kind": "offered",
             "reason": "noProofMethod"
           },
-          "search_crawler": {
-            "last_active": null,
-            "rooms": {
-              "!crawler:example.test": {
-                "kind": "queued"
-              }
+          "search_crawler_rooms_by_id": {
+            "!crawler:example.test": {
+              "kind": "queued"
             }
           }
         },
