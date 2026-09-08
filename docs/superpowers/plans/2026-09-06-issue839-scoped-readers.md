@@ -1361,52 +1361,34 @@ diff and agents-doc checks also pass
   The clarified mobile requirement is backend neutrality, which is covered by
   the shared Rust/toolkit-independent unit and consumer tests; no mobile UI
   lifecycle claim is made.
-- `cargo audit` remains blocked by inherited `quick-xml 0.39.4` advisories
-  `RUSTSEC-2026-0194` and `RUSTSEC-2026-0195` (the current scan also reports
-  the inherited yanked `chacha20 0.10.1` warning); `cargo deny` and `cargo
-  machete` pass and no unreviewed dependency upgrade was made
-  (`/tmp/umbrella-final-cargo-audit-2.log`,
+- `cargo audit` now exits 0 after the compatible `plist 1.10.1` lockfile update,
+  which selected `quick-xml 0.42.0` and `base64 0.23.1`; `cargo deny` and
+  `cargo machete` pass. The inherited yanked `chacha20 0.10.1` remains a
+  warning-level audit finding and no unreviewed dependency upgrade or exception
+  was made (`/tmp/umbrella-cargo-audit-final-current.log`,
   `/tmp/umbrella-final-cargo-deny-2.log`,
   `/tmp/umbrella-final-cargo-machete-2.log`).
 - The SDK submodule's public `ReadReceiptSnapshot::changes_since` API in
   `vendor/matrix-rust-sdk/crates/matrix-sdk-ui/src/timeline/event_item/read_receipt_snapshot.rs`
-  is now committed as `e85bc9e762592fee316839908f29cd6015973578` and pushed to
+  is committed as `e85bc9e762592fee316839908f29cd6015973578` and pushed to
   `origin/koushi/shared-receipt-snapshots`; the focused UI receipt suite passes
-  2/2 (`/tmp/umbrella-sdk-receipt-publication-focused.log`), and an independent
-  `git ls-remote` check resolves the branch to the exact local commit. The parent
-  gitlink still needs to be updated from `35ed65c95bcef777d471b778177014a90af6a37b`;
-  final SDK diff policy and clean submitted-tree verification remain required.
-- Final ownership/deletion audit, umbrella CI/PR/merge verification, and a
-  reproducible clean submitted tree are still required. GitHub currently lists
-  no open PR for this umbrella branch; prerequisite PRs #852, #853, and #854
-  are closed with their hosted checks green, but that is not umbrella exact-head
-  evidence. The earlier branch/HEAD/gitlink/status evidence is superseded;
-  the fresh follow-up records 117 tracked modifications, 26 untracked paths,
-  144 status entries, and the dirty SDK submodule
-  (`/tmp/umbrella-status-current-followup.log`); changed architecture/plan/September
-  specification relative links now resolve with zero missing targets
-  (`/tmp/umbrella-current-doc-links.log`); the final post-audit diff and
-  agents-doc checks also pass (`/tmp/umbrella-final-diff-after-doc-audit.log`,
-  `/tmp/umbrella-final-agents-after-doc-audit.log`). A combined-change regression
-now proves receipt and room-metadata updates populate their two independent
-scoped fields without a full live-signals replacement. Its first compile caught
-an introduced delimiter typo; the targeted fix passed formatting and the test
-(`/tmp/umbrella-combined-live-delta-fmt.log`,
-`/tmp/umbrella-combined-live-delta-test.log`). The focused state-delta suite
-passes 29/29 non-ignored tests with the one explicit performance measurement
-still ignored (`/tmp/umbrella-combined-live-delta-state-suite.log`). The full
-workspace suite after this test addition passes 2,587 tests / 13 ignored across
-132 suites with no failures (`/tmp/umbrella-final-workspace-after-combined-live-delta.log`).
-Final formatting, diff, Rust test-structure, and agents-doc checks remain green
-after the added regression (`/tmp/umbrella-final-fmt-after-combined.log`,
-`/tmp/umbrella-final-diff-after-combined.log`,
-`/tmp/umbrella-final-structure-after-combined.log`,
-`/tmp/umbrella-final-agents-after-combined.log`). The final status remains
-  116 tracked modifications, 26 untracked paths, and one dirty SDK submodule
-  (143 status entries) on `feat/umbrella-completion` at
-  `2132fc98ff8b1f19d543f70cc8a9d4e7859eb360`
-  (`/tmp/umbrella-status-final-current.log`); the earlier audit remains
-  `/tmp/umbrella-final-status-audit.log`.
+  2/2 (`/tmp/umbrella-sdk-receipt-publication-focused.log`). The parent gitlink
+  and remote SDK ref are synchronized, and the current submitted worktree has
+  no SDK or untracked diff (`node scripts/check-sdk-submodule.mjs`,
+  `git status --short`).
+- The ownership/deletion audit, reproducible clean submitted-tree check, and
+  exact-head umbrella CI are complete; the remaining PR work is review and merge.
+  Active production paths contain no obsolete receipt action or placeholder, and
+  retired backend vocabulary is limited to intentional guards/history material
+  (`/tmp/umbrella-ownership-deletion-audit-current.log`). The combined state-delta
+  regression and full workspace evidence remain green
+  (`/tmp/umbrella-final-workspace-after-combined-live-delta.log`). Final
+  formatting, diff, Rust test-structure, agents-doc, SDK, and ownership checks
+  pass. Current `feat/umbrella-completion` HEAD is
+  `cbb2c198e79c23a0c9d6ce2b85e516ab37ef5143`; worktree and remote match with no
+  untracked files, and CI run `34222800869` passes all nine required jobs. PR
+  #857 is open Draft with `mergeStateStatus: CLEAN` and currently has no reviews
+  or comments.
 
 A search-crawler delta audit found one remaining whole-slice path: changing
 `last_active` previously cloned the complete crawler room map. The protocol,
