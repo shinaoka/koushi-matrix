@@ -1638,3 +1638,14 @@ maintainer policy blocker rather than an unexamined audit result. Exact-head CI
 `34259016298` passes all nine required jobs for the dependency-disposition
 plan update, so the latest submitted state is green while the unreviewed
 release policy and native/stress/product decisions remain open.
+
+Exact-head CI `34264565246` for the checklist-refresh commit `4713f51e`
+failed only in the Rust workspace job: six `send_queue_fast` tests completed,
+but `fast_send_queue_feedback_runs_production_runtime_without_homeserver`
+reached its existing 60-second outer guard while the production timeline
+subscription was still at `build_begin`, producing no product assertion or
+state failure. The other eight required jobs passed. The failure log was
+retrieved and inspected before any rerun (`/tmp/umbrella-ci-342645-failed.log`);
+it is retained as shared-runner/test-runtime timing evidence, not treated as a
+pass or hidden by extending the timeout. A new exact-head run is required
+before the submitted tree can be called green.
