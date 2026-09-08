@@ -1554,4 +1554,10 @@ existing warning-level advisory set (including yanked `chacha20`), while
 `cargo deny check`, `cargo machete`, the Core/SDK/state/desktop focused suites,
 formatting, and `git diff --check` pass. The obsolete quick-xml exceptions were
 removed from `deny.toml`; the change is committed as `5f06a429` and pushed for
-fresh exact-head CI verification.
+fresh exact-head CI verification. The follow-up CI run `34219287338` passed all
+nine required jobs at submitted head `206fdd5f1ebae6d777f2341f8a82ab2c7791c8c3`.
+Its only prior failure was the frontend `TimelineView.anchor-race` test timing
+out under shared-runner load; the test was locally reproduced, its existing
+assertions were retained, and an explicit 15-second test timeout was added in
+`206fdd5f`. Focused and full frontend tests pass locally, and the current
+worktree and remote branch are identical and clean.
