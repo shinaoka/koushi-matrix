@@ -1555,3 +1555,11 @@ committed `ReceiptSourceRef` through the six registered Tauri reader commands,
 publication, and ACK/retirement; it also confirmed the App-level timeline store
 is the sole reducer owner while TimelineView retains only viewport/side effects.
 Evidence: `/tmp/umbrella-preflight-review-current.md`.
+
+The docs-only no-local-echo contract clarification was pushed as `db673252`.
+Exact-head CI `34235700270` then failed only in the Synapse invitation job:
+the SDK lane reached two successful join-operation traces and timed out in the
+runner, while the other eight jobs passed; the uploaded SDK artifact contains no
+application failure or changed assertion (`/tmp/umbrella-ci-342357-synapse.log`,
+`/tmp/umbrella-ci-342357-artifact/`). This is recorded as a non-green CI
+attempt, not treated as a pass or retried blindly.
