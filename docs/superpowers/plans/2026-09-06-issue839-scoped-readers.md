@@ -1680,7 +1680,7 @@ exact-head run is still required for the current submitted documentation
 commit, after which no further code or documentation changes are planned while
 the external native/review/policy decisions remain open.
 
-The required fresh run `34273641056` for `1ae3cf8` passed all nine jobs. Before
+The fresh run `34273641056` for `1ae3cf8` passed all nine jobs. Before
 that CI result, a local Synapse `1x10x100` stress characterization was rerun
 with the strict waiter unchanged and failed at coordinate `s0 r7 m3` only after
 observing the local echo: `SendCompleted` and event ID were still absent at the
@@ -1693,6 +1693,8 @@ connection was lost before response serialization. The sanitized per-send and
 server evidence is retained in `/tmp/umbrella-synapse-stress-trace-current.md`.
 This confirms a transport/server response outlier rather than a missing local
 echo, and no retry or relaxed assertion is justified. A `1x1x1` Synapse lane
-also passes end-to-end. The maximum `10x10x100` stress contract, native macOS
-viewport evidence, dependency policy, external review, Draft removal, and
-merge remain open; this plan does not claim completion.
+also passes end-to-end. Exact-head CI `34276407594` for the resulting
+`9ec257f1` trace-documentation commit also passed all nine required jobs. The
+maximum `10x10x100` stress contract, native macOS viewport evidence, dependency
+policy, external review, Draft removal, and merge remain open; this plan does
+not claim completion.
