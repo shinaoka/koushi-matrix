@@ -1632,4 +1632,7 @@ inherited yanked `chacha20 0.10.1` and unmaintained crates; no safe direct
 workspace upgrade exists. The exact dependency graph and required release
 accept/defer decision are recorded in
 `/tmp/umbrella-dependency-disposition-current.md`, so this is now an explicit
-maintainer policy blocker rather than an unexamined audit result.
+maintainer policy blocker rather than an unexamined audit result. Exact-head CI
+`34259016298` passes all nine required jobs for the dependency-disposition
+plan update, so the latest submitted state is green while the unreviewed
+release policy and native/stress/product decisions remain open.
