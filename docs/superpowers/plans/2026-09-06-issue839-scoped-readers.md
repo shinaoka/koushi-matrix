@@ -1616,4 +1616,7 @@ exact-head CI verification; no sleep, retry, or expectation weakening was
 introduced. Exact-head CI `34252040641` for the timeout-alignment commit
 passes all nine required jobs, including the full Rust workspace, confirming
 that the prior timeout was the CI-load preemption rather than a product or
-send-queue assertion regression.
+send-queue assertion regression. The next exact-head CI `34253841386` on the
+following plan-only commit also passed all nine required jobs; the current
+branch is therefore green after the timeout alignment and its latest local
+plan update remains the only pending verification change.
