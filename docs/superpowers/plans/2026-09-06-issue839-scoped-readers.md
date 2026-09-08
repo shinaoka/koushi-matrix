@@ -1493,4 +1493,9 @@ lib tests pass 135/135; `koushi-core` runtime-stack tests pass 3/3;
 `koushi-sdk` lib tests pass 143/143; frontend Vitest passes 1,272/1,272;
 typecheck, lint, build, Tauri/domain/leaf/SDK/secret/structure/docs checks all
 pass (`/tmp/umbrella-final-*after-main.log`). The build retains only the
-pre-existing Vite chunk-size and ineffective dynamic-import warnings.
+pre-existing Vite chunk-size and ineffective dynamic-import warnings. The first
+PR #857 CI run exposed a real generated-artifact mismatch in the README
+screenshot: the new Rust-demand avatar path intentionally applies deterministic
+per-sender colors. Re-running `docs:screenshot` produced a stable 2560×1600
+asset, and a second local generation matches it byte-for-byte; the refreshed
+`assets/screenshots/koushi-main.png` is included in the next commit.
