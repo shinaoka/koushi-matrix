@@ -1613,4 +1613,7 @@ its guard is now aligned to the existing explicit 60-second wall-clock budget
 rather than preempting at 55 seconds (`/tmp/umbrella-ci-342504-rust.log`,
 `/tmp/umbrella-send-queue-timeout-fix.log`). This remains subject to fresh
 exact-head CI verification; no sleep, retry, or expectation weakening was
-introduced.
+introduced. Exact-head CI `34252040641` for the timeout-alignment commit
+passes all nine required jobs, including the full Rust workspace, confirming
+that the prior timeout was the CI-load preemption rather than a product or
+send-queue assertion regression.
