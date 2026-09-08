@@ -1496,7 +1496,7 @@ fn send_completion_trace_orders_terminal_before_and_after_binding() {
 }
 
 #[test]
-fn local_echo_before_sdk_bind_retires_the_fallback_after_binding() {
+fn local_echo_before_sdk_bind_preserves_fallback_until_terminal() {
     let coordinator = SharedSendCompletionCoordinator::default();
     let (ingress, _terminal_rx) = TimelineSendTerminalIngress::channel();
     let key = room_key();
@@ -1526,6 +1526,23 @@ fn local_echo_before_sdk_bind_retires_the_fallback_after_binding() {
         assert_eq!(owner.projections_for_key(&key).len(), 1);
     }
     registration.bind("sdk-prebind".to_owned());
+    assert_eq!(
+        coordinator
+            .lock()
+            .expect("coordinator")
+            .projections_for_key(&key)
+            .len(),
+        1
+    );
+    apply_send_completion_observation_and_handoff(
+        &coordinator,
+        &TimelineSendTerminalIngress::channel().0,
+        key.room_id(),
+        SendCompletionObservation::Sent {
+            sdk_transaction_id: "sdk-prebind".to_owned(),
+            event_id: "$event-prebind:test".to_owned(),
+        },
+    );
     assert!(
         coordinator
             .lock()

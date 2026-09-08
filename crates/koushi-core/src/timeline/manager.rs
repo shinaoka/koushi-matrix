@@ -1082,6 +1082,10 @@ impl TimelineManagerActor {
                 if removed_actor.is_some() {
                     self.read_workers.remove_local_read_correlation(&key);
                 }
+                self.send_completion
+                    .lock()
+                    .expect("send completion coordinator lock must not be poisoned")
+                    .drop_direct_retained_for_key(&key);
                 // Release the actor-resource lease only when an actor was
                 // actually removed. Session residency is intentionally
                 // independent and is never removed by unsubscribe.

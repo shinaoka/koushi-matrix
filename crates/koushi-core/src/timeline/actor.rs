@@ -1046,6 +1046,35 @@ impl TimelineActor {
         self.display_projection.reproject(&context)
     }
 
+    pub(super) fn update_send_status(
+        &mut self,
+        transaction_id: &str,
+        send_state: TimelineSendState,
+    ) {
+        self.send_statuses
+            .insert(transaction_id.to_owned(), send_state.clone());
+        let diffs = self.display_projection.update_send_state(
+            transaction_id,
+            send_state.clone(),
+            &self.display_projection_context(),
+        );
+        if diffs.is_empty() {
+            return;
+        }
+        let batch_id = self.next_batch_id;
+        if super::navigation::emit_items_updated_for_generation(
+            &self.event_tx,
+            &self.timeline_actor_generations,
+            &self.key,
+            self.actor_generation,
+            self.generation,
+            batch_id,
+            diffs,
+        ) {
+            self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
+        }
+    }
+
     pub(super) async fn refresh_pending_send_projection(
         &mut self,
         actor_generation: u64,

@@ -626,7 +626,7 @@ impl TimelineActor {
             let mut reconcile_item = |item: &koushi_protocol::event::TimelineItem| match &item.id {
                 koushi_protocol::event::TimelineItemId::Transaction { transaction_id } => {
                     reconciled_pending |= coordinator
-                        .reconcile_local_echo(self.key.room_id(), transaction_id)
+                        .reconcile_canonical_local_echo(self.key.room_id(), transaction_id)
                         .is_some();
                 }
                 koushi_protocol::event::TimelineItemId::Event { event_id } => {

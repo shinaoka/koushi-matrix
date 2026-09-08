@@ -1664,7 +1664,8 @@ pub(super) async fn send_text_expect_local_echo(
     .map_err(|e| format!("{label}: submit SendText failed: {e}"))?;
 
     let sdk_transaction_id =
-        wait_for_local_echo_transaction(conn, key, request_id, body, label).await?;
+        wait_for_local_echo_transaction(conn, key, request_id, client_transaction_id, body, label)
+            .await?;
     Ok(SendQueueLocalEcho {
         request_id,
         client_transaction_id: client_transaction_id.to_owned(),
@@ -1676,6 +1677,7 @@ async fn wait_for_local_echo_transaction(
     conn: &mut CoreConnection,
     key: &TimelineKey,
     request_id: RequestId,
+    expected_client_transaction_id: &str,
     expected_body: &str,
     label: &str,
 ) -> Result<String, String> {
@@ -1695,6 +1697,7 @@ async fn wait_for_local_echo_transaction(
                 visit_timeline_diff_items(&diffs, |item| {
                     if timeline_item_body_matches(item, expected_body)
                         && let Some(transaction_id) = timeline_item_transaction_id(item)
+                        && transaction_id != expected_client_transaction_id
                     {
                         found = Some(transaction_id.to_owned());
                     }

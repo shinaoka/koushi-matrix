@@ -1484,13 +1484,17 @@ The SDK receipt snapshot WIP was committed and published at
 `origin/koushi/shared-receipt-snapshots`; the parent gitlink was updated and
 committed in the umbrella branch. The umbrella changes were committed as
 `5affd113`, then merged with `origin/main` (including runtime reconnect fixes)
-as `7e24a15d`, and pushed to `origin/feat/umbrella-completion`. The branch is
-clean and two commits ahead of `origin/main`.
+as `7e24a15d`, and pushed to `origin/feat/umbrella-completion`. The branch
+was clean at that submitted head; the latest direct-send fix is now the
+unpublished working-tree change.
 
-Post-merge verification passes: the full workspace suite reports 2,562 passed,
-0 failed (`/tmp/umbrella-final-workspace-after-main.log`); `koushi-desktop`
-lib tests pass 135/135; `koushi-core` runtime-stack tests pass 3/3;
-`koushi-sdk` lib tests pass 143/143; frontend Vitest passes 1,272/1,272;
+Post-merge verification passes: the full workspace suite before the latest
+send fix reported 2,562 passed, 0 failed
+(`/tmp/umbrella-final-workspace-after-main.log`); after the send fix and
+projection regression it reports 2,564 passed, 0 failed
+(`/tmp/umbrella-final-workspace-send-all.log`). `koushi-desktop` lib tests pass
+135/135; `koushi-core` runtime-stack tests pass 3/3; `koushi-sdk` lib tests pass
+143/143; frontend Vitest passes 1,272/1,272;
 typecheck, lint, build, Tauri/domain/leaf/SDK/secret/structure/docs checks all
 pass (`/tmp/umbrella-final-*after-main.log`). The build retains only the
 pre-existing Vite chunk-size and ineffective dynamic-import warnings. The first
@@ -1503,24 +1507,34 @@ asset, and a second local generation matches it byte-for-byte; the refreshed
 The strict send waiter exposed a concrete direct-send race. `TimelineCommand::SendText`
 and `SendReply` now install a bounded manager-owned pending projection and wait
 for the generation-fenced actor refresh ACK before starting the SDK enqueue.
-The actor no longer retires that fallback before the canonical transaction is
-published; pre-bind SDK local echoes are tracked and reconciled when the SDK
-transaction is bound. This preserves the strict local-echo plus terminal oracle
-without sleeps or weakened expectations. The regression test
-`local_echo_before_sdk_bind_retires_the_fallback_after_binding` passes, as do
-Tuwunel `1×10×100` (1,001 messages) and `4×10×100` (4,001 messages)
-(`/tmp/umbrella-timeline-stress-direct-projection-ack2.log`,
+The actor no longer retires that fallback before the terminal state is
+published; direct projections remain available for recoverable failures,
+pre-bind SDK local echoes are tracked until binding, and direct retained rows
+are dropped when their timeline actor is gone. This preserves the strict
+local-echo plus terminal oracle without sleeps or weakened expectations. The regression test
+`local_echo_before_sdk_bind_preserves_fallback_until_terminal` passes; the
+canonical send-state regression passes 23/23, and the fast send-queue lane
+passes 7/7. Tuwunel `1×10×100` (1,001 messages) and `4×10×100` (4,001
+messages) pass (`/tmp/umbrella-final-tuwunel-direct-retained.log`,
 `/tmp/umbrella-timeline-stress-prebind-marker-trace-4x10x100.log`). A fresh
 Synapse `1×10×20` lane passes 201 messages
 (`/tmp/umbrella-timeline-stress-direct-projection-synapse-1x10x20.log`).
-The full `10×10×100` Tuwunel attempt progressed through space 8 and then failed
-creating room 9 with `RoomOperationFailed { kind: Network }`; no send assertion
-was relaxed (`/tmp/umbrella-timeline-stress-max-final-tuwunel.log`).
+The latest full `10×10×100` Tuwunel attempt progressed through space 8 and then
+failed creating room 9 with `RoomOperationFailed { kind: Network }`; no send
+assertion was relaxed (`/tmp/umbrella-timeline-stress-max-final-current.log`). A later max run with
+the direct-retained cleanup reached space 8 room 9 before the same Tuwunel
+room-creation network failure (`/tmp/umbrella-timeline-stress-max-after-retained-drop.log`).
 
-A fresh Synapse `1×10×100` run now reaches `s0/r6/m89` with
+A fresh Synapse `1×10×100` run now reaches `s0/r7/m0` with
 `local_echo=true local_echo_send_state=Sending send_completed=false event_id=false`.
 Its lifecycle ring shows the local echo and projection merge completed before
-terminal delivery; the Synapse access log records two long-poll requests at
-32.977s and 30.108s, both disconnected before response serialization. This is
-the same 30-second transport/long-poll outlier as the earlier Synapse run, not
-an absent local-echo projection (`/tmp/umbrella-timeline-stress-final-synapse-1x10x100.log`).
+terminal delivery; its access log records the corresponding 30-second
+long-poll requests disconnecting before response serialization. This is the
+same transport/long-poll outlier as the earlier Synapse run, not an absent
+local-echo projection
+(`/tmp/umbrella-final-synapse-direct-retained.log`). The post-fix fast
+send-queue integration lane passes all 7 tests, the QA binary passes 103 tests,
+and the complete workspace/all-targets run passes 2,564 tests with zero
+failures (`/tmp/umbrella-final-send-testkit-2.log`,
+`/tmp/umbrella-final-send-qa-2.log`,
+`/tmp/umbrella-final-workspace-send-all.log`).
