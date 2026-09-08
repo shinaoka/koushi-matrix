@@ -52,11 +52,6 @@ ignore = [
     # crate that does not run in production — it only affects compile-time
     # macro expansion. Track upstream SDK upgrades to drop it.
     "RUSTSEC-2026-0173",
-    # RUSTSEC-2026-0194/0195: quick-xml issues reached through plist in the
-    # Tauri stack. plist currently pins a quick-xml 0.39-compatible range; the
-    # fix requires an upstream plist/Tauri dependency update.
-    "RUSTSEC-2026-0194",
-    "RUSTSEC-2026-0195",
 ]
 
 [licenses]
