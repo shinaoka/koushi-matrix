@@ -1484,9 +1484,9 @@ The SDK receipt snapshot WIP was committed and published at
 `origin/koushi/shared-receipt-snapshots`; the parent gitlink was updated and
 committed in the umbrella branch. The umbrella changes were committed as
 `5affd113`, then merged with `origin/main` (including runtime reconnect fixes)
-as `7e24a15d`, and pushed to `origin/feat/umbrella-completion`. The branch
-was clean at that submitted head; the latest direct-send fix is now the
-unpublished working-tree change.
+as `7e24a15d`, and pushed to `origin/feat/umbrella-completion`. The direct-send
+fix and test-teardown warning cleanup are now committed as `18a2e355` and
+`932240aa`, respectively, and the current pushed head is clean.
 
 Post-merge verification passes: the full workspace suite before the latest
 send fix reported 2,562 passed, 0 failed
@@ -1519,11 +1519,12 @@ messages) pass (`/tmp/umbrella-final-tuwunel-direct-retained.log`,
 `/tmp/umbrella-timeline-stress-prebind-marker-trace-4x10x100.log`). A fresh
 Synapse `1×10×20` lane passes 201 messages
 (`/tmp/umbrella-timeline-stress-direct-projection-synapse-1x10x20.log`).
-The latest full `10×10×100` Tuwunel attempt progressed through space 8 and then
+The latest full `10×10×100` Tuwunel attempts progressed through space 8 and then
 failed creating room 9 with `RoomOperationFailed { kind: Network }`; no send
-assertion was relaxed (`/tmp/umbrella-timeline-stress-max-final-current.log`). A later max run with
-the direct-retained cleanup reached space 8 room 9 before the same Tuwunel
-room-creation network failure (`/tmp/umbrella-timeline-stress-max-after-retained-drop.log`).
+assertion was relaxed (`/tmp/umbrella-timeline-stress-max-final-current.log`,
+`/tmp/umbrella-timeline-stress-max-after-retained-drop.log`). The latest run
+reached the same room-creation boundary after direct-retained cleanup, with no
+send-flow queue overflow.
 
 A fresh Synapse `1×10×100` run now reaches `s0/r7/m0` with
 `local_echo=true local_echo_send_state=Sending send_completed=false event_id=false`.
@@ -1532,8 +1533,12 @@ terminal delivery; its access log records the corresponding 30-second
 long-poll requests disconnecting before response serialization. This is the
 same transport/long-poll outlier as the earlier Synapse run, not an absent
 local-echo projection
-(`/tmp/umbrella-final-synapse-direct-retained.log`). The post-fix fast
-send-queue integration lane passes all 7 tests, the QA binary passes 103 tests,
+(`/tmp/umbrella-final-synapse-direct-retained.log`). Exact-head umbrella CI
+run `34212970926` passes all 9 required jobs, including macOS Tauri check,
+Windows IPC, both invitation lanes, browser/README gates, frontend, and Rust
+workspace/wasm
+(`https://github.com/shinaoka/koushi-matrix/actions/runs/34212970926`). The
+post-fix fast send-queue integration lane passes all 7 tests, the QA binary passes 103 tests,
 and the complete workspace/all-targets run passes 2,564 tests with zero
 failures (`/tmp/umbrella-final-send-testkit-2.log`,
 `/tmp/umbrella-final-send-qa-2.log`,
