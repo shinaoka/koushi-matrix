@@ -960,7 +960,9 @@ fn projection_timeline_item(event_id: &str, is_redacted: bool) -> TimelineItem {
 }
 
 const FAST_SEND_QUEUE_PHASE_TIMEOUT: Duration = Duration::from_secs(5);
-const FAST_SEND_QUEUE_TOTAL_TIMEOUT: Duration = Duration::from_secs(55);
+// Keep the timeout aligned with the lane's explicit 60-second wall-clock budget;
+// the former 55-second guard could preempt a healthy run under shared CI load.
+const FAST_SEND_QUEUE_TOTAL_TIMEOUT: Duration = Duration::from_secs(60);
 
 struct FastSendQueuePausedTime;
 
@@ -2473,7 +2475,7 @@ async fn fast_send_queue_feedback_runs_production_runtime_without_homeserver() {
     .await
     .expect("fast_send_queue whole lane timed out");
     assert!(
-        started.elapsed() < Duration::from_secs(60),
+        started.elapsed() < FAST_SEND_QUEUE_TOTAL_TIMEOUT,
         "fast_send_queue exceeded the 60-second lane budget"
     );
 }

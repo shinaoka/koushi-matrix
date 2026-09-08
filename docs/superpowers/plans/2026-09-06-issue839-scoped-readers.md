@@ -1604,3 +1604,13 @@ stable in the full required matrix, while the native macOS, maximum-stress,
 advisory-policy, review, and merge blockers above remain open. The resulting
 plan commit `665f8c4e` was then verified by exact-head CI `34248745965`, again
 with all nine required jobs successful.
+Exact-head CI `34250444297` then exposed a separate shared-runner timing issue:
+`send_queue_fast` completed its six short tests but its production feedback test
+was preempted by the artificial 55-second outer guard at 55.02 seconds while
+restored timeline subscription was still progressing; no assertion or product
+behavior failed. The full focused lane passes 7/7 locally in 9.11 seconds, and
+its guard is now aligned to the existing explicit 60-second wall-clock budget
+rather than preempting at 55 seconds (`/tmp/umbrella-ci-342504-rust.log`,
+`/tmp/umbrella-send-queue-timeout-fix.log`). This remains subject to fresh
+exact-head CI verification; no sleep, retry, or expectation weakening was
+introduced.
