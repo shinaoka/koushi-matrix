@@ -1601,4 +1601,6 @@ The subsequent plan-only commit `fd676dfc` is also verified by exact-head CI
 and PR head match this commit and the worktree remains clean. This confirms
 that the receipt-diagnostic serialization and anchor-stepping corrections are
 stable in the full required matrix, while the native macOS, maximum-stress,
-advisory-policy, review, and merge blockers above remain open.
+advisory-policy, review, and merge blockers above remain open. The resulting
+plan commit `665f8c4e` was then verified by exact-head CI `34248745965`, again
+with all nine required jobs successful.
