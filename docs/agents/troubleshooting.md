@@ -89,6 +89,13 @@ the lane that shows the symptom. Lane commands are in
   helper that finds the visible `button[role="menuitem"]` by exact text and
   dispatches a DOM click. Keep this fallback limited to GUI QA plumbing; product
   code must still use typed Rust commands.
+- **Message-action QA cannot find its redaction seed.** WebKit's bulk
+  `setValue()` on the contenteditable can change case or drop characters before
+  sending. The redaction seed uses balanced native key actions with explicit
+  Shift lifetimes and verifies the exact editable value before Enter; do not
+  loosen the expected message text. The lane also checks the Rust default
+  `hide_redacted=true`, reveals the placeholder, then hides it again rather
+  than assuming deleted messages are initially visible.
 - **A `datetime-local` control stays empty.** WebDriverIO/WebKit `setValue()` did
   not populate it in the date-jump lane: the DOM input stayed `valueLength=0`,
   `valid=false`, and the app title stayed `panel=closed focused=closed`. Use the

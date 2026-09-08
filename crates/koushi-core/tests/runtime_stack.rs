@@ -5,7 +5,7 @@ use koushi_protocol::view::{
     ReaderWindowLimit, ReceiptSourceRef, TimelineViewSource, ViewDelivery, ViewRetirement,
 };
 use koushi_protocol::{
-    AccountCommand, AccountKey, CoreCommand, CoreEvent, CoreFailure, RequestId,
+    AccountCommand, AccountKey, AppCommand, CoreCommand, CoreEvent, CoreFailure, RequestId,
     RuntimeConnectionId, TimelineGeneration, TimelineKey,
 };
 
@@ -22,6 +22,15 @@ fn public_command_fits_a_normal_tokio_worker_stack() {
         let data_dir = tempfile::tempdir().expect("runtime data directory");
         let core = CoreRuntime::start_with_data_dir(data_dir.path().to_owned());
         let mut connection = core.attach();
+        let close_request_id = connection.next_request_id();
+        connection
+            .command(CoreCommand::App(AppCommand::CloseSearch {
+                request_id: close_request_id,
+            }))
+            .await
+            .expect("app command");
+        // The following correlated response proves the preceding App command
+        // also passed through the actor's ordered command lane.
         let request_id = connection.next_request_id();
         connection
             .command(CoreCommand::Account(
@@ -85,7 +94,7 @@ fn reader_subscription_close_handle_interrupts_pending_receive() {
             subscription
                 .resource_content(
                     koushi_protocol::view::ViewRevision(1),
-                    "avatar/0000000000000001"
+                    "avatar/0000000000000001",
                 )
                 .unwrap_err(),
             ScopeError::Closed

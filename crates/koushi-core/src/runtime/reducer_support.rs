@@ -130,6 +130,8 @@ impl DeferredReducerSideEffects {
 }
 
 impl super::AppActor {
+    // Keep this future off the command dispatcher's debug stack: each match
+    // arm otherwise embeds another large reducer future temporary.
     pub(super) fn reduce_app_action(
         &mut self,
         action: AppAction,
