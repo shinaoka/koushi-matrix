@@ -1350,7 +1350,18 @@ diff and agents-doc checks remain green
 `/tmp/umbrella-final-agents-stress-followup-2.log`). The latest post-audit
 diff and agents-doc checks also pass
 (`/tmp/umbrella-final-diff-stress-followup-5.log`,
-`/tmp/umbrella-final-agents-stress-followup-5.log`). The QA lane documentation now
+`/tmp/umbrella-final-agents-stress-followup-5.log`). A focused maximum-room
+cadence attempt with `10×10×1` messages first timed out during the release
+binary build at the 120-second investigative bound; after inspecting that
+artifact, the warmed rerun completed setup through `space=8 room=8` and failed
+at `space=8 room=9`. The Tuwunel log contains 101 successful
+`room::create` records and no server `ERROR` lines; its final create record is
+about 30 seconds before Core reports `RoomOperationFailed { kind: Network }`.
+This reproduces the room-load blocker without the 10,000-message send phase and
+shows that the server accepted the create operation while the Core/SDK request
+still ended in a network classification. Retrying a non-idempotent create or
+recovering by display name is unsafe without an authoritative room-id response.
+The QA lane documentation now
 formally distinguishes the product-compatible no-local-echo state-machine path
 from the deliberately stricter `timeline_stress` diagnostic oracle: each stress
 send still requires its exact local echo, matching `SendCompleted`, and event ID;
