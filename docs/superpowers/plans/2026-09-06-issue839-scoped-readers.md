@@ -1619,4 +1619,9 @@ that the prior timeout was the CI-load preemption rather than a product or
 send-queue assertion regression. The next exact-head CI `34253841386` on the
 following plan-only commit also passed all nine required jobs; the current
 branch is therefore green after the timeout alignment and its latest local
-plan update remains the only pending verification change.
+plan update remains the only pending verification change. Exact-head CI
+`34255572470` then passed all nine required jobs for the current head
+`c1ca8dfa`, including the adjusted fast send lane; the worktree, remote, and
+PR head are synchronized and clean. No further local corrective change is
+justified while the native macOS, maximum-stress contract, advisory-policy,
+review, and merge decisions remain unavailable.
