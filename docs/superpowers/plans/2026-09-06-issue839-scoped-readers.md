@@ -1537,4 +1537,7 @@ send-queue integration lane passes all 7 tests, the QA binary passes 103 tests,
 and the complete workspace/all-targets run passes 2,564 tests with zero
 failures (`/tmp/umbrella-final-send-testkit-2.log`,
 `/tmp/umbrella-final-send-qa-2.log`,
-`/tmp/umbrella-final-workspace-send-all.log`).
+`/tmp/umbrella-final-workspace-send-all.log`). The subsequent full Core lib
+run passes 1,011 tests / 9 ignored, and the two previously reported unused
+`Result` warnings in search/thread teardown tests are now handled
+(`/tmp/umbrella-warning-two-core-tests.log`).

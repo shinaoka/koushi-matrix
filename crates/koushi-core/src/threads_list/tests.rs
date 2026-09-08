@@ -49,7 +49,7 @@ fn pending_subscription() -> (ActiveSubscription, [oneshot::Receiver<()>; 3]) {
 
 async fn assert_tasks_settled(tasks: [oneshot::Receiver<()>; 3]) {
     for settled in tasks {
-        crate::executor::timeout(Duration::from_millis(100), settled)
+        let _ = crate::executor::timeout(Duration::from_millis(100), settled)
             .await
             .expect("every owned subscription task must settle");
     }
