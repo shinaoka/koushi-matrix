@@ -1391,8 +1391,8 @@ a missing echo remains a recorded failure rather than a weakened assertion
   (`/tmp/umbrella-final-workspace-after-combined-live-delta.log`). Final
   formatting, diff, Rust test-structure, agents-docs, SDK, and ownership checks
   pass. Current `feat/umbrella-completion` HEAD is
-  `a04a60f7b7fd8a0dd30f80ea7637019707ccdfd5`; worktree and remote match with no
-  untracked files, and exact-head CI run `34265735390` passes all nine required
+  `659ed0296c6da35fe9cf8d47ddf49775475642a5`; worktree and remote match with no
+  untracked files, and exact-head CI run `34267415229` passes all nine required
   jobs. PR #857 is open Draft with `mergeStateStatus: CLEAN` and currently has
   no reviews or comments. Native macOS viewport evidence, maximum stress
   resolution, explicit dependency policy, review, and merge remain open as
@@ -1654,3 +1654,7 @@ Rust workspace and the 60-second fast-send lane (`/tmp/umbrella-ci-342645-failed
 is retained for the preceding failure; the successful run is linked from the
 PR checks). This confirms the preceding timeout was intermittent
 shared-runner/test-runtime pressure, not a reproducible product regression.
+The follow-up exact-head CI `34267415229` for `659ed029` also passed all nine
+required jobs, including workspace, browser, macOS, Windows, and both real-
+homeserver invitation lanes. No further code or documentation changes are
+planned while the external native/review/policy decisions remain open.
