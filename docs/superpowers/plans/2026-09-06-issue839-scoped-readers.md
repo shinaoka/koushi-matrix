@@ -1697,6 +1697,9 @@ also passes end-to-end. Exact-head CI `34276407594` for the resulting
 `9ec257f1` trace-documentation commit also passed all nine required jobs. The
 follow-up plan-only commit `5ec75e2` kept the same evidence and its exact-head
 CI `34277997252` again passed all nine required jobs, including the full Rust
-workspace and dependency checks. The maximum `10x10x100` stress contract,
+workspace and dependency checks. The final plan-only commit `78a2052` also
+passed exact-head CI `34279450306` across all nine required jobs, including the
+full Rust workspace and dependency checks. The maximum `10x10x100` stress
+contract,
 native macOS viewport evidence, dependency policy, external review, Draft
 removal, and merge remain open; this plan does not claim completion.
