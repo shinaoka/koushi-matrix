@@ -1667,5 +1667,15 @@ PR checks). This confirms the preceding timeout was intermittent
 shared-runner/test-runtime pressure, not a reproducible product regression.
 The follow-up exact-head CI `34267415229` for `659ed029` also passed all nine
 required jobs, including workspace, browser, macOS, Windows, and both real-
-homeserver invitation lanes. No further code or documentation changes are
-planned while the external native/review/policy decisions remain open.
+homeserver invitation lanes. The subsequent room-load triage documentation
+commit `fb6eecb9` triggered exact-head CI `34272190017`; eight jobs passed, but
+Rust failed only because `fast_send_queue_feedback_runs_production_runtime_without_homeserver`
+was preempted by its existing 60-second outer guard at 60.01 seconds while
+still building the initial timeline subscription. The failure log was inspected
+before any rerun (`/tmp/umbrella-ci-342721-failed.log`), and the same focused
+Rust test passes locally in 8.94 seconds (`/tmp/umbrella-send-queue-fast-ci-failure-triage.log`).
+This is another shared-runner timing outlier, not a product assertion failure;
+no timeout, sleep, retry, or expectation was changed in response. A fresh
+exact-head run is still required for the current submitted documentation
+commit, after which no further code or documentation changes are planned while
+the external native/review/policy decisions remain open.
