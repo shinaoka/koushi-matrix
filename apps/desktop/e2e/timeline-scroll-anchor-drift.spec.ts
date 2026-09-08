@@ -109,28 +109,42 @@ async function placeAnchorInViewport(
 ): Promise<{ anchorEventId: string; originalOffset: number }> {
   const anchorEventId = `$scroll-anchor-item-${String(targetIndex).padStart(4, "0")}:example.invalid`;
 
-  await page.evaluate(
-    ({ target }) => {
-      const container = document.querySelector<HTMLElement>("[data-testid=timeline-view]");
-      if (!container) return;
-      container.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
-      container.scrollTop = Math.max(0, target * 90);
-      container.dispatchEvent(new Event("scroll", { bubbles: true }));
-    },
-    { target: targetIndex }
-  );
-
-  const anchor = page.locator(`[data-event-id="${anchorEventId}"]`);
-  await expect(anchor).toBeVisible({ timeout: 5000 });
-  // The first jump uses estimated heights only to mount the row. Visibility
-  // includes overscan offscreen rows, so position the actual measured row before
-  // choosing the viewport oracle (it used to be ~1551px above a 422px viewport).
-  await anchor.evaluate((row) => {
-    const container = row.closest<HTMLElement>("[data-testid=timeline-view]")!;
-    container.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
-    container.scrollTop += row.getBoundingClientRect().top - container.getBoundingClientRect().top - 40;
+  await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>("[data-testid=timeline-view]");
+    if (!container) return;
+    container.scrollTop = 0;
+    container.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 120 }));
     container.dispatchEvent(new Event("scroll", { bubbles: true }));
   });
+
+  const anchor = page.locator(`[data-event-id="${anchorEventId}"]`);
+  // Move through the virtualized range in bounded, frame-separated steps. A
+  // single estimated-height jump can mount the overscanned row while its
+  // measured range still places it far outside the viewport; stepping lets the
+  // production range model settle before the anchor oracle begins.
+  for (let step = 0; step < 100; step += 1) {
+    const inViewport = await page.evaluate((eventId) => {
+      const row = document.querySelector<HTMLElement>(
+        `[data-event-id="${CSS.escape(eventId)}"]`
+      );
+      const container = document.querySelector<HTMLElement>("[data-testid=timeline-view]");
+      if (!row || !container) return false;
+      const rowRect = row.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      return rowRect.bottom > containerRect.top && rowRect.top < containerRect.bottom;
+    }, anchorEventId);
+    if (inViewport) break;
+    await page.evaluate(() => {
+      const container = document.querySelector<HTMLElement>("[data-testid=timeline-view]");
+      if (!container) return;
+      container.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 500 }));
+      container.scrollTop += 500;
+      container.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await waitAnimationFrames(page, 2);
+  }
+
+  await expect(anchor).toBeVisible({ timeout: 5000 });
   await expect(anchor).toBeInViewport();
 
   const originalOffset = await anchorOffsetFromContainer(page, anchorEventId);

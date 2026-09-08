@@ -1584,3 +1584,13 @@ runner, while the other eight jobs passed; the uploaded SDK artifact contains no
 application failure or changed assertion (`/tmp/umbrella-ci-342357-synapse.log`,
 `/tmp/umbrella-ci-342357-artifact/`). This is recorded as a non-green CI
 attempt, not treated as a pass or retried blindly.
+
+The next exact-head CI `34241965442` exposed one browser-headless failure in
+`timeline-scroll-anchor-drift.spec.ts`: the anchor-drift oracle timed out after
+288 other browser tests passed. Local reproduction showed the helper's single
+estimated-height jump could mount the overscanned row while the measured range
+still moved it outside the viewport. The test now advances through bounded,
+frame-separated scroll steps before asserting the real anchor, retaining the
+same viewport assertion; the complete spec passes 4/4 and frontend typecheck
+passes (`/tmp/umbrella-ci-342419-browser.log`,
+`/tmp/umbrella-anchor-stepping-typecheck.log`).
