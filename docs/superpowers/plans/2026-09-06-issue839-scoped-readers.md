@@ -1546,3 +1546,12 @@ failures (`/tmp/umbrella-final-send-testkit-2.log`,
 run passes 1,011 tests / 9 ignored, and the two previously reported unused
 `Result` warnings in search/thread teardown tests are now handled
 (`/tmp/umbrella-warning-two-core-tests.log`).
+
+Dependency-security follow-up: `cargo update -p plist` selected the latest
+compatible `plist 1.10.1`, `quick-xml 0.42.0`, and its required `base64 0.23.1`
+without changing the vendored SDK. `cargo audit` now exits 0 with only the
+existing warning-level advisory set (including yanked `chacha20`), while
+`cargo deny check`, `cargo machete`, the Core/SDK/state/desktop focused suites,
+formatting, and `git diff --check` pass. The obsolete quick-xml exceptions were
+removed from `deny.toml`; the change is committed as `5f06a429` and pushed for
+fresh exact-head CI verification.
