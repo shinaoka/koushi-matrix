@@ -1569,6 +1569,15 @@ is the sole reducer owner while TimelineView retains only viewport/side effects.
 Evidence: `/tmp/umbrella-preflight-review-current.md`.
 
 The docs-only no-local-echo contract clarification was pushed as `db673252`.
+Exact-head CI `34239948809` then exposed one existing parallel-test isolation
+failure in `scoped_receipt_window_prepares_only_its_selected_profiles`: four
+sibling receipt-profile tests emitted the same diagnostic source without taking
+the shared diagnostic test lock. They now all hold that lock, without changing
+production behavior or relaxing the assertion; the focused read-state module
+passes 38/38 and the full Core library suite passes 1,011/1,011
+(`/tmp/umbrella-ci-342399-rust.log`,
+`/tmp/umbrella-receipt-lock-module.log`,
+`/tmp/umbrella-receipt-lock-core-final.log`).
 Exact-head CI `34235700270` then failed only in the Synapse invitation job:
 the SDK lane reached two successful join-operation traces and timed out in the
 runner, while the other eight jobs passed; the uploaded SDK artifact contains no

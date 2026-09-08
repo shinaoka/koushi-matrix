@@ -2365,6 +2365,7 @@ fn live_receipt_observation_action_builder_is_pure_and_orders_profiles_first() {
 
 #[tokio::test]
 async fn local_receipt_observation_helper_builds_profile_then_receipt_actions() {
+    let _diagnostic_lock = koushi_diagnostics::test_support::lock();
     use koushi_state::{AppState, SessionInfo, SessionState, reduce};
     use matrix_sdk::assert_next_with_timeout;
     use matrix_sdk::ruma::{event_id, room_id, user_id};
@@ -2514,6 +2515,7 @@ async fn local_receipt_observation_helper_builds_profile_then_receipt_actions() 
 
 #[tokio::test]
 async fn production_receipt_diff_delivery_refreshes_unknown_with_room_profile() {
+    let _diagnostic_lock = koushi_diagnostics::test_support::lock();
     use koushi_state::{AppState, reduce};
     use matrix_sdk::ruma::{event_id, room_id, user_id};
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
@@ -2635,6 +2637,7 @@ async fn production_receipt_diff_delivery_refreshes_unknown_with_room_profile() 
 
 #[tokio::test]
 async fn production_receipt_diff_delivery_uses_global_cache_when_local_lookup_misses() {
+    let _diagnostic_lock = koushi_diagnostics::test_support::lock();
     use koushi_state::{AppState, reduce};
     use matrix_sdk::ruma::{event_id, room_id};
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
@@ -2965,6 +2968,7 @@ async fn production_receipt_diff_delivery_sends_receipts_when_local_lookup_fails
 
 #[tokio::test]
 async fn stale_production_receipt_diff_result_is_discarded_after_generation_replacement() {
+    let _diagnostic_lock = koushi_diagnostics::test_support::lock();
     use koushi_state::SessionAuthenticationMethod;
     use matrix_sdk::ruma::event_id;
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
