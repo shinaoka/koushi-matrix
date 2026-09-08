@@ -1476,3 +1476,21 @@ changed scoped files, `/tmp/umbrella-final-scoped-trailing-whitespace.log`),
 `/tmp/umbrella-final-owners-3.log`,
 `/tmp/umbrella-final-sdk-guard-3.log`,
 `/tmp/umbrella-final-lint-warning-free.log`).
+
+## Current submitted-branch follow-up
+
+The SDK receipt snapshot WIP was committed and published at
+`e85bc9e762592fee316839908f29cd6015973578` on
+`origin/koushi/shared-receipt-snapshots`; the parent gitlink was updated and
+committed in the umbrella branch. The umbrella changes were committed as
+`5affd113`, then merged with `origin/main` (including runtime reconnect fixes)
+as `7e24a15d`, and pushed to `origin/feat/umbrella-completion`. The branch is
+clean and two commits ahead of `origin/main`.
+
+Post-merge verification passes: the full workspace suite reports 2,562 passed,
+0 failed (`/tmp/umbrella-final-workspace-after-main.log`); `koushi-desktop`
+lib tests pass 135/135; `koushi-core` runtime-stack tests pass 3/3;
+`koushi-sdk` lib tests pass 143/143; frontend Vitest passes 1,272/1,272;
+typecheck, lint, build, Tauri/domain/leaf/SDK/secret/structure/docs checks all
+pass (`/tmp/umbrella-final-*after-main.log`). The build retains only the
+pre-existing Vite chunk-size and ineffective dynamic-import warnings.
