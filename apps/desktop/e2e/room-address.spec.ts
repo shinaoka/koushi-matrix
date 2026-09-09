@@ -44,3 +44,29 @@ test("public address preserves manual edits and collision drafts until successfu
   await expect(name).toBeHidden();
   expect(await invocationCount(page, "create_room")).toBe(2);
 });
+
+test("private creation needs no alias even when a public address is invalid", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse("preview_room_address", () => ({
+      localpart: "#invalid", full_alias: null, error: "invalid"
+    }));
+    window.__harness.setCommandResponse("create_room", () => window.__harness.currentSnapshot());
+    window.__harness.clearInvocations();
+  });
+  await page.getByRole("button", { name: "Create room", exact: true }).click();
+  const name = page.getByRole("textbox", { name: "Room name" });
+  await name.fill("Private discussion");
+  await page.getByRole("radio", { name: "Public room", exact: true }).check();
+  await expect(page.getByRole("textbox", { name: "Room address" })).toHaveValue("#invalid");
+  const submit = page.getByRole("button", { name: "Submit create room" });
+  await expect(submit).toBeDisabled();
+  await page.getByRole("radio", { name: "Private room", exact: true }).check();
+  await expect(submit).toBeEnabled();
+  await submit.click();
+  await expect(name).toBeHidden();
+  expect(await page.evaluate(() => window.__harness.invocationsOf("create_room").map(call => call.args.options)))
+    .toEqual([expect.objectContaining({
+      name: "Private discussion", visibility: "private", aliasLocalpart: null
+    })]);
+});

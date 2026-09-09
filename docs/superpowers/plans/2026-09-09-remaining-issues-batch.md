@@ -385,6 +385,31 @@ also passed. Logs: `/tmp/koushi-ignore-coalesced.log` (initial fixture failure),
 `/tmp/koushi-ignore-coalesced-corrected.log`, `/tmp/koushi-ignore-reset-suite.log`.
 The overall goal and #839 approval boundary remain open.
 
+## #838 acceptance audit and private-room browser coverage
+
+Re-read the live #838 body, including the appended Room info requirements.
+The requirement/evidence mapping is:
+
+| Requirement | Existing implementation and evidence |
+| --- | --- |
+| Editable suggestion, Japanese/unsuitable names | Rust suggestion and SDK preview tests in `koushi-state/tests/room_address.rs` and `koushi-sdk/tests/room_address.rs`; actual-App public-address browser test |
+| Exact account-server preview, no duplicate sigils/suffix | SDK preview tests include account server with port, full/invalid alias rejection; both-server `directory` QA compares created canonical alias with Rust preview |
+| Manual edits survive name/rerender/visibility changes | Rust-preview hook freshness test, English/Japanese dialog tests, actual-App public-address browser test |
+| Actionable invalid/empty/collision feedback, retained drafts | Rust typed errors, English/Japanese catalog and dialog checks, actual createRoom `M_ROOM_IN_USE` test, both-server collision QA, browser collision/retry check |
+| Non-public creation does not require an alias | Existing SDK private create-request test plus the new actual-App browser test described below |
+| Sufficient inline help and optional official link | English/Japanese `dialog.roomAddressHelp` explicitly explains localpart syntax and server-confirmed availability; dialog tests assert the official link |
+| Share current canonical/alternate/room-ID fallback URL without changing access | SDK permalink transition test; Core direct mapping; RoomInfoPanel renders DTO and copies through clipboard without a visibility command |
+| Localized copy success/failure; changed aliases and obsolete completions | English/Japanese RoomInfoPanel share/copy tests |
+| Participation URL reaches created public room | Both-server `directory` QA parses the SDK URL and joins a second client using that alias |
+| Upstream comparison, Rust-first implementation, IME | Earlier worklog records pinned upstream behavior and Phase A RED→GREEN; actual-App public-address test suppresses candidate-confirmation submit |
+
+Added one missing focused UI check: a failed public address preview disables
+public submission, but switching to private enables creation and sends exactly one
+request with `aliasLocalpart: null`. It passed without a production change
+(`/tmp/koushi-private-address-e2e.log`). This is browser-harness evidence, not a
+new live-server run. The audit does not close the issue or substitute for the
+remaining integrated gates, submitted-head CI, approval and merge.
+
 ## Native evidence availability checkpoint
 
 The current execution host reports Linux. Existing GitHub workflows include a
