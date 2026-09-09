@@ -70,9 +70,9 @@ async fn avatar_observation_requires_a_live_source_even_with_an_installed_model(
     let epoch = raw.bind_test_owner(&source()).await;
     let retained = registry.retain_reader_raw(&mut work, raw.clone()).unwrap();
     registry.accept_reader_raw(&mut work, retained).unwrap();
-    let mut resolved = raw.into_resolved(koushi_state::CatalogLocale::En);
+    let mut resolved = raw.clone().into_resolved(koushi_state::CatalogLocale::En);
     let resources = std::mem::take(&mut resolved.avatar_resources);
-    let model = ViewModel::ReaderReady(ReaderWindow {
+    let mut model = ViewModel::ReaderReady(ReaderWindow {
         source: source(),
         total_count: 1,
         start: 0,
@@ -84,7 +84,7 @@ async fn avatar_observation_requires_a_live_source_even_with_an_installed_model(
     });
     assert!(!serde_json::to_string(&model).unwrap().contains("mxc://"));
     let revision = registry
-        .publish_current(scope.id(), model, resources, &resolved)
+        .publish_current(scope.id(), model.clone(), resources, &resolved)
         .unwrap();
     let _delivery = scope.next_delivery().await.unwrap();
     consumer.ack_model(scope.id(), revision).unwrap();
@@ -123,6 +123,77 @@ async fn avatar_observation_requires_a_live_source_even_with_an_installed_model(
         installed.scope_ids().collect::<Vec<_>>(),
         vec![scope.id().0]
     );
+    // The next projection changes only private resource identity. The host has
+    // not acknowledged it and must not be able to restore the old URI.
+    raw.receipts[0].avatar.as_mut().unwrap().mxc_uri =
+        "mxc://example.invalid/rebound-reader-avatar".into();
+    let mut rebound = raw.into_resolved(koushi_state::CatalogLocale::En);
+    let resources = std::mem::take(&mut rebound.avatar_resources);
+    let next_revision = registry
+        .publish_current(scope.id(), model.clone(), resources, &rebound)
+        .unwrap();
+    consumer
+        .observe_reader_avatars(
+            scope.id(),
+            revision,
+            2,
+            &context,
+            &["@a:example.org".into()],
+            &[],
+        )
+        .unwrap();
+    assert_eq!(
+        registry
+            .avatar_demand_for_context(Some(&context))
+            .unwrap()
+            .resources_by_priority(),
+        ["mxc://example.invalid/rebound-reader-avatar"]
+    );
+    let _pending = scope.next_delivery().await.unwrap();
+    consumer
+        .observe_reader_avatars(
+            scope.id(),
+            revision,
+            3,
+            &context,
+            &["@a:example.org".into()],
+            &[],
+        )
+        .unwrap();
+    assert_eq!(
+        registry
+            .avatar_demand_for_context(Some(&context))
+            .unwrap()
+            .resources_by_priority(),
+        ["mxc://example.invalid/rebound-reader-avatar"]
+    );
+    // A newer removal must beat even the in-flight projection's old binding.
+    if let ViewModel::ReaderReady(window) = &mut model {
+        window.rows[0].avatar = None;
+    }
+    rebound.rows[0].avatar = None;
+    registry
+        .publish_current(scope.id(), model, vec![], &rebound)
+        .unwrap();
+    consumer
+        .observe_reader_avatars(
+            scope.id(),
+            revision,
+            4,
+            &context,
+            &["@a:example.org".into()],
+            &[],
+        )
+        .unwrap();
+    assert!(
+        registry
+            .avatar_demand_for_context(Some(&context))
+            .unwrap()
+            .resources_by_priority()
+            .is_empty()
+    );
+    // Keep the old installed revision for the remaining admission checks.
+    assert_ne!(next_revision, revision);
     assert_eq!(
         consumer.observe_reader_avatars(scope.id(), revision, 1, &context, &[], &[]),
         Err(ScopeError::InvalidRevision)

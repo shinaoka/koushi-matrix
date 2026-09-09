@@ -211,13 +211,11 @@ impl ViewConsumer {
             return Err(ScopeError::Capacity);
         }
         self.with_live_reader_avatar_source(id, revision, |rows| {
-            let resolve = |ids: &[String]| {
-                ids.iter()
-                    .map(|id| rows.avatar_mxc(id).map(|uri| uri.map(str::to_owned)))
-                    .collect::<Result<Vec<_>, ScopeError>>()
-            };
-            let visible = resolve(visible)?;
-            let prefetch = resolve(prefetch)?;
+            // The acknowledged model grants identity access, not authority to
+            // restore resource bindings superseded by a newer Rust projection.
+            for user_id in visible.iter().chain(prefetch) {
+                rows.avatar_mxc(user_id)?;
+            }
             let mut state = self
                 .0
                 .registry
@@ -248,15 +246,30 @@ impl ViewConsumer {
             {
                 return Err(ScopeError::InactiveSession);
             }
-            if control
-                .mailbox
-                .lock()
-                .expect("view mailbox poisoned")
-                .installed_revision()
-                != Some(revision)
-            {
-                return Err(ScopeError::InvalidRevision);
-            }
+            let current = {
+                let mailbox = control.mailbox.lock().expect("view mailbox poisoned");
+                if mailbox.installed_revision() != Some(revision) {
+                    return Err(ScopeError::InvalidRevision);
+                }
+                mailbox
+                    .current_rows()
+                    .ok_or(ScopeError::SourceUnavailable)?
+            };
+            let resolve = |ids: &[String]| {
+                ids.iter()
+                    .map(|user_id| {
+                        // A formerly visible identity absent from the current window
+                        // is a placeholder, never a request for its old resource.
+                        current
+                            .avatar_mxc(user_id)
+                            .ok()
+                            .flatten()
+                            .map(str::to_owned)
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let visible = resolve(visible);
+            let prefetch = resolve(prefetch);
             // Only AppActor may establish a session context. If it cleared or
             // changed during resolution, do not recreate the captured context.
             let mut next = state

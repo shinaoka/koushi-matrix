@@ -825,6 +825,26 @@ native WebView behavior or server media request counts. Remaining source familie
 source re-resolution, old URI demand removal, live-server scale and final delivery
 requirements remain open.
 
+## #839 current binding versus installed-model authority
+
+Found and reproduced an authority mix-up: after Rust published a new private
+avatar URI, an observation against the still-installed older model restored its
+old URI. Installed metadata now authorizes user IDs only. Resource resolution
+uses the existing mailbox's latest projection, then in-flight projection, then
+installed metadata; no additional URI cache or registry was added. An identity
+that no longer has a current binding resolves to a placeholder, not its old URI.
+
+The behavioral test failed with the old URI where the new URI was expected. It
+now covers pending and in-flight replacement plus a newer removal superseding an
+in-flight binding. All 21 lifecycle and 23 connection tests passed, together with
+normal Core check, format/structure/whitespace. Logs:
+`/tmp/koushi-reader-current-uri-{red,green,regression,check}.log`.
+
+This closes stale re-observation restoring an old resource. It does not yet make
+source changes refresh existing demand without another observation: retaining
+charged stable observation IDs and using the existing reader publication path
+for that refresh is still required. Other surfaces and final delivery remain open.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated

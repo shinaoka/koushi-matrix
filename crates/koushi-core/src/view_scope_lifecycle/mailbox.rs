@@ -13,6 +13,16 @@ pub(super) struct Mailbox {
 }
 
 impl Mailbox {
+    /// Current Rust projection, including one not yet delivered/acknowledged.
+    /// Installed rows separately authorize which identities the host may name.
+    pub(super) fn current_rows(&self) -> Option<Arc<super::model::InstalledRows>> {
+        self.latest
+            .as_ref()
+            .or(self.in_flight.as_ref())
+            .map(|(_, model)| model.installed.clone())
+            .or_else(|| self.installed.as_ref().map(|(_, rows)| rows.clone()))
+    }
+
     pub(super) fn publish(
         &mut self,
         model: &Arc<PreparedModel>,
