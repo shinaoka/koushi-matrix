@@ -23,8 +23,8 @@
 //! 1. HTTPS login to the homeserver -> pre-sync Ready snapshot (store bootstrap
 //!    invariant and reducer gate).
 //! 2. Sync lifecycle: Start -> Started -> Running.
-//! 3. Recovery: after sync/account data flows in, require RecoveryRequired ->
-//!    SubmitRecovery -> RecoveryCompleted -> assert Ready.
+//! 3. Recovery is completed during login admission, before starting room sync.
+//!    Require the correlated completion events and Ready in either order.
 //! 4. Room list: wait non-empty or timeout; print COUNTS ONLY (rooms=N spaces=N dms=N).
 //! 5. Create synthetic QA room, subscribe timeline, send edit/redact fixture
 //!    messages plus a dedicated search probe, wait SendCompleted + diffs, edit
@@ -186,3 +186,7 @@ use cleanup::{RealQaCleanupState, cleanup_real_qa_resources};
 use config::{RealQaScenario, real_qa_data_dir};
 #[cfg(any(debug_assertions, test))]
 use credentials::{RealCredentials, assert_file_credential_store_active};
+
+#[cfg(any(debug_assertions, test))]
+#[path = "real_homeserver_qa/admission.rs"]
+mod admission;

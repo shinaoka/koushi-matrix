@@ -54,5 +54,22 @@ Results:
 - `cargo test -p koushi-core-testkit --test runtime_room_list_sync --release`
   exited 0: all four integration tests passed, including SDK reconnect and
   reuse of the same sync engine.
-- No real-account or native sleep/wake validation has been performed. The
-  installed app has not been replaced by this source change.
+- Full core tests: 1,019 passed; state tests including doctests: 792 passed.
+  Frontend typecheck and 1,272 tests passed. Local Tuwunel and Synapse basic
+  operations and timeline reconnect scenarios passed. Initial PR CI passed all
+  nine jobs.
+- The required real-server gate exposed a stale QA admission order: the runner
+  waited for LoggedIn before performing the verification that admits login.
+  Adapt the QA runner to existing-identity recovery before sync, collect both
+  terminal events and Ready under one deadline, and revoke provisional sessions
+  on admission failure through the same connection. Product authentication and
+  verification conditions remain unchanged.
+- QA admission regression failed before the adaptation and passes afterwards;
+  tests cover both completion orders for login/restore, request/account fences,
+  unsupported methods, one recovery submission, and timeout.
+- Real-server space compatibility QA passed, including recovery, sync,
+  send/edit/redact/search, store restore, room/space leave+forget, logout, and
+  post-logout restore rejection. The failed initial run's pending device was
+  reused in the successful run and cleaned up.
+- Native sleep/wake validation has not been performed. The installed app has
+  not been replaced by this source change.
