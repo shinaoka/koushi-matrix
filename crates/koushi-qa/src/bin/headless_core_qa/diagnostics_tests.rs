@@ -6,6 +6,91 @@ use super::{
 };
 
 #[test]
+fn proxy_counts_actual_media_reads_without_counting_uploads_or_sync() {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        time::{Duration, Instant},
+    };
+    let server = TcpListener::bind("127.0.0.1:0").unwrap();
+    server.set_nonblocking(true).unwrap();
+    let proxy =
+        super::QaTcpProxy::start(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+    let requests = [
+        (
+            "GET",
+            "/_matrix/client/v1/media/download/example.invalid/one",
+            1,
+        ),
+        (
+            "GET",
+            "/_matrix/client/v1/media/thumbnail/example.invalid/two?width=32",
+            2,
+        ),
+        ("GET", "/_matrix/media/v3/download/example.invalid/three", 3),
+        ("GET", "/_matrix/media/r0/thumbnail/example.invalid/four", 4),
+        ("POST", "/_matrix/media/v3/upload", 4),
+        ("GET", "/_matrix/client/v3/sync", 4),
+        ("GET", "/_matrix/media/v3/config", 4),
+        (
+            "GET",
+            "/_matrix/client/v1/media/download/example.invalid/",
+            4,
+        ),
+        (
+            "POST",
+            "/_matrix/client/v1/media/download/example.invalid/five",
+            4,
+        ),
+    ];
+    let worker = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut forwarded = 0;
+        while forwarded < requests.len() {
+            assert!(
+                Instant::now() < deadline,
+                "proxy did not forward all requests"
+            );
+            let (mut stream, _) = match server.accept() {
+                Ok(pair) => pair,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(error) => panic!("accept failed: {error}"),
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .unwrap();
+            forwarded += 1;
+        }
+    });
+    for (method, path, expected) in requests {
+        let mut client =
+            std::net::TcpStream::connect(proxy.homeserver_url().trim_start_matches("http://"))
+                .unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        write!(client, "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).unwrap();
+        assert!(response.ends_with(b"ok"));
+        assert_eq!(proxy.media_read_forwarded_count(), expected);
+    }
+    worker.join().unwrap();
+}
+
+#[test]
 fn trust_admission_timeout_summary_is_allowlisted_and_private_safe() {
     use koushi_diagnostics::{
         DiagnosticEvent, DiagnosticField, DiagnosticLevel, DiagnosticRecord, DiagnosticSnapshot,

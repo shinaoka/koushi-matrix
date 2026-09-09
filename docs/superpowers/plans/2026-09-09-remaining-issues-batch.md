@@ -890,6 +890,26 @@ new scope remains a new cache consumer even when it shares an existing URI.
 existing implementation, not a newly reproduced product defect or new RED claim.
 Other surfaces, actual large-server scenarios and final delivery remain open.
 
+## #839 actual media-request measurement primitive
+
+Extended the existing QaTcpProxy with a count-only media-read counter. It counts
+successfully written upstream HTTP download/thumbnail requests, including retries,
+not render rows, cache hits or successful response statuses. Authenticated client
+v1 and legacy media v1/r0/v3 paths are recognized; upload, sync, config, malformed
+resource paths and non-GET requests are excluded. No URLs or credentials are
+retained in the new counter.
+
+A bounded real-TCP test forwards requests through the proxy to a local HTTP
+fixture and checks counts after each response. The initial RED was missing-API
+compile failure, not a reproduced product failure. All 104 headless-core-qa unit
+tests pass; structure/whitespace checks pass. Logs:
+`/tmp/koushi-qa-media-counter-{red,green,regression}.log`.
+
+This is the measurement primitive only: the counter is currently exercised by
+its test. The 1,500-member disposable Tuwunel/Synapse scenario still needs to
+consume it and has not run. No new success token or server acceptance claim is
+made here. Remaining surface migration and final delivery are also open.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated

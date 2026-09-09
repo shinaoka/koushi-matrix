@@ -561,6 +561,7 @@ pub(super) fn verification_state_flow_id(state: &VerificationFlowState) -> Optio
 
 pub(super) struct QaTcpProxy {
     listen_addr: SocketAddr,
+    media_read_forwarded: Arc<AtomicUsize>,
     enabled: Arc<AtomicBool>,
     room_send_forwarded: Arc<AtomicUsize>,
     room_send_responses_completed: Arc<AtomicUsize>,
@@ -573,6 +574,7 @@ pub(super) struct QaTcpProxy {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum QaProxyRequestKind {
+    MediaRead,
     RoomSend,
     RoomMessages,
     ReadState,
@@ -829,6 +831,7 @@ impl QaTcpProxy {
             .local_addr()
             .map_err(|e| format!("send_queue proxy local_addr failed: {e}"))?;
         let enabled = Arc::new(AtomicBool::new(true));
+        let media_read_forwarded = Arc::new(AtomicUsize::new(0));
         let room_send_forwarded = Arc::new(AtomicUsize::new(0));
         let room_send_responses_completed = Arc::new(AtomicUsize::new(0));
         let running = Arc::new(AtomicBool::new(true));
@@ -840,6 +843,7 @@ impl QaTcpProxy {
         ));
 
         let thread_enabled = enabled.clone();
+        let thread_media_read_forwarded = media_read_forwarded.clone();
         let thread_room_send_forwarded = room_send_forwarded.clone();
         let thread_room_send_responses_completed = room_send_responses_completed.clone();
         let thread_running = running.clone();
@@ -862,6 +866,7 @@ impl QaTcpProxy {
                             thread_read_state_control.clone(),
                             thread_room_send_forwarded.clone(),
                             thread_room_send_responses_completed.clone(),
+                            thread_media_read_forwarded.clone(),
                         );
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -878,6 +883,7 @@ impl QaTcpProxy {
 
         Ok(Self {
             listen_addr,
+            media_read_forwarded,
             enabled,
             room_send_forwarded,
             room_send_responses_completed,
@@ -900,6 +906,12 @@ impl QaTcpProxy {
 
     pub(super) fn enable(&self) {
         self.enabled.store(true, Ordering::SeqCst);
+    }
+
+    /// HTTP media reads forwarded by this proxy, not cache hits or rendered rows.
+    /// Includes retries and both original downloads and server thumbnails.
+    pub(super) fn media_read_forwarded_count(&self) -> usize {
+        self.media_read_forwarded.load(Ordering::SeqCst)
     }
 
     pub(super) fn room_send_forwarded_count(&self) -> usize {
@@ -1072,6 +1084,7 @@ fn spawn_proxy_pair(
     read_state_control: Arc<(Mutex<QaReadStateProxyControl>, Condvar)>,
     room_send_forwarded: Arc<AtomicUsize>,
     room_send_responses_completed: Arc<AtomicUsize>,
+    media_read_forwarded: Arc<AtomicUsize>,
 ) {
     thread::spawn(move || {
         let _ = proxy_single_http_request(
@@ -1082,6 +1095,7 @@ fn spawn_proxy_pair(
             read_state_control,
             room_send_forwarded,
             room_send_responses_completed,
+            media_read_forwarded,
         );
         let _ = client.shutdown(Shutdown::Both);
     });
@@ -1095,6 +1109,7 @@ fn proxy_single_http_request(
     read_state_control: Arc<(Mutex<QaReadStateProxyControl>, Condvar)>,
     room_send_forwarded: Arc<AtomicUsize>,
     room_send_responses_completed: Arc<AtomicUsize>,
+    media_read_forwarded: Arc<AtomicUsize>,
 ) -> io::Result<()> {
     let mut request_head = Vec::new();
     {
@@ -1170,6 +1185,9 @@ fn proxy_single_http_request(
         room_send_forwarded.fetch_add(1, Ordering::SeqCst);
     }
     io::Write::write_all(&mut server, &request)?;
+    if request_kind == QaProxyRequestKind::MediaRead {
+        media_read_forwarded.fetch_add(1, Ordering::SeqCst);
+    }
     io::copy(&mut server, client)?;
     if count_forwarded_room_send {
         room_send_responses_completed.fetch_add(1, Ordering::SeqCst);
@@ -1246,6 +1264,15 @@ fn qa_proxy_request_kind(request: &[u8]) -> io::Result<QaProxyRequestKind> {
     }
     let path = target.split_once('?').map_or(target, |(path, _)| path);
     Ok(match (method, path) {
+        ("GET", path)
+            if matches!(path.split('/').collect::<Vec<_>>().as_slice(),
+                ["", "_matrix", "client", "v1", "media", "download" | "thumbnail", server, media, ..]
+                | ["", "_matrix", "media", "v1" | "r0" | "v3", "download" | "thumbnail", server, media, ..]
+                if !server.is_empty() && !media.is_empty()
+            ) =>
+        {
+            QaProxyRequestKind::MediaRead
+        }
         ("PUT", path)
             if path.starts_with("/_matrix/client/")
                 && path.contains("/rooms/")
