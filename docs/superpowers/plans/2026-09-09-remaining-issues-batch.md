@@ -1103,7 +1103,17 @@ remained at total_count=1 until timeout. Direct server-only diagnostics using th
 same Simplified Sliding Sync endpoint and fixture confirmed an HTTP-200 initial
 response with one receipt user on Tuwunel, versus 1,500 on Synapse. No alternative
 sync backend was used. This localizes the missing population upstream of Core;
-server persistence versus response construction still needs investigation.
+response construction is now identified as lossy: v1.7.1
+[`collect_room`](https://github.com/matrix-construct/tuwunel/blob/v1.7.1/src/api/client/sync/v5/extensions/receipts.rs#L75-L93)
+collects the individual receipt events and calls
+[`pack_receipts`](https://github.com/matrix-construct/tuwunel/blob/v1.7.1/src/service/rooms/read_receipt/mod.rs#L276-L304),
+whose `json.insert(event, receipt)` replaces the preceding nested receipt map for
+the same event. It therefore retains only the last user's map instead of merging
+receipt types and users. This matches the direct HTTP and Core observations.
+Inspection of the upstream default branch also found this insertion in
+`pack_receipts_fallible`; merely choosing an unverified newer build is not a fix.
+No upstream files, shared server binaries or services were modified. An upstream
+correction and the unchanged real-server gate turning green remain required.
 Earlier fixture creation results proved accepted seed requests, not receipt
 readback completeness. No threshold reduction, skip or fallback was added.
 Evidence: `/tmp/koushi-avatar-scale-tuwunel-settle.log`,

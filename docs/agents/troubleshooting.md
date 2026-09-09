@@ -163,8 +163,11 @@ the lane that shows the symptom. Lane commands are in
 
 - **`avatar_demand` stays at one reader after a successful large fixture seed.**
   Tuwunel 1.7.1 returned one receipt user in the initial Simplified Sliding Sync
-  response in this test, while Synapse returned the full population. Seed HTTP
-  success is not receipt-readback proof. Keep the failing population gate; do not
+  response in this test, while Synapse returned the full population. Its
+  [`pack_receipts`](https://github.com/matrix-construct/tuwunel/blob/v1.7.1/src/service/rooms/read_receipt/mod.rs#L276-L304)
+  inserts each receipt map by event ID, replacing previous users for that event
+  instead of merging the nested receipt-type/user maps. Seed HTTP success is not
+  receipt-readback proof. Keep the failing population gate; do not
   manufacture readers in Core or add a sync fallback. The active investigation
   and exact evidence are in the 2026-09-09 remaining-issues batch worklog.
 
