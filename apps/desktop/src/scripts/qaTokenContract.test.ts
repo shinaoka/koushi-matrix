@@ -34,6 +34,19 @@ describe("qa token contract", () => {
     ).not.toThrow();
   });
 
+  test.each([
+    ["directory", "room_address_preview_create_share=ok"],
+    ["directory", "room_address_collision=ok"],
+    ["live_signals", "ignored_user_history_recovery=ok"],
+    ["all", "room_address_collision=ok"],
+    ["all", "ignored_user_history_recovery=ok"]
+  ])("requires %s checkpoint %s even with a successful process", (scenario, token) => {
+    const required = requiredTokensForHeadlessScenario(scenario);
+    expect(required).toContain(token);
+    expect(() => assertRequiredTokens(required.filter(value => value !== token).join(" "), required, scenario)).toThrow(/missing required QA tokens/);
+    expect(() => assertRequiredTokens(required.join(" "), required, scenario)).not.toThrow();
+  });
+
   test("assertRequiredTokens throws naming the missing tokens", () => {
     expect(() =>
       assertRequiredTokens("login=ok", ["login=ok", "logout=ok"], "lane")

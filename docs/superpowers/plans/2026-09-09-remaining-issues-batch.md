@@ -306,6 +306,17 @@ and restore cleanup. Logs: `/tmp/koushi-ignore-tuwunel.log` and
 `/tmp/koushi-ignore-synapse.log`. Coalesced repeated-clear coverage and final
 submitted-state gates still remain; neither server pass completes the full goal.
 
+## QA token enforcement follow-up
+
+The new directory and ignore-recovery checks initially emitted success tokens
+without adding Node runner requirements. Added the normative docs/qa contract and
+required-token registration for `directory`, `live_signals`, and `all`. Five
+missing-checkpoint assertions were RED before registration; all 39 focused token/
+runner tests passed afterward. A fresh complete frontend run now passes all
+1300 tests across 112 files (`/tmp/koushi-batch-frontend-latest.log`). This supersedes
+the earlier failing full-run result, but is not proof of the unfinished #839
+scope migration or final PR/merge gates.
+
 ## Native evidence availability checkpoint
 
 The current execution host reports Linux. Existing GitHub workflows include a

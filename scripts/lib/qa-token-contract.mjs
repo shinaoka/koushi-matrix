@@ -10,7 +10,13 @@
  * vocabulary of status values is accepted so prose can never be mistaken for a
  * token.
  */
+const ADDRESS_TOKENS = ["room_address_preview_create_share=ok", "room_address_collision=ok"];
+const IGNORE_RECOVERY_TOKEN = "ignored_user_history_recovery=ok";
+
 export const HEADLESS_LOCAL_QA_SCENARIO_TOKENS = Object.freeze({
+  directory: Object.freeze(["directory_query=ok", "directory_join=ok", ...ADDRESS_TOKENS]),
+  live_signals: Object.freeze(["live_signals=ok", IGNORE_RECOVERY_TOKEN]),
+  all: Object.freeze([...ADDRESS_TOKENS, IGNORE_RECOVERY_TOKEN]),
   redact_edit_convergence: Object.freeze([
     "redact_edit_convergence=ok",
     "thread_summary_convergence=ok"
