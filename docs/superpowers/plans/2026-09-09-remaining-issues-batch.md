@@ -274,6 +274,20 @@ unchanged three-test contract suite then passed. Typecheck, lint and production
 build passed (existing large-chunk warning). Full final gates remain; no all-green
 whole-suite run is claimed for the prior failing invocation.
 
+## #847 cancellation verification checkpoint
+
+Extended the actual SDK/Core ignored-reset fixture with explicit pagination
+cancellation while a controlled HTTP messages response is delayed. It waits for
+the real request, cancels, observes the matching Idle event, and checks that no
+replacement HTTP request appears after the delayed response's completion window.
+The first fixture attempt had no prev_batch token and never made a messages
+request; that was a test setup failure, not evidence of a product regression.
+Adding a synthetic prev_batch makes both recovery and cancellation exercise real
+pagination. Both focused tests pass. Fresh Core lib gate after the avatar task
+identity fix and this coverage: 1015 passed, 9 existing ignored, zero failures
+(`/tmp/koushi-batch-core-latest.log`). Local homeserver ignore/unignore and refill
+failure/coalescing coverage remain outstanding.
+
 ## Native evidence availability checkpoint
 
 The current execution host reports Linux. Existing GitHub workflows include a

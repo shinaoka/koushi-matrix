@@ -49,6 +49,25 @@ async fn wait_for(
 
 #[tokio::test]
 async fn ignored_user_cache_reset_refills_without_new_events_or_viewport_requests() {
+    exercise_ignored_reset(false).await;
+}
+
+#[tokio::test]
+async fn explicit_cancel_stops_cache_reset_refill_without_rescheduling() {
+    exercise_ignored_reset(true).await;
+}
+
+async fn message_request_count(server: &MatrixMockServer) -> usize {
+    server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|request| request.url.path().ends_with("/messages"))
+        .count()
+}
+
+async fn exercise_ignored_reset(cancel_refill: bool) {
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
     client.event_cache().subscribe().unwrap();
@@ -79,6 +98,7 @@ async fn ignored_user_cache_reset_refills_without_new_events_or_viewport_request
         .sync_room(
             &client,
             JoinedRoomBuilder::new(room_id)
+                .set_timeline_prev_batch("synthetic-before")
                 .add_timeline_event(first())
                 .add_timeline_event(ignored())
                 .add_timeline_event(last()),
@@ -172,6 +192,20 @@ async fn ignored_user_cache_reset_refills_without_new_events_or_viewport_request
             )
         })
         .await?;
+        let initial_requests = message_request_count(&server).await;
+        if cancel_refill {
+            wiremock::Mock::given(wiremock::matchers::path_regex(r"/messages$"))
+                .respond_with(
+                    wiremock::ResponseTemplate::new(200)
+                        .set_delay(Duration::from_secs(1))
+                        .set_body_json(
+                            serde_json::json!({"chunk": [], "start": "synthetic-start"}),
+                        ),
+                )
+                .with_priority(1)
+                .mount(server.server())
+                .await;
+        }
         for ignore in [true, false] {
             let users = if ignore { vec![bob.to_owned()] } else { vec![] };
             actor
@@ -197,6 +231,34 @@ async fn ignored_user_cache_reset_refills_without_new_events_or_viewport_request
                 !items.iter().any(|item| item.sender.is_some())
             })
             .await?;
+            if cancel_refill {
+                stage = "refill-request-started";
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    while message_request_count(&server).await == initial_requests {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await?;
+                actor
+                    .send(TimelineActorMessage::CancelPagination {
+                        request_id: fake_rid(3),
+                    })
+                    .await;
+                stage = "refill-cancelled";
+                wait_for(&mut events, &mut items, |event, _| {
+                    matches!(event,
+                        CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+                            request_id: Some(id), state: PaginationState::Idle, ..
+                        }) if *id == fake_rid(3)
+                    )
+                })
+                .await?;
+                // Wait past the controlled server response: cancellation must not
+                // schedule a replacement request when the old request finishes.
+                tokio::time::sleep(Duration::from_millis(1200)).await;
+                assert_eq!(message_request_count(&server).await, initial_requests + 1);
+                break;
+            }
             stage = if ignore {
                 "ignore-refill"
             } else {
