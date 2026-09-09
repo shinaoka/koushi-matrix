@@ -5,7 +5,7 @@ Dated specs and plans under `docs/superpowers/` are implementation guides
 toward this document and must not contradict it. Amend this document first
 when a design change is needed, then update or supersede the affected specs.
 
-Last amended: 2026-09-07.
+Last amended: 2026-09-09.
 
 The evidence-based classification of remaining frontend-owned resources and
 semantic migration candidates is maintained in
@@ -742,6 +742,12 @@ Supervision follows the same ownership tree:
 - `AccountActor` failure is fatal to that account runtime: stop children,
   drop SDK handles in runtime context, emit a redacted account failure, and
   require restore/login rather than silently continuing with unknown state.
+- A local room-list reconciliation deadline measures projection delay, not
+  sync-owner failure. Keep one pending acknowledgement while processing SDK
+  lifecycle/encryption observations and explicit stop. Do not publish recovery
+  before a valid matching acknowledgement, or terminate healthy sync merely
+  because projection is slow. SDK owner replacement retires the pending wait
+  and requires fresh replacement-generation proofs.
 - Hangs are detected per command by request deadlines and missing required
   progress. Idle timeline or sync streams are valid states, not hangs.
 

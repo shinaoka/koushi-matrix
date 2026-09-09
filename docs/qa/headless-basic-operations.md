@@ -545,6 +545,14 @@ This lane validates the same core flows against matrix.org with a bounded
 compatibility subset. It must avoid OS keychain access, use one login per run,
 and clean up created rooms, spaces, and sessions even after earlier failures.
 
+The real lane completes existing-identity recovery before waiting for login
+admission and starting room sync. Login/restore completion, recovery completion,
+and the Ready snapshot may arrive in either order; the QA collector retains
+them under one deadline. Failed initial login admission logs out through the
+still-owned connection, including a provisional session that has not been
+persisted. Restore failure preserves the cleanup owner so it can validate the
+expected account and leave/forget QA rooms before logout.
+
 The subset exercises room creation, space creation, space-child linking,
 send/edit/redact/search, and — added once reply was proven on the local lanes
 (roadmap Phase 15) — **reply** (`SendReply`). It leaves and forgets every
