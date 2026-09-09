@@ -957,6 +957,24 @@ async fn oldest_observable_event_id(timeline: &Timeline) -> Option<String> {
 }
 
 impl TimelineActor {
+    pub(super) async fn maybe_refill_reset_room_cache(&mut self) {
+        if !self.cache_reset_refill_pending
+            || self.pagination_task.is_some()
+            || self.gap_repair.active_serial.is_some()
+            || self.gap_projection_correlation.is_pending()
+            || self.pending_gap_projection.is_some()
+        {
+            return;
+        }
+        self.cache_reset_refill_pending = false;
+        self.handle_paginate(
+            self.projection_request_id,
+            PaginationDirection::Backward,
+            INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT,
+        )
+        .await;
+    }
+
     pub(super) async fn handle_paginate(
         &mut self,
         request_id: RequestId,
@@ -1194,6 +1212,7 @@ impl TimelineActor {
         }));
     }
     pub(super) fn handle_cancel_pagination(&mut self, request_id: RequestId) {
+        self.cache_reset_refill_pending = false;
         let Some(active) = self.pagination_task.take() else {
             return;
         };

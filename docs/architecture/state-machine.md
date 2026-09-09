@@ -1046,6 +1046,28 @@ stateDiagram-v2
 
 ### Timeline Diff Relay Recovery
 
+A room-timeline SDK `Clear` invalidates the old history window, including an
+old pagination `EndReached` observation. The actor retains one coalesced
+cache-reset refill demand. After existing pagination and causal gap work settle,
+it uses the ordinary account-scheduled backward-page path once, independently
+of browser viewport demand. A further Clear while that page runs queues one new
+refill; it never creates concurrent pagination. Failure is the ordinary typed
+pagination failure, not a retry loop. Explicit pagination cancellation discards
+pending refill demand; actor replacement/shutdown drops it with that actor.
+The replacement vector comes exclusively from the SDK's own diff stream, not a
+separate stored snapshot. Thread drafts and focused navigation do not acquire
+room-reset refill behavior.
+
+```mermaid
+stateDiagram-v2
+    [*] --> NoRefill
+    NoRefill --> RefillPending: accepted room SDK Clear
+    RefillPending --> RefillPending: another Clear / coalesce
+    RefillPending --> NoRefill: pagination and causal gap work idle / start one ordinary page
+    RefillPending --> NoRefill: explicit cancellation or actor retirement
+```
+
+
 The SDK `Timeline` is the authoritative timeline source. Each timeline actor owns
 one relay task and a monotonically increasing relay generation. Normal SDK
 `VectorDiff` batches use the bounded data inbox and carry the generation of the

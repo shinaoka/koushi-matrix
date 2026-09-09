@@ -77,6 +77,26 @@ semantic ownership guard) passed after the four slices. Full Vitest then passed
 1,290/1,290 across 110 files. Full browser suite/build and final diff review are
 not yet run. No PR is open for this batch.
 
+## #847 recovery design / canon approval
+
+The main frontier agent approves the state-machine amendment above before code:
+retain one actor-local pending room-cache refill bit on accepted SDK Clear; drain
+it through existing backward pagination only when pagination and causal gap work
+are idle. Coalesce repeated clears, preserve SDK accumulator ownership, expose
+ordinary failure without adding retries, and discard pending work on cancellation
+or actor retirement. No SDK fork change, persisted recovery state, timers, or UI
+repair. An actual SDK+Core regression reaches `EndReached`, applies ignored-user
+account data, consumes Clear, and fails specifically at `ignore-refill` before
+the change. Both ignore and unignore must pass without incoming events/viewport
+requests. After implementation, the unchanged test passes both cycles. Full
+Core library: 1,012 passed / 9 existing ignored. The actor retains one pending
+bit, checks existing pagination/gap ownership before scheduling, and reuses the
+normal page worker and its typed result. No SDK changes. Local-homeserver
+verification and final cross-boundary audit remain pending.
+Rust iteration reuses the existing main target with line-tables-only dev debug
+information and CARGO_BUILD_JOBS=4; these are functional tests, not performance
+measurements.
+
 ## Remaining investigation and implementation
 
 - #847: Core ignored-sender suppression is reversible per-item. The pinned SDK
@@ -86,9 +106,10 @@ not yet run. No PR is open for this batch.
   Therefore the issue's retained-event/no-network repair suggestion is not yet
   proven safe: do not restore the indexed SDK accumulator from an unrelated
   snapshot or claim the cache still contains the old authoritative history.
-  Trace Clear/in-flight-pagination handling, reproduce with the actual SDK/Core
-  relay, and choose the smallest owner-level recovery with an amended canonical
-  contract if needed. Prove both ignore and unignore without new events/restart.
+  The actual SDK/Core relay regression now proves both ignore/unignore recover
+  without new events/restart/viewport requests; owner-level one-page recovery is
+  implemented under the approved canonical amendment above. Complete the local
+  server lane and cancellation/failure boundary checks before issue closure.
 - #839: audit all issue acceptance against #857 and its scoped-reader worklog;
   do not rewrite merged functionality or use broad CI as request-count evidence.
   Verify remaining surface ownership, full-reader access and actual bounded

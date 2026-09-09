@@ -907,6 +907,7 @@ pub(super) struct TimelineActor {
     /// this actor lifetime. This avoids retry loops on every viewport tick.
     pub(super) reply_detail_fetch_attempted_event_ids: HashSet<String>,
     pub(super) pagination_task: Option<ActivePaginationTask>,
+    pub(super) cache_reset_refill_pending: bool,
     pub(super) next_pagination_serial: u64,
     /// Application data directory for cached preview images.
     pub(super) data_dir: Option<std::path::PathBuf>,
@@ -1837,6 +1838,7 @@ impl TimelineActor {
             terminal_ingress,
             reply_detail_fetch_attempted_event_ids: HashSet::new(),
             pagination_task: None,
+            cache_reset_refill_pending: false,
             next_pagination_serial: 0,
             data_dir,
             account_work,
@@ -1979,6 +1981,7 @@ impl TimelineActor {
                 }
             }
             self.finish_ready_causal_projection_handoffs().await;
+            self.maybe_refill_reset_room_cache().await;
         }
     }
     async fn finish_ready_causal_projection_handoffs(&mut self) {

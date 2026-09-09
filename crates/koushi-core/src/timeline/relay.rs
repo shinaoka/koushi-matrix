@@ -614,6 +614,13 @@ impl TimelineActor {
             return;
         };
         drop(thread_summary_commit_lease);
+        if matches!(self.key.kind, TimelineKind::Room { .. })
+            && sdk_diffs
+                .iter()
+                .any(|diff| matches!(diff, eyeball_im::VectorDiff::Clear))
+        {
+            self.cache_reset_refill_pending = true;
+        }
 
         // Reconcile only after the generation-fenced canonical batch committed.
         // A replaced actor must not retire manager-owned fallback state.
@@ -1610,5 +1617,7 @@ pub(super) async fn run_diff_relay(
     }
 }
 
+#[cfg(test)]
+mod ignored_reset_tests;
 #[cfg(test)]
 mod tests;
