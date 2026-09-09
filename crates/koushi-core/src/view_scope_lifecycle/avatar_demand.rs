@@ -118,6 +118,27 @@ mod tests {
     }
 
     #[test]
+    fn runtime_shutdown_releases_its_avatar_publication() {
+        let registry = super::super::ViewScopeRegistry::default();
+        let publication = ChargedAvatarDemand::new(demand(), &registry.budget).unwrap();
+        let bytes: usize = publication
+            .charges
+            .values()
+            .map(|charge| charge.bytes())
+            .sum();
+        registry.state.lock().unwrap().avatar_demand = Some(std::sync::Arc::new(publication));
+        let _remaining = registry
+            .budget
+            .reserve_bytes(256 * 1024 * 1024 - bytes)
+            .unwrap();
+        registry.shutdown();
+        assert!(
+            registry.budget.reserve_bytes(bytes).is_some(),
+            "stopped runtime must release its publication even while connection registry handles survive"
+        );
+    }
+
+    #[test]
     fn failed_scope_replacement_preserves_demand_and_revision() {
         let budget = crate::view_budget::ViewBudget::default();
         let mut current = ChargedAvatarDemand::new(demand(), &budget).unwrap();

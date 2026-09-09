@@ -104,15 +104,15 @@ async fn avatar_observation_requires_a_live_source_even_with_an_installed_model(
         account_id: "account".into(),
         session_generation: 1,
     };
+    assert!(
+        registry
+            .avatar_demand_for_context(Some(&context))
+            .unwrap()
+            .resources_by_priority()
+            .is_empty()
+    );
     consumer
-        .observe_reader_avatars(
-            scope.id(),
-            revision,
-            1,
-            &context,
-            &["@a:example.org".into()],
-            &[],
-        )
+        .observe_current_reader_avatars(scope.id(), revision, 1, &["@a:example.org".into()], &[])
         .unwrap();
     let installed = registry.avatar_demand_for_context(Some(&context)).unwrap();
     assert_eq!(
@@ -162,6 +162,19 @@ async fn avatar_observation_requires_a_live_source_even_with_an_installed_model(
             })
             .err(),
         Some(ScopeError::SourceUnavailable)
+    );
+    epoch.lock().unwrap().valid = true;
+    registry.avatar_demand_for_context(None);
+    assert_eq!(
+        consumer.observe_reader_avatars(scope.id(), revision, 2, &context, &[], &[]),
+        Err(ScopeError::InactiveSession)
+    );
+    let mut changed = context.clone();
+    changed.session_generation += 1;
+    registry.avatar_demand_for_context(Some(&changed));
+    assert_eq!(
+        consumer.observe_reader_avatars(scope.id(), revision, 2, &context, &[], &[]),
+        Err(ScopeError::InactiveSession)
     );
 }
 

@@ -301,11 +301,27 @@ impl ViewScopeRegistry {
         context: Option<&koushi_state::AvatarDemandContext>,
     ) -> Option<Arc<ChargedAvatarDemand>> {
         let mut state = self.state.lock().expect("view registry poisoned");
-        let demand = state.avatar_demand.as_ref()?;
-        if context != Some(demand.context()) {
+        if state.closed || context.is_none() {
             state.avatar_demand = None;
             return None;
         }
+        let context = context?;
+        if state
+            .avatar_demand
+            .as_ref()
+            .is_none_or(|demand| demand.context() != context)
+        {
+            // AppActor publishes the current context before admitting reader work.
+            // Empty demand requires no scope reservation and issues no downloads.
+            state.avatar_demand = Some(Arc::new(
+                ChargedAvatarDemand::new(
+                    koushi_state::AvatarDemandState::new(context.clone()),
+                    &self.budget,
+                )
+                .ok()?,
+            ));
+        }
+        let demand = state.avatar_demand.as_ref()?;
         let expired: Vec<_> = demand
             .scope_ids()
             .filter(|scope| {
@@ -366,6 +382,7 @@ impl ViewScopeRegistry {
             entry.control.retire(ViewRetirement::RuntimeStopped);
         }
         state.scopes.clear();
+        state.avatar_demand = None;
         state.reader_queue.clear();
         state.profile_readers.clear();
         state.room_profile_readers.clear();

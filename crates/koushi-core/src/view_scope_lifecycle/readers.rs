@@ -172,6 +172,28 @@ impl ViewConsumer {
         Ok(())
     }
 
+    pub(crate) fn observe_current_reader_avatars(
+        &self,
+        id: koushi_protocol::view::ViewScopeId,
+        revision: ViewRevision,
+        sequence: u64,
+        visible: &[String],
+        prefetch: &[String],
+    ) -> Result<(), ScopeError> {
+        let context = self
+            .0
+            .registry
+            .state
+            .lock()
+            .expect("view registry poisoned")
+            .avatar_demand
+            .as_ref()
+            .ok_or(ScopeError::InactiveSession)?
+            .context()
+            .clone();
+        self.observe_reader_avatars(id, revision, sequence, &context, visible, prefetch)
+    }
+
     /// Commit resolved reader demand. Context comes from AppActor's current
     /// session, never from deserialized host input; host inputs are IDs/revisions.
     pub(crate) fn observe_reader_avatars(
@@ -235,13 +257,13 @@ impl ViewConsumer {
             {
                 return Err(ScopeError::InvalidRevision);
             }
-            let mut next = match &state.avatar_demand {
-                Some(current) => current.as_ref().clone(),
-                None => super::ChargedAvatarDemand::new(
-                    koushi_state::AvatarDemandState::new(context.clone()),
-                    &self.0.registry.budget,
-                )?,
-            };
+            // Only AppActor may establish a session context. If it cleared or
+            // changed during resolution, do not recreate the captured context.
+            let mut next = state
+                .avatar_demand
+                .as_deref()
+                .ok_or(ScopeError::InactiveSession)?
+                .clone();
             next.replace(
                 context,
                 id.0,

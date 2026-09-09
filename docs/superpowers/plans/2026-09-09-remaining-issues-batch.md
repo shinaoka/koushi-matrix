@@ -695,6 +695,32 @@ structure and whitespace passed; logs:
 `/tmp/koushi-avatar-reader-identity-final.log`.
 Public command/GUI wiring remains pending; this is not an end-to-end download test.
 
+## #839 public reader observation API and runtime release
+
+Connected `ReaderSubscription::observe_avatars` to the existing observation
+commit. The host supplies only installed revision, monotonic sequence and visible/
+prefetch user IDs. AppActor initializes an empty current-context publication before
+reader work admission; observations read that existing context rather than adding
+another command queue, counter or context registry. If the context is cleared or
+changes during resolution, commit rejects the captured context instead of
+recreating it. The subscription close signal rejects further observations.
+
+Tests cover the context-derived commit, inactive/closed public subscription, and
+cleared/replaced context rejection. The new API initially produced compile RED.
+Also reproduced a real shutdown retention failure: surviving connection registry
+handles kept the current charged publication after runtime shutdown. Shutdown now
+clears that publication; external snapshot owners still retain their own charges.
+The same shutdown test turned GREEN.
+
+21 lifecycle, 22 connection and nine profile actor tests passed; normal Core check,
+format, test-structure and whitespace passed. Logs:
+`/tmp/koushi-avatar-current-context-{red,green}.log`,
+`/tmp/koushi-avatar-shutdown-budget-red.log`,
+`/tmp/koushi-avatar-reader-api-{regression,check}.log`.
+
+The portable reader API is now reachable; desktop adapter/TypeScript/GUI wiring,
+other source families, full request-count QA and final gates remain unfinished.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated

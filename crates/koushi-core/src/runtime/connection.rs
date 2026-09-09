@@ -154,6 +154,27 @@ impl ReaderSubscription {
         self.consumer.ack_model(self.scope.id(), revision)
     }
 
+    /// Report visible and bounded prefetch user IDs from an acknowledged model.
+    /// Rust supplies session context and resolves private resource identities.
+    pub fn observe_avatars(
+        &self,
+        revision: koushi_protocol::view::ViewRevision,
+        sequence: u64,
+        visible: &[String],
+        prefetch: &[String],
+    ) -> Result<(), crate::view_scope_lifecycle::ScopeError> {
+        if *self.close_rx.borrow() {
+            return Err(crate::view_scope_lifecycle::ScopeError::Closed);
+        }
+        self.consumer.observe_current_reader_avatars(
+            self.scope.id(),
+            revision,
+            sequence,
+            visible,
+            prefetch,
+        )
+    }
+
     pub fn update_window(
         &self,
         request: koushi_protocol::view::ReaderWindowRequest,

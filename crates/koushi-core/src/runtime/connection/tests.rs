@@ -124,6 +124,33 @@ fn scripted_connection(
 }
 
 #[test]
+fn reader_avatar_observation_uses_runtime_context_and_honors_close() {
+    let (connection, _commands, _events, _snapshots) = scripted_connection(4);
+    let source = serde_json::from_value(serde_json::json!({
+        "key": {"account_key": "@owner:example.org", "kind": {"Room": {"room_id": "!room:example.org"}}},
+        "projection_request_id": {"connection_id": "1", "sequence": "2"},
+        "generation": "3", "event_id": "$event"
+    })).unwrap();
+    let reader = connection
+        .subscribe_reader(
+            source,
+            0,
+            koushi_protocol::view::ReaderWindowLimit::try_from(3).unwrap(),
+        )
+        .unwrap();
+    let revision = koushi_protocol::view::ViewRevision(1);
+    assert_eq!(
+        reader.observe_avatars(revision, 1, &[], &[]),
+        Err(crate::view_scope_lifecycle::ScopeError::InactiveSession)
+    );
+    reader.close_handle().close();
+    assert_eq!(
+        reader.observe_avatars(revision, 1, &[], &[]),
+        Err(crate::view_scope_lifecycle::ScopeError::Closed)
+    );
+}
+
+#[test]
 fn resource_access_rejects_foreign_runtime_and_retired_consumers_at_connection_boundary() {
     use crate::view_scope_lifecycle::ScopeError;
     use koushi_protocol::view::ViewRevision;
