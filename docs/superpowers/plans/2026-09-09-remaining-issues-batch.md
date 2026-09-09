@@ -980,6 +980,21 @@ pass. Logs: `/tmp/koushi-avatar-fixture-tuwunel.log`,
 This remains fixture setup evidence only, not Core avatar-demand request bounds,
 cancellation, cache/reopen or final acceptance.
 
+## #839 fixture image validity correction
+
+Inspection found the initial embedded PNG had an invalid IDAT CRC despite being
+accepted by both upload endpoints. A test checking every PNG chunk CRC and
+inflating its pixel data failed at IDAT before the payload was corrected. The
+same three fixture tests now pass, together with typecheck/lint. This is a real
+fixture-data RED→GREEN, not a product rendering regression. Earlier upload-only
+results never established image validity or native rendering.
+
+Reran the full 1,500-reader fixture generation with corrected bytes on both
+disposable servers; Tuwunel and Synapse succeeded. Evidence:
+`/tmp/koushi-avatar-fixture-png-{red,green,tuwunel,synapse}.log`.
+Core observation/request bounds, cancellation/shared/cache checks, remaining GUI
+surfaces and final PR/merge remain unverified or unfinished.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated

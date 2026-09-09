@@ -1,3 +1,4 @@
+import { crc32, inflateSync } from "node:zlib";
 import { afterEach, expect, test, vi } from "vitest";
 import {
   AVATAR_FIXTURE_READERS,
@@ -11,6 +12,7 @@ test("seeds 1500 distinct avatars and receipts with bounded traffic and no retur
   let peak = 0;
   let registered = 0;
   let uploaded = 0;
+  const uploadedImages: Buffer[] = [];
   let joined = 0;
   let receipts = 0;
   const profiles = new Set<string>();
@@ -30,6 +32,7 @@ test("seeds 1500 distinct avatars and receipts with bounded traffic and no retur
       } else if (url.endsWith("/upload")) {
         uploaded += 1;
         expect(options.body).toBeInstanceOf(Uint8Array);
+        if (uploaded === 1) uploadedImages.push(Buffer.from(options.body as Uint8Array));
         body = { content_uri: `mxc://example.invalid/avatar-${uploaded}` };
       } else if (url.endsWith("/avatar_url")) {
         profiles.add(token);
@@ -59,6 +62,20 @@ test("seeds 1500 distinct avatars and receipts with bounded traffic and no retur
   expect(result).toEqual({ roomId: "!fixture:example.invalid", eventId: "$target", readerCount: 1500 });
   expect([registered, uploaded, joined, receipts]).toEqual([1500, 1500, 1500, 1500]);
   expect(peak).toBeLessThanOrEqual(8);
+  const png = uploadedImages[0];
+  expect(png.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  const pixels: Buffer[] = [];
+  let offset = 8;
+  while (offset < png.length) {
+    const length = png.readUInt32BE(offset);
+    const end = offset + 8 + length;
+    const kind = png.toString("ascii", offset + 4, offset + 8);
+    expect(crc32(png.subarray(offset + 4, end)), `${kind} checksum`).toBe(png.readUInt32BE(end));
+    if (kind === "IDAT") pixels.push(png.subarray(offset + 8, end));
+    offset = end + 4;
+  }
+  expect(offset).toBe(png.length);
+  expect([...inflateSync(Buffer.concat(pixels))]).toEqual([1, 255, 255]);
   expect(JSON.stringify(result)).not.toMatch(/private-|secret|mxc:/);
 });
 
