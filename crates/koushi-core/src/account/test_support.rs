@@ -98,6 +98,18 @@ pub(super) async fn inspect_sync_owners(handle: &AccountActorHandle) -> (bool, b
     result.await.expect("sync owner inspection")
 }
 
+pub(super) async fn inspect_secure_backup_owners(
+    handle: &AccountActorHandle,
+) -> crate::account::actor::SecureBackupOwnersSnapshot {
+    let (response, result) = oneshot::channel();
+    assert!(
+        handle
+            .send(AccountMessage::InspectSecureBackupOwners { response })
+            .await
+    );
+    result.await.expect("secure backup owner inspection")
+}
+
 pub(super) async fn shutdown_and_ack(handle: &AccountActorHandle) {
     let (acknowledged, ack) = oneshot::channel();
     assert!(

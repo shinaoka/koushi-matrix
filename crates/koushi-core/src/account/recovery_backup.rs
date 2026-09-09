@@ -34,6 +34,12 @@ const RECOVERY_TRUST_SETTLEMENT_POLL_INTERVAL: Duration = Duration::from_millis(
 
 const SECURE_BACKUP_INSPECTION_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Bound on how long a deferred (connectivity-unproven) inspection may wait
+/// for a proven edge before the gate is moved to a retryable failure (#860).
+/// Starts when the inspection first defers; repeated defers coalesce onto the
+/// armed deadline instead of extending it.
+pub(super) const SECURE_BACKUP_CONNECTIVITY_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+
 const SECURE_BACKUP_RETRY_BASE: Duration = Duration::from_secs(5);
 
 const SECURE_BACKUP_RETRY_MAX: Duration = Duration::from_secs(5 * 60);
@@ -1562,6 +1568,7 @@ impl AccountActor {
             SecureBackupInspectionAdmission::Defer => {
                 self.retire_secure_backup_monitor();
                 self.secure_backup_inspection_pending = true;
+                self.arm_secure_backup_defer_deadline();
                 record(
                     DiagnosticEvent::new(
                         DiagnosticLevel::Info,
@@ -1575,6 +1582,7 @@ impl AccountActor {
             SecureBackupInspectionAdmission::Start => {}
         }
         self.retire_secure_backup_monitor();
+        self.disarm_secure_backup_defer_deadline();
         let Some(session) = self.session.clone().filter(|_| self.session_promoted) else {
             return;
         };
@@ -1742,15 +1750,25 @@ impl AccountActor {
             self.secure_backup_inspection_pending |= self.session_promoted
                 || self.secure_backup_inspection_task.is_some()
                 || self.secure_backup_monitor_task.is_some();
+            let had_inspection = self.secure_backup_inspection_task.is_some();
             if let Some(task) = self.secure_backup_inspection_task.take() {
                 task.abort();
                 let _ = task.await;
             }
             self.retire_secure_backup_monitor();
+            // An inspection aborted mid-flight leaves the gate on Checking
+            // with pending work: it needs the same bounded wait as an
+            // initial defer, otherwise a never-again-proven edge dead-ends
+            // the gate (#860). Post-settlement gates keep reconnect-driven
+            // recovery instead.
+            if had_inspection && !self.secure_backup_ready {
+                self.arm_secure_backup_defer_deadline();
+            }
             return;
         }
         if self.session_promoted {
             self.secure_backup_inspection_pending = false;
+            self.disarm_secure_backup_defer_deadline();
             if !self.secure_backup_recovery_epoch || recovery_reset {
                 self.start_secure_backup_inspection();
             } else {
@@ -1767,12 +1785,86 @@ impl AccountActor {
         }
     }
 
+    /// Arm the bounded connectivity-wait deadline for a deferred inspection.
+    /// Idempotent: a repeated defer coalesces onto the armed deadline so the
+    /// total wait cannot be extended indefinitely by duplicate requests.
+    fn arm_secure_backup_defer_deadline(&mut self) {
+        if self.secure_backup_defer_deadline_task.is_some() {
+            return;
+        }
+        let generation = self.trust_generation;
+        let deadline_serial = self.secure_backup_defer_serial;
+        let wait = self.secure_backup_connectivity_wait;
+        let tx = self.self_tx.clone();
+        self.secure_backup_defer_deadline_task = Some(executor::spawn(async move {
+            executor::sleep(wait).await;
+            let _ = tx
+                .send(AccountMessage::SecureBackupDeferredDeadlineExpired {
+                    generation,
+                    deadline_serial,
+                })
+                .await;
+        }));
+    }
+
+    fn disarm_secure_backup_defer_deadline(&mut self) {
+        self.secure_backup_defer_serial = self.secure_backup_defer_serial.wrapping_add(1).max(1);
+        if let Some(task) = self.secure_backup_defer_deadline_task.take() {
+            task.abort();
+        }
+    }
+
+    /// Deadline expiry for a deferred inspection: leave `Checking` for the
+    /// retryable `BlockedFailed` state (which renders the gate's Retry) even
+    /// when no proven connectivity edge ever arrived (#860).
+    pub(super) async fn handle_secure_backup_defer_deadline_expired(
+        &mut self,
+        generation: u64,
+        deadline_serial: u64,
+    ) {
+        let is_current = self.session_promoted
+            && generation == self.trust_generation
+            && deadline_serial == self.secure_backup_defer_serial;
+        if !is_current {
+            return;
+        }
+        self.secure_backup_defer_deadline_task = None;
+        // Consume the serial so a replayed expiry cannot fail the gate twice.
+        self.secure_backup_defer_serial = self.secure_backup_defer_serial.wrapping_add(1).max(1);
+        self.secure_backup_inspection_pending = false;
+        let Some(action) = secure_backup_inspection_completion_action(
+            self.trust_generation,
+            self.session_promoted,
+            false,
+            generation,
+            Err(koushi_state::SecureBackupGateFailureKind::Timeout),
+        ) else {
+            return;
+        };
+        if let AppAction::SecureBackupGateChanged(gate) = &action {
+            self.set_secure_backup_send_admitted(gate.backup_is_ready());
+            record(
+                DiagnosticEvent::new(
+                    DiagnosticLevel::Info,
+                    "core.secure_backup",
+                    "inspection_defer_deadline_expired",
+                )
+                .field(DiagnosticField::token(
+                    "gate",
+                    secure_backup_gate_token(gate),
+                )),
+            );
+        }
+        self.send_actions(vec![action]).await;
+    }
+
     pub(super) async fn cancel_secure_backup_inspection(&mut self) {
         self.secure_backup_inspection_pending = false;
         self.sync_connectivity_proven = false;
         self.secure_backup_retry_attempt = 0;
         self.secure_backup_recovery_epoch = false;
         self.secure_backup_recovery_reset_consumed = false;
+        self.disarm_secure_backup_defer_deadline();
         if let Some(task) = self.secure_backup_inspection_task.take() {
             task.abort();
             let _ = task.await;

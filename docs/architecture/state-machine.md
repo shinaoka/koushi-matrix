@@ -409,7 +409,16 @@ stateDiagram-v2
 - Nonessential secure-backup server inspection runs only while the accepted
   sync projection is `Running`. An unproven connectivity edge aborts and
   coalesces inspection/monitor work; the first proven edge in one recovery
-  epoch admits one inspection. Post-authority recoverable failures use bounded
+  epoch admits one inspection. A deferred inspection always owns a bounded
+  connectivity-wait deadline (30 seconds from the first defer; repeated
+  defers coalesce onto the armed deadline instead of extending it): expiry
+  projects `BlockedFailed` (retryable, no automatic monitor) even when no
+  proven edge ever arrives, so `Checking` cannot wait forever. Proven
+  connectivity before the expiry disarms the deadline and admits the
+  inspection. The explicit typed retry re-enters inspection admission and,
+  while connectivity is still unproven, also asks the sync owner to
+  re-project its current status, so a missed `Running` projection cannot make
+  retry a permanent no-op. Post-authority recoverable failures use bounded
   exponential backoff with jitter (5 seconds through 5 minutes), preserving the
   attempt across connectivity flaps until a successful backup inspection resets
   the epoch. A pre-authority inconclusive inspection is `BlockedFailed`, has no
