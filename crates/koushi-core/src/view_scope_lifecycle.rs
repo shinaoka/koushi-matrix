@@ -8,14 +8,14 @@ use std::{
 
 use koushi_protocol::{
     RuntimeConnectionId,
-    view::{
-        ReaderWindowLimit, ReaderWindowTarget, ViewModel, ViewRetirement, ViewRevision, ViewScopeId,
-    },
+    view::{ViewModel, ViewRetirement, ViewRevision, ViewScopeId},
 };
 use tokio::sync::Notify;
 
 use crate::view_budget::{ViewBudget, ViewReservation};
 
+mod avatar_demand;
+pub(crate) use avatar_demand::ChargedAvatarDemand;
 mod mailbox;
 mod model;
 mod producer;
@@ -70,6 +70,7 @@ impl Drop for ViewRuntimeLifetime {
 #[derive(Default)]
 struct RegistryState {
     closed: bool,
+    avatar_demand: Option<Arc<ChargedAvatarDemand>>,
     scopes: HashMap<ViewScopeId, Entry>,
     reader_queue: VecDeque<ViewScopeId>,
     profile_readers: HashMap<String, HashSet<ViewScopeId>>,
@@ -153,6 +154,7 @@ struct Control {
     producer: Mutex<Option<crate::runtime::AbortOnDrop<()>>>,
     reader: Mutex<Option<readers::ReaderRequest>>,
     wake: Notify,
+    runtime_work: Arc<Notify>,
     _bytes: ViewReservation,
 }
 
@@ -166,6 +168,7 @@ impl Control {
             *retired = Some(reason);
             self.mailbox.lock().expect("view mailbox poisoned").clear();
             self.wake.notify_one();
+            self.runtime_work.notify_one();
             (
                 self.producer.lock().expect("view producer poisoned").take(),
                 self.reader.lock().expect("reader request poisoned").take(),
@@ -256,39 +259,101 @@ impl ViewScopeRegistry {
         Ok(revision)
     }
 
-    // Source fencing may wrap this short operation, never serialization/preparation.
+    // Model serialization stays outside source fencing. This bounded commit
+    // also refreshes accepted avatar identities; it performs no I/O.
     fn commit_prepared(
         &self,
         scope: ViewScopeId,
         prepared: &Arc<model::PreparedModel>,
     ) -> Result<(ViewRevision, Option<Arc<model::PreparedModel>>), ScopeError> {
-        let state = self.state.lock().expect("view registry poisoned");
-        let entry = state.scopes.get(&scope).ok_or(ScopeError::Closed)?;
-        let retired = entry.control.retired.lock().expect("view control poisoned");
+        let mut state = self.state.lock().expect("view registry poisoned");
+        let control = state
+            .scopes
+            .get(&scope)
+            .ok_or(ScopeError::Closed)?
+            .control
+            .clone();
+        let retired = control.retired.lock().expect("view control poisoned");
         if retired.is_some() {
             return Err(ScopeError::Closed);
         }
+        let mut avatar_update = None;
         if let ViewModel::ReaderReady(window) = &prepared.model {
-            let request = entry
-                .control
-                .reader
-                .lock()
-                .expect("reader request poisoned");
-            if !request
+            let request = control.reader.lock().expect("reader request poisoned");
+            let request = request
                 .as_ref()
-                .is_some_and(|request| request.accepts(window))
-            {
-                return Err(ScopeError::InvalidModel);
+                .filter(|request| request.accepts(window))
+                .ok_or(ScopeError::InvalidModel)?;
+            if let Some(current) = &state.avatar_demand {
+                avatar_update = request.refresh_avatar_demand(
+                    scope,
+                    current,
+                    &prepared.installed,
+                    &self.budget,
+                )?;
             }
         }
-        let committed = entry
-            .control
+        let committed = control
             .mailbox
             .lock()
             .expect("view mailbox poisoned")
             .publish(prepared)?;
-        entry.control.wake.notify_one();
+        if let Some(next) = avatar_update {
+            state.avatar_demand = Some(Arc::new(next));
+            self.reader_work.notify_one();
+        }
+        control.wake.notify_one();
         Ok(committed)
+    }
+
+    pub(crate) fn avatar_demand_for_context(
+        &self,
+        context: Option<&koushi_state::AvatarDemandContext>,
+    ) -> Option<Arc<ChargedAvatarDemand>> {
+        let mut state = self.state.lock().expect("view registry poisoned");
+        if state.closed || context.is_none() {
+            state.avatar_demand = None;
+            return None;
+        }
+        let context = context?;
+        if state
+            .avatar_demand
+            .as_ref()
+            .is_none_or(|demand| demand.context() != context)
+        {
+            // AppActor publishes the current context before admitting reader work.
+            // Empty demand requires no scope reservation and issues no downloads.
+            state.avatar_demand = Some(Arc::new(
+                ChargedAvatarDemand::new(
+                    koushi_state::AvatarDemandState::new(context.clone()),
+                    &self.budget,
+                )
+                .ok()?,
+            ));
+        }
+        let demand = state.avatar_demand.as_ref()?;
+        let expired: Vec<_> = demand
+            .scope_ids()
+            .filter(|scope| {
+                state.closed
+                    || !state.scopes.get(&ViewScopeId(*scope)).is_some_and(|entry| {
+                        entry
+                            .control
+                            .retired
+                            .lock()
+                            .expect("view control poisoned")
+                            .is_none()
+                    })
+            })
+            .collect();
+        let demand = state.avatar_demand.as_mut().expect("demand checked above");
+        if !expired.is_empty() {
+            let current = Arc::make_mut(demand);
+            for scope in expired {
+                current.close(scope);
+            }
+        }
+        Some(demand.clone())
     }
 
     pub(crate) fn retire(&self, scope: ViewScopeId, reason: ViewRetirement) {
@@ -327,6 +392,7 @@ impl ViewScopeRegistry {
             entry.control.retire(ViewRetirement::RuntimeStopped);
         }
         state.scopes.clear();
+        state.avatar_demand = None;
         state.reader_queue.clear();
         state.profile_readers.clear();
         state.room_profile_readers.clear();
@@ -418,6 +484,7 @@ impl ViewConsumer {
             producer: Mutex::new(None),
             reader: Mutex::new(None),
             wake: Notify::new(),
+            runtime_work: self.0.registry.reader_work.clone(),
             _bytes: bytes,
         });
         state.scopes.insert(
@@ -453,6 +520,23 @@ impl ViewConsumer {
         revision: ViewRevision,
         source_ref: &str,
     ) -> Result<Option<crate::renderable_thumbnail::RenderableThumbnailLease>, ScopeError> {
+        let installed = self.avatar_source(id, revision)?;
+        Ok(installed
+            .resources
+            .iter()
+            .filter_map(|resource| resource.lease.as_ref().ok())
+            .find(|lease| lease.source_ref() == source_ref)
+            .cloned())
+    }
+
+    /// Core-only installed-model admission. Live source qualification remains
+    /// with the observation handler. Retained metadata owns its existing byte
+    /// charge; callers resolve stable IDs without copying image bytes.
+    pub(crate) fn avatar_source(
+        &self,
+        id: ViewScopeId,
+        revision: ViewRevision,
+    ) -> Result<Arc<model::InstalledRows>, ScopeError> {
         let state = self
             .0
             .registry
@@ -476,7 +560,7 @@ impl ViewConsumer {
             .mailbox
             .lock()
             .expect("view mailbox poisoned")
-            .resource(revision, source_ref)
+            .installed_rows(revision)
     }
 
     pub fn ack_model(&self, id: ViewScopeId, revision: ViewRevision) -> Result<(), ScopeError> {
@@ -581,22 +665,6 @@ impl OwnedViewScope {
     #[cfg(test)]
     pub(crate) fn ack_retirement(&self) -> Result<(), ScopeError> {
         ViewConsumer(self.consumer.clone()).ack_retirement(self.id)
-    }
-
-    pub(crate) fn update_reader_window(
-        &self,
-        installed_revision: ViewRevision,
-        sequence: u64,
-        target: ReaderWindowTarget,
-        limit: ReaderWindowLimit,
-    ) -> Result<(), ScopeError> {
-        ViewConsumer(self.consumer.clone()).update_reader_window(
-            self.id,
-            installed_revision,
-            sequence,
-            target,
-            limit,
-        )
     }
 }
 
@@ -738,6 +806,54 @@ mod tests {
             registry.consumer(RuntimeConnectionId(3)),
             Err(ScopeError::Closed)
         ));
+    }
+
+    #[tokio::test]
+    async fn avatar_demand_retirement_wakes_runtime_and_prunes_closed_scopes() {
+        for mode in 0..3 {
+            let registry = ViewScopeRegistry::default();
+            let consumer = registry.consumer(RuntimeConnectionId(1)).unwrap();
+            let mut scope = Some(consumer.open().unwrap());
+            let id = scope.as_ref().unwrap().id().0;
+            let context = koushi_state::AvatarDemandContext {
+                account_id: "@synthetic:example.invalid".into(),
+                session_generation: 1,
+            };
+            let mut demand = koushi_state::AvatarDemandState::new(context.clone());
+            demand.open(id).unwrap();
+            demand
+                .replace(
+                    &context,
+                    id,
+                    1,
+                    vec![Some("synthetic-avatar".into())],
+                    vec![],
+                )
+                .unwrap();
+            let demand = Arc::new(ChargedAvatarDemand::new(demand, &registry.budget).unwrap());
+            registry.state.lock().unwrap().avatar_demand = Some(demand.clone());
+            assert!(Arc::ptr_eq(
+                &registry.avatar_demand_for_context(Some(&context)).unwrap(),
+                &demand
+            ));
+            match mode {
+                0 => drop(scope.take()),
+                1 => consumer.retire(),
+                _ => registry.retire_session(),
+            }
+            // Poll after retirement: the wake must survive without a waiting
+            // runtime task and must not rely on a command-mailbox slot.
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                registry.reader_work_ready(),
+            )
+            .await
+            .expect("retirement wakes runtime demand reconciliation");
+            let pruned = registry.avatar_demand_for_context(Some(&context)).unwrap();
+            assert!(!Arc::ptr_eq(&pruned, &demand));
+            assert!(pruned.resources_by_priority().is_empty());
+            assert!(registry.avatar_demand_for_context(None).is_none());
+        }
     }
 
     #[test]

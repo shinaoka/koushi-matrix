@@ -372,6 +372,21 @@ pub(crate) fn lease_renderable_thumbnail(
         .lease(cache_key)
 }
 
+/// Check availability without cloning image bytes or reserving a resource lease.
+pub(crate) fn is_renderable_thumbnail_cached(source_ref: &str) -> bool {
+    let Some(cache_key) = validated_renderable_thumbnail_ref(source_ref) else {
+        return false;
+    };
+    let mut cache = renderable_thumbnail_cache()
+        .lock()
+        .expect("renderable thumbnail cache should not be poisoned");
+    if !cache.entries.contains_key(cache_key) {
+        return false;
+    }
+    cache.touch(cache_key);
+    true
+}
+
 pub fn lookup_renderable_thumbnail(source_ref: &str) -> Option<RenderableThumbnailContent> {
     let cache_key = validated_renderable_thumbnail_ref(source_ref)?;
     let mut cache = renderable_thumbnail_cache()

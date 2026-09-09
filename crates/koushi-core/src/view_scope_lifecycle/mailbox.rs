@@ -13,6 +13,16 @@ pub(super) struct Mailbox {
 }
 
 impl Mailbox {
+    /// Current Rust projection, including one not yet delivered/acknowledged.
+    /// Installed rows separately authorize which identities the host may name.
+    pub(super) fn current_rows(&self) -> Option<Arc<super::model::InstalledRows>> {
+        self.latest
+            .as_ref()
+            .or(self.in_flight.as_ref())
+            .map(|(_, model)| model.installed.clone())
+            .or_else(|| self.installed.as_ref().map(|(_, rows)| rows.clone()))
+    }
+
     pub(super) fn publish(
         &mut self,
         model: &Arc<PreparedModel>,
@@ -79,22 +89,16 @@ impl Mailbox {
             .map(|index| index as u64))
     }
 
-    pub(super) fn resource(
+    pub(super) fn installed_rows(
         &self,
         revision: ViewRevision,
-        source_ref: &str,
-    ) -> Result<Option<crate::renderable_thumbnail::RenderableThumbnailLease>, ScopeError> {
+    ) -> Result<Arc<super::model::InstalledRows>, ScopeError> {
         let (_, installed) = self
             .installed
             .as_ref()
             .filter(|(current, _)| *current == revision)
             .ok_or(ScopeError::InvalidRevision)?;
-        Ok(installed
-            .resources
-            .iter()
-            .filter_map(|resource| resource.lease.as_ref().ok())
-            .find(|lease| lease.source_ref() == source_ref)
-            .cloned())
+        Ok(installed.clone())
     }
 
     pub(super) fn clear(&mut self) {

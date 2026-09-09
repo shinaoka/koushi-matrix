@@ -165,7 +165,7 @@ pub use room_management::{
     RoomHistoryVisibility, RoomJoinRule, RoomManagementOperationKind, RoomManagementOperationState,
     RoomManagementState, RoomMemberRole, RoomMemberRoleOption, RoomMemberSummary,
     RoomModerationAction, RoomPermissionFacts, RoomSettingChange, RoomSettingsSnapshot,
-    UserTrustState, room_settings_share_link,
+    UserTrustState,
 };
 
 // ── Re-exports: e2ee ────────────────────────────────────────────────────────

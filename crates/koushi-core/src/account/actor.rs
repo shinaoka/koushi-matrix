@@ -529,7 +529,13 @@ pub(crate) enum AccountMessage {
     AvatarFetched {
         mxc_uri: String,
         generation: u64,
+        fetch_id: tokio::task::Id,
         thumbnail: AvatarThumbnailState,
+    },
+    #[cfg(test)]
+    AvatarFetchIdForTesting {
+        mxc_uri: String,
+        response_tx: oneshot::Sender<Option<tokio::task::Id>>,
     },
     /// Internal: optional account-data/profile hydration completed after the
     /// session was already projected as ready. Generation-gated so stale
@@ -546,6 +552,9 @@ pub(crate) enum AccountMessage {
 #[derive(Clone)]
 pub struct AccountActorHandle {
     tx: mpsc::Sender<AccountMessage>,
+    avatar_demand_tx:
+        tokio::sync::watch::Sender<Option<Arc<crate::view_scope_lifecycle::ChargedAvatarDemand>>>,
+    avatar_session_generation: Arc<AtomicU64>,
     navigation_projection: NavigationProjectionIngress,
     focused_projection_rx:
         Arc<Mutex<Option<mpsc::UnboundedReceiver<crate::timeline::FocusedProjectionCommitted>>>>,
@@ -557,6 +566,54 @@ pub struct AccountActorHandle {
 }
 
 impl AccountActorHandle {
+    pub(crate) fn avatar_demand_context(
+        &self,
+        account_id: String,
+    ) -> koushi_state::AvatarDemandContext {
+        koushi_state::AvatarDemandContext {
+            account_id,
+            session_generation: self
+                .avatar_session_generation
+                .load(std::sync::atomic::Ordering::Acquire),
+        }
+    }
+
+    pub(crate) fn publish_avatar_demand_snapshot(
+        &self,
+        demand: Option<Arc<crate::view_scope_lifecycle::ChargedAvatarDemand>>,
+    ) {
+        self.avatar_demand_tx.send_if_modified(|current| {
+            let unchanged = match (&*current, &demand) {
+                (Some(current), Some(next)) => Arc::ptr_eq(current, next),
+                (None, None) => true,
+                _ => false,
+            };
+            if unchanged {
+                return false;
+            }
+            *current = demand;
+            true
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn publish_avatar_demand(
+        &self,
+        demand: Option<Arc<koushi_state::AvatarDemandState>>,
+    ) {
+        // Fixture convenience only; production publishers must supply the
+        // reservation owned by their runtime's existing ViewBudget.
+        self.publish_avatar_demand_snapshot(demand.map(|demand| {
+            Arc::new(
+                crate::view_scope_lifecycle::ChargedAvatarDemand::new(
+                    (*demand).clone(),
+                    &crate::view_budget::ViewBudget::default(),
+                )
+                .expect("small test demand fits budget"),
+            )
+        }));
+    }
+
     pub(crate) async fn send(&self, msg: AccountMessage) -> bool {
         self.tx.send(msg).await.is_ok()
     }
@@ -745,6 +802,8 @@ impl AccountActorHandle {
         Self {
             tx,
             navigation_projection,
+            avatar_demand_tx: tokio::sync::watch::channel(None).0,
+            avatar_session_generation: Arc::new(AtomicU64::new(0)),
             focused_projection_rx: Arc::new(Mutex::new(None)),
             native_artifacts: Arc::new(crate::native_artifact::RejectingNativeArtifactPort),
             #[cfg(any(test, feature = "test-hooks"))]
@@ -985,7 +1044,10 @@ pub struct AccountActor {
     /// logout / switch / shutdown so that `AvatarFetched` completions that
     /// were already enqueued before the abort are detected and silently dropped
     /// instead of being accepted into the new (or absent) session's state.
-    pub(super) avatar_session_generation: u64,
+    pub(super) avatar_session_generation: Arc<AtomicU64>,
+    pub(super) avatar_demand_rx:
+        tokio::sync::watch::Receiver<Option<Arc<crate::view_scope_lifecycle::ChargedAvatarDemand>>>,
+    pub(super) avatar_demand: Option<Arc<crate::view_scope_lifecycle::ChargedAvatarDemand>>,
 }
 
 impl AccountActor {
@@ -1041,6 +1103,8 @@ impl AccountActor {
         // AppActor forwards every Room/Timeline/Sync command here via send().await;
         // sized so heavy sync does not block the AppActor's forwarding.
         let (tx, command_rx) = mpsc::channel(crate::ACTOR_MESSAGE_QUEUE_CAPACITY);
+        let (avatar_demand_tx, avatar_demand_rx) = tokio::sync::watch::channel(None);
+        let avatar_session_generation = Arc::new(AtomicU64::new(0));
         let data_dir = store_actor.data_dir().to_path_buf();
         // Spawn RoomActor once at AccountActor creation. It starts with no
         // session and waits for RoomMessage::SyncStarted.
@@ -1197,11 +1261,15 @@ impl AccountActor {
             avatar_download_semaphore: Arc::new(Semaphore::new(AVATAR_DOWNLOAD_CONCURRENCY)),
             avatar_fetch_tasks: tokio::task::JoinSet::new(),
             avatar_fetch_abort_handles: HashMap::new(),
-            avatar_session_generation: 0,
+            avatar_session_generation: avatar_session_generation.clone(),
+            avatar_demand_rx,
+            avatar_demand: None,
         };
         crate::executor::spawn(actor.run());
         AccountActorHandle {
             tx,
+            avatar_demand_tx,
+            avatar_session_generation,
             navigation_projection,
             focused_projection_rx: Arc::new(Mutex::new(Some(focused_projection_rx))),
             #[cfg(any(test, feature = "test-hooks"))]
@@ -1240,7 +1308,30 @@ impl AccountActor {
     async fn run(mut self) {
         #[cfg(any(test, feature = "test-hooks"))]
         let mut shutdown_ack: Option<oneshot::Sender<()>> = None;
-        while let Some(msg) = self.command_rx.recv().await {
+        let mut demand_channel_open = true;
+        loop {
+            // Fair selection prevents a busy publisher from starving commands;
+            // the check below still applies pending demand before a completion.
+            let msg = tokio::select! {
+                changed = self.avatar_demand_rx.changed(), if demand_channel_open => {
+                    if changed.is_err() {
+                        demand_channel_open = false;
+                        self.avatar_demand = None;
+                        self.reconcile_avatar_demand(false, false).await;
+                    } else {
+                        self.accept_avatar_demand().await;
+                    }
+                    continue;
+                }
+                msg = self.command_rx.recv() => match msg {
+                    Some(msg) => msg,
+                    None => break,
+                },
+            };
+            // A removal can arrive concurrently with dequeuing a completion.
+            if self.avatar_demand_rx.has_changed().unwrap_or(false) {
+                self.accept_avatar_demand().await;
+            }
             match msg {
                 AccountMessage::Shutdown => break,
                 #[cfg(test)]
@@ -2285,12 +2376,24 @@ impl AccountActor {
                 AccountMessage::IdentityResetAuthTimedOut { flow_id } => {
                     self.handle_identity_reset_auth_timeout(flow_id).await;
                 }
+                #[cfg(test)]
+                AccountMessage::AvatarFetchIdForTesting {
+                    mxc_uri,
+                    response_tx,
+                } => {
+                    let _ = response_tx.send(
+                        self.avatar_fetch_abort_handles
+                            .get(&mxc_uri)
+                            .map(|handle| handle.id()),
+                    );
+                }
                 AccountMessage::AvatarFetched {
                     mxc_uri,
                     generation,
+                    fetch_id,
                     thumbnail,
                 } => {
-                    self.handle_avatar_fetched(mxc_uri, generation, thumbnail)
+                    self.handle_avatar_fetched(mxc_uri, generation, fetch_id, thumbnail)
                         .await;
                 }
                 AccountMessage::AccountHydrationLoaded {

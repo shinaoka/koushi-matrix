@@ -92,6 +92,11 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
         run_timeline_reconnect_scenario(&config).await?;
         return Ok(scenario_report(&config.server_kind, scenario));
     }
+    if scenario == QaScenario::AvatarDemand {
+        println!("safety=ok");
+        super::scenario_avatars::run_avatar_demand_scenario(&config).await?;
+        return Ok(scenario_report(&config.server_kind, scenario));
+    }
     if scenario == QaScenario::ReadStateConvergence {
         println!("safety=ok");
         run_read_state_convergence_scenario(&config).await?;
@@ -112,6 +117,17 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
         run_e2ee_login_store_scenario(&config).await?;
         return Ok(scenario_report(&config.server_kind, scenario));
     }
+
+    // Measure actual media HTTP traffic through the existing local QA proxy.
+    // Keep it alive for the whole runtime/session lifetime, including restarts.
+    let media_proxy = (scenario.should_run_stage(QaStage::Media)
+        || scenario.should_run_stage(QaStage::LiveSignals))
+    .then(|| super::diagnostics::QaTcpProxy::start(&config.homeserver))
+    .transpose()?;
+    let config = media_proxy
+        .as_ref()
+        .map(|proxy| config.with_homeserver(proxy.homeserver_url()))
+        .unwrap_or(config);
 
     // One CoreRuntime per synthetic user (two-device topology).
     let data_dir_a = qa_data_dir("a");
@@ -750,6 +766,7 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
             &key_b,
             &event1_id,
             &account_key_b.0,
+            media_proxy.as_ref().expect("live signals uses media proxy"),
         )
         .await?;
     }
@@ -854,7 +871,8 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
     }
 
     if scenario.should_run_stage(QaStage::Media) {
-        run_media_stage(&mut conn_a, &mut conn_b, &key_a, &key_b).await?;
+        let proxy = media_proxy.as_ref().expect("media stage uses media proxy");
+        run_media_stage(&mut conn_a, &mut conn_b, &key_a, &key_b, proxy).await?;
     }
 
     if scenario.should_run_stage(QaStage::LinkPreview) {

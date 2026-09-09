@@ -22,6 +22,7 @@ export const testkitTargets = [
   "request_outcome_a2a.rs",
   "request_outcome_a2b.rs",
   "request_outcome_a2c.rs",
+  "room_address.rs",
   "room_subscription_residency.rs",
   "runtime_account_management.rs",
   "runtime_activity.rs",

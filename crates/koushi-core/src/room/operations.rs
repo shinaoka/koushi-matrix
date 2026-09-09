@@ -151,6 +151,7 @@ fn room_tag_info_from_order(order: Option<f64>) -> RoomTagInfo {
 
 pub(super) fn operation_failure_kind(kind: RoomFailureKind) -> OperationFailureKind {
     match kind {
+        RoomFailureKind::AliasInUse => OperationFailureKind::Invalid,
         RoomFailureKind::Forbidden => OperationFailureKind::Forbidden,
         RoomFailureKind::Network => OperationFailureKind::Network,
         RoomFailureKind::NotFound => OperationFailureKind::NotFound,
@@ -182,7 +183,7 @@ async fn invite_target_to_space_if_needed(
 }
 
 /// Map a `MatrixRoomOperationError` to a coarse `RoomFailureKind`.
-/// The spec defines: Forbidden / NotFound / Network / Sdk.
+/// Alias collisions retain their actionable kind; raw error details stay private.
 /// Raw SDK error text must never appear in public events.
 pub(crate) fn classify_room_error(error: &MatrixRoomOperationError) -> RoomFailureKind {
     use koushi_sdk::MatrixRoomOperationFailureKind;
@@ -195,6 +196,7 @@ pub(crate) fn classify_room_error(error: &MatrixRoomOperationError) -> RoomFailu
         | MatrixRoomOperationError::InvalidServerName
         | MatrixRoomOperationError::RoomUnavailable => RoomFailureKind::NotFound,
         MatrixRoomOperationError::Sdk(kind) => match kind {
+            MatrixRoomOperationFailureKind::AliasInUse => RoomFailureKind::AliasInUse,
             MatrixRoomOperationFailureKind::Forbidden
             | MatrixRoomOperationFailureKind::AuthenticationRequired => RoomFailureKind::Forbidden,
             MatrixRoomOperationFailureKind::Http => RoomFailureKind::Network,

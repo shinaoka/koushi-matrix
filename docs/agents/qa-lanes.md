@@ -101,7 +101,7 @@ qa-bin`; plain `cargo test` does not compile that binary.
 | `gate_restore`, `gate_negative`, `gate_no_proof` | verification-gate paths | `gate_new_identity_bootstrap=ok` |
 | `invites_dm` | invite receipt/accept/decline and DM start | `invite_recv=ok`, `invite_accept=ok`, `invite_decline=ok`, `dm_start=ok` |
 | `room_space` | room and space classification | — |
-| `directory` | public directory query and alias join | `directory_query=ok`, `directory_join=ok` |
+| `directory` | public directory query, alias join, Rust address preview/create/share-link join and collision | `directory_query=ok`, `directory_join=ok`, `room_address_preview_create_share=ok`, `room_address_collision=ok` |
 | `room_management` | settings edit, permission guard, moderation, using a disposable management room so it cannot disturb other stages | `room_settings=ok`, `permission_guard=ok`, `moderation=ok`, plus cleanup tokens |
 | `room_people_projection` | member projection | — |
 | `timeline` | timeline projection and navigation | `timeline_nav=ok` |
@@ -111,7 +111,8 @@ qa-bin`; plain `cargo test` does not compile that binary.
 | `composer` | mentions, markdown, slash commands, IME guard | `mention_send=ok`, `markdown_send=ok`, `slash_command=ok`, `ime_guard=ok` |
 | `reply` | reply quote and pin lifecycle | `reply_quote=ok`, `pin_event=ok`, `pinned_state=ok`, `unpin_event=ok` |
 | `media` | upload staging, captions, compression, receive, gallery | `upload_staging=ok`, `media_gallery=ok`, `send_media=ok`, `media_caption=ok`, `image_compress=ok`, `recv_media=ok`, `media_caption_edit=ok` |
-| `live_signals` | receipts, read markers, typing, presence | `read_receipt=ok`, `fully_read=ok`, `typing=ok`, `presence=ok`, `live_signals=ok` |
+| `avatar_demand` | dedicated 1,500-reader source, eight visible plus eight prefetch images, scoped PNGs, disjoint window move/return, cache reopen, shared in-flight cancellation and logout retirement with a retained scope; requires `--core`, separate from `all` | `avatar_window_requests=ok` |
+| `live_signals` | receipts, live reader source/ACK/download/scoped bytes/cache reopen/close, read markers, typing, presence, ignore/unignore history recovery | `read_receipt=ok`, `fully_read=ok`, `typing=ok`, `presence=ok`, `ignored_user_history_recovery=ok`, `live_signals=ok` |
 | `thread` | Rust-owned thread-root projection lifecycle, Room display block, and Thread panel relation | `thread_projection_lifecycle=stable`, `thread_summary=ok`, `thread_recv=ok` |
 | `edit_redact_search` | edit, redact, search | — |
 | `redact_edit_convergence` | redaction/edit room-latest and Activity convergence plus live Rust-projected Room/thread-panel summary advance, edit, redaction rollback, and real-runtime restore parity | `redact_edit_convergence=ok`, `thread_summary_convergence=ok` |

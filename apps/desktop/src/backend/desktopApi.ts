@@ -1,6 +1,7 @@
 import type {
   ReceiptSourceRef,
   ReaderWindowRequest,
+  ReaderAvatarObservation,
   TimelineKey,
   ViewDelivery
 } from "../domain/coreEvents";
@@ -20,6 +21,7 @@ import type {
   ComposerSurface,
   ComposerTarget,
   CreateRoomRequest,
+  RoomAddressPreview,
   DesktopSnapshot,
   DirectoryQuery,
   DisplayPlatform,
@@ -341,6 +343,7 @@ export interface DesktopApi {
   ): Promise<string>;
   receiveReceiptReader(scope: string): Promise<ViewDelivery | null>;
   updateReceiptReaderWindow(scope: string, request: ReaderWindowRequest): Promise<void>;
+  observeReceiptReaderAvatars(scope: string, request: ReaderAvatarObservation): Promise<void>;
   ackReceiptReader(scope: string, revision: string): Promise<void>;
   readReceiptReaderResource(
     scope: string,
@@ -412,6 +415,7 @@ export interface DesktopApi {
     powerLevel: number,
     confirmed: boolean
   ): Promise<CommandSettlement>;
+  previewRoomAddress(name: string, aliasLocalpart: string | null): Promise<RoomAddressPreview>;
   createRoom(request: CreateRoomRequest): Promise<CommandSettlement>;
   createSpace(name: string): Promise<CommandSettlement>;
   setSpaceChild(spaceId: string, childRoomId: string, viaServer: string): Promise<CommandAdmission>;

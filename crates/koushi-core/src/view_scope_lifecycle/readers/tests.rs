@@ -36,7 +36,351 @@ async fn accept_profile_raw(registry: &ViewScopeRegistry, work: &mut ReaderWork,
     };
     let _epoch = raw.bind_test_owner(&source).await;
     let retained = registry.retain_reader_raw(work, raw).unwrap();
-    registry.accept_reader_raw(work, retained).unwrap();
+    registry
+        .accept_reader_raw(
+            work,
+            retained,
+            std::iter::once(format!("mxc://example.org/{user_id}")),
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+async fn window_updates_refetch_changed_ranges_and_preserve_source_invalidation() {
+    use koushi_protocol::view::{ReaderWindow, ResolvedReaderAnchor, ViewModel};
+    for (start, limit, source_changed, refetch) in [
+        (1, 1, false, true),
+        (0, 2, false, true),
+        (0, 1, true, true),
+        (0, 1, false, false),
+    ] {
+        let registry = ViewScopeRegistry::default();
+        let consumer = registry
+            .consumer(koushi_protocol::RuntimeConnectionId(4))
+            .unwrap();
+        let mut scope = consumer
+            .open_reader(source(), 0, ReaderWindowLimit::try_from(1).unwrap())
+            .unwrap();
+        let mut work = registry.take_reader_work().unwrap().unwrap();
+        let mut raw = crate::timeline::RawReceiptWindow {
+            total_count: 1,
+            start: 0,
+            receipts: vec![koushi_state::LiveReadReceipt {
+                user_id: "@a:example.org".into(),
+                display_name: None,
+                original_display_label: String::new(),
+                avatar: None,
+                timestamp_ms: None,
+            }],
+            profiles: vec![],
+            owner: None,
+            epoch: std::sync::Weak::new(),
+        };
+        let _epoch = raw.bind_test_owner(&source()).await;
+        let retained = registry.retain_reader_raw(&mut work, raw.clone()).unwrap();
+        registry
+            .accept_reader_raw(&mut work, retained, std::iter::empty())
+            .unwrap();
+        let resolved = raw.into_resolved(koushi_state::CatalogLocale::En);
+        let model = ViewModel::ReaderReady(ReaderWindow {
+            source: source(),
+            total_count: 1,
+            start: 0,
+            rows: resolved.rows.clone(),
+            window_sequence: 0,
+            source_revision: resolved.source_revision().unwrap(),
+            dependency_revision: 1,
+            resolved_anchor: ResolvedReaderAnchor::NotRequested,
+        });
+        let revision = registry
+            .publish_current(scope.id(), model, vec![], &resolved)
+            .unwrap();
+        let _delivery = scope.next_delivery().await.unwrap();
+        consumer.ack_model(scope.id(), revision).unwrap();
+        registry.finish_reader_work(&work).unwrap();
+        drop(work);
+        if source_changed {
+            registry.dirty_reader(scope.id(), true).unwrap();
+        }
+        consumer
+            .update_reader_window(
+                scope.id(),
+                revision,
+                1,
+                ReaderWindowTarget::Index { start },
+                ReaderWindowLimit::try_from(limit).unwrap(),
+            )
+            .unwrap();
+        let next = registry.take_reader_work().unwrap().unwrap();
+        assert_eq!(
+            next.raw.is_none(),
+            refetch,
+            "start={start} limit={limit} source_changed={source_changed}"
+        );
+    }
+}
+
+#[test]
+fn retained_reader_avatar_identities_release_their_budget_with_the_owner() {
+    let budget = crate::view_budget::ViewBudget::default();
+    let context = koushi_state::AvatarDemandContext {
+        account_id: "account".into(),
+        session_generation: 1,
+    };
+    let ids = vec!["@visible:example.invalid".to_owned()];
+    let observed = super::ObservedReaderAvatars::retain(&context, &ids, &[], &budget).unwrap();
+    let bytes = observed._bytes.bytes();
+    let _remaining = budget.reserve_bytes(256 * 1024 * 1024 - bytes).unwrap();
+    assert!(matches!(
+        super::ObservedReaderAvatars::retain(&context, &ids, &[], &budget),
+        Err(ScopeError::Capacity)
+    ));
+    drop(observed);
+    assert!(budget.reserve_bytes(bytes).is_some());
+}
+
+#[tokio::test]
+async fn avatar_observation_requires_a_live_source_even_with_an_installed_model() {
+    use koushi_protocol::view::{ReaderWindow, ResolvedReaderAnchor, ViewModel};
+    let registry = ViewScopeRegistry::default();
+    let consumer = registry
+        .consumer(koushi_protocol::RuntimeConnectionId(4))
+        .unwrap();
+    let mut scope = consumer
+        .open_reader(source(), 0, ReaderWindowLimit::try_from(3).unwrap())
+        .unwrap();
+    let mut work = registry.take_reader_work().unwrap().unwrap();
+    let mut raw = crate::timeline::RawReceiptWindow {
+        total_count: 1,
+        start: 0,
+        receipts: vec![koushi_state::LiveReadReceipt {
+            user_id: "@a:example.org".into(),
+            display_name: None,
+            original_display_label: String::new(),
+            avatar: Some(koushi_state::AvatarImage {
+                mxc_uri: "mxc://example.invalid/observed-reader-avatar".into(),
+                thumbnail: koushi_state::AvatarThumbnailState::NotRequested,
+            }),
+            timestamp_ms: None,
+        }],
+        profiles: vec![],
+        owner: None,
+        epoch: std::sync::Weak::new(),
+    };
+    let epoch = raw.bind_test_owner(&source()).await;
+    let retained = registry.retain_reader_raw(&mut work, raw.clone()).unwrap();
+    registry
+        .accept_reader_raw(
+            &mut work,
+            retained,
+            std::iter::once("mxc://example.invalid/observed-reader-avatar".to_owned()),
+        )
+        .unwrap();
+    let mut resolved = raw.clone().into_resolved(koushi_state::CatalogLocale::En);
+    let resources = std::mem::take(&mut resolved.avatar_resources);
+    let mut model = ViewModel::ReaderReady(ReaderWindow {
+        source: source(),
+        total_count: 1,
+        start: 0,
+        rows: resolved.rows.clone(),
+        window_sequence: 0,
+        source_revision: resolved.source_revision().unwrap(),
+        dependency_revision: 1,
+        resolved_anchor: ResolvedReaderAnchor::NotRequested,
+    });
+    assert!(!serde_json::to_string(&model).unwrap().contains("mxc://"));
+    let revision = registry
+        .publish_current(scope.id(), model.clone(), resources, &resolved)
+        .unwrap();
+    let _delivery = scope.next_delivery().await.unwrap();
+    consumer.ack_model(scope.id(), revision).unwrap();
+    assert_eq!(
+        consumer
+            .with_live_reader_avatar_source(scope.id(), revision, |rows| {
+                assert_eq!(
+                    rows.avatar_mxc("@a:example.org")?,
+                    Some("mxc://example.invalid/observed-reader-avatar")
+                );
+                Ok(42)
+            })
+            .unwrap(),
+        42
+    );
+    let context = koushi_state::AvatarDemandContext {
+        account_id: "account".into(),
+        session_generation: 1,
+    };
+    assert!(
+        registry
+            .avatar_demand_for_context(Some(&context))
+            .unwrap()
+            .resources_by_priority()
+            .is_empty()
+    );
+    consumer
+        .observe_current_reader_avatars(scope.id(), revision, 1, &["@a:example.org".into()], &[])
+        .unwrap();
+    let installed = registry.avatar_demand_for_context(Some(&context)).unwrap();
+    assert_eq!(
+        installed.resources_by_priority(),
+        ["mxc://example.invalid/observed-reader-avatar"]
+    );
+    assert_eq!(
+        installed.scope_ids().collect::<Vec<_>>(),
+        vec![scope.id().0]
+    );
+    let mut unchanged = raw.clone().into_resolved(koushi_state::CatalogLocale::En);
+    let resources = std::mem::take(&mut unchanged.avatar_resources);
+    registry
+        .publish_current(scope.id(), model.clone(), resources, &unchanged)
+        .unwrap();
+    assert!(
+        std::sync::Arc::ptr_eq(
+            &installed,
+            &registry.avatar_demand_for_context(Some(&context)).unwrap()
+        ),
+        "unchanged bindings must not republish demand on thumbnail/model updates"
+    );
+    // The next projection changes only private resource identity. The host has
+    // not acknowledged it and must not be able to restore the old URI.
+    raw.receipts[0].avatar.as_mut().unwrap().mxc_uri =
+        "mxc://example.invalid/rebound-reader-avatar".into();
+    let mut rebound = raw.into_resolved(koushi_state::CatalogLocale::En);
+    let resources = std::mem::take(&mut rebound.avatar_resources);
+    let next_revision = registry
+        .publish_current(scope.id(), model.clone(), resources, &rebound)
+        .unwrap();
+    assert_eq!(
+        registry
+            .avatar_demand_for_context(Some(&context))
+            .unwrap()
+            .resources_by_priority(),
+        ["mxc://example.invalid/rebound-reader-avatar"],
+        "reprojection must refresh demand without host re-observation"
+    );
+    consumer
+        .observe_reader_avatars(
+            scope.id(),
+            revision,
+            2,
+            &context,
+            &["@a:example.org".into()],
+            &[],
+        )
+        .unwrap();
+    assert_eq!(
+        registry
+            .avatar_demand_for_context(Some(&context))
+            .unwrap()
+            .resources_by_priority(),
+        ["mxc://example.invalid/rebound-reader-avatar"]
+    );
+    let _pending = scope.next_delivery().await.unwrap();
+    consumer
+        .observe_reader_avatars(
+            scope.id(),
+            revision,
+            3,
+            &context,
+            &["@a:example.org".into()],
+            &[],
+        )
+        .unwrap();
+    assert_eq!(
+        registry
+            .avatar_demand_for_context(Some(&context))
+            .unwrap()
+            .resources_by_priority(),
+        ["mxc://example.invalid/rebound-reader-avatar"]
+    );
+    // A newer removal must beat even the in-flight projection's old binding.
+    if let ViewModel::ReaderReady(window) = &mut model {
+        window.rows[0].avatar = None;
+    }
+    rebound.rows[0].avatar = None;
+    registry
+        .publish_current(scope.id(), model, vec![], &rebound)
+        .unwrap();
+    assert!(
+        registry
+            .avatar_demand_for_context(Some(&context))
+            .unwrap()
+            .resources_by_priority()
+            .is_empty(),
+        "avatar removal must withdraw demand without another observation"
+    );
+    consumer
+        .observe_reader_avatars(
+            scope.id(),
+            revision,
+            4,
+            &context,
+            &["@a:example.org".into()],
+            &[],
+        )
+        .unwrap();
+    assert!(
+        registry
+            .avatar_demand_for_context(Some(&context))
+            .unwrap()
+            .resources_by_priority()
+            .is_empty()
+    );
+    // Keep the old installed revision for the remaining admission checks.
+    assert_ne!(next_revision, revision);
+    assert_eq!(
+        consumer.observe_reader_avatars(scope.id(), revision, 1, &context, &[], &[]),
+        Err(ScopeError::InvalidRevision)
+    );
+    assert_eq!(
+        consumer.observe_reader_avatars(
+            scope.id(),
+            revision,
+            2,
+            &context,
+            &["@foreign:example.org".into()],
+            &[]
+        ),
+        Err(ScopeError::InvalidModel)
+    );
+    assert_eq!(
+        consumer.observe_reader_avatars(
+            scope.id(),
+            revision,
+            2,
+            &context,
+            &vec!["@a:example.org".into(); 257],
+            &[]
+        ),
+        Err(ScopeError::Capacity)
+    );
+    epoch.lock().unwrap().valid = false;
+    assert_eq!(
+        consumer.observe_reader_avatars(scope.id(), revision, 2, &context, &[], &[]),
+        Err(ScopeError::SourceUnavailable)
+    );
+    assert!(consumer.avatar_source(scope.id(), revision).is_ok());
+    assert_eq!(
+        consumer
+            .with_live_reader_avatar_source::<()>(scope.id(), revision, |_| {
+                panic!("retired source must not admit an observation")
+            })
+            .err(),
+        Some(ScopeError::SourceUnavailable)
+    );
+    epoch.lock().unwrap().valid = true;
+    registry.avatar_demand_for_context(None);
+    assert_eq!(
+        consumer.observe_reader_avatars(scope.id(), revision, 2, &context, &[], &[]),
+        Err(ScopeError::InactiveSession)
+    );
+    let mut changed = context.clone();
+    changed.session_generation += 1;
+    registry.avatar_demand_for_context(Some(&changed));
+    assert_eq!(
+        consumer.observe_reader_avatars(scope.id(), revision, 2, &context, &[], &[]),
+        Err(ScopeError::InactiveSession)
+    );
 }
 
 #[tokio::test]
@@ -260,7 +604,7 @@ async fn accepted_raw_is_scope_owned_and_reused_without_mutating_its_hints() {
     let _epoch = raw.bind_test_owner(&source()).await;
     let retained = registry.retain_reader_raw(&mut work, raw).unwrap();
     registry
-        .accept_reader_raw(&mut work, retained.clone())
+        .accept_reader_raw(&mut work, retained.clone(), std::iter::empty())
         .unwrap();
     {
         let mut replacement = retained.raw.clone();
@@ -271,7 +615,9 @@ async fn accepted_raw_is_scope_owned_and_reused_without_mutating_its_hints() {
             Some(crate::view_scope_lifecycle::ScopeError::SourceRetired)
         );
         assert_eq!(
-            registry.accept_reader_raw(&mut work, replacement).err(),
+            registry
+                .accept_reader_raw(&mut work, replacement, std::iter::empty())
+                .err(),
             Some(crate::view_scope_lifecycle::ScopeError::SourceRetired),
             "same public source cannot silently adopt a replacement actor"
         );
@@ -284,7 +630,7 @@ async fn accepted_raw_is_scope_owned_and_reused_without_mutating_its_hints() {
         assert_eq!(other.scope, narrow.id());
         assert_eq!(
             registry
-                .accept_reader_raw(&mut other, retained.clone())
+                .accept_reader_raw(&mut other, retained.clone(), std::iter::empty())
                 .err(),
             Some(crate::view_scope_lifecycle::ScopeError::InvalidRevision)
         );

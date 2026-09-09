@@ -192,6 +192,16 @@ export type MessageId =
   | "dialog.privateRoom"
   | "dialog.publicRoom"
   | "dialog.roomAddress"
+  | "room.shareUrl"
+  | "room.shareLinkCopied"
+  | "room.shareLinkCopyFailed"
+  | "dialog.roomAddressInUse"
+  | "dialog.roomAddressAbout"
+  | "dialog.roomAddressHelp"
+  | "dialog.roomAddressPreview"
+  | "dialog.roomAddressEmpty"
+  | "dialog.roomAddressInvalid"
+  | "dialog.roomAddressPending"
   | "dialog.roomTopic"
   | "dialog.roomVisibility"
   | "dialog.sendInvite"
@@ -1500,7 +1510,17 @@ const en: Catalog = {
   "dialog.newDmTitle": "New DM",
   "dialog.privateRoom": "Private room",
   "dialog.publicRoom": "Public room",
+  "room.shareUrl": "Room URL",
+  "room.shareLinkCopied": "Room link copied.",
+  "room.shareLinkCopyFailed": "Could not copy the link. Select and copy the URL instead.",
   "dialog.roomAddress": "Room address",
+  "dialog.roomAddressInUse": "This address is already in use. Choose a different room-specific name and try again.",
+  "dialog.roomAddressAbout": "About room addresses ↗",
+  "dialog.roomAddressHelp": "This address lets people find and share this room. Enter only the room-specific name, without # or a server name. Availability is confirmed when you create the room.",
+  "dialog.roomAddressPreview": "Full address: {address}",
+  "dialog.roomAddressEmpty": "Enter an address for this public room.",
+  "dialog.roomAddressInvalid": "Use a room-specific name without spaces, # at the start, or a server suffix. Shorten it if needed.",
+  "dialog.roomAddressPending": "Waiting for the address preview.",
   "dialog.roomTopic": "Topic",
   "dialog.roomVisibility": "Room visibility",
   "dialog.sendInvite": "Send invite",
@@ -2715,7 +2735,17 @@ const ja: Catalog = {
   "dialog.newDmTitle": "新しいDM",
   "dialog.privateRoom": "非公開ルーム",
   "dialog.publicRoom": "公開ルーム",
+  "room.shareUrl": "ルームURL",
+  "room.shareLinkCopied": "ルームのリンクをコピーしました。",
+  "room.shareLinkCopyFailed": "リンクをコピーできませんでした。URLを選択してコピーしてください。",
   "dialog.roomAddress": "ルームアドレス",
+  "dialog.roomAddressInUse": "このアドレスは使用済みです。別のルーム固有の名前に変更して、もう一度作成してください。",
+  "dialog.roomAddressAbout": "ルームアドレスについて ↗",
+  "dialog.roomAddressHelp": "このアドレスでルームを見つけたり共有したりできます。# やサーバー名を付けず、ルーム固有の名前だけ入力してください。使用可能かどうかは作成時に確認されます。",
+  "dialog.roomAddressPreview": "完全なアドレス: {address}",
+  "dialog.roomAddressEmpty": "公開ルームのアドレスを入力してください。",
+  "dialog.roomAddressInvalid": "空白、先頭の #、サーバー名を除いたルーム固有の名前を入力してください。長すぎる場合は短くしてください。",
+  "dialog.roomAddressPending": "アドレスのプレビューを待っています。",
   "dialog.roomTopic": "トピック",
   "dialog.roomVisibility": "ルーム公開範囲",
   "dialog.sendInvite": "招待を送信",

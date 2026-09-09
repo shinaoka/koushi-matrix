@@ -280,7 +280,7 @@ describe("diagnosticReport", () => {
     expect(report).toContain("Timeline matches active room: true");
     expect(report).toContain("Timeline visible items: 3");
     expect(report).toContain(
-      "Timeline avatars: mxc=2 ready=1 pending=1 failed=0 missing=1 rendered=1 broken=0"
+      "Timeline avatars (item counts, not downloads; pending includes unrequested): mxc=2 ready=1 pending=1 failed=0 missing=1 rendered=1 broken=0"
     );
     expect(report).toContain(
       "Potential UI load: search crawler running=1 queued=1; worker=1"

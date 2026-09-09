@@ -378,12 +378,14 @@ impl AccountActor {
         }
     }
 
-    fn spawn_avatar_fetch(&mut self, mxc_uri: String, request_sequence: u64) {
+    pub(super) fn spawn_avatar_fetch(&mut self, mxc_uri: String, request_sequence: u64) {
         let Some(session) = self.session.clone() else {
             return;
         };
         self.avatar_active_fetches += 1;
-        let generation = self.avatar_session_generation;
+        let generation = self
+            .avatar_session_generation
+            .load(std::sync::atomic::Ordering::Acquire);
         let semaphore = self.avatar_download_semaphore.clone();
         let tx = self.self_tx.clone();
         let mxc_uri_clone = mxc_uri;
@@ -407,6 +409,7 @@ impl AccountActor {
                 .send(AccountMessage::AvatarFetched {
                     mxc_uri: mxc_uri_clone,
                     generation,
+                    fetch_id: tokio::task::id(),
                     thumbnail,
                 })
                 .await;
@@ -415,7 +418,7 @@ impl AccountActor {
             .insert(abort_key, abort_handle);
     }
 
-    fn start_pending_avatar_fetches(&mut self) {
+    pub(super) fn start_pending_avatar_fetches(&mut self) {
         while self.avatar_active_fetches < AVATAR_DOWNLOAD_CONCURRENCY {
             let Some(mxc_uri) = self.avatar_pending.pop_front() else {
                 return;
@@ -423,12 +426,24 @@ impl AccountActor {
             if let Some(request_sequence) = self
                 .avatar_inflight
                 .get(&mxc_uri)
-                .and_then(|waiters| waiters.first())
-                .map(|request_id| request_id.sequence)
+                .map(|waiters| waiters.first().map_or(0, |request_id| request_id.sequence))
             {
                 self.spawn_avatar_fetch(mxc_uri, request_sequence);
             }
         }
+    }
+
+    pub(super) fn cached_avatar_thumbnail(
+        &mut self,
+        mxc_uri: &str,
+    ) -> Option<AvatarThumbnailState> {
+        if self.avatar_cache.get(mxc_uri).is_some_and(|thumbnail| {
+            matches!(thumbnail, AvatarThumbnailState::Ready { source_ref, .. }
+                if !crate::renderable_thumbnail::is_renderable_thumbnail_cached(source_ref))
+        }) {
+            self.avatar_cache.remove(mxc_uri);
+        }
+        self.avatar_cache.get(mxc_uri).cloned()
     }
 
     /// Non-blocking, cache-first avatar thumbnail handler (Stage R1).
@@ -443,8 +458,8 @@ impl AccountActor {
         mxc_uri: String,
     ) {
         // 1. Cache hit — Ready and terminal Failed states both settle without I/O.
-        if let Some(cached) = self.avatar_cache.get(&mxc_uri) {
-            let thumbnail = avatar_thumbnail_for_request(cached, request_id);
+        if let Some(cached) = self.cached_avatar_thumbnail(&mxc_uri) {
+            let thumbnail = avatar_thumbnail_for_request(&cached, request_id);
             self.send_actions(vec![AppAction::AvatarThumbnailUpdated {
                 mxc_uri: mxc_uri.clone(),
                 thumbnail: thumbnail.clone(),
@@ -554,6 +569,7 @@ impl AccountActor {
         &mut self,
         mxc_uri: String,
         generation: u64,
+        fetch_id: tokio::task::Id,
         thumbnail: AvatarThumbnailState,
     ) {
         // Fix 3: drain completed tasks non-blockingly so the JoinSet stays
@@ -561,7 +577,15 @@ impl AccountActor {
         self.reap_avatar_fetch_tasks();
 
         // Fix 1: drop stale completions from a prior session.
-        if generation != self.avatar_session_generation {
+        if generation
+            != self
+                .avatar_session_generation
+                .load(std::sync::atomic::Ordering::Acquire)
+            || !self
+                .avatar_fetch_abort_handles
+                .get(&mxc_uri)
+                .is_some_and(|handle| handle.id() == fetch_id)
+        {
             return;
         }
         // A canceled task can still have a completion message queued before
@@ -599,25 +623,29 @@ impl AccountActor {
                 },
             ));
         }
-        self.start_pending_avatar_fetches();
+        self.reconcile_avatar_demand(false, false).await;
     }
 
     /// Cancel one renderer waiter. The fetch remains alive while another
     /// renderer still depends on the same MXC; otherwise remove the demand
     /// from the pending queue or abort its active task.
     pub(super) fn cancel_avatar_thumbnail(&mut self, target_request_id: RequestId, mxc_uri: &str) {
-        let should_abort = match self.avatar_inflight.get_mut(mxc_uri) {
-            Some(waiters) => {
-                let previous_len = waiters.len();
-                waiters.retain(|request_id| *request_id != target_request_id);
-                waiters.len() != previous_len && waiters.is_empty()
-            }
-            None => false,
-        };
-        if !should_abort {
+        if let Some(waiters) = self.avatar_inflight.get_mut(mxc_uri) {
+            waiters.retain(|request_id| *request_id != target_request_id);
+        }
+        self.cancel_unwanted_avatar(mxc_uri);
+        self.start_pending_avatar_fetches();
+    }
+
+    pub(super) fn cancel_unwanted_avatar(&mut self, mxc_uri: &str) {
+        if !self.avatar_inflight.get(mxc_uri).is_some_and(Vec::is_empty)
+            || self
+                .avatar_demand
+                .as_ref()
+                .is_some_and(|demand| demand.contains_resource(mxc_uri))
+        {
             return;
         }
-
         let was_pending = self.avatar_pending.iter().any(|uri| uri == mxc_uri);
         self.avatar_inflight.remove(mxc_uri);
         if was_pending {
@@ -628,7 +656,6 @@ impl AccountActor {
                 abort_handle.abort();
             }
         }
-        self.start_pending_avatar_fetches();
     }
 
     /// Non-blocking reap of completed/aborted avatar-fetch JoinSet entries.
@@ -659,7 +686,9 @@ impl AccountActor {
         self.avatar_download_semaphore = Arc::new(Semaphore::new(AVATAR_DOWNLOAD_CONCURRENCY));
         // Advance the generation counter so stale completions from tasks that
         // were spawned before this abort are silently rejected.
-        self.avatar_session_generation = self.avatar_session_generation.wrapping_add(1);
+        self.avatar_demand = None;
+        self.avatar_session_generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     }
 
     pub(super) fn spawn_account_hydration(&mut self, session: Arc<MatrixClientSession>) {

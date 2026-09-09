@@ -3538,6 +3538,11 @@ pub(super) async fn wait_for_cancelled_or_removed_send(
     }
 }
 
+#[path = "timeline/ignored_reset.rs"]
+mod ignored_reset;
+#[path = "timeline/reader_scope.rs"]
+mod reader_scope;
+
 pub(super) async fn run_live_signals_stage(
     conn_a: &mut CoreConnection,
     conn_b: &mut CoreConnection,
@@ -3545,6 +3550,7 @@ pub(super) async fn run_live_signals_stage(
     key_b: &TimelineKey,
     event_id: &str,
     expected_reader_user_id: &str,
+    proxy: &QaTcpProxy,
 ) -> Result<(), String> {
     let room_id = timeline_key_room_id(key_b)
         .ok_or_else(|| "live signals: expected room timeline key".to_owned())?
@@ -3574,6 +3580,9 @@ pub(super) async fn run_live_signals_stage(
         "read receipt state",
     )
     .await?;
+    reader_scope::verify_live_reader_scope(conn_a, key_a, event_id, expected_reader_user_id, proxy)
+        .await?;
+    println!("reader_scope_live=ok");
     println!("read_receipt=ok");
 
     let fully_read_id = conn_b.next_request_id();
@@ -3649,6 +3658,7 @@ pub(super) async fn run_live_signals_stage(
     })
     .await?;
     println!("presence=ok");
+    ignored_reset::verify(conn_a, key_a, event_id, &user_id_b).await?;
     println!("live_signals=ok");
 
     Ok(())
@@ -3896,7 +3906,9 @@ pub(super) async fn run_media_stage(
     conn_b: &mut CoreConnection,
     key_a: &TimelineKey,
     key_b: &TimelineKey,
+    proxy: &QaTcpProxy,
 ) -> Result<(), String> {
+    let media_reads_before = proxy.media_read_forwarded_count();
     const MEDIA_BYTES: &[u8] = b"koushi-desktop synthetic media fixture";
     const MEDIA_CAPTION: &str = "matrix desktop media caption";
     const MEDIA_CAPTION_EDITED: &str = "matrix desktop media caption edited";
@@ -3986,6 +3998,15 @@ pub(super) async fn run_media_stage(
         "media download",
     )
     .await?;
+    let media_reads = proxy
+        .media_read_forwarded_count()
+        .saturating_sub(media_reads_before);
+    if media_reads == 0 {
+        return Err(
+            "media download completed without an observed upstream HTTP media request".to_owned(),
+        );
+    }
+    println!("media_http_requests={media_reads}");
     println!("recv_media=ok");
 
     // Editing a captioned media message must replace only the caption. A

@@ -123,6 +123,92 @@ fn scripted_connection(
     )
 }
 
+#[tokio::test]
+async fn reader_controls_remain_available_while_delivery_is_pending() {
+    let (connection, _commands, _events, _snapshots) = scripted_connection(4);
+    let source = serde_json::from_value(serde_json::json!({
+        "key": {"account_key": "@owner:example.org", "kind": {"Room": {"room_id": "!room:example.org"}}},
+        "projection_request_id": {"connection_id": "1", "sequence": "2"},
+        "generation": "3", "event_id": "$event"
+    })).unwrap();
+    let mut reader = connection
+        .subscribe_reader(
+            source,
+            0,
+            koushi_protocol::view::ReaderWindowLimit::try_from(3).unwrap(),
+        )
+        .unwrap();
+    let control = reader.control();
+    let close = reader.close_handle();
+    let pending = reader.next_delivery();
+    tokio::pin!(pending);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), &mut pending)
+            .await
+            .is_err()
+    );
+    let revision = koushi_protocol::view::ViewRevision(1);
+    assert_eq!(
+        control.observe_avatars(revision, 1, &[], &[]),
+        Err(crate::view_scope_lifecycle::ScopeError::InactiveSession)
+    );
+    assert_eq!(
+        control.ack_model(revision),
+        Err(crate::view_scope_lifecycle::ScopeError::InvalidRevision)
+    );
+    assert_eq!(
+        control.resource_content(revision, "uninstalled").err(),
+        Some(crate::view_scope_lifecycle::ScopeError::InvalidRevision)
+    );
+    assert_eq!(
+        control.update_window(koushi_protocol::view::ReaderWindowRequest {
+            installed_revision: revision,
+            sequence: 1,
+            target: koushi_protocol::view::ReaderWindowTarget::Index { start: 0 },
+            limit: koushi_protocol::view::ReaderWindowLimit::try_from(3).unwrap(),
+        }),
+        Err(crate::view_scope_lifecycle::ScopeError::InvalidRevision)
+    );
+    close.close();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), pending)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        control.observe_avatars(revision, 2, &[], &[]),
+        Err(crate::view_scope_lifecycle::ScopeError::Closed)
+    );
+}
+
+#[test]
+fn reader_avatar_observation_uses_runtime_context_and_honors_close() {
+    let (connection, _commands, _events, _snapshots) = scripted_connection(4);
+    let source = serde_json::from_value(serde_json::json!({
+        "key": {"account_key": "@owner:example.org", "kind": {"Room": {"room_id": "!room:example.org"}}},
+        "projection_request_id": {"connection_id": "1", "sequence": "2"},
+        "generation": "3", "event_id": "$event"
+    })).unwrap();
+    let reader = connection
+        .subscribe_reader(
+            source,
+            0,
+            koushi_protocol::view::ReaderWindowLimit::try_from(3).unwrap(),
+        )
+        .unwrap();
+    let revision = koushi_protocol::view::ViewRevision(1);
+    assert_eq!(
+        reader.observe_avatars(revision, 1, &[], &[]),
+        Err(crate::view_scope_lifecycle::ScopeError::InactiveSession)
+    );
+    reader.close_handle().close();
+    assert_eq!(
+        reader.observe_avatars(revision, 1, &[], &[]),
+        Err(crate::view_scope_lifecycle::ScopeError::Closed)
+    );
+}
+
 #[test]
 fn resource_access_rejects_foreign_runtime_and_retired_consumers_at_connection_boundary() {
     use crate::view_scope_lifecycle::ScopeError;

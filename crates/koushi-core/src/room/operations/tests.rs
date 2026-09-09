@@ -30,6 +30,18 @@ fn room_operation_records_without_environment_switch() {
 }
 
 #[test]
+fn alias_collision_retains_a_closed_actionable_protocol_kind() {
+    let error =
+        MatrixRoomOperationError::Sdk(koushi_sdk::MatrixRoomOperationFailureKind::AliasInUse);
+    let kind = classify_room_error(&error);
+    assert_eq!(kind, RoomFailureKind::AliasInUse);
+    assert_eq!(
+        serde_json::to_value(CoreFailure::RoomOperationFailed { kind }).unwrap(),
+        serde_json::json!({"RoomOperationFailed": {"kind": "AliasInUse"}})
+    );
+}
+
+#[test]
 fn forbidden_sdk_error_classifies_as_forbidden() {
     let error =
         MatrixRoomOperationError::Sdk(koushi_sdk::MatrixRoomOperationFailureKind::Forbidden);

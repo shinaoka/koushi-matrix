@@ -17,11 +17,6 @@ use koushi_state::{
 };
 
 fn room_settings_snapshot_from_sdk(settings: MatrixRoomSettingsSnapshot) -> RoomSettingsSnapshot {
-    let share_link = koushi_state::room_settings_share_link(
-        &settings.room_id,
-        settings.canonical_alias.as_deref(),
-        &settings.alternate_aliases,
-    );
     RoomSettingsSnapshot {
         room_id: settings.room_id,
         name: settings.name,
@@ -29,7 +24,7 @@ fn room_settings_snapshot_from_sdk(settings: MatrixRoomSettingsSnapshot) -> Room
         avatar_url: settings.avatar_url,
         canonical_alias: settings.canonical_alias,
         alternate_aliases: settings.alternate_aliases,
-        share_link,
+        share_link: settings.share_link,
         join_rule: room_join_rule_from_sdk(settings.join_rule),
         history_visibility: room_history_visibility_from_sdk(settings.history_visibility),
         permissions: room_permission_facts_from_sdk(settings.permissions),
@@ -489,6 +484,7 @@ mod tests {
     #[test]
     fn room_settings_snapshot_mapping_preserves_role_power_and_role_permission_facts() {
         let settings = MatrixRoomSettingsSnapshot {
+            share_link: Some("https://matrix.to/#/%23private%3Aexample.invalid".to_owned()),
             room_id: "!room:example.invalid".to_owned(),
             name: Some("Private room".to_owned()),
             topic: Some("Private topic".to_owned()),

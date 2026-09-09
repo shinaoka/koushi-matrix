@@ -62,6 +62,42 @@ impl Drop for ReaderWork {
     }
 }
 
+struct ObservedReaderAvatars {
+    context: koushi_state::AvatarDemandContext,
+    visible: Vec<String>,
+    prefetch: Vec<String>,
+    _bytes: ViewReservation,
+}
+
+impl ObservedReaderAvatars {
+    fn retain(
+        context: &koushi_state::AvatarDemandContext,
+        visible: &[String],
+        prefetch: &[String],
+        budget: &crate::view_budget::ViewBudget,
+    ) -> Result<Self, ScopeError> {
+        // The inline record is already charged in Control's ReaderRequest.
+        // Reserve its backing strings/vectors before retaining copies.
+        let bytes =
+            visible
+                .iter()
+                .chain(prefetch)
+                .try_fold(context.account_id.len(), |bytes, id| {
+                    bytes
+                        .checked_add(std::mem::size_of::<String>())
+                        .and_then(|bytes| bytes.checked_add(id.len()))
+                        .ok_or(ScopeError::Capacity)
+                })?;
+        let reservation = budget.reserve_bytes(bytes).ok_or(ScopeError::Capacity)?;
+        Ok(Self {
+            context: context.clone(),
+            visible: visible.to_vec(),
+            prefetch: prefetch.to_vec(),
+            _bytes: reservation,
+        })
+    }
+}
+
 /// The scope's request, not a second copy of timeline/receipt ordering.
 pub(super) struct ReaderRequest {
     source: ReceiptSourceRef,
@@ -74,10 +110,36 @@ pub(super) struct ReaderRequest {
     dirty: bool,
     source_dirty: bool,
     accepted_raw: Option<std::sync::Arc<ChargedRaw>>,
+    avatar_observation: Option<ObservedReaderAvatars>,
     _bytes: ViewReservation,
 }
 
 impl ReaderRequest {
+    pub(super) fn refresh_avatar_demand(
+        &self,
+        scope: ViewScopeId,
+        current: &super::ChargedAvatarDemand,
+        rows: &super::model::InstalledRows,
+        budget: &crate::view_budget::ViewBudget,
+    ) -> Result<Option<super::ChargedAvatarDemand>, ScopeError> {
+        let Some(observation) = &self.avatar_observation else {
+            return Ok(None);
+        };
+        if &observation.context != current.context() || !current.scope_ids().any(|id| id == scope.0)
+        {
+            return Ok(None);
+        }
+        let mut next = current.clone();
+        if !next.refresh(
+            scope.0,
+            rows.resolve_avatar_resources(&observation.visible),
+            rows.resolve_avatar_resources(&observation.prefetch),
+            budget,
+        )? {
+            return Ok(None);
+        }
+        Ok(Some(next))
+    }
     pub(super) fn accepts(&self, window: &ReaderWindow) -> bool {
         window.source == self.source
             && window.window_sequence == self.window_sequence
@@ -153,11 +215,13 @@ impl ViewConsumer {
                     .anchor_index(installed_revision, &user_id)?
                     .ok_or(ScopeError::InvalidModel)?,
             };
+            // Accepted raw data covers only the previous range. Preserve any
+            // pending source invalidation even for an unchanged window.
+            reader.source_dirty |= reader.start != start || reader.limit != limit;
             reader.start = start;
             reader.limit = limit;
             reader.window_sequence = sequence;
             reader.dirty = true;
-            reader.source_dirty = false;
             if reader.phase == Phase::Idle {
                 reader.phase = Phase::Queued;
                 true
@@ -170,6 +234,159 @@ impl ViewConsumer {
             self.0.registry.reader_work.notify_one();
         }
         Ok(())
+    }
+
+    pub(crate) fn observe_current_reader_avatars(
+        &self,
+        id: koushi_protocol::view::ViewScopeId,
+        revision: ViewRevision,
+        sequence: u64,
+        visible: &[String],
+        prefetch: &[String],
+    ) -> Result<(), ScopeError> {
+        let context = self
+            .0
+            .registry
+            .state
+            .lock()
+            .expect("view registry poisoned")
+            .avatar_demand
+            .as_ref()
+            .ok_or(ScopeError::InactiveSession)?
+            .context()
+            .clone();
+        self.observe_reader_avatars(id, revision, sequence, &context, visible, prefetch)
+    }
+
+    /// Commit resolved reader demand. Context comes from AppActor's current
+    /// session, never from deserialized host input; host inputs are IDs/revisions.
+    pub(crate) fn observe_reader_avatars(
+        &self,
+        id: koushi_protocol::view::ViewScopeId,
+        revision: ViewRevision,
+        sequence: u64,
+        context: &koushi_state::AvatarDemandContext,
+        visible: &[String],
+        prefetch: &[String],
+    ) -> Result<(), ScopeError> {
+        if visible.len() > koushi_state::AVATAR_VISIBLE_CAPACITY
+            || prefetch.len() > koushi_state::AVATAR_PREFETCH_CAPACITY
+        {
+            return Err(ScopeError::Capacity);
+        }
+        self.with_live_reader_avatar_source(id, revision, |rows| {
+            // The acknowledged model grants identity access, not authority to
+            // restore resource bindings superseded by a newer Rust projection.
+            for user_id in visible.iter().chain(prefetch) {
+                rows.avatar_mxc(user_id)?;
+            }
+            let observation =
+                ObservedReaderAvatars::retain(context, visible, prefetch, &self.0.registry.budget)?;
+            let mut state = self
+                .0
+                .registry
+                .state
+                .lock()
+                .expect("view registry poisoned");
+            let control = state
+                .scopes
+                .get(&id)
+                .filter(|entry| entry.owner == self.0.id)
+                .map(|entry| entry.control.clone())
+                .ok_or(ScopeError::NotOwned)?;
+            let retired = control.retired.lock().expect("view control poisoned");
+            if state.closed
+                || self.0.closed.load(std::sync::atomic::Ordering::Acquire)
+                || retired.is_some()
+            {
+                return Err(ScopeError::Closed);
+            }
+            if !control
+                .reader
+                .lock()
+                .expect("reader request poisoned")
+                .as_ref()
+                .is_some_and(|reader| {
+                    reader.source.timeline.key.account_key.0 == context.account_id
+                })
+            {
+                return Err(ScopeError::InactiveSession);
+            }
+            let current = {
+                let mailbox = control.mailbox.lock().expect("view mailbox poisoned");
+                if mailbox.installed_revision() != Some(revision) {
+                    return Err(ScopeError::InvalidRevision);
+                }
+                mailbox
+                    .current_rows()
+                    .ok_or(ScopeError::SourceUnavailable)?
+            };
+            let visible = current.resolve_avatar_resources(visible);
+            let prefetch = current.resolve_avatar_resources(prefetch);
+            // Only AppActor may establish a session context. If it cleared or
+            // changed during resolution, do not recreate the captured context.
+            let mut next = state
+                .avatar_demand
+                .as_deref()
+                .ok_or(ScopeError::InactiveSession)?
+                .clone();
+            next.replace(
+                context,
+                id.0,
+                sequence,
+                visible,
+                prefetch,
+                &self.0.registry.budget,
+            )?;
+            control
+                .reader
+                .lock()
+                .expect("reader request poisoned")
+                .as_mut()
+                .ok_or(ScopeError::Closed)?
+                .avatar_observation = Some(observation);
+            state.avatar_demand = Some(std::sync::Arc::new(next));
+            self.0.registry.reader_work.notify_one();
+            Ok(())
+        })
+    }
+
+    /// Reader-only observation commit. The accepted raw source owns its charge;
+    /// hold source authority and recheck the installed model before the callback.
+    pub(crate) fn with_live_reader_avatar_source<R>(
+        &self,
+        id: koushi_protocol::view::ViewScopeId,
+        revision: ViewRevision,
+        commit: impl FnOnce(&super::model::InstalledRows) -> Result<R, ScopeError>,
+    ) -> Result<R, ScopeError> {
+        let installed = self.avatar_source(id, revision)?;
+        let raw = {
+            let state = self
+                .0
+                .registry
+                .state
+                .lock()
+                .expect("view registry poisoned");
+            let entry = state.scopes.get(&id).ok_or(ScopeError::Closed)?;
+            let reader = entry
+                .control
+                .reader
+                .lock()
+                .expect("reader request poisoned");
+            reader
+                .as_ref()
+                .and_then(|reader| reader.accepted_raw.clone())
+                .ok_or(ScopeError::SourceUnavailable)?
+        };
+        raw.raw
+            .commit_if_current(|| {
+                let current = self.avatar_source(id, revision)?;
+                if !std::sync::Arc::ptr_eq(&installed, &current) {
+                    return Err(ScopeError::InvalidRevision);
+                }
+                commit(&current)
+            })
+            .ok_or(ScopeError::SourceUnavailable)?
     }
 
     pub fn open_reader(
@@ -206,6 +423,7 @@ impl ViewConsumer {
                 dirty: false,
                 source_dirty: false,
                 accepted_raw: None,
+                avatar_observation: None,
                 _bytes: bytes,
             });
         }

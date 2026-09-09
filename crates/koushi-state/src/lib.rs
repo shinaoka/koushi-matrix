@@ -2,18 +2,24 @@
 // (and the `prelude`), not the module tree. Feature modules are crate-internal so
 // consumers depend on the stable root API rather than reaching into module internals.
 mod action;
+mod avatar_demand;
 mod composer_document;
 mod composer_revision;
 mod composer_shortcuts;
 mod effect;
 mod locale_profile;
 mod reducer;
+mod room_address;
 mod sidebar;
 mod state;
 mod submission;
 mod typography_profile;
 
 pub use action::{AppAction, AuthSecret, IdentityResetAuthRequest, LoginRequest, RecoveryRequest};
+pub use avatar_demand::{
+    AVATAR_PREFETCH_CAPACITY, AVATAR_VISIBLE_CAPACITY, AvatarDemandContext, AvatarDemandError,
+    AvatarDemandState, VIEW_SCOPE_CAPACITY,
+};
 pub use composer_document::{ComposerDocument, ComposerInline};
 pub use composer_revision::{ComposerDraftRevision, ComposerDraftRevisionError};
 pub use composer_shortcuts::{
@@ -31,6 +37,7 @@ pub use locale_profile::{
     resolve_locale_display_profile,
 };
 pub use reducer::reduce;
+pub use room_address::{RoomAddressError, RoomAddressPreview, suggest_room_alias_localpart};
 pub use sidebar::{
     AccountHomeItem, RoomListItem, SidebarModel, SidebarSections, SpaceRailItem, compose_sidebar,
     compose_sidebar_for_state, compose_sidebar_with_account_facts,
@@ -127,8 +134,8 @@ pub use state::{
     refresh_room_summary_display_projection, resolve_live_receipt_profile,
     resolve_optional_user_display_name, resolve_people_label, resolve_user_display_name,
     room_activity_unread_count, room_attention_kind, room_attention_projection,
-    room_attention_summary, room_settings_share_link, search_query_too_short,
-    sort_threads_list_items, staged_upload_item_with_completed_output, staged_uploads_are_sendable,
+    room_attention_summary, search_query_too_short, sort_threads_list_items,
+    staged_upload_item_with_completed_output, staged_uploads_are_sendable,
 };
 
 pub fn encrypted_messaging_is_admitted(state: &AppState) -> bool {

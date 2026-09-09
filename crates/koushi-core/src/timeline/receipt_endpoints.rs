@@ -51,16 +51,7 @@ impl ResolvedReceiptWindow {
 
     /// Only a prepared, synchronous commit may run here; source lock precedes registry locks.
     pub(crate) fn commit_if_current<R>(&self, commit: impl FnOnce() -> R) -> Option<R> {
-        let owner = self.owner.as_ref()?;
-        let _generation = owner
-            .gate
-            .try_acquire(&owner.source.timeline.key, owner.generation)?;
-        let epoch = self.epoch.upgrade()?;
-        let current = epoch.lock().expect("receipt epoch poisoned");
-        if !current.valid {
-            return None;
-        }
-        Some(commit())
+        self.owner.as_ref()?.commit_if_current(&self.epoch, commit)
     }
 
     #[cfg(test)]
@@ -92,7 +83,31 @@ pub(crate) struct ReceiptWindowOwner {
     generation: u64,
 }
 
+impl ReceiptWindowOwner {
+    fn commit_if_current<R>(
+        &self,
+        epoch: &std::sync::Weak<std::sync::Mutex<ReceiptEpoch>>,
+        commit: impl FnOnce() -> R,
+    ) -> Option<R> {
+        let _generation = self
+            .gate
+            .try_acquire(&self.source.timeline.key, self.generation)?;
+        let epoch = epoch.upgrade()?;
+        let current = epoch.lock().expect("receipt epoch poisoned");
+        if !current.valid {
+            return None;
+        }
+        Some(commit())
+    }
+}
+
 impl RawReceiptWindow {
+    /// Hold the existing actor-generation and receipt-epoch guards through a
+    /// synchronous observation commit. Source locks precede registry locks.
+    pub(crate) fn commit_if_current<R>(&self, commit: impl FnOnce() -> R) -> Option<R> {
+        self.owner.as_ref()?.commit_if_current(&self.epoch, commit)
+    }
+
     pub(crate) fn owner_generation(&self) -> Option<u64> {
         self.owner.as_ref().map(|owner| owner.generation)
     }

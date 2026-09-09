@@ -43,6 +43,10 @@ test("Synapse fixture pins matrixdotorg/synapse v1.157.0", () => {
   assert.equal(baseImages[0].trim(), "FROM docker.io/matrixdotorg/synapse:v1.157.0");
 });
 
+test("Synapse fixture raises the separate per-room join limit for population QA", () => {
+  assert.match(synapseEntrypoint(), /\nrc_joins_per_room:\n  per_second: 1000\n  burst_count: 1000\n/);
+});
+
 test("Synapse positive fixture enables simplified Sliding Sync", () => {
   const entrypoint = synapseEntrypoint();
 

@@ -2,6 +2,12 @@ import type { LinkPreview } from "./linkPreview";
 
 export type SearchScopeKind = "currentRoom" | "currentSpace" | "allRooms";
 
+export interface RoomAddressPreview {
+  localpart: string;
+  full_alias: string | null;
+  error: "empty" | "invalid" | "notReady" | null;
+}
+
 export interface CreateRoomRequest {
   name: string;
   topic?: string | null;

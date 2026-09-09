@@ -43,6 +43,7 @@ import type {
   AttachmentFilter,
   AttachmentSort,
   CreateRoomRequest,
+  RoomAddressPreview,
   FilesViewScope,
   SubmissionResponse,
   ThreadOpenIntent,
@@ -52,6 +53,7 @@ import type { DiagnosticLogSnapshot } from "../domain/diagnostics";
 import type {
   ReceiptSourceRef,
   ReaderWindowRequest,
+  ReaderAvatarObservation,
   TimelineKey,
   ViewDelivery
 } from "../domain/coreEvents";
@@ -859,6 +861,13 @@ export class TauriDesktopApi implements DesktopApi {
     return this.invokeCommand<void>("update_receipt_reader_window", { scope, request });
   }
 
+  async observeReceiptReaderAvatars(
+    scope: string,
+    request: ReaderAvatarObservation
+  ): Promise<void> {
+    return this.invokeCommand<void>("observe_receipt_reader_avatars", { scope, request });
+  }
+
   async ackReceiptReader(scope: string, revision: string): Promise<void> {
     return this.invokeCommand<void>("ack_receipt_reader", { scope, revision });
   }
@@ -994,6 +1003,10 @@ export class TauriDesktopApi implements DesktopApi {
 
   async joinRoom(roomId: string): Promise<CommandSettlement> {
     return this.invokeCommand<CommandSettlement>("join_room", { roomId });
+  }
+
+  async previewRoomAddress(name: string, aliasLocalpart: string | null): Promise<RoomAddressPreview> {
+    return this.invokeCommand<RoomAddressPreview>("preview_room_address", { name, aliasLocalpart });
   }
 
   async createRoom(request: CreateRoomRequest): Promise<CommandSettlement> {

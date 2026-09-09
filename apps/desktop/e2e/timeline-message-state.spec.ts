@@ -31,13 +31,14 @@ async function gotoReadyShell(page: import("@playwright/test").Page): Promise<vo
 async function seedTimelineItems(
   page: import("@playwright/test").Page,
   items: unknown[],
-  generation = 2
+  generation = 2,
+  requestId: { connection_id: number; sequence: number } | null = null
 ): Promise<void> {
   await expect
     .poll(
       async () =>
         page.evaluate(
-          async ({ key, nextItems, nextGeneration }) => {
+          async ({ key, nextItems, nextGeneration, nextRequestId }) => {
             const itemDomIds = nextItems.map((item) => {
               if ("Transaction" in (item as { id: Record<string, unknown> }).id) {
                 return `txn:${(item as { id: { Transaction: { transaction_id: string } } }).id.Transaction.transaction_id}`;
@@ -51,7 +52,7 @@ async function seedTimelineItems(
               kind: "Timeline",
               event: {
                 InitialItems: {
-                  request_id: null,
+                  request_id: nextRequestId,
                   key,
                   generation: nextGeneration,
                   items: nextItems
@@ -64,7 +65,7 @@ async function seedTimelineItems(
               document.querySelector(`[data-item-id="${CSS.escape(id)}"]`)
             );
           },
-          { key: HARNESS_ROOM_KEY, nextItems: items, nextGeneration: generation }
+          { key: HARNESS_ROOM_KEY, nextItems: items, nextGeneration: generation, nextRequestId: requestId }
         ),
       { timeout: 10_000, intervals: [25, 50, 100, 250] }
     )
@@ -275,6 +276,74 @@ test("single read receipt renders avatar initials and count", async ({ page }) =
 // ---------------------------------------------------------------------------
 // 5. Read receipts — multiple readers
 // ---------------------------------------------------------------------------
+
+test("reader avatar observations follow real popup clipping and stop on close", async ({ page }) => {
+  await gotoReadyShell(page);
+  const eventId = "$receipt-geometry:example.invalid";
+  await seedTimelineItems(page, [makeEventItem(eventId)], 2, { connection_id: 1, sequence: 2 });
+  await page.evaluate(({ roomId, eventId }) => {
+    const readers = Array.from({ length: 80 }, (_, index) => ({
+      user_id: `@geometry-${index}:example.invalid`, display_name: `Reader ${index}`,
+      original_display_label: `Reader ${index}`, avatar: null, timestamp_ms: null
+    }));
+    const snap = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({ ...snap, state: { ...snap.state, domain: {
+      ...snap.state.domain, live_signals: { ...snap.state.domain.live_signals, rooms: {
+        ...snap.state.domain.live_signals.rooms,
+        [roomId]: { receipts_by_event: { [eventId]: { readers: readers.slice(0, 3), total_count: 80, overflow_count: 77 } },
+          fully_read_event_id: null, typing_user_ids: [], typing_users: [] }
+      } }
+    } } });
+    window.__harness.pushStateUpdate();
+    let source: unknown;
+    let delivered = false;
+    window.__harness.setCommandResponse("subscribe_receipt_reader", (args: { source: unknown }) => {
+      source = args.source;
+      return "geometry-scope";
+    });
+    window.__harness.setCommandResponse("receive_receipt_reader", () => {
+      if (delivered) return null;
+      delivered = true;
+      return { kind: "model", scope: "geometry-scope", revision: "7", model: {
+        kind: "readerReady", source, total_count: 80, start: 0, window_sequence: "0",
+        source_revision: "1", dependency_revision: "1", resolved_anchor: { kind: "notRequested" },
+        rows: readers.map((reader) => ({ user_id: reader.user_id, display_label: reader.display_name,
+          original_display_label: reader.display_name, initials: "R", timestamp: null,
+          avatar: { kind: "notRequested" } }))
+      } };
+    });
+  }, { roomId: HARNESS_ROOM_ID, eventId });
+  await page.locator(`[data-event-id="${eventId}"] .message-receipts`).focus();
+  const popup = page.getByRole("dialog", { name: "Read by 80" });
+  await expect(popup).toBeVisible();
+  const matchesGeometry = () => page.evaluate(() => {
+    const popup = document.querySelector(".receipt-tooltip");
+    const request = window.__harness.invocationsOf("observe_receipt_reader_avatars").at(-1)?.args.request;
+    if (!popup || !request) return false;
+    const bounds = popup.getBoundingClientRect();
+    const visible = Array.from(popup.querySelectorAll("[aria-posinset]")).filter((row) => {
+      const rect = row.getBoundingClientRect();
+      return rect.bottom > bounds.top && rect.top < bounds.bottom;
+    }).map((row) => `@geometry-${Number(row.getAttribute("aria-posinset")) - 1}:example.invalid`);
+    return visible.length > 0 && visible.length < 80 && request.installed_revision === "7"
+      && JSON.stringify(request.visible_user_ids) === JSON.stringify(visible)
+      && request.prefetch_user_ids.length === 8;
+  });
+  await expect.poll(matchesGeometry).toBe(true);
+  const before = await page.evaluate(() => window.__harness.invocationsOf("observe_receipt_reader_avatars").at(-1)?.args.request);
+  await popup.evaluate((element) => { element.scrollTop = 200; });
+  await expect.poll(matchesGeometry).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("observe_receipt_reader_avatars").at(-1)?.args.request.visible_user_ids[0])).not.toBe(before.visible_user_ids[0]);
+  await popup.getByRole("button", { name: t("shortcut.closeDialogOrMenu") }).click();
+  await expect(popup).not.toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("close_receipt_reader").length)).toBe(1);
+  const count = await page.evaluate(() => window.__harness.invocationsOf("observe_receipt_reader_avatars").length);
+  await page.evaluate(async () => {
+    window.dispatchEvent(new Event("resize"));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  });
+  expect(await page.evaluate(() => window.__harness.invocationsOf("observe_receipt_reader_avatars").length)).toBe(count);
+});
 
 test("multiple read receipts render stacked avatars", async ({ page }) => {
   await gotoReadyShell(page);

@@ -122,6 +122,7 @@ import {
 } from "./app/qaDiagnostics";
 import { useDesktopAttentionEffects } from "./app/useDesktopAttentionEffects";
 import { useUiLatencyDiagnostics } from "./app/useUiLatencyDiagnostics";
+import { useRoomAddressPreview } from "./app/useRoomAddressPreview";
 import {
   createDiagnosticLogBuffer,
   diagnosticReport,
@@ -1121,8 +1122,19 @@ export function App() {
   // (basic_operation); the created room/space identity comes from the API.
   const [createDialog, setCreateDialog] = useState<"room" | "space" | null>(null);
   const [createDraftName, setCreateDraftName] = useState("");
+  const createDialogEpochRef = useRef(0);
+  const [createRoomAliasCollision, setCreateRoomAliasCollision] = useState<string | null>(null);
   const [createRoomDraftOptions, setCreateRoomDraftOptions] =
     useState<CreateRoomDialogOptions>(defaultCreateRoomDialogOptions);
+  const [createRoomManualAlias, setCreateRoomManualAlias] = useState<string | null>(null);
+  const createRoomAddressPreview = useRoomAddressPreview(
+    api, createDraftName, createRoomManualAlias,
+    snapshot?.state.domain.session.user_id ?? null, createDialog === "room"
+  );
+  const displayedCreateRoomOptions = {
+    ...createRoomDraftOptions,
+    aliasLocalpart: createRoomManualAlias ?? createRoomAddressPreview?.localpart ?? ""
+  };
   const [reportDialog, setReportDialog] = useState<ReportDialogState | null>(null);
   const [reportReasonDraft, setReportReasonDraft] = useState("");
   const [timelineStore, setTimelineStore] = useState<TimelineStoreState>(createTimelineStore);
@@ -3350,12 +3362,18 @@ export function App() {
   }
 
   function openCreateDialog(kind: "room" | "space") {
+    createDialogEpochRef.current += 1;
+    setCreateRoomAliasCollision(null);
+    setCreateRoomManualAlias(null);
     setCreateDraftName("");
     setCreateRoomDraftOptions(defaultCreateRoomDialogOptions());
     setCreateDialog(kind);
   }
 
   function closeCreateDialog() {
+    createDialogEpochRef.current += 1;
+    setCreateRoomAliasCollision(null);
+    setCreateRoomManualAlias(null);
     setCreateDialog(null);
     setCreateDraftName("");
     setCreateRoomDraftOptions(defaultCreateRoomDialogOptions());
@@ -3652,6 +3670,7 @@ export function App() {
   }
 
   async function submitCreateDialog() {
+    const epoch = createDialogEpochRef.current;
     const kind = createDialog;
     const name = createDraftName.trim();
     const activeSpaceIdForCreatedRoom =
@@ -3663,7 +3682,7 @@ export function App() {
       !name ||
       (kind === "room" &&
         createRoomDraftOptions.visibility === "public" &&
-        !createRoomDraftOptions.aliasLocalpart.trim()) ||
+        (!createRoomAddressPreview || createRoomAddressPreview.error !== null)) ||
       isBusy ||
       (snapshot && snapshot.state.ui.basic_operation.kind !== "idle")
     ) {
@@ -3673,12 +3692,23 @@ export function App() {
     try {
       const createRoomRequest =
         kind === "room"
-          ? createRoomRequestFromDraft(name, createRoomDraftOptions, activeSpaceIdForCreatedRoom)
+          ? createRoomRequestFromDraft(name, displayedCreateRoomOptions, activeSpaceIdForCreatedRoom)
           : null;
       await settleCommand(
         kind === "space" ? api.createSpace(name) : api.createRoom(createRoomRequest!)
       );
-      closeCreateDialog();
+      if (epoch === createDialogEpochRef.current) closeCreateDialog();
+    } catch (error) {
+      if (kind === "room" && typeof error === "object" && error !== null && "kind" in error && error.kind === "aliasInUse") {
+        if (epoch === createDialogEpochRef.current) {
+          setCreateRoomAliasCollision(displayedCreateRoomOptions.aliasLocalpart);
+        }
+        return;
+      }
+      if (typeof error === "object" && error !== null && "message" in error && typeof error.message === "string") {
+        throw new Error(error.message);
+      }
+      throw error;
     } finally {
       setIsBusy(false);
     }
@@ -4314,7 +4344,7 @@ export function App() {
     }
     const current = getAppStoreSnapshot();
     const opened =
-      current?.state.ui.thread.kind === "open" &&
+      (current?.state.ui.thread.kind === "opening" || current?.state.ui.thread.kind === "open") &&
       current.state.ui.thread.room_id === roomId &&
       current.state.ui.thread.root_event_id === rootEventId;
     if (!opened) {
@@ -6430,10 +6460,18 @@ export function App() {
           activeSpaceName={activeSpaceName}
           isBusy={isBusy || snapshot.state.ui.basic_operation.kind !== "idle"}
           kind={createDialog}
-          roomOptions={createRoomDraftOptions}
+          roomOptions={displayedCreateRoomOptions}
+          addressPreview={createRoomAddressPreview}
+          addressFailure={createRoomAliasCollision === displayedCreateRoomOptions.aliasLocalpart ? "aliasInUse" : null}
+          onOpenAddressHelp={(url) => runInBackground(openExternalHttpUrl(url))}
           value={createDraftName}
           onCancel={closeCreateDialog}
-          onRoomOptionsChange={setCreateRoomDraftOptions}
+          onRoomOptionsChange={(options) => {
+            if (options.aliasLocalpart !== displayedCreateRoomOptions.aliasLocalpart) {
+              setCreateRoomManualAlias(options.aliasLocalpart);
+            }
+            setCreateRoomDraftOptions(options);
+          }}
           onSubmit={() => {
             runInBackground(submitCreateDialog());
           }}

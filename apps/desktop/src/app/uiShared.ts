@@ -392,11 +392,16 @@ export function forwardDestinationsFromSnapshot(
 }
 
 export function activeMentionQuery(value: string): { start: number; end: number; query: string } | null {
-  const match = /(^|\s)@([^\s@]*)$/u.exec(value);
+  // A completed email-shaped token stays plain text; a bare @ after text can
+  // still start an explicit mention. Mention atoms delimit the editable query.
+  if (/[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+$/u.test(value)) {
+    return null;
+  }
+  const match = /@([^\s@\uFFFC]*)$/u.exec(value);
   if (!match) {
     return null;
   }
-  const query = match[2] ?? "";
+  const query = match[1] ?? "";
   return {
     start: value.length - query.length - 1,
     end: value.length,

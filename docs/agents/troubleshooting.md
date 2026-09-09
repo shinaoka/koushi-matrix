@@ -161,6 +161,22 @@ the lane that shows the symptom. Lane commands are in
 
 ## Local homeserver core QA
 
+- **`avatar_demand` stays at one reader after a successful large fixture seed.**
+  Tuwunel 1.7.1 returned one receipt user in the initial Simplified Sliding Sync
+  response in this test, while Synapse returned the full population. Its
+  [`pack_receipts`](https://github.com/matrix-construct/tuwunel/blob/v1.7.1/src/service/rooms/read_receipt/mod.rs#L276-L304)
+  inserts each receipt map by event ID, replacing previous users for that event
+  instead of merging the nested receipt-type/user maps. Seed HTTP success is not
+  receipt-readback proof. Keep the failing population gate; do not
+  manufacture readers in Core or add a sync fallback. The active investigation
+  and exact evidence are in the 2026-09-09 remaining-issues batch worklog.
+
+- **Synapse returns 429 while populating one room despite high local/remote join limits.**
+  `rc_joins_per_room` is separate from `rc_joins.local` and `.remote`; the pinned
+  Synapse defaults it to one join/second with a burst of ten. The disposable QA
+  config raises this separate limit too. Use a newly generated fixture config
+  when testing that change; do not alter production or unrelated servers.
+
 - **`login A: timed out waiting for LoggedIn event`.** Read the `phase=…` token
   in the message before re-running; it names the session phase and has
   identified the cause in a single run. `phase=rechecking_trust` means the

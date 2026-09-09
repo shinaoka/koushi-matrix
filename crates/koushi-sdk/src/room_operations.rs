@@ -57,6 +57,7 @@ impl MatrixRoomOperationError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MatrixRoomOperationFailureKind {
+    AliasInUse,
     AuthenticationRequired,
     Encryption,
     Forbidden,
@@ -95,6 +96,7 @@ pub struct MatrixSpaceMemberRoleUpdateResult {
 impl fmt::Display for MatrixRoomOperationFailureKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self {
+            Self::AliasInUse => "alias_in_use",
             Self::AuthenticationRequired => "authentication_required",
             Self::Encryption => "encryption",
             Self::Forbidden => "forbidden",
@@ -168,6 +170,7 @@ pub struct MatrixRoomSettingsSnapshot {
     pub avatar_url: Option<String>,
     pub canonical_alias: Option<String>,
     pub alternate_aliases: Vec<String>,
+    pub share_link: Option<String>,
     pub join_rule: MatrixRoomJoinRule,
     pub history_visibility: MatrixRoomHistoryVisibility,
     pub permissions: MatrixRoomPermissionFacts,
@@ -719,6 +722,17 @@ pub async fn create_room(
     session: &MatrixClientSession,
     options: MatrixCreateRoomOptions,
 ) -> Result<String, MatrixRoomOperationError> {
+    if matches!(options.visibility, MatrixCreateRoomVisibility::Public)
+        && preview_room_address(
+            &options.name,
+            Some(options.alias_localpart.as_deref().unwrap_or("")),
+            session.client().user_id().map(|id| id.as_str()),
+        )
+        .error
+        .is_some()
+    {
+        return Err(MatrixRoomOperationError::InvalidRoomAlias);
+    }
     let request = create_room_request(options)?;
     let room = session
         .client()
@@ -828,8 +842,58 @@ pub(super) fn create_room_request(
     Ok(request)
 }
 
+/// Resolve a draft against the account's Matrix server; this never probes availability.
+pub fn preview_room_address(
+    name: &str,
+    alias_localpart: Option<&str>,
+    user_id: Option<&str>,
+) -> koushi_state::RoomAddressPreview {
+    use koushi_state::{RoomAddressError, RoomAddressPreview, suggest_room_alias_localpart};
+    let localpart = alias_localpart
+        .map(|value| value.trim().to_owned())
+        .unwrap_or_else(|| suggest_room_alias_localpart(name));
+    let user = user_id.and_then(|id| matrix_sdk::ruma::UserId::parse(id).ok());
+    let error = if user.is_none() {
+        Some(RoomAddressError::NotReady)
+    } else if localpart.is_empty() {
+        Some(RoomAddressError::Empty)
+    } else if validate_alias_localpart(&localpart).is_err() {
+        Some(RoomAddressError::Invalid)
+    } else {
+        None
+    };
+    let mut preview = RoomAddressPreview {
+        localpart,
+        full_alias: None,
+        error,
+    };
+    if preview.error.is_none() {
+        let alias = format!(
+            "#{}:{}",
+            preview.localpart,
+            user.expect("validated user").server_name()
+        );
+        // The SDK enables Ruma's arbitrary-length compatibility feature; new
+        // aliases still obey Matrix's 255-byte identifier limit.
+        if alias.len() > 255 {
+            preview.error = Some(RoomAddressError::Invalid);
+            return preview;
+        }
+        match matrix_sdk::ruma::RoomAliasId::parse(alias) {
+            Ok(alias) => preview.full_alias = Some(alias.to_string()),
+            Err(_) => preview.error = Some(RoomAddressError::Invalid),
+        }
+    }
+    preview
+}
+
 fn validate_alias_localpart(alias_localpart: &str) -> Result<(), MatrixRoomOperationError> {
-    if alias_localpart.starts_with('#') || alias_localpart.contains(':') {
+    if alias_localpart.starts_with('#')
+        || alias_localpart.contains(':')
+        || alias_localpart
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control())
+    {
         return Err(MatrixRoomOperationError::InvalidRoomAlias);
     }
     Ok(())
@@ -1472,6 +1536,9 @@ pub async fn room_is_joined(
     let room = matrix_room(session, room_id)?;
     Ok(room.state() == matrix_sdk_base::RoomState::Joined)
 }
+
+#[cfg(test)]
+mod address_tests;
 
 #[cfg(test)]
 mod tests;

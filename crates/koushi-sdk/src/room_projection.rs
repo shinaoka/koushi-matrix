@@ -691,6 +691,9 @@ mod room_permission_tests {
 }
 
 #[cfg(test)]
+mod share_link_tests;
+
+#[cfg(test)]
 mod space_member_projection_tests;
 
 #[cfg(test)]
@@ -1592,6 +1595,11 @@ pub(super) async fn matrix_room_settings_snapshot(
             .into_iter()
             .map(|alias| alias.to_string())
             .collect(),
+        share_link: room
+            .matrix_to_permalink()
+            .await
+            .ok()
+            .map(|uri| uri.to_string()),
         join_rule: room
             .join_rule()
             .as_ref()
@@ -1917,6 +1925,12 @@ pub(super) fn matrix_room_operation_failure_kind(
         }
         matrix_sdk::Error::WrongRoomState(_) => MatrixRoomOperationFailureKind::WrongRoomState,
         matrix_sdk::Error::Http(error) => {
+            if matches!(
+                error.client_api_error_kind(),
+                Some(matrix_sdk::ruma::api::error::ErrorKind::RoomInUse)
+            ) {
+                return MatrixRoomOperationFailureKind::AliasInUse;
+            }
             if error
                 .as_client_api_error()
                 .is_some_and(|error| error.status_code.as_u16() == 403)
@@ -2103,9 +2117,10 @@ async fn matrix_room_list_snapshot_from_rooms(
             continue;
         }
 
-        let unread_notifications = room.unread_notification_counts();
-        let notification_count = unread_notifications.notification_count.into();
-        let highlight_count = unread_notifications.highlight_count.into();
+        // Sliding Sync server counts may be dummy zeros; the SDK evaluates
+        // notifications and mentions locally, including encrypted events.
+        let notification_count = room.num_unread_notifications();
+        let highlight_count = room.num_unread_mentions();
         let is_marked_unread = room.is_marked_unread();
         let unread_messages = room.num_unread_messages();
         // Keep raw unread messages separate from notification and manual-unread
@@ -2911,13 +2926,11 @@ fn matrix_room_tag_info_from_sdk(
 
 pub fn room_attention_summary_from_room(room: &matrix_sdk::Room) -> Option<RoomAttentionSummary> {
     let room_display_name = room.cached_display_name().map(|name| name.to_string())?;
-    let unread_notifications = room.unread_notification_counts();
-
     room_attention_summary_from_counts(
         Some(room_display_name),
         room.is_dm(),
-        unread_notifications.notification_count.into(),
-        unread_notifications.highlight_count.into(),
+        room.num_unread_notifications(),
+        room.num_unread_mentions(),
         room.num_unread_messages(),
         room.is_marked_unread(),
     )

@@ -2488,7 +2488,10 @@ async fn receipt_resolution_borrows_current_alias_without_publishing_global_stat
                     display_label: String::new(),
                     original_display_label: String::new(),
                     mention_search_terms: Vec::new(),
-                    avatar: None,
+                    avatar: Some(koushi_state::AvatarImage {
+                        mxc_uri: "mxc://example.org/current-room-avatar".into(),
+                        thumbnail: koushi_state::AvatarThumbnailState::NotRequested,
+                    }),
                 }],
             });
         actor.start_reader_work();
@@ -2512,6 +2515,29 @@ async fn receipt_resolution_borrows_current_alias_without_publishing_global_stat
             Err(mpsc::error::TryRecvError::Empty)
         ));
         consumer.ack_model(scope.id(), revision).unwrap();
+        let (avatar_effects, _) =
+            actor.reduce_app_action_state(AppAction::AvatarThumbnailUpdated {
+                mxc_uri: "mxc://example.org/current-room-avatar".into(),
+                thumbnail: koushi_state::AvatarThumbnailState::NotRequested,
+            });
+        assert!(
+            avatar_effects.is_empty(),
+            "scoped invalidation must not need a global UI effect"
+        );
+        let avatar_work = actor
+            .view_scopes
+            .take_reader_work()
+            .unwrap()
+            .expect("current projected avatar must invalidate its reader");
+        actor.view_scopes.finish_reader_work(&avatar_work).unwrap();
+        drop(avatar_work);
+        actor
+            .view_scopes
+            .reader_avatar_thumbnail_changed("mxc://example.org/removed");
+        assert!(
+            actor.view_scopes.take_reader_work().unwrap().is_none(),
+            "obsolete raw avatar hints must not remain indexed"
+        );
         let (receipt_effects, _) =
             actor.reduce_app_action_state(AppAction::LiveRoomReceiptsWindowReconciled {
                 room_id: "!room:example.org".into(),

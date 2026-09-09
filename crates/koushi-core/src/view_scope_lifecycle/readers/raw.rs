@@ -117,20 +117,12 @@ impl ViewScopeRegistry {
         &self,
         work: &mut ReaderWork,
         raw: Arc<ChargedRaw>,
+        thumbnail_sources: impl Iterator<Item = String>,
     ) -> Result<(), ScopeError> {
         let registration = super::super::profiles::ProfileRegistration::prepare(
             work.source.timeline.key.room_id().to_owned(),
             raw.raw.receipts.iter().map(|row| row.user_id.clone()),
-            raw.raw
-                .receipts
-                .iter()
-                .filter_map(|row| row.avatar.as_ref().map(|avatar| avatar.mxc_uri.clone()))
-                .chain(
-                    raw.raw
-                        .profiles
-                        .iter()
-                        .filter_map(|profile| profile.avatar_mxc_uri.clone()),
-                ),
+            thumbnail_sources,
             &mut work.reservation,
         )?;
         let replaced = {

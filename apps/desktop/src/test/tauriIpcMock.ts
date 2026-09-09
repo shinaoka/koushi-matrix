@@ -48,8 +48,8 @@ const VOID_COMMANDS = new Set([
   "send_read_receipt",
   "set_fully_read",
   "set_typing",
-  "receive_receipt_reader",
   "update_receipt_reader_window",
+  "observe_receipt_reader_avatars",
   "ack_receipt_reader",
   "close_receipt_reader"
 ]);
@@ -160,7 +160,7 @@ export class TauriIpcMock {
       );
     }
 
-    if (command === "read_receipt_reader_resource") {
+    if (command === "read_receipt_reader_resource" || command === "receive_receipt_reader") {
       return Promise.resolve(null as T);
     }
 

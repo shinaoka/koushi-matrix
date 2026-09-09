@@ -689,11 +689,23 @@ pub async fn update_room_member_role(
 }
 
 #[tauri::command]
+pub fn preview_room_address(
+    name: String,
+    alias_localpart: Option<String>,
+    state: State<'_, CoreRuntimeState>,
+) -> koushi_state::RoomAddressPreview {
+    state
+        .runtime
+        .attach()
+        .preview_room_address(&name, alias_localpart.as_deref())
+}
+
+#[tauri::command]
 pub async fn create_room(
     options: koushi_protocol::CreateRoomOptions,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendCommandSettlement, String> {
+) -> Result<FrontendCommandSettlement, CreateRoomInvokeError> {
     let mut event_conn = state.runtime.attach();
     let baseline = event_conn.versioned_snapshot();
     let account_key = account_key_from_app_state(&baseline.state);
@@ -701,7 +713,9 @@ pub async fn create_room(
     event_conn
         .command(build_create_room_command(request_id, options))
         .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
+        .map_err(|e| CreateRoomInvokeError::Failed {
+            message: format!("command submit failed: {e}"),
+        })?;
     let outcome = event_conn
         .wait_for_request_outcome(
             OutcomeCorrelation::Request(request_id),
@@ -713,9 +727,11 @@ pub async fn create_room(
             tokio::time::Instant::now() + CREATE_EVENT_TIMEOUT,
         )
         .await
-        .map_err(|error| invoke_error_from_request_outcome("room creation", error))?;
+        .map_err(CreateRoomInvokeError::from)?;
     let RequestOutcome::RoomCreated { generation, .. } = outcome else {
-        return Err("room creation returned an invalid outcome".to_owned());
+        return Err(CreateRoomInvokeError::Failed {
+            message: "room creation returned an invalid outcome".to_owned(),
+        });
     };
     update_qa_window_title_from_state(&app, state.inner()).await;
     Ok(command_settlement(generation))
@@ -1322,6 +1338,9 @@ pub(super) const ROOM_OPERATION_EVENT_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(60);
 
 const CREATE_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+mod create_error;
+use create_error::CreateRoomInvokeError;
 
 #[cfg(test)]
 mod tests;

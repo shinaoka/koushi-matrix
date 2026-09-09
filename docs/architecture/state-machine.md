@@ -676,8 +676,13 @@ Unread state crosses three Matrix concepts that must not be collapsed into one
 local flag:
 
 - `RoomSummary.unread_count` is the raw unread-message count; notification and
-  mention counts are separate SDK/server observations, as is `marked_unread`.
-  They can arrive later than a
+  mention counts are separate SDK client-side observations, as is `marked_unread`.
+  Both full room projection and attention updates use SDK
+  `num_unread_notifications` / `num_unread_mentions`, not the server-computed
+  `unread_notification_counts`: Synapse 1.157.0 Sliding Sync returns zero dummy
+  counts, and servers cannot classify encrypted mentions. This follows Element X
+  iOS room-summary use of the SDK client-side counters; do not replace notification
+  counts with plain unread-message counts. These observations can arrive later than a
   local command response, and historical Matrix Rust SDK releases have had
   unread-count/read-receipt convergence bugs (for example
   matrix-rust-sdk#6211, fixed upstream by matrix-rust-sdk#6406). Koushi must
@@ -1057,6 +1062,28 @@ stateDiagram-v2
 ## Timeline And Thread
 
 ### Timeline Diff Relay Recovery
+
+A room-timeline SDK `Clear` invalidates the old history window, including an
+old pagination `EndReached` observation. The actor retains one coalesced
+cache-reset refill demand. After existing pagination and causal gap work settle,
+it uses the ordinary account-scheduled backward-page path once, independently
+of browser viewport demand. A further Clear while that page runs queues one new
+refill; it never creates concurrent pagination. Failure is the ordinary typed
+pagination failure, not a retry loop. Explicit pagination cancellation discards
+pending refill demand; actor replacement/shutdown drops it with that actor.
+The replacement vector comes exclusively from the SDK's own diff stream, not a
+separate stored snapshot. Thread drafts and focused navigation do not acquire
+room-reset refill behavior.
+
+```mermaid
+stateDiagram-v2
+    [*] --> NoRefill
+    NoRefill --> RefillPending: accepted room SDK Clear
+    RefillPending --> RefillPending: another Clear / coalesce
+    RefillPending --> NoRefill: pagination and causal gap work idle / start one ordinary page
+    RefillPending --> NoRefill: explicit cancellation or actor retirement
+```
+
 
 The SDK `Timeline` is the authoritative timeline source. Each timeline actor owns
 one relay task and a monotonically increasing relay generation. Normal SDK
@@ -2343,12 +2370,28 @@ stateDiagram-v2
   `LiveSignalsChanged` after existing profile/room-list effects. Duplicate
   thumbnail state and unrelated MXCs are inert; no new action or renderer-side
   profile join is required.
-- Visible avatar demand is a bounded renderer request: intersection cleanup
-  releases its reference, Tauri returns only an opaque decimal request sequence,
-  and Core cancels the matching waiter or active/queued fetch without publishing
-  a terminal event for the released demand. Shared MXCs remain single-flight
-  until their final consumer releases them; account teardown still uses the
-  session-generation fence.
+- Scoped full-reader avatar observations are bounded, connection-owned, account/session-qualified
+  scope updates containing stable source identities/windows and monotonically
+  ordered revisions, not renderer-selected MXCs. Retired/stale or oversized input
+  is rejected rather than truncated. Each scope admits at most 256 visible and
+  eight prefetch identities, using the existing 64-scope budget. Rust resolves and
+  serializes demand, prioritizing visible resources before prefetch. AppActor's
+  latest-wins watch handoff makes scope removal durable; it must not depend on a
+  best-effort cancellation message. AccountActor reconciles the demand using its
+  existing six active/256 queued downloader; excess live demand is deferred and
+  reconsidered as capacity becomes available, not lost or put in an unbounded
+  queue. React owns neither a demand/ref-count registry nor retries for this
+  migrated path. Other avatar surfaces retain their existing bridge under the
+  [user-approved delivery scope](../superpowers/specs/2026-09-09-issue839-avatar-demand-completion.md#current-delivery-scope-supersedes-the-original-migration-gates-below);
+  their full migration is not a completion claim or requirement of this batch.
+  Core cancels
+  a released waiter's active/queued fetch without a terminal event for that
+  released demand. Shared MXCs remain single-flight until their final consumer
+  releases them; account teardown still uses the session-generation fence. Within one session, a completion must also match the
+  currently registered fetch task identity for that MXC. An already queued result
+  from a canceled task must not settle or remove a later replacement's waiters,
+  populate its cache, or decrement its active-fetch count. The existing task
+  handle supplies this identity; no second fetch-generation counter is needed.
 - The existing timeline media download contract emits byte counts only and does
   not put downloaded bytes in React state. Avatar thumbnail source references
   are opaque app-owned handles produced by Rust/platform media handling;

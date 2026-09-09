@@ -247,12 +247,40 @@ async fn installed_scope_owns_reader_leases_until_retirement_and_delivery_releas
             consumer.resource(scope.id(), revision, &reference).err(),
             Some(ScopeError::InvalidRevision)
         );
+        assert_eq!(
+            consumer.avatar_source(scope.id(), revision).err(),
+            Some(ScopeError::InvalidRevision)
+        );
         consumer.ack_model(scope.id(), revision).unwrap();
+        {
+            let source = consumer.avatar_source(scope.id(), revision).unwrap();
+            assert_eq!(
+                source.avatar_mxc("@reader:example.test").unwrap(),
+                Some("mxc://example.test/installed")
+            );
+            assert_eq!(
+                source.avatar_mxc("@foreign:example.test"),
+                Err(ScopeError::InvalidModel)
+            );
+        }
+        assert_eq!(
+            consumer
+                .avatar_source(
+                    scope.id(),
+                    koushi_protocol::view::ViewRevision(revision.0 + 1)
+                )
+                .err(),
+            Some(ScopeError::InvalidRevision)
+        );
         let foreign = registry
             .consumer(koushi_protocol::RuntimeConnectionId(1))
             .unwrap();
         assert_eq!(
             foreign.resource(scope.id(), revision, &reference).err(),
+            Some(ScopeError::NotOwned)
+        );
+        assert_eq!(
+            foreign.avatar_source(scope.id(), revision).err(),
             Some(ScopeError::NotOwned)
         );
         assert_eq!(
@@ -308,6 +336,10 @@ async fn installed_scope_owns_reader_leases_until_retirement_and_delivery_releas
             Some(ScopeError::SourceUnavailable)
         );
         consumer.retire();
+        assert_eq!(
+            consumer.avatar_source(scope.id(), revision).err(),
+            Some(ScopeError::Closed)
+        );
         assert_eq!(
             consumer.resource(scope.id(), revision, &reference).err(),
             Some(ScopeError::Closed)

@@ -83,6 +83,7 @@ const SKIP_KEYCHAIN_PERSISTENCE_ENV: &str = "KOUSHI_SKIP_KEYCHAIN_PERSISTENCE";
 pub(crate) struct ReaderSubscriptionEntry {
     pub(crate) subscription: Arc<TokioMutex<ReaderSubscription>>,
     pub(crate) close: ReaderSubscriptionCloser,
+    pub(crate) control: koushi_core::ReaderSubscriptionControl,
 }
 
 pub struct CoreRuntimeState {
@@ -1041,6 +1042,7 @@ pub fn run() {
             commands::views::receive_receipt_reader,
             commands::views::read_receipt_reader_resource,
             commands::views::update_receipt_reader_window,
+            commands::views::observe_receipt_reader_avatars,
             commands::views::ack_receipt_reader,
             commands::views::close_receipt_reader,
             commands::search::submit_search,
@@ -1048,6 +1050,7 @@ pub fn run() {
             commands::search::start_room_crawl,
             commands::search::stop_room_crawl,
             commands::directory::query_directory,
+            commands::room::preview_room_address,
             commands::room::create_room,
             commands::room::create_space,
             commands::directory::join_directory_room,
