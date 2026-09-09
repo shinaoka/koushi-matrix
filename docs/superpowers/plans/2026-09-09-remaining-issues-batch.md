@@ -116,6 +116,16 @@ contract/surface requirements before changing ownership, and obtain the requeste
 actual bounded-avatar request evidence on disposable servers (live-signals pass
 alone does not prove avatar request counts). No code changes for #839 yet.
 
+### #839 remaining architecture proposal
+
+Prepared [the shared-demand completion proposal](../specs/2026-09-09-issue839-avatar-demand-completion.md)
+from the existing scope registry, account downloader, receipt resource and profile
+invalidation sources. It records newly inspected Element Web/X iOS lifecycle
+behavior with exact revisions, reuse/retirement boundaries, explicit bounds and
+pre-GUI local-server evidence. It is a proposal awaiting canon-change approval,
+not an implemented or verified shared-demand contract. No new state framework or
+second downloader has been introduced.
+
 ### #839 same-session replacement race
 
 Found a separate concrete bug in the existing shared downloader: after the final
@@ -316,6 +326,44 @@ runner tests passed afterward. A fresh complete frontend run now passes all
 1300 tests across 112 files (`/tmp/koushi-batch-frontend-latest.log`). This supersedes
 the earlier failing full-run result, but is not proof of the unfinished #839
 scope migration or final PR/merge gates.
+
+## Browser regression checkpoint while #839 approval is pending
+
+Ran the changed real-App Playwright scenarios together on the current batch:
+thread Opening→Open/Closed, inline math baseline/overflow, and public room address
+manual editing/collision/retry/IME. All four passed with one worker
+(`/tmp/koushi-batch-browser-checkpoint.log`). This is Chromium evidence, not the
+required macOS WebView evidence. The proposed #839 contract remains unapproved
+and unimplemented; this check does not authorize its implementation.
+
+## Additional Rust gates while #839 approval is pending
+
+Completed previously unrun full package checks on the existing implementation:
+
+- Tauri `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib`:
+  136 passed, zero failed/ignored (`/tmp/koushi-batch-tauri-full.log`).
+- `cargo test -p koushi-state -p koushi-protocol`: 844 passed across 53 test
+  suite summaries, including doctests, zero failed/ignored
+  (`/tmp/koushi-batch-state-protocol-full.log`).
+- `cargo test -p koushi-sdk`: 229 passed across 10 suite summaries, zero
+  failed/ignored (`/tmp/koushi-batch-sdk-full.log`).
+
+All commands exited zero within the explicit 120-second bounds. These are
+functional checks, not overhead benchmarks. The #839 proposal has not been
+approved or implemented; the goal is still incomplete and these results are not
+final submitted-SHA CI or native macOS evidence.
+
+## Boundary and privacy gate checkpoint
+
+SDK gitlink, protocol/QA boundary, Tauri adapter boundary, command snapshot
+contract and domain platform-dependency checks passed. The leaf-crate gate found
+that the new `koushi-core-testkit/tests/room_address.rs` was missing from its exact
+integration-target inventory. Added only that target; all eight boundary-checker
+tests and the unchanged leaf boundary gate then passed. Diagnostic test isolation
+also exited zero. The repository secret scanner passed for tracked files.
+Logs: `/tmp/koushi-batch-boundary-gates.log` (initial inventory failure),
+`/tmp/koushi-batch-boundary-gates-followup.log` (correction and remaining checks).
+This inventory correction does not implement or approve the #839 proposal.
 
 ## Native evidence availability checkpoint
 
