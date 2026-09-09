@@ -8,64 +8,6 @@ use std::{
     sync::Arc,
 };
 
-/// Stable identities observed by a surface, never renderer-selected media URLs.
-/// Core must authorize the source, account and revision before resolving them.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum AvatarTarget {
-    OwnProfile,
-    User { room_id: String, user_id: String },
-    Room { room_id: String },
-    Space { space_id: String },
-    Invite { room_id: String },
-}
-
-impl fmt::Debug for AvatarTarget {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::OwnProfile => "OwnProfile",
-            Self::User { .. } => "User(..)",
-            Self::Room { .. } => "Room(..)",
-            Self::Space { .. } => "Space(..)",
-            Self::Invite { .. } => "Invite(..)",
-        })
-    }
-}
-
-/// Resolve existing projected state without a profile fetch or membership probe.
-/// A known room profile's missing avatar is authoritative, not a cache miss.
-pub fn resolve_avatar_target<'a>(
-    state: &'a crate::AppState,
-    target: &AvatarTarget,
-) -> Option<&'a str> {
-    let avatar = match target {
-        AvatarTarget::OwnProfile => state.profile.own.avatar.as_ref(),
-        AvatarTarget::User { room_id, user_id } => state
-            .profile
-            .room_users
-            .get(room_id)
-            .and_then(|users| users.get(user_id))
-            .or_else(|| state.profile.users.get(user_id))
-            .and_then(|profile| profile.avatar.as_ref()),
-        AvatarTarget::Room { room_id } => state
-            .rooms
-            .iter()
-            .find(|room| &room.room_id == room_id)
-            .and_then(|room| room.avatar.as_ref()),
-        AvatarTarget::Space { space_id } => state
-            .spaces
-            .iter()
-            .find(|space| &space.space_id == space_id)
-            .and_then(|space| space.avatar.as_ref()),
-        AvatarTarget::Invite { room_id } => state
-            .invites
-            .iter()
-            .find(|invite| &invite.room_id == room_id)
-            .and_then(|invite| invite.avatar.as_ref()),
-    };
-    avatar.map(|avatar| avatar.mxc_uri.as_str())
-}
-
 /// Shared with Core's existing admission budget; not a separate avatar pool.
 pub const VIEW_SCOPE_CAPACITY: usize = 64;
 pub const AVATAR_VISIBLE_CAPACITY: usize = 256;

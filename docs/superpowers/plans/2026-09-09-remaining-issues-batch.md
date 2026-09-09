@@ -1348,6 +1348,17 @@ problems and existing fixes, not full avatar unification. Tuwunel's known
 applicable local/CI gates, human PR approval and merge/main verification remain
 required. Do not close the broad #839 requirements as fully implemented.
 
+## Submission review: unused target resolver removed
+
+Repository-wide caller inspection found AvatarTarget/resolve_avatar_target used
+only by their own tests, not the shipped reader path. Removed the unshipped
+all-surface enum, resolver and its tests rather than retaining preparation for
+a deferred feature. The active AvatarDemandState and its tests remain. Rust fmt
+check passed; Core lib 1,031 passed/nine ignored and State lib 42 passed.
+Evidence: `/tmp/koushi-final-state-core.log`. This is not the full State integration
+suite or final workspace gate. Fetched main has additional fixes; integrate those
+before collecting the remaining final evidence.
+
 ## Current next steps
 
 - Diagnostic wording: the report now explicitly describes avatar counts as items,
