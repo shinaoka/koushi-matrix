@@ -234,6 +234,7 @@ export function TimelineItemRow({
   onRequestAvatarThumbnail,
   presence,
   profile,
+  ownAvatar,
   reactionSenderLabelsByUserId = {},
   mentionProfileUsers = {},
   mentionCandidates = [],
@@ -301,6 +302,7 @@ export function TimelineItemRow({
   onRequestAvatarThumbnail?: (mxcUri: string) => void | Promise<void | (() => void)>;
   presence?: PresenceKind;
   profile?: UserProfile;
+  ownAvatar?: UserProfile["avatar"];
   reactionSenderLabelsByUserId?: Readonly<Record<string, string>>;
   mentionProfileUsers?: Record<string, UserProfile>;
   mentionCandidates?: MentionCandidate[];
@@ -625,7 +627,7 @@ export function TimelineItemRow({
     canForward;
   const canShowThreadSummary = Boolean(showThreadSummary && eventId && item.thread_summary);
   const canShowReactions = !isRedacted && !isEditing && item.reactions.length > 0;
-  const senderAvatar = resolvedAvatar(item.sender_avatar, profile?.avatar);
+  const senderAvatar = resolvedAvatar(item.sender_avatar, profile?.avatar, ownAvatar);
   const senderDisplayLabel = peopleFacingLabel(item.sender_label);
   const senderProfileUserId =
     isContinuation && density === "compact" ? null : item.sender;

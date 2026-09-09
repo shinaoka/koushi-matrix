@@ -1044,6 +1044,7 @@ export function TimelinePane({
               resolveComposerKeyAction={resolveComposerKeyActionStable}
               liveSignals={snapshot.state.domain.live_signals}
               profileUsers={snapshot.state.domain.profile.users}
+              ownAvatar={snapshot.state.domain.profile.own.avatar}
               pinnedEventIds={pinnedEventIds}
               forwardDestinations={forwardDestinations}
               onSetLocalUserAlias={onSetLocalUserAliasStable}

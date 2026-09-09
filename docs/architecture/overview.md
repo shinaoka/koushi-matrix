@@ -565,7 +565,11 @@ An in-process actor system in `koushi-core`:
   maps, orders readers, or formats receipt dates. It performs only DOM visibility
   demand discovery for avatar thumbnails; the App registry reference-counts
   visible/snapshot consumers and Core owns download, retry, capacity, cancellation,
-  and terminal state. Visibility qualifies both the committed timeline display and
+  and terminal state. Timeline rows and their diagnostics may reuse the Rust-owned
+  ready own-profile thumbnail when its MXC exactly matches the selected sender
+  avatar, even if self is absent from the user-profile map. This reuse changes
+  neither the sender image identity nor the visible-demand boundary.
+  Visibility qualifies both the committed timeline display and
   receipt-model revisions. The old room-wide full-reader map is removed from the
   production path rather than retained as a fallback or embedded TimelineItem
   cache.
