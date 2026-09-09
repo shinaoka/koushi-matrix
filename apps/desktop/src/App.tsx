@@ -4314,7 +4314,7 @@ export function App() {
     }
     const current = getAppStoreSnapshot();
     const opened =
-      current?.state.ui.thread.kind === "open" &&
+      (current?.state.ui.thread.kind === "opening" || current?.state.ui.thread.kind === "open") &&
       current.state.ui.thread.room_id === roomId &&
       current.state.ui.thread.root_event_id === rootEventId;
     if (!opened) {

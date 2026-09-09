@@ -399,7 +399,7 @@ export function DiagnosticDialog({
           <button
             className="icon-button"
             type="button"
-            aria-label={t("action.close")}
+            aria-label={t("action.close", { title: t("diagnostics.title") })}
             onClick={onClose}
           >
             <X size={ICON_SIZE.small} />

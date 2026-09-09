@@ -864,7 +864,10 @@ export function ContextualRightPanel({
   return (
     <aside className="thread-pane" aria-label={t("panel.context")}>
       <PanelHeader title={t("panel.thread")} onClose={onCloseThread} />
-      <section className="thread-scroll thread-timeline-panel">
+      <section className="thread-scroll thread-timeline-panel" aria-busy={threadState.kind === "opening"}>
+        {threadState.kind === "opening" && threadTimelineKeyValue && timelineTransport ? (
+          <div className="thread-root-placeholder" role="status">{t("timeline.openingThread")}</div>
+        ) : null}
         {threadTimelineKeyValue && threadRoomId && timelineTransport ? (
           <TimelineView
             key={`${threadRoomId}:${rootEventId}`}

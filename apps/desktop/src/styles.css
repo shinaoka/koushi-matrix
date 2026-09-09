@@ -3645,10 +3645,11 @@ button:disabled {
 }
 
 .message-math {
-  display: inline-block;
+  /* Flex exports the formula's baseline even when this box scrolls. */
+  display: inline-flex;
   max-inline-size: 100%;
   overflow-x: auto;
-  vertical-align: -0.12em;
+  vertical-align: baseline;
 }
 
 .message-math.is-block {
