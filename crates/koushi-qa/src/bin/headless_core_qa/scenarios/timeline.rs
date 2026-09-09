@@ -3550,6 +3550,7 @@ pub(super) async fn run_live_signals_stage(
     key_b: &TimelineKey,
     event_id: &str,
     expected_reader_user_id: &str,
+    proxy: &QaTcpProxy,
 ) -> Result<(), String> {
     let room_id = timeline_key_room_id(key_b)
         .ok_or_else(|| "live signals: expected room timeline key".to_owned())?
@@ -3579,7 +3580,7 @@ pub(super) async fn run_live_signals_stage(
         "read receipt state",
     )
     .await?;
-    reader_scope::verify_live_reader_scope(conn_a, key_a, event_id, expected_reader_user_id)
+    reader_scope::verify_live_reader_scope(conn_a, key_a, event_id, expected_reader_user_id, proxy)
         .await?;
     println!("reader_scope_live=ok");
     println!("read_receipt=ok");

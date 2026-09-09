@@ -23,6 +23,30 @@ async function inBatches(values, operation) {
   }
 }
 
+export async function setFixtureAvatar(homeserver, registration) {
+  const authorization = `Bearer ${registration.access_token}`;
+  const upload = await fetch(`${homeserver}/_matrix/media/v3/upload`, {
+    method: "POST",
+    headers: { authorization, "content-type": "image/png" },
+    body: PNG
+  });
+  if (!upload.ok) throw new Error("avatar fixture upload failed");
+  const { content_uri: uri } = await upload.json();
+  if (typeof uri !== "string" || !uri.startsWith("mxc://")) {
+    throw new Error("avatar fixture upload identity missing");
+  }
+  const profile = await fetch(
+    `${homeserver}/_matrix/client/v3/profile/${encodeURIComponent(registration.user_id)}/avatar_url`,
+    {
+      method: "PUT",
+      headers: { authorization, "content-type": "application/json" },
+      body: JSON.stringify({ avatar_url: uri })
+    }
+  );
+  if (!profile.ok) throw new Error("avatar fixture profile update failed");
+  return uri;
+}
+
 /** Seed server data only; returned metadata contains no credentials or MXCs. */
 export async function seedAvatarDemandFixture({ homeserver, ownerAccessToken, runId }) {
   const { room_id: roomId } = await createRoom(homeserver, ownerAccessToken, {
@@ -37,27 +61,11 @@ export async function seedAvatarDemandFixture({ homeserver, ownerAccessToken, ru
       `qa_avatar_${runId}_${String(index).padStart(4, "0")}`,
       `qa-avatar-password-${runId}-${index}`
     );
-    const authorization = `Bearer ${registration.access_token}`;
-    const upload = await fetch(`${homeserver}/_matrix/media/v3/upload`, {
-      method: "POST",
-      headers: { authorization, "content-type": "image/png" },
-      body: PNG
-    });
-    if (!upload.ok) throw new Error("avatar fixture upload failed");
-    const { content_uri: uri } = await upload.json();
-    if (typeof uri !== "string" || !uri.startsWith("mxc://") || mediaUris.has(uri)) {
+    const uri = await setFixtureAvatar(homeserver, registration);
+    if (mediaUris.has(uri)) {
       throw new Error("avatar fixture requires distinct media resources");
     }
     mediaUris.add(uri);
-    const profile = await fetch(
-      `${homeserver}/_matrix/client/v3/profile/${encodeURIComponent(registration.user_id)}/avatar_url`,
-      {
-        method: "PUT",
-        headers: { authorization, "content-type": "application/json" },
-        body: JSON.stringify({ avatar_url: uri })
-      }
-    );
-    if (!profile.ok) throw new Error("avatar fixture profile update failed");
     await joinRoom(homeserver, registration.access_token, roomId);
     credentials.push(registration.access_token);
   });

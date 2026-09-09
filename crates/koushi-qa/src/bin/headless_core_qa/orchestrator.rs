@@ -115,10 +115,10 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
 
     // Measure actual media HTTP traffic through the existing local QA proxy.
     // Keep it alive for the whole runtime/session lifetime, including restarts.
-    let media_proxy = scenario
-        .should_run_stage(QaStage::Media)
-        .then(|| super::diagnostics::QaTcpProxy::start(&config.homeserver))
-        .transpose()?;
+    let media_proxy = (scenario.should_run_stage(QaStage::Media)
+        || scenario.should_run_stage(QaStage::LiveSignals))
+    .then(|| super::diagnostics::QaTcpProxy::start(&config.homeserver))
+    .transpose()?;
     let config = media_proxy
         .as_ref()
         .map(|proxy| config.with_homeserver(proxy.homeserver_url()))
@@ -761,6 +761,7 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
             &key_b,
             &event1_id,
             &account_key_b.0,
+            media_proxy.as_ref().expect("live signals uses media proxy"),
         )
         .await?;
     }
@@ -864,7 +865,8 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
         println!("unpin_event=ok");
     }
 
-    if let Some(proxy) = &media_proxy {
+    if scenario.should_run_stage(QaStage::Media) {
+        let proxy = media_proxy.as_ref().expect("media stage uses media proxy");
         run_media_stage(&mut conn_a, &mut conn_b, &key_a, &key_b, proxy).await?;
     }
 

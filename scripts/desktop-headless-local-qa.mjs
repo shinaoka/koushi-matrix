@@ -35,6 +35,7 @@ import {
 } from "./lib/qa-token-contract.mjs";
 import { writeValidatedQaOutputFiles } from "./lib/qa-output-artifacts.mjs";
 import { assertSdkSubmoduleSynced } from "./lib/sdk-submodule-status.mjs";
+import { setFixtureAvatar } from "./lib/avatar-demand-fixture.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const localSecretsRoot = join(repoRoot, ".local-secrets", "headless-local-qa");
@@ -238,7 +239,7 @@ async function runForServer(serverKind, scenario) {
     }
 
     if (runCoreQa) {
-      const coreUsers = fixture ?? (await registerQaUsers(homeserver, "core"));
+      const coreUsers = fixture ?? (await registerQaUsers(homeserver, "core", scenario));
       if (!fixture && serverKind === "synapse") {
         writeQaFixture(runDir, {
           serverKind,
@@ -262,7 +263,7 @@ async function runForServer(serverKind, scenario) {
   }
 }
 
-async function registerQaUsers(homeserver, label) {
+async function registerQaUsers(homeserver, label, scenario) {
   const userSuffix = `${label}_${safeTimestamp()}`;
   const userA = `qa_a_${userSuffix}`;
   const userB = `qa_b_${userSuffix}`;
@@ -271,7 +272,10 @@ async function registerQaUsers(homeserver, label) {
   const passwordB = `koushi-desktop-local-b-${userSuffix}`;
   const passwordC = `koushi-desktop-local-c-${userSuffix}`;
   await registerUser(homeserver, userA, passwordA);
-  await registerUser(homeserver, userB, passwordB);
+  const registrationB = await registerUser(homeserver, userB, passwordB);
+  if (scenario === "live_signals" || scenario === "all") {
+    await setFixtureAvatar(homeserver, registrationB);
+  }
   await registerUser(homeserver, userC, passwordC);
   return { userA, passwordA, userB, passwordB, userC };
 }

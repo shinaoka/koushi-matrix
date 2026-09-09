@@ -1023,6 +1023,37 @@ it does not assert avatar HTTP counts. Connecting the 1,500-reader fixture to
 this observation path, media bounds/shared/cache/cancellation checks, remaining
 GUI migration and final delivery are still required.
 
+## #839 live observation → download → scoped bytes and cache reopen
+
+The Core live-signals fixture now assigns its reader B a real PNG before login,
+using the same upload/profile setter as the 1,500-reader builder. Only Core
+`live_signals`/`all` fixtures opt into this setup; SDK-only and other scenarios
+retain their setup. Live-signals sessions now use the existing measured proxy,
+without accidentally running the media stage for a live-signals-only scenario.
+
+The public reader check observes B, waits for Ready, and reads the PNG through the
+ACK-qualified scoped resource API. It closes/reopens the source, accepts Ready
+from either the first model or a subsequent model, and validates scoped bytes
+again. Demand remains open for a 250 ms bounded no-additional-HTTP observation
+interval per phase. This interval is not an AccountActor barrier or an unlimited
+future guarantee. Both closed scopes reject late observations.
+
+On Tuwunel and Synapse the initial phase recorded one HTTP media read and the
+reopen phase still recorded one total read (zero extra). Both complete
+live-signals lanes passed. An intermediate reopen timeout was a QA waiting error:
+it waited for another Ready delivery despite a Ready first model, not a product
+cache failure. No new product RED is claimed.
+
+32 focused frontend/script tests, 104 headless-core-qa unit tests, typecheck,
+lint and Rust test-structure checks passed. Evidence:
+`/tmp/koushi-reader-cache-both-corrected.log` and
+`/tmp/koushi-reader-download-final-checks.log`.
+
+This closes the one-reader real download/scoped-byte/cache-reopen evidence gap.
+The 1,500-reader fixture is not yet connected to Core observations; its request
+bounds, live in-flight cancellation/shared/account-retirement cases, remaining
+surfaces and final delivery remain open.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated
