@@ -11,6 +11,8 @@ import type {
   SettingsState
 } from "../domain/types";
 
+const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+
 const baseRoom: RoomSummary = {
   room_id: "!room-alpha:example.invalid",
   display_name: "Alpha Room",
@@ -93,6 +95,8 @@ afterEach(() => {
   cleanup();
   setActiveLocaleProfile("en", "none");
   vi.restoreAllMocks();
+  if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard);
+  else Reflect.deleteProperty(navigator, "clipboard");
 });
 
 describe("RoomInfoPanel", () => {
@@ -254,7 +258,7 @@ describe("RoomInfoPanel", () => {
     setActiveLocaleProfile(locale, "none");
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-    render(
+    const panel = (alias: string | null, link: string) => (
       <RoomInfoPanel
         room={{ ...baseRoom, is_encrypted: true }}
         roomNotificationSettings={idleSettings}
@@ -276,9 +280,9 @@ describe("RoomInfoPanel", () => {
               can_ban: true,
               can_unban: false
             },
-            canonical_alias: "#alpha:example.invalid",
+            canonical_alias: alias,
             alternate_aliases: [],
-            share_link: "https://matrix.to/#/%23alpha%3Aexample.invalid",
+            share_link: link,
             members: []
           },
           operation: { kind: "idle" }
@@ -286,6 +290,7 @@ describe("RoomInfoPanel", () => {
       />
     );
 
+    const { rerender } = render(panel("#alpha:example.invalid", "https://matrix.to/#/%23alpha%3Aexample.invalid"));
     if (locale === "en") {
       const status = screen.getByLabelText("Room status");
       expect(status.textContent).toContain("Encrypted");
@@ -299,6 +304,26 @@ describe("RoomInfoPanel", () => {
     writeText.mockRejectedValueOnce(new Error("synthetic failure"));
     await act(async () => fireEvent.click(screen.getByRole("button", { name: t("room.copyShareLink") })));
     expect(screen.getByRole("status").textContent).toBe(t("room.shareLinkCopyFailed"));
+
+    const changedLink = "https://matrix.to/#/%23changed%3Aexample.invalid";
+    rerender(panel("#changed:example.invalid", changedLink));
+    expect(screen.queryByText("#alpha:example.invalid")).toBeNull();
+    expect(screen.getByText("#changed:example.invalid")).toBeTruthy();
+    expect(screen.getByText(changedLink)).toBeTruthy();
+    expect(screen.queryByRole("status")).toBeNull();
+
+    let finishCopy!: () => void;
+    writeText.mockImplementationOnce(() => new Promise<void>(resolve => { finishCopy = resolve; }));
+    fireEvent.click(screen.getByRole("button", { name: t("room.copyShareLink") }));
+    const roomIdLink = "https://matrix.to/#/!room-alpha:example.invalid?via=example.invalid";
+    rerender(panel(null, roomIdLink));
+    await act(async () => finishCopy());
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByText("#changed:example.invalid")).toBeNull();
+    expect(screen.getByText(roomIdLink)).toBeTruthy();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: t("room.copyShareLink") })));
+    expect(writeText).toHaveBeenLastCalledWith(roomIdLink);
+    expect(screen.getByRole("status").textContent).toBe(t("room.shareLinkCopied"));
   });
 
   test("labels direct messages distinctly from rooms", () => {

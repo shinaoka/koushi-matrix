@@ -244,7 +244,17 @@ English/Japanese copy-success and copy-failure coverage now passes as part of
 22 RoomInfoPanel tests. Typecheck/lint passed for the production change; subsequent
 locale test expansion also passed. SDK alias-change/no-alias coverage and local
 public sharing join evidence are already recorded above. Additional UI alias-change/
-no-alias lifecycle coverage, whole frontend suite and final gates remain.
+no-alias lifecycle coverage, whole frontend suite and final gates remain at that checkpoint.
+
+Follow-up: both locales now exercise changed canonical aliases, a Rust-projected
+room-ID/via URL without an alias, clipboard failures, and rejection of a late copy
+completion after the link changes. All 22 RoomInfoPanel tests passed; clipboard
+mock state is restored after each test. Whole Vitest run: 1294 passed, one failed
+because the required DesktopApi migration table omitted previewRoomAddress.
+Classified it as a pure typed-value method in the canonical migration map; the
+unchanged three-test contract suite then passed. Typecheck, lint and production
+build passed (existing large-chunk warning). Full final gates remain; no all-green
+whole-suite run is claimed for the prior failing invocation.
 
 ## Remaining investigation and implementation
 
