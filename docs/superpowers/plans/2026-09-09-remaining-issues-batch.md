@@ -616,6 +616,18 @@ This supplies reader-specific live-source admission, not the complete observatio
 command or other surface families. Budgeted demand commit, protocol/adapter/GUI
 wiring and 1,500-target server evidence remain pending.
 
+## #839 non-current demand input evidence
+
+Added a focused actor test for input-side account/generation mismatch, distinct
+from existing late-completion tests. Each case waits for an actual current-account
+media request to start, then publishes an empty demand snapshot with a different
+account or session generation. Both valid requests still settle; exactly two
+server requests occur across the cases. Thus a mismatched empty snapshot cannot
+cancel the current account's fetch. The existing implementation passed without a
+production change. Log: `/tmp/koushi-avatar-stale-input.log`; test-structure and
+whitespace checks also passed. The payload is synthetic transport data, not a
+native image-rendering check. Observation command/GUI integration remains pending.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated

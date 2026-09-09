@@ -506,6 +506,78 @@ async fn scoped_avatar_rehydrates_evicted_ready_bytes_from_sdk_cache() {
 }
 
 #[tokio::test]
+async fn stale_scoped_demand_does_not_cancel_the_current_accounts_fetch() {
+    let _cache_guard = crate::renderable_thumbnail::test_cache_lock();
+    let server = MatrixMockServer::new().await;
+    server
+        .mock_authed_media_download()
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(vec![1, 2, 3])
+                .set_delay(Duration::from_millis(200)),
+        )
+        .expect(2)
+        .mount()
+        .await;
+    let session = test_session(&server).await;
+    let account_id = session.info.user_id.clone();
+    let cred_dir = tempdir().unwrap();
+    let data_dir = tempdir().unwrap();
+    let (handle, mut actions, _events) = spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+    assert!(
+        handle
+            .install_residency_test_session(std::sync::Arc::new(session))
+            .await
+    );
+    let context = handle.avatar_demand_context(account_id);
+    for case in 0..2 {
+        let uri = format!("mxc://localhost/current-context-{case}");
+        let mut demand = koushi_state::AvatarDemandState::new(context.clone());
+        demand.open(1).unwrap();
+        demand
+            .replace(&context, 1, 1, vec![Some(uri.clone())], vec![])
+            .unwrap();
+        handle.publish_avatar_demand(Some(std::sync::Arc::new(demand)));
+        timeout(Duration::from_secs(3), async {
+            loop {
+                let requests = server.received_requests().await.unwrap_or_default();
+                if requests.iter().any(|request| {
+                    request
+                        .url
+                        .path()
+                        .ends_with(&format!("/current-context-{case}"))
+                }) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("current demand is running before stale input");
+        let mut stale = context.clone();
+        if case == 0 {
+            stale.account_id = "@other:example.invalid".into();
+        } else {
+            stale.session_generation += 1;
+        }
+        // An empty snapshot would cancel the valid fetch if admitted.
+        handle.publish_avatar_demand(Some(std::sync::Arc::new(
+            koushi_state::AvatarDemandState::new(stale),
+        )));
+        timeout(Duration::from_secs(3), async {
+            'settled: loop {
+                for action in actions.recv().await.unwrap() {
+                    if matches!(action, AppAction::AvatarThumbnailUpdated { mxc_uri, thumbnail: AvatarThumbnailState::Ready { .. } } if mxc_uri == uri) {
+                        break 'settled;
+                    }
+                }
+            }
+        }).await.expect("stale input must preserve the active account demand");
+    }
+    shutdown_and_ack(&handle).await;
+}
+
+#[tokio::test]
 async fn scoped_avatar_watch_cancels_active_and_queued_demand() {
     let _cache_guard = crate::renderable_thumbnail::test_cache_lock();
     let server = MatrixMockServer::new().await;
