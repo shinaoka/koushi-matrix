@@ -304,6 +304,9 @@ rc_joins:
   remote:
     per_second: 1000
     burst_count: 1000
+rc_joins_per_room:
+  per_second: 1000
+  burst_count: 1000
 rc_invites:
   per_room:
     per_second: 1000

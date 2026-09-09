@@ -161,6 +161,12 @@ the lane that shows the symptom. Lane commands are in
 
 ## Local homeserver core QA
 
+- **Synapse returns 429 while populating one room despite high local/remote join limits.**
+  `rc_joins_per_room` is separate from `rc_joins.local` and `.remote`; the pinned
+  Synapse defaults it to one join/second with a burst of ten. The disposable QA
+  config raises this separate limit too. Use a newly generated fixture config
+  when testing that change; do not alter production or unrelated servers.
+
 - **`login A: timed out waiting for LoggedIn event`.** Read the `phase=…` token
   in the message before re-running; it names the session phase and has
   identified the cause in a single run. `phase=rechecking_trust` means the

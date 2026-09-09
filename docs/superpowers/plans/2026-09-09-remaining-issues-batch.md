@@ -951,6 +951,35 @@ other script modules. Evidence: `/tmp/koushi-avatar-fixture-final.log`. These ar
 fixture tests, not 1,500-reader real-server or avatar-demand acceptance evidence.
 No product RED or backend-scale completion claim is made.
 
+## #839 full fixture-generation check and Synapse setup correction
+
+The bounded verification driver `/tmp/koushi-check-avatar-fixture.mjs` uses the
+existing server start/stop helpers and the committed fixture builder, writes only
+room/event/count metadata into its private run directory, and stops its owned
+server. Tuwunel created all 1,500 readers successfully. Synapse initially failed:
+16 joins succeeded and eight returned HTTP 429. The pinned Synapse 1.157.0 source
+confirms `rc_joins_per_room` separately defaults to one join/second, burst ten;
+existing local QA `rc_joins.local/remote` settings do not override it.
+
+A failing config test precedes adding the separate local-only setting at the same
+1000/1000 limits as other QA rate limits. The corrected attempt produced 1,208
+registrations (plus owner) without 429 before its 110-second investigation limit.
+It timed out and is not success evidence; process/container inspection found no
+remaining server owned by that attempt. Unrelated containers were left untouched.
+
+The complete 1,500-reader fixture-generation check is now budgeted as a full gate
+at 240 seconds per server (230-second process deadline plus cleanup margin):
+`timeout --kill-after=8s 230s node /tmp/koushi-check-avatar-fixture.mjs synapse`.
+This longer attempt is based on measured progress, not an unbounded retry. It
+completed successfully: Synapse created all 1,500 readers, distinct media resources
+and target receipts. Together with the earlier Tuwunel success, both fixture
+builders now have real-server evidence. The 15 local-homeserver helper tests also
+pass. Logs: `/tmp/koushi-avatar-fixture-tuwunel.log`,
+`/tmp/koushi-avatar-fixture-synapse-full.log`, and
+`/tmp/koushi-avatar-fixture-join-limit-{red,green}.log`.
+This remains fixture setup evidence only, not Core avatar-demand request bounds,
+cancellation, cache/reopen or final acceptance.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated
