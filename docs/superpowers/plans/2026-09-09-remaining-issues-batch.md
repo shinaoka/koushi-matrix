@@ -410,6 +410,32 @@ request with `aliasLocalpart: null`. It passed without a production change
 new live-server run. The audit does not close the issue or substitute for the
 remaining integrated gates, submitted-head CI, approval and merge.
 
+## #858 / #856 / #850 source-to-acceptance audit
+
+Re-read all three live Issue bodies and their checked-in regression tests. No
+successful test was rerun for this documentation-only audit.
+
+- **#858:** `DiagnosticDialog.test.tsx` resolves the accessible close name in
+  English/Japanese, rejects the raw placeholder and checks dismissal. This covers
+  the reported call-site defect. The Issue's suggested class-wide static
+  placeholder-argument checker and optional development warning have **not** been
+  implemented; do not claim class-wide prevention from this component test. Native
+  VoiceOver was not rerun on this Linux host.
+- **#856:** `mentionQuery.test.ts` covers start/space/newline, Japanese text and
+  punctuation, opening brackets, repeated triggers, emoji UTF-16 offsets,
+  semantic-atom boundaries and completed email text. `composer.mid-sentence.test.tsx`
+  checks main/thread cursor insertion, candidate display, both surrounding text
+  fragments, the resulting semantic mention and caret, and IME Enter suppression.
+  Existing RED→GREEN and full frontend results supply execution evidence.
+- **#850:** `thread-opening.spec.ts` admits Opening from a single actual-App pill
+  click, checks visible loading and a disabled composer, then supplies Open or
+  Closed and asserts the resulting UI with exactly one command. This covers the
+  specified admitted-generation race without a timing-dependent server fixture.
+  It is Chromium harness evidence, not a replay of the reporter's native test.
+
+These mappings are not Issue closure, final-SHA CI or a goal-completion audit.
+The #839 design approval and native #855 evidence remain outstanding.
+
 ## Native evidence availability checkpoint
 
 The current execution host reports Linux. Existing GitHub workflows include a
