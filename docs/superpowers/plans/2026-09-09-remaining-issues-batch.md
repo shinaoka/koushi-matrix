@@ -1414,6 +1414,27 @@ Evidence: `/tmp/koushi-final-core-both.log`,
 The dedicated Tuwunel 1,500-reader limitation is unchanged and is not included in
 this success claim.
 
+## PR preparation checkpoint
+
+On f2c91a91 code, the post-correction workspace gate passed again
+(`/tmp/koushi-final-workspace-notifications.log`). The standard browser gate
+`npm --prefix apps/desktop run test:ui-headless -- --workers=4` passed all 295
+Playwright cases and its preceding timeline-store tests. Wasm check passed.
+Diagnostic isolation, protocol/QA/platform/leaf boundary guards and their checker
+tests passed; cargo-deny and cargo-machete passed. Logs:
+`/tmp/koushi-final-{browser-all,wasm,boundary-guards,deny,machete}.log`.
+Existing large-chunk and unmatched-advisory-ignore warnings are not hidden.
+
+Preflight traced room preview/create/error/share routing, mention/IME and opening
+UI, reader observation/ACK/resource controls, scope source/session ownership,
+watch handoff/shared cancellation/cache, and reset refill/cancel paths. Both new
+Tauri commands are registered and have matching frontend invocations. The unused
+all-surface resolver was removed; no replacement abstraction was added. Final
+fetch showed main fully included. Required remote checks are frontend, Rust,
+macOS cargo check, invitations on both servers, QA binary, browser DOM and Windows
+ACL. Those remote results and human approval must still be collected before merge.
+#839 remains partial and #855 native remains user-deferred; do not auto-close them.
+
 ## Current next steps
 
 - Diagnostic wording: the report now explicitly describes avatar counts as items,
