@@ -19,10 +19,23 @@ pub(crate) struct PreparedModel {
     pub(super) installed: std::sync::Arc<InstalledRows>,
 }
 
-pub(super) struct InstalledRows {
+pub(crate) struct InstalledRows {
     pub(super) rows: Vec<InstalledRow>,
     pub(super) resources: Vec<crate::timeline::ReaderAvatarResource>,
     _bytes: ViewReservation,
+}
+
+impl InstalledRows {
+    pub(crate) fn avatar_mxc(&self, user_id: &str) -> Result<Option<&str>, ScopeError> {
+        if !self.rows.iter().any(|row| row.user_id == user_id) {
+            return Err(ScopeError::InvalidModel);
+        }
+        Ok(self
+            .resources
+            .binary_search_by(|resource| resource.user_id.as_str().cmp(user_id))
+            .ok()
+            .map(|index| self.resources[index].mxc_uri.as_str()))
+    }
 }
 
 pub(super) struct InstalledRow {

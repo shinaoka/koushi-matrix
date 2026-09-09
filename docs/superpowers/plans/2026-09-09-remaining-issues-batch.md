@@ -572,6 +572,28 @@ raw timeline/member/reader resolution where required, retained-data charging,
 protocol/adapter wiring and all GUI migrations before the typed identity path is
 live. The required 1,500-target local-server acceptance remains outstanding.
 
+## #839 installed reader identity admission
+
+Reused installed reader metadata as the Core-only source for stable user-ID
+lookup. The admission helper checks consumer ownership, live scope and the
+acknowledged installed revision; lookup rejects users outside that installed
+model and obtains an MXC only from existing Rust resource metadata. No MXC is
+returned to a renderer API. The existing resource-byte API now shares this
+admission path rather than duplicating its guards. Retaining the metadata Arc
+retains its existing budget charge and does not copy image bytes.
+
+Extended the installed-scope resource test with pre-ack, unknown-user,
+wrong-owner, wrong-revision and retired-scope checks. It initially failed for the
+absent API, then passed. All 17 lifecycle and 14 renderable-thumbnail tests also
+passed, plus test-structure/whitespace checks. Logs:
+`/tmp/koushi-avatar-source-red.log`, `/tmp/koushi-avatar-source-green.log`,
+`/tmp/koushi-avatar-source-regression.log`.
+
+This is installed-model admission, not complete live SDK/source qualification.
+The observation handler must still acquire the live source/generation guard,
+apply visible/prefetch bounds and feed budgeted resolved demand into the registry.
+The renderer migration and real-server scale evidence remain incomplete.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated

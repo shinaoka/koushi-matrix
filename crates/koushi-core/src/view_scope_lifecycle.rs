@@ -491,6 +491,23 @@ impl ViewConsumer {
         revision: ViewRevision,
         source_ref: &str,
     ) -> Result<Option<crate::renderable_thumbnail::RenderableThumbnailLease>, ScopeError> {
+        let installed = self.avatar_source(id, revision)?;
+        Ok(installed
+            .resources
+            .iter()
+            .filter_map(|resource| resource.lease.as_ref().ok())
+            .find(|lease| lease.source_ref() == source_ref)
+            .cloned())
+    }
+
+    /// Core-only installed-model admission. Live source qualification remains
+    /// with the observation handler. Retained metadata owns its existing byte
+    /// charge; callers resolve stable IDs without copying image bytes.
+    pub(crate) fn avatar_source(
+        &self,
+        id: ViewScopeId,
+        revision: ViewRevision,
+    ) -> Result<Arc<model::InstalledRows>, ScopeError> {
         let state = self
             .0
             .registry
@@ -514,7 +531,7 @@ impl ViewConsumer {
             .mailbox
             .lock()
             .expect("view mailbox poisoned")
-            .resource(revision, source_ref)
+            .installed_rows(revision)
     }
 
     pub fn ack_model(&self, id: ViewScopeId, revision: ViewRevision) -> Result<(), ScopeError> {
