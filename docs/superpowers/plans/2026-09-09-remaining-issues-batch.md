@@ -553,6 +553,25 @@ structure and whitespace checks. Logs: `/tmp/koushi-avatar-ready-eviction-red.lo
 This does not replace the remaining scoped resource-budget/lifetime integration,
 source resolver, GUI migration or 1,500-target local-server evidence.
 
+## #839 stable avatar identities and projected-state lookup
+
+Added the portable `AvatarTarget` identity variants for own profile, room-scoped
+users, room icons, Space icons and invite icons. The pure Rust resolver borrows
+existing projected avatar data and performs no SDK call or membership probe. A
+known room profile with no avatar suppresses the global fallback; an absent room
+profile may use the existing global profile. Debug prints only target kinds.
+
+New lookup tests and the four demand-state tests passed (six total), after the
+lookup test initially failed for the absent API. Test-structure, platform boundary
+and whitespace checks passed. Logs: `/tmp/koushi-avatar-target-red.log`,
+`/tmp/koushi-avatar-target-green.log`.
+
+This helper does not authorize observations or claim that every source's raw
+payload is already projected. Core still needs revision/source/ownership admission,
+raw timeline/member/reader resolution where required, retained-data charging,
+protocol/adapter wiring and all GUI migrations before the typed identity path is
+live. The required 1,500-target local-server acceptance remains outstanding.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated

@@ -18,7 +18,7 @@ mod typography_profile;
 pub use action::{AppAction, AuthSecret, IdentityResetAuthRequest, LoginRequest, RecoveryRequest};
 pub use avatar_demand::{
     AVATAR_PREFETCH_CAPACITY, AVATAR_VISIBLE_CAPACITY, AvatarDemandContext, AvatarDemandError,
-    AvatarDemandState, VIEW_SCOPE_CAPACITY,
+    AvatarDemandState, AvatarTarget, VIEW_SCOPE_CAPACITY, resolve_avatar_target,
 };
 pub use composer_document::{ComposerDocument, ComposerInline};
 pub use composer_revision::{ComposerDraftRevision, ComposerDraftRevisionError};
