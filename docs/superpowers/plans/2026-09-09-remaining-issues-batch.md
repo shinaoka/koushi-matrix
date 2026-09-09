@@ -995,6 +995,34 @@ disposable servers; Tuwunel and Synapse succeeded. Evidence:
 Core observation/request bounds, cancellation/shared/cache checks, remaining GUI
 surfaces and final PR/merge remain unverified or unfinished.
 
+## #839 live Core reader-scope admission path
+
+The existing live-signals stage now exercises public Core reader subscription
+against real SDK receipt data before emitting its existing `read_receipt=ok`
+marker. It obtains an observed timeline source, receives and ACKs a matching
+reader model, observes the known reader identity, closes the subscription and
+requires a late observation to fail with Closed. `reader_scope_live=ok` records
+this extra check; failures fail the existing stage.
+
+The first attempt timed out because it expected a projection request ID on an
+already-committed replay. Source inspection confirmed that committed replay may
+omit that identity. The QA check now deliberately unsubscribes/resubscribes its
+owned timeline to obtain a fresh observed identity rather than guessing one.
+This was a QA setup correction, not a product fix. An initial module-path compile/
+format error was corrected separately and is not product RED evidence.
+
+`qa:headless-local -- --server=both --scenario=live_signals --core
+--timeout-ms=240000` passed on both Tuwunel and Synapse, including the new marker
+and existing read/typing/presence/cleanup checks. All 104 headless-core-qa unit
+tests and Rust test-structure/whitespace checks passed. Evidence:
+`/tmp/koushi-reader-live-both-corrected.log` and
+`/tmp/koushi-reader-live-final-tests.log`.
+
+This covers live source/ACK/admission/close, including placeholder identities;
+it does not assert avatar HTTP counts. Connecting the 1,500-reader fixture to
+this observation path, media bounds/shared/cache/cancellation checks, remaining
+GUI migration and final delivery are still required.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated

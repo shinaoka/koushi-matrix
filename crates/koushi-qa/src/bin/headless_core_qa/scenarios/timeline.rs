@@ -3540,6 +3540,8 @@ pub(super) async fn wait_for_cancelled_or_removed_send(
 
 #[path = "timeline/ignored_reset.rs"]
 mod ignored_reset;
+#[path = "timeline/reader_scope.rs"]
+mod reader_scope;
 
 pub(super) async fn run_live_signals_stage(
     conn_a: &mut CoreConnection,
@@ -3577,6 +3579,9 @@ pub(super) async fn run_live_signals_stage(
         "read receipt state",
     )
     .await?;
+    reader_scope::verify_live_reader_scope(conn_a, key_a, event_id, expected_reader_user_id)
+        .await?;
+    println!("reader_scope_live=ok");
     println!("read_receipt=ok");
 
     let fully_read_id = conn_b.next_request_id();
