@@ -23,30 +23,15 @@ pub(super) enum RecoveryOutcome {
 pub(super) async fn wait_for_logged_in(
     conn: &mut CoreConnection,
     request_id: RequestId,
+    secret: &super::AuthSecret,
     label: &str,
-) -> Result<AccountKey, String> {
-    loop {
-        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
-            .await
-            .map_err(|_| format!("{label}: timed out waiting for LoggedIn event"))?
-            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
-
-        match event {
-            CoreEvent::Account(AccountEvent::LoggedIn {
-                request_id: ev_id,
-                account_key,
-            }) if ev_id == request_id => {
-                return Ok(account_key);
-            }
-            CoreEvent::OperationFailed {
-                request_id: ev_id,
-                failure,
-            } if ev_id == request_id => {
-                return Err(format!("{label} failed: {failure:?}"));
-            }
-            _ => continue,
-        }
+) -> Result<super::admission::AdmissionOutcome, String> {
+    let result =
+        super::admission::wait_for_admission(conn, request_id, None, Some(secret), label).await;
+    if result.is_err() {
+        super::admission::cleanup_failed_admission(conn).await;
     }
+    result
 }
 
 #[cfg(any(debug_assertions, test))]
@@ -697,61 +682,18 @@ pub(super) async fn wait_for_session_restored_with_recovery(
     request_id: RequestId,
     expected_account_key: &AccountKey,
     creds: &RealCredentials,
-    transcript: &mut Vec<String>,
+    _transcript: &mut Vec<String>,
     label: &str,
 ) -> Result<(), String> {
-    loop {
-        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
-            .await
-            .map_err(|_| {
-                format!("{label}: timed out waiting for SessionRestored or RecoveryRequired")
-            })?
-            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
-
-        match event {
-            CoreEvent::Account(AccountEvent::SessionRestored {
-                request_id: ev_id,
-                account_key,
-            }) if ev_id == request_id => {
-                ensure_session_restored_account_key(&account_key, expected_account_key, label)?;
-                return Ok(());
-            }
-            CoreEvent::Account(AccountEvent::RecoveryRequired { .. }) => {
-                let line = "restore_recovery=required".to_owned();
-                transcript.push(line.clone());
-                println!("{line}");
-
-                let submit_id = conn.next_request_id();
-                conn.command(CoreCommand::Account(AccountCommand::SubmitRecovery {
-                    request_id: submit_id,
-                    request: RecoveryRequest {
-                        secret: creds.recovery_key.clone(),
-                    },
-                }))
-                .await
-                .map_err(|e| format!("restore recovery submit failed: {e}"))?;
-
-                match wait_for_recovery_outcome(conn, submit_id, "restore recovery").await? {
-                    RecoveryOutcome::Completed => {
-                        let line2 = "restore_recovery=completed".to_owned();
-                        transcript.push(line2.clone());
-                        println!("{line2}");
-                    }
-                    RecoveryOutcome::Failed(kind) => {
-                        return Err(format!("restore recovery failed with kind {kind:?}"));
-                    }
-                }
-                // Continue looping to receive SessionRestored.
-            }
-            CoreEvent::OperationFailed {
-                request_id: ev_id,
-                failure,
-            } if ev_id == request_id => {
-                return Err(format!("{label} failed: {failure:?}"));
-            }
-            _ => continue,
-        }
-    }
+    let result = super::admission::wait_for_admission(
+        conn,
+        request_id,
+        Some(expected_account_key),
+        Some(&creds.recovery_key),
+        label,
+    )
+    .await;
+    result.map(|_| ())
 }
 
 #[cfg(any(debug_assertions, test))]

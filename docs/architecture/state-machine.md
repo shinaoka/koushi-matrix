@@ -512,6 +512,18 @@ replacement generation, or actor cancellation clears any partial proof pair.
 Explicit stop reaches `Stopped` and never auto-restarts. Stale generation
 success/failure/drop observations are inert.
 
+Room-list reconciliation can remain pending across slow local projection after
+offline/sleep recovery. Its ten-second threshold emits a delay diagnostic once;
+it does not move sync to `Failed` or discard the outstanding acknowledgement.
+There is at most one reconciliation in flight. While it is pending, the sync
+observer still handles SDK lifecycle/encryption observations and explicit stop;
+later committed responses remain in the retained SDK observable. A closed or
+invalid acknowledgement remains an infrastructure failure. Offline/error,
+owner termination, or a newer replacement encryption generation retires the
+old wait and partial room proof; recovery requires a room response beyond the
+latest pre-loss commit. Explicit stop cancels both blocked request submission
+and acknowledgement waiting.
+
 Logout, authentication lock, trust-gate re-entry, account switch, rejection,
 and recovery-required transitions atomically clear navigation, room lists, the
 main timeline, thread pane, focused context, search state, search crawler status,

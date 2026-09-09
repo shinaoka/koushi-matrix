@@ -7,6 +7,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { clearAppStoreSnapshot, getAppStoreSnapshot, setAppStoreSnapshot } from "../domain/appStore";
 import { COMPOSER_DRAFT_REVISION_ZERO } from "../domain/composerDraftRevision";
 import type { DesktopSnapshot } from "../domain/types";
+import { applyTimelineEvent, createTimelineStore } from "../domain/timelineStore";
+import { roomTimelineKey } from "../domain/coreEvents";
+import { TimelineStoreContext } from "./timelineStoreContext";
+import { message } from "./timelineViewTestSupport";
 import { TimelinePane } from "./panes";
 import type { TimelineTransport } from "./TimelineView";
 
@@ -48,6 +52,85 @@ vi.mock("./TimelineView", async () => {
 });
 
 describe("TimelinePane render isolation", () => {
+  test("shows the ready own avatar beside messages when self is absent from user profiles", () => {
+    const snapshot = makeSnapshot();
+    const readyAvatar = {
+      mxc_uri: "mxc://example.invalid/own",
+      thumbnail: {
+        kind: "ready" as const,
+        source_ref: "https://example.invalid/own.png",
+        width: 32,
+        height: 32,
+        mime_type: "image/png"
+      }
+    };
+    snapshot.state.domain.profile.own.avatar = readyAvatar;
+    const key = roomTimelineKey("@user:example.invalid", "!room-alpha:example.invalid");
+    const item = {
+      ...message("$own:example.invalid", "Own message"),
+      sender: "@user:example.invalid",
+      sender_label: "Self",
+      sender_avatar: { ...readyAvatar, thumbnail: { kind: "notRequested" as const } }
+    };
+    const store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: { request_id: null, key, generation: 1, items: [item] }
+    });
+    const resolveComposerKeyAction = async (): Promise<"noop"> => "noop";
+    const noop = () => undefined;
+    const emptySearchResults: never[] = [];
+    const timelineTransport = noopTimelineTransport();
+    setAppStoreSnapshot(snapshot);
+    const renderPane = (currentSnapshot: DesktopSnapshot) =>
+      createElement(TimelinePane, {
+        activeRoomName: "Alpha Room",
+        composerDocument: currentSnapshot.state.ui.timeline.composer.document,
+        composerMode: { kind: "plain" },
+        resolveComposerKeyAction,
+        searchQuery: "",
+        searchResults: emptySearchResults,
+        showSearchResults: false,
+        snapshot: currentSnapshot,
+        timelineTransport,
+        onCancelReply: noop,
+        onCancelScheduledSend: noop,
+        onAttachFiles: noop,
+        onClearUploadStaging: noop,
+        onComposerMathModeChange: noop,
+        onUpdateStagedUploadCaption: noop,
+        onSelectStagedUploadOutput: noop,
+        onSendStagedAttachments: noop,
+        onLoadStagedUploadPreview: async () => [],
+        onComposerDocumentChange: noop,
+        onEditMessage: noop,
+        onOpenContextMenu: noop,
+        onOpenThread: noop,
+        onRedactMessage: noop,
+        onReply: noop,
+        onRescheduleScheduledSend: noop,
+        onResultSelect: noop,
+        onScheduleSend: noop,
+        onSendText: noop,
+        onSetLocalUserAlias: noop,
+        onUnpinPinnedEvent: noop,
+        onOpenPeople: noop,
+        onOpenThreads: noop,
+        onToggleRoomInfo: noop
+      });
+    const pendingSnapshot = structuredClone(snapshot);
+    pendingSnapshot.state.domain.profile.own.avatar = { ...readyAvatar, thumbnail: { kind: "notRequested" } };
+    const renderWithStore = (next: DesktopSnapshot) => createElement(
+      TimelineStoreContext.Provider,
+      { value: { store, setStore: vi.fn() } },
+      renderPane(next)
+    );
+    const { container, rerender } = render(renderWithStore(pendingSnapshot));
+    expect(container.querySelector(".message .avatar img")).toBeNull();
+    rerender(renderWithStore(snapshot));
+    expect(screen.getByText("Own message")).toBeTruthy();
+    expect(snapshot.state.domain.profile.own.avatar.thumbnail.kind).toBe("ready");
+    expect(container.querySelector(".message .avatar img")?.getAttribute("src")).toBe("https://example.invalid/own.png");
+  });
+
   beforeEach(() => {
     clearAppStoreSnapshot();
     renderCounts.composer = 0;

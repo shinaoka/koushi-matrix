@@ -100,8 +100,14 @@ pub(super) async fn run_startup_latency_scenario(
                 .await
                 .map_err(|e| format!("startup_latency login command submit failed: {e}"))?;
 
-                let key = wait_for_logged_in(&mut conn, login_id, "startup_latency login").await?;
-                break key;
+                let key = wait_for_logged_in(
+                    &mut conn,
+                    login_id,
+                    &creds.recovery_key,
+                    "startup_latency login",
+                )
+                .await?;
+                break key.account_key;
             }
             CoreEvent::OperationFailed {
                 request_id: ev_id,

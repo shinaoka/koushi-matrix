@@ -6,18 +6,18 @@ use super::config::{
 };
 use super::credentials::RealCredentials;
 use super::waiters::{
-    RecoveryOutcome, poll_search_until_found_or_timeout, wait_for_body_substring_in_timeline,
-    wait_for_edit_diff, wait_for_initial_items, wait_for_logged_in, wait_for_non_empty_room_list,
+    poll_search_until_found_or_timeout, wait_for_body_substring_in_timeline, wait_for_edit_diff,
+    wait_for_initial_items, wait_for_logged_in, wait_for_non_empty_room_list,
     wait_for_operation_failed_and_signed_out, wait_for_paginate_end_reached,
-    wait_for_post_login_ready_snapshot, wait_for_ready_snapshot, wait_for_recovery_outcome,
-    wait_for_recovery_required_after_sync, wait_for_redact_diff, wait_for_room_created,
-    wait_for_room_forgotten, wait_for_room_left, wait_for_room_list_space_child,
-    wait_for_send_completed, wait_for_session_restored_with_recovery, wait_for_space_child_set,
-    wait_for_space_created, wait_for_sync_running, wait_for_sync_started, wait_for_sync_stopped,
+    wait_for_post_login_ready_snapshot, wait_for_ready_snapshot, wait_for_redact_diff,
+    wait_for_room_created, wait_for_room_forgotten, wait_for_room_left,
+    wait_for_room_list_space_child, wait_for_send_completed,
+    wait_for_session_restored_with_recovery, wait_for_space_child_set, wait_for_space_created,
+    wait_for_sync_running, wait_for_sync_started, wait_for_sync_stopped,
 };
 use super::{
     AccountCommand, ComposerDocument, CoreCommand, CoreFailure, CoreRuntime, LoginRequest,
-    PaginationDirection, RecoveryRequest, RoomCommand, SyncCommand, TimelineCommand, TimelineKey,
+    PaginationDirection, RoomCommand, SyncCommand, TimelineCommand, TimelineKey,
 };
 use std::time::Duration;
 
@@ -53,10 +53,14 @@ pub(super) async fn run_async_inner(
     .await
     .map_err(|e| format!("login command submit failed: {e}"))?;
 
-    let account_key = wait_for_logged_in(&mut conn, login_id, "login").await?;
+    let admission = wait_for_logged_in(&mut conn, login_id, &creds.recovery_key, "login").await?;
+    let account_key = admission.account_key;
     // Login succeeded: record the account key so the catch-all wrapper can log
     // out (and leave/forget any rooms/spaces) on a later failure.
     cleanup.account_key = Some(account_key.clone());
+    if !admission.recovered {
+        return Err("compat admission did not prove recovery".to_owned());
+    }
     // Matrix identifiers (user/room/event/space ids) MUST NOT appear in QA
     // output (REPOSITORY_RULES Security). Emit private-data-free tokens only.
     let line = "login=ok".to_owned();
@@ -85,39 +89,7 @@ pub(super) async fn run_async_inner(
     transcript.push(line.clone());
     println!("{line}");
 
-    // -----------------------------------------------------------------------
-    // Step 3: Recovery check
-    // -----------------------------------------------------------------------
-    // Wait for the post-sync recovery observer to publish the final state.
-    // Recovery becomes actionable only once sync/account data has flowed in.
-    wait_for_recovery_required_after_sync(&mut conn, "post-sync recovery gate").await?;
-
-    let submit_id = conn.next_request_id();
-    conn.command(CoreCommand::Account(AccountCommand::SubmitRecovery {
-        request_id: submit_id,
-        request: RecoveryRequest {
-            secret: creds.recovery_key.clone(),
-        },
-    }))
-    .await
-    .map_err(|e| format!("submit recovery command failed: {e}"))?;
-
-    match wait_for_recovery_outcome(&mut conn, submit_id, "recovery").await? {
-        RecoveryOutcome::Completed => {
-            let line = "recovery=completed".to_owned();
-            transcript.push(line.clone());
-            println!("{line}");
-        }
-        RecoveryOutcome::Failed(kind) => {
-            // Recovery failure is a hard QA failure; the catch-all wrapper owns
-            // logout/cleanup after we return Err.
-            let line = format!("recovery=failed kind={kind:?}");
-            transcript.push(line.clone());
-            eprintln!("{line}");
-            return Err(format!("recovery failed with kind {kind:?}"));
-        }
-    }
-
+    // Verification and recovery are part of admission, before room sync starts.
     // Assert Ready snapshot after recovery completes.
     wait_for_ready_snapshot(&mut conn, "post-recovery Ready").await?;
     let line = "session=ready".to_owned();

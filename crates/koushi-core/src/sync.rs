@@ -771,7 +771,7 @@ async fn reconcile_committed_room_list(
     response_sequence: u64,
 ) -> RoomListReconcileResult {
     let started_at = Instant::now();
-    let (ack_tx, ack_rx) = oneshot::channel();
+    let (ack_tx, mut ack_rx) = oneshot::channel();
     if room_tx
         .send(RoomMessage::ReconcileCommittedRange {
             source: RoomListSource::Live,
@@ -790,8 +790,23 @@ async fn reconcile_committed_room_list(
         );
         return RoomListReconcileResult::Failed;
     }
-    match executor::timeout(ROOM_OBSERVATION_ACK_TIMEOUT, ack_rx).await {
-        Ok(Ok(ack)) => {
+    // A slow live projection is not a failed sync owner. Keep the same receiver
+    // after the diagnostic threshold; the observer polls this future alongside
+    // SDK lifecycle and stop signals, so waiting never blocks supervision.
+    let ack = match executor::timeout(ROOM_OBSERVATION_ACK_TIMEOUT, &mut ack_rx).await {
+        Ok(result) => result,
+        Err(_) => {
+            record_room_list_reconcile_diagnostic(
+                RoomListReconcileDiagnosticOutcome::Timeout,
+                started_at.elapsed(),
+                run_generation,
+                response_sequence,
+            );
+            ack_rx.await
+        }
+    };
+    match ack {
+        Ok(ack) => {
             let result = classify_room_list_reconcile_ack(run_generation, response_sequence, ack);
             record_room_list_reconcile_diagnostic(
                 if result == RoomListReconcileResult::Failed {
@@ -805,18 +820,9 @@ async fn reconcile_committed_room_list(
             );
             result
         }
-        Ok(Err(_)) => {
-            record_room_list_reconcile_diagnostic(
-                RoomListReconcileDiagnosticOutcome::AckClosed,
-                started_at.elapsed(),
-                run_generation,
-                response_sequence,
-            );
-            RoomListReconcileResult::Failed
-        }
         Err(_) => {
             record_room_list_reconcile_diagnostic(
-                RoomListReconcileDiagnosticOutcome::Timeout,
+                RoomListReconcileDiagnosticOutcome::AckClosed,
                 started_at.elapsed(),
                 run_generation,
                 response_sequence,
@@ -1019,6 +1025,12 @@ impl ReplacementRecoveryProof {
     }
 }
 
+mod observer;
+use observer::retire_room_recovery;
+use observer::{
+    PendingRoomReconciliation, SyncObserverSignal as Signal, next_sync_observer_signal,
+};
+
 async fn observe_sync_service(
     sync_service: Arc<matrix_sdk_ui::sync_service::SyncService>,
     observer_stop: Arc<SyncObserverStop>,
@@ -1050,40 +1062,29 @@ async fn observe_sync_service(
     let mut pending_encryption = Some(*encryption_readiness.borrow_and_update());
     let mut last_encryption_started_generation = 0;
     let mut last_encryption_response_generation = 0;
+    let mut pending_reconciliation: Option<PendingRoomReconciliation> = None;
 
     loop {
-        enum Signal {
-            State(matrix_sdk_ui::sync_service::State),
-            Committed(matrix_sdk_ui::room_list_service::CommittedAllRoomsResponse),
-            Encryption(matrix_sdk::encryption::EncryptionSyncReadinessSnapshot),
+        if observer_stop.is_requested() {
+            return SyncTaskOutcome::Stopped;
         }
-
         let signal = if let Some(state) = pending_state.take() {
             Signal::State(state)
-        } else if let Some(committed) = pending_commit.take() {
+        } else if pending_reconciliation.is_none()
+            && let Some(committed) = pending_commit.take()
+        {
             Signal::Committed(committed)
         } else if let Some(encryption) = pending_encryption.take() {
             Signal::Encryption(encryption)
         } else {
-            tokio::select! {
-                biased;
-                _ = observer_stop.notify.notified() => return SyncTaskOutcome::Stopped,
-                state = state_sub.next() => match state {
-                    Some(state) => Signal::State(state),
-                    None => return internal_observer_failure_at("state_subscription_closed", connected),
-                },
-                committed = committed_all_rooms_response.next() => match committed {
-                    Some(committed) => Signal::Committed(committed),
-                    None => return internal_observer_failure_at("response_subscription_closed", connected),
-                },
-                changed = encryption_readiness.changed() => match changed {
-                    Ok(()) => Signal::Encryption(*encryption_readiness.borrow_and_update()),
-                    Err(_) => return internal_observer_failure_at(
-                        "encryption_readiness_subscription_closed",
-                        connected,
-                    ),
-                },
-            }
+            next_sync_observer_signal(
+                &observer_stop,
+                &mut state_sub,
+                &mut committed_all_rooms_response,
+                &mut encryption_readiness,
+                &mut pending_reconciliation,
+            )
+            .await
         };
 
         match signal {
@@ -1163,42 +1164,67 @@ async fn observe_sync_service(
                         connected
                     );
                 }
-                if !connected {
-                    match reconcile_committed_room_list(
-                        &room_tx,
-                        run_generation,
-                        committed.sequence(),
-                    )
-                    .await
-                    {
-                        RoomListReconcileResult::Projected { response_sequence } => {
-                            last_committed_sequence =
-                                last_committed_sequence.max(response_sequence);
-                        }
-                        RoomListReconcileResult::Reconciled { response_sequence } => {
-                            last_committed_sequence =
-                                last_committed_sequence.max(response_sequence);
-                        }
-                        RoomListReconcileResult::Superseded { response_sequence } => {
-                            last_committed_sequence =
-                                last_committed_sequence.max(response_sequence);
-                            pending_commit = Some(committed_all_rooms_response.get());
-                            continue;
-                        }
-                        RoomListReconcileResult::Failed => {
-                            return internal_observer_failure_at(
-                                "initial_room_reconcile_failed",
-                                connected,
-                            );
-                        }
+                if !connected || reconnecting {
+                    let room_tx = room_tx.clone();
+                    let sequence = committed.sequence();
+                    pending_reconciliation = Some(Box::pin(async move {
+                        (
+                            sequence,
+                            reconcile_committed_room_list(&room_tx, run_generation, sequence).await,
+                        )
+                    }));
+                } else {
+                    diagnostics.response_committed(run_generation, committed.pos_present());
+                }
+            }
+            Signal::Committed(_) => {}
+            Signal::Reconciled(requested_sequence, result) => {
+                pending_reconciliation = None;
+                match result {
+                    RoomListReconcileResult::Projected { response_sequence }
+                    | RoomListReconcileResult::Reconciled { response_sequence } => {
+                        last_committed_sequence = last_committed_sequence.max(response_sequence);
                     }
-                    let replacement_ready = replacement_recovery
-                        .as_mut()
-                        .is_none_or(|proof| proof.observe_room_response(committed.sequence()));
-                    if replacement_ready {
+                    RoomListReconcileResult::Superseded { response_sequence } => {
+                        last_committed_sequence = last_committed_sequence.max(response_sequence);
+                        pending_commit = Some(committed_all_rooms_response.get());
+                        continue;
+                    }
+                    RoomListReconcileResult::Failed => {
+                        return internal_observer_failure_at(
+                            if connected {
+                                "reconnect_room_reconcile_failed"
+                            } else {
+                                "initial_room_reconcile_failed"
+                            },
+                            connected,
+                        );
+                    }
+                }
+                let replacement_elapsed = replacement_recovery
+                    .as_ref()
+                    .map(|proof| proof.started.elapsed())
+                    .unwrap_or_default();
+                let replacement_ready = replacement_recovery
+                    .as_mut()
+                    .is_none_or(|proof| proof.observe_room_response(requested_sequence));
+                if replacement_ready {
+                    if connected && replacement_recovery.is_some() {
+                        koushi_sdk::record_encryption_sync_lifecycle(
+                            koushi_sdk::EncryptionSyncLifecycleOwner::Steady,
+                            *encryption_readiness.borrow(),
+                            koushi_sdk::EncryptionSyncLifecycleStage::Handoff,
+                            replacement_elapsed,
+                        );
+                    }
+                    reconnecting = false;
+                    replacement_recovery = None;
+                    if connected {
+                        let _ = control_tx
+                            .send(SyncActorControl::Recovered { run_generation })
+                            .await;
+                    } else {
                         connected = true;
-                        reconnecting = false;
-                        replacement_recovery = None;
                         let _ = control_tx
                             .send(SyncActorControl::FirstResponseCommitted { run_generation })
                             .await;
@@ -1210,62 +1236,25 @@ async fn observe_sync_service(
                         )
                         .await;
                     }
-                } else if reconnecting {
-                    match reconcile_committed_room_list(
-                        &room_tx,
-                        run_generation,
-                        committed.sequence(),
-                    )
-                    .await
-                    {
-                        RoomListReconcileResult::Projected { response_sequence } => {
-                            last_committed_sequence =
-                                last_committed_sequence.max(response_sequence);
-                        }
-                        RoomListReconcileResult::Reconciled { response_sequence } => {
-                            last_committed_sequence =
-                                last_committed_sequence.max(response_sequence);
-                        }
-                        RoomListReconcileResult::Superseded { response_sequence } => {
-                            last_committed_sequence =
-                                last_committed_sequence.max(response_sequence);
-                            pending_commit = Some(committed_all_rooms_response.get());
-                            continue;
-                        }
-                        RoomListReconcileResult::Failed => {
-                            return internal_observer_failure_at(
-                                "reconnect_room_reconcile_failed",
-                                connected,
-                            );
-                        }
-                    }
-                    let replacement_ready = replacement_recovery
-                        .as_mut()
-                        .is_some_and(|proof| proof.observe_room_response(committed.sequence()));
-                    let replacement_elapsed = replacement_recovery
-                        .as_ref()
-                        .map(|proof| proof.started.elapsed())
-                        .unwrap_or_default();
-                    if replacement_recovery.is_none() || replacement_ready {
-                        reconnecting = false;
-                        if replacement_ready {
-                            koushi_sdk::record_encryption_sync_lifecycle(
-                                koushi_sdk::EncryptionSyncLifecycleOwner::Steady,
-                                *encryption_readiness.borrow(),
-                                koushi_sdk::EncryptionSyncLifecycleStage::Handoff,
-                                replacement_elapsed,
-                            );
-                            replacement_recovery = None;
-                        }
-                        let _ = control_tx
-                            .send(SyncActorControl::Recovered { run_generation })
-                            .await;
-                    }
                 }
-                diagnostics.response_committed(run_generation, committed.pos_present());
+                diagnostics.response_committed(run_generation, true);
             }
-            Signal::Committed(_) => {}
+            Signal::Stopped => return SyncTaskOutcome::Stopped,
+            Signal::Closed(reason) => return internal_observer_failure_at(reason, connected),
             Signal::Encryption(snapshot) => {
+                if replacement_recovery.as_ref().is_some_and(|proof| {
+                    proof
+                        .replacement_encryption_generation
+                        .is_some_and(|generation| snapshot.generation > generation)
+                }) {
+                    retire_room_recovery(
+                        &mut pending_reconciliation,
+                        &mut pending_commit,
+                        &mut last_committed_sequence,
+                        &mut replacement_recovery,
+                        committed_all_rooms_response.get().sequence(),
+                    );
+                }
                 let lifecycle_elapsed = replacement_recovery
                     .as_ref()
                     .map(|proof| proof.started.elapsed())
@@ -1340,6 +1329,20 @@ async fn observe_sync_service(
                 }
             }
             Signal::State(state) => {
+                if matches!(
+                    state,
+                    matrix_sdk_ui::sync_service::State::Offline(_)
+                        | matrix_sdk_ui::sync_service::State::Error(_)
+                        | matrix_sdk_ui::sync_service::State::Terminated
+                ) {
+                    retire_room_recovery(
+                        &mut pending_reconciliation,
+                        &mut pending_commit,
+                        &mut last_committed_sequence,
+                        &mut replacement_recovery,
+                        committed_all_rooms_response.get().sequence(),
+                    );
+                }
                 let state_label = sync_service_state_trace_label(&state);
                 trace_sync!(
                     "sync_service_state",
@@ -1375,6 +1378,7 @@ async fn observe_sync_service(
                             .await;
                     }
                     matrix_sdk_ui::sync_service::State::Terminated => {
+                        pending_reconciliation = None;
                         if observer_stop.is_requested() {
                             return SyncTaskOutcome::Stopped;
                         }
@@ -1702,3 +1706,9 @@ pub(crate) fn sync_failure_kind_label(kind: SyncFailureKind) -> &'static str {
 
 #[cfg(test)]
 pub mod tests;
+
+#[cfg(test)]
+mod reconcile_tests;
+
+#[cfg(test)]
+mod observer_tests;

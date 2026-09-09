@@ -573,19 +573,26 @@ An in-process actor system in `koushi-core`:
   Compact output is all readers through four, three plus exact overflow from five;
   full-reader windows preserve the exact total without publishing all records.
   React joins finished compact summaries by event ID only; it never joins profile
-  maps, orders readers, or formats receipt dates. The scoped full-reader avatar path reports only
-  source-revision-qualified visible identities/windows through connection-owned
-  scopes. Rust owns resolved demand, visible-before-prefetch priority, shared
-  consumption, download, retry, capacity, cancellation and terminal state; React
-  does not maintain an MXC request/ref-count registry for this migrated path. The existing 64-scope budget
-  admits at most 256 visible and eight prefetch identities per avatar scope.
-  AppActor publishes durable latest-wins demand to the existing AccountActor
-  downloader; scope retirement removes demand even under mailbox pressure.
-  Visibility qualifies both the committed timeline display and receipt-model
-  revisions. Other avatar surfaces retain their existing request bridge for the
-  current delivery; do not extend it or claim their migration is complete.
+  maps, orders readers, or formats receipt dates. The scoped full-reader avatar
+  path reports source-revision-qualified visible identities/windows through
+  connection-owned scopes. Rust owns resolved demand, visible-before-prefetch
+  priority, shared consumption, download, retry, capacity, cancellation and
+  terminal state. React has no MXC request/ref-count registry for this migrated
+  path. The existing 64-scope budget admits at most 256 visible and eight prefetch
+  identities per avatar scope. AppActor publishes durable latest-wins demand to
+  the existing AccountActor downloader; retirement removes demand even under
+  mailbox pressure. Visibility qualifies both committed timeline display and
+  receipt-model revisions.
+  Other avatar surfaces retain their existing App request/ref-count bridge for
+  visible/snapshot consumers in this delivery; Core still owns download, retry,
+  capacity, cancellation and terminal state. Do not extend that bridge or claim
+  its migration is complete. Timeline rows and their diagnostics may reuse the
+  Rust-owned ready own-profile thumbnail when its MXC exactly matches the selected
+  sender avatar, even if self is absent from the user-profile map. This reuse
+  changes neither the sender image identity nor the visible-demand boundary.
   All-surface unification is deferred by the user's narrowed scope; see the
-  [avatar demand contract](../superpowers/specs/2026-09-09-issue839-avatar-demand-completion.md). The old room-wide full-reader map is removed from the
+  [avatar demand contract](../superpowers/specs/2026-09-09-issue839-avatar-demand-completion.md).
+  The old room-wide full-reader map is removed from the
   production path rather than retained as a fallback or embedded TimelineItem
   cache.
   See the [receipt vertical](../superpowers/specs/2026-09-06-receipt-reader-vertical.md)
@@ -761,6 +768,12 @@ Supervision follows the same ownership tree:
 - `AccountActor` failure is fatal to that account runtime: stop children,
   drop SDK handles in runtime context, emit a redacted account failure, and
   require restore/login rather than silently continuing with unknown state.
+- A local room-list reconciliation deadline measures projection delay, not
+  sync-owner failure. Keep one pending acknowledgement while processing SDK
+  lifecycle/encryption observations and explicit stop. Do not publish recovery
+  before a valid matching acknowledgement, or terminate healthy sync merely
+  because projection is slow. SDK owner replacement retires the pending wait
+  and requires fresh replacement-generation proofs.
 - Hangs are detected per command by request deadlines and missing required
   progress. Idle timeline or sync streams are valid states, not hangs.
 

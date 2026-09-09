@@ -311,6 +311,7 @@ export const TimelineView = memo(function TimelineView({
   resolveComposerKeyAction = ignoreComposerKeyAction,
   liveSignals,
   profileUsers = {},
+  ownAvatar,
   pinnedEventIds = [],
   forwardDestinations = [],
   onSetLocalUserAlias,
@@ -359,6 +360,7 @@ export const TimelineView = memo(function TimelineView({
   resolveComposerKeyAction?: ResolveComposerKeyAction;
   liveSignals?: LiveSignalsState;
   profileUsers?: Record<string, UserProfile>;
+  ownAvatar?: UserProfile["avatar"];
   pinnedEventIds?: readonly string[];
   forwardDestinations?: readonly TimelineForwardDestination[];
   onSetLocalUserAlias?: TimelineRowActionHandlers["onSetLocalUserAlias"];
@@ -1924,7 +1926,8 @@ export const TimelineView = memo(function TimelineView({
   useEffect(() => {
     const avatarDiagnostics = timelineAvatarDiagnostics(
       visibleRows.map((row) => row.item),
-      profileUsers
+      profileUsers,
+      ownAvatar
     );
     for (const item of items) {
       if ("Event" in item.id) {
@@ -1959,6 +1962,7 @@ export const TimelineView = memo(function TimelineView({
     items,
     onDiagnosticsChange,
     profileUsers,
+    ownAvatar,
     store,
     timelineKeyHash,
     visibleRows
@@ -3517,6 +3521,7 @@ export const TimelineView = memo(function TimelineView({
                 }
                 presence={item.sender ? liveSignals?.presence[item.sender] : undefined}
                 profile={item.sender ? profileUsers[item.sender] : undefined}
+                ownAvatar={ownAvatar}
                 reactionSenderLabelsByUserId={reactionSenderLabelsByUserId}
                 currentUserId={currentUserId}
                 ignoredUserIds={ignoredUserIds}
