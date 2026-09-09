@@ -215,11 +215,13 @@ impl ViewConsumer {
                     .anchor_index(installed_revision, &user_id)?
                     .ok_or(ScopeError::InvalidModel)?,
             };
+            // Accepted raw data covers only the previous range. Preserve any
+            // pending source invalidation even for an unchanged window.
+            reader.source_dirty |= reader.start != start || reader.limit != limit;
             reader.start = start;
             reader.limit = limit;
             reader.window_sequence = sequence;
             reader.dirty = true;
-            reader.source_dirty = false;
             if reader.phase == Phase::Idle {
                 reader.phase = Phase::Queued;
                 true

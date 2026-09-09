@@ -39,6 +39,79 @@ async fn accept_profile_raw(registry: &ViewScopeRegistry, work: &mut ReaderWork,
     registry.accept_reader_raw(work, retained).unwrap();
 }
 
+#[tokio::test]
+async fn window_updates_refetch_changed_ranges_and_preserve_source_invalidation() {
+    use koushi_protocol::view::{ReaderWindow, ResolvedReaderAnchor, ViewModel};
+    for (start, limit, source_changed, refetch) in [
+        (1, 1, false, true),
+        (0, 2, false, true),
+        (0, 1, true, true),
+        (0, 1, false, false),
+    ] {
+        let registry = ViewScopeRegistry::default();
+        let consumer = registry
+            .consumer(koushi_protocol::RuntimeConnectionId(4))
+            .unwrap();
+        let mut scope = consumer
+            .open_reader(source(), 0, ReaderWindowLimit::try_from(1).unwrap())
+            .unwrap();
+        let mut work = registry.take_reader_work().unwrap().unwrap();
+        let mut raw = crate::timeline::RawReceiptWindow {
+            total_count: 1,
+            start: 0,
+            receipts: vec![koushi_state::LiveReadReceipt {
+                user_id: "@a:example.org".into(),
+                display_name: None,
+                original_display_label: String::new(),
+                avatar: None,
+                timestamp_ms: None,
+            }],
+            profiles: vec![],
+            owner: None,
+            epoch: std::sync::Weak::new(),
+        };
+        let _epoch = raw.bind_test_owner(&source()).await;
+        let retained = registry.retain_reader_raw(&mut work, raw.clone()).unwrap();
+        registry.accept_reader_raw(&mut work, retained).unwrap();
+        let resolved = raw.into_resolved(koushi_state::CatalogLocale::En);
+        let model = ViewModel::ReaderReady(ReaderWindow {
+            source: source(),
+            total_count: 1,
+            start: 0,
+            rows: resolved.rows.clone(),
+            window_sequence: 0,
+            source_revision: resolved.source_revision().unwrap(),
+            dependency_revision: 1,
+            resolved_anchor: ResolvedReaderAnchor::NotRequested,
+        });
+        let revision = registry
+            .publish_current(scope.id(), model, vec![], &resolved)
+            .unwrap();
+        let _delivery = scope.next_delivery().await.unwrap();
+        consumer.ack_model(scope.id(), revision).unwrap();
+        registry.finish_reader_work(&work).unwrap();
+        drop(work);
+        if source_changed {
+            registry.dirty_reader(scope.id(), true).unwrap();
+        }
+        consumer
+            .update_reader_window(
+                scope.id(),
+                revision,
+                1,
+                ReaderWindowTarget::Index { start },
+                ReaderWindowLimit::try_from(limit).unwrap(),
+            )
+            .unwrap();
+        let next = registry.take_reader_work().unwrap().unwrap();
+        assert_eq!(
+            next.raw.is_none(),
+            refetch,
+            "start={start} limit={limit} source_changed={source_changed}"
+        );
+    }
+}
+
 #[test]
 fn retained_reader_avatar_identities_release_their_budget_with_the_owner() {
     let budget = crate::view_budget::ViewBudget::default();

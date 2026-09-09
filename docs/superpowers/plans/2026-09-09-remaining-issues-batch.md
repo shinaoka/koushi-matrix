@@ -1127,6 +1127,36 @@ the failing Tuwunel scenario green. Todo #7 tracks that unresolved server-side
 population boundary. Large-window scrolling/in-flight cancellation/account
 retirement, remaining UI surfaces and final gates/PR/merge are still outstanding.
 
+## #839 scrolling regression: range-cache fix green, live transition still failing
+
+Extended `avatar_demand` to move the same reader scope from index 0 to 32 and
+back, then close/reopen. Each phase observes eight visible plus eight prefetch
+identities. The moved set must be disjoint, and the returned/reopened set must
+match the original. Expected cumulative HTTP counts are 16/32/32/32. The model
+wait requires the requested start, so a stale previous-window delivery cannot
+satisfy the check. These new phases are NOT yet passing.
+
+The first Synapse attempt passed initial HTTP16 but retired on scroll. A focused
+Core regression then demonstrated that update_reader_window reused accepted raw
+input from the old range: start=1 still yielded cached raw (RED). The correction
+marks changed start/limit as source-dirty and preserves an already pending source
+invalidation. Four cases cover moved start, changed limit, pending source change,
+and legitimate reuse for an unchanged clean range. The regression and all 23
+scope lifecycle tests passed. Evidence: `/tmp/koushi-avatar-scroll-{red,green}.log`.
+
+After that correction, the live Synapse test no longer reported immediate
+retirement but timed out before delivering a model at the new start
+(observed_total=0). Servicing the ordinary Core event stream concurrently did not
+resolve it; that experimental change was removed. The unresolved delivery issue
+is Todo #8. Evidence: `/tmp/koushi-avatar-scroll-synapse{,-green,-drained}.log`.
+No deadline, population or request-count requirement was weakened, and no
+scroll/return/cache success is claimed for the expanded lane.
+
+Fresh Core library gate: 1,031 passed, nine ignored (four Rust test workers).
+Core QA unit gate: 104 passed. Format, Rust test-structure and whitespace passed.
+Evidence: `/tmp/koushi-avatar-scroll-regression.log`. These unit successes do not
+resolve either the Synapse live transition or the upstream Tuwunel blocker.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated

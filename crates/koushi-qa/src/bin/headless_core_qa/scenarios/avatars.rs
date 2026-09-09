@@ -5,7 +5,8 @@ use super::participants::{QaParticipantLoginGate, login_synced_participant_for_q
 use super::registry::EVENT_TIMEOUT;
 use super::*;
 use koushi_protocol::view::{
-    ReaderWindow, ReaderWindowLimit, ReceiptSourceRef, TimelineViewSource, ViewDelivery, ViewModel,
+    ReaderWindow, ReaderWindowLimit, ReaderWindowRequest, ReaderWindowTarget, ReceiptSourceRef,
+    TimelineViewSource, ViewDelivery, ViewModel,
 };
 
 pub(super) async fn run_avatar_demand_scenario(config: &QaConfig) -> Result<(), String> {
@@ -133,12 +134,36 @@ async fn run_window(
     })
     .await
     .map_err(|_| "avatar timeline timed out".to_owned())??;
-    let mut targets: Vec<String> = Vec::new();
-    for phase in ["initial", "reopen"] {
-        let mut reader = conn
-            .subscribe_reader(source.clone(), 0, ReaderWindowLimit::try_from(32).unwrap())
-            .map_err(|_| "avatar reader admission failed".to_owned())?;
-        let (revision, initial) = next_window(&mut reader).await?;
+    let limit = ReaderWindowLimit::try_from(32).unwrap();
+    let mut reader = conn
+        .subscribe_reader(source.clone(), 0, limit)
+        .map_err(|_| "avatar reader admission failed".to_owned())?;
+    let (mut revision, mut initial) = next_window(&mut reader, 0).await?;
+    let mut first_targets: Vec<String> = Vec::new();
+    for (sequence, phase, start, expected_requests) in [
+        (1, "initial", 0, 16),
+        (2, "scroll", 32, 32),
+        (3, "return", 0, 32),
+        (1, "reopen", 0, 32),
+    ] {
+        if phase == "reopen" {
+            reader.close_handle().close();
+            drop(reader);
+            reader = conn
+                .subscribe_reader(source.clone(), start, limit)
+                .map_err(|_| "avatar reader reopen failed".to_owned())?;
+            (revision, initial) = next_window(&mut reader, start).await?;
+        } else if phase != "initial" {
+            reader
+                .update_window(ReaderWindowRequest {
+                    installed_revision: revision,
+                    sequence,
+                    target: ReaderWindowTarget::Index { start },
+                    limit,
+                })
+                .map_err(|_| "avatar window update rejected".to_owned())?;
+            (revision, initial) = next_window(&mut reader, start).await?;
+        }
         if initial.total_count < 1500 || initial.rows.len() > 32 {
             return Err(format!(
                 "avatar reader population/window mismatch total={} rows={}",
@@ -146,25 +171,35 @@ async fn run_window(
                 initial.rows.len()
             ));
         }
-        if targets.is_empty() {
-            targets = initial
-                .rows
-                .iter()
-                .filter(|row| row.avatar.is_some())
-                .take(16)
-                .map(|row| row.user_id.clone())
-                .collect();
-            if targets.len() != 16 {
-                return Err("avatar fixture visible metadata missing".to_owned());
+        let targets: Vec<String> = initial
+            .rows
+            .iter()
+            .filter(|row| row.avatar.is_some())
+            .take(16)
+            .map(|row| row.user_id.clone())
+            .collect();
+        if targets.len() != 16 {
+            return Err("avatar fixture visible metadata missing".to_owned());
+        }
+        match phase {
+            "initial" => {
+                first_targets = targets.clone();
+                if proxy.media_read_forwarded_count() != 0 {
+                    return Err("avatar images fetched before observation".to_owned());
+                }
             }
-            if proxy.media_read_forwarded_count() != 0 {
-                return Err("avatar images fetched before observation".to_owned());
+            "scroll" if targets.iter().any(|target| first_targets.contains(target)) => {
+                return Err("avatar scroll did not reach disjoint identities".to_owned());
             }
+            "return" | "reopen" if targets != first_targets => {
+                return Err("avatar return identities changed".to_owned());
+            }
+            _ => {}
         }
         reader
-            .observe_avatars(revision, 1, &targets[..8], &targets[8..])
+            .observe_avatars(revision, sequence, &targets[..8], &targets[8..])
             .map_err(|_| "avatar observation rejected".to_owned())?;
-        tokio::time::timeout(EVENT_TIMEOUT, async {
+        (revision, initial) = tokio::time::timeout(EVENT_TIMEOUT, async {
             let mut window = initial;
             let mut revision = revision;
             loop {
@@ -188,16 +223,16 @@ async fn run_window(
                     }
                 }
                 if ready == targets.len() {
-                    return Ok::<_, String>(());
+                    return Ok::<_, String>((revision, window));
                 }
-                (revision, window) = next_window(&mut reader).await?;
+                (revision, window) = next_window(&mut reader, start).await?;
             }
         })
         .await
         .map_err(|_| "avatar window Ready timed out".to_owned())??;
         tokio::time::sleep(Duration::from_millis(250)).await;
         let requests = proxy.media_read_forwarded_count();
-        if requests != 16 {
+        if requests != expected_requests {
             return Err(format!(
                 "avatar HTTP bound failed phase={phase} requests={requests}"
             ));
@@ -205,13 +240,14 @@ async fn run_window(
         println!(
             "avatar_population=1500 visible=8 prefetch=8 phase={phase} media_http_requests={requests}"
         );
-        reader.close_handle().close();
     }
+    reader.close_handle().close();
     Ok(())
 }
 
 async fn next_window(
     reader: &mut koushi_core::runtime::ReaderSubscription,
+    expected_start: u64,
 ) -> Result<(koushi_protocol::view::ViewRevision, ReaderWindow), String> {
     let mut observed_total = 0;
     tokio::time::timeout(EVENT_TIMEOUT, async {
@@ -225,12 +261,15 @@ async fn next_window(
                         .map_err(|_| "avatar model ACK failed".to_owned())?;
                     if let ViewModel::ReaderReady(window) = model {
                         observed_total = window.total_count;
-                        if window.total_count >= 1500 {
+                        if window.total_count >= 1500 && window.start == expected_start {
                             return Ok((revision, window));
                         }
                     }
                 }
-                _ => return Err("avatar reader retired".to_owned()),
+                Some(ViewDelivery::Retired { reason, .. }) => {
+                    return Err(format!("avatar reader retired: {reason:?}"));
+                }
+                None => return Err("avatar reader closed".to_owned()),
             }
         }
     })
