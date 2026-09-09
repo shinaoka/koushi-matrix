@@ -5,11 +5,17 @@ export const AVATAR_THUMBNAIL_DOWNLOADS_ENABLED = true;
 
 export function resolvedAvatar(
   itemAvatar: AvatarImage | null | undefined,
-  profileAvatar: AvatarImage | null | undefined
+  profileAvatar: AvatarImage | null | undefined,
+  knownAvatar?: AvatarImage | null
 ): AvatarImage | null {
-  return profileAvatar && itemAvatar && profileAvatar.mxc_uri === itemAvatar.mxc_uri
+  const avatar = profileAvatar && itemAvatar && profileAvatar.mxc_uri === itemAvatar.mxc_uri
     ? profileAvatar
     : itemAvatar ?? profileAvatar ?? null;
+  // Reuse a Rust-owned ready thumbnail only for the exact same media resource.
+  // A room-specific sender avatar must keep its own URI and demand lifetime.
+  return avatar && knownAvatar?.thumbnail.kind === "ready" && knownAvatar.mxc_uri === avatar.mxc_uri
+    ? knownAvatar
+    : avatar;
 }
 
 export interface AvatarThumbnailRequestPlan {

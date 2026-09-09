@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 
 import {
   planSnapshotAvatarThumbnailRequests,
+  resolvedAvatar,
   requestAvatarThumbnailWithDedupe
 } from "./avatarThumbnails";
 import { readyDesktopSnapshotFixture } from "../test/desktopApiFixture";
@@ -86,5 +87,31 @@ describe("avatar thumbnail demand discovery", () => {
     );
     expect(request).toHaveBeenCalledTimes(2);
     expect(visible).toEqual(new Set(["mxc://example.invalid/member"]));
+  });
+});
+
+describe("ready avatar reuse", () => {
+  const own = {
+    mxc_uri: "mxc://example.invalid/own",
+    thumbnail: {
+      kind: "ready" as const,
+      source_ref: "https://example.invalid/own.png",
+      width: 32,
+      height: 32,
+      mime_type: "image/png"
+    }
+  };
+  test("reuses the own thumbnail for the same message avatar resource", () => {
+    const pending = { ...own, thumbnail: { kind: "notRequested" as const } };
+    expect(resolvedAvatar(pending, undefined, own)).toBe(own);
+  });
+  test("does not substitute a global avatar for a different room-specific image or missing sender image", () => {
+    const room = { mxc_uri: "mxc://example.invalid/room-avatar", thumbnail: { kind: "notRequested" as const } };
+    expect(resolvedAvatar(room, undefined, own)).toBe(room);
+    expect(resolvedAvatar(null, undefined, own)).toBeNull();
+  });
+  test("does not replace a ready row with an unready own thumbnail", () => {
+    const pending = { ...own, thumbnail: { kind: "notRequested" as const } };
+    expect(resolvedAvatar(own, undefined, pending)).toBe(own);
   });
 });

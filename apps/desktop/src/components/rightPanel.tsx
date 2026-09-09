@@ -791,6 +791,7 @@ export function ContextualRightPanel({
               resolveComposerKeyAction={onResolveComposerKeyAction}
               liveSignals={snapshot.state.domain.live_signals}
               profileUsers={snapshot.state.domain.profile.users}
+              ownAvatar={snapshot.state.domain.profile.own.avatar}
               pinnedEventIds={focusedPinnedEventIds}
               forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}
               onSetLocalUserAlias={onSetLocalUserAlias}
@@ -877,6 +878,7 @@ export function ContextualRightPanel({
             resolveComposerKeyAction={onResolveComposerKeyAction}
             liveSignals={snapshot.state.domain.live_signals}
             profileUsers={snapshot.state.domain.profile.users}
+            ownAvatar={snapshot.state.domain.profile.own.avatar}
             pinnedEventIds={threadPinnedEventIds}
             forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}
             onSetLocalUserAlias={onSetLocalUserAlias}

@@ -17,7 +17,8 @@ export interface TimelineDiagnostics {
 
 export function timelineAvatarDiagnostics(
   items: readonly TimelineItem[],
-  profileUsers: Record<string, UserProfile>
+  profileUsers: Record<string, UserProfile>,
+  ownAvatar?: UserProfile["avatar"]
 ): Omit<
   TimelineDiagnostics,
   "visibleItems" | "downloadedItems" | "backfill" | "avatarRenderedImages" | "avatarBrokenImages"
@@ -31,7 +32,7 @@ export function timelineAvatarDiagnostics(
   };
   for (const item of items) {
     const profileAvatar = item.sender ? profileUsers[item.sender]?.avatar : null;
-    const avatar = resolvedAvatar(item.sender_avatar, profileAvatar);
+    const avatar = resolvedAvatar(item.sender_avatar, profileAvatar, ownAvatar);
     if (!avatar) {
       diagnostics.avatarMissingItems += 1;
       continue;
