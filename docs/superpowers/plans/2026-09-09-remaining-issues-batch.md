@@ -183,7 +183,20 @@ error code (not human-readable text) and Core retains it in the serialized
 CoreFailure. Core room operation tests 13/13 passed. Generic non-creation operation
 projection maps this kind to Invalid; mention operations retain their coarse SDK
 failure. Transport/UI actionable inline rendering and actual local-homeserver
-collision evidence are still outstanding.
+collision evidence are still outstanding at this checkpoint.
+
+Local-server checkpoint: extended the existing `directory` stage (retaining its
+previous command coverage) with ordinary Core CreateRoom using the Rust suggestion,
+canonical-address equality, Ruma parsing of the SDK share URL, a second client's
+join using that URL's alias, and repeated creation expecting AliasInUse. Tuwunel
+passed initially. Synapse exposed an observation race: RoomCreated/list insertion
+preceded canonical-alias sync. The lane now observes missing alias state with six
+500ms-spaced settings requests under one EVENT_TIMEOUT; a present wrong alias still
+fails. Synapse then passed, including both new evidence tokens and restored-session
+cleanup. Logs: `/tmp/koushi-batch-address-tuwunel.log`,
+`/tmp/koushi-batch-address-synapse-2.log`; the first failed Synapse log is retained
+locally. Tuwunel predates the bounded-observation adjustment and will be covered
+again by the final gate. GUI/IME/localized feedback remains unimplemented.
 
 ## Remaining investigation and implementation
 

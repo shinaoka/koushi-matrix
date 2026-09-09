@@ -1,3 +1,6 @@
+#[path = "rooms/address.rs"]
+mod address;
+
 use super::event_wait::{
     QaEventDeadline, wait_for_dm_room_in_room_list, wait_for_initial_items,
     wait_for_invite_in_snapshot, wait_for_item_with_body, wait_for_room_created,
@@ -227,6 +230,7 @@ pub(super) async fn run_directory_stage(
     )
     .await?;
     println!("directory_join=ok");
+    address::verify(config, conn_a, conn_b).await?;
 
     Ok(())
 }
