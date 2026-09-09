@@ -294,7 +294,17 @@ messages request was made through a 300ms post-failure observation interval.
 All three ignored-reset tests pass (`/tmp/koushi-ignore-failure.log`): recovery,
 explicit cancellation, and non-retryable failure. This bounded negative check
 is not a claim about every future retry trigger; explicit new user demand is
-still permitted. Local-homeserver ignore/unignore and coalescing coverage remain.
+still permitted. Local-homeserver ignore/unignore and coalescing coverage remain at that checkpoint.
+
+Local-homeserver follow-up: extended `live_signals` to issue real IgnoreUser then
+UnignoreUser commands, observe the matching room's Clear/reset, and wait for an
+existing visible event to return and authoritative ignored-user state to settle.
+The verification sends no messages, viewport commands or restart between the
+ignore/unignore commands. Tuwunel and Synapse both passed with
+`ignored_user_history_recovery=ok`, their existing live-signals/navigation checks,
+and restore cleanup. Logs: `/tmp/koushi-ignore-tuwunel.log` and
+`/tmp/koushi-ignore-synapse.log`. Coalesced repeated-clear coverage and final
+submitted-state gates still remain; neither server pass completes the full goal.
 
 ## Native evidence availability checkpoint
 

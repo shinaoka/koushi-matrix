@@ -3538,6 +3538,9 @@ pub(super) async fn wait_for_cancelled_or_removed_send(
     }
 }
 
+#[path = "timeline/ignored_reset.rs"]
+mod ignored_reset;
+
 pub(super) async fn run_live_signals_stage(
     conn_a: &mut CoreConnection,
     conn_b: &mut CoreConnection,
@@ -3649,6 +3652,7 @@ pub(super) async fn run_live_signals_stage(
     })
     .await?;
     println!("presence=ok");
+    ignored_reset::verify(conn_a, key_a, event_id, &user_id_b).await?;
     println!("live_signals=ok");
 
     Ok(())
