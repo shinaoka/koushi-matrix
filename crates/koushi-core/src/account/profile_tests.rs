@@ -436,6 +436,76 @@ async fn scoped_avatar_capacity_defers_without_losing_demand_and_reuses_terminal
 }
 
 #[tokio::test]
+async fn scoped_avatar_rehydrates_evicted_ready_bytes_from_sdk_cache() {
+    use crate::renderable_thumbnail::{
+        MAX_RENDERABLE_THUMBNAIL_ENTRIES, RenderableThumbnailKind, lookup_renderable_thumbnail,
+        store_renderable_thumbnail,
+    };
+    let _cache_guard = crate::renderable_thumbnail::test_cache_lock();
+    let server = MatrixMockServer::new().await;
+    server
+        .mock_authed_media_download()
+        .ok_image()
+        .expect(1)
+        .mount()
+        .await;
+    let session = test_session(&server).await;
+    let account_id = session.info.user_id.clone();
+    let cred_dir = tempdir().unwrap();
+    let data_dir = tempdir().unwrap();
+    let (handle, mut actions, _events) = spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+    assert!(
+        handle
+            .install_residency_test_session(std::sync::Arc::new(session))
+            .await
+    );
+    let context = handle.avatar_demand_context(account_id);
+    let mut demand = koushi_state::AvatarDemandState::new(context.clone());
+    let uri = "mxc://localhost/evicted-scoped-avatar";
+    for scope in 1..=2 {
+        demand.open(scope).unwrap();
+        demand
+            .replace(&context, scope, 1, vec![Some(uri.into())], vec![])
+            .unwrap();
+        handle.publish_avatar_demand(Some(std::sync::Arc::new(demand.clone())));
+        let source_ref = timeout(Duration::from_secs(3), async {
+            'ready: loop {
+                for action in actions.recv().await.unwrap() {
+                    if let AppAction::AvatarThumbnailUpdated {
+                        mxc_uri,
+                        thumbnail: AvatarThumbnailState::Ready { source_ref, .. },
+                    } = action
+                    {
+                        if mxc_uri == uri {
+                            break 'ready source_ref;
+                        }
+                    }
+                }
+            }
+        })
+        .await
+        .expect("Ready from authoritative actor");
+        assert!(
+            lookup_renderable_thumbnail(&source_ref).is_some(),
+            "Ready must refer to retained bytes"
+        );
+        if scope == 1 {
+            demand.close(scope);
+            for id in 0..MAX_RENDERABLE_THUMBNAIL_ENTRIES {
+                store_renderable_thumbnail(
+                    RenderableThumbnailKind::Avatar,
+                    &format!("synthetic-eviction-{id}"),
+                    vec![0],
+                )
+                .unwrap();
+            }
+            assert!(lookup_renderable_thumbnail(&source_ref).is_none());
+        }
+    }
+    shutdown_and_ack(&handle).await;
+}
+
+#[tokio::test]
 async fn scoped_avatar_watch_cancels_active_and_queued_demand() {
     let _cache_guard = crate::renderable_thumbnail::test_cache_lock();
     let server = MatrixMockServer::new().await;

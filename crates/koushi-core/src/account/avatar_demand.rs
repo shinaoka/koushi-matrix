@@ -59,7 +59,15 @@ impl AccountActor {
             }
         }
         for uri in resources {
-            if let Some(cached) = self.avatar_cache.get(uri) {
+            // Revalidate Ready bytes when an observation is published, not on
+            // every completion: a working set larger than the renderable LRU
+            // must not drive an endless eviction/refill loop.
+            let cached = if publish_cached {
+                self.cached_avatar_thumbnail(uri)
+            } else {
+                self.avatar_cache.get(uri).cloned()
+            };
+            if let Some(cached) = cached {
                 if publish_cached {
                     self.send_actions(vec![AppAction::AvatarThumbnailUpdated {
                         mxc_uri: uri.to_owned(),

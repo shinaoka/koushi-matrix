@@ -433,6 +433,19 @@ impl AccountActor {
         }
     }
 
+    pub(super) fn cached_avatar_thumbnail(
+        &mut self,
+        mxc_uri: &str,
+    ) -> Option<AvatarThumbnailState> {
+        if self.avatar_cache.get(mxc_uri).is_some_and(|thumbnail| {
+            matches!(thumbnail, AvatarThumbnailState::Ready { source_ref, .. }
+                if !crate::renderable_thumbnail::is_renderable_thumbnail_cached(source_ref))
+        }) {
+            self.avatar_cache.remove(mxc_uri);
+        }
+        self.avatar_cache.get(mxc_uri).cloned()
+    }
+
     /// Non-blocking, cache-first avatar thumbnail handler (Stage R1).
     ///
     /// 1. Cache hit (`Ready` or terminal `Failed`): emit immediately; no SDK call.
@@ -445,8 +458,8 @@ impl AccountActor {
         mxc_uri: String,
     ) {
         // 1. Cache hit — Ready and terminal Failed states both settle without I/O.
-        if let Some(cached) = self.avatar_cache.get(&mxc_uri) {
-            let thumbnail = avatar_thumbnail_for_request(cached, request_id);
+        if let Some(cached) = self.cached_avatar_thumbnail(&mxc_uri) {
+            let thumbnail = avatar_thumbnail_for_request(&cached, request_id);
             self.send_actions(vec![AppAction::AvatarThumbnailUpdated {
                 mxc_uri: mxc_uri.clone(),
                 thumbnail: thumbnail.clone(),

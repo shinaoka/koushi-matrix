@@ -532,6 +532,27 @@ state (currently only its test does), including retained-data budget accounting;
 portable command/model wiring, GUI migration and real-server scale evidence are
 not yet complete. No renderer demand registry has been removed prematurely.
 
+## #839 Ready cache eviction regression
+
+A real-image scoped actor test reproduced an invalid Ready reference after filling
+the existing 256-entry renderable LRU: the actor's metadata cache outlived the
+image bytes. RED failed at `Ready must refer to retained bytes`.
+
+Added a byte-copy-free availability check at the shared avatar cache-hit helper.
+Both ordinary and scoped cache hits now discard unavailable Ready metadata and
+reuse the existing SDK media path to restore bytes. The test turns GREEN with
+exactly one server download across initial load and rehydration: the SDK cache
+supplies the second load. Terminal failure caching is unchanged. Revalidation
+occurs on observed demand, not every completion, to avoid an automatic refill
+loop when visible demand exceeds the renderable LRU.
+
+All eight profile actor and 14 renderable-thumbnail tests passed, plus test
+structure and whitespace checks. Logs: `/tmp/koushi-avatar-ready-eviction-red.log`,
+`/tmp/koushi-avatar-ready-eviction-green.log`,
+`/tmp/koushi-avatar-ready-regression.log`.
+This does not replace the remaining scoped resource-budget/lifetime integration,
+source resolver, GUI migration or 1,500-target local-server evidence.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated
