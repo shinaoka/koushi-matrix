@@ -1275,8 +1275,9 @@ impl AccountActor {
         let mut shutdown_ack: Option<oneshot::Sender<()>> = None;
         let mut demand_channel_open = true;
         loop {
+            // Fair selection prevents a busy publisher from starving commands;
+            // the check below still applies pending demand before a completion.
             let msg = tokio::select! {
-                biased;
                 changed = self.avatar_demand_rx.changed(), if demand_channel_open => {
                     if changed.is_err() {
                         demand_channel_open = false;

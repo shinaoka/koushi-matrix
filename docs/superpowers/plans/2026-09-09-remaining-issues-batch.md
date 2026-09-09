@@ -487,6 +487,28 @@ AppActor/source-resolution publication and connection/scope lifecycle integratio
 are still pending; currently only the new test publishes scoped demand. This is
 not yet the live renderer migration, nor the required 1,500-target server proof.
 
+## #839 deferred-capacity and terminal-failure cache evidence
+
+Added a 264-resource actor test, exceeding the six-active plus 256-queued limit.
+All 264 settle with the existing two-attempt budget (528 actual mock-server media
+requests). Replacing the scope with the same resources settles entirely from the
+terminal-failure cache without additional requests. All seven profile actor tests,
+formatting, test structure and diff checks passed.
+
+The initial fixture incorrectly assumed opaque non-image bytes would be rejected
+by the renderable-thumbnail store; that store accepts opaque bytes as Ready. The
+corrected fixture uses explicit HTTP 403 responses. This is a fixture correction,
+not a production image-decoding defect, and the resulting test proves terminal
+**failure** cache reuse, not Ready-resource lease/eviction handling. Ready cache
+and live scoped resource retention still need integration evidence.
+
+Removed watch-first biased selection so continuously arriving observations cannot
+systematically starve commands/completions. The existing pre-message freshness
+check still consumes pending demand before processing a completion.
+Logs: `/tmp/koushi-avatar-capacity.log` (fixture failure),
+`/tmp/koushi-avatar-capacity-corrected.log`,
+`/tmp/koushi-avatar-capacity-regression.log`.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated

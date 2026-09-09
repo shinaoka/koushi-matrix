@@ -359,6 +359,83 @@ async fn canceling_last_avatar_waiter_aborts_active_fetch_and_admits_pending_wor
 }
 
 #[tokio::test]
+async fn scoped_avatar_capacity_defers_without_losing_demand_and_reuses_terminal_failure_cache() {
+    let _cache_guard = crate::renderable_thumbnail::test_cache_lock();
+    let server = MatrixMockServer::new().await;
+    // Non-retryable HTTP response; the avatar owner's two-attempt budget still
+    // applies before its coarse Network failure becomes terminal and cached.
+    server
+        .mock_authed_media_download()
+        .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+            "errcode": "M_FORBIDDEN", "error": "synthetic denial"
+        })))
+        .mount()
+        .await;
+    let session = test_session(&server).await;
+    let account_id = session.info.user_id.clone();
+    let cred_dir = tempdir().unwrap();
+    let data_dir = tempdir().unwrap();
+    let (handle, mut actions, _events) = spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+    assert!(
+        handle
+            .install_residency_test_session(std::sync::Arc::new(session))
+            .await
+    );
+    let context = handle.avatar_demand_context(account_id);
+    let mut demand = koushi_state::AvatarDemandState::new(context.clone());
+    let resources = |range: std::ops::Range<usize>| {
+        range
+            .map(|id| Some(format!("mxc://localhost/capacity-{id}")))
+            .collect()
+    };
+    demand.open(1).unwrap();
+    demand
+        .replace(&context, 1, 1, resources(0..256), resources(256..264))
+        .unwrap();
+    handle.publish_avatar_demand(Some(std::sync::Arc::new(demand.clone())));
+    for pass in 0..2 {
+        let mut settled = std::collections::BTreeSet::new();
+        timeout(Duration::from_secs(15), async {
+            while settled.len() < 264 {
+                for action in actions.recv().await.expect("actor action stream") {
+                    if let AppAction::AvatarThumbnailUpdated { mxc_uri, thumbnail } = action {
+                        if mxc_uri.starts_with("mxc://localhost/capacity-") {
+                            assert!(matches!(
+                                thumbnail,
+                                AvatarThumbnailState::Failed {
+                                    kind: AvatarThumbnailFailureKind::Network,
+                                    ..
+                                }
+                            ));
+                            settled.insert(mxc_uri);
+                        }
+                    }
+                }
+            }
+        })
+        .await
+        .expect("all demand, including deferred resources, settles");
+        let requests = server.received_requests().await.unwrap_or_default();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.url.path().contains("/media/download/"))
+                .count(),
+            528
+        );
+        if pass == 0 {
+            demand.close(1);
+            demand.open(2).unwrap();
+            demand
+                .replace(&context, 2, 1, resources(0..256), resources(256..264))
+                .unwrap();
+            handle.publish_avatar_demand(Some(std::sync::Arc::new(demand.clone())));
+        }
+    }
+    shutdown_and_ack(&handle).await;
+}
+
+#[tokio::test]
 async fn scoped_avatar_watch_cancels_active_and_queued_demand() {
     let _cache_guard = crate::renderable_thumbnail::test_cache_lock();
     let server = MatrixMockServer::new().await;
