@@ -798,6 +798,33 @@ Logs: `/tmp/koushi-reader-geometry-red.log`,
 Remaining work still includes other surfaces, Rust-driven source re-resolution,
 old global URI demand removal, browser/live-server scale evidence and final gates.
 
+## #839 browser popup geometry evidence
+
+Added an actual-App Chromium check with 80 full reader rows and a bounded
+three-reader compact summary. It compares observed IDs with real popup clipping,
+checks eight nearby candidates, scroll-driven changes and no observations after
+close. The fixture explicitly supplies a committed projection request; the first
+attempt used the generic helper's null request and therefore exercised only the
+compact fallback, not the full reader.
+
+The corrected fixture exposed a separate test-infrastructure defect:
+`TauriIpcMock` classified `receive_receipt_reader` as void and discarded model
+replies. A focused unit test reproduced that loss, then turned green after
+preserving delivery/null values and making the unconfigured default null. This
+was a mock correction, not a product/backend deadlock claim.
+
+All 1,303 frontend tests in 112 files passed. All 15 tests in the timeline message
+state browser file passed with one worker. Typecheck, frontend lint and whitespace
+passed. Logs: `/tmp/koushi-reader-mock-red.log`,
+`/tmp/koushi-reader-mock-frontend-full.log`,
+`/tmp/koushi-reader-geometry-browser-green.log`,
+`/tmp/koushi-reader-browser-file.log`, `/tmp/koushi-reader-browser-static.log`.
+
+This proves real browser geometry and command emission against the harness, not
+native WebView behavior or server media request counts. Remaining source families,
+source re-resolution, old URI demand removal, live-server scale and final delivery
+requirements remain open.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated

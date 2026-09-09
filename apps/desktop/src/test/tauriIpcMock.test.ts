@@ -4,6 +4,16 @@ import type { DesktopSnapshot } from "../domain/types";
 import { TauriIpcMock } from "./tauriIpcMock";
 
 describe("TauriIpcMock command responses", () => {
+  test("preserves reader deliveries and end-of-stream instead of treating them as void", async () => {
+    const mock = new TauriIpcMock();
+    await expect(mock.invoke("receive_receipt_reader", { scope: "1" })).resolves.toBeNull();
+    const delivery = { kind: "model", scope: "1", revision: "1", model: { kind: "readerLoading" } };
+    mock.setCommandResponse("receive_receipt_reader", delivery);
+    await expect(mock.invoke("receive_receipt_reader", { scope: "1" })).resolves.toEqual(delivery);
+    mock.setCommandResponse("receive_receipt_reader", null);
+    await expect(mock.invoke("receive_receipt_reader", { scope: "1" })).resolves.toBeNull();
+  });
+
   test("supports static and functional command responses", async () => {
     const mock = new TauriIpcMock();
     let current: { kind: "ready" | "reply" } = { kind: "ready" };
