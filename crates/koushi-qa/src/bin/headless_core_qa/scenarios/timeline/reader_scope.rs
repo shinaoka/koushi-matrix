@@ -66,7 +66,11 @@ pub(super) async fn verify_live_reader_scope(
     })
     .await
     .map_err(|_| format!("reader scope: source timed out initial={initial_count} cause_matches={matching_cause_count} projection_present={projection_count}"))??;
-    for phase in ["initial", "reopen"] {
+    let mut first_scope: Option<(
+        koushi_core::runtime::ReaderSubscription,
+        koushi_protocol::view::ViewRevision,
+    )> = None;
+    for phase in ["initial", "shared", "reopen"] {
         let mut reader = conn
             .subscribe_reader(
                 ReceiptSourceRef {
@@ -77,7 +81,7 @@ pub(super) async fn verify_live_reader_scope(
                 ReaderWindowLimit::try_from(16).unwrap(),
             )
             .map_err(|_| "reader scope: admission failed".to_owned())?;
-        let mut ready_in_initial = false;
+        let mut ready_resource = None;
         let revision = tokio::time::timeout(EVENT_TIMEOUT, async {
             loop {
                 match reader.next_delivery().await {
@@ -99,7 +103,7 @@ pub(super) async fn verify_live_reader_scope(
                                 }) = &row.avatar
                                 {
                                     verify_png(&reader, revision, source_ref)?;
-                                    ready_in_initial = true;
+                                    ready_resource = Some((revision, source_ref.clone()));
                                 }
                                 return Ok::<_, String>(revision);
                             }
@@ -114,7 +118,7 @@ pub(super) async fn verify_live_reader_scope(
         reader
             .observe_avatars(revision, 1, &[expected_reader.to_owned()], &[])
             .map_err(|_| "reader scope: observation rejected".to_owned())?;
-        if !ready_in_initial {
+        if ready_resource.is_none() {
             tokio::time::timeout(EVENT_TIMEOUT, async {
                 loop {
                     match reader.next_delivery().await {
@@ -136,6 +140,7 @@ pub(super) async fn verify_live_reader_scope(
                                 }) = ready
                                 {
                                     verify_png(&reader, revision, source_ref)?;
+                                    ready_resource = Some((revision, source_ref.clone()));
                                     return Ok::<_, String>(());
                                 }
                             }
@@ -146,6 +151,18 @@ pub(super) async fn verify_live_reader_scope(
             })
             .await
             .map_err(|_| "reader avatar: Ready timed out".to_owned())??;
+        }
+        let (ready_revision, source_ref) =
+            ready_resource.ok_or_else(|| "reader avatar: missing Ready resource".to_owned())?;
+        if let Some((first, first_revision)) = first_scope.take() {
+            verify_closed(&first, first_revision)?;
+            // Drop the first subscription and its model/lease owners before
+            // accessing the surviving scope's independent capability.
+            drop(first);
+            verify_png(&reader, ready_revision, &source_ref)?;
+            reader
+                .observe_avatars(ready_revision, 2, &[expected_reader.to_owned()], &[])
+                .map_err(|_| "reader avatar: surviving demand rejected".to_owned())?;
         }
         // Keep demand live during a bounded no-additional-HTTP observation interval.
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -158,12 +175,24 @@ pub(super) async fn verify_live_reader_scope(
             ));
         }
         println!("reader_avatar_phase={phase} media_http_requests={media_reads}");
-        reader.close_handle().close();
-        if reader.observe_avatars(revision, 2, &[], &[])
-            != Err(koushi_core::runtime::ScopeError::Closed)
-        {
-            return Err("reader scope: closed observation was not rejected".to_owned());
+        if phase == "initial" {
+            first_scope = Some((reader, ready_revision));
+        } else {
+            verify_closed(&reader, ready_revision)?;
         }
+    }
+    Ok(())
+}
+
+fn verify_closed(
+    reader: &koushi_core::runtime::ReaderSubscription,
+    revision: koushi_protocol::view::ViewRevision,
+) -> Result<(), String> {
+    reader.close_handle().close();
+    if reader.observe_avatars(revision, 3, &[], &[])
+        != Err(koushi_core::runtime::ScopeError::Closed)
+    {
+        return Err("reader scope: closed observation was not rejected".to_owned());
     }
     Ok(())
 }

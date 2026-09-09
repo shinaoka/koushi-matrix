@@ -1054,6 +1054,26 @@ The 1,500-reader fixture is not yet connected to Core observations; its request
 bounds, live in-flight cancellation/shared/account-retirement cases, remaining
 surfaces and final delivery remain open.
 
+## #839 live shared-scope resource retention
+
+Extended the real reader-avatar check to keep its first subscription open while
+a second scope observes the same reader. Once the second scope has Ready bytes,
+the first is closed and dropped; the surviving scope must still read its scoped
+PNG and accept a renewed observation. Both scopes are then closed before the
+existing reopen phase. Late observations on closed scopes remain rejected.
+
+Both Tuwunel and Synapse passed the full live-signals lane. Initial, shared and
+reopen phases each reported one total media HTTP request (no additional read in
+the latter phases), including the existing 250 ms open-demand observation
+intervals. The 104 QA unit tests and Rust test-structure/whitespace checks passed.
+Evidence: `/tmp/koushi-reader-shared-{tests,both}.log`.
+
+This proves shared Ready-resource access across closing/dropping one owner and
+cache reopening on real backends. It does not prove sharing during an unfinished
+download, in-flight cancellation, account retirement, or the 1,500-reader Core
+scenario. Those checks, remaining surface migration and final delivery remain
+open; no overall completion claim is made.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated
