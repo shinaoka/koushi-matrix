@@ -36,25 +36,9 @@ impl InstalledRows {
     }
 
     pub(crate) fn avatar_mxc(&self, user_id: &str) -> Result<Option<&str>, ScopeError> {
-        let target = self
-            .rows
-            .iter()
-            .find(|row| row.user_id() == Some(user_id))
-            .map(|row| &row.target)
-            .ok_or(ScopeError::InvalidModel)?;
-        self.avatar_target_mxc(target)
-    }
-
-    pub(crate) fn avatar_target_mxc(
-        &self,
-        target: &koushi_state::AvatarTarget,
-    ) -> Result<Option<&str>, ScopeError> {
-        if !self.rows.iter().any(|row| &row.target == target) {
+        if !self.rows.iter().any(|row| row.user_id == user_id) {
             return Err(ScopeError::InvalidModel);
         }
-        let koushi_state::AvatarTarget::User { user_id, .. } = target else {
-            return Err(ScopeError::InvalidModel);
-        };
         Ok(self
             .resources
             .binary_search_by(|resource| resource.user_id.as_str().cmp(user_id))
@@ -64,30 +48,21 @@ impl InstalledRows {
 }
 
 pub(super) struct InstalledRow {
-    target: koushi_state::AvatarTarget,
+    pub(super) user_id: String,
 }
 
-impl InstalledRow {
-    pub(super) fn user_id(&self) -> Option<&str> {
-        match &self.target {
-            koushi_state::AvatarTarget::User { user_id, .. } => Some(user_id),
-            _ => None,
-        }
-    }
-}
-
-fn visit_rows(model: &ViewModel, mut visit: impl FnMut(&str, &ReaderRow)) {
+fn visit_rows(model: &ViewModel, mut visit: impl FnMut(&ReaderRow)) {
     match model {
         ViewModel::ReaderLoading { .. } => {}
         ViewModel::ReaderReady(window) => {
             for row in &window.rows {
-                visit(window.source.timeline.key.room_id(), row);
+                visit(row);
             }
         }
-        ViewModel::TimelineReceipts { source, summaries } => {
+        ViewModel::TimelineReceipts { summaries, .. } => {
             for summary in summaries {
                 for row in &summary.readers {
-                    visit(source.key.room_id(), row);
+                    visit(row);
                 }
             }
         }
@@ -119,13 +94,9 @@ pub(super) fn prepare(
         .ok_or(ScopeError::Capacity)?;
     let mut count = 0;
     let mut metadata_bytes = Some(std::mem::size_of::<InstalledRows>());
-    visit_rows(&model, |room_id, row| {
+    visit_rows(&model, |row| {
         count += 1;
-        for bytes in [
-            std::mem::size_of::<InstalledRow>(),
-            room_id.len(),
-            row.user_id.len(),
-        ] {
+        for bytes in [std::mem::size_of::<InstalledRow>(), row.user_id.len()] {
             metadata_bytes = metadata_bytes.and_then(|total| total.checked_add(bytes));
         }
     });
@@ -165,7 +136,7 @@ pub(super) fn prepare(
         .ok_or(ScopeError::Capacity)?;
     let mut valid_resources = true;
     let mut referenced = vec![false; resources.len()];
-    visit_rows(&model, |_, row| {
+    visit_rows(&model, |row| {
         if row.avatar.is_none() {
             return;
         }
@@ -188,12 +159,9 @@ pub(super) fn prepare(
         return Err(ScopeError::InvalidModel);
     }
     let mut rows = Vec::with_capacity(count);
-    visit_rows(&model, |room_id, row| {
+    visit_rows(&model, |row| {
         rows.push(InstalledRow {
-            target: koushi_state::AvatarTarget::User {
-                room_id: room_id.to_owned(),
-                user_id: row.user_id.clone(),
-            },
+            user_id: row.user_id.clone(),
         })
     });
     Ok(PreparedModel {
@@ -286,9 +254,6 @@ fn unique_rows(rows: &[ReaderRow]) -> bool {
             .any(|previous| previous.user_id == row.user_id)
     })
 }
-
-#[cfg(test)]
-mod target_tests;
 
 #[cfg(test)]
 mod tests {

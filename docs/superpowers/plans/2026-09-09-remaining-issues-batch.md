@@ -1307,37 +1307,24 @@ bug. It uses same-account test-installed sessions and synthetic completion
 messages; it does not claim real login/account-switch or stale network-byte
 replay coverage. No production behavior, GUI or shared server was changed.
 
-## #839 Rust target metadata preparation (GUI still untouched)
+## #839 simplification after user feedback
 
-Clarified the remaining work boundary: the Tuwunel issue blocks satisfying the
-both-server prerequisite for GUI wiring, not all independent Rust Phase-A work.
-The stable AvatarTarget resolver exists in state, but the Core public API remains
-ReaderSubscription-only. The general avatar-surface API is still to be completed.
+The user questioned over-engineering. Reverted the implementation-only metadata
+preparation from 24c631c: it added room strings per installed row and an extra
+lookup without a caller needing the new interface. Removed its dedicated test
+along with that interface. Existing reader owner/source/revision authorization,
+budget accounting and resource lifetime checks remain in place. The independently
+useful session-fence test from 57847fe remains.
 
-As a first internal preparation, installed row metadata now uses the existing
-room-qualified AvatarTarget::User instead of retaining an unqualified user ID.
-Reader observations continue through the same ownership/revision/source gates,
-then use typed-target lookup. A reader target from a different room or an
-OwnProfile target cannot reuse the same user identity to obtain its private URI.
-The added room strings and enum storage are charged before metadata allocation.
-Reader resource production and public DTOs remain unchanged; this is not a claim
-that own-profile or icon subscriptions already work, nor a new UI model layer.
+Core lib after this removal: 1,031 passed, nine ignored. Evidence:
+`/tmp/koushi-avatar-simplification-core.log`. The one-test count reduction is the
+removed preparatory-interface test, not an ignored or weakened acceptance check.
+Prior 24c631c evidence is historical, not evidence of an implemented general API.
 
-The added boundary test verifies valid private-URI lookup, different-room/kind
-rejection and no MXC in serialized data. The initial check failed on the missing
-new internal lookup method; no existing product RED is claimed for this internal
-refactoring. The test moved into model/target_tests.rs after the structure gate
-reported the 200-line inline-test limit. No suppression was added.
-
-Core lib passed 1,032 tests with nine ignored. After the final test split, all 24
-scope-lifecycle checks passed. The unchanged live-signals lane passed on both
-Tuwunel and Synapse, including its actual reader media/cache/shared-scope checks.
-Evidence: `/tmp/koushi-avatar-target-metadata-{missing-api,core,focused,final,live}.log`.
-This is not a rerun or a pass claim for the blocked 1,500-reader Tuwunel lane.
-
-Next: finish the Rust avatar-surface lifecycle/API using the existing registry,
-budget and watch handoff, beginning with own-profile source authority and lifetime
-checks. GUI wiring, upstream Tuwunel changes and overall completion remain gated.
+The public Core API remains reader-only. Next implementation must provide a
+working smallest surface end-to-end rather than more standalone scaffolding.
+Tuwunel still blocks the both-server 1,500-reader prerequisite for GUI migration,
+not independent Rust Phase-A work. No upstream or GUI changes were made.
 
 ## Latest user decisions: #839 approved, native check deferred
 

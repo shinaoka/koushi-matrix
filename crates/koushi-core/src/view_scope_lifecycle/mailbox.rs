@@ -85,7 +85,7 @@ impl Mailbox {
         Ok(installed
             .rows
             .iter()
-            .position(|row| row.user_id() == Some(user_id))
+            .position(|row| row.user_id == user_id)
             .map(|index| index as u64))
     }
 
