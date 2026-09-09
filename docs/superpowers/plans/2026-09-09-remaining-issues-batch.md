@@ -1287,6 +1287,26 @@ claim cross-account switch/relogin isolation or deliberately delivered stale tas
 completion; the held connections were canceled before their bytes were forwarded.
 Tuwunel, remaining product-surface migration and final gates/PR/merge remain open.
 
+## #839 session-fence coverage strengthened
+
+The existing retired-session avatar test injected an unrelated task ID before a
+current waiter existed, so it did not independently exercise the generation
+fence. It now starts a real actor fetch in each test-installed session and obtains
+the actual IDs through a read-only cfg(test) actor query. With the new waiter
+active, it injects the retired pair and each stale/current mixed pair, then a
+current completion. Only the current completion may settle the waiter; stale
+Ready actions must not reach the reducer. The delayed mock network response is
+not awaited as an oracle; owned tasks are aborted by normal actor shutdown.
+
+A temporary removal of only the generation guard made the test fail with a
+stale Ready settling the current waiter. The guard was restored exactly, and
+Core lib passed 1,032 tests (nine ignored); Rust test structure and whitespace
+checks passed. Logs: `/tmp/koushi-avatar-session-fence-{green,mutation,core}.log`.
+This is a coverage improvement with mutation evidence, not a newly fixed product
+bug. It uses same-account test-installed sessions and synthetic completion
+messages; it does not claim real login/account-switch or stale network-byte
+replay coverage. No production behavior, GUI or shared server was changed.
+
 ## #839 Rust target metadata preparation (GUI still untouched)
 
 Clarified the remaining work boundary: the Tuwunel issue blocks satisfying the

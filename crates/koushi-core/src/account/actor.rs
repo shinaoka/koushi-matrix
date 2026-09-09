@@ -532,6 +532,11 @@ pub(crate) enum AccountMessage {
         fetch_id: tokio::task::Id,
         thumbnail: AvatarThumbnailState,
     },
+    #[cfg(test)]
+    AvatarFetchIdForTesting {
+        mxc_uri: String,
+        response_tx: oneshot::Sender<Option<tokio::task::Id>>,
+    },
     /// Internal: optional account-data/profile hydration completed after the
     /// session was already projected as ready. Generation-gated so stale
     /// completions from a previous session are dropped.
@@ -2370,6 +2375,17 @@ impl AccountActor {
                 }
                 AccountMessage::IdentityResetAuthTimedOut { flow_id } => {
                     self.handle_identity_reset_auth_timeout(flow_id).await;
+                }
+                #[cfg(test)]
+                AccountMessage::AvatarFetchIdForTesting {
+                    mxc_uri,
+                    response_tx,
+                } => {
+                    let _ = response_tx.send(
+                        self.avatar_fetch_abort_handles
+                            .get(&mxc_uri)
+                            .map(|handle| handle.id()),
+                    );
                 }
                 AccountMessage::AvatarFetched {
                     mxc_uri,
