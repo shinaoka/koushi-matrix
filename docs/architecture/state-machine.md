@@ -2353,7 +2353,7 @@ stateDiagram-v2
   `LiveSignalsChanged` after existing profile/room-list effects. Duplicate
   thumbnail state and unrelated MXCs are inert; no new action or renderer-side
   profile join is required.
-- Avatar observations are bounded, connection-owned, account/session-qualified
+- Scoped full-reader avatar observations are bounded, connection-owned, account/session-qualified
   scope updates containing stable source identities/windows and monotonically
   ordered revisions, not renderer-selected MXCs. Retired/stale or oversized input
   is rejected rather than truncated. Each scope admits at most 256 visible and
@@ -2363,7 +2363,11 @@ stateDiagram-v2
   best-effort cancellation message. AccountActor reconciles the demand using its
   existing six active/256 queued downloader; excess live demand is deferred and
   reconsidered as capacity becomes available, not lost or put in an unbounded
-  queue. React owns neither a demand/ref-count registry nor retries. Core cancels
+  queue. React owns neither a demand/ref-count registry nor retries for this
+  migrated path. Other avatar surfaces retain their existing bridge under the
+  [user-approved delivery scope](../superpowers/specs/2026-09-09-issue839-avatar-demand-completion.md#current-delivery-scope-supersedes-the-original-migration-gates-below);
+  their full migration is not a completion claim or requirement of this batch.
+  Core cancels
   a released waiter's active/queued fetch without a terminal event for that
   released demand. Shared MXCs remain single-flight until their final consumer
   releases them; account teardown still uses the session-generation fence. Within one session, a completion must also match the

@@ -1,6 +1,32 @@
 # #839: complete shared avatar-demand ownership
 
-Status: approved by the user (「承認」); implementation in progress.
+Status: delivery scope narrowed by the user to remaining concrete problems;
+the original full-migration design below is retained as historical context.
+
+## Current delivery scope (supersedes the original migration gates below)
+
+The user reports that operation latency is largely resolved and approved fixing
+only remaining demonstrated problems before one PR through merge. Retain and
+verify the implemented scoped full-reader behavior. Do not build a generic
+avatar-surface API, enable People images, migrate all avatar surfaces, or remove
+all React request management merely for architectural uniformity in this batch.
+Those original #839 requirements remain uncompleted, not silently satisfied.
+
+Clarify the existing diagnostic pending count as timeline items including
+unrequested avatars, not download counts; do not add a diagnostics framework or
+new performance/heap SLO. Run focused checks for actual changes and the applicable
+repository-local/required CI gates, without duplicating every operation in every
+host/browser/native layer.
+
+The Tuwunel 1.7.1 receipt aggregation defect and failed 1,500-reader case remain
+explicit known limitations, not pass evidence or merge prerequisites. Preserve
+the existing Synapse evidence and rerun relevant checks when affected. Do not
+modify the upstream repository or shared services. The native #855 check remains
+user-owned and deferred as previously approved. This scope does not authorize
+weakening existing ownership, session fencing, resource bounds, accessibility or
+IME behavior.
+
+## Original design context
 The subsequent user instruction defers #855 macOS WebView verification to their
 later check. It is not a blocker for this batch and is not verified evidence.
 Scope: the remaining #839 contract, not #859 virtualization replacement.

@@ -283,7 +283,7 @@ export function diagnosticReport({
     `Timeline visible items: ${timelineDiagnostics.visibleItems}`,
     `Timeline downloaded event items: ${timelineDiagnostics.downloadedItems}`,
     `Timeline backfill: ${timelineDiagnostics.backfill}`,
-    `Timeline avatars: mxc=${timelineDiagnostics.avatarMxcItems} ready=${timelineDiagnostics.avatarReadyItems} pending=${timelineDiagnostics.avatarPendingItems} failed=${timelineDiagnostics.avatarFailedItems} missing=${timelineDiagnostics.avatarMissingItems} rendered=${timelineDiagnostics.avatarRenderedImages} broken=${timelineDiagnostics.avatarBrokenImages}`,
+    `Timeline avatars (item counts, not downloads; pending includes unrequested): mxc=${timelineDiagnostics.avatarMxcItems} ready=${timelineDiagnostics.avatarReadyItems} pending=${timelineDiagnostics.avatarPendingItems} failed=${timelineDiagnostics.avatarFailedItems} missing=${timelineDiagnostics.avatarMissingItems} rendered=${timelineDiagnostics.avatarRenderedImages} broken=${timelineDiagnostics.avatarBrokenImages}`,
     ...(crawler.running + crawler.queued > 0
       ? [
           `Potential UI load: search crawler running=${crawler.running} queued=${crawler.queued}; worker=1`

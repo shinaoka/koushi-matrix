@@ -573,17 +573,18 @@ An in-process actor system in `koushi-core`:
   Compact output is all readers through four, three plus exact overflow from five;
   full-reader windows preserve the exact total without publishing all records.
   React joins finished compact summaries by event ID only; it never joins profile
-  maps, orders readers, or formats receipt dates. For avatars it reports only
+  maps, orders readers, or formats receipt dates. The scoped full-reader avatar path reports only
   source-revision-qualified visible identities/windows through connection-owned
   scopes. Rust owns resolved demand, visible-before-prefetch priority, shared
   consumption, download, retry, capacity, cancellation and terminal state; React
-  must not maintain an MXC request/ref-count registry. The existing 64-scope budget
+  does not maintain an MXC request/ref-count registry for this migrated path. The existing 64-scope budget
   admits at most 256 visible and eight prefetch identities per avatar scope.
   AppActor publishes durable latest-wins demand to the existing AccountActor
   downloader; scope retirement removes demand even under mailbox pressure.
   Visibility qualifies both the committed timeline display and receipt-model
-  revisions. The same contract serves senders, compact/full readers, People,
-  Space members, room/Space/invite icons and own profile; see the approved
+  revisions. Other avatar surfaces retain their existing request bridge for the
+  current delivery; do not extend it or claim their migration is complete.
+  All-surface unification is deferred by the user's narrowed scope; see the
   [avatar demand contract](../superpowers/specs/2026-09-09-issue839-avatar-demand-completion.md). The old room-wide full-reader map is removed from the
   production path rather than retained as a fallback or embedded TimelineItem
   cache.

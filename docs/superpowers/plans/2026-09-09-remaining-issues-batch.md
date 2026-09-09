@@ -2,7 +2,12 @@
 
 ## Contract
 
-Address #858, #856, #855, #850, #847, #839, and #838 in one final PR.
+Deliver the existing fixes for #858, #856, #855, #850, #847, #838 and the
+implemented #839 reader work in one final PR through merge. The latest user
+instruction limits additional work to concrete remaining problems, not all-surface
+avatar unification. Follow the current delivery scope in
+[the avatar spec](../specs/2026-09-09-issue839-avatar-demand-completion.md).
+Historical checkpoints below record their state at the time, not fresh blockers.
 The maintainer explicitly extracted the viewport-library selection/integration/
 qualification into #859 and closed the former #846 umbrella. Do not silently
 reintroduce that independent scope or claim its qualification is complete.
@@ -1323,8 +1328,8 @@ Prior 24c631c evidence is historical, not evidence of an implemented general API
 
 The public Core API remains reader-only. Next implementation must provide a
 working smallest surface end-to-end rather than more standalone scaffolding.
-Tuwunel still blocks the both-server 1,500-reader prerequisite for GUI migration,
-not independent Rust Phase-A work. No upstream or GUI changes were made.
+Tuwunel's 1,500-reader failure remains documented; the latest approved scope
+removes it as a delivery prerequisite. No upstream or GUI changes were made.
 
 ## Latest user decisions: #839 approved, native check deferred
 
@@ -1337,10 +1342,26 @@ macOS WebView verification to a later user check and removes it from this batch'
 implementation/PR/merge blockers. Native verification remains **not performed**;
 Linux/Chromium, macOS cargo-check and release packaging are not substitutes.
 The final handoff must disclose the deferral, not claim native acceptance evidence.
-All other goal requirements, including #839 real request-count evidence, final
-local/CI gates, human PR approval and merge/main verification, remain required.
+The subsequent user instruction narrows delivery to demonstrated remaining
+problems and existing fixes, not full avatar unification. Tuwunel's known
+1,500-reader failure is disclosed rather than treated as a merge gate. Final
+applicable local/CI gates, human PR approval and merge/main verification remain
+required. Do not close the broad #839 requirements as fully implemented.
 
-## Remaining investigation and implementation
+## Current next steps
+
+- Diagnostic wording: the report now explicitly describes avatar counts as items,
+  not downloads, and pending as including unrequested items. Counters and QA
+  tokens are unchanged. The existing report assertion failed before the wording
+  change, then diagnostics/QA-title tests passed 24/24; typecheck passed.
+  Evidence: `/tmp/koushi-diagnostic-count-label-{red,green,types}.log`.
+- Review the coherent diff for necessary fixes versus unused preparation, then
+  run the applicable final gates and preflight self-review. Preserve user changes.
+- Open/update one PR, obtain exact-head required CI and human approval, merge,
+  and verify main/post-merge status. Disclose #839's deferred architecture and
+  Tuwunel limitation and #855's native deferral in the PR/issue disposition.
+
+## Historical investigation list (superseded by current next steps)
 
 - #847: Core ignored-sender suppression is reversible per-item. The pinned SDK
   `event_cache/tasks.rs::ignore_user_list_update_task` calls `clear_all_rooms`,
