@@ -116,6 +116,24 @@ contract/surface requirements before changing ownership, and obtain the requeste
 actual bounded-avatar request evidence on disposable servers (live-signals pass
 alone does not prove avatar request counts). No code changes for #839 yet.
 
+### #839 same-session replacement race
+
+Found a separate concrete bug in the existing shared downloader: after the final
+waiter cancels, a new demand for the same MXC may be present when the canceled
+task's queued completion arrives. Session generation and MXC equality cannot
+distinguish the old task from the replacement. An actor/MatrixMockServer regression
+was runtime-RED: an injected old Ready result incorrectly settled the replacement
+whose actual HTTP fetch should fail. Amended the Profiles And Avatars canon before
+fixing it. AvatarFetched now carries the existing Tokio task identity and the
+actor compares it to the current abort handle before touching waiters, counters
+or cache. No extra counter/registry was introduced. Regression assertions are
+unchanged (the new internal message field supplies an obsolete task identity).
+All five account profile actor tests passed, including capacity, cancellation,
+cache reuse and retired-session rejection. Logs:
+`/tmp/koushi-avatar-replacement-red.log`, `/tmp/koushi-avatar-replacement-green.log`.
+This fixes one required stale-result boundary, not the remaining scope/demand
+migration or the 1,500-target local-server evidence.
+
 ## #838 upstream comparison and Phase A start
 
 Inspected Element Web `1b06092990a28edca91a90bbd904acb523a74ba3`,
@@ -255,6 +273,15 @@ Classified it as a pure typed-value method in the canonical migration map; the
 unchanged three-test contract suite then passed. Typecheck, lint and production
 build passed (existing large-chunk warning). Full final gates remain; no all-green
 whole-suite run is claimed for the prior failing invocation.
+
+## Native evidence availability checkpoint
+
+The current execution host reports Linux. Existing GitHub workflows include a
+macOS cargo-check job and release packaging, but no macOS WebView layout/GUI
+verification lane. Neither is evidence for #855's native baseline acceptance.
+A macOS GUI environment or an explicitly supplied native verification result is
+still required; do not dispatch a release workflow to obtain unrelated evidence.
+This blocks final acceptance, not the remaining Linux/headless implementation.
 
 ## Remaining investigation and implementation
 

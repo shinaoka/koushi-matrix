@@ -529,6 +529,7 @@ pub(crate) enum AccountMessage {
     AvatarFetched {
         mxc_uri: String,
         generation: u64,
+        fetch_id: tokio::task::Id,
         thumbnail: AvatarThumbnailState,
     },
     /// Internal: optional account-data/profile hydration completed after the
@@ -2288,9 +2289,10 @@ impl AccountActor {
                 AccountMessage::AvatarFetched {
                     mxc_uri,
                     generation,
+                    fetch_id,
                     thumbnail,
                 } => {
-                    self.handle_avatar_fetched(mxc_uri, generation, thumbnail)
+                    self.handle_avatar_fetched(mxc_uri, generation, fetch_id, thumbnail)
                         .await;
                 }
                 AccountMessage::AccountHydrationLoaded {

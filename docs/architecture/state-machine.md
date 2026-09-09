@@ -2358,7 +2358,11 @@ stateDiagram-v2
   and Core cancels the matching waiter or active/queued fetch without publishing
   a terminal event for the released demand. Shared MXCs remain single-flight
   until their final consumer releases them; account teardown still uses the
-  session-generation fence.
+  session-generation fence. Within one session, a completion must also match the
+  currently registered fetch task identity for that MXC. An already queued result
+  from a canceled task must not settle or remove a later replacement's waiters,
+  populate its cache, or decrement its active-fetch count. The existing task
+  handle supplies this identity; no second fetch-generation counter is needed.
 - The existing timeline media download contract emits byte counts only and does
   not put downloaded bytes in React state. Avatar thumbnail source references
   are opaque app-owned handles produced by Rust/platform media handling;

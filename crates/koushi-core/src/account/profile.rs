@@ -407,6 +407,7 @@ impl AccountActor {
                 .send(AccountMessage::AvatarFetched {
                     mxc_uri: mxc_uri_clone,
                     generation,
+                    fetch_id: tokio::task::id(),
                     thumbnail,
                 })
                 .await;
@@ -554,6 +555,7 @@ impl AccountActor {
         &mut self,
         mxc_uri: String,
         generation: u64,
+        fetch_id: tokio::task::Id,
         thumbnail: AvatarThumbnailState,
     ) {
         // Fix 3: drain completed tasks non-blockingly so the JoinSet stays
@@ -561,7 +563,12 @@ impl AccountActor {
         self.reap_avatar_fetch_tasks();
 
         // Fix 1: drop stale completions from a prior session.
-        if generation != self.avatar_session_generation {
+        if generation != self.avatar_session_generation
+            || !self
+                .avatar_fetch_abort_handles
+                .get(&mxc_uri)
+                .is_some_and(|handle| handle.id() == fetch_id)
+        {
             return;
         }
         // A canceled task can still have a completion message queued before

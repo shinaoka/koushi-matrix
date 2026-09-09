@@ -359,6 +359,106 @@ async fn canceling_last_avatar_waiter_aborts_active_fetch_and_admits_pending_wor
 }
 
 #[tokio::test]
+async fn canceled_avatar_completion_cannot_settle_a_replacement_in_the_same_session() {
+    let _cache_guard = crate::renderable_thumbnail::test_cache_lock();
+    let server = MatrixMockServer::new().await;
+    server
+        .mock_authed_media_download()
+        .respond_with(ResponseTemplate::new(500).set_delay(Duration::from_millis(100)))
+        .mount()
+        .await;
+    let session = test_session(&server).await;
+    let cred_dir = tempdir().unwrap();
+    let data_dir = tempdir().unwrap();
+    let (handle, _action_rx, mut event_rx) =
+        spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+    assert!(
+        handle
+            .install_residency_test_session(std::sync::Arc::new(session))
+            .await
+    );
+    let mxc_uri = "mxc://localhost/replaced-avatar";
+    let first = RequestId {
+        connection_id: RuntimeConnectionId(10),
+        sequence: 1,
+    };
+    let replacement = RequestId {
+        sequence: 2,
+        ..first
+    };
+    handle
+        .send(AccountMessage::Command(
+            AccountCommand::DownloadAvatarThumbnail {
+                request_id: first,
+                mxc_uri: mxc_uri.into(),
+            },
+        ))
+        .await;
+    handle
+        .send(AccountMessage::Command(
+            AccountCommand::CancelAvatarThumbnail {
+                request_id: RequestId {
+                    sequence: 3,
+                    ..first
+                },
+                target_request_id: first,
+                mxc_uri: mxc_uri.into(),
+            },
+        ))
+        .await;
+    handle
+        .send(AccountMessage::Command(
+            AccountCommand::DownloadAvatarThumbnail {
+                request_id: replacement,
+                mxc_uri: mxc_uri.into(),
+            },
+        ))
+        .await;
+    // Model an already queued completion from the canceled task. Session identity
+    // is unchanged and a new waiter now exists for precisely the same resource.
+    handle
+        .send(AccountMessage::AvatarFetched {
+            mxc_uri: mxc_uri.into(),
+            generation: 0,
+            fetch_id: tokio::spawn(async {}).id(),
+            thumbnail: AvatarThumbnailState::Ready {
+                source_ref: "avatar/obsolete".into(),
+                width: None,
+                height: None,
+                mime_type: None,
+            },
+        })
+        .await;
+    let result = timeout(Duration::from_secs(3), async {
+        loop {
+            if let CoreEvent::Account(AccountEvent::AvatarThumbnailDownloaded {
+                request_id,
+                thumbnail,
+                ..
+            }) = event_rx.recv().await.unwrap()
+            {
+                if request_id == replacement {
+                    break thumbnail;
+                }
+            }
+        }
+    })
+    .await
+    .expect("replacement must settle from its own fetch");
+    assert!(
+        matches!(
+            result,
+            AvatarThumbnailState::Failed {
+                kind: AvatarThumbnailFailureKind::Network,
+                ..
+            }
+        ),
+        "obsolete completion settled replacement: {result:?}"
+    );
+    shutdown_and_ack(&handle).await;
+}
+
+#[tokio::test]
 async fn avatar_actor_drops_a_late_completion_from_a_retired_session() {
     let _cache_guard = crate::renderable_thumbnail::test_cache_lock();
     let server = MatrixMockServer::new().await;
@@ -390,6 +490,7 @@ async fn avatar_actor_drops_a_late_completion_from_a_retired_session() {
         .send(AccountMessage::AvatarFetched {
             mxc_uri: mxc_uri.to_owned(),
             generation: 0,
+            fetch_id: tokio::spawn(async {}).id(),
             thumbnail: AvatarThumbnailState::Ready {
                 source_ref: "avatar/stale".to_owned(),
                 width: None,
