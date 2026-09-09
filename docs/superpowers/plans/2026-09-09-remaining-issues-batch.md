@@ -365,6 +365,26 @@ Logs: `/tmp/koushi-batch-boundary-gates.log` (initial inventory failure),
 `/tmp/koushi-batch-boundary-gates-followup.log` (correction and remaining checks).
 This inventory correction does not implement or approve the #839 proposal.
 
+## #847 repeated-reset cancellation coverage
+
+Added `repeated_cache_resets_share_inflight_refill_and_cancel_pending_demand`.
+A real SDK ignore-list reset starts a delayed `/messages` refill. Three more
+Clears pass through the existing acknowledged actor diff test seam and the normal
+`handle_diff_batch` path. The actual server request count remains one; explicit
+cancel produces correlated Idle, and the count still remains one after the delayed
+response interval. No production code or new test API was added.
+
+The first fixture tried to use repeated display Clears as synchronization while
+the timeline was already empty and timed out. It is a fixture failure, not a
+product regression. The corrected fixture uses acknowledged actor delivery rather
+than assuming an empty display must emit another Clear. This is actor-level
+coalescing/cancellation evidence; only the first Clear originates in the real SDK.
+
+All four ignored-reset tests passed; formatting and Rust test-structure checks
+also passed. Logs: `/tmp/koushi-ignore-coalesced.log` (initial fixture failure),
+`/tmp/koushi-ignore-coalesced-corrected.log`, `/tmp/koushi-ignore-reset-suite.log`.
+The overall goal and #839 approval boundary remain open.
+
 ## Native evidence availability checkpoint
 
 The current execution host reports Linux. Existing GitHub workflows include a

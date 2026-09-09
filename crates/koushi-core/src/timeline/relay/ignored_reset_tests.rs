@@ -62,10 +62,16 @@ async fn failed_cache_reset_refill_reports_failure_without_automatic_retry() {
     exercise_ignored_reset(ResetCase::Fail).await;
 }
 
+#[tokio::test]
+async fn repeated_cache_resets_share_inflight_refill_and_cancel_pending_demand() {
+    exercise_ignored_reset(ResetCase::CoalescedCancel).await;
+}
+
 #[derive(Clone, Copy)]
 enum ResetCase {
     Recover,
     Cancel,
+    CoalescedCancel,
     Fail,
 }
 
@@ -80,7 +86,7 @@ async fn message_request_count(server: &MatrixMockServer) -> usize {
 }
 
 async fn exercise_ignored_reset(case: ResetCase) {
-    let cancel_refill = matches!(case, ResetCase::Cancel);
+    let cancel_refill = matches!(case, ResetCase::Cancel | ResetCase::CoalescedCancel);
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
     client.event_cache().subscribe().unwrap();
@@ -279,6 +285,27 @@ async fn exercise_ignored_reset(case: ResetCase) {
                     }
                 })
                 .await?;
+                if matches!(case, ResetCase::CoalescedCancel) {
+                    // The first reset came from the real SDK. Use the existing
+                    // acknowledged diff seam for additional accepted Clears:
+                    // ignoring users again while already empty need not emit a
+                    // display Clear, so it is not a reliable scheduler barrier.
+                    for _ in 0..3 {
+                        let (acknowledged, received) = tokio::sync::oneshot::channel();
+                        actor
+                            .send(TimelineActorMessage::TestInjectRestoreDiff {
+                                diffs: vec![eyeball_im::VectorDiff::Clear],
+                                projections: BTreeSet::new(),
+                                acknowledged,
+                            })
+                            .await;
+                        stage = "repeated-clear";
+                        tokio::time::timeout(Duration::from_secs(2), received)
+                            .await?
+                            .expect("actor accepted repeated Clear");
+                    }
+                    assert_eq!(message_request_count(&server).await, initial_requests + 1);
+                }
                 actor
                     .send(TimelineActorMessage::CancelPagination {
                         request_id: fake_rid(3),
