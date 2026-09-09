@@ -88,6 +88,30 @@ pub async fn update_receipt_reader_window(
 }
 
 #[tauri::command]
+pub async fn observe_receipt_reader_avatars(
+    scope: koushi_protocol::view::ViewScopeId,
+    request: koushi_protocol::view::ReaderAvatarObservation,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<(), String> {
+    let entry = state
+        .reader_subscriptions
+        .lock()
+        .await
+        .get(&scope)
+        .cloned()
+        .ok_or_else(|| "reader scope is not owned by this window".to_owned())?;
+    entry
+        .control
+        .observe_avatars(
+            request.installed_revision,
+            request.sequence,
+            &request.visible_user_ids,
+            &request.prefetch_user_ids,
+        )
+        .map_err(|error| format!("reader avatar observation failed: {error:?}"))
+}
+
+#[tauri::command]
 pub async fn ack_receipt_reader(
     scope: koushi_protocol::view::ViewScopeId,
     revision: koushi_protocol::view::ViewRevision,

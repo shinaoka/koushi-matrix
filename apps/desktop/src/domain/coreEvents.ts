@@ -79,6 +79,13 @@ export interface ReceiptSourceRef {
   event_id: string;
 }
 
+export interface ReaderAvatarObservation {
+  installed_revision: string;
+  sequence: string;
+  visible_user_ids: string[];
+  prefetch_user_ids: string[];
+}
+
 export interface ReaderWindowRequest {
   installed_revision: string;
   sequence: string;

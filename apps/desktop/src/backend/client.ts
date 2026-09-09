@@ -53,6 +53,7 @@ import type { DiagnosticLogSnapshot } from "../domain/diagnostics";
 import type {
   ReceiptSourceRef,
   ReaderWindowRequest,
+  ReaderAvatarObservation,
   TimelineKey,
   ViewDelivery
 } from "../domain/coreEvents";
@@ -858,6 +859,13 @@ export class TauriDesktopApi implements DesktopApi {
     request: ReaderWindowRequest
   ): Promise<void> {
     return this.invokeCommand<void>("update_receipt_reader_window", { scope, request });
+  }
+
+  async observeReceiptReaderAvatars(
+    scope: string,
+    request: ReaderAvatarObservation
+  ): Promise<void> {
+    return this.invokeCommand<void>("observe_receipt_reader_avatars", { scope, request });
   }
 
   async ackReceiptReader(scope: string, revision: string): Promise<void> {

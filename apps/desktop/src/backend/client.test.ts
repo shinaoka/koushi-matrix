@@ -15,6 +15,18 @@ describe("TauriDesktopApi", () => {
     vi.clearAllMocks();
   });
 
+  test("observes reader avatars with stable IDs and lossless counters", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+    const request = {
+      installed_revision: "18446744073709551615", sequence: "18446744073709551614",
+      visible_user_ids: ["@visible:example.invalid"], prefetch_user_ids: []
+    };
+    await new TauriDesktopApi().observeReceiptReaderAvatars("9007199254740993", request);
+    expect(invoke).toHaveBeenCalledWith("observe_receipt_reader_avatars", {
+      scope: "9007199254740993", request
+    });
+  });
+
   test("passes raw room address drafts to Rust and returns its preview unchanged", async () => {
     vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
     const preview = { localpart: "設計", full_alias: "#設計:example.invalid", error: null };

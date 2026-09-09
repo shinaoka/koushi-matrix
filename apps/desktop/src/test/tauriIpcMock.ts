@@ -50,6 +50,7 @@ const VOID_COMMANDS = new Set([
   "set_typing",
   "receive_receipt_reader",
   "update_receipt_reader_window",
+  "observe_receipt_reader_avatars",
   "ack_receipt_reader",
   "close_receipt_reader"
 ]);

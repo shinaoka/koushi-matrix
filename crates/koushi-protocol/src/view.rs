@@ -183,6 +183,29 @@ pub struct ReaderWindowRequest {
     pub limit: ReaderWindowLimit,
 }
 
+/// Visible/prefetch identities from an acknowledged reader model. Core validates
+/// ownership, live source, current session, sequence and both window bounds.
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ReaderAvatarObservation {
+    pub installed_revision: ViewRevision,
+    #[serde(with = "crate::u64_decimal_string")]
+    pub sequence: u64,
+    pub visible_user_ids: Vec<String>,
+    pub prefetch_user_ids: Vec<String>,
+}
+
+impl std::fmt::Debug for ReaderAvatarObservation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ReaderAvatarObservation")
+            .field("installed_revision", &self.installed_revision)
+            .field("sequence", &self.sequence)
+            .field("visible_count", &self.visible_user_ids.len())
+            .field("prefetch_count", &self.prefetch_user_ids.len())
+            .finish()
+    }
+}
+
 /// Rust's explicit anchor result; absence never implies an estimated scroll jump.
 ///
 /// ```
@@ -301,6 +324,27 @@ mod tests {
         let debug = format!("{source:?}");
         assert!(!debug.contains("private-account"));
         assert!(!debug.contains("!private:example.org"));
+    }
+
+    #[test]
+    fn avatar_observations_keep_counters_lossless_and_debug_private() {
+        let observation = ReaderAvatarObservation {
+            installed_revision: ViewRevision(u64::MAX),
+            sequence: u64::MAX,
+            visible_user_ids: vec!["@private:example.invalid".into()],
+            prefetch_user_ids: vec![],
+        };
+        let wire = serde_json::to_value(&observation).unwrap();
+        assert_eq!(wire["sequence"], u64::MAX.to_string());
+        assert_eq!(wire["installed_revision"], u64::MAX.to_string());
+        assert_eq!(
+            serde_json::from_value::<ReaderAvatarObservation>(wire.clone()).unwrap(),
+            observation
+        );
+        assert!(!format!("{observation:?}").contains("@private"));
+        let mut invalid = wire;
+        invalid["sequence"] = serde_json::json!(1);
+        assert!(serde_json::from_value::<ReaderAvatarObservation>(invalid).is_err());
     }
 
     #[test]

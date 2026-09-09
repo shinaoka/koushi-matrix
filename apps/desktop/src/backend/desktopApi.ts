@@ -1,6 +1,7 @@
 import type {
   ReceiptSourceRef,
   ReaderWindowRequest,
+  ReaderAvatarObservation,
   TimelineKey,
   ViewDelivery
 } from "../domain/coreEvents";
@@ -342,6 +343,7 @@ export interface DesktopApi {
   ): Promise<string>;
   receiveReceiptReader(scope: string): Promise<ViewDelivery | null>;
   updateReceiptReaderWindow(scope: string, request: ReaderWindowRequest): Promise<void>;
+  observeReceiptReaderAvatars(scope: string, request: ReaderAvatarObservation): Promise<void>;
   ackReceiptReader(scope: string, revision: string): Promise<void>;
   readReceiptReaderResource(
     scope: string,

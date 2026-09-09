@@ -1042,6 +1042,7 @@ pub fn run() {
             commands::views::receive_receipt_reader,
             commands::views::read_receipt_reader_resource,
             commands::views::update_receipt_reader_window,
+            commands::views::observe_receipt_reader_avatars,
             commands::views::ack_receipt_reader,
             commands::views::close_receipt_reader,
             commands::search::submit_search,

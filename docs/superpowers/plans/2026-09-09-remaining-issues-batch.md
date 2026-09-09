@@ -746,6 +746,31 @@ whitespace passed. Logs: `/tmp/koushi-reader-control-{red,green,regression}.log`
 The desktop observation command/DTO and frontend invocation still remain to be
 added; other avatar source families and scale/GUI evidence are not completed.
 
+## #839 desktop observation wire
+
+Added `ReaderAvatarObservation` to the portable protocol and mirrored it in
+TypeScript. Installed revision and sequence retain decimal-string u64 encoding;
+Debug exposes counts, not user IDs. Registered the Tauri observation command and
+DesktopApi/client method. The command resolves its owned subscription entry and
+uses the non-receiving control capability, without taking the delivery mutex.
+The payload contains stable user IDs only, never host-supplied MXC identities.
+Classified the method with existing scoped observations in the ordered transport
+contract; added it to the test IPC void-command inventory.
+
+The missing DTO produced compile RED and the missing client method produced a
+focused test failure. After implementation, four protocol view tests and all 29
+client tests passed, including maximal u64 round-trip, numeric-sequence rejection,
+private Debug and exact large-string client forwarding. Typecheck, frontend lint,
+Tauri library check, test structure, adapter/snapshot/protocol boundary and
+whitespace checks passed. Logs: `/tmp/koushi-avatar-wire-red.log`,
+`/tmp/koushi-avatar-client-red.log`, `/tmp/koushi-avatar-wire-green-final.log`,
+`/tmp/koushi-avatar-client-green.log`, `/tmp/koushi-avatar-wire-tauri-check.log`,
+`/tmp/koushi-avatar-wire-lint.log`.
+
+Receipt popup geometry reporting is not yet connected to this API. Other source
+families, Rust-driven source invalidation/re-resolution, removal of old renderer
+URI demand, 1,500-target QA, final gates and PR/merge remain pending.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated
