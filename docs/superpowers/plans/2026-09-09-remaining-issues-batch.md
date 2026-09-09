@@ -594,6 +594,28 @@ The observation handler must still acquire the live source/generation guard,
 apply visible/prefetch bounds and feed budgeted resolved demand into the registry.
 The renderer migration and real-server scale evidence remain incomplete.
 
+## #839 live reader source guard
+
+Shared the existing synchronous receipt-source commit guard between raw and
+resolved windows instead of introducing another generation registry. Added the
+reader-only observation callback: it retains the accepted charged raw source,
+acquires the existing timeline-generation and receipt-epoch guards, then rechecks
+the consumer's installed model before invoking the callback. Lock ordering stays
+source-before-registry. Callbacks must be prepared synchronous operations.
+
+Tests now cover invalid receipt epochs and replaced actor authority, and verify
+that an installed model can remain readable while its retired live source refuses
+new observation work. The raw callback API initially failed to compile because it
+was absent; the new integrated test passed after implementation. All six receipt
+endpoint and 18 scope-lifecycle tests passed, plus test structure/whitespace.
+Logs: `/tmp/koushi-avatar-live-source-red.log`,
+`/tmp/koushi-avatar-live-source-green.log`,
+`/tmp/koushi-avatar-live-source-regression.log`.
+
+This supplies reader-specific live-source admission, not the complete observation
+command or other surface families. Budgeted demand commit, protocol/adapter/GUI
+wiring and 1,500-target server evidence remain pending.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated

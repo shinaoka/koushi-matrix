@@ -40,6 +40,71 @@ async fn accept_profile_raw(registry: &ViewScopeRegistry, work: &mut ReaderWork,
 }
 
 #[tokio::test]
+async fn avatar_observation_requires_a_live_source_even_with_an_installed_model() {
+    use koushi_protocol::view::{ReaderWindow, ResolvedReaderAnchor, ViewModel};
+    let registry = ViewScopeRegistry::default();
+    let consumer = registry
+        .consumer(koushi_protocol::RuntimeConnectionId(4))
+        .unwrap();
+    let mut scope = consumer
+        .open_reader(source(), 0, ReaderWindowLimit::try_from(3).unwrap())
+        .unwrap();
+    let mut work = registry.take_reader_work().unwrap().unwrap();
+    let mut raw = crate::timeline::RawReceiptWindow {
+        total_count: 1,
+        start: 0,
+        receipts: vec![koushi_state::LiveReadReceipt {
+            user_id: "@a:example.org".into(),
+            display_name: None,
+            original_display_label: String::new(),
+            avatar: None,
+            timestamp_ms: None,
+        }],
+        profiles: vec![],
+        owner: None,
+        epoch: std::sync::Weak::new(),
+    };
+    let epoch = raw.bind_test_owner(&source()).await;
+    let retained = registry.retain_reader_raw(&mut work, raw.clone()).unwrap();
+    registry.accept_reader_raw(&mut work, retained).unwrap();
+    let resolved = raw.into_resolved(koushi_state::CatalogLocale::En);
+    let model = ViewModel::ReaderReady(ReaderWindow {
+        source: source(),
+        total_count: 1,
+        start: 0,
+        rows: resolved.rows.clone(),
+        window_sequence: 0,
+        source_revision: resolved.source_revision().unwrap(),
+        dependency_revision: 1,
+        resolved_anchor: ResolvedReaderAnchor::NotRequested,
+    });
+    let revision = registry
+        .publish_current(scope.id(), model, vec![], &resolved)
+        .unwrap();
+    let _delivery = scope.next_delivery().await.unwrap();
+    consumer.ack_model(scope.id(), revision).unwrap();
+    assert_eq!(
+        consumer
+            .with_live_reader_avatar_source(scope.id(), revision, |rows| {
+                assert_eq!(rows.avatar_mxc("@a:example.org")?, None);
+                Ok(42)
+            })
+            .unwrap(),
+        42
+    );
+    epoch.lock().unwrap().valid = false;
+    assert!(consumer.avatar_source(scope.id(), revision).is_ok());
+    assert_eq!(
+        consumer
+            .with_live_reader_avatar_source::<()>(scope.id(), revision, |_| {
+                panic!("retired source must not admit an observation")
+            })
+            .err(),
+        Some(ScopeError::SourceUnavailable)
+    );
+}
+
+#[tokio::test]
 async fn room_profile_changes_dirty_only_matching_room_and_user() {
     let registry = ViewScopeRegistry::default();
     let consumer = registry

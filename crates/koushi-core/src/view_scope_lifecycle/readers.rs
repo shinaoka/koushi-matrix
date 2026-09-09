@@ -172,6 +172,44 @@ impl ViewConsumer {
         Ok(())
     }
 
+    /// Reader-only observation commit. The accepted raw source owns its charge;
+    /// hold source authority and recheck the installed model before the callback.
+    pub(crate) fn with_live_reader_avatar_source<R>(
+        &self,
+        id: koushi_protocol::view::ViewScopeId,
+        revision: ViewRevision,
+        commit: impl FnOnce(&super::model::InstalledRows) -> Result<R, ScopeError>,
+    ) -> Result<R, ScopeError> {
+        let installed = self.avatar_source(id, revision)?;
+        let raw = {
+            let state = self
+                .0
+                .registry
+                .state
+                .lock()
+                .expect("view registry poisoned");
+            let entry = state.scopes.get(&id).ok_or(ScopeError::Closed)?;
+            let reader = entry
+                .control
+                .reader
+                .lock()
+                .expect("reader request poisoned");
+            reader
+                .as_ref()
+                .and_then(|reader| reader.accepted_raw.clone())
+                .ok_or(ScopeError::SourceUnavailable)?
+        };
+        raw.raw
+            .commit_if_current(|| {
+                let current = self.avatar_source(id, revision)?;
+                if !std::sync::Arc::ptr_eq(&installed, &current) {
+                    return Err(ScopeError::InvalidRevision);
+                }
+                commit(&current)
+            })
+            .ok_or(ScopeError::SourceUnavailable)?
+    }
+
     pub fn open_reader(
         &self,
         source: ReceiptSourceRef,

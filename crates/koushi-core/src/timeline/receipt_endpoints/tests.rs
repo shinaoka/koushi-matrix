@@ -100,8 +100,21 @@ async fn raw_window_does_not_keep_replaced_actor_authority() {
     window.epoch = Arc::downgrade(&epoch);
     window.bind_owner(&gate, &serde_json::from_value(serde_json::json!({"key": key, "projection_request_id": {"connection_id":"1", "sequence":"1"}, "generation":"1", "event_id":"$event"})).unwrap(), generation);
     assert!(window.acquire_source().is_some());
+    assert_eq!(window.commit_if_current(|| 42), Some(42));
+    epoch.lock().unwrap().valid = false;
+    assert!(
+        window
+            .commit_if_current(|| panic!("invalid epoch committed"))
+            .is_none()
+    );
+    epoch.lock().unwrap().valid = true;
     gate.invalidate_and_quiesce(&key).await;
     assert!(window.acquire_source().is_none());
+    assert!(
+        window
+            .commit_if_current(|| panic!("retired actor committed"))
+            .is_none()
+    );
 }
 
 #[test]
