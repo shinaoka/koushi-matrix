@@ -1122,6 +1122,8 @@ export function App() {
   // (basic_operation); the created room/space identity comes from the API.
   const [createDialog, setCreateDialog] = useState<"room" | "space" | null>(null);
   const [createDraftName, setCreateDraftName] = useState("");
+  const createDialogEpochRef = useRef(0);
+  const [createRoomAliasCollision, setCreateRoomAliasCollision] = useState<string | null>(null);
   const [createRoomDraftOptions, setCreateRoomDraftOptions] =
     useState<CreateRoomDialogOptions>(defaultCreateRoomDialogOptions);
   const [createRoomManualAlias, setCreateRoomManualAlias] = useState<string | null>(null);
@@ -3360,6 +3362,8 @@ export function App() {
   }
 
   function openCreateDialog(kind: "room" | "space") {
+    createDialogEpochRef.current += 1;
+    setCreateRoomAliasCollision(null);
     setCreateRoomManualAlias(null);
     setCreateDraftName("");
     setCreateRoomDraftOptions(defaultCreateRoomDialogOptions());
@@ -3367,6 +3371,8 @@ export function App() {
   }
 
   function closeCreateDialog() {
+    createDialogEpochRef.current += 1;
+    setCreateRoomAliasCollision(null);
     setCreateRoomManualAlias(null);
     setCreateDialog(null);
     setCreateDraftName("");
@@ -3664,6 +3670,7 @@ export function App() {
   }
 
   async function submitCreateDialog() {
+    const epoch = createDialogEpochRef.current;
     const kind = createDialog;
     const name = createDraftName.trim();
     const activeSpaceIdForCreatedRoom =
@@ -3690,7 +3697,18 @@ export function App() {
       await settleCommand(
         kind === "space" ? api.createSpace(name) : api.createRoom(createRoomRequest!)
       );
-      closeCreateDialog();
+      if (epoch === createDialogEpochRef.current) closeCreateDialog();
+    } catch (error) {
+      if (kind === "room" && typeof error === "object" && error !== null && "kind" in error && error.kind === "aliasInUse") {
+        if (epoch === createDialogEpochRef.current) {
+          setCreateRoomAliasCollision(displayedCreateRoomOptions.aliasLocalpart);
+        }
+        return;
+      }
+      if (typeof error === "object" && error !== null && "message" in error && typeof error.message === "string") {
+        throw new Error(error.message);
+      }
+      throw error;
     } finally {
       setIsBusy(false);
     }
@@ -6444,6 +6462,7 @@ export function App() {
           kind={createDialog}
           roomOptions={displayedCreateRoomOptions}
           addressPreview={createRoomAddressPreview}
+          addressFailure={createRoomAliasCollision === displayedCreateRoomOptions.aliasLocalpart ? "aliasInUse" : null}
           onOpenAddressHelp={(url) => runInBackground(openExternalHttpUrl(url))}
           value={createDraftName}
           onCancel={closeCreateDialog}

@@ -220,6 +220,21 @@ subsequent optional-help-link addition and remains to rerun on final state.
 End-to-end App editing/IME tests and typed collision inline handling remain; this
 is not full #838 completion.
 
+Collision UI checkpoint: Tauri now preserves AliasInUse as a structured rejection
+and retains generic failure messages separately. Its serialized-kind test was
+RED then GREEN. App renders localized inline collision feedback, keeps drafts,
+and fences outcomes from closed/reopened dialogs by renderer lifetime; editing
+the attempted alias hides the old collision feedback. Component locale tests
+were RED then GREEN; focused component/App tests 87 passed, typecheck passed.
+A real-App Playwright test passes for auto suggestion, manual/name/visibility
+changes, exact full preview, collision draft preservation and successful retry.
+It also verifies candidate-confirmation Enter does not submit the public address
+form. The synthetic IME sequence must execute keydown and implicit submit in one
+browser task, matching the existing zero-delay form fence; separate Playwright
+round trips incorrectly expire that fence. Final focused Playwright and lint
+passed. Room-info UI copy feedback/alias/no-alias checks and broader final gates
+remain.
+
 ## Remaining investigation and implementation
 
 - #847: Core ignored-sender suppression is reversible per-item. The pinned SDK

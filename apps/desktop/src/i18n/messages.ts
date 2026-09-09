@@ -192,6 +192,7 @@ export type MessageId =
   | "dialog.privateRoom"
   | "dialog.publicRoom"
   | "dialog.roomAddress"
+  | "dialog.roomAddressInUse"
   | "dialog.roomAddressAbout"
   | "dialog.roomAddressHelp"
   | "dialog.roomAddressPreview"
@@ -1507,6 +1508,7 @@ const en: Catalog = {
   "dialog.privateRoom": "Private room",
   "dialog.publicRoom": "Public room",
   "dialog.roomAddress": "Room address",
+  "dialog.roomAddressInUse": "This address is already in use. Choose a different room-specific name and try again.",
   "dialog.roomAddressAbout": "About room addresses ↗",
   "dialog.roomAddressHelp": "This address lets people find and share this room. Enter only the room-specific name, without # or a server name. Availability is confirmed when you create the room.",
   "dialog.roomAddressPreview": "Full address: {address}",
@@ -2728,6 +2730,7 @@ const ja: Catalog = {
   "dialog.privateRoom": "非公開ルーム",
   "dialog.publicRoom": "公開ルーム",
   "dialog.roomAddress": "ルームアドレス",
+  "dialog.roomAddressInUse": "このアドレスは使用済みです。別のルーム固有の名前に変更して、もう一度作成してください。",
   "dialog.roomAddressAbout": "ルームアドレスについて ↗",
   "dialog.roomAddressHelp": "このアドレスでルームを見つけたり共有したりできます。# やサーバー名を付けず、ルーム固有の名前だけ入力してください。使用可能かどうかは作成時に確認されます。",
   "dialog.roomAddressPreview": "完全なアドレス: {address}",

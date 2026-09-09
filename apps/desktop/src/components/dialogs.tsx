@@ -106,6 +106,7 @@ export interface CreateRoomDialogOptions {
 export function CreateEntityDialog({
   activeSpaceName = null,
   addressPreview = null,
+  addressFailure = null,
   isBusy,
   kind,
   roomOptions,
@@ -118,6 +119,7 @@ export function CreateEntityDialog({
 }: {
   activeSpaceName?: string | null;
   addressPreview?: RoomAddressPreview | null;
+  addressFailure?: "aliasInUse" | null;
   isBusy: boolean;
   kind: "room" | "space";
   roomOptions?: CreateRoomDialogOptions;
@@ -285,6 +287,7 @@ export function CreateEntityDialog({
                   })
                 }
               />
+              {addressFailure === "aliasInUse" ? <p role="alert">{t("dialog.roomAddressInUse")}</p> : null}
               <p id="create-room-address-preview" role="status">
                 {addressPreview?.full_alias
                   ? t("dialog.roomAddressPreview", { address: addressPreview.full_alias })
