@@ -676,8 +676,13 @@ Unread state crosses three Matrix concepts that must not be collapsed into one
 local flag:
 
 - `RoomSummary.unread_count` is the raw unread-message count; notification and
-  mention counts are separate SDK/server observations, as is `marked_unread`.
-  They can arrive later than a
+  mention counts are separate SDK client-side observations, as is `marked_unread`.
+  Both full room projection and attention updates use SDK
+  `num_unread_notifications` / `num_unread_mentions`, not the server-computed
+  `unread_notification_counts`: Synapse 1.157.0 Sliding Sync returns zero dummy
+  counts, and servers cannot classify encrypted mentions. This follows Element X
+  iOS room-summary use of the SDK client-side counters; do not replace notification
+  counts with plain unread-message counts. These observations can arrive later than a
   local command response, and historical Matrix Rust SDK releases have had
   unread-count/read-receipt convergence bugs (for example
   matrix-rust-sdk#6211, fixed upstream by matrix-rust-sdk#6406). Koushi must

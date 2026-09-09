@@ -1377,6 +1377,43 @@ Logs: `/tmp/koushi-final-{frontend,build,lint,secrets,playwright}.log`.
 This is not yet the final all-requirements audit: real-server gates, the remaining
 coherent diff review, PR/exact-head CI/human approval and merge are outstanding.
 
+## Real-server final gate corrections
+
+The first aggregate run passed Tuwunel but failed Synapse's People label check.
+The QA had treated ProfileUpdated as proof that room membership had already
+arrived over sync. It now observes the existing live mention demand with the
+existing bounded waiter and request identity; no repeated queries, sleeps,
+expectation reduction or product changes. The isolated Synapse People lane and
+that stage in the subsequent aggregate passed.
+
+The next aggregate and isolated Synapse Activity run failed because Activity
+received no notification-backed unread row. Waiting longer for notification
+counts and changing the seed to a mention did not solve it; both experimental
+QA changes were removed. Synapse v1.157.0's
+[Sliding Sync RoomResult](https://github.com/element-hq/synapse/blob/v1.157.0/synapse/handlers/sliding_sync/__init__.py)
+explicitly sets notification_count/highlight_count to dummy zero values. The SDK
+Room docs distinguish those server counts from num_unread_notifications and
+num_unread_mentions; Element X iOS RoomSummaryProvider uses the latter.
+
+Corrected both SDK projection entry points to use those existing client-side
+counters (full room projection and attention updates). No new state, fallback,
+backend selection or SDK fork. The unchanged isolated Synapse Activity test then
+passed recent/unread/resolution/mark-read. Core lib 1,039 passed/nine ignored and
+SDK lib 145 passed. Finally the aggregate `--server=both --scenario=all --core
+--timeout-ms=240000` passed on both servers, including People, address, ignored
+history recovery, Activity, reader resource sharing and cleanup.
+
+Evidence: `/tmp/koushi-final-core-both.log`,
+`/tmp/koushi-people-gate-synapse.log`, `/tmp/koushi-final-core-both-green.log`
+(the latter still failed at Activity), `/tmp/koushi-final-activity-isolated.log`,
+`/tmp/koushi-final-activity-notification.log`,
+`/tmp/koushi-final-activity-mention.log` (both experiments failed),
+`/tmp/koushi-final-activity-sdk-counts.log`,
+`/tmp/koushi-final-notification-rust.log`, and
+`/tmp/koushi-final-core-both-notifications.log` (both-server aggregate success).
+The dedicated Tuwunel 1,500-reader limitation is unchanged and is not included in
+this success claim.
+
 ## Current next steps
 
 - Diagnostic wording: the report now explicitly describes avatar counts as items,

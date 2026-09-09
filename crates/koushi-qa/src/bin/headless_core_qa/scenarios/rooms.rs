@@ -285,17 +285,30 @@ pub(super) async fn run_room_people_projection_stage(
         "room people main candidates",
     )
     .await?;
+    // ProfileUpdated acknowledges the account profile operation, not receipt of
+    // the room membership update over sync. Observe the existing live demand;
+    // do not reissue queries or replace room-specific profile authority.
+    let main_target = wait_for_mention_target(
+        conn_a,
+        room_id,
+        MentionSurface::Main,
+        None,
+        "room people room display-name convergence",
+        |target| {
+            target.request_id == main_target.request_id
+                && target.completeness == MentionCandidatesCompleteness::Complete
+                && target.candidates.iter().any(|candidate| {
+                    candidate.user_id == user_a_id
+                        && candidate.display_label.as_deref() == Some("Room People Known")
+                })
+        },
+    )
+    .await?;
     assert_joined_candidate_scope(&main_target, [&user_a_id, &user_b_id], &user_c_id)?;
     if main_target.room_mention_allowed != RoomMentionPermission::Allowed {
         return Err(
             "room people: room mention permission was not allowed for the room creator".to_owned(),
         );
-    }
-    if !main_target.candidates.iter().any(|candidate| {
-        candidate.user_id == user_a_id
-            && candidate.display_label.as_deref() == Some("Room People Known")
-    }) {
-        return Err("room people: known room display label was not projected".to_owned());
     }
     if !main_target
         .candidates
