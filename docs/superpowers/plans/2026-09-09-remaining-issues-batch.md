@@ -1287,6 +1287,38 @@ claim cross-account switch/relogin isolation or deliberately delivered stale tas
 completion; the held connections were canceled before their bytes were forwarded.
 Tuwunel, remaining product-surface migration and final gates/PR/merge remain open.
 
+## #839 Rust target metadata preparation (GUI still untouched)
+
+Clarified the remaining work boundary: the Tuwunel issue blocks satisfying the
+both-server prerequisite for GUI wiring, not all independent Rust Phase-A work.
+The stable AvatarTarget resolver exists in state, but the Core public API remains
+ReaderSubscription-only. The general avatar-surface API is still to be completed.
+
+As a first internal preparation, installed row metadata now uses the existing
+room-qualified AvatarTarget::User instead of retaining an unqualified user ID.
+Reader observations continue through the same ownership/revision/source gates,
+then use typed-target lookup. A reader target from a different room or an
+OwnProfile target cannot reuse the same user identity to obtain its private URI.
+The added room strings and enum storage are charged before metadata allocation.
+Reader resource production and public DTOs remain unchanged; this is not a claim
+that own-profile or icon subscriptions already work, nor a new UI model layer.
+
+The added boundary test verifies valid private-URI lookup, different-room/kind
+rejection and no MXC in serialized data. The initial check failed on the missing
+new internal lookup method; no existing product RED is claimed for this internal
+refactoring. The test moved into model/target_tests.rs after the structure gate
+reported the 200-line inline-test limit. No suppression was added.
+
+Core lib passed 1,032 tests with nine ignored. After the final test split, all 24
+scope-lifecycle checks passed. The unchanged live-signals lane passed on both
+Tuwunel and Synapse, including its actual reader media/cache/shared-scope checks.
+Evidence: `/tmp/koushi-avatar-target-metadata-{missing-api,core,focused,final,live}.log`.
+This is not a rerun or a pass claim for the blocked 1,500-reader Tuwunel lane.
+
+Next: finish the Rust avatar-surface lifecycle/API using the existing registry,
+budget and watch handoff, beginning with own-profile source authority and lifetime
+checks. GUI wiring, upstream Tuwunel changes and overall completion remain gated.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated
