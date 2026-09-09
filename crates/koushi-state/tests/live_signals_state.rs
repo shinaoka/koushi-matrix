@@ -6,6 +6,8 @@
 ///    (i.e. the receipt's user_id matches own_user_id regardless of origin).
 ///  - total_count and overflow_count are computed from the remaining readers
 ///    after own exclusion.
+///  - compact summaries retain only the newest three rows while preserving the
+///    exact total for a full-reader view.
 ///  - other readers are unaffected.
 use koushi_state::{LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate};
 
@@ -114,7 +116,25 @@ fn own_read_on_another_device_still_excluded() {
 }
 
 // ---------------------------------------------------------------------------
-// 4. When own_user_id is None, all receipts appear (no exclusion)
+// 4. Compact summaries keep exact totals but only the newest three readers.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn compact_summary_bounds_readers_and_preserves_total() {
+    let receipts = (0..1500)
+        .map(|index| make_receipt(&format!("@user{index}:localhost"), index))
+        .collect();
+    let summary = signals_for(receipts, None);
+
+    assert_eq!(summary.total_count, 1500);
+    assert_eq!(summary.overflow_count, 1497);
+    assert_eq!(summary.readers.len(), 3);
+    assert_eq!(summary.readers[0].user_id, "@user1499:localhost");
+    assert_eq!(summary.readers[2].user_id, "@user1497:localhost");
+}
+
+// ---------------------------------------------------------------------------
+// 5. When own_user_id is None, all receipts appear (no exclusion)
 // ---------------------------------------------------------------------------
 
 #[test]

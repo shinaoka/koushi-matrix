@@ -5,7 +5,7 @@ Dated specs and plans under `docs/superpowers/` are implementation guides
 toward this document and must not contradict it. Amend this document first
 when a design change is needed, then update or supersede the affected specs.
 
-Last amended: 2026-09-05.
+Last amended: 2026-09-07.
 
 The evidence-based classification of remaining frontend-owned resources and
 semantic migration candidates is maintained in
@@ -292,7 +292,26 @@ state inspect it explicitly. Tauri converts the generation into its existing
 settlement DTO. This intentionally narrows the Rust result API without changing
 wire settlement shapes or the synchronous watch-based predicate ordering above.
 It adds no `AppState`, `AppAction`, reducer or reducer transition and does not yet
-remove the watch or complete scoped publication.
+remove the watch or complete the full scoped-publication migration. Room-local
+live-signal metadata changes use the `live_signals_rooms` state-delta slice,
+while receipt-only changes use nested `live_signals_receipts_by_room_event`
+replacements so moving one receipt does not clone other events in that room.
+Room additions/removals and typing/fully-read metadata retain the full room
+fallback; account-level presence changes use `live_signals_presence_by_user`.
+All replacement maps carry explicit removals. The frontend merges these slices
+into its read-only snapshot replica without changing the Rust state owner.
+Profile own/alias/ignored/update facts and search-crawler room/last-active facts
+likewise have independent delta fields, while global and room profile records
+use their existing nested replacement maps. Room, Space, and invite list
+mutations use `*_by_id` replacement maps when their ordering is unchanged; an
+order change deliberately uses the full ordered list so the list contract
+remains coherent. Live receipt observations use a Core-owned bounded summary
+action carrying at most three reader rows and an exact count; only an explicitly
+opened reader window uses the full receipt source. Open Activity stream row
+replacements use identity-keyed `activity_recent_rows_by_id` /
+`activity_unread_rows_by_id` deltas when stream order and pagination/resolution
+metadata are unchanged; insertions, reorders, and metadata/state transitions
+retain the complete Activity slice.
 
 ### Core-owned staged upload orchestration (Phase B, issue #755)
 
@@ -394,6 +413,19 @@ rewriting the runtime.
    search index backend on wasm, credential storage UX without an OS
    keychain, and multi-tab/single-runtime coordination. None of these may be
    solved by weakening the desktop security model.
+6. **The shared Rust core is the semantic owner across renderers.** Product
+   state, Matrix behavior, operation state, selection, retry/cancellation,
+   resource demand, and scheduling that must be reusable belong in the
+   toolkit-independent `koushi-state`/`koushi-core`/`koushi-protocol` boundary.
+   Tauri/React and future native or mobile hosts adapt typed contracts and may
+   retain only transport, layout, focus, IME, and platform capability state.
+   The mobile upper layer is intentionally a thin backend-neutral adapter; it
+   need not reproduce the full desktop UI in this migration. A renderer must
+   not grow a parallel product state machine or toolkit-bound
+   core contract. Portable Rust contract/unit tests are the backend-neutrality
+   evidence for future mobile consumers; this migration does not require a
+   mobile UI/lifecycle implementation. This is a permanent ownership rule, not
+   a requirement to ship GPUI or mobile applications in this migration.
 
 ## Runtime Model
 
@@ -521,15 +553,24 @@ An in-process actor system in `koushi-core`:
   renders the quote state and does not resolve Matrix reply bodies. Pinned
   events live in `AppState.room_interactions`, and pin/unpin commands route
   through `RoomActor` before the Rust snapshot/event stream updates the GUI.
-  Read receipts, fully-read markers, and typing notifications are projected
-  from SDK timeline/room signals into `AppState.live_signals`; React may render
-  that snapshot and dispatch typed commands, but it must not synthesize receipt,
-  marker, or typing lifecycle locally. Receipt reader avatars are part of this
-  Rust-owned projection: reducers resolve reader display labels and avatar DTOs
-  from profile state, order readers most-recent-first, cap the rendered reader
-  list, and expose an overflow count before the data reaches `TimelineView`.
-  React must not join receipt user ids with profile maps or choose receipt
-  ordering locally.
+  Fully-read markers and typing notifications remain room-scoped Rust state in
+  `AppState.live_signals`. The approved receipt migration instead scopes reader
+  projections by TimelineKey and live source identity: TimelineActor owns the
+  SDK-derived reader index; AppActor finalizes bounded compact/full-reader models
+  from current profile/display state. `TimelineReceipts` and `ReceiptReaders` use
+  one common owned-subscription, bounded-delivery and priority-retirement contract.
+  Compact output is all readers through four, three plus exact overflow from five;
+  full-reader windows preserve the exact total without publishing all records.
+  React joins finished compact summaries by event ID only; it never joins profile
+  maps, orders readers, or formats receipt dates. It performs only DOM visibility
+  demand discovery for avatar thumbnails; the App registry reference-counts
+  visible/snapshot consumers and Core owns download, retry, capacity, cancellation,
+  and terminal state. Visibility qualifies both the committed timeline display and
+  receipt-model revisions. The old room-wide full-reader map is removed from the
+  production path rather than retained as a fallback or embedded TimelineItem
+  cache.
+  See the [receipt vertical](../superpowers/specs/2026-09-06-receipt-reader-vertical.md)
+  and its linked lifecycle/surface contracts for ownership, reset and focus rules.
 - Room-scoped mention demand enters `RoomActor` through
   `RoomCommand::QueryMentionCandidates`. The actor publishes reducer actions,
   `AppState.mention_candidates` flows through the versioned state-delta
@@ -596,8 +637,10 @@ also the configuration used by the SDK `SqliteMediaStore`; supplying a separate
 avatar persistence therefore uses the SDK media store and its retention policy,
 not a Koushi-owned disk cache. Koushi may materialize decrypted bytes into a
 session-scoped in-memory renderable-thumbnail cache. Core/state/protocol expose
-only an opaque cache reference; the desktop Tauri adapter may map that reference
-to `koushi-thumbnail://`, while a native adapter may consume bytes directly.
+only an opaque cache reference; the desktop Tauri adapter may map general
+references to `koushi-thumbnail://`, while opened reader rows use the
+revision-qualified installed-resource command and a transient renderer object
+URL. A native adapter may consume bytes directly.
 The cache is an entry-and-byte-bounded LRU: access refreshes recency, eviction
 or session clear releases the owned bytes, and an item larger than the byte
 bound fails before a Ready reference is published. It must never persist
@@ -1226,6 +1269,14 @@ new generation. Queue overflow must never silently lose a Matrix event while
 continuing to apply later diffs as if the stream were complete.
 
 ## Timeline Viewport And Scrollback
+
+Replacement proposal: [Timeline viewport redesign](../superpowers/specs/2026-09-05-timeline-viewport-redesign.md)
+records the single-list-engine target, upstream comparison, removal map and
+large-room acceptance gates following the #837/#844 recurrence. The current
+normative implementation contract below remains in force until the proposal's
+feasibility gate selects an engine and this section is amended before production
+replacement. The proposal does not establish a fixed recurrence or a supported
+large-room capacity.
 
 Timeline scrollback uses a two-layer contract: core owns Matrix ordering,
 subscriptions, diffs, and pagination state; React owns render lists, viewport

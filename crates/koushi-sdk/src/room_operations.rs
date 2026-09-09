@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::MatrixRoomMemberRoleOption;
 use crate::room_projection::{
     matrix_public_room_from_chunk, matrix_room, matrix_room_operation_failure_kind,
     matrix_room_settings_snapshot, matrix_space_members_projection, non_empty_name,
@@ -5,8 +7,7 @@ use crate::room_projection::{
     sdk_history_visibility, sdk_join_rule_for_update,
 };
 use crate::{
-    MatrixClientSession, MatrixRoomMemberRoleOption, MatrixRoomMemberSummary, MatrixRoomTagKind,
-    MatrixSpaceMembersProjection,
+    MatrixClientSession, MatrixRoomMemberSummary, MatrixRoomTagKind, MatrixSpaceMembersProjection,
 };
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticLevel};
 #[cfg(test)]

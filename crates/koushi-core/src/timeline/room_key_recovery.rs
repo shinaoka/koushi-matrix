@@ -1030,7 +1030,7 @@ impl TimelineActor {
                 koushi_sdk::request_late_decryption(&self.session, &room_id, [session_id.clone()]);
                 Outcome::RedecryptionRequested
             }
-            stage => {
+            _ => {
                 // Other stages are not driver steps.
                 return;
             }

@@ -402,22 +402,22 @@ describe("TimelineView", () => {
     });
 
     // Closed by default; the details are not a row-local always-rendered child.
-    expect(document.querySelector('[role="tooltip"]')).toBeNull();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
 
     fireEvent.focus(receipts);
-    const tooltip = await waitFor(() => {
-      const node = document.querySelector<HTMLElement>('[role="tooltip"]');
+    const dialog = await waitFor(() => {
+      const node = document.querySelector<HTMLElement>('[role="dialog"]');
       expect(node).not.toBeNull();
       return node!;
     });
-    expect(tooltip.textContent).toContain("Ken Inayoshi");
+    expect(dialog.textContent).toContain("Ken Inayoshi");
     // The popup must escape the clipped pane, so it cannot be a descendant.
-    expect(pane.contains(tooltip)).toBe(false);
-    expect(tooltip.parentElement).toBe(document.body);
+    expect(pane.contains(dialog)).toBe(false);
+    expect(dialog.parentElement).toBe(document.body);
 
     fireEvent.blur(receipts);
     await waitFor(() => {
-      expect(document.querySelector('[role="tooltip"]')).toBeNull();
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
     });
 
     pane.remove();

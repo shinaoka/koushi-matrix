@@ -31,9 +31,7 @@ use crate::threads_list::{
 use koushi_protocol::command::{InitialBackfillPolicy, TimelineCommand};
 use koushi_protocol::event::{CoreEvent, TimelineAnchorRestoreStatus, TimelineEvent, TimelineItem};
 use koushi_protocol::failure::{CoreFailure, TimelineFailureKind};
-use koushi_protocol::ids::{
-    RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration, TimelineKey, TimelineKind,
-};
+use koushi_protocol::ids::{RequestId, RuntimeConnectionId, TimelineKey, TimelineKind};
 
 // BEGIN GENERATED SIBLING IMPORTS
 use super::actor::{
@@ -80,6 +78,17 @@ fn initial_thread_backfill_is_authoritative(end_reached: bool, item_count: usize
 
 /// Messages routed to the `TimelineManagerActor`.
 pub(crate) enum TimelineMessage {
+    ReadReceiptWindow {
+        source: koushi_protocol::view::ReceiptSourceRef,
+        start: u64,
+        limit: koushi_protocol::view::ReaderWindowLimit,
+        response: oneshot::Sender<
+            Result<
+                super::receipt_endpoints::RawReceiptWindow,
+                crate::view_scope_lifecycle::ScopeError,
+            >,
+        >,
+    },
     Command(TimelineCommand),
     CommandWithComposerFormatting {
         command: TimelineCommand,
@@ -710,6 +719,27 @@ impl TimelineManagerActor {
             };
             let Some(msg) = msg else { break };
             match msg {
+                TimelineMessage::ReadReceiptWindow {
+                    source,
+                    start,
+                    limit,
+                    response,
+                } => {
+                    if let Some(handle) = self.timelines.get(&source.timeline.key) {
+                        let _ = handle
+                            .send(TimelineActorMessage::ReadReceiptWindow {
+                                source,
+                                start,
+                                limit,
+                                response,
+                            })
+                            .await;
+                    } else {
+                        let _ = response.send(Err(
+                            crate::view_scope_lifecycle::ScopeError::SourceUnavailable,
+                        ));
+                    }
+                }
                 TimelineMessage::Shutdown { acknowledged } => {
                     shutdown_acknowledgement = acknowledged;
                     break;
@@ -1052,6 +1082,10 @@ impl TimelineManagerActor {
                 if removed_actor.is_some() {
                     self.read_workers.remove_local_read_correlation(&key);
                 }
+                self.send_completion
+                    .lock()
+                    .expect("send completion coordinator lock must not be poisoned")
+                    .drop_direct_retained_for_key(&key);
                 // Release the actor-resource lease only when an actor was
                 // actually removed. Session residency is intentionally
                 // independent and is never removed by unsubscribe.

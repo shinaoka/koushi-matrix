@@ -7,7 +7,7 @@ build gates. AGENTS.md remains the operational how-to (permissions, install
 caveats, recovery steps); durable rules discovered there are promoted to
 REPOSITORY_RULES.md or this document.
 
-Last amended: 2026-09-05.
+Last amended: 2026-09-07.
 
 ## Design Simplicity
 
@@ -379,7 +379,9 @@ Rules:
    in the account/session-scoped in-memory renderable-thumbnail cache. Core,
    state and protocol expose an opaque reference, never a Tauri URI; the desktop
    adapter may mint `koushi-thumbnail://` and a native adapter may consume bytes.
-   The cache must be bounded by both entry count and owned bytes, refresh recency
+   Opened reader rows must instead use a live-scope and installed-revision
+   resource read; any renderer object URL is transient and must be revoked on
+   scope/revision/unmount. The cache must be bounded by both entry count and owned bytes, refresh recency
    on access, and reject an over-bound single item before returning a Ready
    reference. A
    separate plaintext avatar/link-preview cache and automatic `file://` URLs are
@@ -1088,6 +1090,13 @@ Operational setup and failure diagnosis are documented in
    Core self-dev-dependency or production API. See Platform Portability in
    `docs/architecture/overview.md`.
 6. Japanese/CJK product semantics remain Rust-owned and platform-portable.
+7. Every changed product behavior must converge on the shared, toolkit-independent
+   Rust core. Review the authoritative owner and portable command/projection
+   contract; reject new renderer-owned semantic state, duplicate retry or
+   resource scheduling, and toolkit/platform types in pure contracts. Renderer
+   code may retain only layout, focus, IME composition and read-only projection
+   replica state. A touched legacy owner is removed with its migration slice,
+   rather than extended as a permanent compatibility path.
    Catalog completeness is tested in `apps/desktop/src/i18n`, but CJK
    normalization, display sort keys, search query variants, and highlight
    offsets live in `koushi-state`, `koushi-search`, and

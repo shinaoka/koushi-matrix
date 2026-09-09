@@ -29,10 +29,21 @@ import type {
   AppDomainState,
   AppUiState,
   AttachmentResult,
+  LiveEventReceiptSummary,
+  UserProfile,
   ComposerDocument,
   DesktopSnapshot,
+  InvitePreview,
+  RoomInteractionState,
+  RoomLiveSignalMetadata,
+  RoomLiveSignals,
+  RoomNotificationSettings,
+  RoomSummary,
   SearchCrawlerFailureKind,
+  SearchCrawlerLastActive,
+  SearchCrawlerRoomState,
   SidebarModel,
+  SpaceSummary,
   SpaceMemberRoleUpdateOutcome,
   ThreadSnapshot,
   ThreadsListItem,
@@ -60,6 +71,50 @@ export type TimelineKind =
   | { Room: { room_id: string } }
   | { Thread: { room_id: string; root_event_id: string } }
   | { Focused: { room_id: string; event_id: string } };
+
+export interface ReceiptSourceRef {
+  key: TimelineKey;
+  projection_request_id: RequestId;
+  generation: string;
+  event_id: string;
+}
+
+export interface ReaderWindowRequest {
+  installed_revision: string;
+  sequence: string;
+  target: { kind: "index"; start: string } | { kind: "anchor"; user_id: string };
+  limit: number;
+}
+
+export interface ReaderRow {
+  user_id: string;
+  display_label: string;
+  original_display_label: string;
+  initials: string;
+  timestamp: { unix_ms: string; locale: "en" | "ja" } | null;
+  /** Rust wire shape carries only thumbnail state; MXC demand identity stays private. */
+  avatar: AvatarThumbnailState | null;
+}
+
+export interface ReaderWindow {
+  source: ReceiptSourceRef;
+  total_count: number;
+  start: number;
+  rows: ReaderRow[];
+  window_sequence: string;
+  source_revision: string;
+  dependency_revision: string;
+  resolved_anchor: { kind: "notRequested" } | { kind: "user"; user_id: string };
+}
+
+export type ViewModel =
+  | { kind: "timelineReceipts"; source: unknown; summaries: unknown[] }
+  | { kind: "readerLoading"; source: ReceiptSourceRef }
+  | ({ kind: "readerReady" } & ReaderWindow);
+
+export type ViewDelivery =
+  | { kind: "model"; scope: string; revision: string; model: ViewModel }
+  | { kind: "retired"; scope: string; reason: string };
 
 export type PaginationDirection = "Backward" | "Forward";
 
@@ -836,7 +891,12 @@ export type AvatarThumbnailState =
     }
   | { kind: "failed"; request_id: number; failureKind: AvatarThumbnailFailureKind };
 
-export type AvatarThumbnailFailureKind = "network" | "forbidden" | "unsupported" | "sdk";
+export type AvatarThumbnailFailureKind =
+  | "network"
+  | "forbidden"
+  | "unsupported"
+  | "sdk"
+  | "capacity";
 
 export interface LiveReadReceipt {
   user_id: string;
@@ -1193,10 +1253,40 @@ export type StateUpdateEnvelope =
       reason: StateUpdateSnapshotReason;
     };
 
+type StateDeltaDomainChangedSlices = Partial<AppDomainState> & {
+  live_signals_rooms?: Record<string, RoomLiveSignals | null>;
+  live_signals_receipts_by_room_event?: Record<
+    string,
+    Record<string, LiveEventReceiptSummary | null>
+  >;
+  live_signals_room_metadata_by_id?: Record<string, RoomLiveSignalMetadata | null>;
+  live_signals_presence_by_user?: Record<string, PresenceKind | null>;
+  rooms_by_id?: Record<string, RoomSummary | null>;
+  spaces_by_id?: Record<string, SpaceSummary | null>;
+  invites_by_id?: Record<string, InvitePreview | null>;
+  profile_own?: AppDomainState["profile"]["own"];
+  profile_users_by_id?: Record<string, UserProfile | null>;
+  profile_room_users_by_room?: Record<
+    string,
+    Record<string, UserProfile | null> | null
+  >;
+  profile_local_aliases_by_id?: Record<string, string | null>;
+  profile_ignored_user_ids_by_id?: Record<string, boolean>;
+  profile_local_alias_update?: AppDomainState["profile"]["local_alias_update"];
+  profile_ignored_user_update?: AppDomainState["profile"]["ignored_user_update"];
+  profile_update?: AppDomainState["profile"]["update"];
+  room_notification_settings_by_id?: Record<string, RoomNotificationSettings | null>;
+  room_interactions_by_id?: Record<string, RoomInteractionState | null>;
+  search_crawler_rooms_by_id?: Record<string, SearchCrawlerRoomState | null>;
+  search_crawler_last_active?: SearchCrawlerLastActive | null;
+  activity_recent_rows_by_id?: Record<string, ActivityRow | null>;
+  activity_unread_rows_by_id?: Record<string, ActivityRow | null>;
+};
+
 export type StateDeltaChangedSlices = {
   state?: {
     schema_version?: number;
-    domain?: Partial<AppDomainState>;
+    domain?: StateDeltaDomainChangedSlices;
     ui?: Partial<AppUiState>;
   };
   sidebar?: SidebarModel;

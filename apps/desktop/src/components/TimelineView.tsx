@@ -118,7 +118,6 @@ type SetStateAction
 import { flushSync } from "react-dom";
 
 import { peopleFacingLabel, type MentionCandidate } from "../app/uiShared";
-import { resolvedAvatar } from "../domain/avatarThumbnails";
 import {
 type ContextMenuItem
 } from "../domain/contextMenus";
@@ -286,7 +285,6 @@ type TimelineBackfillMetrics = {
   maxScrollTop: number;
 };
 
-const TIMELINE_AVATAR_THUMBNAIL_OVERSCAN_ITEMS = 8;
 const TIMELINE_LINK_PREVIEW_OVERSCAN_ITEMS = 8;
 const TIMELINE_SCROLL_IDLE_FLUSH_MS = 100;
 const TIMELINE_SCROLL_MAX_DEFER_MS = 500;
@@ -335,6 +333,7 @@ export const TimelineView = memo(function TimelineView({
   roomScrollAnchor: _persistedRoomScrollAnchor = null,
   density = "default",
   enableAvatarThumbnailDownloads = true,
+  onRequestAvatarThumbnail,
   onDiagnosticsChange,
   onScrollDiagnosticsChange,
   onDiagnosticLogEntry,
@@ -399,6 +398,8 @@ export const TimelineView = memo(function TimelineView({
   density?: DisplayDensity;
   /** Tests may disable avatar thumbnail demand discovery to isolate unrelated behavior. */
   enableAvatarThumbnailDownloads?: boolean;
+  /** Core-owned visible avatar demand callback shared with sidebar/member surfaces. */
+  onRequestAvatarThumbnail?: (mxcUri: string) => void | Promise<void | (() => void)>;
   onDiagnosticsChange?: (diagnostics: TimelineDiagnostics) => void;
   onScrollDiagnosticsChange?: (diagnostics: TimelineScrollDiagnostics) => void;
   onDiagnosticLogEntry?: (entry: TimelineDiagnosticLogEntry) => void;
@@ -479,12 +480,6 @@ export const TimelineView = memo(function TimelineView({
     useState<TimelineVirtualRangeState>(EMPTY_TIMELINE_RANGE);
   const [projectionSettlementRevision, setProjectionSettlementRevision] = useState(0);
   const virtualRangeRef = useRef<TimelineVirtualRangeState>(EMPTY_TIMELINE_RANGE);
-  const [avatarRequestRange, setAvatarRequestRange] = useState<TimelineItemIndexRange>(
-    EMPTY_TIMELINE_ITEM_INDEX_RANGE
-  );
-  const avatarRequestRangeRef = useRef<TimelineItemIndexRange>(
-    EMPTY_TIMELINE_ITEM_INDEX_RANGE
-  );
   const [linkPreviewRequestRange, setLinkPreviewRequestRange] =
     useState<TimelineItemIndexRange>(EMPTY_TIMELINE_ITEM_INDEX_RANGE);
   const linkPreviewRequestRangeRef = useRef<TimelineItemIndexRange>(
@@ -580,7 +575,6 @@ export const TimelineView = memo(function TimelineView({
   const autoReturnToLiveKeyRef = useRef<string | null>(null);
   const downloadedEventIdsRef = useRef<Set<string>>(new Set());
   const requestedImagePreviewEventIdsRef = useRef<Set<string>>(new Set());
-  const requestedAvatarMxcsRef = useRef<Set<string>>(new Set());
   const initialItemsSeenForTimelineKeyRef = useRef<string | null>(null);
   const lastDiagnosticsEmissionRef = useRef<{
     callback: (diagnostics: TimelineDiagnostics) => void;
@@ -705,6 +699,7 @@ export const TimelineView = memo(function TimelineView({
   }, [items, profileUsers]);
   const timelineKeyState = getKeyState(store, timelineKey);
   const generation = timelineKeyState?.generation ?? 0;
+  const receiptProjectionRequestId = timelineKeyState?.projectionRequestId ?? null;
   const timelineGenerationRef = useRef(generation);
   useLayoutEffect(() => { timelineGenerationRef.current = generation; }, [generation]);
   const stableAnchor = viewportTransactionRef.current.stableAnchor;
@@ -1598,8 +1593,6 @@ export const TimelineView = memo(function TimelineView({
       genuineUserScroll: false
     };
     lastPersistedViewportAnchorSignatureRef.current = null;
-    avatarRequestRangeRef.current = EMPTY_TIMELINE_ITEM_INDEX_RANGE;
-    setAvatarRequestRange(EMPTY_TIMELINE_ITEM_INDEX_RANGE);
     linkPreviewRequestRangeRef.current = EMPTY_TIMELINE_ITEM_INDEX_RANGE;
     setLinkPreviewRequestRange(EMPTY_TIMELINE_ITEM_INDEX_RANGE);
   }, [
@@ -1628,7 +1621,6 @@ export const TimelineView = memo(function TimelineView({
     lastViewportObservationRef.current = null;
     downloadedEventIdsRef.current = new Set();
     requestedImagePreviewEventIdsRef.current = new Set();
-    requestedAvatarMxcsRef.current = new Set();
     initialItemsSeenForTimelineKeyRef.current = null;
     lastDiagnosticsEmissionRef.current = null;
     initialLiveEdgeScrollAppliedRef.current = null;
@@ -1639,8 +1631,6 @@ export const TimelineView = memo(function TimelineView({
     itemHeightByDomIdRef.current = new Map();
     committedVisibleRowsRef.current = null;
     viewportTransactionRef.current.invalidate("key");
-    avatarRequestRangeRef.current = EMPTY_TIMELINE_ITEM_INDEX_RANGE;
-    setAvatarRequestRange(EMPTY_TIMELINE_ITEM_INDEX_RANGE);
     linkPreviewRequestRangeRef.current = EMPTY_TIMELINE_ITEM_INDEX_RANGE;
     setLinkPreviewRequestRange(EMPTY_TIMELINE_ITEM_INDEX_RANGE);
     roomScrollAnchorRestorePendingRef.current = false;
@@ -1835,22 +1825,6 @@ export const TimelineView = memo(function TimelineView({
   }, [timelineHeightModel, visibleRows]);
   const commitVirtualRangeForMetrics = useCallback(
     (metrics: TimelineViewportMetrics) => {
-      const nextAvatarRequestRange = calculateTimelineItemIndexRange({
-        visibleItemsLength: visibleRows.length,
-        metrics,
-        model: timelineHeightModel,
-        overscanItems: TIMELINE_AVATAR_THUMBNAIL_OVERSCAN_ITEMS
-      });
-      if (
-        !timelineItemIndexRangeEquals(
-          avatarRequestRangeRef.current,
-          nextAvatarRequestRange
-        )
-      ) {
-        avatarRequestRangeRef.current = nextAvatarRequestRange;
-        setAvatarRequestRange(nextAvatarRequestRange);
-      }
-
       const nextLinkPreviewRequestRange = calculateTimelineItemIndexRange({
         visibleItemsLength: visibleRows.length,
         metrics,
@@ -1947,13 +1921,6 @@ export const TimelineView = memo(function TimelineView({
     () => sideEffectRows.map((row) => row.item),
     [sideEffectRows]
   );
-  const avatarSideEffectItems = useMemo(
-    () =>
-      visibleRows
-        .slice(avatarRequestRange.startIndex, avatarRequestRange.endIndex)
-        .map((row) => row.item),
-    [avatarRequestRange.endIndex, avatarRequestRange.startIndex, visibleRows]
-  );
   useEffect(() => {
     const avatarDiagnostics = timelineAvatarDiagnostics(
       visibleRows.map((row) => row.item),
@@ -1995,40 +1962,6 @@ export const TimelineView = memo(function TimelineView({
     store,
     timelineKeyHash,
     visibleRows
-  ]);
-  useEffect(() => {
-    // #116 perf gate: skip avatar downloads when disabled (default).
-    if (!enableAvatarThumbnailDownloads) {
-      return;
-    }
-    if (!transport.downloadAvatarThumbnail) {
-      return;
-    }
-    for (const item of avatarSideEffectItems) {
-      const profileAvatar = item.sender ? profileUsers[item.sender]?.avatar : null;
-      const avatar = resolvedAvatar(item.sender_avatar, profileAvatar);
-      if (!avatar) {
-        continue;
-      }
-      if (avatar.thumbnail.kind !== "notRequested") {
-        continue;
-      }
-      if (requestedAvatarMxcsRef.current.has(avatar.mxc_uri)) {
-        continue;
-      }
-      requestedAvatarMxcsRef.current.add(avatar.mxc_uri);
-      emitDiagnosticLog("timeline.avatar", "avatar thumbnail request queued");
-      void transport.downloadAvatarThumbnail(avatar.mxc_uri).catch(() => {
-        requestedAvatarMxcsRef.current.delete(avatar.mxc_uri);
-        emitDiagnosticLog("timeline.avatar", "avatar thumbnail command failed");
-      });
-    }
-  }, [
-    avatarSideEffectItems,
-    emitDiagnosticLog,
-    enableAvatarThumbnailDownloads,
-    profileUsers,
-    transport
   ]);
   useEffect(() => {
     for (const item of sideEffectItems) {
@@ -3579,6 +3512,9 @@ export const TimelineView = memo(function TimelineView({
                   presentationContext === "room" ? onStartDirectMessage : undefined
                 }
                 density={density}
+                onRequestAvatarThumbnail={
+                  enableAvatarThumbnailDownloads ? onRequestAvatarThumbnail : undefined
+                }
                 presence={item.sender ? liveSignals?.presence[item.sender] : undefined}
                 profile={item.sender ? profileUsers[item.sender] : undefined}
                 reactionSenderLabelsByUserId={reactionSenderLabelsByUserId}
@@ -3596,6 +3532,16 @@ export const TimelineView = memo(function TimelineView({
                   contentEventId
                     ? roomSignals?.receipts_by_event[contentEventId]?.readers ?? []
                     : []
+                }
+                receiptSource={
+                  contentEventId && receiptProjectionRequestId
+                    ? {
+                        key: timelineKey,
+                        projection_request_id: receiptProjectionRequestId,
+                        generation: String(generation),
+                        event_id: contentEventId
+                      }
+                    : undefined
                 }
                 receiptTotalCount={
                   contentEventId

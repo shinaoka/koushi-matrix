@@ -148,6 +148,37 @@ fn pending_send_converges_to_local_and_remote_echo_without_an_empty_projection()
 }
 
 #[test]
+fn send_error_reprojects_a_canonical_transaction_with_its_failure_state() {
+    let mut transaction = timeline_item(
+        "$transaction:test",
+        Some("offline body"),
+        "@sender:test",
+        false,
+    );
+    transaction.id = TimelineItemId::Transaction {
+        transaction_id: "sdk-transaction".to_owned(),
+    };
+    transaction.send_state = Some(TimelineSendState::Sending);
+    let mut projection = DisplayProjectionState::from_canonical_window(&[transaction], 0..1);
+
+    let diffs = projection.update_send_state(
+        "sdk-transaction",
+        TimelineSendState::NotSent {
+            reason: koushi_protocol::event::TimelineSendFailureReason::Recoverable,
+        },
+        &DisplayProjectionContext::bounded_live_edge(),
+    );
+
+    assert!(matches!(diffs.as_slice(), [TimelineDiff::Set { .. }]));
+    assert_eq!(
+        projection.display_items()[0].send_state,
+        Some(TimelineSendState::NotSent {
+            reason: koushi_protocol::event::TimelineSendFailureReason::Recoverable,
+        })
+    );
+}
+
+#[test]
 fn sdk_canonical_indices_project_to_bounded_display_and_converge_local_echo() {
     let mut canonical_items = synthetic_projection_items(9_039);
     let mut transaction = timeline_item(

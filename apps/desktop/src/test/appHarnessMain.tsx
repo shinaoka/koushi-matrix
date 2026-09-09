@@ -26,8 +26,11 @@ import { emit } from "@tauri-apps/api/event";
 
 import type {
   CoreEventPayload,
+  ReceiptSourceRef,
+  ReaderRow,
   StateUpdateEnvelope,
-  TimelineItem
+  TimelineItem,
+  ViewDelivery
 } from "../domain/coreEvents";
 import { roomTimelineKey } from "../domain/coreEvents";
 import { applyDeltaToState } from "../domain/appStore";
@@ -686,6 +689,47 @@ const mock = new TauriIpcMock();
 mock.setCommandResponse("plugin:dialog|message", "Ok");
 let currentSnapshot = readySnapshot();
 let lastStateUpdateGeneration = currentSnapshot.state_generation ?? 0;
+
+type HarnessReceiptReaderScope = {
+  source: ReceiptSourceRef;
+  rows: ReaderRow[];
+  totalCount: number;
+  delivered: boolean;
+};
+const receiptReaderScopes = new Map<string, HarnessReceiptReaderScope>();
+let nextReceiptReaderScope = 0;
+
+function receiptSourceRoomId(source: ReceiptSourceRef): string {
+  const kind = source.key.kind;
+  if ("Room" in kind) return kind.Room.room_id;
+  if ("Thread" in kind) return kind.Thread.room_id;
+  return kind.Focused.room_id;
+}
+
+function receiptReaderRows(source: ReceiptSourceRef): {
+  rows: ReaderRow[];
+  totalCount: number;
+} {
+  const summary =
+    currentSnapshot.state.domain.live_signals.rooms[receiptSourceRoomId(source)]
+      ?.receipts_by_event[source.event_id];
+  const locale = currentSnapshot.state.domain.locale_profile.catalog_locale === "ja" ? "ja" : "en";
+  const rows = (summary?.readers ?? []).map((reader): ReaderRow => {
+    const displayLabel = (reader.display_name ?? reader.original_display_label) || reader.user_id;
+    return {
+      user_id: reader.user_id,
+      display_label: displayLabel,
+      original_display_label: reader.original_display_label,
+      initials: displayLabel.slice(0, 2),
+      timestamp:
+        reader.timestamp_ms === null
+          ? null
+          : { unix_ms: String(reader.timestamp_ms), locale },
+      avatar: reader.avatar?.thumbnail ?? null
+    };
+  });
+  return { rows, totalCount: summary?.total_count ?? rows.length };
+}
 mock.setCommandResponse(
   "settlement_snapshot",
   () => new Promise((resolve) => setTimeout(() => resolve(currentSnapshot), 0))
@@ -1142,6 +1186,66 @@ function rejectDeferredCommand(command: string, index: number): void {
 // Snapshot-returning commands the App calls. Default snapshot stays ready so
 // any unanticipated snapshot read still renders the shell.
 mock.setCommandResponse("get_snapshot", () => currentSnapshot);
+mock.setCommandResponse("subscribe_receipt_reader", ({
+  source,
+}: {
+  source: ReceiptSourceRef;
+  start: number;
+  limit: number;
+}) => {
+  const scope = `harness-receipt-reader-${++nextReceiptReaderScope}`;
+  const { rows, totalCount } = receiptReaderRows(source);
+  receiptReaderScopes.set(scope, {
+    source,
+    rows,
+    totalCount,
+    delivered: false
+  });
+  return scope;
+});
+mock.setCommandResponse("receive_receipt_reader", ({ scope }: { scope: string }): ViewDelivery | null => {
+  const entry = receiptReaderScopes.get(scope);
+  if (!entry || entry.delivered) return null;
+  entry.delivered = true;
+  return {
+    kind: "model",
+    scope,
+    revision: "1",
+    model: {
+      kind: "readerReady",
+      source: entry.source,
+      total_count: entry.totalCount,
+      start: 0,
+      rows: entry.rows,
+      window_sequence: "0",
+      source_revision: "1",
+      dependency_revision: "1",
+      resolved_anchor: { kind: "notRequested" }
+    }
+  };
+});
+mock.setCommandResponse(
+  "read_receipt_reader_resource",
+  ({ scope, sourceRef }: { scope: string; sourceRef: string }) => {
+    const entry = receiptReaderScopes.get(scope);
+    const row = entry?.rows.find(
+      (candidate) =>
+        candidate.avatar?.kind === "ready" && candidate.avatar.source_ref === sourceRef
+    );
+    return row
+      ? {
+          bytes: [71, 73, 70, 56, 57, 97, 1, 0, 1, 0, 0, 0, 0, 0, 0, 33, 249, 4, 1, 0, 0, 0, 0, 44, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 0, 59],
+          mime_type: "image/gif"
+        }
+      : null;
+  }
+);
+mock.setCommandResponse("update_receipt_reader_window", () => undefined);
+mock.setCommandResponse("ack_receipt_reader", () => undefined);
+mock.setCommandResponse("close_receipt_reader", ({ scope }: { scope: string }) => {
+  receiptReaderScopes.delete(scope);
+  return undefined;
+});
 mock.setCommandResponse("discover_login_methods", () => currentSnapshot);
 mock.setCommandResponse("refresh_current_session_status", () =>
   setCurrentSnapshot({

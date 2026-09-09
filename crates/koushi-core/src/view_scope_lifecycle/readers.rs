@@ -1,0 +1,218 @@
+use koushi_protocol::view::{
+    ReaderWindow, ReaderWindowLimit, ReaderWindowTarget, ReceiptSourceRef, ViewRevision,
+    ViewScopeId,
+};
+
+use super::{OwnedViewScope, ReaderSourceKey, ScopeError, ViewConsumer, model};
+use crate::view_budget::ViewReservation;
+
+#[cfg(test)]
+mod tests;
+
+mod raw;
+mod scheduling;
+pub(crate) use raw::ChargedRaw;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Phase {
+    Idle,
+    Queued,
+    Running,
+}
+
+pub(crate) struct ReaderWork {
+    pub(crate) scope: koushi_protocol::view::ViewScopeId,
+    pub(crate) source: ReceiptSourceRef,
+    pub(crate) start: u64,
+    pub(crate) limit: ReaderWindowLimit,
+    pub(crate) window_sequence: u64,
+    pub(crate) dependency_revision: u64,
+    pub(crate) reservation: ViewReservation,
+    pub(crate) raw: Option<std::sync::Arc<ChargedRaw>>,
+    control: std::sync::Weak<super::Control>,
+    run_id: u64,
+}
+
+impl ReaderWork {
+    pub(crate) fn spawn<F, Fut>(self, produce: F) -> Result<(), ScopeError>
+    where
+        F: FnOnce(Self, super::ProducerCompletion) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let control = self.control.upgrade().ok_or(ScopeError::Closed)?;
+        control.spawn_producer(move |completion| produce(self, completion))
+    }
+}
+
+impl Drop for ReaderWork {
+    fn drop(&mut self) {
+        if let Some(control) = self.control.upgrade() {
+            let unfinished = control
+                .reader
+                .lock()
+                .expect("reader request poisoned")
+                .as_ref()
+                .is_some_and(|reader| {
+                    reader.phase == Phase::Running && reader.run_id == self.run_id
+                });
+            if unfinished {
+                control.retire(koushi_protocol::view::ViewRetirement::ProducerFailed);
+            }
+        }
+    }
+}
+
+/// The scope's request, not a second copy of timeline/receipt ordering.
+pub(super) struct ReaderRequest {
+    source: ReceiptSourceRef,
+    start: u64,
+    limit: ReaderWindowLimit,
+    window_sequence: u64,
+    dependency_revision: u64,
+    phase: Phase,
+    run_id: u64,
+    dirty: bool,
+    source_dirty: bool,
+    accepted_raw: Option<std::sync::Arc<ChargedRaw>>,
+    _bytes: ViewReservation,
+}
+
+impl ReaderRequest {
+    pub(super) fn accepts(&self, window: &ReaderWindow) -> bool {
+        window.source == self.source
+            && window.window_sequence == self.window_sequence
+            && window.dependency_revision == self.dependency_revision
+            && window.start == self.start.min(window.total_count)
+            && window.rows.len() as u64
+                == (window.total_count - window.start).min(u64::from(self.limit.get()))
+    }
+}
+
+impl ViewConsumer {
+    pub fn update_reader_window(
+        &self,
+        scope: ViewScopeId,
+        installed_revision: ViewRevision,
+        sequence: u64,
+        target: ReaderWindowTarget,
+        limit: ReaderWindowLimit,
+    ) -> Result<(), ScopeError> {
+        let mut state = self
+            .0
+            .registry
+            .state
+            .lock()
+            .expect("view registry poisoned");
+        let enqueue = {
+            let entry = state
+                .scopes
+                .get(&scope)
+                .filter(|entry| entry.owner == self.0.id)
+                .ok_or(ScopeError::NotOwned)?;
+            if entry
+                .control
+                .retired
+                .lock()
+                .expect("view control poisoned")
+                .is_some()
+            {
+                return Err(ScopeError::Closed);
+            }
+            if entry
+                .control
+                .mailbox
+                .lock()
+                .expect("view mailbox poisoned")
+                .installed_revision()
+                != Some(installed_revision)
+            {
+                return Err(ScopeError::InvalidRevision);
+            }
+            let mut reader = entry
+                .control
+                .reader
+                .lock()
+                .expect("reader request poisoned");
+            let reader = reader.as_mut().ok_or(ScopeError::Closed)?;
+            if sequence < reader.window_sequence {
+                return Err(ScopeError::InvalidRevision);
+            }
+            if sequence == reader.window_sequence
+                && (reader.limit != limit
+                    || !matches!(target, ReaderWindowTarget::Index { start } if start == reader.start))
+            {
+                return Err(ScopeError::InvalidRevision);
+            }
+            let start = match target {
+                ReaderWindowTarget::Index { start } => start,
+                ReaderWindowTarget::Anchor { user_id } => entry
+                    .control
+                    .mailbox
+                    .lock()
+                    .expect("view mailbox poisoned")
+                    .anchor_index(installed_revision, &user_id)?
+                    .ok_or(ScopeError::InvalidModel)?,
+            };
+            reader.start = start;
+            reader.limit = limit;
+            reader.window_sequence = sequence;
+            reader.dirty = true;
+            reader.source_dirty = false;
+            if reader.phase == Phase::Idle {
+                reader.phase = Phase::Queued;
+                true
+            } else {
+                false
+            }
+        };
+        if enqueue {
+            state.reader_queue.push_back(scope);
+            self.0.registry.reader_work.notify_one();
+        }
+        Ok(())
+    }
+
+    pub fn open_reader(
+        &self,
+        source: ReceiptSourceRef,
+        start: u64,
+        limit: ReaderWindowLimit,
+    ) -> Result<OwnedViewScope, ScopeError> {
+        let source_key = ReaderSourceKey::from_source(&source);
+        let bytes = self
+            .0
+            .registry
+            .budget
+            .reserve_bytes(model::encoded_bytes(&source)?)
+            .ok_or(ScopeError::Capacity)?;
+        let scope = self.open()?;
+        {
+            let retired = scope.control.retired.lock().expect("view control poisoned");
+            if retired.is_some() {
+                return Err(ScopeError::Closed);
+            }
+            *scope
+                .control
+                .reader
+                .lock()
+                .expect("reader request poisoned") = Some(ReaderRequest {
+                source,
+                start,
+                limit,
+                window_sequence: 0,
+                dependency_revision: 1,
+                phase: Phase::Idle,
+                run_id: 0,
+                dirty: false,
+                source_dirty: false,
+                accepted_raw: None,
+                _bytes: bytes,
+            });
+        }
+        self.0
+            .registry
+            .register_reader_source(scope.id(), source_key)?;
+        self.0.registry.dirty_reader(scope.id(), true)?;
+        Ok(scope)
+    }
+}

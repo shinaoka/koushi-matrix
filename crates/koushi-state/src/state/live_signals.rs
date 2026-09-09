@@ -112,6 +112,16 @@ pub struct LiveEventReceipts {
     pub receipts: Vec<LiveReadReceipt>,
 }
 
+/// Bounded live publication input. The total is computed by Core while the
+/// reader index is authoritative; only the compact rows cross the reducer
+/// action boundary.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LiveEventReceiptSummaryUpdate {
+    pub event_id: String,
+    pub readers: Vec<LiveReadReceipt>,
+    pub total_count: u64,
+}
+
 impl fmt::Debug for LiveEventReceipts {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -148,6 +158,23 @@ impl fmt::Debug for LiveRoomSignalUpdate {
             )
             .field("typing_user_count", &self.typing_user_ids.len())
             .finish()
+    }
+}
+
+impl LiveEventReceiptSummaryUpdate {
+    pub fn into_summary_with_profiles(
+        self,
+        profiles: &ProfileState,
+        relevant_room_profiles: Option<&BTreeMap<String, UserProfile>>,
+        own_user_id: Option<&str>,
+    ) -> LiveEventReceiptSummary {
+        let mut summary =
+            normalize_receipts(self.readers, profiles, relevant_room_profiles, own_user_id);
+        summary.total_count = self.total_count;
+        summary.overflow_count = self
+            .total_count
+            .saturating_sub(COMPACT_RECEIPT_READER_LIMIT as u64);
+        summary
     }
 }
 
@@ -273,7 +300,7 @@ pub fn refresh_live_receipt_display_projection(
         let relevant_room_profiles = profiles.room_users.get(room_id);
         for summary in room.receipts_by_event.values_mut() {
             for receipt in &mut summary.readers {
-                let enriched = enrich_receipt(
+                let enriched = enrich_live_receipt(
                     receipt.clone(),
                     profiles,
                     relevant_room_profiles,
@@ -300,6 +327,8 @@ pub enum PresenceKind {
     Offline,
 }
 
+const COMPACT_RECEIPT_READER_LIMIT: usize = 3;
+
 fn normalize_receipts(
     receipts: Vec<LiveReadReceipt>,
     profiles: &ProfileState,
@@ -314,7 +343,6 @@ fn normalize_receipts(
         if own_user_id.is_some_and(|own| own == receipt.user_id) {
             continue;
         }
-        let receipt = enrich_receipt(receipt, profiles, relevant_room_profiles, own_user_id);
         by_user
             .entry(receipt.user_id.clone())
             .and_modify(|existing: &mut LiveReadReceipt| {
@@ -334,11 +362,17 @@ fn normalize_receipts(
     });
 
     let total_count = readers.len() as u64;
+    let overflow_count = total_count.saturating_sub(COMPACT_RECEIPT_READER_LIMIT as u64);
+    readers.truncate(COMPACT_RECEIPT_READER_LIMIT);
+    let readers = readers
+        .into_iter()
+        .map(|receipt| enrich_live_receipt(receipt, profiles, relevant_room_profiles, own_user_id))
+        .collect();
 
     LiveEventReceiptSummary {
         readers,
         total_count,
-        overflow_count: 0,
+        overflow_count,
     }
 }
 
@@ -346,7 +380,19 @@ fn receipt_is_newer(candidate: &LiveReadReceipt, existing: &LiveReadReceipt) -> 
     candidate.timestamp_ms.unwrap_or_default() >= existing.timestamp_ms.unwrap_or_default()
 }
 
-fn enrich_receipt(
+/// Resolve one receipt against borrowed current profile state, without sorting a list.
+///
+/// ```
+/// use koushi_state::{LiveReadReceipt, ProfileState, enrich_live_receipt};
+/// let receipt = LiveReadReceipt {
+///     user_id: "@reader:example.org".into(), display_name: Some("Reader".into()),
+///     original_display_label: String::new(), avatar: None, timestamp_ms: None,
+/// };
+/// let mut profiles = ProfileState::default();
+/// profiles.local_aliases.insert(receipt.user_id.clone(), "Alias".into());
+/// assert_eq!(enrich_live_receipt(receipt, &profiles, None, None).display_name.as_deref(), Some("Alias"));
+/// ```
+pub fn enrich_live_receipt(
     mut receipt: LiveReadReceipt,
     profiles: &ProfileState,
     relevant_room_profiles: Option<&BTreeMap<String, UserProfile>>,

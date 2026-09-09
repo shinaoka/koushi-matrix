@@ -48,8 +48,10 @@ export interface TimelineTransport {
   downloadMedia(roomId: string, eventId: string): Promise<void>;
   /** Save an already downloaded media file through the host desktop shell. */
   saveMediaFile?(sourceUrl: string, filename: string): Promise<void>;
-  /** Download a Matrix avatar thumbnail for a visible sender avatar MXC. */
-  downloadAvatarThumbnail?(mxcUri: string): Promise<void>;
+  /** Download a Matrix avatar thumbnail and return its cancelable request sequence. */
+  downloadAvatarThumbnail?(mxcUri: string): Promise<string | void>;
+  /** Cancel a renderer-owned avatar thumbnail demand. */
+  cancelAvatarThumbnail?(mxcUri: string, requestSequence: string): Promise<void>;
   /** Request a Rust-owned safe source DTO for an event-backed item. */
   loadMessageSource(roomId: string, eventId: string): Promise<void>;
   /** Request missing room keys for an undecryptable event and retry decryption. */

@@ -35,7 +35,6 @@ import {
   type ContextMenuItem
 } from "../../domain/contextMenus";
 import { getActiveLocale, t } from "../../i18n/messages";
-import { useRecoverableImageSource } from "../avatarImage";
 import { onMenuKeyDown } from "../ContextMenuSurface";
 import { Tooltip } from "../Tooltip";
 
@@ -46,6 +45,7 @@ import {
 } from "../../domain/composerDocument";
 import type {
   MediaTransferProgress,
+  ReceiptSourceRef,
   ReactionSender,
   TimelineItem
 } from "../../domain/coreEvents";
@@ -71,10 +71,11 @@ import type {
   UserProfile
 } from "../../domain/types";
 import { Composer } from "../composer";
+import { EntityAvatar } from "../Shell";
 import { ImeSafeForm } from "../ImeTextControl";
 import type { TimelineTransport } from "./TimelineTransport";
 import { formatMessageTimestamp, MessageMeta } from "./MessageMeta";
-import { formatReceiptDetails, ReceiptReaders } from "./ReceiptReaders";
+import { ReceiptReaders } from "./ReceiptReaders";
 import {
   TimelineMediaAttachment,
   type TimelineMediaViewerItem
@@ -230,6 +231,7 @@ export function TimelineItemRow({
   onOpenSenderProfile,
   onStartDirectMessage,
   density = "default",
+  onRequestAvatarThumbnail,
   presence,
   profile,
   reactionSenderLabelsByUserId = {},
@@ -238,6 +240,7 @@ export function TimelineItemRow({
   mentionCandidatesLoading = false,
   onMentionQueryChange,
   receipts = [],
+  receiptSource,
   receiptTotalCount = receipts.length,
   receiptOverflowCount = 0,
   currentUserId,
@@ -295,6 +298,7 @@ export function TimelineItemRow({
   onOpenSenderProfile?: TimelineRowActionHandlers["onOpenSenderProfile"];
   onStartDirectMessage?: (userId: string) => void;
   density?: DisplayDensity;
+  onRequestAvatarThumbnail?: (mxcUri: string) => void | Promise<void | (() => void)>;
   presence?: PresenceKind;
   profile?: UserProfile;
   reactionSenderLabelsByUserId?: Readonly<Record<string, string>>;
@@ -303,6 +307,7 @@ export function TimelineItemRow({
   mentionCandidatesLoading?: boolean;
   onMentionQueryChange?: (roomId: string, query: string | null) => void;
   receipts?: LiveReadReceipt[];
+  receiptSource?: ReceiptSourceRef;
   receiptTotalCount?: number;
   receiptOverflowCount?: number;
   currentUserId?: string;
@@ -621,13 +626,6 @@ export function TimelineItemRow({
   const canShowThreadSummary = Boolean(showThreadSummary && eventId && item.thread_summary);
   const canShowReactions = !isRedacted && !isEditing && item.reactions.length > 0;
   const senderAvatar = resolvedAvatar(item.sender_avatar, profile?.avatar);
-  const avatarUrl = thumbnailSourceUrl(senderAvatar?.thumbnail);
-  const {
-    displaySourceUrl: displayAvatarUrl,
-    onImageError: onAvatarImageError,
-    onImageLoad: onAvatarImageLoad
-  } = useRecoverableImageSource(avatarUrl);
-  const showAvatarImage = Boolean(displayAvatarUrl);
   const senderDisplayLabel = peopleFacingLabel(item.sender_label);
   const senderProfileUserId =
     isContinuation && density === "compact" ? null : item.sender;
@@ -666,11 +664,6 @@ export function TimelineItemRow({
     threadNotificationCount > 0
       ? t("timeline.threadNotificationCount", { count: threadNotificationCount })
       : "";
-  const receiptDetails = formatReceiptDetails(receipts, receiptOverflowCount);
-  const receiptLabel = t("timeline.readBy", { count: receiptTotalCount });
-  const receiptAriaLabel =
-    receiptDetails.length > 0 ? `${receiptLabel}: ${receiptDetails.join("; ")}` : receiptLabel;
-  const receiptTitle = receiptDetails.join("\n");
   const spoilerState = { revealed: revealedSpoilers, reveal: revealSpoiler };
   const displayBody = localizedTimelineItemBody(item);
   const replyLabel = t("timeline.replyToMessage");
@@ -831,17 +824,13 @@ export function TimelineItemRow({
   }
 
   const avatar = (
-    <>
-      {showAvatarImage ? (
-        <img
-          src={displayAvatarUrl ?? undefined}
-          onError={onAvatarImageError}
-          onLoad={onAvatarImageLoad}
-        />
-      ) : (
-        senderInitials(senderDisplayLabel || item.sender)
-      )}
-    </>
+    <EntityAvatar
+      avatar={senderAvatar}
+      className="avatar-content"
+      colorSeed={item.sender}
+      fallback={senderInitials(senderDisplayLabel || item.sender)}
+      onRequestAvatarThumbnail={onRequestAvatarThumbnail}
+    />
   );
   const avatarElement = canStartDirectMessage ? (
     <button
@@ -1128,11 +1117,11 @@ export function TimelineItemRow({
             ) : null}
             {receiptTotalCount > 0 ? (
               <ReceiptReaders
-                ariaLabel={receiptAriaLabel}
-                details={receiptDetails}
                 overflowCount={receiptOverflowCount}
                 receipts={receipts}
-                title={receiptTitle}
+                source={receiptSource}
+                totalCount={receiptTotalCount}
+                onRequestAvatarThumbnail={onRequestAvatarThumbnail}
               />
             ) : null}
           </div>

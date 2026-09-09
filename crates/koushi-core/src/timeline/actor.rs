@@ -44,8 +44,8 @@ use koushi_protocol::ids::{
 use super::diagnostics::{
     event_cache_origin_trace_token, record_live_catchup_gate, record_subscribe_stage,
     record_timeline_gap_demand, record_timeline_gap_projection_boundary,
-    record_timeline_gap_repair, record_timeline_gap_repair_evaluation, trace_event_cache_diffs,
-    trace_event_cache_items, trace_timeline_items, trace_timeline_paginate,
+    record_timeline_gap_repair_evaluation, trace_event_cache_diffs, trace_event_cache_items,
+    trace_timeline_items, trace_timeline_paginate,
 };
 use super::display_projection::{DisplayProjectionContext, DisplayProjectionState};
 use super::gap_repair::{
@@ -55,7 +55,6 @@ use super::gap_repair::{
     TimelineGapRepairTracker, TimelineGapRepairTrigger, historical_causal_projection_operation,
     projected_gaps_contain_id, rendered_live_edge_target, retain_room_subscription_checkpoint,
     room_checkpoint_advances_global_fence, should_record_gap_repair_evaluation,
-    timeline_gap_repair_trigger_token,
 };
 use super::item_projection::{
     ReceiptObservationTarget, apply_ignored_sender_suppression, apply_link_previews_to_item,
@@ -199,6 +198,17 @@ impl ThreadSummaryProjectionIngress {
 }
 
 pub(super) enum TimelineActorMessage {
+    ReadReceiptWindow {
+        source: koushi_protocol::view::ReceiptSourceRef,
+        start: u64,
+        limit: koushi_protocol::view::ReaderWindowLimit,
+        response: oneshot::Sender<
+            Result<
+                super::receipt_endpoints::RawReceiptWindow,
+                crate::view_scope_lifecycle::ScopeError,
+            >,
+        >,
+    },
     RoomSubscriptionCheckpoint(MatrixRoomSubscriptionCheckpoint),
     /// Ordered generation advance for a retained room whose subscription set
     /// changed because another room was added/removed (issue #518). The actor
@@ -853,6 +863,7 @@ pub(super) struct TimelineActor {
     /// Rust-owned navigation projection source. The webview reports viewport
     /// facts; item ordering, unread marker semantics, and counts stay here.
     pub(super) navigation_items: Vec<TimelineItem>,
+    pub(super) receipt_endpoints: super::receipt_endpoints::ReceiptEndpointMirror,
     /// Canonical-slot membership plus the normalized bounded sequence last
     /// emitted to the Room UI. SDK indices are translated through this state;
     /// raw navigation indices never reach `ItemsUpdated`.
@@ -1033,6 +1044,35 @@ impl TimelineActor {
     pub(super) fn reproject_display_items(&mut self) -> Vec<TimelineDiff> {
         let context = self.display_projection_context();
         self.display_projection.reproject(&context)
+    }
+
+    pub(super) fn update_send_status(
+        &mut self,
+        transaction_id: &str,
+        send_state: TimelineSendState,
+    ) {
+        self.send_statuses
+            .insert(transaction_id.to_owned(), send_state.clone());
+        let diffs = self.display_projection.update_send_state(
+            transaction_id,
+            send_state.clone(),
+            &self.display_projection_context(),
+        );
+        if diffs.is_empty() {
+            return;
+        }
+        let batch_id = self.next_batch_id;
+        if super::navigation::emit_items_updated_for_generation(
+            &self.event_tx,
+            &self.timeline_actor_generations,
+            &self.key,
+            self.actor_generation,
+            self.generation,
+            batch_id,
+            diffs,
+        ) {
+            self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
+        }
     }
 
     pub(super) async fn refresh_pending_send_projection(
@@ -1463,6 +1503,8 @@ impl TimelineActor {
         let initial_media_gallery_items =
             media_gallery_items_from_timeline_items(&key, &initial_items);
         let initial_receipts = live_event_receipts_from_sdk_items(initial_sdk_items.iter());
+        let receipt_endpoints =
+            super::receipt_endpoints::ReceiptEndpointMirror::new(initial_sdk_items.iter());
 
         let (actor_tx, actor_rx) = mpsc::channel(256);
         let (actor_control_tx, actor_control_rx) =
@@ -1766,6 +1808,7 @@ impl TimelineActor {
             search_index_tx,
             thread_attention,
             navigation_items,
+            receipt_endpoints,
             display_projection,
             media_gallery_items: initial_media_gallery_items,
             fully_read_event_id: initial_fully_read_event_id,
@@ -2172,6 +2215,61 @@ impl TimelineActor {
                     self.pagination_task = None;
                     self.emit_pagination_completion(request_id, direction, completion);
                     self.start_pending_timeline_gap_inspection().await;
+                }
+            }
+            TimelineActorMessage::ReadReceiptWindow {
+                source,
+                start,
+                limit,
+                mut response,
+            } => {
+                if response.is_closed() {
+                    return;
+                }
+                let current = koushi_protocol::view::TimelineViewSource {
+                    key: self.key.clone(),
+                    projection_request_id: self.projection_request_id,
+                    generation: self.generation,
+                };
+                let mut window = self.receipt_endpoints.read_window(
+                    &source,
+                    &current,
+                    start,
+                    limit,
+                    self.own_user_id.as_deref(),
+                );
+                if let Some(window) = window.as_mut() {
+                    if let Err(error) = window.source_revision() {
+                        let _ = response.send(Err(error));
+                        return;
+                    }
+                    window.bind_owner(
+                        &self.timeline_actor_generations,
+                        &source,
+                        self.actor_generation,
+                    );
+                    if !super::item_projection::prepare_receipt_window_profiles(
+                        &self.session,
+                        self.key.room_id(),
+                        window,
+                        &mut response,
+                    )
+                    .await
+                    {
+                        return;
+                    }
+                }
+                if let Some(_lease) = self
+                    .timeline_actor_generations
+                    .try_acquire(&self.key, self.actor_generation)
+                {
+                    let _ = response.send(
+                        window.ok_or(crate::view_scope_lifecycle::ScopeError::SourceUnavailable),
+                    );
+                } else {
+                    let _ = response.send(Err(
+                        crate::view_scope_lifecycle::ScopeError::SourceUnavailable,
+                    ));
                 }
             }
             TimelineActorMessage::OwnReadReceiptChanged => {

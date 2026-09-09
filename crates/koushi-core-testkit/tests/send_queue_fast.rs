@@ -960,7 +960,9 @@ fn projection_timeline_item(event_id: &str, is_redacted: bool) -> TimelineItem {
 }
 
 const FAST_SEND_QUEUE_PHASE_TIMEOUT: Duration = Duration::from_secs(5);
-const FAST_SEND_QUEUE_TOTAL_TIMEOUT: Duration = Duration::from_secs(55);
+// Keep the timeout aligned with the lane's explicit 60-second wall-clock budget;
+// the former 55-second guard could preempt a healthy run under shared CI load.
+const FAST_SEND_QUEUE_TOTAL_TIMEOUT: Duration = Duration::from_secs(60);
 
 struct FastSendQueuePausedTime;
 
@@ -1243,10 +1245,11 @@ async fn send_fast_send_queue_text_expect_local_echo(
             ));
         }
         if let Some(sdk_transaction_id) = projection.iter().find_map(|item| {
-            (timeline_item_body_matches(item, body))
-                .then(|| timeline_item_transaction_id(item))
-                .flatten()
-                .map(str::to_owned)
+            if !timeline_item_body_matches(item, body) {
+                return None;
+            }
+            let transaction_id = timeline_item_transaction_id(item)?;
+            (transaction_id != client_transaction_id).then(|| transaction_id.to_owned())
         }) {
             return Ok(SendQueueLocalEcho {
                 request_id,
@@ -1283,7 +1286,31 @@ async fn wait_for_fast_send_queue_not_sent(
                 _ => {}
             }
         }
-        let event = recv_fast_send_queue_event(conn, deadline, label).await?;
+        let event = match recv_fast_send_queue_event(conn, deadline, label).await {
+            Ok(event) => event,
+            Err(error) => {
+                let send_stages = koushi_diagnostics::snapshot()
+                    .records
+                    .iter()
+                    .filter(|record| record.event.source == "core.send")
+                    .rev()
+                    .take(24)
+                    .map(|record| {
+                        let correlation = record.event.fields.iter().find_map(|field| {
+                            if let koushi_diagnostics::DiagnosticValue::Correlation(value) =
+                                field.value
+                            {
+                                Some(value)
+                            } else {
+                                None
+                            }
+                        });
+                        format!("corr={correlation:?}:{}", record.event.stage)
+                    })
+                    .collect::<Vec<_>>();
+                return Err(format!("{error}; send_stages={send_stages:?}"));
+            }
+        };
         apply_fast_send_queue_event(projection, key, &event, label)?;
         if let CoreEvent::OperationFailed {
             request_id,
@@ -2448,7 +2475,7 @@ async fn fast_send_queue_feedback_runs_production_runtime_without_homeserver() {
     .await
     .expect("fast_send_queue whole lane timed out");
     assert!(
-        started.elapsed() < Duration::from_secs(60),
+        started.elapsed() < FAST_SEND_QUEUE_TOTAL_TIMEOUT,
         "fast_send_queue exceeded the 60-second lane budget"
     );
 }

@@ -590,7 +590,7 @@ pub(super) async fn run_timeline_stress_room_messages(
         );
         let send_id = sender_conn.next_request_id();
         sender_conn
-            .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            .command_with_admission(CoreCommand::Timeline(TimelineCommand::SendText {
                 request_id: send_id,
                 key: sender_key.clone(),
                 transaction_id: transaction_id.clone(),
@@ -598,13 +598,17 @@ pub(super) async fn run_timeline_stress_room_messages(
             }))
             .await
             .map_err(|e| format!("timeline_stress: submit stress send failed: {e}"))?;
+        let send_label = format!(
+            "timeline_stress send flow s{} r{} m{}",
+            coordinates.space_index, coordinates.room_index, message_index
+        );
         wait_for_send_flow_completion(
             sender_conn,
             send_id,
             &sender_key,
             &transaction_id,
             &body,
-            "timeline_stress send flow",
+            &send_label,
         )
         .await?;
         expected_bodies.push(body);
@@ -5395,6 +5399,7 @@ fn timeline_item_body_contains(item: &TimelineItem, expected_body: &str) -> bool
         .unwrap_or(false)
 }
 
+#[cfg(test)]
 fn timeline_item_has_thread_summary_reply(item: &TimelineItem, root_event_id: &str) -> bool {
     timeline_item_event_id(item) == Some(root_event_id)
         && item

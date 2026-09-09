@@ -2,7 +2,7 @@
 
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Sidebar, WorkspaceRail } from "./Shell";
+import { EntityAvatar, Sidebar, WorkspaceRail } from "./Shell";
 import { readyDesktopSnapshotFixture } from "../test/desktopApiFixture";
 import type { RoomListItem } from "../domain/types";
 
@@ -23,6 +23,32 @@ function room(room_id: string, display_name: string): RoomListItem {
   };
 }
 
+class MockIntersectionObserver {
+  static instances: MockIntersectionObserver[] = [];
+  private readonly callback: IntersectionObserverCallback;
+  private readonly observed: Element[] = [];
+
+  constructor(callback: IntersectionObserverCallback) {
+    this.callback = callback;
+    MockIntersectionObserver.instances.push(this);
+  }
+
+  observe(element: Element): void {
+    this.observed.push(element);
+  }
+
+  disconnect(): void {}
+  unobserve(): void {}
+  takeRecords(): IntersectionObserverEntry[] { return []; }
+
+  trigger(isIntersecting = true): void {
+    this.callback(
+      this.observed.map((target) => ({ isIntersecting, target }) as IntersectionObserverEntry),
+      this as unknown as IntersectionObserver
+    );
+  }
+}
+
 function sidebarProps() {
   return {
     activeRoomId: null,
@@ -38,9 +64,31 @@ function sidebarProps() {
   };
 }
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+  MockIntersectionObserver.instances = [];
+});
 
 describe("Rust-projected workspace shell", () => {
+  it("requests an icon only after its rendered avatar intersects", () => {
+    vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
+    const request = vi.fn();
+    render(
+      <EntityAvatar
+        avatar={{ mxc_uri: "mxc://example.invalid/space", thumbnail: { kind: "notRequested" } }}
+        className="test-avatar"
+        fallback="SP"
+        onRequestAvatarThumbnail={request}
+      />
+    );
+
+    expect(request).not.toHaveBeenCalled();
+    MockIntersectionObserver.instances[0]?.trigger();
+    expect(request).toHaveBeenCalledOnce();
+    expect(request).toHaveBeenCalledWith("mxc://example.invalid/space");
+  });
+
   it("renders the Rust-projected local Space name and icon", () => {
     const snapshot = readyDesktopSnapshotFixture();
     snapshot.sidebar.space_rail = [{

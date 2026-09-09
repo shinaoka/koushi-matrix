@@ -2869,6 +2869,15 @@ button:disabled {
   background: var(--avatar-8);
 }
 
+.avatar-content {
+  display: grid;
+  place-items: center;
+  inline-size: 100%;
+  block-size: 100%;
+  overflow: hidden;
+  border-radius: inherit;
+}
+
 .avatar-button {
   appearance: none;
   padding: 0;
@@ -3956,6 +3965,43 @@ button:disabled {
   object-fit: cover;
 }
 
+.receipt-tooltip .receipt-reader-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.receipt-tooltip .receipt-reader-row .receipt-reader-avatar {
+  flex: 0 0 auto;
+  margin-inline-end: 0;
+}
+
+.receipt-reader-close {
+  position: absolute;
+  z-index: 1;
+  inset-block-start: 4px;
+  inset-inline-end: 4px;
+  block-size: 16px;
+  border: 0;
+  padding: 0 4px;
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+}
+
+.receipt-reader-close:focus-visible,
+.receipt-tooltip .receipt-reader-row:focus-visible {
+  outline: var(--receipt-focus-outline-width) solid var(--brand);
+  outline-offset: var(--receipt-focus-outline-offset);
+}
+
+.receipt-tooltip > [role="list"] {
+  overflow: visible;
+  white-space: normal;
+}
+
 .receipt-overflow {
   min-inline-size: var(--receipt-overflow-min-inline-size);
   padding-block: 0;
@@ -3989,7 +4035,7 @@ button:disabled {
   font-weight: 600;
   line-height: 1.35;
   overflow: hidden;
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 /* #360: one reader per line. A name longer than the popup truncates instead of

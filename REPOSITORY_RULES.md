@@ -6,7 +6,7 @@ glue. Vendored upstream code must keep its original license and copyright
 notices; local changes to vendored code must remain easy to upstream or
 revert.
 
-Last amended: 2026-09-05.
+Last amended: 2026-09-07.
 
 ## Read Order And Authority
 
@@ -148,6 +148,14 @@ conflict is being resolved.
   filesystem/platform, or OS dependency. Secret-bearing typed commands are
   constructed by each validated adapter and are not required to be wholesale
   serde payloads.
+- The toolkit-independent Rust application core is the sole reusable owner of
+  product semantics and authoritative application state for every renderer and
+  host. React/Tauri, future native desktop, and future iOS/Android adapters may
+  own transport, layout, focus, IME composition, and platform capabilities, but
+  must not add a competing semantic state machine, retry/resource policy, or
+  toolkit-dependent product contract. Touched legacy owners move toward this
+  boundary and are removed with their migration slice; this rule does not
+  require shipping future renderers.
 - WebView `localStorage` is not a product-state or preference store. Production
   frontend code may access it only in an explicitly allowlisted, bounded legacy
   migration reader that submits typed Rust commands and deletes each old key only

@@ -249,11 +249,7 @@ pub(super) fn profile_resolution_diagnostic_event(
 ) -> Option<DiagnosticEvent> {
     let mut counts = ProfileResolutionDiagnosticCounts::default();
     let trigger = match action {
-        AppAction::LiveRoomReceiptsUpdated {
-            room_id,
-            receipts_by_event,
-        }
-        | AppAction::LiveRoomReceiptsWindowReconciled {
+        AppAction::LiveRoomReceiptsWindowReconciled {
             room_id,
             receipts_by_event,
             ..
@@ -382,10 +378,6 @@ pub(super) fn live_receipt_profile_diagnostic_event(
     action: &AppAction,
 ) -> Option<DiagnosticEvent> {
     let (room_id, receipts_by_event, update_kind) = match action {
-        AppAction::LiveRoomReceiptsUpdated {
-            room_id,
-            receipts_by_event,
-        } => (room_id, receipts_by_event, "incremental"),
         AppAction::LiveRoomReceiptsWindowReconciled {
             room_id,
             receipts_by_event,
@@ -561,8 +553,9 @@ mod tests {
         room.parent_space_ids = vec!["!space:example.invalid".to_owned()];
         state.rooms.push(room);
 
-        let action = AppAction::LiveRoomReceiptsUpdated {
+        let action = AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: room_id.to_owned(),
+            scoped_event_ids: Vec::new(),
             receipts_by_event: vec![LiveEventReceipts {
                 event_id: "$event".to_owned(),
                 receipts: vec![LiveReadReceipt {
@@ -654,8 +647,9 @@ mod tests {
             avatar: None,
             timestamp_ms: Some(42),
         };
-        let action = AppAction::LiveRoomReceiptsUpdated {
+        let action = AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: room_id.to_owned(),
+            scoped_event_ids: Vec::new(),
             receipts_by_event: vec![
                 LiveEventReceipts {
                     event_id: "$alias-event:example.invalid".to_owned(),

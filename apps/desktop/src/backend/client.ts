@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   ComposerDraftAccountOwner,
   DesktopApi,
+  ReceiptReaderResourceContent,
   ViewportSyncObservation,
   ViewportSyncReceipt
 } from "./desktopApi";
@@ -48,7 +49,12 @@ import type {
   ThreadsListScope
 } from "../domain/types";
 import type { DiagnosticLogSnapshot } from "../domain/diagnostics";
-import type { TimelineKey } from "../domain/coreEvents";
+import type {
+  ReceiptSourceRef,
+  ReaderWindowRequest,
+  TimelineKey,
+  ViewDelivery
+} from "../domain/coreEvents";
 import type {
   ComposerDraftLeaseSnapshot,
   ComposerDraftScope
@@ -832,6 +838,44 @@ export class TauriDesktopApi implements DesktopApi {
 
   async closeFilesView(): Promise<CommandAdmission> {
     return this.invokeCommand<CommandAdmission>("close_files_view");
+  }
+
+  async subscribeReceiptReader(
+    source: ReceiptSourceRef,
+    start: number,
+    limit: number
+  ): Promise<string> {
+    return this.invokeCommand<string>("subscribe_receipt_reader", { source, start, limit });
+  }
+
+  async receiveReceiptReader(scope: string): Promise<ViewDelivery | null> {
+    return this.invokeCommand<ViewDelivery | null>("receive_receipt_reader", { scope });
+  }
+
+  async updateReceiptReaderWindow(
+    scope: string,
+    request: ReaderWindowRequest
+  ): Promise<void> {
+    return this.invokeCommand<void>("update_receipt_reader_window", { scope, request });
+  }
+
+  async ackReceiptReader(scope: string, revision: string): Promise<void> {
+    return this.invokeCommand<void>("ack_receipt_reader", { scope, revision });
+  }
+
+  async readReceiptReaderResource(
+    scope: string,
+    revision: string,
+    sourceRef: string
+  ): Promise<ReceiptReaderResourceContent | null> {
+    return this.invokeCommand<ReceiptReaderResourceContent | null>(
+      "read_receipt_reader_resource",
+      { scope, revision, sourceRef }
+    );
+  }
+
+  async closeReceiptReader(scope: string): Promise<void> {
+    return this.invokeCommand<void>("close_receipt_reader", { scope });
   }
 
   async paginateThreadsList(scope: ThreadsListScope): Promise<CommandAdmission> {

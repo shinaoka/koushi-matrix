@@ -1117,6 +1117,8 @@ async fn committed_room_cleanup_bypasses_a_saturated_account_mailbox() {
     let (_focused_projection_tx, focused_projection_rx) = mpsc::unbounded_channel();
     let (event_navigation_prepared_tx, event_navigation_prepared_rx) = mpsc::unbounded_channel();
     let actor = AppActor {
+        view_scopes: crate::view_scope_lifecycle::ViewScopeRegistry::default(),
+        command_tx: command_tx.downgrade(),
         command_rx,
         action_rx,
         injected_action_rx: Some(injected_action_rx),
@@ -1292,6 +1294,8 @@ async fn same_batch_select_room_settles_only_final_selection() {
     let (_focused_projection_tx, focused_projection_rx) = mpsc::unbounded_channel();
     let (event_navigation_prepared_tx, event_navigation_prepared_rx) = mpsc::unbounded_channel();
     let actor = AppActor {
+        view_scopes: crate::view_scope_lifecycle::ViewScopeRegistry::default(),
+        command_tx: command_tx.downgrade(),
         command_rx,
         action_rx,
         injected_action_rx: Some(injected_action_rx),
@@ -2368,6 +2372,370 @@ async fn wait_for_runtime_session(
     .unwrap_or_else(|_| panic!("session transition timed out during {stage}"));
 }
 
+#[tokio::test]
+async fn receipt_resolution_borrows_current_alias_without_publishing_global_state() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let state = AppState {
+        session: SessionState::Ready(SessionInfo {
+            homeserver: "https://example.invalid".into(),
+            user_id: "@owner:example.org".into(),
+            device_id: "DEVICE".into(),
+            authentication_method: koushi_state::SessionAuthenticationMethod::Unknown,
+        }),
+        ..AppState::default()
+    };
+    let (
+        mut actor,
+        _commands,
+        _actions,
+        mut account,
+        _events,
+        snapshots,
+        _navigation,
+        _prepared,
+        _focused,
+    ) = app_actor_event_navigation_fixture(data_dir.path(), state);
+    actor
+        .state
+        .profile
+        .local_aliases
+        .insert("@reader:example.org".into(), "Current alias".into());
+    let source = koushi_protocol::view::ReceiptSourceRef {
+        timeline: koushi_protocol::view::TimelineViewSource {
+            key: TimelineKey::room(
+                koushi_protocol::AccountKey("@owner:example.org".into()),
+                "!room:example.org",
+            ),
+            projection_request_id: RequestId {
+                connection_id: koushi_protocol::RuntimeConnectionId(1),
+                sequence: 2,
+            },
+            generation: TimelineGeneration(3),
+        },
+        event_id: "$event".into(),
+    };
+    actor.state.profile.users.insert(
+        "@reader:example.org".into(),
+        UserProfile {
+            user_id: "@reader:example.org".into(),
+            display_name: Some("Current global".into()),
+            display_label: String::new(),
+            original_display_label: String::new(),
+            mention_search_terms: Vec::new(),
+            avatar: None,
+        },
+    );
+    actor.state.settings.values.locale.language_tag = Some("ja-JP".into());
+    let mut window = crate::timeline::RawReceiptWindow {
+        total_count: 1500,
+        start: 0,
+        profiles: vec![koushi_sdk::MatrixUserProfile {
+            user_id: "@reader:example.org".into(),
+            display_name: Some("Stale SDK name".into()),
+            avatar_mxc_uri: Some("mxc://example.org/removed".into()),
+        }],
+        owner: None,
+        epoch: std::sync::Weak::new(),
+        receipts: vec![koushi_state::LiveReadReceipt {
+            user_id: "@reader:example.org".into(),
+            display_name: Some("Stale label".into()),
+            original_display_label: String::new(),
+            avatar: None,
+            timestamp_ms: Some(42),
+        }],
+    };
+    let _epoch = window.bind_test_owner(&source).await;
+    {
+        let consumer = actor
+            .view_scopes
+            .consumer(koushi_protocol::RuntimeConnectionId(8))
+            .unwrap();
+        let mut scope = consumer
+            .open_reader(
+                source.clone(),
+                0,
+                koushi_protocol::view::ReaderWindowLimit::try_from(1).unwrap(),
+            )
+            .unwrap();
+        actor.start_reader_work();
+        let command = actor.command_rx.recv().await.unwrap();
+        actor.handle_command(command).await;
+        let AccountMessage::ReadReceiptWindow { response, .. } = account.recv().await.unwrap()
+        else {
+            panic!("expected SDK reader preparation")
+        };
+        assert!(response.send(Ok(window.clone())).is_ok());
+        let command = actor.command_rx.recv().await.unwrap();
+        actor.handle_command(command).await;
+        let Some(crate::view_scope_lifecycle::ScopeDelivery::Model { revision, model }) =
+            scope.next_delivery().await
+        else {
+            panic!("expected initial scoped model")
+        };
+        let koushi_protocol::view::ViewModel::ReaderReady(reader) = &model.model else {
+            panic!("expected readers")
+        };
+        assert_eq!(reader.total_count, 1500);
+        assert_eq!(reader.rows[0].display_label, "Current alias");
+        consumer.ack_model(scope.id(), revision).unwrap();
+        actor.state.profile.local_aliases.clear();
+        let (_room_profile_effects, _) =
+            actor.reduce_app_action_state(AppAction::LiveRoomProfilesObserved {
+                room_id: "!room:example.org".into(),
+                profiles: vec![UserProfile {
+                    user_id: "@reader:example.org".into(),
+                    display_name: Some("Room profile".into()),
+                    display_label: String::new(),
+                    original_display_label: String::new(),
+                    mention_search_terms: Vec::new(),
+                    avatar: None,
+                }],
+            });
+        actor.start_reader_work();
+        let command =
+            crate::executor::timeout(std::time::Duration::from_secs(1), actor.command_rx.recv())
+                .await
+                .expect("room-profile mutation must schedule only its reader dependencies")
+                .unwrap();
+        actor.handle_command(command).await;
+        let Some(crate::view_scope_lifecycle::ScopeDelivery::Model { revision, model }) =
+            scope.next_delivery().await
+        else {
+            panic!("expected room-profile projection")
+        };
+        let koushi_protocol::view::ViewModel::ReaderReady(reader) = &model.model else {
+            panic!("expected readers")
+        };
+        assert_eq!(reader.rows[0].display_label, "Room profile");
+        assert!(matches!(
+            account.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        consumer.ack_model(scope.id(), revision).unwrap();
+        let (receipt_effects, _) =
+            actor.reduce_app_action_state(AppAction::LiveRoomReceiptsWindowReconciled {
+                room_id: "!room:example.org".into(),
+                scoped_event_ids: vec!["$event".into()],
+                receipts_by_event: Vec::new(),
+            });
+        assert!(receipt_effects.iter().any(|effect| matches!(
+            effect,
+            koushi_state::AppEffect::EmitUiEvent(koushi_state::UiEvent::LiveSignalsChanged)
+        )));
+        let receipt_work = actor
+            .view_scopes
+            .take_reader_work()
+            .unwrap()
+            .expect("receipt source change must invalidate its indexed reader");
+        assert!(
+            receipt_work.raw.is_none(),
+            "source changes must refetch raw data"
+        );
+        actor.view_scopes.finish_reader_work(&receipt_work).unwrap();
+        drop(receipt_work);
+        let _effects = actor.reduce_app_action_state(AppAction::LocalUserAliasesLoaded {
+            aliases: std::collections::BTreeMap::from([(
+                "@reader:example.org".into(),
+                "Updated alias".into(),
+            )]),
+        });
+        actor.start_reader_work();
+        let command =
+            crate::executor::timeout(std::time::Duration::from_secs(1), actor.command_rx.recv())
+                .await
+                .expect("alias mutation must schedule only its reader dependencies")
+                .unwrap();
+        actor.handle_command(command).await;
+        let Some(crate::view_scope_lifecycle::ScopeDelivery::Model { revision, model }) =
+            scope.next_delivery().await
+        else {
+            panic!("expected reprojected model")
+        };
+        let koushi_protocol::view::ViewModel::ReaderReady(reader) = &model.model else {
+            panic!("expected readers")
+        };
+        assert_eq!(reader.rows[0].display_label, "Updated alias");
+        assert!(
+            matches!(account.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            "dependency-only projection must not refetch SDK profiles"
+        );
+        assert_eq!(actor.state_generation, 0);
+        consumer.ack_model(scope.id(), revision).unwrap();
+        let mut values = actor.state.settings.values.clone();
+        values.locale.language_tag = Some("en-US".into());
+        let _effects = actor.reduce_app_action_state(AppAction::SettingsLoaded { values });
+        actor.start_reader_work();
+        let command =
+            crate::executor::timeout(std::time::Duration::from_secs(1), actor.command_rx.recv())
+                .await
+                .expect("locale mutation must schedule projection")
+                .unwrap();
+        actor.handle_command(command).await;
+        let Some(crate::view_scope_lifecycle::ScopeDelivery::Model { model, .. }) =
+            scope.next_delivery().await
+        else {
+            panic!("expected locale projection")
+        };
+        let koushi_protocol::view::ViewModel::ReaderReady(reader) = &model.model else {
+            panic!("expected readers")
+        };
+        assert_eq!(
+            reader.rows[0].timestamp.unwrap().locale,
+            koushi_protocol::view::ReceiptTimestampLocale::En
+        );
+        assert!(matches!(
+            account.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        let mut values = actor.state.settings.values.clone();
+        values.locale.language_tag = Some("en-GB".into());
+        let _effects = actor.reduce_app_action_state(AppAction::SettingsLoaded { values });
+        assert!(
+            actor.view_scopes.take_reader_work().unwrap().is_none(),
+            "same resolved receipt locale must not invalidate"
+        );
+        actor.state.settings.values.locale.language_tag = Some("ja-JP".into());
+        actor.view_scopes.dirty_reader(scope.id(), true).unwrap();
+        actor.start_reader_work();
+        let command = actor.command_rx.recv().await.unwrap();
+        actor.handle_command(command).await;
+        let AccountMessage::ReadReceiptWindow { response, .. } = account.recv().await.unwrap()
+        else {
+            panic!("expected source refresh")
+        };
+        let mut replacement = window.clone();
+        let _replacement_epoch = replacement.bind_test_owner(&source).await;
+        assert!(response.send(Ok(replacement)).is_ok());
+        actor.view_scopes.dirty_reader(scope.id(), true).unwrap();
+        let command = actor.command_rx.recv().await.unwrap();
+        actor.handle_command(command).await;
+        assert!(
+            matches!(
+                scope.next_delivery().await,
+                Some(crate::view_scope_lifecycle::ScopeDelivery::Retired(
+                    koushi_protocol::view::ViewRetirement::SourceUnavailable
+                ))
+            ),
+            "actor replacement retires even with unacked data and pending dirtiness"
+        );
+        assert!(actor.view_scopes.take_reader_work().unwrap().is_none());
+        actor
+            .state
+            .profile
+            .local_aliases
+            .insert("@reader:example.org".into(), "Current alias".into());
+    }
+    actor.state.profile.room_users.remove("!room:example.org");
+    let (response, result) = oneshot::channel();
+    assert!(
+        !actor
+            .handle_command(CoreCommandEnvelope::ResolveReceiptWindow {
+                source: source.clone(),
+                window,
+                response,
+            })
+            .await
+    );
+    let window = result.await.unwrap().unwrap();
+    assert_eq!(window.rows[0].display_label, "Current alias");
+    assert_eq!(window.total_count, 1500);
+    assert!(
+        window.rows[0].avatar.is_none(),
+        "a captured SDK hint must not resurrect a removed avatar"
+    );
+    assert_eq!(window.rows[0].original_display_label, "Current global");
+    assert_eq!(window.rows[0].initials, "CU");
+    assert_eq!(window.rows[0].timestamp.unwrap().unix_ms.get(), 42);
+    assert_eq!(
+        window.rows[0].timestamp.unwrap().locale,
+        koushi_protocol::view::ReceiptTimestampLocale::Ja
+    );
+    assert!(!snapshots.has_changed().unwrap());
+    drop(_epoch); // Same actor remains active, but the receipt index was superseded.
+    let window = crate::timeline::RawReceiptWindow {
+        total_count: window.total_count,
+        start: window.start,
+        owner: window.owner,
+        epoch: window.epoch,
+        receipts: Vec::new(),
+        profiles: Vec::new(),
+    };
+    let (response, result) = oneshot::channel();
+    assert!(
+        !actor
+            .handle_command(CoreCommandEnvelope::ResolveReceiptWindow {
+                source: source.clone(),
+                window,
+                response,
+            })
+            .await
+    );
+    assert_eq!(
+        result.await.unwrap().err(),
+        Some(crate::view_scope_lifecycle::ScopeError::SourceUnavailable)
+    );
+    let (response, abandoned) = oneshot::channel();
+    drop(abandoned);
+    assert!(
+        !actor
+            .handle_command(CoreCommandEnvelope::ReadReceiptWindow {
+                source: source.clone(),
+                start: 0,
+                limit: koushi_protocol::view::ReaderWindowLimit::try_from(3).unwrap(),
+                response,
+            })
+            .await
+    );
+    assert!(
+        matches!(account.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+        "abandoned window must not start SDK preparation"
+    );
+    let session_consumer = actor
+        .view_scopes
+        .consumer(koushi_protocol::RuntimeConnectionId(9))
+        .unwrap();
+    let mut session_scope = session_consumer
+        .open_reader(
+            source.clone(),
+            0,
+            koushi_protocol::view::ReaderWindowLimit::try_from(1).unwrap(),
+        )
+        .unwrap();
+    let _effects = actor.reduce_app_action_state(AppAction::LogoutRequested);
+    assert!(
+        !session_scope.is_live(),
+        "session retirement must precede deferred reducer work"
+    );
+    assert!(matches!(
+        session_scope.next_delivery().await,
+        Some(crate::view_scope_lifecycle::ScopeDelivery::Retired(
+            koushi_protocol::view::ViewRetirement::SessionRetired
+        ))
+    ));
+    assert!(
+        session_consumer.open().is_ok(),
+        "session retirement does not retire the host consumer"
+    );
+    actor.state.session = AppState::default().session;
+    let (response, result) = oneshot::channel();
+    actor
+        .handle_command(CoreCommandEnvelope::ReadReceiptWindow {
+            source,
+            start: 0,
+            limit: koushi_protocol::view::ReaderWindowLimit::try_from(3).unwrap(),
+            response,
+        })
+        .await;
+    assert_eq!(
+        result.await.unwrap().err(),
+        Some(crate::view_scope_lifecycle::ScopeError::InactiveSession)
+    );
+    assert!(matches!(
+        account.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+}
+
 fn app_actor_event_navigation_fixture(
     data_dir: &std::path::Path,
     state: AppState,
@@ -2405,6 +2773,8 @@ fn app_actor_event_navigation_fixture(
     let (focused_projection_tx, focused_projection_rx) = mpsc::unbounded_channel();
     let (event_navigation_prepared_tx, event_navigation_prepared_rx) = mpsc::unbounded_channel();
     let actor = AppActor {
+        view_scopes: crate::view_scope_lifecycle::ViewScopeRegistry::default(),
+        command_tx: command_tx.downgrade(),
         command_rx,
         action_rx,
         injected_action_rx: Some(injected_action_rx),

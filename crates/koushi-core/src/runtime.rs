@@ -12,6 +12,7 @@ mod composer;
 mod connection;
 mod navigation;
 mod profile_display_diagnostics;
+mod readers;
 mod reducer_support;
 pub mod request_outcome;
 mod scheduled_send;
@@ -31,16 +32,16 @@ use navigation::{
     PendingEventNavigation, PendingFocusedNavigation,
     cancel_replaced_room_timeline_link_previews_key, cancel_replaced_room_timeline_pagination_key,
     command_supersedes_event_navigation, effects_open_focused_timeline,
-    focused_navigation_outcome_after_reduce, navigation_replacement_room_for_cleanup,
-    unsubscribe_replaced_timeline_key,
+    navigation_replacement_room_for_cleanup, unsubscribe_replaced_timeline_key,
 };
 use scheduled_send::scheduled_send_id;
 
+pub use crate::view_scope_lifecycle::ScopeError;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use connection::CoreConnectionTestControl;
 pub use connection::{
     CommandSubmitError, CoreCommandHandle, CoreConnection, EventNavigationError, EventStreamLag,
-    SelectRoomError,
+    ReaderSubscription, ReaderSubscriptionCloser, SelectRoomError,
 };
 pub use koushi_protocol::state_update::CoreCommandAdmission;
 pub use request_outcome::{
@@ -59,13 +60,14 @@ use std::time::Duration;
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_state::{
     AccountManagementOperation, ActivityRowKind, ActivityState, AppAction, AppEffect, AppState,
-    ComposerDraftStore, ComposerTarget, LoginAttemptId, NavigationState, OperationFailureKind,
-    ProfileUpdateRequest, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem,
-    SearchScope as AppSearchScope, SecureBackupSetupAdmission, SessionState,
-    SpaceMembersCommandRejection, ThreadOpenIntent, ThreadPaneState, UiEvent,
-    admit_space_member_cancellation, admit_space_member_invite, admit_space_member_role,
-    admit_space_members_load, reduce,
+    ComposerTarget, LoginAttemptId, ProfileUpdateRequest, ScheduledSendCapability,
+    ScheduledSendHandle, ScheduledSendItem, SearchScope as AppSearchScope,
+    SecureBackupSetupAdmission, SessionState, SpaceMembersCommandRejection, ThreadOpenIntent,
+    ThreadPaneState, UiEvent, admit_space_member_cancellation, admit_space_member_invite,
+    admit_space_member_role, admit_space_members_load, reduce,
 };
+#[cfg(any(test, feature = "test-hooks"))]
+use koushi_state::{ComposerDraftStore, NavigationState, OperationFailureKind};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::account::{AccountActorHandle, AccountMessage};
@@ -91,10 +93,12 @@ use koushi_protocol::event::{
 use koushi_protocol::state_update::VersionedAppStateSnapshot;
 
 use crate::executor;
-use crate::native_artifact::{NativeArtifactKind, NativeArtifactPort, RejectingNativeArtifactPort};
+use crate::native_artifact::{NativeArtifactPort, RejectingNativeArtifactPort};
 use crate::settings::SettingsStore;
 use crate::state_delta::build_state_delta;
-use crate::store::{StoreActor, session_key_id_from_info};
+use crate::store::StoreActor;
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::store::session_key_id_from_info;
 use koushi_protocol::failure::{CoreFailure, RoomFailureKind, TimelineFailureKind};
 use koushi_protocol::ids::{
     AccountKey, RequestId, RuntimeConnectionId, TimelineGeneration, TimelineKey, TimelineKind,
@@ -255,6 +259,23 @@ pub enum CoreQaCommand {
 }
 
 enum CoreCommandEnvelope {
+    ReaderPrepared(readers::ReaderPrepared),
+    #[cfg(test)]
+    ResolveReceiptWindow {
+        source: koushi_protocol::view::ReceiptSourceRef,
+        window: crate::timeline::RawReceiptWindow,
+        response: oneshot::Sender<
+            Result<crate::timeline::ResolvedReceiptWindow, crate::view_scope_lifecycle::ScopeError>,
+        >,
+    },
+    ReadReceiptWindow {
+        source: koushi_protocol::view::ReceiptSourceRef,
+        start: u64,
+        limit: koushi_protocol::view::ReaderWindowLimit,
+        response: oneshot::Sender<
+            Result<crate::timeline::RawReceiptWindow, crate::view_scope_lifecycle::ScopeError>,
+        >,
+    },
     Public {
         command: CoreCommand,
         composer_permit: Option<ComposerDraftCommandPermit>,
@@ -269,6 +290,13 @@ impl CoreCommandEnvelope {
     fn command(&self) -> &CoreCommand {
         match self {
             Self::Public { command, .. } => command,
+            Self::ReadReceiptWindow { .. } | Self::ReaderPrepared(_) => {
+                panic!("expected public command envelope")
+            }
+            #[cfg(test)]
+            Self::ResolveReceiptWindow { .. } => {
+                panic!("expected public command envelope")
+            }
             Self::Qa(_) => panic!("expected public command envelope"),
         }
     }
@@ -278,12 +306,12 @@ impl CoreCommandEnvelope {
 /// shutdown. Explicit shutdown takes the handle and awaits it; error paths in
 /// headless QA and embedding callers therefore cannot leave detached runtime
 /// tasks keeping the process alive indefinitely.
-struct AbortOnDrop<T> {
+pub(crate) struct AbortOnDrop<T> {
     handle: Option<executor::JoinHandle<T>>,
 }
 
 impl<T> AbortOnDrop<T> {
-    fn new(handle: executor::JoinHandle<T>) -> Self {
+    pub(crate) fn new(handle: executor::JoinHandle<T>) -> Self {
         Self {
             handle: Some(handle),
         }
@@ -316,6 +344,7 @@ impl<T> Drop for AbortOnDrop<T> {
 
 /// Owns the actor tree and creates [`CoreConnection`] handles.
 pub struct CoreRuntime {
+    view_scopes: crate::view_scope_lifecycle::ViewScopeRegistry,
     command_tx: mpsc::Sender<CoreCommandEnvelope>,
     event_tx: broadcast::Sender<CoreEvent>,
     snapshot_rx: watch::Receiver<VersionedAppStateSnapshot>,
@@ -591,7 +620,10 @@ impl CoreRuntime {
         let account_actor_test_handle = account_actor.clone();
         #[cfg(any(test, feature = "test-hooks"))]
         let composer_draft_store_actor_for_testing = composer_draft_store_actor.clone();
+        let view_scopes = crate::view_scope_lifecycle::ViewScopeRegistry::default();
         let actor = AppActor {
+            view_scopes: view_scopes.clone(),
+            command_tx: command_tx.downgrade(),
             command_rx,
             action_rx,
             #[cfg(any(test, feature = "test-hooks"))]
@@ -634,7 +666,11 @@ impl CoreRuntime {
             latest_focused_projection_generation: HashMap::new(),
             pending_date_navigation_request_id: None,
         };
-        let actor = executor::spawn(actor.run());
+        let view_lifetime = crate::view_scope_lifecycle::ViewRuntimeLifetime(view_scopes.clone());
+        let actor = executor::spawn(async move {
+            let _view_lifetime = view_lifetime;
+            actor.run().await;
+        });
         let media_preparation =
             Arc::new(crate::media_preparation::MediaPreparationService::default());
         let media_staging = Arc::new(crate::media_staging::MediaStagingService::new(Arc::clone(
@@ -655,6 +691,7 @@ impl CoreRuntime {
         });
 
         Self {
+            view_scopes,
             command_tx,
             event_tx,
             snapshot_rx,
@@ -804,6 +841,7 @@ impl CoreRuntime {
     /// ordered AccountActor/store shutdown barrier.
     pub async fn shutdown(self) {
         let Self {
+            view_scopes: _,
             command_tx,
             event_tx: _,
             snapshot_rx: _,
@@ -838,6 +876,8 @@ enum SettingsLoadStatus {
 }
 
 struct AppActor {
+    view_scopes: crate::view_scope_lifecycle::ViewScopeRegistry,
+    command_tx: mpsc::WeakSender<CoreCommandEnvelope>,
     command_rx: mpsc::Receiver<CoreCommandEnvelope>,
     action_rx: mpsc::Receiver<Vec<AppAction>>,
     #[cfg(any(test, feature = "test-hooks"))]
@@ -1072,6 +1112,9 @@ impl AppActor {
                         break;
                     };
                     self.pending_composer_acceptances.remove(&rejected_request_id);
+                }
+                _ = self.view_scopes.reader_work_ready() => {
+                    self.start_reader_work();
                 }
                 command = self.command_rx.recv() => {
                     let Some(command) = command else { break };
@@ -1810,6 +1853,107 @@ impl AppActor {
 
     /// Returns whether `AppState` changed.
     async fn handle_command(&mut self, envelope: CoreCommandEnvelope) -> bool {
+        match envelope {
+            CoreCommandEnvelope::ReaderPrepared(prepared) => {
+                self.handle_reader_prepared(prepared);
+                false
+            }
+            #[cfg(test)]
+            CoreCommandEnvelope::ResolveReceiptWindow {
+                source,
+                window,
+                response,
+            } => Box::pin(self.handle_resolve_receipt_window(source, window, response)).await,
+            CoreCommandEnvelope::ReadReceiptWindow {
+                source,
+                start,
+                limit,
+                response,
+            } => Box::pin(self.handle_read_receipt_window(source, start, limit, response)).await,
+            envelope => Box::pin(self.handle_public_command(envelope)).await,
+        }
+    }
+
+    #[cfg(test)]
+    async fn handle_resolve_receipt_window(
+        &mut self,
+        source: koushi_protocol::view::ReceiptSourceRef,
+        mut window: crate::timeline::RawReceiptWindow,
+        response: oneshot::Sender<
+            Result<crate::timeline::ResolvedReceiptWindow, crate::view_scope_lifecycle::ScopeError>,
+        >,
+    ) -> bool {
+        if response.is_closed() {
+            return false;
+        }
+        if let Err(error) = window.source_revision() {
+            let _ = response.send(Err(error));
+            return false;
+        }
+        let Some(_source_lease) = window.acquire_source() else {
+            let _ = response.send(Err(
+                crate::view_scope_lifecycle::ScopeError::SourceUnavailable,
+            ));
+            return false;
+        };
+        if let SessionState::Ready(info) = &self.state.session
+            && info.user_id == source.timeline.key.account_key.0
+        {
+            window.resolve_profiles(
+                &self.state.profile,
+                source.timeline.key.room_id(),
+                Some(&info.user_id),
+            );
+            // Receipt changes may race profile projection on another executor.
+            // Recheck before enqueue; scoped installation still needs its revision fence.
+            let window = window.into_resolved(koushi_state::resolve_catalog_locale(
+                &self.state.settings.values.locale,
+            ));
+            let current = window.acquire_source().is_some();
+            let _ = response.send(if current {
+                Ok(window)
+            } else {
+                Err(crate::view_scope_lifecycle::ScopeError::SourceUnavailable)
+            });
+        } else {
+            let _ = response.send(Err(
+                crate::view_scope_lifecycle::ScopeError::InactiveSession,
+            ));
+        }
+        false
+    }
+
+    async fn handle_read_receipt_window(
+        &mut self,
+        source: koushi_protocol::view::ReceiptSourceRef,
+        start: u64,
+        limit: koushi_protocol::view::ReaderWindowLimit,
+        response: oneshot::Sender<
+            Result<crate::timeline::RawReceiptWindow, crate::view_scope_lifecycle::ScopeError>,
+        >,
+    ) -> bool {
+        if response.is_closed() {
+            return false;
+        }
+        if is_ready_session_for_commands(&self.state.session) {
+            let _ = self
+                .account_actor
+                .send(AccountMessage::ReadReceiptWindow {
+                    source,
+                    start,
+                    limit,
+                    response,
+                })
+                .await;
+        } else {
+            let _ = response.send(Err(
+                crate::view_scope_lifecycle::ScopeError::InactiveSession,
+            ));
+        }
+        false
+    }
+
+    async fn handle_public_command(&mut self, envelope: CoreCommandEnvelope) -> bool {
         let (command, composer_permit, admission) = match envelope {
             CoreCommandEnvelope::Public {
                 command,
@@ -1818,6 +1962,14 @@ impl AppActor {
             } => (command, composer_permit, admission),
             #[cfg(any(test, feature = "test-hooks"))]
             CoreCommandEnvelope::Qa(command) => return self.handle_qa_command(command).await,
+            CoreCommandEnvelope::ReaderPrepared(_)
+            | CoreCommandEnvelope::ReadReceiptWindow { .. } => {
+                unreachable!("internal command routed to public handler")
+            }
+            #[cfg(test)]
+            CoreCommandEnvelope::ResolveReceiptWindow { .. } => {
+                unreachable!("internal command routed to public handler")
+            }
         };
         if let Some(admission) = admission {
             self.pending_command_admissions.push(admission);
@@ -1964,1209 +2116,1256 @@ impl AppActor {
                 }
                 projected_state_changed
             }
-            CoreCommand::App(app_command) => match app_command {
-                AppCommand::NavigateToEvent {
-                    request_id,
-                    room_id,
-                    event_id,
-                    source,
-                    missing_target_policy,
-                } => {
-                    self.handle_event_navigation_command(
-                        request_id,
-                        room_id,
-                        event_id,
-                        source,
-                        missing_target_policy,
-                    )
-                    .await
-                }
-                AppCommand::Shutdown { .. } => {
-                    unreachable!("shutdown is handled by the AppActor command disposition")
-                }
-                AppCommand::SetComposerReplyTarget {
-                    request_id,
-                    room_id,
-                    event_id,
-                } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::ComposerReplyTargetSelected {
+            CoreCommand::App(app_command) => {
+                Box::pin(async move {
+                    match app_command {
+                        AppCommand::NavigateToEvent {
+                            request_id,
                             room_id,
                             event_id,
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::CancelComposerReply { request_id } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::ComposerReplyCancelled)
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::SetComposerDraft {
-                    request_id,
-                    expected_account,
-                    room_id,
-                    document,
-                    revision,
-                } => {
-                    if !composer_draft_account_matches(&self.state, &expected_account) {
-                        return false;
-                    }
-                    let effects = self
-                        .reduce_app_action(AppAction::ComposerDraftChangedAtRevision {
+                            source,
+                            missing_target_policy,
+                        } => {
+                            self.handle_event_navigation_command(
+                                request_id,
+                                room_id,
+                                event_id,
+                                source,
+                                missing_target_policy,
+                            )
+                            .await
+                        }
+                        AppCommand::Shutdown { .. } => {
+                            unreachable!("shutdown is handled by the AppActor command disposition")
+                        }
+                        AppCommand::SetComposerReplyTarget {
+                            request_id,
+                            room_id,
+                            event_id,
+                        } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::ComposerReplyTargetSelected {
+                                    room_id,
+                                    event_id,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::CancelComposerReply { request_id } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::ComposerReplyCancelled)
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::SetComposerDraft {
+                            request_id,
+                            expected_account,
                             room_id,
                             document,
                             revision,
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::SetThreadComposerDraft {
-                    request_id,
-                    expected_account,
-                    room_id,
-                    root_event_id,
-                    document,
-                    revision,
-                } => {
-                    if !composer_draft_account_matches(&self.state, &expected_account) {
-                        return false;
-                    }
-                    let effects = self
-                        .reduce_app_action(AppAction::ThreadComposerDraftChangedAtRevision {
+                        } => {
+                            if !composer_draft_account_matches(&self.state, &expected_account) {
+                                return false;
+                            }
+                            let effects = self
+                                .reduce_app_action(AppAction::ComposerDraftChangedAtRevision {
+                                    room_id,
+                                    document,
+                                    revision,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::SetThreadComposerDraft {
+                            request_id,
+                            expected_account,
                             room_id,
                             root_event_id,
                             document,
                             revision,
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::AcceptComposerDraft {
-                    request_id,
-                    expected_account,
-                    target,
-                    submitted_revision,
-                } => {
-                    if !composer_draft_account_matches(&self.state, &expected_account) {
-                        return false;
-                    }
-                    if composer_draft_acceptance_would_exhaust(
-                        &self.state,
-                        &target,
-                        submitted_revision,
-                    ) {
-                        self.emit(CoreEvent::OperationFailed {
+                        } => {
+                            if !composer_draft_account_matches(&self.state, &expected_account) {
+                                return false;
+                            }
+                            let effects = self
+                                .reduce_app_action(
+                                    AppAction::ThreadComposerDraftChangedAtRevision {
+                                        room_id,
+                                        root_event_id,
+                                        document,
+                                        revision,
+                                    },
+                                )
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::AcceptComposerDraft {
                             request_id,
-                            failure: CoreFailure::TimelineOperationFailed {
-                                kind: TimelineFailureKind::ComposerRevisionExhausted,
-                            },
-                        });
-                        return false;
-                    }
-                    let effects = self
-                        .reduce_app_action(AppAction::ComposerDraftAccepted {
+                            expected_account,
                             target,
                             submitted_revision,
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::SetUploadStaging {
-                    request_id,
-                    target,
-                    items,
-                } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::UploadStagingChanged { target, items })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::UpdateStagedUploadCaption {
-                    request_id,
-                    target,
-                    staged_id,
-                    caption,
-                } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::UploadStagingCaptionChanged {
+                        } => {
+                            if !composer_draft_account_matches(&self.state, &expected_account) {
+                                return false;
+                            }
+                            if composer_draft_acceptance_would_exhaust(
+                                &self.state,
+                                &target,
+                                submitted_revision,
+                            ) {
+                                self.emit(CoreEvent::OperationFailed {
+                                    request_id,
+                                    failure: CoreFailure::TimelineOperationFailed {
+                                        kind: TimelineFailureKind::ComposerRevisionExhausted,
+                                    },
+                                });
+                                return false;
+                            }
+                            let effects = self
+                                .reduce_app_action(AppAction::ComposerDraftAccepted {
+                                    target,
+                                    submitted_revision,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::SetUploadStaging {
+                            request_id,
+                            target,
+                            items,
+                        } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::UploadStagingChanged {
+                                    target,
+                                    items,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::UpdateStagedUploadCaption {
+                            request_id,
                             target,
                             staged_id,
                             caption,
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::UpdateStagedUploadCompression {
-                    request_id,
-                    target,
-                    staged_id,
-                    compression_choice,
-                } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::UploadStagingCompressionChanged {
+                        } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::UploadStagingCaptionChanged {
+                                    target,
+                                    staged_id,
+                                    caption,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::UpdateStagedUploadCompression {
+                            request_id,
                             target,
                             staged_id,
                             compression_choice,
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::SelectStagedUploadOutput {
-                    request_id,
-                    target,
-                    staged_id,
-                    selection,
-                } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::UploadStagingOutputSelected {
+                        } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::UploadStagingCompressionChanged {
+                                    target,
+                                    staged_id,
+                                    compression_choice,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::SelectStagedUploadOutput {
+                            request_id,
                             target,
                             staged_id,
                             selection,
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::ClearUploadStaging { request_id, target } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::UploadStagingCleared { target })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::ScheduleSend {
-                    request_id,
-                    expected_account,
-                    room_id,
-                    thread_root_event_id,
-                    body,
-                    send_at_ms,
-                    draft_revision,
-                } => {
-                    if !composer_draft_account_matches(&self.state, &expected_account) {
-                        self.emit(CoreEvent::OperationFailed {
+                        } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::UploadStagingOutputSelected {
+                                    target,
+                                    staged_id,
+                                    selection,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::ClearUploadStaging { request_id, target } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::UploadStagingCleared { target })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::ScheduleSend {
                             request_id,
-                            failure: CoreFailure::SessionRequired,
-                        });
-                        return false;
-                    }
-                    let target = match &thread_root_event_id {
-                        Some(root_event_id) => ComposerTarget::Thread {
-                            room_id: room_id.clone(),
-                            root_event_id: root_event_id.clone(),
-                        },
-                        None => ComposerTarget::Main {
-                            room_id: room_id.clone(),
-                        },
-                    };
-                    if composer_draft_acceptance_would_exhaust(&self.state, &target, draft_revision)
-                    {
-                        self.emit(CoreEvent::OperationFailed {
-                            request_id,
-                            failure: CoreFailure::TimelineOperationFailed {
-                                kind: TimelineFailureKind::ComposerRevisionExhausted,
-                            },
-                        });
-                        return false;
-                    }
-                    // Issue #450: validate slash semantics BEFORE either
-                    // scheduled-send acceptance path clears the draft — a
-                    // recognized-but-unavailable command (/join, /invite) is
-                    // rejected terminally here instead of being scheduled and
-                    // entering a permanent dispatch/retry loop. The rejection
-                    // is keyed to the composer target so the UI routes the
-                    // notice to the right pane (no frontend correlation
-                    // needed).
-                    if let Err(kind) =
-                        crate::timeline::composer::validate_composer_body_for_timeline_send(&body)
-                    {
-                        if kind == TimelineFailureKind::UnsupportedSlashCommand
-                            && let Some(key) =
-                                self.composer_target_notice_key(&expected_account, &target)
-                        {
-                            self.emit(CoreEvent::Room(
+                            expected_account,
+                            room_id,
+                            thread_root_event_id,
+                            body,
+                            send_at_ms,
+                            draft_revision,
+                        } => {
+                            if !composer_draft_account_matches(&self.state, &expected_account) {
+                                self.emit(CoreEvent::OperationFailed {
+                                    request_id,
+                                    failure: CoreFailure::SessionRequired,
+                                });
+                                return false;
+                            }
+                            let target = match &thread_root_event_id {
+                                Some(root_event_id) => ComposerTarget::Thread {
+                                    room_id: room_id.clone(),
+                                    root_event_id: root_event_id.clone(),
+                                },
+                                None => ComposerTarget::Main {
+                                    room_id: room_id.clone(),
+                                },
+                            };
+                            if composer_draft_acceptance_would_exhaust(
+                                &self.state,
+                                &target,
+                                draft_revision,
+                            ) {
+                                self.emit(CoreEvent::OperationFailed {
+                                    request_id,
+                                    failure: CoreFailure::TimelineOperationFailed {
+                                        kind: TimelineFailureKind::ComposerRevisionExhausted,
+                                    },
+                                });
+                                return false;
+                            }
+                            // Issue #450: validate slash semantics BEFORE either
+                            // scheduled-send acceptance path clears the draft — a
+                            // recognized-but-unavailable command (/join, /invite) is
+                            // rejected terminally here instead of being scheduled and
+                            // entering a permanent dispatch/retry loop. The rejection
+                            // is keyed to the composer target so the UI routes the
+                            // notice to the right pane (no frontend correlation
+                            // needed).
+                            if let Err(kind) =
+                                crate::timeline::composer::validate_composer_body_for_timeline_send(
+                                    &body,
+                                )
+                            {
+                                if kind == TimelineFailureKind::UnsupportedSlashCommand
+                                    && let Some(key) =
+                                        self.composer_target_notice_key(&expected_account, &target)
+                                {
+                                    self.emit(CoreEvent::Room(
                                 koushi_protocol::event::RoomEvent::ComposerSlashCommandRejected {
                                     key,
                                     request_id,
                                 },
                             ));
-                        } else {
-                            self.emit(CoreEvent::OperationFailed {
-                                request_id,
-                                failure: CoreFailure::TimelineOperationFailed { kind },
-                            });
-                        }
-                        return false;
-                    }
-                    if self.state.scheduled_sends.capability
-                        != ScheduledSendCapability::LocalFallback
-                    {
-                        let scheduled_id = scheduled_send_id();
-                        let forwarded_permit = self.forward_composer_draft_permit(
-                            request_id,
-                            ComposerAcceptanceIdentity::ScheduledSend(scheduled_id.clone()),
-                            composer_permit
-                                .take()
-                                .expect("server schedule command must carry its admitted permit"),
-                        );
-                        if !self
-                            .account_actor
-                            .send(AccountMessage::ScheduleServerDelayedSend {
-                                request_id,
-                                expected_account,
-                                scheduled_id,
+                                } else {
+                                    self.emit(CoreEvent::OperationFailed {
+                                        request_id,
+                                        failure: CoreFailure::TimelineOperationFailed { kind },
+                                    });
+                                }
+                                return false;
+                            }
+                            if self.state.scheduled_sends.capability
+                                != ScheduledSendCapability::LocalFallback
+                            {
+                                let scheduled_id = scheduled_send_id();
+                                let forwarded_permit = self.forward_composer_draft_permit(
+                                    request_id,
+                                    ComposerAcceptanceIdentity::ScheduledSend(scheduled_id.clone()),
+                                    composer_permit.take().expect(
+                                        "server schedule command must carry its admitted permit",
+                                    ),
+                                );
+                                if !self
+                                    .account_actor
+                                    .send(AccountMessage::ScheduleServerDelayedSend {
+                                        request_id,
+                                        expected_account,
+                                        scheduled_id,
+                                        room_id,
+                                        thread_root_event_id,
+                                        body,
+                                        send_at_ms,
+                                        draft_revision,
+                                        composer_permit: forwarded_permit,
+                                    })
+                                    .await
+                                {
+                                    self.emit(CoreEvent::OperationFailed {
+                                        request_id,
+                                        failure: CoreFailure::TimelineOperationFailed {
+                                            kind: TimelineFailureKind::QueueOverflow,
+                                        },
+                                    });
+                                }
+                                return false;
+                            }
+                            let capability_effects = self
+                                .reduce_app_action(AppAction::ScheduledSendCapabilityChanged {
+                                    capability: ScheduledSendCapability::LocalFallback,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, capability_effects)
+                                .await;
+                            let item = ScheduledSendItem {
+                                scheduled_id: scheduled_send_id(),
                                 room_id,
                                 thread_root_event_id,
                                 body,
                                 send_at_ms,
-                                draft_revision,
-                                composer_permit: forwarded_permit,
-                            })
-                            .await
-                        {
-                            self.emit(CoreEvent::OperationFailed {
-                                request_id,
-                                failure: CoreFailure::TimelineOperationFailed {
-                                    kind: TimelineFailureKind::QueueOverflow,
-                                },
-                            });
+                                handle: ScheduledSendHandle::Local,
+                                is_dispatching: false,
+                            };
+                            let effects = self
+                                .reduce_app_action(AppAction::ScheduledSendCreatedAtRevision {
+                                    item,
+                                    draft_revision,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
                         }
-                        return false;
-                    }
-                    let capability_effects = self
-                        .reduce_app_action(AppAction::ScheduledSendCapabilityChanged {
-                            capability: ScheduledSendCapability::LocalFallback,
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, capability_effects)
-                        .await;
-                    let item = ScheduledSendItem {
-                        scheduled_id: scheduled_send_id(),
-                        room_id,
-                        thread_root_event_id,
-                        body,
-                        send_at_ms,
-                        handle: ScheduledSendHandle::Local,
-                        is_dispatching: false,
-                    };
-                    let effects = self
-                        .reduce_app_action(AppAction::ScheduledSendCreatedAtRevision {
-                            item,
-                            draft_revision,
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::CancelScheduledSend {
-                    request_id,
-                    scheduled_id,
-                } => {
-                    if let Some(ScheduledSendHandle::Server { delay_id }) = self
-                        .state
-                        .scheduled_sends
-                        .items
-                        .get(&scheduled_id)
-                        .map(|item| item.handle.clone())
-                    {
-                        if !self
-                            .account_actor
-                            .send(AccountMessage::CancelServerDelayedSend {
-                                request_id,
-                                scheduled_id,
-                                delay_id,
-                            })
-                            .await
-                        {
-                            self.emit(CoreEvent::OperationFailed {
-                                request_id,
-                                failure: CoreFailure::TimelineOperationFailed {
-                                    kind: TimelineFailureKind::QueueOverflow,
-                                },
-                            });
-                        }
-                        return false;
-                    }
-                    let effects = self
-                        .reduce_app_action(AppAction::ScheduledSendCancelled { scheduled_id })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::RescheduleScheduledSend {
-                    request_id,
-                    scheduled_id,
-                    body,
-                    send_at_ms,
-                } => {
-                    // Issue #450: rescheduling must apply the same slash
-                    // validation as the initial schedule — otherwise a
-                    // recognized-but-unavailable command (/join, /invite)
-                    // could be stored and enter the permanent dispatch/retry
-                    // loop. Reject terminally and leave the existing item
-                    // untouched. Scheduled items are edited from the main-pane
-                    // scheduled list (thread items included), so the notice is
-                    // keyed to the item's room — visible without the thread
-                    // being open.
-                    if let Err(kind) =
-                        crate::timeline::composer::validate_composer_body_for_timeline_send(&body)
-                    {
-                        let notice_key =
-                            composer_draft_session_key(&self.state).and_then(|account| {
-                                self.state
-                                    .scheduled_sends
-                                    .items
-                                    .get(&scheduled_id)
-                                    .and_then(|item| {
-                                        self.composer_target_notice_key(
-                                            &account,
-                                            &ComposerTarget::Main {
-                                                room_id: item.room_id.clone(),
-                                            },
-                                        )
+                        AppCommand::CancelScheduledSend {
+                            request_id,
+                            scheduled_id,
+                        } => {
+                            if let Some(ScheduledSendHandle::Server { delay_id }) = self
+                                .state
+                                .scheduled_sends
+                                .items
+                                .get(&scheduled_id)
+                                .map(|item| item.handle.clone())
+                            {
+                                if !self
+                                    .account_actor
+                                    .send(AccountMessage::CancelServerDelayedSend {
+                                        request_id,
+                                        scheduled_id,
+                                        delay_id,
                                     })
-                            });
-                        if kind == TimelineFailureKind::UnsupportedSlashCommand
-                            && let Some(key) = notice_key
-                        {
-                            self.emit(CoreEvent::Room(
+                                    .await
+                                {
+                                    self.emit(CoreEvent::OperationFailed {
+                                        request_id,
+                                        failure: CoreFailure::TimelineOperationFailed {
+                                            kind: TimelineFailureKind::QueueOverflow,
+                                        },
+                                    });
+                                }
+                                return false;
+                            }
+                            let effects = self
+                                .reduce_app_action(AppAction::ScheduledSendCancelled {
+                                    scheduled_id,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::RescheduleScheduledSend {
+                            request_id,
+                            scheduled_id,
+                            body,
+                            send_at_ms,
+                        } => {
+                            // Issue #450: rescheduling must apply the same slash
+                            // validation as the initial schedule — otherwise a
+                            // recognized-but-unavailable command (/join, /invite)
+                            // could be stored and enter the permanent dispatch/retry
+                            // loop. Reject terminally and leave the existing item
+                            // untouched. Scheduled items are edited from the main-pane
+                            // scheduled list (thread items included), so the notice is
+                            // keyed to the item's room — visible without the thread
+                            // being open.
+                            if let Err(kind) =
+                                crate::timeline::composer::validate_composer_body_for_timeline_send(
+                                    &body,
+                                )
+                            {
+                                let notice_key =
+                                    composer_draft_session_key(&self.state).and_then(|account| {
+                                        self.state
+                                            .scheduled_sends
+                                            .items
+                                            .get(&scheduled_id)
+                                            .and_then(|item| {
+                                                self.composer_target_notice_key(
+                                                    &account,
+                                                    &ComposerTarget::Main {
+                                                        room_id: item.room_id.clone(),
+                                                    },
+                                                )
+                                            })
+                                    });
+                                if kind == TimelineFailureKind::UnsupportedSlashCommand
+                                    && let Some(key) = notice_key
+                                {
+                                    self.emit(CoreEvent::Room(
                                 koushi_protocol::event::RoomEvent::ComposerSlashCommandRejected {
                                     key,
                                     request_id,
                                 },
                             ));
-                        } else {
-                            self.emit(CoreEvent::OperationFailed {
-                                request_id,
-                                failure: CoreFailure::TimelineOperationFailed { kind },
-                            });
+                                } else {
+                                    self.emit(CoreEvent::OperationFailed {
+                                        request_id,
+                                        failure: CoreFailure::TimelineOperationFailed { kind },
+                                    });
+                                }
+                                return false;
+                            }
+                            if let Some(item) =
+                                self.state.scheduled_sends.items.get(&scheduled_id).cloned()
+                                && let ScheduledSendHandle::Server { delay_id } = item.handle
+                            {
+                                if !self
+                                    .account_actor
+                                    .send(AccountMessage::RescheduleServerDelayedSend {
+                                        request_id,
+                                        scheduled_id,
+                                        room_id: item.room_id,
+                                        thread_root_event_id: item.thread_root_event_id,
+                                        body,
+                                        delay_id,
+                                        send_at_ms,
+                                    })
+                                    .await
+                                {
+                                    self.emit(CoreEvent::OperationFailed {
+                                        request_id,
+                                        failure: CoreFailure::TimelineOperationFailed {
+                                            kind: TimelineFailureKind::QueueOverflow,
+                                        },
+                                    });
+                                }
+                                return false;
+                            }
+                            let effects = self
+                                .reduce_app_action(AppAction::ScheduledSendRescheduled {
+                                    scheduled_id,
+                                    body,
+                                    send_at_ms,
+                                    handle: ScheduledSendHandle::Local,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
                         }
-                        return false;
-                    }
-                    if let Some(item) = self.state.scheduled_sends.items.get(&scheduled_id).cloned()
-                        && let ScheduledSendHandle::Server { delay_id } = item.handle
-                    {
-                        if !self
-                            .account_actor
-                            .send(AccountMessage::RescheduleServerDelayedSend {
-                                request_id,
-                                scheduled_id,
-                                room_id: item.room_id,
-                                thread_root_event_id: item.thread_root_event_id,
-                                body,
-                                delay_id,
-                                send_at_ms,
-                            })
-                            .await
-                        {
-                            self.emit(CoreEvent::OperationFailed {
-                                request_id,
-                                failure: CoreFailure::TimelineOperationFailed {
-                                    kind: TimelineFailureKind::QueueOverflow,
-                                },
-                            });
-                        }
-                        return false;
-                    }
-                    let effects = self
-                        .reduce_app_action(AppAction::ScheduledSendRescheduled {
-                            scheduled_id,
-                            body,
-                            send_at_ms,
-                            handle: ScheduledSendHandle::Local,
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::OpenThread {
-                    request_id,
-                    room_id,
-                    root_event_id,
-                    intent,
-                } => {
-                    let replaced_thread_key =
-                        self.unsubscribe_replaced_thread_timeline(&room_id, &root_event_id);
-                    let effects = self
-                        .reduce_app_action(AppAction::OpenThread {
+                        AppCommand::OpenThread {
+                            request_id,
                             room_id,
                             root_event_id,
                             intent,
-                        })
-                        .await;
-                    if effects_open_thread_timeline(&effects) {
-                        if let Some(key) = replaced_thread_key {
-                            self.send_timeline_command_or_fail(
-                                request_id,
-                                TimelineCommand::Unsubscribe { request_id, key },
-                            )
-                            .await;
+                        } => {
+                            let replaced_thread_key =
+                                self.unsubscribe_replaced_thread_timeline(&room_id, &root_event_id);
+                            let effects = self
+                                .reduce_app_action(AppAction::OpenThread {
+                                    room_id,
+                                    root_event_id,
+                                    intent,
+                                })
+                                .await;
+                            if effects_open_thread_timeline(&effects) {
+                                if let Some(key) = replaced_thread_key {
+                                    self.send_timeline_command_or_fail(
+                                        request_id,
+                                        TimelineCommand::Unsubscribe { request_id, key },
+                                    )
+                                    .await;
+                                }
+                            }
+                            self.handle_app_effects(request_id, effects).await;
+                            true
                         }
-                    }
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::CloseThread { request_id } => {
-                    let thread_key = self.current_thread_timeline_key();
-                    let effects = self.reduce_app_action(AppAction::CloseThread).await;
-                    if let Some(key) = thread_key {
-                        self.send_timeline_command_or_fail(
-                            request_id,
-                            TimelineCommand::Unsubscribe { request_id, key },
-                        )
-                        .await;
-                    }
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::OpenFocusedContext {
-                    request_id,
-                    room_id,
-                    event_id,
-                } => {
-                    self.pending_focused_navigation = None;
-                    if !self
-                        .ensure_room_event_cached(request_id, &room_id, &event_id)
-                        .await
-                    {
-                        self.emit(CoreEvent::OperationFailed {
-                            request_id,
-                            failure: CoreFailure::TimelineOperationFailed {
-                                kind: TimelineFailureKind::Timeout,
-                            },
-                        });
-                        return true;
-                    }
-                    let replaced_focused_key =
-                        self.unsubscribe_replaced_focused_context_timeline(&room_id, &event_id);
-                    let effects = self
-                        .reduce_app_action(AppAction::OpenFocusedContext { room_id, event_id })
-                        .await;
-                    if effects_open_focused_timeline(&effects) {
-                        if let Some(key) = replaced_focused_key {
-                            self.send_timeline_command_or_fail(
-                                request_id,
-                                TimelineCommand::Unsubscribe { request_id, key },
-                            )
-                            .await;
+                        AppCommand::CloseThread { request_id } => {
+                            let thread_key = self.current_thread_timeline_key();
+                            let effects = self.reduce_app_action(AppAction::CloseThread).await;
+                            if let Some(key) = thread_key {
+                                self.send_timeline_command_or_fail(
+                                    request_id,
+                                    TimelineCommand::Unsubscribe { request_id, key },
+                                )
+                                .await;
+                            }
+                            self.handle_app_effects(request_id, effects).await;
+                            true
                         }
-                    } else {
-                        self.pending_focused_navigation = None;
-                    }
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::OpenAnchoredTimeline {
-                    request_id,
-                    room_id,
-                    event_id,
-                    allow_live_fallback,
-                } => {
-                    if !self
-                        .ensure_room_event_cached(request_id, &room_id, &event_id)
-                        .await
-                    {
-                        self.emit(CoreEvent::OperationFailed {
+                        AppCommand::OpenFocusedContext {
                             request_id,
-                            failure: CoreFailure::TimelineOperationFailed {
-                                kind: TimelineFailureKind::Timeout,
-                            },
-                        });
-                        return true;
-                    }
-                    let replaced_focused_key =
-                        self.unsubscribe_replaced_focused_context_timeline(&room_id, &event_id);
-                    let Some(account_key) = self.current_account_key() else {
-                        self.emit(CoreEvent::OperationFailed {
-                            request_id,
-                            failure: CoreFailure::SessionRequired,
-                        });
-                        return true;
-                    };
-                    let key = TimelineKey {
-                        account_key,
-                        kind: TimelineKind::Focused {
-                            room_id: room_id.clone(),
-                            event_id: event_id.clone(),
-                        },
-                    };
-                    self.pending_focused_navigation = Some(PendingFocusedNavigation {
-                        projection_request_id: request_id,
-                        key,
-                        room_id: room_id.clone(),
-                        event_id: event_id.clone(),
-                        allow_live_fallback,
-                        generation: None,
-                    });
-                    let effects = self
-                        .reduce_app_action(AppAction::OpenFocusedContext { room_id, event_id })
-                        .await;
-                    if effects_open_focused_timeline(&effects) {
-                        if let Some(key) = replaced_focused_key {
-                            self.send_timeline_command_or_fail(
-                                request_id,
-                                TimelineCommand::Unsubscribe { request_id, key },
-                            )
-                            .await;
-                        }
-                    } else {
-                        self.pending_focused_navigation = None;
-                    }
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::EnterAnchoredTimeline {
-                    request_id,
-                    room_id,
-                    event_id,
-                } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::EnterAnchoredTimeline { room_id, event_id })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::RepairRoomTimeline {
-                    request_id,
-                    room_id,
-                } => {
-                    let Some(account_key) = self.current_account_key() else {
-                        self.emit(CoreEvent::OperationFailed {
-                            request_id,
-                            failure: CoreFailure::SessionRequired,
-                        });
-                        return true;
-                    };
-                    let _ = self
-                        .account_actor
-                        .send(AccountMessage::RepairRoomTimeline {
-                            request_id,
-                            account_key,
                             room_id,
-                        })
-                        .await;
-                    true
-                }
-                AppCommand::OpenTimelineAtTimestamp {
-                    request_id,
-                    room_id,
-                    timestamp_ms,
-                } => {
-                    let focused_key = self.current_focused_context_timeline_key();
-                    let effects = self.reduce_app_action(AppAction::CloseFocusedContext).await;
-                    if let Some(key) = focused_key {
-                        self.send_timeline_command_or_fail(
+                            event_id,
+                        } => {
+                            self.pending_focused_navigation = None;
+                            if !self
+                                .ensure_room_event_cached(request_id, &room_id, &event_id)
+                                .await
+                            {
+                                self.emit(CoreEvent::OperationFailed {
+                                    request_id,
+                                    failure: CoreFailure::TimelineOperationFailed {
+                                        kind: TimelineFailureKind::Timeout,
+                                    },
+                                });
+                                return true;
+                            }
+                            let replaced_focused_key = self
+                                .unsubscribe_replaced_focused_context_timeline(&room_id, &event_id);
+                            let effects = self
+                                .reduce_app_action(AppAction::OpenFocusedContext {
+                                    room_id,
+                                    event_id,
+                                })
+                                .await;
+                            if effects_open_focused_timeline(&effects) {
+                                if let Some(key) = replaced_focused_key {
+                                    self.send_timeline_command_or_fail(
+                                        request_id,
+                                        TimelineCommand::Unsubscribe { request_id, key },
+                                    )
+                                    .await;
+                                }
+                            } else {
+                                self.pending_focused_navigation = None;
+                            }
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::OpenAnchoredTimeline {
                             request_id,
-                            TimelineCommand::Unsubscribe { request_id, key },
-                        )
-                        .await;
-                    }
-                    self.handle_app_effects(request_id, effects).await;
-                    if let Some(event_id) = self
-                        .activity_projection
-                        .event_at_or_after(&room_id, timestamp_ms)
-                    {
-                        // #161: jump-to-date reuses the focused-context timeline
-                        // subscription lifecycle but renders it in the MAIN pane
-                        // (marked by `main_timeline_anchor`), not the right panel.
-                        let Some(account_key) = self.current_account_key() else {
-                            self.emit(CoreEvent::OperationFailed {
-                                request_id,
-                                failure: CoreFailure::SessionRequired,
-                            });
-                            return true;
-                        };
-                        self.pending_focused_navigation = Some(PendingFocusedNavigation {
-                            projection_request_id: request_id,
-                            key: TimelineKey {
+                            room_id,
+                            event_id,
+                            allow_live_fallback,
+                        } => {
+                            if !self
+                                .ensure_room_event_cached(request_id, &room_id, &event_id)
+                                .await
+                            {
+                                self.emit(CoreEvent::OperationFailed {
+                                    request_id,
+                                    failure: CoreFailure::TimelineOperationFailed {
+                                        kind: TimelineFailureKind::Timeout,
+                                    },
+                                });
+                                return true;
+                            }
+                            let replaced_focused_key = self
+                                .unsubscribe_replaced_focused_context_timeline(&room_id, &event_id);
+                            let Some(account_key) = self.current_account_key() else {
+                                self.emit(CoreEvent::OperationFailed {
+                                    request_id,
+                                    failure: CoreFailure::SessionRequired,
+                                });
+                                return true;
+                            };
+                            let key = TimelineKey {
                                 account_key,
                                 kind: TimelineKind::Focused {
                                     room_id: room_id.clone(),
                                     event_id: event_id.clone(),
                                 },
-                            },
-                            room_id: room_id.clone(),
-                            event_id: event_id.clone(),
-                            allow_live_fallback: true,
-                            generation: None,
-                        });
-                        let effects = self
-                            .reduce_app_action(AppAction::OpenFocusedContext {
+                            };
+                            self.pending_focused_navigation = Some(PendingFocusedNavigation {
+                                projection_request_id: request_id,
+                                key,
                                 room_id: room_id.clone(),
                                 event_id: event_id.clone(),
-                            })
-                            .await;
-                        self.handle_app_effects(request_id, effects).await;
-                        return true;
-                    }
-                    self.pending_date_navigation_request_id = Some(request_id);
-                    let _ = self
-                        .account_actor
-                        .send(AccountMessage::OpenTimelineAtTimestamp {
+                                allow_live_fallback,
+                                generation: None,
+                            });
+                            let effects = self
+                                .reduce_app_action(AppAction::OpenFocusedContext {
+                                    room_id,
+                                    event_id,
+                                })
+                                .await;
+                            if effects_open_focused_timeline(&effects) {
+                                if let Some(key) = replaced_focused_key {
+                                    self.send_timeline_command_or_fail(
+                                        request_id,
+                                        TimelineCommand::Unsubscribe { request_id, key },
+                                    )
+                                    .await;
+                                }
+                            } else {
+                                self.pending_focused_navigation = None;
+                            }
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::EnterAnchoredTimeline {
+                            request_id,
+                            room_id,
+                            event_id,
+                        } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::EnterAnchoredTimeline {
+                                    room_id,
+                                    event_id,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::RepairRoomTimeline {
+                            request_id,
+                            room_id,
+                        } => {
+                            let Some(account_key) = self.current_account_key() else {
+                                self.emit(CoreEvent::OperationFailed {
+                                    request_id,
+                                    failure: CoreFailure::SessionRequired,
+                                });
+                                return true;
+                            };
+                            let _ = self
+                                .account_actor
+                                .send(AccountMessage::RepairRoomTimeline {
+                                    request_id,
+                                    account_key,
+                                    room_id,
+                                })
+                                .await;
+                            true
+                        }
+                        AppCommand::OpenTimelineAtTimestamp {
                             request_id,
                             room_id,
                             timestamp_ms,
-                        })
-                        .await;
-                    true
-                }
-                AppCommand::TimelineScrollAnchorUpdated {
-                    request_id,
-                    room_id,
-                    anchor,
-                } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::TimelineScrollAnchorUpdated {
-                            room_id,
-                            anchor,
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::CloseFocusedContext { request_id } => {
-                    self.pending_focused_navigation = None;
-                    let focused_key = self.current_focused_context_timeline_key();
-                    let effects = self.reduce_app_action(AppAction::CloseFocusedContext).await;
-                    if let Some(key) = focused_key {
-                        self.send_timeline_command_or_fail(
-                            request_id,
-                            TimelineCommand::Unsubscribe { request_id, key },
-                        )
-                        .await;
-                    }
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::CloseSearch { request_id } => {
-                    let effects = self.reduce_app_action(AppAction::SearchClosed).await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::OpenInviteWorkflow {
-                    request_id,
-                    room_id,
-                } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::InviteWorkflowOpened { room_id })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::CloseInviteWorkflow { request_id } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::InviteWorkflowClosed)
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::SearchInviteTargets {
-                    request_id,
-                    room_id,
-                    query,
-                } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::InviteTargetQueryChanged { room_id, query })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::SetInviteScope {
-                    request_id,
-                    room_id,
-                    scope,
-                } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::InviteScopeSelected { room_id, scope })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::SelectInviteTarget {
-                    request_id,
-                    room_id,
-                    user_id,
-                } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::InviteTargetSelected { room_id, user_id })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::RemoveInviteTarget {
-                    request_id,
-                    user_id,
-                } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::InviteTargetRemoved { user_id })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::UpdateSettings { request_id, patch } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::SettingsUpdateRequested {
-                            request_id: request_id.sequence,
-                            patch,
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::ImportLegacySettings { request_id, patch } => {
-                    if self.settings_load_status == SettingsLoadStatus::Failed {
-                        self.emit(CoreEvent::OperationFailed {
-                            request_id,
-                            failure: CoreFailure::StoreUnavailable,
-                        });
-                        true
-                    } else if self
-                        .state
-                        .settings
-                        .values
-                        .legacy_frontend_preferences_imported
-                    {
-                        true
-                    } else {
-                        let mut values = self.state.settings.values.clone();
-                        values.apply_patch(patch);
-                        values.legacy_frontend_preferences_imported = true;
-                        let projected_values = values.clone();
-                        let store = self.settings_store.clone();
-                        let saved = executor::spawn_blocking(move || store.save(&values)).await;
-                        match saved {
-                            Ok(Ok(())) => {
+                        } => {
+                            let focused_key = self.current_focused_context_timeline_key();
+                            let effects =
+                                self.reduce_app_action(AppAction::CloseFocusedContext).await;
+                            if let Some(key) = focused_key {
+                                self.send_timeline_command_or_fail(
+                                    request_id,
+                                    TimelineCommand::Unsubscribe { request_id, key },
+                                )
+                                .await;
+                            }
+                            self.handle_app_effects(request_id, effects).await;
+                            if let Some(event_id) = self
+                                .activity_projection
+                                .event_at_or_after(&room_id, timestamp_ms)
+                            {
+                                // #161: jump-to-date reuses the focused-context timeline
+                                // subscription lifecycle but renders it in the MAIN pane
+                                // (marked by `main_timeline_anchor`), not the right panel.
+                                let Some(account_key) = self.current_account_key() else {
+                                    self.emit(CoreEvent::OperationFailed {
+                                        request_id,
+                                        failure: CoreFailure::SessionRequired,
+                                    });
+                                    return true;
+                                };
+                                self.pending_focused_navigation = Some(PendingFocusedNavigation {
+                                    projection_request_id: request_id,
+                                    key: TimelineKey {
+                                        account_key,
+                                        kind: TimelineKind::Focused {
+                                            room_id: room_id.clone(),
+                                            event_id: event_id.clone(),
+                                        },
+                                    },
+                                    room_id: room_id.clone(),
+                                    event_id: event_id.clone(),
+                                    allow_live_fallback: true,
+                                    generation: None,
+                                });
                                 let effects = self
-                                    .reduce_app_action(AppAction::SettingsLoaded {
-                                        values: projected_values,
+                                    .reduce_app_action(AppAction::OpenFocusedContext {
+                                        room_id: room_id.clone(),
+                                        event_id: event_id.clone(),
                                     })
                                     .await;
                                 self.handle_app_effects(request_id, effects).await;
+                                return true;
                             }
-                            Ok(Err(_)) | Err(_) => {
+                            self.pending_date_navigation_request_id = Some(request_id);
+                            let _ = self
+                                .account_actor
+                                .send(AccountMessage::OpenTimelineAtTimestamp {
+                                    request_id,
+                                    room_id,
+                                    timestamp_ms,
+                                })
+                                .await;
+                            true
+                        }
+                        AppCommand::TimelineScrollAnchorUpdated {
+                            request_id,
+                            room_id,
+                            anchor,
+                        } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::TimelineScrollAnchorUpdated {
+                                    room_id,
+                                    anchor,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::CloseFocusedContext { request_id } => {
+                            self.pending_focused_navigation = None;
+                            let focused_key = self.current_focused_context_timeline_key();
+                            let effects =
+                                self.reduce_app_action(AppAction::CloseFocusedContext).await;
+                            if let Some(key) = focused_key {
+                                self.send_timeline_command_or_fail(
+                                    request_id,
+                                    TimelineCommand::Unsubscribe { request_id, key },
+                                )
+                                .await;
+                            }
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::CloseSearch { request_id } => {
+                            let effects = self.reduce_app_action(AppAction::SearchClosed).await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::OpenInviteWorkflow {
+                            request_id,
+                            room_id,
+                        } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::InviteWorkflowOpened { room_id })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::CloseInviteWorkflow { request_id } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::InviteWorkflowClosed)
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::SearchInviteTargets {
+                            request_id,
+                            room_id,
+                            query,
+                        } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::InviteTargetQueryChanged {
+                                    room_id,
+                                    query,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::SetInviteScope {
+                            request_id,
+                            room_id,
+                            scope,
+                        } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::InviteScopeSelected {
+                                    room_id,
+                                    scope,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::SelectInviteTarget {
+                            request_id,
+                            room_id,
+                            user_id,
+                        } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::InviteTargetSelected {
+                                    room_id,
+                                    user_id,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::RemoveInviteTarget {
+                            request_id,
+                            user_id,
+                        } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::InviteTargetRemoved { user_id })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::UpdateSettings { request_id, patch } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::SettingsUpdateRequested {
+                                    request_id: request_id.sequence,
+                                    patch,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::ImportLegacySettings { request_id, patch } => {
+                            if self.settings_load_status == SettingsLoadStatus::Failed {
                                 self.emit(CoreEvent::OperationFailed {
                                     request_id,
                                     failure: CoreFailure::StoreUnavailable,
                                 });
+                                true
+                            } else if self
+                                .state
+                                .settings
+                                .values
+                                .legacy_frontend_preferences_imported
+                            {
+                                true
+                            } else {
+                                let mut values = self.state.settings.values.clone();
+                                values.apply_patch(patch);
+                                values.legacy_frontend_preferences_imported = true;
+                                let projected_values = values.clone();
+                                let store = self.settings_store.clone();
+                                let saved =
+                                    executor::spawn_blocking(move || store.save(&values)).await;
+                                match saved {
+                                    Ok(Ok(())) => {
+                                        let effects = self
+                                            .reduce_app_action(AppAction::SettingsLoaded {
+                                                values: projected_values,
+                                            })
+                                            .await;
+                                        self.handle_app_effects(request_id, effects).await;
+                                    }
+                                    Ok(Err(_)) | Err(_) => {
+                                        self.emit(CoreEvent::OperationFailed {
+                                            request_id,
+                                            failure: CoreFailure::StoreUnavailable,
+                                        });
+                                    }
+                                }
+                                true
                             }
                         }
-                        true
-                    }
-                }
-                AppCommand::UpdateNavigationPreference { request_id, update } => {
-                    self.handle_navigation_preference_command(request_id, update)
-                        .await;
-                    true
-                }
-                AppCommand::RebuildSearchIndex { request_id } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::SearchIndexRebuildRequested {
-                            request_id: request_id.sequence,
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::SetRoomUrlPreviewOverride {
-                    request_id,
-                    room_id,
-                    enabled,
-                } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::RoomUrlPreviewOverrideSet {
-                            request_id: request_id.sequence,
+                        AppCommand::UpdateNavigationPreference { request_id, update } => {
+                            self.handle_navigation_preference_command(request_id, update)
+                                .await;
+                            true
+                        }
+                        AppCommand::RebuildSearchIndex { request_id } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::SearchIndexRebuildRequested {
+                                    request_id: request_id.sequence,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::SetRoomUrlPreviewOverride {
+                            request_id,
                             room_id,
                             enabled,
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::OpenActivity { request_id } => {
-                    let previous_tab = match self.state.activity {
-                        ActivityState::Closed { last_selected_tab } => last_selected_tab,
-                        ActivityState::Opening { tab, .. } => {
-                            record_activity_transition(
-                                "open_applied",
-                                request_id,
-                                "already_opening",
-                                tab,
-                                tab,
-                            );
-                            return true;
+                        } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::RoomUrlPreviewOverrideSet {
+                                    request_id: request_id.sequence,
+                                    room_id,
+                                    enabled,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
                         }
-                        ActivityState::Open { active_tab, .. } => {
+                        AppCommand::OpenActivity { request_id } => {
+                            let previous_tab = match self.state.activity {
+                                ActivityState::Closed { last_selected_tab } => last_selected_tab,
+                                ActivityState::Opening { tab, .. } => {
+                                    record_activity_transition(
+                                        "open_applied",
+                                        request_id,
+                                        "already_opening",
+                                        tab,
+                                        tab,
+                                    );
+                                    return true;
+                                }
+                                ActivityState::Open { active_tab, .. } => {
+                                    record_activity_transition(
+                                        "open_applied",
+                                        request_id,
+                                        "already_open",
+                                        active_tab,
+                                        active_tab,
+                                    );
+                                    return true;
+                                }
+                            };
+                            let effects = self
+                                .reduce_app_action(AppAction::ActivityOpened {
+                                    request_id: request_id.sequence,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            let opening_tab = match self.state.activity {
+                                ActivityState::Opening {
+                                    request_id: active_request_id,
+                                    tab,
+                                } if active_request_id == request_id.sequence => tab,
+                                _ => {
+                                    record_activity_transition(
+                                        "open_applied",
+                                        request_id,
+                                        "stale",
+                                        previous_tab,
+                                        previous_tab,
+                                    );
+                                    return true;
+                                }
+                            };
+                            let (recent, unread, excluded_room_ids) =
+                                self.activity_projection.snapshot(&self.state);
+                            let snapshot_effects = self
+                                .reduce_app_action(AppAction::ActivitySnapshotLoaded {
+                                    request_id: request_id.sequence,
+                                    active_tab: opening_tab,
+                                    recent: recent.clone(),
+                                    unread: unread.clone(),
+                                    excluded_room_ids,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, snapshot_effects).await;
+                            self.start_activity_resolution().await;
+                            self.emit(CoreEvent::Activity(ActivityEvent::Opened { request_id }));
+                            let (recent, unread, selected_tab) = match &self.state.activity {
+                                ActivityState::Open {
+                                    active_tab,
+                                    recent,
+                                    unread,
+                                    ..
+                                } => (recent.clone(), unread.clone(), *active_tab),
+                                _ => (recent, unread, opening_tab),
+                            };
                             record_activity_transition(
                                 "open_applied",
                                 request_id,
-                                "already_open",
-                                active_tab,
-                                active_tab,
-                            );
-                            return true;
-                        }
-                    };
-                    let effects = self
-                        .reduce_app_action(AppAction::ActivityOpened {
-                            request_id: request_id.sequence,
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    let opening_tab = match self.state.activity {
-                        ActivityState::Opening {
-                            request_id: active_request_id,
-                            tab,
-                        } if active_request_id == request_id.sequence => tab,
-                        _ => {
-                            record_activity_transition(
-                                "open_applied",
-                                request_id,
-                                "stale",
+                                "opened",
                                 previous_tab,
-                                previous_tab,
+                                selected_tab,
                             );
-                            return true;
+                            self.emit(CoreEvent::Activity(ActivityEvent::SnapshotLoaded {
+                                request_id,
+                                active_tab: selected_tab,
+                                recent,
+                                unread,
+                            }));
+                            true
                         }
-                    };
-                    let (recent, unread, excluded_room_ids) =
-                        self.activity_projection.snapshot(&self.state);
-                    let snapshot_effects = self
-                        .reduce_app_action(AppAction::ActivitySnapshotLoaded {
-                            request_id: request_id.sequence,
-                            active_tab: opening_tab,
-                            recent: recent.clone(),
-                            unread: unread.clone(),
-                            excluded_room_ids,
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, snapshot_effects).await;
-                    self.start_activity_resolution().await;
-                    self.emit(CoreEvent::Activity(ActivityEvent::Opened { request_id }));
-                    let (recent, unread, selected_tab) = match &self.state.activity {
-                        ActivityState::Open {
-                            active_tab,
-                            recent,
-                            unread,
-                            ..
-                        } => (recent.clone(), unread.clone(), *active_tab),
-                        _ => (recent, unread, opening_tab),
-                    };
-                    record_activity_transition(
-                        "open_applied",
-                        request_id,
-                        "opened",
-                        previous_tab,
-                        selected_tab,
-                    );
-                    self.emit(CoreEvent::Activity(ActivityEvent::SnapshotLoaded {
-                        request_id,
-                        active_tab: selected_tab,
-                        recent,
-                        unread,
-                    }));
-                    true
-                }
-                AppCommand::CloseActivity { request_id } => {
-                    let _ = self
-                        .account_actor
-                        .send(AccountMessage::CancelActivityResolution)
-                        .await;
-                    let effects = self.reduce_app_action(AppAction::ActivityClosed).await;
-                    self.handle_app_effects(request_id, effects).await;
-                    self.emit(CoreEvent::Activity(ActivityEvent::Closed { request_id }));
-                    true
-                }
-                AppCommand::SetActivityTab { request_id, tab } => {
-                    let previous_tab = match self.state.activity {
-                        ActivityState::Open { active_tab, .. } => Some(active_tab),
-                        _ => None,
-                    };
-                    let effects = self
-                        .reduce_app_action(AppAction::ActivityTabSelected { tab })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    if let Some(previous_tab) = previous_tab {
-                        if previous_tab != tab {
-                            record(
-                                DiagnosticEvent::new(
-                                    DiagnosticLevel::Info,
-                                    "core.activity",
-                                    "tab_selected",
-                                )
-                                .field(DiagnosticField::request_id(
-                                    "request_id",
-                                    request_id.connection_id.0,
-                                    request_id.sequence,
-                                ))
-                                .field(DiagnosticField::token(
-                                    "previous_tab",
-                                    activity_tab_token(previous_tab),
-                                ))
-                                .field(DiagnosticField::token(
-                                    "selected_tab",
-                                    activity_tab_token(tab),
-                                )),
-                            );
+                        AppCommand::CloseActivity { request_id } => {
+                            let _ = self
+                                .account_actor
+                                .send(AccountMessage::CancelActivityResolution)
+                                .await;
+                            let effects = self.reduce_app_action(AppAction::ActivityClosed).await;
+                            self.handle_app_effects(request_id, effects).await;
+                            self.emit(CoreEvent::Activity(ActivityEvent::Closed { request_id }));
+                            true
                         }
-                    }
-                    self.emit(CoreEvent::Activity(ActivityEvent::TabSelected {
-                        request_id,
-                        tab,
-                    }));
-                    true
-                }
-                AppCommand::PaginateActivity {
-                    request_id, tab, ..
-                } => {
-                    let (recent, unread, excluded_room_ids) =
-                        self.activity_projection.snapshot(&self.state);
-                    let effects = self
-                        .reduce_app_action(AppAction::ActivityRowsUpdated {
-                            recent: recent.clone(),
-                            unread: unread.clone(),
-                            excluded_room_ids,
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    self.emit(CoreEvent::Activity(ActivityEvent::SnapshotLoaded {
-                        request_id,
-                        active_tab: tab,
-                        recent,
-                        unread,
-                    }));
-                    true
-                }
-                AppCommand::RetryActivityResolution { request_id } => {
-                    self.start_activity_resolution().await;
-                    self.emit(CoreEvent::Activity(ActivityEvent::ResolutionRetried {
-                        request_id,
-                        generation: self.activity_resolution_generation,
-                    }));
-                    true
-                }
-                AppCommand::MarkActivityRead { request_id, target } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::ActivityMarkReadRequested {
-                            request_id: request_id.sequence,
-                            target: target.clone(),
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    let fully_read_updates = self
-                        .activity_projection
-                        .fully_read_marker_updates(&self.state, &target);
-                    let mark_read_result = self.activity_projection.mark_read(&self.state, &target);
-                    let cleared_room_ids =
-                        self.activity_projection.room_ids_without_remaining_unread(
-                            &self.state,
-                            &mark_read_result.cleared_event_ids,
-                        );
-                    let success_effects = self
-                        .reduce_app_action(AppAction::ActivityMarkReadSucceeded {
-                            request_id: request_id.sequence,
-                            cleared_event_ids: mark_read_result.cleared_event_ids.clone(),
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, success_effects).await;
-                    for room_id in mark_read_result.cleared_placeholder_room_ids {
-                        let room_effects = self
-                            .reduce_app_action(AppAction::RoomMarkedAsReadSucceeded {
-                                request_id: request_id.sequence,
-                                room_id,
-                            })
-                            .await;
-                        self.handle_app_effects(request_id, room_effects).await;
-                    }
-                    for room_id in cleared_room_ids {
-                        let room_effects = self
-                            .reduce_app_action(AppAction::RoomMarkedAsReadSucceeded {
-                                request_id: request_id.sequence,
-                                room_id,
-                            })
-                            .await;
-                        self.handle_app_effects(request_id, room_effects).await;
-                    }
-                    for (room_id, event_id) in fully_read_updates {
-                        let room_read_request_id = self.next_internal_request_id();
-                        let _ = self
-                            .account_actor
-                            .send(AccountMessage::RoomCommand(
-                                koushi_protocol::command::RoomCommand::MarkRoomAsRead {
-                                    request_id: room_read_request_id,
-                                    room_id: room_id.clone(),
-                                    event_id: event_id.clone(),
-                                },
-                            ))
-                            .await;
-                        let marker_effects = self
-                            .reduce_app_action(AppAction::FullyReadMarkerUpdated {
-                                room_id,
-                                event_id: Some(event_id),
-                            })
-                            .await;
-                        self.handle_app_effects(request_id, marker_effects).await;
-                    }
-                    if let Some(activity_update) = self
-                        .activity_projection
-                        .update_action_for_open_state(&self.state)
-                    {
-                        let activity_update_effects = self.reduce_app_action(activity_update).await;
-                        self.handle_app_effects(request_id, activity_update_effects)
-                            .await;
-                    }
-                    self.emit(CoreEvent::Activity(ActivityEvent::MarkedRead {
-                        request_id,
-                        cleared_event_ids: mark_read_result.cleared_event_ids,
-                    }));
-                    true
-                }
-                AppCommand::OpenFilesView {
-                    request_id,
-                    scope,
-                    filter,
-                    sort,
-                } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::FilesViewOpened {
-                            request_id: request_id.sequence,
+                        AppCommand::SetActivityTab { request_id, tab } => {
+                            let previous_tab = match self.state.activity {
+                                ActivityState::Open { active_tab, .. } => Some(active_tab),
+                                _ => None,
+                            };
+                            let effects = self
+                                .reduce_app_action(AppAction::ActivityTabSelected { tab })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            if let Some(previous_tab) = previous_tab {
+                                if previous_tab != tab {
+                                    record(
+                                        DiagnosticEvent::new(
+                                            DiagnosticLevel::Info,
+                                            "core.activity",
+                                            "tab_selected",
+                                        )
+                                        .field(DiagnosticField::request_id(
+                                            "request_id",
+                                            request_id.connection_id.0,
+                                            request_id.sequence,
+                                        ))
+                                        .field(DiagnosticField::token(
+                                            "previous_tab",
+                                            activity_tab_token(previous_tab),
+                                        ))
+                                        .field(
+                                            DiagnosticField::token(
+                                                "selected_tab",
+                                                activity_tab_token(tab),
+                                            ),
+                                        ),
+                                    );
+                                }
+                            }
+                            self.emit(CoreEvent::Activity(ActivityEvent::TabSelected {
+                                request_id,
+                                tab,
+                            }));
+                            true
+                        }
+                        AppCommand::PaginateActivity {
+                            request_id, tab, ..
+                        } => {
+                            let (recent, unread, excluded_room_ids) =
+                                self.activity_projection.snapshot(&self.state);
+                            let effects = self
+                                .reduce_app_action(AppAction::ActivityRowsUpdated {
+                                    recent: recent.clone(),
+                                    unread: unread.clone(),
+                                    excluded_room_ids,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            self.emit(CoreEvent::Activity(ActivityEvent::SnapshotLoaded {
+                                request_id,
+                                active_tab: tab,
+                                recent,
+                                unread,
+                            }));
+                            true
+                        }
+                        AppCommand::RetryActivityResolution { request_id } => {
+                            self.start_activity_resolution().await;
+                            self.emit(CoreEvent::Activity(ActivityEvent::ResolutionRetried {
+                                request_id,
+                                generation: self.activity_resolution_generation,
+                            }));
+                            true
+                        }
+                        AppCommand::MarkActivityRead { request_id, target } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::ActivityMarkReadRequested {
+                                    request_id: request_id.sequence,
+                                    target: target.clone(),
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            let fully_read_updates = self
+                                .activity_projection
+                                .fully_read_marker_updates(&self.state, &target);
+                            let mark_read_result =
+                                self.activity_projection.mark_read(&self.state, &target);
+                            let cleared_room_ids =
+                                self.activity_projection.room_ids_without_remaining_unread(
+                                    &self.state,
+                                    &mark_read_result.cleared_event_ids,
+                                );
+                            let success_effects = self
+                                .reduce_app_action(AppAction::ActivityMarkReadSucceeded {
+                                    request_id: request_id.sequence,
+                                    cleared_event_ids: mark_read_result.cleared_event_ids.clone(),
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, success_effects).await;
+                            for room_id in mark_read_result.cleared_placeholder_room_ids {
+                                let room_effects = self
+                                    .reduce_app_action(AppAction::RoomMarkedAsReadSucceeded {
+                                        request_id: request_id.sequence,
+                                        room_id,
+                                    })
+                                    .await;
+                                self.handle_app_effects(request_id, room_effects).await;
+                            }
+                            for room_id in cleared_room_ids {
+                                let room_effects = self
+                                    .reduce_app_action(AppAction::RoomMarkedAsReadSucceeded {
+                                        request_id: request_id.sequence,
+                                        room_id,
+                                    })
+                                    .await;
+                                self.handle_app_effects(request_id, room_effects).await;
+                            }
+                            for (room_id, event_id) in fully_read_updates {
+                                let room_read_request_id = self.next_internal_request_id();
+                                let _ = self
+                                    .account_actor
+                                    .send(AccountMessage::RoomCommand(
+                                        koushi_protocol::command::RoomCommand::MarkRoomAsRead {
+                                            request_id: room_read_request_id,
+                                            room_id: room_id.clone(),
+                                            event_id: event_id.clone(),
+                                        },
+                                    ))
+                                    .await;
+                                let marker_effects = self
+                                    .reduce_app_action(AppAction::FullyReadMarkerUpdated {
+                                        room_id,
+                                        event_id: Some(event_id),
+                                    })
+                                    .await;
+                                self.handle_app_effects(request_id, marker_effects).await;
+                            }
+                            if let Some(activity_update) = self
+                                .activity_projection
+                                .update_action_for_open_state(&self.state)
+                            {
+                                let activity_update_effects =
+                                    self.reduce_app_action(activity_update).await;
+                                self.handle_app_effects(request_id, activity_update_effects)
+                                    .await;
+                            }
+                            self.emit(CoreEvent::Activity(ActivityEvent::MarkedRead {
+                                request_id,
+                                cleared_event_ids: mark_read_result.cleared_event_ids,
+                            }));
+                            true
+                        }
+                        AppCommand::OpenFilesView {
+                            request_id,
                             scope,
                             filter,
                             sort,
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::CloseFilesView { request_id } => {
-                    let effects = self.reduce_app_action(AppAction::FilesViewClosed).await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::OpenThreadsList { request_id, scope } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::OpenThreadsList {
-                            request_id: request_id.sequence,
-                            room_id: scope.scope_key(),
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::CloseThreadsList { request_id } => {
-                    let effects = self.reduce_app_action(AppAction::CloseThreadsList).await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::PaginateThreadsList { request_id, scope } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::PaginateThreadsList {
-                            request_id: request_id.sequence,
-                            room_id: scope.scope_key(),
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::RecordLocalEncryptionHealth { request_id, health } => {
-                    let probe_effects = self
-                        .reduce_app_action(AppAction::LocalEncryptionProbeRequested {
-                            request_id: request_id.sequence,
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, probe_effects).await;
-                    let health_effects = self
-                        .reduce_app_action(AppAction::LocalEncryptionHealthChanged {
-                            request_id: request_id.sequence,
-                            health,
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, health_effects).await;
-                    true
-                }
-                AppCommand::UpdateNativeAttentionState {
-                    request_id,
-                    attention,
-                } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::NativeAttentionUpdated { attention })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::ObserveNativeWindowFocus {
-                    request_id,
-                    focused,
-                    observation_generation,
-                } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::NativeWindowFocusChanged {
+                        } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::FilesViewOpened {
+                                    request_id: request_id.sequence,
+                                    scope,
+                                    filter,
+                                    sort,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::CloseFilesView { request_id } => {
+                            let effects = self.reduce_app_action(AppAction::FilesViewClosed).await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::OpenThreadsList { request_id, scope } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::OpenThreadsList {
+                                    request_id: request_id.sequence,
+                                    room_id: scope.scope_key(),
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::CloseThreadsList { request_id } => {
+                            let effects = self.reduce_app_action(AppAction::CloseThreadsList).await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::PaginateThreadsList { request_id, scope } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::PaginateThreadsList {
+                                    request_id: request_id.sequence,
+                                    room_id: scope.scope_key(),
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::RecordLocalEncryptionHealth { request_id, health } => {
+                            let probe_effects = self
+                                .reduce_app_action(AppAction::LocalEncryptionProbeRequested {
+                                    request_id: request_id.sequence,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, probe_effects).await;
+                            let health_effects = self
+                                .reduce_app_action(AppAction::LocalEncryptionHealthChanged {
+                                    request_id: request_id.sequence,
+                                    health,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, health_effects).await;
+                            true
+                        }
+                        AppCommand::UpdateNativeAttentionState {
+                            request_id,
+                            attention,
+                        } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::NativeAttentionUpdated { attention })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::ObserveNativeWindowFocus {
+                            request_id,
                             focused,
                             observation_generation,
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::StartNativeAttentionDispatch {
-                    request_id,
-                    dispatch_id,
-                } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::NativeAttentionDispatchStarted {
+                        } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::NativeWindowFocusChanged {
+                                    focused,
+                                    observation_generation,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::StartNativeAttentionDispatch {
+                            request_id,
                             dispatch_id,
-                        })
-                        .await;
-                    self.emit(CoreEvent::NativeAttention(
-                        NativeAttentionEvent::DispatchAdmission {
-                            dispatch_id,
-                            accepted: !effects.is_empty(),
-                        },
-                    ));
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::SettleNativeAttentionDispatch {
-                    request_id,
-                    dispatch_id,
-                    outcome,
-                } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::NativeAttentionDispatchSettled {
+                        } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::NativeAttentionDispatchStarted {
+                                    dispatch_id,
+                                })
+                                .await;
+                            self.emit(CoreEvent::NativeAttention(
+                                NativeAttentionEvent::DispatchAdmission {
+                                    dispatch_id,
+                                    accepted: !effects.is_empty(),
+                                },
+                            ));
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::SettleNativeAttentionDispatch {
+                            request_id,
                             dispatch_id,
                             outcome,
-                        })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::UpdateJapaneseCatalogProfile {
-                    request_id,
-                    profile,
-                } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::JapaneseCatalogProfileChanged { profile })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-                AppCommand::SelectRoomListFilter { request_id, filter } => {
-                    let effects = self
-                        .reduce_app_action(AppAction::RoomListFilterSelected { filter })
-                        .await;
-                    self.handle_app_effects(request_id, effects).await;
-                    true
-                }
-            },
+                        } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::NativeAttentionDispatchSettled {
+                                    dispatch_id,
+                                    outcome,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::UpdateJapaneseCatalogProfile {
+                            request_id,
+                            profile,
+                        } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::JapaneseCatalogProfileChanged {
+                                    profile,
+                                })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                        AppCommand::SelectRoomListFilter { request_id, filter } => {
+                            let effects = self
+                                .reduce_app_action(AppAction::RoomListFilterSelected { filter })
+                                .await;
+                            self.handle_app_effects(request_id, effects).await;
+                            true
+                        }
+                    }
+                })
+                .await
+            }
             CoreCommand::Sync(sync_command) => {
                 // Route to AccountActor (which forwards to SyncActor).
                 let _ = self
@@ -4730,6 +4929,7 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
         | AccountCommand::QuerySavedSessions { .. }
         | AccountCommand::SetPresence { .. }
         | AccountCommand::DownloadAvatarThumbnail { .. }
+        | AccountCommand::CancelAvatarThumbnail { .. }
         | AccountCommand::Logout { .. }
         | AccountCommand::CancelVerification { .. }
         | AccountCommand::RetryCurrentDeviceTrustDiscovery { .. }

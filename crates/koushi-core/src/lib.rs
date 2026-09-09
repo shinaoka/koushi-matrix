@@ -55,6 +55,8 @@ pub mod threads_list;
 mod time;
 pub mod timeline;
 pub(crate) mod unread_trace;
+mod view_budget;
+mod view_scope_lifecycle;
 
 pub use command_policy::CoreCommandPolicy;
 pub use direct_message_classification::DirectAccountDataSource;
@@ -73,8 +75,9 @@ pub use native_artifact::{
 };
 pub use runtime::{
     COMMAND_INBOX_CAPACITY, CommandSubmitError, CoreCommandHandle, CoreConnection, CoreRuntime,
-    EVENT_QUEUE_CAPACITY, EventNavigationError, EventStreamLag, OutcomeCorrelation, RequestOutcome,
-    RequestOutcomeError, RequestOutcomeExpectation, RoomOperationKind, SelectRoomError,
+    EVENT_QUEUE_CAPACITY, EventNavigationError, EventStreamLag, OutcomeCorrelation,
+    ReaderSubscription, ReaderSubscriptionCloser, RequestOutcome, RequestOutcomeError,
+    RequestOutcomeExpectation, RoomOperationKind, SelectRoomError,
 };
 pub use sliding_sync_diagnostics::{
     DiagnosticAgeBucket, SlidingSyncDiagnostics, SlidingSyncDiagnosticsSnapshot,

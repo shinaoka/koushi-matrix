@@ -1,4 +1,4 @@
-import { sendRoomMessage } from "../../lib/local-homeserver-qa.mjs";
+import { sendReadMarkers, sendRoomMessage } from "../../lib/local-homeserver-qa.mjs";
 import { parseQaTitle,safeTimestamp,timestamp } from "../evidence.mjs";
 import { cleanupLocalGuiScenario,recordLocalGuiEvidence,startLocalGuiScenario,waitForAuthScreen,waitForComposerSendSettled,waitForLocalLoginReady,waitForLocalSendSuccess,writeLocalLoginPipe } from "../local-session.mjs";
 import { timeoutMs } from "../options.mjs";
@@ -425,6 +425,91 @@ export async function runLocalExploreScenario() {
     );
     await recordLocalGuiEvidence(session);
     console.log("gui_local_explore_join=ok");
+  } finally {
+    await cleanupLocalGuiScenario(session);
+  }
+}
+
+async function waitForReceiptCount(browser, expectedCount, timeout, description) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeout) {
+    const matched = await browser.execute((count) =>
+      [...document.querySelectorAll('.message-receipts')].some((element) =>
+        (element.getAttribute('aria-label') ?? '').startsWith(`Read by ${count}:`)
+      ), expectedCount);
+    if (matched) return;
+    await sleep(250);
+  }
+  throw new Error(`${description} did not observe Read by ${expectedCount}`);
+}
+
+export async function runLocalReceiptReadersScenario() {
+  const session = await startLocalGuiScenario();
+  try {
+    await waitForAuthScreen(session.browser, timeoutMs);
+    await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
+    await waitForLocalLoginReady(session, timeoutMs);
+    await selectRoomByName(session.browser, "QA Seed Room", timeoutMs);
+    await waitForActiveRoomName(session.browser, "QA Seed Room", timeoutMs);
+    await waitForDocumentText(
+      session.browser,
+      [session.readerSeedBody],
+      timeoutMs,
+      "local GUI receipt-reader seed"
+    );
+    // Publish one helper marker only after the previous marker is visible. This
+    // is an observation barrier, not a timing delay: it proves that each
+    // incremental sliding-sync receipt update is accumulated by Core.
+    for (const [index, helper] of session.readerHelpers.entries()) {
+      await sendReadMarkers(
+        session.credentials.homeserver,
+        helper.accessToken,
+        session.seedRoomId,
+        session.readerEventId
+      );
+      await waitForReceiptCount(
+        session.browser,
+        index + 1,
+        timeoutMs,
+        `local GUI receipt reader ${index + 1}`
+      );
+    }
+    await waitForDocumentText(
+      session.browser,
+      ["+2"],
+      timeoutMs,
+      "local GUI compact receipt overflow"
+    );
+    const receiptAnchor = await session.browser.$(
+      '.message-receipts[aria-label^="Read by 5"]'
+    );
+    await receiptAnchor.waitForDisplayed({ timeout: timeoutMs });
+    await receiptAnchor.click();
+    await waitForElementCount(
+      session.browser,
+      ".receipt-tooltip",
+      1,
+      timeoutMs,
+      "local GUI receipt-reader popup"
+    );
+    await waitForDocumentText(
+      session.browser,
+      session.readerDisplayNames,
+      timeoutMs,
+      "local GUI receipt-reader rows"
+    );
+    console.log("gui_local_reader_subscribe=ok");
+
+    await session.browser.keys("Escape");
+    await waitForElementCount(
+      session.browser,
+      ".receipt-tooltip",
+      0,
+      timeoutMs,
+      "local GUI receipt-reader close"
+    );
+    await recordLocalGuiEvidence(session);
+    console.log("gui_local_reader_close=ok");
   } finally {
     await cleanupLocalGuiScenario(session);
   }

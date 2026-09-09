@@ -750,9 +750,13 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   bounded concurrency, the two-attempt network policy and the session-terminal
   Ready/Failed cache. Ready state carries an opaque cache reference. The Tauri
   link/media port may map it to `koushi-thumbnail://`; Core/state/protocol never
-  mint that URI, and a native frontend may consume Core bytes directly.
-  Renderer request sets may suppress duplicate transport admission only; they
-  must not classify retryability or count/release retries.
+  mint that URI, and a native frontend may consume Core bytes directly. Opened
+  receipt-reader rows are stricter: after ACK, the Tauri adapter reads bytes only
+  through the live scope, installed revision, and opaque source-reference
+  mapping; React may hold only the resulting transient object URL and must revoke
+  it on scope/revision/unmount. Renderer request sets may suppress duplicate
+  transport admission only; they must not classify retryability or count/release
+  retries.
 - Personal local user aliases are also Rust-owned profile state. Keep alias
   set/clear/list, persistence to `app.koushi.local_aliases`, display-name
   resolution, and pending/failure state in Rust; React may render the returned

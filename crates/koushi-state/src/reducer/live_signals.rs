@@ -52,10 +52,10 @@ pub(crate) fn handle_live_room_profiles_observed(
     }
 }
 
-pub(crate) fn handle_live_room_receipts_updated(
+pub(crate) fn handle_live_room_receipt_summaries_updated(
     state: &mut AppState,
     room_id: String,
-    receipts_by_event: Vec<crate::state::LiveEventReceipts>,
+    receipts_by_event: Vec<crate::state::LiveEventReceiptSummaryUpdate>,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
         return Vec::new();
@@ -63,21 +63,37 @@ pub(crate) fn handle_live_room_receipts_updated(
 
     let own_user_id = session_user_id(state).map(str::to_owned);
     let relevant_room_profiles = state.profile.room_users.get(&room_id);
-    let mut receipts_by_event = receipts_by_event;
-    preserve_known_receipt_thumbnails(state, &mut receipts_by_event);
-    let room = state.live_signals.rooms.entry(room_id).or_default();
-    let normalized = crate::state::LiveRoomSignalUpdate {
-        receipts_by_event,
-        fully_read_event_id: None,
-        typing_user_ids: Vec::new(),
-    }
-    .into_room_signals_with_room_profiles(
-        &state.profile,
-        relevant_room_profiles,
-        own_user_id.as_deref(),
-    );
-    for (event_id, receipts) in normalized.receipts_by_event {
-        room.receipts_by_event.insert(event_id, receipts);
+    for mut entry in receipts_by_event {
+        let previous_readers = state
+            .live_signals
+            .rooms
+            .get(&room_id)
+            .and_then(|room| room.receipts_by_event.get(&entry.event_id))
+            .map(|summary| &summary.readers);
+        for receipt in &mut entry.readers {
+            if receipt.avatar.is_none() {
+                receipt.avatar = previous_readers
+                    .and_then(|readers| {
+                        readers
+                            .iter()
+                            .find(|reader| reader.user_id == receipt.user_id)
+                    })
+                    .and_then(|reader| reader.avatar.clone());
+            }
+        }
+        let event_id = entry.event_id.clone();
+        let summary = entry.into_summary_with_profiles(
+            &state.profile,
+            relevant_room_profiles,
+            own_user_id.as_deref(),
+        );
+        state
+            .live_signals
+            .rooms
+            .entry(room_id.clone())
+            .or_default()
+            .receipts_by_event
+            .insert(event_id, summary);
     }
     vec![AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)]
 }

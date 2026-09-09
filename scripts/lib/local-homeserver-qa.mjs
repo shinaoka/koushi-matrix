@@ -455,6 +455,23 @@ export async function joinRoom(homeserver, accessToken, roomIdOrAlias) {
   }
 }
 
+export async function sendReadMarkers(homeserver, accessToken, roomId, eventId) {
+  const response = await fetch(
+    `${homeserver}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/read_markers`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ fully_read: eventId, "m.read": eventId })
+    }
+  );
+  if (!response.ok) {
+    throw new Error(`sendReadMarkers failed with HTTP ${response.status}`);
+  }
+}
+
 export async function sendRoomMessage(homeserver, accessToken, roomId, body, transactionId) {
   return sendRoomMessageContent(
     homeserver,

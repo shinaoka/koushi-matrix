@@ -6,7 +6,7 @@ use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel};
 use crate::threads_list::ThreadRootDisplayData;
 use koushi_protocol::event::{
     TimelineDiff, TimelineDisplayKind, TimelineDisplayMetadata, TimelineItem, TimelineItemId,
-    TimelineViewportObservation,
+    TimelineSendState, TimelineViewportObservation,
 };
 use koushi_protocol::ids::{TimelineKey, TimelineKind};
 use koushi_state::TimelineThreadRootOrder;
@@ -89,6 +89,36 @@ impl DisplayProjectionState {
     ) {
         self.pending_items = pending_items;
         self.suppressed_transaction_ids = suppressed_transaction_ids;
+    }
+
+    pub(super) fn update_send_state(
+        &mut self,
+        transaction_id: &str,
+        send_state: TimelineSendState,
+        context: &DisplayProjectionContext,
+    ) -> Vec<TimelineDiff> {
+        let mut changed = false;
+        for slot in &mut self.slots {
+            if matches!(
+                &slot.item.id,
+                TimelineItemId::Transaction { transaction_id: id } if id == transaction_id
+            ) && slot.item.send_state != Some(send_state.clone())
+            {
+                slot.item.send_state = Some(send_state.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            return Vec::new();
+        }
+        let before = self.display_items.clone();
+        self.display_items = project_display_items(
+            &self.slots,
+            &self.pending_items,
+            &self.suppressed_transaction_ids,
+            context,
+        );
+        finalize_display_projection_diffs(&before, &self.display_items, false).0
     }
 
     pub(super) fn replace_pending(

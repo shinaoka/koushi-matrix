@@ -78,6 +78,7 @@ pub enum AvatarThumbnailFailureKind {
     Forbidden,
     Unsupported,
     Sdk,
+    Capacity,
 }
 
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]

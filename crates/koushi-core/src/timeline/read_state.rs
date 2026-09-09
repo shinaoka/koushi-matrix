@@ -6,12 +6,11 @@ use std::time::Duration;
 
 use futures_util::stream::FuturesUnordered;
 use koushi_sdk::MatrixClientSession;
-use koushi_state::AppAction;
+use koushi_state::{AppAction, LiveEventReceipts};
 
 use matrix_sdk::room::Receipts;
 use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType as SendReceiptType;
 use matrix_sdk::ruma::events::receipt::ReceiptThread;
-use matrix_sdk_ui::timeline::TimelineItem as SdkTimelineItem;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::executor;
@@ -35,7 +34,7 @@ use super::diagnostics::{
     record_read_retry_scheduled, timeline_key_matches_read_state_key,
 };
 use super::item_projection::{
-    collect_live_event_receipts_from_diff, is_attention_eligible_event, timeline_room_id,
+    is_attention_eligible_event, live_event_receipts_from_endpoint_changes, timeline_room_id,
 };
 use super::manager::{TimelineManagerActor, TimelineMessage};
 use super::navigation::{derive_timeline_navigation_snapshot, record_timeline_unread_consistency};
@@ -734,6 +733,7 @@ impl ReadWorkerSupervisor {
     }
 }
 
+#[cfg(test)]
 fn read_retry_delay_for_attempt(base: Duration, cap: Duration, attempt: u32) -> Duration {
     read_retry_delay_for_attempt_with_retry_after(base, cap, attempt, None)
 }
@@ -2142,24 +2142,22 @@ impl TimelineActor {
             }
         }
     }
-    pub(super) fn live_receipts_action_from_sdk_diffs(
-        key: &TimelineKey,
-        diffs: &[eyeball_im::VectorDiff<Arc<SdkTimelineItem>>],
-    ) -> Option<AppAction> {
-        let Some(room_id) = timeline_room_id(key) else {
+    pub(super) fn live_receipts_from_endpoints(
+        &self,
+        changes: std::collections::BTreeMap<
+            String,
+            super::receipt_endpoints::ReceiptEndpointChange,
+        >,
+    ) -> Option<(String, Vec<LiveEventReceipts>)> {
+        let Some(room_id) = timeline_room_id(&self.key) else {
             return None;
         };
-        let mut receipts_by_event = Vec::new();
-        for diff in diffs {
-            collect_live_event_receipts_from_diff(diff, &mut receipts_by_event);
-        }
+        let receipts_by_event =
+            live_event_receipts_from_endpoint_changes(changes, &self.receipt_endpoints);
         if receipts_by_event.is_empty() {
             return None;
         }
-        Some(AppAction::LiveRoomReceiptsUpdated {
-            room_id,
-            receipts_by_event,
-        })
+        Some((room_id, receipts_by_event))
     }
 }
 

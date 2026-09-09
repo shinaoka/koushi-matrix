@@ -107,8 +107,11 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
       async saveMediaFile(sourceUrl: string, filename: string) {
         await saveReadyMediaFile(sourceUrl, filename);
       },
-      async downloadAvatarThumbnail(mxcUri: string) {
-        await invoke("download_avatar_thumbnail", { mxcUri });
+      async downloadAvatarThumbnail(mxcUri: string): Promise<string> {
+        return invoke<string>("download_avatar_thumbnail", { mxcUri });
+      },
+      async cancelAvatarThumbnail(mxcUri: string, requestSequence: string) {
+        await invoke("cancel_avatar_thumbnail", { mxcUri, requestSequence });
       },
       async loadMessageSource(roomId: string, eventId: string) {
         await invoke("load_message_source", { roomId, eventId });

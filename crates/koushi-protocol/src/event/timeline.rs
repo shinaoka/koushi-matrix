@@ -409,35 +409,9 @@ pub struct TimelineViewportObservation {
 }
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct TimelineGapId {
-    #[serde(with = "u64_decimal_string")]
+    #[serde(with = "crate::u64_decimal_string")]
     pub topology_revision: u64,
     pub ordinal: u32,
-}
-mod u64_decimal_string {
-    use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
-
-    pub(super) fn serialize<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&value.to_string())
-    }
-
-    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<u64, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let encoded = String::deserialize(deserializer)?;
-        let parsed = encoded
-            .parse::<u64>()
-            .map_err(|_| D::Error::custom("expected a canonical unsigned decimal string"))?;
-        if parsed.to_string() != encoded {
-            return Err(D::Error::custom(
-                "expected a canonical unsigned decimal string",
-            ));
-        }
-        Ok(parsed)
-    }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TimelineGapPosition {

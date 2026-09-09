@@ -3,7 +3,7 @@ import { assertSdkSubmoduleSynced } from "../lib/sdk-submodule-status.mjs";
 import { guiScenario,repoRoot } from "./options.mjs";
 import { runLocalInvitesDmScenario,runLocalLoginScenario,runLocalLogoutReloginScenario,runSignedOutScenario } from "./scenarios/auth.mjs";
 import { runLocalImageCompressionScenario,runLocalMediaScenario,runLocalMessageTypesScenario } from "./scenarios/media.mjs";
-import { runLocalActivityScenario,runLocalAliasScenario,runLocalCjkScenario,runLocalComposerScenario,runLocalCreateRoomScenario,runLocalCreateSpaceScenario,runLocalExploreScenario,runLocalMessageActionsScenario,runLocalPinsScenario,runLocalReplyScenario,runLocalRichFormattingScenario,runLocalRoomManagementScenario,runLocalRoomTagsScenario,runLocalScheduledSendScenario,runLocalSendScenario,runLocalSpacesNavScenario,runLocalTimelineNavigationScenario } from "./scenarios/rooms-timeline.mjs";
+import { runLocalActivityScenario,runLocalAliasScenario,runLocalCjkScenario,runLocalComposerScenario,runLocalCreateRoomScenario,runLocalCreateSpaceScenario,runLocalExploreScenario,runLocalMessageActionsScenario,runLocalPinsScenario,runLocalReceiptReadersScenario,runLocalReplyScenario,runLocalRichFormattingScenario,runLocalRoomManagementScenario,runLocalRoomTagsScenario,runLocalScheduledSendScenario,runLocalSendScenario,runLocalSpacesNavScenario,runLocalTimelineNavigationScenario } from "./scenarios/rooms-timeline.mjs";
 import { runLocalE2eeKeyManagementScenario,runLocalSettingsScenario } from "./scenarios/settings-security.mjs";
 
 export const checks = [
@@ -23,6 +23,7 @@ export const checks = [
   "scenario local-activity",
   "scenario local-explore",
   "scenario local-message-actions",
+  "scenario local-receipt-readers",
   "scenario local-pins",
   "scenario local-message-types",
   "scenario local-composer",
@@ -109,6 +110,10 @@ export async function run() {
   }
   if (guiScenario === "local-message-actions") {
     await runLocalMessageActionsScenario();
+    return;
+  }
+  if (guiScenario === "local-receipt-readers") {
+    await runLocalReceiptReadersScenario();
     return;
   }
   if (guiScenario === "local-pins") {

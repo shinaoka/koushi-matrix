@@ -2658,7 +2658,7 @@ fn matrix_local_latest_event_projection(
     Option<MatrixRoomLatestEventSummary>,
     Option<MatrixConversationActivity>,
 ) {
-    let (raw_content, event_type) = value.content.raw();
+    let (_, event_type) = value.content.raw();
     let relation_type = matrix_local_latest_event_relation_type(&value.content);
     if relation_type.as_deref() == Some("m.replace") {
         return (None, cached_conversation_activity);

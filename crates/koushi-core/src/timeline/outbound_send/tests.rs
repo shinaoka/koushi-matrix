@@ -1496,6 +1496,63 @@ fn send_completion_trace_orders_terminal_before_and_after_binding() {
 }
 
 #[test]
+fn local_echo_before_sdk_bind_preserves_fallback_until_terminal() {
+    let coordinator = SharedSendCompletionCoordinator::default();
+    let (ingress, _terminal_rx) = TimelineSendTerminalIngress::channel();
+    let key = room_key();
+    let mut registration = SendCompletionRegistration::begin_with_projection(
+        Arc::clone(&coordinator),
+        ingress,
+        key.clone(),
+        "client-prebind".to_owned(),
+        None,
+        fake_rid(7401),
+        true,
+        Some(PendingSendProjection {
+            key: key.clone(),
+            sequence: 0,
+            client_txn_id: "client-prebind".to_owned(),
+            item: pending_send_item("client-prebind", "body", None, None, None),
+            sdk_transaction_id: None,
+            handle: None,
+            terminal_event_id: None,
+            phase: PendingSendPhase::Pending,
+        }),
+    );
+    registration.activate();
+    {
+        let mut owner = coordinator.lock().expect("coordinator");
+        assert_eq!(owner.observe_local_echo(key.room_id(), "sdk-prebind"), None);
+        assert_eq!(owner.projections_for_key(&key).len(), 1);
+    }
+    registration.bind("sdk-prebind".to_owned());
+    assert_eq!(
+        coordinator
+            .lock()
+            .expect("coordinator")
+            .projections_for_key(&key)
+            .len(),
+        1
+    );
+    apply_send_completion_observation_and_handoff(
+        &coordinator,
+        &TimelineSendTerminalIngress::channel().0,
+        key.room_id(),
+        SendCompletionObservation::Sent {
+            sdk_transaction_id: "sdk-prebind".to_owned(),
+            event_id: "$event-prebind:test".to_owned(),
+        },
+    );
+    assert!(
+        coordinator
+            .lock()
+            .expect("coordinator")
+            .projections_for_key(&key)
+            .is_empty()
+    );
+}
+
+#[test]
 fn pending_projection_uses_exact_ids_and_converges_with_or_without_local_echo() {
     let _diagnostic_lock = koushi_diagnostics::test_support::lock();
     let coordinator = SharedSendCompletionCoordinator::default();

@@ -236,10 +236,10 @@ pub use basic_operation::{BasicOperationRequest, BasicOperationState};
 
 // ── Re-exports: live_signals ────────────────────────────────────────────────
 pub use live_signals::{
-    LiveEventReceiptSummary, LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate,
-    LiveSignalsState, LiveTypingUser, PresenceKind, RoomLiveSignals,
-    refresh_live_receipt_display_projection, refresh_live_typing_user_display_projection,
-    resolve_live_receipt_profile,
+    LiveEventReceiptSummary, LiveEventReceiptSummaryUpdate, LiveEventReceipts, LiveReadReceipt,
+    LiveRoomSignalUpdate, LiveSignalsState, LiveTypingUser, PresenceKind, RoomLiveSignals,
+    enrich_live_receipt, refresh_live_receipt_display_projection,
+    refresh_live_typing_user_display_projection, resolve_live_receipt_profile,
 };
 
 // ── Re-exports: mention candidates ──────────────────────────────────────────

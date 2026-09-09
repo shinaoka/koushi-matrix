@@ -1,4 +1,82 @@
 use super::*;
+
+#[tokio::test]
+async fn runtime_loop_settles_inactive_reader_without_manual_actor_pumping() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+        directory.path().join("data"),
+        directory.path().join("credentials"),
+    );
+    let connection = runtime.attach();
+    let consumer = connection.view_consumer().unwrap();
+    let source = serde_json::from_value(serde_json::json!({
+        "key": {"account_key": "@owner:example.org", "kind": {"Room": {"room_id": "!room:example.org"}}},
+        "projection_request_id": {"connection_id": "1", "sequence": "2"},
+        "generation": "3", "event_id": "$event"
+    })).unwrap();
+    let mut scope = consumer
+        .open_reader(
+            source,
+            0,
+            koushi_protocol::view::ReaderWindowLimit::try_from(3).unwrap(),
+        )
+        .unwrap();
+    drop(connection);
+    let delivery =
+        crate::executor::timeout(std::time::Duration::from_secs(1), scope.next_delivery())
+            .await
+            .expect("actual actor loop must consume the reader queue");
+    assert!(matches!(
+        delivery,
+        Some(crate::view_scope_lifecycle::ScopeDelivery::Retired(
+            koushi_protocol::view::ViewRetirement::SessionRetired
+        ))
+    ));
+    assert!(!scope.is_live());
+    assert!(
+        consumer.open().is_ok(),
+        "a failed reader does not retire its logical consumer"
+    );
+    consumer.ack_retirement(scope.id()).unwrap();
+    drop(runtime);
+}
+
+#[tokio::test]
+async fn attached_view_contexts_survive_connection_drop_and_retire_with_runtime() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+        directory.path().join("data"),
+        directory.path().join("credentials"),
+    );
+    let first = runtime.attach();
+    let second = runtime.attach();
+    let a = first.view_consumer().unwrap();
+    let sibling = first.view_consumer().unwrap();
+    let b = second.view_consumer().unwrap();
+    let scope_a = a.open().unwrap();
+    let scope_sibling = sibling.open().unwrap();
+    let mut scope_b = b.open().unwrap();
+    drop(first);
+    assert!(scope_a.is_live());
+    assert!(scope_sibling.is_live());
+    a.retire();
+    assert!(!scope_a.is_live());
+    assert!(scope_sibling.is_live());
+    assert!(scope_b.is_live());
+    drop(runtime);
+    let end = crate::executor::timeout(std::time::Duration::from_secs(1), scope_b.next_delivery())
+        .await
+        .unwrap();
+    assert!(matches!(
+        end,
+        Some(crate::view_scope_lifecycle::ScopeDelivery::Retired(
+            koushi_protocol::view::ViewRetirement::RuntimeStopped
+        ))
+    ));
+    assert!(!scope_sibling.is_live());
+    assert!(second.view_consumer().is_err());
+}
+
 use futures_util::FutureExt;
 use koushi_protocol::event::{
     ThreadSummaryDto, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId,
@@ -27,6 +105,7 @@ fn scripted_connection(
     });
     (
         CoreConnection {
+            view_scopes: crate::view_scope_lifecycle::ViewScopeRegistry::default(),
             connection_id,
             command_tx,
             composer_draft_leases: Arc::new(ComposerDraftLeaseRegistry::new()),
@@ -42,6 +121,180 @@ fn scripted_connection(
         event_tx,
         snapshot_tx,
     )
+}
+
+#[test]
+fn resource_access_rejects_foreign_runtime_and_retired_consumers_at_connection_boundary() {
+    use crate::view_scope_lifecycle::ScopeError;
+    use koushi_protocol::view::ViewRevision;
+    let (connection, _commands, _events, _snapshots) = scripted_connection(4);
+    let (foreign_connection, _commands2, _events2, _snapshots2) = scripted_connection(4);
+    assert_eq!(
+        connection.connection_id(),
+        foreign_connection.connection_id()
+    );
+    let consumer = connection.view_consumer().unwrap();
+    let foreign = foreign_connection.view_consumer().unwrap();
+    let scope = consumer.open().unwrap();
+    assert_eq!(
+        connection
+            .view_resource(&foreign, scope.id(), ViewRevision(1), "avatar/unknown")
+            .err(),
+        Some(ScopeError::NotOwned)
+    );
+    assert_eq!(
+        connection
+            .view_resource(&consumer, scope.id(), ViewRevision(1), "avatar/unknown")
+            .err(),
+        Some(ScopeError::InvalidRevision)
+    );
+    consumer.retire();
+    assert!(
+        connection
+            .view_resource(&consumer, scope.id(), ViewRevision(1), "avatar/unknown")
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn receipt_window_uses_the_existing_command_lane_without_a_snapshot_copy() {
+    for retirement_phase in 0..6 {
+        let retire_before_handoff = retirement_phase == 1;
+        let (connection, mut commands, _events, _snapshots) = scripted_connection(4);
+        let source = koushi_protocol::view::ReceiptSourceRef {
+            timeline: koushi_protocol::view::TimelineViewSource {
+                key: TimelineKey::room(AccountKey("account".into()), "!room:example.org"),
+                projection_request_id: RequestId {
+                    connection_id: RuntimeConnectionId(1),
+                    sequence: 2,
+                },
+                generation: koushi_protocol::TimelineGeneration(3),
+            },
+            event_id: "$event".into(),
+        };
+        let limit = koushi_protocol::view::ReaderWindowLimit::try_from(3).unwrap();
+        let (foreign_connection, _foreign_commands, _foreign_events, _foreign_snapshots) =
+            scripted_connection(4);
+        assert_eq!(
+            connection.connection_id(),
+            foreign_connection.connection_id()
+        );
+        let foreign = foreign_connection.view_consumer().unwrap();
+        let retired = connection.view_consumer().unwrap();
+        retired.retire();
+        for denied in [&foreign, &retired] {
+            assert!(matches!(
+                connection
+                    .read_receipt_window(denied, source.clone(), 7, limit)
+                    .now_or_never(),
+                Some(Err(crate::view_scope_lifecycle::ScopeError::NotOwned
+                    | crate::view_scope_lifecycle::ScopeError::Closed))
+            ));
+            assert!(matches!(
+                commands.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+        }
+        let consumer = connection.view_consumer().unwrap();
+        let retirement = consumer.clone();
+        let runtime_views = connection.view_scopes.clone();
+        let reader = tokio::spawn(async move {
+            connection
+                .read_receipt_window(&consumer, source, 7, limit)
+                .await
+        });
+        let Some(CoreCommandEnvelope::ReadReceiptWindow {
+            source,
+            start,
+            limit,
+            response,
+        }) = commands.recv().await
+        else {
+            panic!("expected bounded receipt request");
+        };
+        if retirement_phase == 5 {
+            assert!(
+                response
+                    .send(Err(
+                        crate::view_scope_lifecycle::ScopeError::CounterExhausted
+                    ))
+                    .is_ok()
+            );
+            assert_eq!(
+                reader.await.unwrap().err(),
+                Some(crate::view_scope_lifecycle::ScopeError::CounterExhausted)
+            );
+            continue;
+        }
+        if matches!(retirement_phase, 2 | 3) {
+            if retirement_phase == 2 {
+                retirement.retire();
+            } else {
+                runtime_views.shutdown();
+            }
+            let result = crate::executor::timeout(std::time::Duration::from_secs(1), reader)
+                .await
+                .expect("retirement must not wait for SDK reply")
+                .unwrap();
+            assert_eq!(
+                result.err(),
+                Some(crate::view_scope_lifecycle::ScopeError::Closed)
+            );
+            assert!(response.is_closed());
+            continue;
+        }
+        assert_eq!(source.event_id, "$event");
+        assert_eq!(start, 7);
+        assert_eq!(limit.get(), 3);
+        let mut window = crate::timeline::RawReceiptWindow {
+            total_count: 1500,
+            start,
+            receipts: Vec::new(),
+            profiles: Vec::new(),
+            owner: None,
+            epoch: std::sync::Weak::new(),
+        };
+        let epoch = window.bind_test_owner(&source).await;
+        assert!(response.send(Ok(window)).is_ok());
+        let Some(CoreCommandEnvelope::ResolveReceiptWindow {
+            source,
+            window,
+            response,
+        }) = commands.recv().await
+        else {
+            panic!("expected AppActor profile resolution");
+        };
+        assert_eq!(source.event_id, "$event");
+        assert!(
+            response
+                .send(Ok(window.into_resolved(koushi_state::CatalogLocale::En)))
+                .is_ok()
+        );
+        if retire_before_handoff {
+            retirement.retire();
+        }
+        let _live_epoch = if retirement_phase == 4 {
+            drop(epoch);
+            None
+        } else {
+            Some(epoch)
+        };
+        let result = reader.await.unwrap();
+        if retire_before_handoff || retirement_phase == 4 {
+            assert_eq!(
+                result.err(),
+                Some(if retirement_phase == 4 {
+                    crate::view_scope_lifecycle::ScopeError::SourceUnavailable
+                } else {
+                    crate::view_scope_lifecycle::ScopeError::Closed
+                })
+            );
+        } else {
+            let result = result.unwrap();
+            assert_eq!(result.total_count, 1500);
+            assert_eq!(result.start, 7);
+        }
+    }
 }
 
 fn event_navigation_snapshot(
@@ -574,6 +827,7 @@ async fn timeline_sender_label_and_reaction_sender_preview_follow_people_facing_
         state,
     });
     let mut connection = CoreConnection {
+        view_scopes: crate::view_scope_lifecycle::ViewScopeRegistry::default(),
         connection_id: RuntimeConnectionId(7),
         command_tx,
         composer_draft_leases: Arc::new(ComposerDraftLeaseRegistry::new()),

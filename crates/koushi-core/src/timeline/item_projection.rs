@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -10,8 +10,8 @@ use koushi_search::{AttachmentDocument, SensitiveString};
 use koushi_state::UserProfile;
 use koushi_state::{
     AppAction, AttachmentKind, AvatarImage, AvatarThumbnailState, ComposerDocument, ComposerInline,
-    LiveEventReceipts, LiveReadReceipt, MentionIntent, MentionTarget, ReplyQuote,
-    ReplyQuoteCodeBlock, ReplyQuoteFormattedBody, ReplyQuoteState,
+    LiveEventReceiptSummaryUpdate, LiveEventReceipts, LiveReadReceipt, MentionIntent,
+    MentionTarget, ReplyQuote, ReplyQuoteCodeBlock, ReplyQuoteFormattedBody, ReplyQuoteState,
 };
 
 use matrix_sdk::attachment::{AttachmentInfo, BaseFileInfo, BaseImageInfo, Thumbnail};
@@ -178,7 +178,6 @@ impl TimelineActor {
         event_id: String,
         document: ComposerDocument,
     ) {
-        let body = document.plain_body();
         // Edits go through the SDK Timeline so the Set diff on the original
         // item is produced locally (send-queue local echo) instead of
         // depending on the server echoing the edit back through sync —
@@ -1854,7 +1853,7 @@ pub(super) fn live_event_receipts_from_sdk_items<'a>(
 ) -> Vec<LiveEventReceipts> {
     items
         .into_iter()
-        .filter_map(|item| live_event_receipts_from_sdk_item(item, false))
+        .filter_map(live_event_receipts_from_sdk_item)
         .collect()
 }
 
@@ -1864,13 +1863,8 @@ pub(super) enum ReceiptObservationTarget {
     Authoritative { scoped_event_ids: Vec<String> },
 }
 
-fn build_receipt_observation_actions(
-    room_id: &str,
-    receipts_by_event: Vec<LiveEventReceipts>,
-    profiles: Vec<MatrixUserProfile>,
-    target: ReceiptObservationTarget,
-) -> Vec<AppAction> {
-    let profile_actions = profiles
+fn profile_actions(profiles: Vec<MatrixUserProfile>) -> Vec<UserProfile> {
+    profiles
         .into_iter()
         .map(|profile| {
             let display_label = profile
@@ -1892,10 +1886,17 @@ fn build_receipt_observation_actions(
                 }),
             }
         })
-        .collect::<Vec<_>>();
+        .collect()
+}
 
-    let mut actions = Vec::with_capacity(usize::from(!profile_actions.is_empty()) * 2 + 1);
-    if !profile_actions.is_empty() {
+fn profile_actions_to_actions(
+    room_id: &str,
+    profiles: Vec<MatrixUserProfile>,
+) -> (Vec<AppAction>, bool) {
+    let profile_actions = profile_actions(profiles);
+    let has_profiles = !profile_actions.is_empty();
+    let mut actions = Vec::with_capacity(usize::from(has_profiles) * 2);
+    if has_profiles {
         actions.push(AppAction::LiveRoomProfilesObserved {
             room_id: room_id.to_owned(),
             profiles: profile_actions.clone(),
@@ -1904,35 +1905,95 @@ fn build_receipt_observation_actions(
             profiles: profile_actions,
         });
     }
-    actions.push(match target {
-        ReceiptObservationTarget::Live => AppAction::LiveRoomReceiptsUpdated {
-            room_id: room_id.to_owned(),
-            receipts_by_event,
-        },
-        ReceiptObservationTarget::Authoritative { scoped_event_ids } => {
-            AppAction::LiveRoomReceiptsWindowReconciled {
-                room_id: room_id.to_owned(),
-                scoped_event_ids,
-                receipts_by_event,
-            }
-        }
+    (actions, has_profiles)
+}
+
+fn build_receipt_observation_actions(
+    room_id: &str,
+    receipts_by_event: Vec<LiveEventReceipts>,
+    profiles: Vec<MatrixUserProfile>,
+    scoped_event_ids: Vec<String>,
+) -> Vec<AppAction> {
+    let (mut actions, has_profiles) = profile_actions_to_actions(room_id, profiles);
+    actions.reserve(usize::from(has_profiles) + 1);
+    actions.push(AppAction::LiveRoomReceiptsWindowReconciled {
+        room_id: room_id.to_owned(),
+        scoped_event_ids,
+        receipts_by_event,
     });
     actions
 }
 
+fn compact_live_receipt_summaries(
+    receipts_by_event: Vec<LiveEventReceipts>,
+    own_user_id: Option<&str>,
+) -> Vec<LiveEventReceiptSummaryUpdate> {
+    receipts_by_event
+        .into_iter()
+        .map(|entry| {
+            let mut by_user = BTreeMap::new();
+            for receipt in entry.receipts {
+                if own_user_id.is_some_and(|own| own == receipt.user_id) {
+                    continue;
+                }
+                by_user
+                    .entry(receipt.user_id.clone())
+                    .and_modify(|existing: &mut LiveReadReceipt| {
+                        if receipt.timestamp_ms.unwrap_or_default()
+                            >= existing.timestamp_ms.unwrap_or_default()
+                        {
+                            *existing = receipt.clone();
+                        }
+                    })
+                    .or_insert(receipt);
+            }
+            let mut readers = by_user.into_values().collect::<Vec<_>>();
+            readers.sort_by(|left, right| {
+                right
+                    .timestamp_ms
+                    .unwrap_or_default()
+                    .cmp(&left.timestamp_ms.unwrap_or_default())
+                    .then_with(|| left.user_id.cmp(&right.user_id))
+            });
+            let total_count = readers.len() as u64;
+            readers.truncate(3);
+            LiveEventReceiptSummaryUpdate {
+                event_id: entry.event_id,
+                readers,
+                total_count,
+            }
+        })
+        .collect()
+}
+
+fn build_live_receipt_summary_actions(
+    room_id: &str,
+    receipts_by_event: Vec<LiveEventReceiptSummaryUpdate>,
+    profiles: Vec<MatrixUserProfile>,
+) -> Vec<AppAction> {
+    let (mut actions, has_profiles) = profile_actions_to_actions(room_id, profiles);
+    actions.reserve(usize::from(has_profiles) + 1);
+    actions.push(AppAction::LiveRoomReceiptSummariesUpdated {
+        room_id: room_id.to_owned(),
+        receipts_by_event,
+    });
+    actions
+}
+
+#[cfg(test)]
 pub(super) fn build_live_receipt_observation_actions(
     room_id: &str,
     receipts_by_event: Vec<LiveEventReceipts>,
     profiles: Vec<MatrixUserProfile>,
 ) -> Vec<AppAction> {
-    build_receipt_observation_actions(
+    build_live_receipt_summary_actions(
         room_id,
-        receipts_by_event,
+        compact_live_receipt_summaries(receipts_by_event, None),
         profiles,
-        ReceiptObservationTarget::Live,
     )
 }
 
+#[cfg(test)]
 pub(super) async fn live_receipt_observation_actions_from_sdk_receipts(
     session: &MatrixClientSession,
     room_id: &str,
@@ -1953,14 +2014,72 @@ async fn receipt_observation_actions_from_sdk_receipts(
     receipts_by_event: Vec<LiveEventReceipts>,
     target: ReceiptObservationTarget,
 ) -> Vec<AppAction> {
+    if matches!(&target, ReceiptObservationTarget::Live) {
+        let own_user_id = session.client().user_id().map(|user_id| user_id.to_owned());
+        let summaries = compact_live_receipt_summaries(
+            receipts_by_event,
+            own_user_id.as_ref().map(|user_id| user_id.as_str()),
+        );
+        let lookup_user_ids = summaries
+            .iter()
+            .flat_map(|entry| entry.readers.iter())
+            .map(|receipt| receipt.user_id.clone())
+            .collect::<Vec<_>>();
+        let receipt_count = summaries
+            .iter()
+            .map(|entry| entry.total_count as usize)
+            .sum();
+        let profiles =
+            receipt_profiles_for_users(session, room_id, &lookup_user_ids, receipt_count).await;
+        return build_live_receipt_summary_actions(room_id, summaries, profiles);
+    }
+
     let user_ids = receipts_by_event
         .iter()
         .flat_map(|entry| entry.receipts.iter())
         .map(|receipt| receipt.user_id.clone())
         .collect::<Vec<_>>();
+    let receipt_count = receipts_by_event
+        .iter()
+        .map(|entry| entry.receipts.len())
+        .sum();
+    let profiles = receipt_profiles_for_users(session, room_id, &user_ids, receipt_count).await;
+    let ReceiptObservationTarget::Authoritative { scoped_event_ids } = target else {
+        unreachable!("live receipt observation returns through the bounded branch");
+    };
+    build_receipt_observation_actions(room_id, receipts_by_event, profiles, scoped_event_ids)
+}
+
+pub(super) async fn prepare_receipt_window_profiles(
+    session: &MatrixClientSession,
+    room_id: &str,
+    window: &mut super::receipt_endpoints::RawReceiptWindow,
+    reply: &mut tokio::sync::oneshot::Sender<
+        Result<super::receipt_endpoints::RawReceiptWindow, crate::view_scope_lifecycle::ScopeError>,
+    >,
+) -> bool {
+    let users: Vec<_> = window
+        .receipts
+        .iter()
+        .map(|receipt| receipt.user_id.clone())
+        .collect();
+    window.profiles = tokio::select! {
+        biased;
+        _ = reply.closed() => return false,
+        profiles = receipt_profiles_for_users(session, room_id, &users, window.total_count as usize) => profiles,
+    };
+    true
+}
+
+async fn receipt_profiles_for_users(
+    session: &MatrixClientSession,
+    room_id: &str,
+    user_ids: &[String],
+    receipt_count: usize,
+) -> Vec<MatrixUserProfile> {
     let requested_user_count = user_ids.iter().collect::<BTreeSet<_>>().len();
     let (profiles, lookup_outcome) = match session
-        .room_member_profiles_no_sync(room_id, &user_ids)
+        .room_member_profiles_no_sync(room_id, user_ids)
         .await
     {
         Ok(profiles) if profiles.is_empty() => (profiles, "miss"),
@@ -1968,15 +2087,12 @@ async fn receipt_observation_actions_from_sdk_receipts(
         Err(_) => (Vec::new(), "failed"),
     };
     record_live_receipt_profile_lookup(
-        receipts_by_event
-            .iter()
-            .map(|entry| entry.receipts.len())
-            .sum(),
+        receipt_count,
         requested_user_count,
         profiles.len(),
         lookup_outcome,
     );
-    build_receipt_observation_actions(room_id, receipts_by_event, profiles, target)
+    profiles
 }
 
 pub(super) async fn emit_receipt_observation_actions(
@@ -2053,40 +2169,26 @@ fn record_live_receipt_profile_lookup(
     );
 }
 
-pub(super) fn collect_live_event_receipts_from_diff(
-    diff: &eyeball_im::VectorDiff<Arc<SdkTimelineItem>>,
-    out: &mut Vec<LiveEventReceipts>,
-) {
-    use eyeball_im::VectorDiff;
-
-    match diff {
-        VectorDiff::PushFront { value }
-        | VectorDiff::PushBack { value }
-        | VectorDiff::Insert { value, .. } => {
-            if let Some(receipts) = live_event_receipts_from_sdk_item(value, false) {
-                out.push(receipts);
+pub(super) fn live_event_receipts_from_endpoint_changes(
+    changes: std::collections::BTreeMap<String, super::receipt_endpoints::ReceiptEndpointChange>,
+    endpoints: &super::receipt_endpoints::ReceiptEndpointMirror,
+) -> Vec<LiveEventReceipts> {
+    changes
+        .into_iter()
+        .filter_map(|(event_id, change)| {
+            let index = endpoints.readers(&event_id)?;
+            if change.before.is_none() && index.total(None) == 0 {
+                return None;
             }
-        }
-        VectorDiff::Set { value, .. } => {
-            if let Some(receipts) = live_event_receipts_from_sdk_item(value, true) {
-                out.push(receipts);
-            }
-        }
-        VectorDiff::Append { values } | VectorDiff::Reset { values } => {
-            out.extend(live_event_receipts_from_sdk_items(values.iter()));
-        }
-        VectorDiff::Remove { .. }
-        | VectorDiff::Truncate { .. }
-        | VectorDiff::Clear
-        | VectorDiff::PopFront
-        | VectorDiff::PopBack => {}
-    }
+            Some(live_event_receipts_from_readers(
+                event_id,
+                index.window(0, usize::MAX, None),
+            ))
+        })
+        .collect()
 }
 
-fn live_event_receipts_from_sdk_item(
-    item: &Arc<SdkTimelineItem>,
-    include_empty: bool,
-) -> Option<LiveEventReceipts> {
+fn live_event_receipts_from_sdk_item(item: &Arc<SdkTimelineItem>) -> Option<LiveEventReceipts> {
     use matrix_sdk_ui::timeline::TimelineItemKind;
 
     let event_item = match item.kind() {
@@ -2094,9 +2196,23 @@ fn live_event_receipts_from_sdk_item(
         TimelineItemKind::Virtual(_) => return None,
     };
     let event_id = event_item.event_id()?.to_string();
-    let receipts = event_item
-        .read_receipt_snapshot()
-        .iter()
+    let snapshot = event_item.read_receipt_snapshot();
+    if snapshot.is_empty() {
+        return None;
+    }
+    Some(live_event_receipts_from_readers(event_id, snapshot.iter()))
+}
+
+fn live_event_receipts_from_readers<'a>(
+    event_id: String,
+    readers: impl Iterator<
+        Item = (
+            &'a matrix_sdk::ruma::OwnedUserId,
+            &'a matrix_sdk::ruma::events::receipt::Receipt,
+        ),
+    >,
+) -> LiveEventReceipts {
+    let receipts = readers
         .map(|(user_id, receipt)| LiveReadReceipt {
             user_id: user_id.to_string(),
             display_name: None,
@@ -2106,11 +2222,7 @@ fn live_event_receipts_from_sdk_item(
         })
         .collect::<Vec<_>>();
 
-    if receipts.is_empty() && !include_empty {
-        return None;
-    }
-
-    Some(LiveEventReceipts { event_id, receipts })
+    LiveEventReceipts { event_id, receipts }
 }
 
 /// Convert a single SDK `TimelineItem` to our `TimelineItem` DTO.

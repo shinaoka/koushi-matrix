@@ -8,7 +8,7 @@
 //! actionable terminal state. No peer requests, no peer-forwarded keys, no
 //! custom wire events, no policy weakening.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 
@@ -51,6 +51,11 @@ pub enum RecoveryStage {
 }
 
 /// Closed outcome of each recovery step, mapped into privacy-safe diagnostics.
+///
+/// The current actor emits the outcomes needed by its active automatic paths;
+/// the remaining outcomes are retained for the same state-machine contract's
+/// terminal, retry, and integration paths.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecoveryStepOutcome {
     LocalFound,
@@ -81,10 +86,6 @@ pub enum RecoveryStepOutcome {
 pub enum RecoveryGuidance {
     /// Another own verified device may hold the key.
     AnotherOwnDevice,
-    /// Secure Backup is unavailable or incomplete.
-    BackupUnavailable,
-    /// Standard sender re-sharing may still recover the session.
-    SenderReshareMayRecover,
     /// The original key cannot be recovered; ask the sender to repost.
     AskSenderToRepost,
 }
@@ -96,7 +97,6 @@ pub struct RecoveryOperation {
     session_alias: u64,
     stage: RecoveryStage,
     attempts: u32,
-    started_at: Instant,
 }
 
 /// Minimal safe record persisted across restarts (issue #478): only the
@@ -116,7 +116,6 @@ impl RecoveryOperation {
             session_alias,
             stage: RecoveryStage::Detected,
             attempts: 0,
-            started_at: Instant::now(),
         }
     }
 
@@ -494,8 +493,6 @@ pub fn record_recovery_settled(stage: RecoveryStage) {
 pub fn guidance_token(guidance: RecoveryGuidance) -> &'static str {
     match guidance {
         RecoveryGuidance::AnotherOwnDevice => "another_own_device",
-        RecoveryGuidance::BackupUnavailable => "backup_unavailable",
-        RecoveryGuidance::SenderReshareMayRecover => "sender_reshare_may_recover",
         RecoveryGuidance::AskSenderToRepost => "ask_sender_to_repost",
     }
 }

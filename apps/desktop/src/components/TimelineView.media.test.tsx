@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { openExternalHttpUrl } from "../backend/linkMediaRuntime";
 
@@ -20,6 +20,43 @@ import {
 } from "./TimelineView";
 
 const AVATAR_DATA_URL_B = "data:image/gif;base64,R0lGODlhAQABAIAAAAD/AP///ywAAAAAAQABAAACAUwAOw==";
+
+class MockIntersectionObserver {
+  static instances: MockIntersectionObserver[] = [];
+  private readonly callback: IntersectionObserverCallback;
+  private readonly observed: Element[] = [];
+
+  constructor(callback: IntersectionObserverCallback) {
+    this.callback = callback;
+    MockIntersectionObserver.instances.push(this);
+  }
+
+  observe(target: Element) {
+    this.observed.push(target);
+  }
+
+  disconnect() {}
+  unobserve() {}
+  takeRecords(): IntersectionObserverEntry[] { return []; }
+
+  trigger(target = this.observed[0]) {
+    if (!target) return;
+    this.callback(
+      [{ isIntersecting: true, target } as IntersectionObserverEntry],
+      this as unknown as IntersectionObserver
+    );
+  }
+}
+
+beforeEach(() => {
+  MockIntersectionObserver.instances = [];
+  vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
+});
+
+async function triggerFirstAvatarObserver() {
+  await waitFor(() => expect(MockIntersectionObserver.instances.length).toBeGreaterThan(0));
+  MockIntersectionObserver.instances[0]?.trigger();
+}
 
 afterEach(() => {
   cleanup();
@@ -822,22 +859,24 @@ describe("TimelineView", () => {
 
   it("requests visible sender avatar thumbnails that are not yet downloaded", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
-    const downloadAvatarThumbnail = vi.fn(async () => undefined);
+    const releaseAvatarDemand = vi.fn();
+    const requestAvatarThumbnail = vi.fn(async () => releaseAvatarDemand);
     const transport = baseTransport({
       listenCoreEvents(nextListener) {
         emit = nextListener;
         return () => undefined;
       },
-      downloadAvatarThumbnail
+      downloadAvatarThumbnail: vi.fn(async () => undefined)
     });
 
-    render(
+    const view = render(
       <TimelineView
         timelineKey={KEY}
         roomId="!room:example.invalid"
         transport={transport}
         onReply={vi.fn()}
         enableAvatarThumbnailDownloads={true}
+        onRequestAvatarThumbnail={requestAvatarThumbnail}
       />
     );
 
@@ -861,13 +900,16 @@ describe("TimelineView", () => {
       }
     });
 
+    await triggerFirstAvatarObserver();
     await waitFor(() => {
-      expect(downloadAvatarThumbnail).toHaveBeenCalledWith("mxc://matrix.org/avatar");
+      expect(requestAvatarThumbnail).toHaveBeenCalledWith("mxc://matrix.org/avatar");
     });
-    expect(downloadAvatarThumbnail).toHaveBeenCalledTimes(1);
+    expect(requestAvatarThumbnail).toHaveBeenCalledTimes(1);
+    view.unmount();
+    await waitFor(() => expect(releaseAvatarDemand).toHaveBeenCalledTimes(1));
   });
 
-  it("limits initial avatar thumbnail requests to the current viewport window", async () => {
+  it("requests only avatars whose rows intersect the viewport", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const downloadAvatarThumbnail = vi.fn(async () => undefined);
     const transport = baseTransport({
@@ -892,6 +934,7 @@ describe("TimelineView", () => {
         transport={transport}
         onReply={vi.fn()}
         enableAvatarThumbnailDownloads={true}
+        onRequestAvatarThumbnail={downloadAvatarThumbnail}
       />
     );
 
@@ -907,6 +950,7 @@ describe("TimelineView", () => {
       }
     });
 
+    await triggerFirstAvatarObserver();
     await waitFor(() => {
       expect(downloadAvatarThumbnail).toHaveBeenCalledWith(
         "mxc://matrix.org/avatar-window-0"
@@ -915,7 +959,7 @@ describe("TimelineView", () => {
     expect(downloadAvatarThumbnail).not.toHaveBeenCalledWith(
       "mxc://matrix.org/avatar-window-39"
     );
-    expect(downloadAvatarThumbnail.mock.calls.length).toBeLessThan(items.length);
+    expect(downloadAvatarThumbnail.mock.calls.length).toBe(1);
   });
 
   it("requests profile avatar thumbnails when the timeline item has no sender avatar", async () => {
@@ -949,6 +993,7 @@ describe("TimelineView", () => {
         }}
         onReply={vi.fn()}
         enableAvatarThumbnailDownloads={true}
+        onRequestAvatarThumbnail={downloadAvatarThumbnail}
       />
     );
 
@@ -964,6 +1009,7 @@ describe("TimelineView", () => {
       }
     });
 
+    await triggerFirstAvatarObserver();
     await waitFor(() => {
       expect(downloadAvatarThumbnail).toHaveBeenCalledWith("mxc://matrix.org/profile-avatar");
     });
@@ -989,6 +1035,7 @@ describe("TimelineView", () => {
         transport={transport}
         onReply={vi.fn()}
         enableAvatarThumbnailDownloads={false}
+        onRequestAvatarThumbnail={downloadAvatarThumbnail}
       />
     );
 

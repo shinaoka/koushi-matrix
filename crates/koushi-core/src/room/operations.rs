@@ -20,10 +20,10 @@ use koushi_state::{
 };
 #[cfg(any(test, feature = "test-hooks"))]
 use std::sync::Mutex;
-use std::{
-    future::Future,
-    sync::{Arc, atomic::Ordering},
-};
+#[cfg(any(test, feature = "test-hooks"))]
+use std::sync::atomic::Ordering;
+use std::{future::Future, sync::Arc};
+#[cfg(any(test, feature = "test-hooks"))]
 use tokio::sync::oneshot;
 
 /// Fixed, content-free messages recorded in `AppState.errors` when a basic

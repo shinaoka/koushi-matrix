@@ -3,7 +3,8 @@ use super::super::test_source::item_body;
 use std::collections::{BTreeSet, HashSet};
 
 use koushi_state::{
-    ComposerDocument, ComposerInline, MentionIntent, MentionTarget, ReplyQuote, ReplyQuoteState,
+    ComposerDocument, ComposerInline, LiveEventReceipts, LiveReadReceipt, MentionIntent,
+    MentionTarget, ReplyQuote, ReplyQuoteState,
 };
 
 use matrix_sdk::room::edit::EditedContent;
@@ -18,6 +19,30 @@ use matrix_sdk_ui::timeline::{MembershipChange, ReactionStatus, ReactionsByKeyBy
 
 use crate::event_projection::message_actions_for_timeline_item;
 use koushi_protocol::command::TimelineCommand;
+
+#[test]
+fn live_receipt_summary_compacts_large_reader_input_with_exact_total() {
+    let receipts = (0..1_500)
+        .map(|index| LiveReadReceipt {
+            user_id: format!("@reader-{index}:example.invalid"),
+            display_name: None,
+            original_display_label: String::new(),
+            avatar: None,
+            timestamp_ms: Some(index),
+        })
+        .collect();
+    let summaries = super::compact_live_receipt_summaries(
+        vec![LiveEventReceipts {
+            event_id: "$event:example.invalid".into(),
+            receipts,
+        }],
+        None,
+    );
+
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].readers.len(), 3);
+    assert_eq!(summaries[0].total_count, 1_500);
+}
 use koushi_protocol::event::{
     LinkPreview, LinkPreviewState, TimelineFormattedBody, TimelineItemId, TimelineMessageKind,
     TimelineNoticeI18n, TimelineNoticeI18nKey, TimelineSendFailureReason, TimelineSendState,

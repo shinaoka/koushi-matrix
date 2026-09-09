@@ -1,4 +1,9 @@
-import type { TimelineKey } from "../domain/coreEvents";
+import type {
+  ReceiptSourceRef,
+  ReaderWindowRequest,
+  TimelineKey,
+  ViewDelivery
+} from "../domain/coreEvents";
 import type {
   ActivityMarkReadTarget,
   ActivityTab,
@@ -95,6 +100,11 @@ export interface ViewportSyncReceipt {
   domRootAligned: boolean;
   parent: ViewportSyncRect | null;
   webview: ViewportSyncRect | null;
+}
+
+export interface ReceiptReaderResourceContent {
+  bytes: number[];
+  mime_type: string | null;
 }
 
 export interface DesktopApi {
@@ -324,6 +334,20 @@ export interface DesktopApi {
   paginateThreadsList(scope: ThreadsListScope): Promise<CommandAdmission>;
   openFilesView(scope: FilesViewScope, filter: AttachmentFilter, sort: AttachmentSort): Promise<CommandAdmission>;
   closeFilesView(): Promise<CommandAdmission>;
+  subscribeReceiptReader(
+    source: ReceiptSourceRef,
+    start: number,
+    limit: number
+  ): Promise<string>;
+  receiveReceiptReader(scope: string): Promise<ViewDelivery | null>;
+  updateReceiptReaderWindow(scope: string, request: ReaderWindowRequest): Promise<void>;
+  ackReceiptReader(scope: string, revision: string): Promise<void>;
+  readReceiptReaderResource(
+    scope: string,
+    revision: string,
+    sourceRef: string
+  ): Promise<ReceiptReaderResourceContent | null>;
+  closeReceiptReader(scope: string): Promise<void>;
   setThreadComposerDraft(
     account: ComposerDraftAccountOwner,
     leaseId: string,

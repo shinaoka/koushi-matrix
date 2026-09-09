@@ -92,8 +92,9 @@ fn room_observation_and_receipt_prefer_authoritative_matching_ready_thumbnail() 
 
     reduce(
         &mut state,
-        AppAction::LiveRoomReceiptsUpdated {
+        AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: ROOM_ID.to_owned(),
+            scoped_event_ids: Vec::new(),
             receipts_by_event: vec![LiveEventReceipts {
                 event_id: "$event:example.invalid".to_owned(),
                 receipts: vec![LiveReadReceipt {
@@ -216,8 +217,9 @@ fn profile_and_receipt_observations_preserve_matching_ready_and_reset_changed_mx
 
     reduce(
         &mut state,
-        AppAction::LiveRoomReceiptsUpdated {
+        AppAction::LiveRoomReceiptsWindowReconciled {
             room_id: ROOM_ID.to_owned(),
+            scoped_event_ids: Vec::new(),
             receipts_by_event: vec![receipt("$event:example.invalid")],
         },
     );

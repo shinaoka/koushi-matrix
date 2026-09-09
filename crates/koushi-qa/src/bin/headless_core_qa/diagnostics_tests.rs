@@ -2,7 +2,7 @@ use super::{
     QaMessagesProxyDecision, QaMessagesProxyExpectation, QaMessagesProxyState,
     QaRoomMessagesRequestMetadata, invite_observer_diagnostic_summary,
     qa_room_messages_request_metadata, rewrite_http_request_connection_close,
-    trust_admission_diagnostic_summary,
+    send_lifecycle_diagnostic_summary, trust_admission_diagnostic_summary,
 };
 
 #[test]
@@ -153,6 +153,76 @@ fn invite_timeout_diagnostic_summary_is_allowlisted_and_private_safe() {
     );
     assert!(!summary.contains("private-room"));
     assert!(!summary.contains("room_id"));
+}
+
+#[test]
+fn send_lifecycle_summary_is_per_send_and_private_safe() {
+    use koushi_diagnostics::{
+        DiagnosticEvent, DiagnosticField, DiagnosticLevel, DiagnosticRecord, DiagnosticSnapshot,
+    };
+
+    let record = |event| DiagnosticRecord {
+        timestamp_ms: 0,
+        event,
+    };
+    let snapshot = DiagnosticSnapshot {
+        records: vec![
+            record(
+                DiagnosticEvent::new(DiagnosticLevel::Info, "core.send", "accepted")
+                    .field(DiagnosticField::correlation("correlation", 7))
+                    .field(DiagnosticField::token("send_kind", "text"))
+                    .field(DiagnosticField::milliseconds(
+                        "elapsed_since_submission_ms",
+                        0,
+                    ))
+                    .field(DiagnosticField::milliseconds(
+                        "elapsed_since_previous_ms",
+                        0,
+                    ))
+                    .field(DiagnosticField::token("private_body", "do-not-print")),
+            ),
+            record(
+                DiagnosticEvent::new(DiagnosticLevel::Info, "core.send", "sdk_enqueue_started")
+                    .field(DiagnosticField::correlation("correlation", 7))
+                    .field(DiagnosticField::token("send_kind", "text"))
+                    .field(DiagnosticField::milliseconds(
+                        "elapsed_since_submission_ms",
+                        3,
+                    ))
+                    .field(DiagnosticField::milliseconds(
+                        "elapsed_since_previous_ms",
+                        3,
+                    )),
+            ),
+            record(
+                DiagnosticEvent::new(DiagnosticLevel::Info, "core.send", "terminal_applied")
+                    .field(DiagnosticField::correlation("correlation", 7))
+                    .field(DiagnosticField::token("send_kind", "text"))
+                    .field(DiagnosticField::token("outcome", "succeeded"))
+                    .field(DiagnosticField::token("delivery_mode", "immediate"))
+                    .field(DiagnosticField::milliseconds(
+                        "elapsed_since_submission_ms",
+                        8,
+                    ))
+                    .field(DiagnosticField::milliseconds(
+                        "elapsed_since_previous_ms",
+                        5,
+                    )),
+            ),
+            record(DiagnosticEvent::new(
+                DiagnosticLevel::Info,
+                "other.source",
+                "not-a-send",
+            )),
+        ],
+        dropped_records: 0,
+    };
+
+    assert_eq!(
+        send_lifecycle_diagnostic_summary(&snapshot),
+        "corr=7 stage=accepted kind=text outcome=none mode=none elapsed_ms=0 delta_ms=0;corr=7 stage=sdk_enqueue_started kind=text outcome=none mode=none elapsed_ms=3 delta_ms=3;corr=7 stage=terminal_applied kind=text outcome=succeeded mode=immediate elapsed_ms=8 delta_ms=5"
+    );
+    assert!(!send_lifecycle_diagnostic_summary(&snapshot).contains("do-not-print"));
 }
 
 #[test]

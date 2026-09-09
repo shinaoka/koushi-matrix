@@ -3,7 +3,7 @@ use std::{
     fmt, fs,
     hash::{DefaultHasher, Hasher},
     path::Path,
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
@@ -12,6 +12,7 @@ use koushi_state::AvatarThumbnailState;
 
 pub(crate) const MAX_RENDERABLE_THUMBNAIL_ENTRIES: usize = 256;
 pub(crate) const MAX_RENDERABLE_THUMBNAIL_BYTES: usize = 32 * 1024 * 1024;
+const MAX_THUMBNAIL_LEASE_BYTES: usize = 96 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RenderableThumbnailKind {
@@ -51,10 +52,57 @@ impl fmt::Display for RenderableThumbnailStoreError {
 
 impl std::error::Error for RenderableThumbnailStoreError {}
 
-#[derive(Clone)]
 struct RenderableThumbnailEntry {
     bytes: Vec<u8>,
     mime_type: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ThumbnailLeaseError {
+    Unavailable,
+    Capacity,
+}
+
+/// Private byte ownership, not permission to access a retired or foreign scope.
+#[derive(Clone)]
+pub(crate) struct RenderableThumbnailLease(Arc<ChargedThumbnail>);
+
+struct ChargedThumbnail {
+    source_ref: String,
+    entry: Arc<RenderableThumbnailEntry>,
+    usage: Arc<Mutex<usize>>,
+}
+
+impl Drop for ChargedThumbnail {
+    fn drop(&mut self) {
+        *self.usage.lock().expect("thumbnail lease budget poisoned") -= self.entry.bytes.len();
+    }
+}
+
+impl RenderableThumbnailLease {
+    pub(crate) fn source_ref(&self) -> &str {
+        &self.0.source_ref
+    }
+
+    pub(crate) fn control_bytes(&self) -> usize {
+        std::mem::size_of::<ChargedThumbnail>() + self.0.source_ref.len()
+    }
+
+    pub(crate) fn thumbnail_state(&self) -> AvatarThumbnailState {
+        AvatarThumbnailState::Ready {
+            source_ref: self.0.source_ref.clone(),
+            width: None,
+            height: None,
+            mime_type: Some(self.0.entry.mime_type.clone()),
+        }
+    }
+
+    pub(crate) fn content(&self) -> RenderableThumbnailContent {
+        RenderableThumbnailContent {
+            bytes: self.0.entry.bytes.clone(),
+            mime_type: Some(self.0.entry.mime_type.clone()),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -73,7 +121,8 @@ struct RenderableThumbnailCache {
     // Opaque references are stored in AppState while their bytes remain in this
     // count-and-byte-bounded LRU. Access refreshes recency; session clear drops
     // all retained bytes.
-    entries: HashMap<String, RenderableThumbnailEntry>,
+    entries: HashMap<String, Arc<RenderableThumbnailEntry>>,
+    lease_bytes: Arc<Mutex<usize>>,
     // Oldest at the front, most recently accessed at the back. The bound is
     // deliberately larger than the existing 129-entry session churn contract.
     lru: VecDeque<String>,
@@ -91,7 +140,7 @@ impl RenderableThumbnailCache {
         cache_key: String,
         bytes: Vec<u8>,
         mime_type: String,
-    ) -> Result<RenderableThumbnailEntry, RenderableThumbnailStoreError> {
+    ) -> Result<(), RenderableThumbnailStoreError> {
         if bytes.len() > MAX_RENDERABLE_THUMBNAIL_BYTES {
             self.oversize_rejection_count = self.oversize_rejection_count.saturating_add(1);
             record(
@@ -118,20 +167,44 @@ impl RenderableThumbnailCache {
             self.remove_from_lru(&cache_key);
         }
         self.retained_bytes = self.retained_bytes.saturating_add(entry.bytes.len());
-        self.entries.insert(cache_key.clone(), entry.clone());
+        self.entries.insert(cache_key.clone(), Arc::new(entry));
         self.lru.push_back(cache_key);
         self.update_high_water();
         self.evict_if_needed();
-        Ok(entry)
+        Ok(())
     }
 
     fn get(&mut self, cache_key: &str) -> Option<RenderableThumbnailContent> {
         let entry = self.entries.get(cache_key)?.clone();
         self.touch(cache_key);
         Some(RenderableThumbnailContent {
-            bytes: entry.bytes,
-            mime_type: Some(entry.mime_type),
+            bytes: entry.bytes.clone(),
+            mime_type: Some(entry.mime_type.clone()),
         })
+    }
+
+    fn lease(&mut self, cache_key: &str) -> Result<RenderableThumbnailLease, ThumbnailLeaseError> {
+        let entry = self
+            .entries
+            .get(cache_key)
+            .ok_or(ThumbnailLeaseError::Unavailable)?
+            .clone();
+        let mut usage = self
+            .lease_bytes
+            .lock()
+            .expect("thumbnail lease budget poisoned");
+        let total = usage
+            .checked_add(entry.bytes.len())
+            .filter(|total| *total <= MAX_THUMBNAIL_LEASE_BYTES)
+            .ok_or(ThumbnailLeaseError::Capacity)?;
+        *usage = total;
+        drop(usage);
+        self.touch(cache_key);
+        Ok(RenderableThumbnailLease(Arc::new(ChargedThumbnail {
+            source_ref: cache_key.into(),
+            entry,
+            usage: self.lease_bytes.clone(),
+        })))
     }
 
     fn stats(&self) -> RenderableThumbnailCacheStats {
@@ -245,7 +318,10 @@ fn mime_type_from_bytes(bytes: &[u8]) -> String {
         .unwrap_or_else(|| "application/octet-stream".to_owned())
 }
 
-fn renderable_thumbnail_cache_key(kind: RenderableThumbnailKind, source: &str) -> String {
+pub(crate) fn renderable_thumbnail_cache_key(
+    kind: RenderableThumbnailKind,
+    source: &str,
+) -> String {
     let mut hasher = DefaultHasher::new();
     hasher.write(kind.path_segment().as_bytes());
     hasher.write(source.as_bytes());
@@ -285,6 +361,17 @@ pub fn store_renderable_thumbnail(
     })
 }
 
+pub(crate) fn lease_renderable_thumbnail(
+    source_ref: &str,
+) -> Result<RenderableThumbnailLease, ThumbnailLeaseError> {
+    let cache_key =
+        validated_renderable_thumbnail_ref(source_ref).ok_or(ThumbnailLeaseError::Unavailable)?;
+    renderable_thumbnail_cache()
+        .lock()
+        .expect("renderable thumbnail cache should not be poisoned")
+        .lease(cache_key)
+}
+
 pub fn lookup_renderable_thumbnail(source_ref: &str) -> Option<RenderableThumbnailContent> {
     let cache_key = validated_renderable_thumbnail_ref(source_ref)?;
     let mut cache = renderable_thumbnail_cache()
@@ -298,6 +385,14 @@ pub fn clear_renderable_thumbnail_cache() {
         .lock()
         .expect("renderable thumbnail cache should not be poisoned");
     cache.clear();
+}
+
+#[cfg(test)]
+pub(crate) fn test_cache_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("renderable thumbnail cache test lock should not be poisoned")
 }
 
 pub fn renderable_thumbnail_cache_stats() -> RenderableThumbnailCacheStats {

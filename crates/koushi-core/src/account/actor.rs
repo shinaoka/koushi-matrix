@@ -1,16 +1,13 @@
 //! `actor` ownership for AccountActor.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    sync::{Arc, Mutex, atomic::AtomicU64},
     time::Instant,
 };
 
 #[cfg(any(test, feature = "test-hooks"))]
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_protocol::SessionKeyId;
@@ -29,15 +26,17 @@ use crate::composer_draft_lifecycle::{ComposerDraftLeaseRegistry, ForwardedCompo
 use crate::executor;
 use crate::link_preview::LinkPreviewContext;
 use crate::native_artifact::{NativeArtifactKind, NativeArtifactPort};
+use crate::room::RoomActorHandle;
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::room::RoomMessage;
 #[cfg(any(test, feature = "test-hooks"))]
 use crate::room::RoomOperationTestControl;
-use crate::room::{RoomActorHandle, RoomMessage};
 
 use crate::search::SearchActorHandle;
 use crate::store::StoreActor;
 use crate::sync::SyncActorHandle;
 use crate::timeline::{
-    NavigationProjectionIngress, NavigationProjectionIntent, TimelineManagerHandle, TimelineMessage,
+    NavigationProjectionIngress, NavigationProjectionIntent, TimelineManagerHandle,
 };
 use koushi_protocol::command::{
     AccountCommand, RoomCommand, SearchCommand, SyncCommand, ThreadsListCommand, TimelineCommand,
@@ -54,9 +53,11 @@ use super::profile::AVATAR_DOWNLOAD_CONCURRENCY;
 use super::recovery_backup::{
     PendingRecoveryCompletion, PendingRecoveryTask, secure_backup_monitor_wakeup_is_current,
 };
+#[cfg(any(test, feature = "test-hooks"))]
+use super::session_lifecycle::PendingOidcFlow;
 use super::session_lifecycle::{
-    LockedSessionRecord, PendingOidcAttempt, PendingOidcFlow, PendingSessionTeardown,
-    SessionChangeObservation, SessionInvalidationReason,
+    LockedSessionRecord, PendingOidcAttempt, PendingSessionTeardown, SessionChangeObservation,
+    SessionInvalidationReason,
 };
 use super::sliding_sync::{
     PendingSlidingSyncAdmission, PendingSlidingSyncRetry, StoredSlidingSyncAdmissionContext,
@@ -118,6 +119,14 @@ pub(super) fn trace_account_request(
 
 /// Messages routed to the AccountActor task.
 pub(crate) enum AccountMessage {
+    ReadReceiptWindow {
+        source: koushi_protocol::view::ReceiptSourceRef,
+        start: u64,
+        limit: koushi_protocol::view::ReaderWindowLimit,
+        response: oneshot::Sender<
+            Result<crate::timeline::RawReceiptWindow, crate::view_scope_lifecycle::ScopeError>,
+        >,
+    },
     Command(AccountCommand),
     #[cfg(any(test, feature = "test-hooks"))]
     QaSetLocalDeviceBlacklisted {
@@ -182,10 +191,6 @@ pub(crate) enum AccountMessage {
     TimelineCommandWithComposerFormatting {
         command: TimelineCommand,
         formatting_options: koushi_state::ComposerFormattingOptions,
-    },
-    LeasedTimelineCommand {
-        command: TimelineCommand,
-        composer_permit: ForwardedComposerDraftPermit,
     },
     LeasedTimelineCommandWithComposerFormatting {
         command: TimelineCommand,
@@ -957,12 +962,15 @@ pub struct AccountActor {
     #[cfg(test)]
     pub(super) event_cache_fetch_override: Option<oneshot::Receiver<super::RoomEventLookupResult>>,
     /// In-flight fetches: mxc_uri -> waiting request_ids (single-flight dedup).
-    /// The first `DownloadAvatarThumbnail` for a given mxc spawns a task and
-    /// records its `request_id` here; subsequent ones for the same mxc while
-    /// the task is running simply append their `request_id`. When `AvatarFetched`
-    /// arrives every waiter receives `AvatarThumbnailDownloaded`.
-    /// Entries are removed (and all waiters notified) when `AvatarFetched` arrives.
+    /// Entries cover both active and queued distinct resources, so this map is
+    /// the bounded logical-demand ledger rather than a task count.
     pub(super) avatar_inflight: HashMap<String, Vec<RequestId>>,
+    /// Distinct resources waiting for one of the six active fetch slots. No
+    /// task is spawned until a slot is available; the queue is capped by the
+    /// public scoped-publication contract.
+    pub(super) avatar_pending: VecDeque<String>,
+    /// Number of fetch tasks that have acquired an actor-owned active slot.
+    pub(super) avatar_active_fetches: usize,
     /// Semaphore bounding concurrent avatar downloads. Cloned into spawned
     /// fetch tasks; the actor holds one Arc so it can be replaced on session
     /// clear.
@@ -970,6 +978,9 @@ pub struct AccountActor {
     /// Owns all spawned avatar-fetch tasks. Aborted on session clear and
     /// shutdown (engineering-rules: every spawned task has an owner).
     pub(super) avatar_fetch_tasks: tokio::task::JoinSet<()>,
+    /// Abort handles let renderer teardown cancel queued semaphore waiters as
+    /// well as network-active avatar fetches.
+    pub(super) avatar_fetch_abort_handles: HashMap<String, tokio::task::AbortHandle>,
     /// Incremented by `abort_avatar_fetch_tasks` on every session clear /
     /// logout / switch / shutdown so that `AvatarFetched` completions that
     /// were already enqueued before the abort are detected and silently dropped
@@ -1181,8 +1192,11 @@ impl AccountActor {
             #[cfg(test)]
             event_cache_fetch_override: None,
             avatar_inflight: HashMap::new(),
+            avatar_pending: VecDeque::new(),
+            avatar_active_fetches: 0,
             avatar_download_semaphore: Arc::new(Semaphore::new(AVATAR_DOWNLOAD_CONCURRENCY)),
             avatar_fetch_tasks: tokio::task::JoinSet::new(),
+            avatar_fetch_abort_handles: HashMap::new(),
             avatar_session_generation: 0,
         };
         crate::executor::spawn(actor.run());
@@ -1346,6 +1360,22 @@ impl AccountActor {
                 AccountMessage::RoomCommand(room_command) => {
                     self.route_room_command(room_command).await;
                 }
+                AccountMessage::ReadReceiptWindow {
+                    source,
+                    start,
+                    limit,
+                    response,
+                } => {
+                    let _ = self
+                        .timeline_manager
+                        .send(crate::timeline::TimelineMessage::ReadReceiptWindow {
+                            source,
+                            start,
+                            limit,
+                            response,
+                        })
+                        .await;
+                }
                 AccountMessage::TimelineCommand(timeline_command) => {
                     self.route_timeline_command(timeline_command).await;
                 }
@@ -1374,13 +1404,6 @@ impl AccountActor {
                         formatting_options,
                     )
                     .await;
-                }
-                AccountMessage::LeasedTimelineCommand {
-                    command,
-                    composer_permit,
-                } => {
-                    self.route_leased_timeline_command(command, composer_permit)
-                        .await;
                 }
                 AccountMessage::LeasedTimelineCommandWithComposerFormatting {
                     command,
@@ -2523,6 +2546,15 @@ impl AccountActor {
             } => {
                 self.handle_download_avatar_thumbnail(request_id, mxc_uri)
                     .await;
+            }
+            AccountCommand::CancelAvatarThumbnail {
+                request_id,
+                target_request_id,
+                mxc_uri,
+            } => {
+                if request_id.connection_id == target_request_id.connection_id {
+                    self.cancel_avatar_thumbnail(target_request_id, &mxc_uri);
+                }
             }
             AccountCommand::IgnoreUser {
                 request_id,

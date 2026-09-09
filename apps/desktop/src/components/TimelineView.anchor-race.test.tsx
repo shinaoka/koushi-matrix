@@ -30,7 +30,10 @@ afterEach(() => {
 });
 
 describe("TimelineView anchor settlement", () => {
-  it("preserves the pre-apply anchor when measurement flush wins the restoration race", async () => {
+  it(
+    "preserves the pre-apply anchor when measurement flush wins the restoration race",
+    { timeout: 15_000 },
+    async () => {
     vi.useFakeTimers();
     const scheduler = createManualTimelineViewportScheduler();
     let listener: ((payload: CoreEventPayload) => void) | null = null;

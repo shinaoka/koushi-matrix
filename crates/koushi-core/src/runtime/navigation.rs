@@ -80,6 +80,7 @@ pub(super) fn event_navigation_owner_cleanup_required(
         && matches!(current, koushi_state::EventNavigationState::Idle)
 }
 
+#[cfg(test)]
 pub(super) fn action_supersedes_event_navigation(action: &AppAction) -> bool {
     matches!(
         action,

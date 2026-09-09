@@ -1,7 +1,7 @@
 use super::diagnostics::{
     gate_session_phase, invite_observer_diagnostic_summary, runtime_sync_diagnostic_summary,
-    session_state_diagnostic_label, sync_diagnostic_summary, sync_event_diagnostic_label,
-    sync_state_diagnostic_label, trust_admission_diagnostic_summary,
+    send_lifecycle_diagnostic_summary, session_state_diagnostic_label, sync_diagnostic_summary,
+    sync_event_diagnostic_label, sync_state_diagnostic_label, trust_admission_diagnostic_summary,
 };
 use super::registry::{
     E2EE_EVENT_TIMEOUT, EVENT_TIMEOUT, LOGIN_EVENT_TIMEOUT, ROOM_LIST_EVENT_TIMEOUT,
@@ -1632,8 +1632,9 @@ pub(super) async fn wait_for_send_flow_completion_with_timeout(
             .await
             .map_err(|_| {
                 format!(
-                    "{label}: timed out waiting for send flow completion ({})",
-                    waiter.status_summary()
+                    "{label}: timed out waiting for send flow completion ({}; send_lifecycle={})",
+                    waiter.status_summary(),
+                    send_lifecycle_diagnostic_summary(&koushi_diagnostics::snapshot())
                 )
             })?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
@@ -1663,7 +1664,8 @@ pub(super) async fn send_text_expect_local_echo(
     .map_err(|e| format!("{label}: submit SendText failed: {e}"))?;
 
     let sdk_transaction_id =
-        wait_for_local_echo_transaction(conn, key, request_id, body, label).await?;
+        wait_for_local_echo_transaction(conn, key, request_id, client_transaction_id, body, label)
+            .await?;
     Ok(SendQueueLocalEcho {
         request_id,
         client_transaction_id: client_transaction_id.to_owned(),
@@ -1675,6 +1677,7 @@ async fn wait_for_local_echo_transaction(
     conn: &mut CoreConnection,
     key: &TimelineKey,
     request_id: RequestId,
+    expected_client_transaction_id: &str,
     expected_body: &str,
     label: &str,
 ) -> Result<String, String> {
@@ -1694,6 +1697,7 @@ async fn wait_for_local_echo_transaction(
                 visit_timeline_diff_items(&diffs, |item| {
                     if timeline_item_body_matches(item, expected_body)
                         && let Some(transaction_id) = timeline_item_transaction_id(item)
+                        && transaction_id != expected_client_transaction_id
                     {
                         found = Some(transaction_id.to_owned());
                     }

@@ -359,6 +359,7 @@ struct SendEnqueueSuccess {
 }
 
 impl SendEnqueueSuccess {
+    #[cfg(test)]
     fn terminal_only(sdk_transaction_id: String) -> Self {
         Self {
             sdk_transaction_id,
@@ -727,6 +728,28 @@ async fn enqueue_timeline_send(
 pub(super) const MAX_PENDING_SEND_PROJECTIONS: usize = 128;
 const PENDING_SEND_PROJECTION_ACK_DEADLINE: Duration = Duration::from_secs(5);
 const MAX_SUBMISSION_TOMBSTONES: usize = 128;
+
+async fn publish_pending_send_projection(
+    actor_tx: mpsc::Sender<TimelineActorMessage>,
+    actor_generation: u64,
+    projections: Vec<PendingSendProjection>,
+) -> bool {
+    let (acknowledged, acknowledgement) = oneshot::channel();
+    if actor_tx
+        .try_send(TimelineActorMessage::RefreshPendingSendProjection {
+            actor_generation,
+            projections,
+            acknowledged,
+        })
+        .is_err()
+    {
+        return false;
+    }
+    matches!(
+        executor::timeout(PENDING_SEND_PROJECTION_ACK_DEADLINE, acknowledgement).await,
+        Ok(Ok(true))
+    )
+}
 
 #[derive(Default)]
 pub(super) struct SubmissionAdmissionLedger {
@@ -1131,6 +1154,12 @@ impl TimelineManagerActor {
             });
         }
         if let Some(key) = key {
+            if !self.timelines.contains_key(&key) {
+                self.send_completion
+                    .lock()
+                    .expect("send completion coordinator lock must not be poisoned")
+                    .drop_direct_retained_for_key(&key);
+            }
             self.refresh_pending_send_projection(&key).await;
         }
         if let Some(hydration) = hydration {
@@ -1160,7 +1189,49 @@ impl TimelineManagerActor {
             return;
         };
 
-        if let Some(action) = send_submitted_action(key, projection, transaction_id.clone(), body) {
+        if self
+            .send_completion
+            .lock()
+            .expect("send completion coordinator lock must not be poisoned")
+            .pending_projection_count()
+            >= MAX_PENDING_SEND_PROJECTIONS
+        {
+            self.emit_failure(
+                request_id,
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::QueueOverflow,
+                },
+            );
+            return;
+        }
+        let (in_reply_to_event_id, thread_root) = match &payload {
+            TimelineSendEnqueuePayload::Reply {
+                in_reply_to_event_id,
+                ..
+            } => (
+                Some(in_reply_to_event_id.clone()),
+                match &key.kind {
+                    TimelineKind::Thread { root_event_id, .. } => Some(root_event_id.clone()),
+                    _ => None,
+                },
+            ),
+            _ => (None, None),
+        };
+        let own_user_id = self
+            .session
+            .as_ref()
+            .and_then(|session| session.client().user_id().map(|id| id.to_string()));
+        let pending_item = pending_send_item(
+            &transaction_id,
+            &body,
+            in_reply_to_event_id,
+            thread_root,
+            own_user_id.as_deref(),
+        );
+        let client_txn_id = transaction_id.clone();
+        if let Some(action) =
+            send_submitted_action(key, projection, transaction_id.clone(), body.clone())
+        {
             if self.action_tx.send(vec![action]).await.is_err() {
                 self.emit_failure(
                     request_id,
@@ -1171,7 +1242,7 @@ impl TimelineManagerActor {
                 return;
             }
         }
-        let mut registration = SendCompletionRegistration::begin(
+        let mut registration = SendCompletionRegistration::begin_with_projection(
             Arc::clone(&self.send_completion),
             self.terminal_ingress.clone(),
             key.clone(),
@@ -1179,8 +1250,51 @@ impl TimelineManagerActor {
             None,
             request_id,
             true,
+            Some(PendingSendProjection {
+                key: key.clone(),
+                sequence: 0,
+                client_txn_id,
+                item: pending_item,
+                sdk_transaction_id: None,
+                handle: None,
+                terminal_event_id: None,
+                phase: PendingSendPhase::Pending,
+            }),
         );
+        let registration_id = registration
+            .registration_id()
+            .expect("new send registration must own its id");
         registration.activate();
+        let actor_tx = self.timelines.get(key).map(|actor| actor.tx.clone());
+        let pending_projections = self
+            .send_completion
+            .lock()
+            .expect("send completion coordinator lock must not be poisoned")
+            .projections_for_key(key);
+        let actor_generation = self
+            .timeline_actor_generations
+            .current_generation(key)
+            .unwrap_or_default();
+        let published = match actor_tx {
+            Some(actor_tx) => {
+                publish_pending_send_projection(actor_tx, actor_generation, pending_projections)
+                    .await
+            }
+            None => false,
+        };
+        if !published {
+            self.send_completion
+                .lock()
+                .expect("send completion coordinator lock must not be poisoned")
+                .cancel_registration(registration_id);
+            self.emit_failure(
+                request_id,
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::QueueOverflow,
+                },
+            );
+            return;
+        }
         let preflight_started = self.spawn_send_enqueue(context, registration, None, payload);
         // Directly-owned futures are not independently scheduled Tokio tasks. Drive this
         // admitted worker through its permit to the start of payload-specific preflight before
@@ -1862,12 +1976,11 @@ impl TimelineActor {
                         .send_completion
                         .lock()
                         .expect("send completion coordinator lock must not be poisoned");
-                    coordinator.stage_pending_send(
-                        self.key.room_id(),
-                        &sdk_transaction_id,
-                        "local_echo_observed",
-                    );
-                    coordinator.reconcile_local_echo(self.key.room_id(), &sdk_transaction_id);
+                    // The send queue's local-echo update is not a Timeline slot. The direct
+                    // route publishes its manager-owned projection and waits for the actor ACK
+                    // before starting the SDK send, so it is now safe to retire that fallback;
+                    // a canonical transaction is reconciled in relay.rs after its batch commits.
+                    coordinator.observe_local_echo(self.key.room_id(), &sdk_transaction_id);
                 }
                 remember_local_echo(&mut self.send_statuses, &mut self.send_handles, &echo);
                 let projections = self
@@ -1880,13 +1993,11 @@ impl TimelineActor {
             }
             RoomSendQueueUpdate::CancelledLocalEvent { transaction_id } => {
                 let sdk_txn_str = transaction_id.to_string();
-                self.send_statuses
-                    .insert(sdk_txn_str.clone(), TimelineSendState::Cancelled);
+                self.update_send_status(&sdk_txn_str, TimelineSendState::Cancelled);
                 self.send_handles.remove(&sdk_txn_str);
             }
             RoomSendQueueUpdate::ReplacedLocalEvent { transaction_id, .. } => {
-                self.send_statuses
-                    .insert(transaction_id.to_string(), TimelineSendState::Sending);
+                self.update_send_status(&transaction_id.to_string(), TimelineSendState::Sending);
             }
             RoomSendQueueUpdate::SendError {
                 transaction_id,
@@ -1894,8 +2005,8 @@ impl TimelineActor {
                 ..
             } => {
                 let sdk_txn_str = transaction_id.to_string();
-                self.send_statuses.insert(
-                    sdk_txn_str.clone(),
+                self.update_send_status(
+                    &sdk_txn_str,
                     TimelineSendState::NotSent {
                         reason: send_failure_reason(is_recoverable),
                     },
@@ -1907,8 +2018,7 @@ impl TimelineActor {
                     .lock()
                     .expect("send completion coordinator lock must not be poisoned")
                     .stage_pending_send(self.key.room_id(), &sdk_transaction_id, "retry_scheduled");
-                self.send_statuses
-                    .insert(sdk_transaction_id, TimelineSendState::Sending);
+                self.update_send_status(&sdk_transaction_id, TimelineSendState::Sending);
             }
             RoomSendQueueUpdate::SentEvent {
                 transaction_id,
@@ -1917,8 +2027,7 @@ impl TimelineActor {
                 // Presentation-only mirror: manager-global correlation owns the
                 // request/client transaction terminal.
                 let sdk_txn_str = transaction_id.to_string();
-                self.send_statuses
-                    .insert(sdk_txn_str.clone(), TimelineSendState::Sent);
+                self.update_send_status(&sdk_txn_str, TimelineSendState::Sent);
                 self.send_handles.remove(&sdk_txn_str);
                 self.sent_event_txns
                     .insert(event_id.to_string(), transaction_id.clone());
@@ -2172,6 +2281,7 @@ pub(super) struct SendCompletionCoordinator {
     retained_projections: HashMap<SendCorrelationKey, RetainedPendingProjection>,
     hydrated_projection_order: VecDeque<SendCorrelationKey>,
     unmatched_terminals: HashMap<SendCorrelationKey, VecDeque<ObservedSendTerminal>>,
+    unmatched_local_echoes: HashSet<SendCorrelationKey>,
     settled_send_tombstones: HashSet<SendCorrelationKey>,
     settled_send_order: VecDeque<SendCorrelationKey>,
 }
@@ -2204,6 +2314,7 @@ impl SendLifecycleTrace {
         }
     }
 
+    #[cfg(test)]
     fn correlation(&self) -> u64 {
         self.state
             .lock()
@@ -2376,6 +2487,7 @@ struct SendLifecycleTraceState {
 
 struct RetainedPendingProjection {
     projection: PendingSendProjection,
+    submission_id: Option<koushi_state::SubmissionId>,
     lifecycle_trace: SendLifecycleTrace,
     hydration_in_flight: bool,
 }
@@ -2389,6 +2501,7 @@ struct CoordinatedPendingSend {
     request_id: RequestId,
     settles_composer: bool,
     failure_reported: bool,
+    local_echo_observed: bool,
     interactive_guard: Option<InteractiveWorkGuard>,
     lifecycle_trace: SendLifecycleTrace,
     projection: Option<PendingSendProjection>,
@@ -2483,6 +2596,7 @@ impl SendCompletionRegistration {
                     request_id,
                     settles_composer,
                     failure_reported: false,
+                    local_echo_observed: false,
                     interactive_guard: None,
                     lifecycle_trace: lifecycle_trace.clone(),
                     projection,
@@ -2520,6 +2634,7 @@ impl SendCompletionRegistration {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn bind(&mut self, sdk_transaction_id: String) {
         let _ = self.bind_with_handle(sdk_transaction_id, None);
     }
@@ -2836,20 +2951,64 @@ impl SendCompletionCoordinator {
         }
     }
 
+    pub(super) fn observe_local_echo(
+        &mut self,
+        room_id: &str,
+        sdk_transaction_id: &str,
+    ) -> Option<TimelineKey> {
+        let correlation = SendCorrelationKey {
+            room_id: room_id.to_owned(),
+            sdk_transaction_id: sdk_transaction_id.to_owned(),
+        };
+        if self.settled_send_tombstones.contains(&correlation) {
+            return None;
+        }
+        if let Some(pending) = self.pending_sends.get_mut(&correlation) {
+            pending.local_echo_observed = true;
+            pending.lifecycle_trace.stage("local_echo_observed");
+            return None;
+        }
+        if self.room_has_active_registration(room_id)
+            && self.unmatched_local_echoes.len() < MAX_PENDING_SEND_PROJECTIONS
+        {
+            self.unmatched_local_echoes.insert(correlation);
+        }
+        None
+    }
+
     pub(super) fn reconcile_local_echo(
         &mut self,
         room_id: &str,
         sdk_transaction_id: &str,
     ) -> Option<TimelineKey> {
-        let pending = self.pending_sends.get_mut(&SendCorrelationKey {
+        let correlation = SendCorrelationKey {
             room_id: room_id.to_owned(),
             sdk_transaction_id: sdk_transaction_id.to_owned(),
-        })?;
+        };
+        let pending = self.pending_sends.get_mut(&correlation)?;
         if pending.projection.take().is_some() {
             pending.lifecycle_trace.stage_once("sdk_local_echo_merged");
             return Some(pending.key.clone());
         }
         None
+    }
+
+    pub(super) fn reconcile_canonical_local_echo(
+        &mut self,
+        room_id: &str,
+        sdk_transaction_id: &str,
+    ) -> Option<TimelineKey> {
+        let correlation = SendCorrelationKey {
+            room_id: room_id.to_owned(),
+            sdk_transaction_id: sdk_transaction_id.to_owned(),
+        };
+        let pending = self.pending_sends.get_mut(&correlation)?;
+        if pending.submission_id.is_none() && pending.projection.is_some() {
+            pending.local_echo_observed = true;
+            pending.lifecycle_trace.stage("local_echo_observed");
+            return Some(pending.key.clone());
+        }
+        self.reconcile_local_echo(room_id, sdk_transaction_id)
     }
 
     fn activate_registration(&mut self, registration_id: u64) -> bool {
@@ -2932,12 +3091,23 @@ impl SendCompletionCoordinator {
             .count()
     }
 
+    pub(super) fn drop_direct_retained_for_key(&mut self, key: &TimelineKey) {
+        self.retained_projections.retain(|_, retained| {
+            retained.submission_id.is_some() || retained.projection.key != *key
+        });
+        let retained = &self.retained_projections;
+        self.hydrated_projection_order
+            .retain(|correlation| retained.contains_key(correlation));
+    }
+
     fn purge_unmatched_for_inactive_room(&mut self, room_id: &str) {
         if self.room_has_active_registration(room_id) {
             return;
         }
         self.unmatched_terminals
             .retain(|correlation, _| correlation.room_id != room_id);
+        self.unmatched_local_echoes
+            .retain(|correlation| correlation.room_id != room_id);
     }
 
     fn remember_settled(&mut self, correlation: SendCorrelationKey) {
@@ -2975,6 +3145,7 @@ impl SendCompletionCoordinator {
             room_id: registration.key.room_id().to_owned(),
             sdk_transaction_id,
         };
+        let local_echo_observed_before_binding = self.unmatched_local_echoes.remove(&correlation);
         if self.settled_send_tombstones.contains(&correlation)
             || self.pending_sends.contains_key(&correlation)
         {
@@ -2991,6 +3162,12 @@ impl SendCompletionCoordinator {
                 transaction_id: correlation.sdk_transaction_id.clone(),
             };
             projection.handle = handle;
+        }
+        if local_echo_observed_before_binding {
+            registration.local_echo_observed = true;
+            registration
+                .lifecycle_trace
+                .stage_once("local_echo_observed");
         }
         self.pending_sends.insert(correlation.clone(), registration);
         let observed = self
@@ -3135,22 +3312,30 @@ impl SendCompletionCoordinator {
                 pending.lifecycle_trace.stage_once("guard_released");
                 let _send_guard = pending.interactive_guard.take();
                 let settles_composer = pending.settles_composer && !pending.failure_reported;
-                if let Some(projection) = pending.projection.as_mut() {
-                    pending.lifecycle_trace.stage_once("sdk_local_echo_missing");
-                    projection.terminal_event_id = Some(event_id.clone());
-                    projection.phase = PendingSendPhase::SentAwaitingRemote;
-                    projection.item.id = TimelineItemId::Event {
-                        event_id: event_id.clone(),
-                    };
-                    projection.item.send_state = Some(TimelineSendState::Sent);
-                    projection.handle = None;
+                let retain_projection =
+                    pending.submission_id.is_some() || !pending.local_echo_observed;
+                let mut projection = pending.projection.take();
+                if let Some(projection) = projection.as_mut() {
+                    if retain_projection {
+                        pending.lifecycle_trace.stage_once("sdk_local_echo_missing");
+                        projection.terminal_event_id = Some(event_id.clone());
+                        projection.phase = PendingSendPhase::SentAwaitingRemote;
+                        projection.item.id = TimelineItemId::Event {
+                            event_id: event_id.clone(),
+                        };
+                        projection.item.send_state = Some(TimelineSendState::Sent);
+                        projection.handle = None;
+                    }
                 }
-                let projection = pending.projection.take();
+                if !retain_projection {
+                    projection = None;
+                }
                 if let Some(projection) = projection {
                     self.retained_projections.insert(
                         correlation.clone(),
                         RetainedPendingProjection {
                             projection,
+                            submission_id: pending.submission_id.clone(),
                             lifecycle_trace: pending.lifecycle_trace.clone(),
                             hydration_in_flight: false,
                         },

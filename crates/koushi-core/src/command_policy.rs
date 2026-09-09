@@ -271,6 +271,7 @@ fn account_command_requires_ready_session(command: &AccountCommand) -> bool {
             | AccountCommand::SetLocalUserAlias { .. }
             | AccountCommand::SetAvatar { .. }
             | AccountCommand::DownloadAvatarThumbnail { .. }
+            | AccountCommand::CancelAvatarThumbnail { .. }
             | AccountCommand::IgnoreUser { .. }
             | AccountCommand::UnignoreUser { .. }
             | AccountCommand::ReportUser { .. }
