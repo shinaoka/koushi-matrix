@@ -1359,6 +1359,24 @@ Evidence: `/tmp/koushi-final-state-core.log`. This is not the full State integra
 suite or final workspace gate. Fetched main has additional fixes; integrate those
 before collecting the remaining final evidence.
 
+## Final gate checkpoint after main integration
+
+Merged origin/main at 10c30dd6, preserving main's own-avatar reuse and reconnect
+fixes. Resolved the overview conflict by retaining both the new delivery boundary
+and main's existing own-avatar behavior. On this integrated code:
+
+- `cargo test --workspace` passed, including Tauri and integration/doc tests
+  (`/tmp/koushi-final-workspace.log`). Existing ignored tests remain ignored.
+- Frontend: 1,311 tests/113 files passed; build (including typecheck) and lint
+  passed. Vite emitted its existing large-chunk warning, not a failure.
+- SDK gitlink, leaf boundaries, Rust test structure and secret scan passed.
+- The four changed Playwright files passed 20 tests with one worker, covering
+  math layout, room address, thread opening and receipt popup geometry.
+
+Logs: `/tmp/koushi-final-{frontend,build,lint,secrets,playwright}.log`.
+This is not yet the final all-requirements audit: real-server gates, the remaining
+coherent diff review, PR/exact-head CI/human approval and merge are outstanding.
+
 ## Current next steps
 
 - Diagnostic wording: the report now explicitly describes avatar counts as items,
