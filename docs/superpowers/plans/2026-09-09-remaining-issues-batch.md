@@ -930,6 +930,27 @@ backends. It is not the 1,500-member/avatar demand scenario, and proves neither
 avatar cancellation nor viewport request bounds by itself. Those requirements
 and the remaining surface migration/final delivery remain open.
 
+## #839 1,500-reader server fixture builder
+
+Added `scripts/lib/avatar-demand-fixture.mjs` using the existing Node registration,
+room, join, message and read-marker helpers. It creates 1,500 synthetic readers,
+uploads a distinct PNG resource for each, sets profiles before joining, then sends
+one target message after membership events and adds all receipts. Eight requests
+at most run concurrently; failed batches settle before rejecting with a closed,
+credential-free error. Duplicate media URIs fail rather than weakening the test
+to one shared resource. Returned metadata contains only room/event IDs and count.
+
+This keeps fixture seeding outside the Core-only command/event QA flow. The
+builder is not yet invoked by the runner: Core scenario integration remains the
+next step, including its source/metadata admission and observation checks.
+
+Three fixture tests passed using mocked HTTP responses: full population/order and
+concurrency, duplicate-resource rejection, and bounded/sanitized batch failure.
+Typecheck and lint passed after adding the ordinary `.d.mts` declaration used by
+other script modules. Evidence: `/tmp/koushi-avatar-fixture-final.log`. These are
+fixture tests, not 1,500-reader real-server or avatar-demand acceptance evidence.
+No product RED or backend-scale completion claim is made.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated
