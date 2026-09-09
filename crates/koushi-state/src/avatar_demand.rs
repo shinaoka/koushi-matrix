@@ -101,6 +101,23 @@ struct ScopeDemand {
     prefetch: Vec<Option<String>>,
 }
 
+impl ScopeDemand {
+    fn new(
+        revision: u64,
+        visible: Vec<Option<String>>,
+        prefetch: Vec<Option<String>>,
+    ) -> Result<Self, AvatarDemandError> {
+        if visible.len() > AVATAR_VISIBLE_CAPACITY || prefetch.len() > AVATAR_PREFETCH_CAPACITY {
+            return Err(AvatarDemandError::Capacity);
+        }
+        Ok(Self {
+            revision,
+            visible,
+            prefetch,
+        })
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AvatarDemandState {
     context: AvatarDemandContext,
@@ -196,15 +213,38 @@ impl AvatarDemandState {
         if revision <= current.revision {
             return Err(AvatarDemandError::StaleObservation);
         }
-        if visible.len() > AVATAR_VISIBLE_CAPACITY || prefetch.len() > AVATAR_PREFETCH_CAPACITY {
-            return Err(AvatarDemandError::Capacity);
-        }
-        *current = Arc::new(ScopeDemand {
-            revision,
-            visible,
-            prefetch,
-        });
+        *current = Arc::new(ScopeDemand::new(revision, visible, prefetch)?);
         Ok(())
+    }
+
+    /// Re-resolve accepted identities without consuming a host observation revision.
+    pub fn refresh(
+        &mut self,
+        scope: u64,
+        visible: Vec<Option<String>>,
+        prefetch: Vec<Option<String>>,
+    ) -> Result<bool, AvatarDemandError> {
+        let current = self
+            .scopes
+            .get_mut(&scope)
+            .ok_or(AvatarDemandError::Closed)?;
+        if current.visible == visible && current.prefetch == prefetch {
+            return Ok(false);
+        }
+        *current = Arc::new(ScopeDemand::new(current.revision, visible, prefetch)?);
+        Ok(true)
+    }
+
+    /// Resource interests, ignoring host observation counters. A new scope is
+    /// still a new consumer even if another scope requests the same resource.
+    pub fn same_resource_demand(&self, other: &Self) -> bool {
+        self.context == other.context
+            && self.scopes.len() == other.scopes.len()
+            && self.scopes.iter().all(|(id, scope)| {
+                other.scopes.get(id).is_some_and(|other| {
+                    scope.visible == other.visible && scope.prefetch == other.prefetch
+                })
+            })
     }
 
     pub fn close(&mut self, scope: u64) -> bool {

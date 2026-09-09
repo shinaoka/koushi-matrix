@@ -36,7 +36,32 @@ fn reserve(
         .ok_or(ScopeError::Capacity)
 }
 
+fn map_error(error: AvatarDemandError) -> ScopeError {
+    match error {
+        AvatarDemandError::SessionChanged => ScopeError::InactiveSession,
+        AvatarDemandError::Closed => ScopeError::Closed,
+        AvatarDemandError::StaleObservation => ScopeError::InvalidRevision,
+        AvatarDemandError::Capacity => ScopeError::Capacity,
+    }
+}
+
 impl ChargedAvatarDemand {
+    pub(crate) fn refresh(
+        &mut self,
+        scope: u64,
+        visible: Vec<Option<String>>,
+        prefetch: Vec<Option<String>>,
+        budget: &ViewBudget,
+    ) -> Result<bool, ScopeError> {
+        let mut next = self.state.clone();
+        if !next.refresh(scope, visible, prefetch).map_err(map_error)? {
+            return Ok(false);
+        }
+        let charge = reserve(&next, scope, budget)?;
+        self.state = next;
+        self.charges.insert(scope, charge);
+        Ok(true)
+    }
     pub(crate) fn new(state: AvatarDemandState, budget: &ViewBudget) -> Result<Self, ScopeError> {
         let mut charges = BTreeMap::new();
         for scope in state.scope_ids() {
@@ -60,12 +85,6 @@ impl ChargedAvatarDemand {
         prefetch: Vec<Option<String>>,
         budget: &ViewBudget,
     ) -> Result<(), ScopeError> {
-        let map_error = |error| match error {
-            AvatarDemandError::SessionChanged => ScopeError::InactiveSession,
-            AvatarDemandError::Closed => ScopeError::Closed,
-            AvatarDemandError::StaleObservation => ScopeError::InvalidRevision,
-            AvatarDemandError::Capacity => ScopeError::Capacity,
-        };
         // Copy only the bounded scope map; unchanged payloads and charges share
         // their owners. Do not install a new revision until reservation succeeds.
         let mut next = self.state.clone();
@@ -146,6 +165,24 @@ mod tests {
         let remaining = budget.reserve_bytes(256 * 1024 * 1024 - bytes).unwrap();
         let context = current.context().clone();
         assert_eq!(
+            current.refresh(
+                1,
+                vec![Some("mxc://example.invalid/one".into())],
+                vec![],
+                &budget
+            ),
+            Ok(false)
+        );
+        assert_eq!(
+            current.refresh(
+                1,
+                vec![Some("mxc://example.invalid/two".into())],
+                vec![],
+                &budget
+            ),
+            Err(ScopeError::Capacity)
+        );
+        assert_eq!(
             current.replace(
                 &context,
                 1,
@@ -161,6 +198,15 @@ mod tests {
             ["mxc://example.invalid/one"]
         );
         drop(remaining);
+        assert_eq!(
+            current.refresh(
+                1,
+                vec![Some("mxc://example.invalid/two".into())],
+                vec![],
+                &budget
+            ),
+            Ok(true)
+        );
         current
             .replace(
                 &context,

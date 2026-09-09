@@ -24,11 +24,19 @@ impl AccountActor {
                 return;
             }
         }
+        let publish_cached = match (&self.avatar_demand, &next) {
+            (Some(previous), Some(next)) => !next.same_resource_demand(previous),
+            _ => true,
+        };
         self.avatar_demand = next;
-        self.reconcile_avatar_demand(true).await;
+        self.reconcile_avatar_demand(true, publish_cached).await;
     }
 
-    pub(super) async fn reconcile_avatar_demand(&mut self, publish_cached: bool) {
+    pub(super) async fn reconcile_avatar_demand(
+        &mut self,
+        revalidate_ready: bool,
+        publish_cached: bool,
+    ) {
         // The Arc is a bounded resolved-demand snapshot, not a clone of AppState.
         let demand = self.avatar_demand.clone();
         let resources = demand
@@ -62,12 +70,14 @@ impl AccountActor {
             // Revalidate Ready bytes when an observation is published, not on
             // every completion: a working set larger than the renderable LRU
             // must not drive an endless eviction/refill loop.
-            let cached = if publish_cached {
+            let cached = if revalidate_ready {
                 self.cached_avatar_thumbnail(uri)
             } else {
                 self.avatar_cache.get(uri).cloned()
             };
             if let Some(cached) = cached {
+                // Revision-only observations follow model updates; echoing
+                // cached state again would continuously invalidate those models.
                 if publish_cached {
                     self.send_actions(vec![AppAction::AvatarThumbnailUpdated {
                         mxc_uri: uri.to_owned(),

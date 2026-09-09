@@ -623,7 +623,7 @@ impl AccountActor {
                 },
             ));
         }
-        self.reconcile_avatar_demand(false).await;
+        self.reconcile_avatar_demand(false, false).await;
     }
 
     /// Cancel one renderer waiter. The fetch remains alive while another

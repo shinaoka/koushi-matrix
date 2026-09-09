@@ -62,6 +62,42 @@ impl Drop for ReaderWork {
     }
 }
 
+struct ObservedReaderAvatars {
+    context: koushi_state::AvatarDemandContext,
+    visible: Vec<String>,
+    prefetch: Vec<String>,
+    _bytes: ViewReservation,
+}
+
+impl ObservedReaderAvatars {
+    fn retain(
+        context: &koushi_state::AvatarDemandContext,
+        visible: &[String],
+        prefetch: &[String],
+        budget: &crate::view_budget::ViewBudget,
+    ) -> Result<Self, ScopeError> {
+        // The inline record is already charged in Control's ReaderRequest.
+        // Reserve its backing strings/vectors before retaining copies.
+        let bytes =
+            visible
+                .iter()
+                .chain(prefetch)
+                .try_fold(context.account_id.len(), |bytes, id| {
+                    bytes
+                        .checked_add(std::mem::size_of::<String>())
+                        .and_then(|bytes| bytes.checked_add(id.len()))
+                        .ok_or(ScopeError::Capacity)
+                })?;
+        let reservation = budget.reserve_bytes(bytes).ok_or(ScopeError::Capacity)?;
+        Ok(Self {
+            context: context.clone(),
+            visible: visible.to_vec(),
+            prefetch: prefetch.to_vec(),
+            _bytes: reservation,
+        })
+    }
+}
+
 /// The scope's request, not a second copy of timeline/receipt ordering.
 pub(super) struct ReaderRequest {
     source: ReceiptSourceRef,
@@ -74,10 +110,36 @@ pub(super) struct ReaderRequest {
     dirty: bool,
     source_dirty: bool,
     accepted_raw: Option<std::sync::Arc<ChargedRaw>>,
+    avatar_observation: Option<ObservedReaderAvatars>,
     _bytes: ViewReservation,
 }
 
 impl ReaderRequest {
+    pub(super) fn refresh_avatar_demand(
+        &self,
+        scope: ViewScopeId,
+        current: &super::ChargedAvatarDemand,
+        rows: &super::model::InstalledRows,
+        budget: &crate::view_budget::ViewBudget,
+    ) -> Result<Option<super::ChargedAvatarDemand>, ScopeError> {
+        let Some(observation) = &self.avatar_observation else {
+            return Ok(None);
+        };
+        if &observation.context != current.context() || !current.scope_ids().any(|id| id == scope.0)
+        {
+            return Ok(None);
+        }
+        let mut next = current.clone();
+        if !next.refresh(
+            scope.0,
+            rows.resolve_avatar_resources(&observation.visible),
+            rows.resolve_avatar_resources(&observation.prefetch),
+            budget,
+        )? {
+            return Ok(None);
+        }
+        Ok(Some(next))
+    }
     pub(super) fn accepts(&self, window: &ReaderWindow) -> bool {
         window.source == self.source
             && window.window_sequence == self.window_sequence
@@ -216,6 +278,8 @@ impl ViewConsumer {
             for user_id in visible.iter().chain(prefetch) {
                 rows.avatar_mxc(user_id)?;
             }
+            let observation =
+                ObservedReaderAvatars::retain(context, visible, prefetch, &self.0.registry.budget)?;
             let mut state = self
                 .0
                 .registry
@@ -255,21 +319,8 @@ impl ViewConsumer {
                     .current_rows()
                     .ok_or(ScopeError::SourceUnavailable)?
             };
-            let resolve = |ids: &[String]| {
-                ids.iter()
-                    .map(|user_id| {
-                        // A formerly visible identity absent from the current window
-                        // is a placeholder, never a request for its old resource.
-                        current
-                            .avatar_mxc(user_id)
-                            .ok()
-                            .flatten()
-                            .map(str::to_owned)
-                    })
-                    .collect::<Vec<_>>()
-            };
-            let visible = resolve(visible);
-            let prefetch = resolve(prefetch);
+            let visible = current.resolve_avatar_resources(visible);
+            let prefetch = current.resolve_avatar_resources(prefetch);
             // Only AppActor may establish a session context. If it cleared or
             // changed during resolution, do not recreate the captured context.
             let mut next = state
@@ -285,6 +336,13 @@ impl ViewConsumer {
                 prefetch,
                 &self.0.registry.budget,
             )?;
+            control
+                .reader
+                .lock()
+                .expect("reader request poisoned")
+                .as_mut()
+                .ok_or(ScopeError::Closed)?
+                .avatar_observation = Some(observation);
             state.avatar_demand = Some(std::sync::Arc::new(next));
             self.0.registry.reader_work.notify_one();
             Ok(())
@@ -363,6 +421,7 @@ impl ViewConsumer {
                 dirty: false,
                 source_dirty: false,
                 accepted_raw: None,
+                avatar_observation: None,
                 _bytes: bytes,
             });
         }

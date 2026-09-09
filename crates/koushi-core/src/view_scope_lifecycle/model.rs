@@ -26,6 +26,15 @@ pub(crate) struct InstalledRows {
 }
 
 impl InstalledRows {
+    pub(crate) fn resolve_avatar_resources(&self, user_ids: &[String]) -> Vec<Option<String>> {
+        // A formerly observed identity absent from the current projection is a
+        // placeholder, never a request for its obsolete resource.
+        user_ids
+            .iter()
+            .map(|id| self.avatar_mxc(id).ok().flatten().map(str::to_owned))
+            .collect()
+    }
+
     pub(crate) fn avatar_mxc(&self, user_id: &str) -> Result<Option<&str>, ScopeError> {
         if !self.rows.iter().any(|row| row.user_id == user_id) {
             return Err(ScopeError::InvalidModel);

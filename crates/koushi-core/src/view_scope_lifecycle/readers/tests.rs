@@ -39,6 +39,25 @@ async fn accept_profile_raw(registry: &ViewScopeRegistry, work: &mut ReaderWork,
     registry.accept_reader_raw(work, retained).unwrap();
 }
 
+#[test]
+fn retained_reader_avatar_identities_release_their_budget_with_the_owner() {
+    let budget = crate::view_budget::ViewBudget::default();
+    let context = koushi_state::AvatarDemandContext {
+        account_id: "account".into(),
+        session_generation: 1,
+    };
+    let ids = vec!["@visible:example.invalid".to_owned()];
+    let observed = super::ObservedReaderAvatars::retain(&context, &ids, &[], &budget).unwrap();
+    let bytes = observed._bytes.bytes();
+    let _remaining = budget.reserve_bytes(256 * 1024 * 1024 - bytes).unwrap();
+    assert!(matches!(
+        super::ObservedReaderAvatars::retain(&context, &ids, &[], &budget),
+        Err(ScopeError::Capacity)
+    ));
+    drop(observed);
+    assert!(budget.reserve_bytes(bytes).is_some());
+}
+
 #[tokio::test]
 async fn avatar_observation_requires_a_live_source_even_with_an_installed_model() {
     use koushi_protocol::view::{ReaderWindow, ResolvedReaderAnchor, ViewModel};
@@ -123,6 +142,18 @@ async fn avatar_observation_requires_a_live_source_even_with_an_installed_model(
         installed.scope_ids().collect::<Vec<_>>(),
         vec![scope.id().0]
     );
+    let mut unchanged = raw.clone().into_resolved(koushi_state::CatalogLocale::En);
+    let resources = std::mem::take(&mut unchanged.avatar_resources);
+    registry
+        .publish_current(scope.id(), model.clone(), resources, &unchanged)
+        .unwrap();
+    assert!(
+        std::sync::Arc::ptr_eq(
+            &installed,
+            &registry.avatar_demand_for_context(Some(&context)).unwrap()
+        ),
+        "unchanged bindings must not republish demand on thumbnail/model updates"
+    );
     // The next projection changes only private resource identity. The host has
     // not acknowledged it and must not be able to restore the old URI.
     raw.receipts[0].avatar.as_mut().unwrap().mxc_uri =
@@ -132,6 +163,14 @@ async fn avatar_observation_requires_a_live_source_even_with_an_installed_model(
     let next_revision = registry
         .publish_current(scope.id(), model.clone(), resources, &rebound)
         .unwrap();
+    assert_eq!(
+        registry
+            .avatar_demand_for_context(Some(&context))
+            .unwrap()
+            .resources_by_priority(),
+        ["mxc://example.invalid/rebound-reader-avatar"],
+        "reprojection must refresh demand without host re-observation"
+    );
     consumer
         .observe_reader_avatars(
             scope.id(),
@@ -175,6 +214,14 @@ async fn avatar_observation_requires_a_live_source_even_with_an_installed_model(
     registry
         .publish_current(scope.id(), model, vec![], &rebound)
         .unwrap();
+    assert!(
+        registry
+            .avatar_demand_for_context(Some(&context))
+            .unwrap()
+            .resources_by_priority()
+            .is_empty(),
+        "avatar removal must withdraw demand without another observation"
+    );
     consumer
         .observe_reader_avatars(
             scope.id(),

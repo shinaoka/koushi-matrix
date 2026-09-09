@@ -1312,7 +1312,7 @@ impl AccountActor {
                     if changed.is_err() {
                         demand_channel_open = false;
                         self.avatar_demand = None;
-                        self.reconcile_avatar_demand(false).await;
+                        self.reconcile_avatar_demand(false, false).await;
                     } else {
                         self.accept_avatar_demand().await;
                     }

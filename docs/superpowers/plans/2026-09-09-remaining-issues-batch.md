@@ -845,6 +845,40 @@ source changes refresh existing demand without another observation: retaining
 charged stable observation IDs and using the existing reader publication path
 for that refresh is still required. Other surfaces and final delivery remain open.
 
+## #839 reader reprojection refresh and cache-echo convergence
+
+ReaderRequest now retains its accepted stable user IDs and session context, with
+backing data charged to the existing ViewBudget. Successful reader publication
+resolves those IDs against the new private metadata and atomically refreshes the
+scope's resource demand alongside the model commit. URI changes and removals no
+longer wait for host re-observation. Refresh preserves the host sequence, skips
+unchanged resources and does not revive an absent/different-context demand.
+Model serialization remains outside source/registry locks; the bounded resource
+refresh performs no I/O. No additional registry or downloader was introduced.
+
+The no-re-observation test first failed with the obsolete URI, then passed for
+replacement/removal. Tests also cover retained-ID budget release, failed refresh
+preserving prior demand, refresh not consuming a host sequence, and unchanged
+bindings preserving publication identity.
+
+A second behavioral RED exposed cached-result echoes on revision-only host
+observations, which can invalidate reader models again. AccountActor now separates
+Ready-byte revalidation from cached-action replay. It still revalidates bytes on
+observations, but does not replay cached actions when scope resource interests
+are unchanged. A real mock media request followed by a deterministic actor barrier
+proves no second cached update; eviction/rehydration and failed-cache tests still
+pass.
+
+10 profile, 22 lifecycle, 23 connection and six state tests passed (61 total), plus
+normal Core check, formatting, structure and whitespace. Logs:
+`/tmp/koushi-reader-refresh-{red,green,regression,final-check}.log`,
+`/tmp/koushi-reader-cache-echo-red.log`.
+
+This completes automatic re-resolution for the existing full-reader source path,
+not other avatar surfaces or the required both-server 1,500-target scenario.
+Global renderer URI demand removal, broader final gates and single PR/merge are
+still pending.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated

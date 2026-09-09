@@ -578,6 +578,52 @@ async fn stale_scoped_demand_does_not_cancel_the_current_accounts_fetch() {
 }
 
 #[tokio::test]
+async fn unchanged_scoped_resources_do_not_echo_cached_updates_on_new_observation_revisions() {
+    let _cache_guard = crate::renderable_thumbnail::test_cache_lock();
+    let server = MatrixMockServer::new().await;
+    server
+        .mock_authed_media_download()
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![1, 2, 3]))
+        .expect(1)
+        .mount()
+        .await;
+    let session = test_session(&server).await;
+    let account_id = session.info.user_id.clone();
+    let cred_dir = tempdir().unwrap();
+    let data_dir = tempdir().unwrap();
+    let (handle, mut actions, _events) = spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+    assert!(
+        handle
+            .install_residency_test_session(std::sync::Arc::new(session))
+            .await
+    );
+    let context = handle.avatar_demand_context(account_id);
+    let uri = "mxc://localhost/unchanged-scope-observation";
+    let mut demand = koushi_state::AvatarDemandState::new(context.clone());
+    demand.open(1).unwrap();
+    demand
+        .replace(&context, 1, 1, vec![Some(uri.into())], vec![])
+        .unwrap();
+    handle.publish_avatar_demand(Some(std::sync::Arc::new(demand.clone())));
+    timeout(Duration::from_secs(3), async {
+        'ready: loop {
+            for action in actions.recv().await.unwrap() {
+                if matches!(action, AppAction::AvatarThumbnailUpdated { mxc_uri, thumbnail: AvatarThumbnailState::Ready { .. } } if mxc_uri == uri) { break 'ready; }
+            }
+        }
+    }).await.expect("initial download must settle");
+    demand
+        .replace(&context, 1, 2, vec![Some(uri.into())], vec![])
+        .unwrap();
+    handle.publish_avatar_demand(Some(std::sync::Arc::new(demand)));
+    // The actor consumes pending watch input before processing this barrier.
+    shutdown_and_ack(&handle).await;
+    while let Ok(batch) = actions.try_recv() {
+        assert!(!batch.iter().any(|action| matches!(action, AppAction::AvatarThumbnailUpdated { mxc_uri, .. } if mxc_uri == uri)), "unchanged demand must not generate another reader-invalidating cache echo");
+    }
+}
+
+#[tokio::test]
 async fn scoped_avatar_watch_cancels_active_and_queued_demand() {
     let _cache_guard = crate::renderable_thumbnail::test_cache_lock();
     let server = MatrixMockServer::new().await;

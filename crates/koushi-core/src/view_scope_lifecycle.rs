@@ -259,38 +259,50 @@ impl ViewScopeRegistry {
         Ok(revision)
     }
 
-    // Source fencing may wrap this short operation, never serialization/preparation.
+    // Model serialization stays outside source fencing. This bounded commit
+    // also refreshes accepted avatar identities; it performs no I/O.
     fn commit_prepared(
         &self,
         scope: ViewScopeId,
         prepared: &Arc<model::PreparedModel>,
     ) -> Result<(ViewRevision, Option<Arc<model::PreparedModel>>), ScopeError> {
-        let state = self.state.lock().expect("view registry poisoned");
-        let entry = state.scopes.get(&scope).ok_or(ScopeError::Closed)?;
-        let retired = entry.control.retired.lock().expect("view control poisoned");
+        let mut state = self.state.lock().expect("view registry poisoned");
+        let control = state
+            .scopes
+            .get(&scope)
+            .ok_or(ScopeError::Closed)?
+            .control
+            .clone();
+        let retired = control.retired.lock().expect("view control poisoned");
         if retired.is_some() {
             return Err(ScopeError::Closed);
         }
+        let mut avatar_update = None;
         if let ViewModel::ReaderReady(window) = &prepared.model {
-            let request = entry
-                .control
-                .reader
-                .lock()
-                .expect("reader request poisoned");
-            if !request
+            let request = control.reader.lock().expect("reader request poisoned");
+            let request = request
                 .as_ref()
-                .is_some_and(|request| request.accepts(window))
-            {
-                return Err(ScopeError::InvalidModel);
+                .filter(|request| request.accepts(window))
+                .ok_or(ScopeError::InvalidModel)?;
+            if let Some(current) = &state.avatar_demand {
+                avatar_update = request.refresh_avatar_demand(
+                    scope,
+                    current,
+                    &prepared.installed,
+                    &self.budget,
+                )?;
             }
         }
-        let committed = entry
-            .control
+        let committed = control
             .mailbox
             .lock()
             .expect("view mailbox poisoned")
             .publish(prepared)?;
-        entry.control.wake.notify_one();
+        if let Some(next) = avatar_update {
+            state.avatar_demand = Some(Arc::new(next));
+            self.reader_work.notify_one();
+        }
+        control.wake.notify_one();
         Ok(committed)
     }
 
