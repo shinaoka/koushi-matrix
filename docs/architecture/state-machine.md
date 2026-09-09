@@ -9,7 +9,7 @@ Core command/actor path; tests may interpret effects through local fixtures.
 The state-transition diagrams in this document are normative and must track the
 reducer; see [Maintenance Contract](#maintenance-contract).
 
-Date: 2026-09-04
+Date: 2026-09-09
 
 ## Contract
 

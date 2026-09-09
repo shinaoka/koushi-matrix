@@ -8,6 +8,7 @@ mod composer_shortcuts;
 mod effect;
 mod locale_profile;
 mod reducer;
+mod room_address;
 mod sidebar;
 mod state;
 mod submission;
@@ -31,6 +32,7 @@ pub use locale_profile::{
     resolve_locale_display_profile,
 };
 pub use reducer::reduce;
+pub use room_address::{RoomAddressError, RoomAddressPreview, suggest_room_alias_localpart};
 pub use sidebar::{
     AccountHomeItem, RoomListItem, SidebarModel, SidebarSections, SpaceRailItem, compose_sidebar,
     compose_sidebar_for_state, compose_sidebar_with_account_facts,

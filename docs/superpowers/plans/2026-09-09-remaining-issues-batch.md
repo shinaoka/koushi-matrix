@@ -97,6 +97,72 @@ Rust iteration reuses the existing main target with line-tables-only dev debug
 information and CARGO_BUILD_JOBS=4; these are functional tests, not performance
 measurements.
 
+## #839 acceptance audit checkpoint
+
+Merged #857 already bounds the avatar actor to six active downloads plus 256
+pending URIs (`account/profile.rs`), retains per-request waiters, cancels the last
+consumer, and rejects canceled completions. Existing real MatrixMockServer tests
+exercise capacity and cancellation. `domain/avatarThumbnails.ts` now eagerly
+considers only the own avatar, not all room/Space/invite icons; list icons report
+viewport demand. Full receipt-reader windows, compact caps and keyboard support
+have merged tests and historical Tuwunel/Synapse live-signals evidence in the
+scoped-reader worklog (lines 1190–1284).
+
+Do not treat this as full #839 closure. App still has a URI-keyed reference-count
+registry; generic avatars use download/cancel request identity rather than the
+issue's explicit account/surface/generation observation contract. People rows
+still render initials (`PeoplePanel.tsx`, avatar=null). Audit those remaining
+contract/surface requirements before changing ownership, and obtain the requested
+actual bounded-avatar request evidence on disposable servers (live-signals pass
+alone does not prove avatar request counts). No code changes for #839 yet.
+
+## #838 upstream comparison and Phase A start
+
+Inspected Element Web `1b06092990a28edca91a90bbd904acb523a74ba3`,
+`apps/web/src/components/views/dialogs/CreateRoomDialog.tsx:138–150,202–225`:
+public creation extracts the local part from the full alias and validates the
+alias field before creating. Inspected Element X iOS
+`ac183daff8ffd64158fb5712f67daeacc68c1ba5`,
+`ElementX/Sources/Screens/CreateRoomScreen/CreateRoomScreenViewModel.swift:97–110,141–175`:
+room-name changes suggest an alias until manual editing disables synchronization;
+visibility/name reset may reenable it. Its RoomDetailsScreen/JoinedRoomProxy
+sharing path delegates to the Rust SDK matrixToPermalink API (source search;
+read the complete methods before integration).
+
+Koushi will keep manual address edits across later name/visibility changes rather
+than reset them, following #838. Rust owns the suggestion/validation and submitted
+alias; the GUI retains only raw unsent drafts and renders returned preview/status.
+Use the SDK's room permalink API rather than building links in React. Availability
+must remain unproven until a server response; preserve drafts on collision.
+
+The main frontier agent approves the stateless preview boundary documented in
+architecture/overview.md before implementation: Core borrows only the Ready
+session, SDK/Ruma validates against the Matrix user-ID server (not the HTTP
+homeserver URL), and creation reuses validation. GUI preview responses are
+presentation of unsent drafts, not a new product state machine or availability
+claim. A typed redacted preview DTO avoids new AppState fields/commands solely
+for pure draft inspection. Room creation still uses the existing authoritative
+CoreCommand/CoreEvent path.
+
+Phase A started with `koushi-state::suggest_room_alias_localpart`: Unicode
+letter/number segments become a lowercase hyphen-separated editable local part;
+Japanese is preserved and unsuitable names yield empty. A focused integration
+test was compile-RED before the helper, then GREEN. SDK preview validation now
+returns a redacted typed `RoomAddressPreview` and validates a full alias against
+the Matrix user-ID server, including ports, empty/manual/invalid input, and the
+255-byte creation limit (Ruma's enabled arbitrary-length compatibility otherwise
+accepts the oversized test). SDK preview tests: compile-RED then 3/3 GREEN;
+full SDK lib 143/143. `create_room` reuses validation before any public-room
+network request. CoreConnection exposes a borrowed-session-only preview method;
+its test was compile-RED then GREEN, proving delegated HTTP hosts do not replace
+the Matrix server, manual drafts survive name changes, generation is unchanged,
+and signed-out previews are rejected.
+
+No Tauri/GUI preview wiring exists yet. Collision mapping, sharing DTO, both-server
+proof and GUI remain. Inspected pinned SDK `Room::matrix_to_permalink`: canonical
+alias, otherwise alternate alias, otherwise room ID with SDK-computed via servers.
+Use this method exactly rather than inventing a room alias or routing server.
+
 ## Remaining investigation and implementation
 
 - #847: Core ignored-sender suppression is reversible per-item. The pinned SDK

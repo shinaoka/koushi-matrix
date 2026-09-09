@@ -122,7 +122,7 @@ pub use room_operations::{
     discard_outbound_room_key, forget_room, get_room_settings_snapshot, invite_user_to_room,
     join_room_by_id, join_room_target, leave_room, load_pinned_event_ids, mark_room_as_read,
     mark_room_as_unread, moderate_room_member, pin_event, preview_join_target,
-    query_public_room_directory, remove_room_tag, room_can_send_text_message,
+    preview_room_address, query_public_room_directory, remove_room_tag, room_can_send_text_message,
     room_has_active_member_no_sync, room_id_server_name, room_is_joined,
     set_room_notification_mode, set_room_tag, set_space_child, start_direct_message, unpin_event,
     update_room_member_power_level, update_room_setting, update_space_member_power_level,

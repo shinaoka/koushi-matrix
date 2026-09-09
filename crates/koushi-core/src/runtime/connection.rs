@@ -1043,6 +1043,21 @@ impl CoreConnection {
         event
     }
 
+    /// Preview an unsent room address against the current Ready Matrix account.
+    /// This borrows only the session; it neither clones AppState nor probes availability.
+    pub fn preview_room_address(
+        &self,
+        name: &str,
+        alias_localpart: Option<&str>,
+    ) -> koushi_state::RoomAddressPreview {
+        let snapshot = self.snapshot_rx.borrow();
+        let user_id = match &snapshot.state.session {
+            koushi_state::SessionState::Ready(session) => Some(session.user_id.as_str()),
+            _ => None,
+        };
+        koushi_sdk::preview_room_address(name, alias_localpart, user_id)
+    }
+
     /// Latest state snapshot (latest-wins watch semantics).
     pub fn snapshot(&self) -> AppStateSnapshot {
         self.snapshot_rx.borrow().state.clone()

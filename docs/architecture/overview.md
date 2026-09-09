@@ -5,7 +5,7 @@ Dated specs and plans under `docs/superpowers/` are implementation guides
 toward this document and must not contradict it. Amend this document first
 when a design change is needed, then update or supersede the affected specs.
 
-Last amended: 2026-09-07.
+Last amended: 2026-09-09.
 
 The evidence-based classification of remaining frontend-owned resources and
 semantic migration candidates is maintained in
@@ -157,6 +157,14 @@ Crate responsibilities:
   Password and recovery strings remain uncontrolled DOM values and do not enter
   React state. A repository AST gate prevents feature components from bypassing
   this layer with raw composable controls or forms.
+  Room-address previews are stateless Rust projections of raw unsent name/alias
+  drafts and the current Ready account's Matrix server name. Core returns the
+  suggested or manually entered local part, a validated full alias, and a typed
+  validation error; availability remains server-owned. Renderer-local draft
+  identity fences late preview responses, without deriving aliases or Matrix
+  server names in React. The existing create-room command revalidates the alias
+  before network submission. Sharing URLs likewise come from the SDK room
+  permalink API and never change room access policy.
   Room management is likewise Rust-owned: room settings snapshots, room-scoped
   member summaries, permission facts, setting changes, power-level role edits,
   and kick/ban/unban moderation operations live in
