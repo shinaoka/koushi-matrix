@@ -17,6 +17,7 @@ import {
 import { type MessageId, t } from "../i18n/messages";
 import type {
   CreateRoomVisibility,
+  RoomAddressPreview,
   DirectoryPreviewState,
   InviteScopeSelection,
   InviteWorkflowState,
@@ -104,22 +105,26 @@ export interface CreateRoomDialogOptions {
 
 export function CreateEntityDialog({
   activeSpaceName = null,
+  addressPreview = null,
   isBusy,
   kind,
   roomOptions,
   value,
   onCancel,
   onRoomOptionsChange,
+  onOpenAddressHelp,
   onSubmit,
   onValueChange
 }: {
   activeSpaceName?: string | null;
+  addressPreview?: RoomAddressPreview | null;
   isBusy: boolean;
   kind: "room" | "space";
   roomOptions?: CreateRoomDialogOptions;
   value: string;
   onCancel: () => void;
   onRoomOptionsChange?: (options: CreateRoomDialogOptions) => void;
+  onOpenAddressHelp?: (url: string) => void;
   onSubmit: () => void;
   onValueChange: (value: string) => void;
 }) {
@@ -141,7 +146,7 @@ export function CreateEntityDialog({
     value.trim().length > 0 &&
     (isSpace ||
       effectiveRoomOptions.visibility === "private" ||
-      effectiveRoomOptions.aliasLocalpart.trim().length > 0) &&
+      (addressPreview !== null && addressPreview.error === null)) &&
     !isBusy;
 
   function onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -200,7 +205,6 @@ export function CreateEntityDialog({
                   checked={effectiveRoomOptions.visibility === "private"}
                   onChange={() =>
                     updateRoomOptions({
-                      aliasLocalpart: "",
                       visibility: "private"
                     })
                   }
@@ -256,7 +260,19 @@ export function CreateEntityDialog({
               }
             />
             {effectiveRoomOptions.visibility === "public" ? (
+              <div>
+              <label htmlFor="create-room-address">{t("dialog.roomAddress")}</label>
+              <p id="create-room-address-help">{t("dialog.roomAddressHelp")}</p>
+              <a href="https://matrix.org/docs/chat_basics/public-rooms/" target="_blank" rel="noreferrer" onClick={(event) => {
+                if (onOpenAddressHelp) {
+                  event.preventDefault();
+                  onOpenAddressHelp(event.currentTarget.href);
+                }
+              }}>{t("dialog.roomAddressAbout")}</a>
               <ImeTextField
+                id="create-room-address"
+                aria-describedby="create-room-address-help create-room-address-preview"
+                aria-invalid={addressPreview?.error === "invalid" || addressPreview?.error === "empty"}
                 className="dialog-input"
                 type="text"
                 aria-label={t("dialog.roomAddress")}
@@ -269,6 +285,12 @@ export function CreateEntityDialog({
                   })
                 }
               />
+              <p id="create-room-address-preview" role="status">
+                {addressPreview?.full_alias
+                  ? t("dialog.roomAddressPreview", { address: addressPreview.full_alias })
+                  : t(addressPreview?.error === "empty" ? "dialog.roomAddressEmpty" : addressPreview?.error === "invalid" ? "dialog.roomAddressInvalid" : "dialog.roomAddressPending")}
+              </p>
+              </div>
             ) : null}
           </div>
         ) : null}

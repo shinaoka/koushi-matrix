@@ -203,7 +203,22 @@ to CoreConnection without parsing or generating aliases in the frontend. Added t
 matching RoomAddressPreview TS mirror and DesktopApi method. The frontend transport
 test was runtime-RED (missing method), then all 28 client tests passed; TypeScript
 typecheck and Tauri cargo check passed. Dialog state/rendering and collision error
-presentation are the next step; no completed GUI behavior is claimed.
+presentation are the next step at that checkpoint.
+
+Phase B dialog checkpoint: App now requests Rust previews for unsent drafts,
+keeps a manually edited alias across name and visibility changes, and submits
+that displayed local part through the existing CreateRoom command. A small
+presentation hook rejects superseded draft/account responses. Public submission
+requires a matching valid Rust preview; private creation remains independent.
+The dialog renders a visible label, full-address preview, localized explanation
+and invalid/empty status in English/Japanese, plus optional official Matrix help
+through the existing external-URL opener. Removed the private-visibility handler's
+alias reset. Hook test was missing-module RED, then GREEN; dialog tests were run
+against the pre-change component (2 RED), then the same tests passed. Focused
+hook/dialog/App suites: 114 passed; typecheck passed. Lint passed before the
+subsequent optional-help-link addition and remains to rerun on final state.
+End-to-end App editing/IME tests and typed collision inline handling remain; this
+is not full #838 completion.
 
 ## Remaining investigation and implementation
 
