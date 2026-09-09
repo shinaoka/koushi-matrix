@@ -57,6 +57,7 @@ impl MatrixRoomOperationError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MatrixRoomOperationFailureKind {
+    AliasInUse,
     AuthenticationRequired,
     Encryption,
     Forbidden,
@@ -95,6 +96,7 @@ pub struct MatrixSpaceMemberRoleUpdateResult {
 impl fmt::Display for MatrixRoomOperationFailureKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self {
+            Self::AliasInUse => "alias_in_use",
             Self::AuthenticationRequired => "authentication_required",
             Self::Encryption => "encryption",
             Self::Forbidden => "forbidden",
@@ -1534,6 +1536,9 @@ pub async fn room_is_joined(
     let room = matrix_room(session, room_id)?;
     Ok(room.state() == matrix_sdk_base::RoomState::Joined)
 }
+
+#[cfg(test)]
+mod address_tests;
 
 #[cfg(test)]
 mod tests;

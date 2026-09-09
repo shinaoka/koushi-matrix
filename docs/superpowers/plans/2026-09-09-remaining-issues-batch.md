@@ -174,6 +174,17 @@ missing SDK field, then GREEN. SDK lib 144/144, Core mapping 1/1, state room
 management 16/16 passed. No both-server share-link proof or GUI acceptance claim
 is made yet; those checks remain.
 
+Collision checkpoint: approved the closed `RoomFailureKind::AliasInUse` addition
+in architecture/overview.md before implementation. A real SDK HTTP createRoom
+request against MatrixMockServer returning `M_ROOM_IN_USE` reproduced the defect:
+it was classified `http`, not `alias_in_use`. The unchanged test now passes and
+checks raw server text is absent from the exported error. SDK maps the Matrix
+error code (not human-readable text) and Core retains it in the serialized
+CoreFailure. Core room operation tests 13/13 passed. Generic non-creation operation
+projection maps this kind to Invalid; mention operations retain their coarse SDK
+failure. Transport/UI actionable inline rendering and actual local-homeserver
+collision evidence are still outstanding.
+
 ## Remaining investigation and implementation
 
 - #847: Core ignored-sender suppression is reversible per-item. The pinned SDK

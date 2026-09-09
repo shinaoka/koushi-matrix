@@ -163,7 +163,10 @@ Crate responsibilities:
   validation error; availability remains server-owned. Renderer-local draft
   identity fences late preview responses, without deriving aliases or Matrix
   server names in React. The existing create-room command revalidates the alias
-  before network submission. Sharing URLs likewise come from the SDK room
+  before network submission. A server `M_ROOM_IN_USE` response becomes the closed
+  `RoomFailureKind::AliasInUse` failure, never a network error or raw server text;
+  the dialog preserves the unsent draft and renders localized corrective feedback.
+  Sharing URLs likewise come from the SDK room
   permalink API and never change room access policy.
   Room management is likewise Rust-owned: room settings snapshots, room-scoped
   member summaries, permission facts, setting changes, power-level role edits,

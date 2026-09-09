@@ -43,7 +43,9 @@ fn mention_failure_kind(error: &MatrixRoomOperationError) -> MentionCandidatesFa
     match classify_room_error(error) {
         RoomFailureKind::Forbidden => MentionCandidatesFailureKind::Forbidden,
         RoomFailureKind::Network => MentionCandidatesFailureKind::Network,
-        RoomFailureKind::NotFound | RoomFailureKind::Sdk => MentionCandidatesFailureKind::Sdk,
+        RoomFailureKind::AliasInUse | RoomFailureKind::NotFound | RoomFailureKind::Sdk => {
+            MentionCandidatesFailureKind::Sdk
+        }
     }
 }
 

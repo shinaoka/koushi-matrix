@@ -1925,6 +1925,12 @@ pub(super) fn matrix_room_operation_failure_kind(
         }
         matrix_sdk::Error::WrongRoomState(_) => MatrixRoomOperationFailureKind::WrongRoomState,
         matrix_sdk::Error::Http(error) => {
+            if matches!(
+                error.client_api_error_kind(),
+                Some(matrix_sdk::ruma::api::error::ErrorKind::RoomInUse)
+            ) {
+                return MatrixRoomOperationFailureKind::AliasInUse;
+            }
             if error
                 .as_client_api_error()
                 .is_some_and(|error| error.status_code.as_u16() == 403)

@@ -73,6 +73,7 @@ pub enum SyncFailureKind {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum RoomFailureKind {
+    AliasInUse,
     Forbidden,
     NotFound,
     Network,
