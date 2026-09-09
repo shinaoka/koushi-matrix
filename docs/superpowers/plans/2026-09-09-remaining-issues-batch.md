@@ -1201,6 +1201,25 @@ cross-repository changes awaiting user confirmation. In-flight cancellation,
 account retirement, remaining avatar surfaces and final PR/merge requirements
 remain open. This checkpoint is not overall goal completion.
 
+## #839 real stale-observation and closed-control rejection
+
+The existing 1,500-reader scenario now also submits the previous model's user
+identities/revision after each window move, with sequence u64::MAX. It requires
+InvalidRevision, then submits the current model with a stale sequence and requires
+the same rejection. The ordinary lower valid sequence must still be accepted,
+proving the rejected maximum did not consume sequence authority. Before reopen,
+a retained non-owning control from the closed/dropped subscription must reject a
+late observation with Closed.
+
+Synapse passed all checks and retained cumulative HTTP counts 16/32/32/32 for
+initial/scroll/return/reopen, including the existing bounded quiet intervals.
+The 104 QA unit tests passed. Evidence:
+`/tmp/koushi-avatar-stale-{unit,synapse}.log`.
+This is additional positive coverage of existing rejection behavior, not a newly
+fixed product bug. It proves stale host observation and closed-scope rejection;
+it does not substitute for stale in-flight completion or active cancellation
+checks. Tuwunel and the remaining UI/PR work are still outstanding.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated

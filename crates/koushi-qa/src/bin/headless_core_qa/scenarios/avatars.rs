@@ -154,13 +154,27 @@ async fn run_window(
         (1, "reopen", 0, 32),
     ] {
         if phase == "reopen" {
+            let closed_control = reader.control();
             reader.close_handle().close();
             drop(reader);
+            if closed_control.observe_avatars(revision, u64::MAX, &[], &[])
+                != Err(koushi_core::runtime::ScopeError::Closed)
+            {
+                return Err("avatar closed control accepted late observation".to_owned());
+            }
             reader = conn
                 .subscribe_reader(source.clone(), start, limit)
                 .map_err(|_| "avatar reader reopen failed".to_owned())?;
             (revision, initial) = next_window(&mut reader, start).await?;
         } else if phase != "initial" {
+            let previous_revision = revision;
+            let previous_targets: Vec<_> = initial
+                .rows
+                .iter()
+                .filter(|row| row.avatar.is_some())
+                .take(16)
+                .map(|row| row.user_id.clone())
+                .collect();
             reader
                 .update_window(ReaderWindowRequest {
                     installed_revision: revision,
@@ -170,6 +184,17 @@ async fn run_window(
                 })
                 .map_err(|_| "avatar window update rejected".to_owned())?;
             (revision, initial) = next_window(&mut reader, start).await?;
+            // A rejected stale model must not consume even the largest host
+            // sequence; the ordinary lower sequence below must still succeed.
+            if reader.observe_avatars(
+                previous_revision,
+                u64::MAX,
+                &previous_targets[..8],
+                &previous_targets[8..],
+            ) != Err(koushi_core::runtime::ScopeError::InvalidRevision)
+            {
+                return Err("avatar stale revision was not rejected".to_owned());
+            }
         }
         if initial.total_count < 1500 || initial.rows.len() > 32 {
             return Err(format!(
@@ -202,6 +227,12 @@ async fn run_window(
                 return Err("avatar return identities changed".to_owned());
             }
             _ => {}
+        }
+        if matches!(phase, "scroll" | "return")
+            && reader.observe_avatars(revision, sequence - 1, &targets[..8], &targets[8..])
+                != Err(koushi_core::runtime::ScopeError::InvalidRevision)
+        {
+            return Err("avatar stale sequence was not rejected".to_owned());
         }
         reader
             .observe_avatars(revision, sequence, &targets[..8], &targets[8..])
