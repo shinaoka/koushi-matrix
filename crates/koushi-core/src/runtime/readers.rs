@@ -22,6 +22,17 @@ pub(super) struct ReaderPrepared {
 
 impl AppActor {
     pub(super) fn start_reader_work(&mut self) {
+        // Scope retirement uses this existing wake even when no reader job is
+        // queued. Publish durable removal before considering ordinary work.
+        let context = match &self.state.session {
+            SessionState::Ready(info) => Some(
+                self.account_actor
+                    .avatar_demand_context(info.user_id.clone()),
+            ),
+            _ => None,
+        };
+        self.account_actor
+            .publish_avatar_demand(self.view_scopes.avatar_demand_for_context(context.as_ref()));
         // One admitted job per fair actor turn. Admission errors already retire
         // the affected scope; never wait for budget inside this actor.
         let Ok(Some(work)) = self.view_scopes.take_reader_work() else {

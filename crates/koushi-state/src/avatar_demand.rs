@@ -58,6 +58,10 @@ impl fmt::Debug for AvatarDemandState {
 }
 
 impl AvatarDemandState {
+    pub fn scope_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.scopes.keys().copied()
+    }
+
     pub fn context(&self) -> &AvatarDemandContext {
         &self.context
     }

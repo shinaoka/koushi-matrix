@@ -576,7 +576,18 @@ impl AccountActorHandle {
         &self,
         demand: Option<Arc<koushi_state::AvatarDemandState>>,
     ) {
-        self.avatar_demand_tx.send_replace(demand);
+        self.avatar_demand_tx.send_if_modified(|current| {
+            let unchanged = match (&*current, &demand) {
+                (Some(current), Some(next)) => Arc::ptr_eq(current, next),
+                (None, None) => true,
+                _ => false,
+            };
+            if unchanged {
+                return false;
+            }
+            *current = demand;
+            true
+        });
     }
 
     pub(crate) async fn send(&self, msg: AccountMessage) -> bool {

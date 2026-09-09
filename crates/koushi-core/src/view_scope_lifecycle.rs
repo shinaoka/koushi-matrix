@@ -70,6 +70,7 @@ impl Drop for ViewRuntimeLifetime {
 #[derive(Default)]
 struct RegistryState {
     closed: bool,
+    avatar_demand: Option<Arc<koushi_state::AvatarDemandState>>,
     scopes: HashMap<ViewScopeId, Entry>,
     reader_queue: VecDeque<ViewScopeId>,
     profile_readers: HashMap<String, HashSet<ViewScopeId>>,
@@ -153,6 +154,7 @@ struct Control {
     producer: Mutex<Option<crate::runtime::AbortOnDrop<()>>>,
     reader: Mutex<Option<readers::ReaderRequest>>,
     wake: Notify,
+    runtime_work: Arc<Notify>,
     _bytes: ViewReservation,
 }
 
@@ -166,6 +168,7 @@ impl Control {
             *retired = Some(reason);
             self.mailbox.lock().expect("view mailbox poisoned").clear();
             self.wake.notify_one();
+            self.runtime_work.notify_one();
             (
                 self.producer.lock().expect("view producer poisoned").take(),
                 self.reader.lock().expect("reader request poisoned").take(),
@@ -289,6 +292,40 @@ impl ViewScopeRegistry {
             .publish(prepared)?;
         entry.control.wake.notify_one();
         Ok(committed)
+    }
+
+    pub(crate) fn avatar_demand_for_context(
+        &self,
+        context: Option<&koushi_state::AvatarDemandContext>,
+    ) -> Option<Arc<koushi_state::AvatarDemandState>> {
+        let mut state = self.state.lock().expect("view registry poisoned");
+        let demand = state.avatar_demand.as_ref()?;
+        if context != Some(demand.context()) {
+            state.avatar_demand = None;
+            return None;
+        }
+        let expired: Vec<_> = demand
+            .scope_ids()
+            .filter(|scope| {
+                state.closed
+                    || !state.scopes.get(&ViewScopeId(*scope)).is_some_and(|entry| {
+                        entry
+                            .control
+                            .retired
+                            .lock()
+                            .expect("view control poisoned")
+                            .is_none()
+                    })
+            })
+            .collect();
+        let demand = state.avatar_demand.as_mut().expect("demand checked above");
+        if !expired.is_empty() {
+            let current = Arc::make_mut(demand);
+            for scope in expired {
+                current.close(scope);
+            }
+        }
+        Some(demand.clone())
     }
 
     pub(crate) fn retire(&self, scope: ViewScopeId, reason: ViewRetirement) {
@@ -418,6 +455,7 @@ impl ViewConsumer {
             producer: Mutex::new(None),
             reader: Mutex::new(None),
             wake: Notify::new(),
+            runtime_work: self.0.registry.reader_work.clone(),
             _bytes: bytes,
         });
         state.scopes.insert(
@@ -738,6 +776,54 @@ mod tests {
             registry.consumer(RuntimeConnectionId(3)),
             Err(ScopeError::Closed)
         ));
+    }
+
+    #[tokio::test]
+    async fn avatar_demand_retirement_wakes_runtime_and_prunes_closed_scopes() {
+        for mode in 0..3 {
+            let registry = ViewScopeRegistry::default();
+            let consumer = registry.consumer(RuntimeConnectionId(1)).unwrap();
+            let mut scope = Some(consumer.open().unwrap());
+            let id = scope.as_ref().unwrap().id().0;
+            let context = koushi_state::AvatarDemandContext {
+                account_id: "@synthetic:example.invalid".into(),
+                session_generation: 1,
+            };
+            let mut demand = koushi_state::AvatarDemandState::new(context.clone());
+            demand.open(id).unwrap();
+            demand
+                .replace(
+                    &context,
+                    id,
+                    1,
+                    vec![Some("synthetic-avatar".into())],
+                    vec![],
+                )
+                .unwrap();
+            let demand = Arc::new(demand);
+            registry.state.lock().unwrap().avatar_demand = Some(demand.clone());
+            assert!(Arc::ptr_eq(
+                &registry.avatar_demand_for_context(Some(&context)).unwrap(),
+                &demand
+            ));
+            match mode {
+                0 => drop(scope.take()),
+                1 => consumer.retire(),
+                _ => registry.retire_session(),
+            }
+            // Poll after retirement: the wake must survive without a waiting
+            // runtime task and must not rely on a command-mailbox slot.
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                registry.reader_work_ready(),
+            )
+            .await
+            .expect("retirement wakes runtime demand reconciliation");
+            let pruned = registry.avatar_demand_for_context(Some(&context)).unwrap();
+            assert!(!Arc::ptr_eq(&pruned, &demand));
+            assert!(pruned.resources_by_priority().is_empty());
+            assert!(registry.avatar_demand_for_context(None).is_none());
+        }
     }
 
     #[test]

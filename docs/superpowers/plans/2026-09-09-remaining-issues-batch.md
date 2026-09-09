@@ -509,6 +509,29 @@ Logs: `/tmp/koushi-avatar-capacity.log` (fixture failure),
 `/tmp/koushi-avatar-capacity-corrected.log`,
 `/tmp/koushi-avatar-capacity-regression.log`.
 
+## #839 scope retirement to AppActor publication
+
+Connected retirement to the existing runtime work notification. Dropping an owned
+scope, retiring its consumer or ending its session now wakes AppActor even when
+no reader job is queued. AppActor's existing work turn obtains the bounded
+resolved-demand Arc from the shared scope registry, prunes entries against actual
+scope liveness, validates its current account/session context and publishes the
+result to AccountActor. An unchanged Arc is not republished; unrelated reader
+notifications therefore do not create a cached-thumbnail feedback loop.
+
+The new lifecycle test first failed at the missing wake timeout, then passed for
+all three retirement paths after the change. It also checks that an unchanged
+live snapshot preserves Arc identity and that missing session context discards
+stored demand. All 17 lifecycle and seven profile actor tests passed, along with
+test-structure and whitespace checks. Logs: `/tmp/koushi-avatar-retirement-red.log`,
+`/tmp/koushi-avatar-retirement-green.log`,
+`/tmp/koushi-avatar-retirement-regression.log`.
+
+Remaining: authorized observation/source resolution must populate that registry
+state (currently only its test does), including retained-data budget accounting;
+portable command/model wiring, GUI migration and real-server scale evidence are
+not yet complete. No renderer demand registry has been removed prematurely.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated
