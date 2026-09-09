@@ -1134,7 +1134,8 @@ back, then close/reopen. Each phase observes eight visible plus eight prefetch
 identities. The moved set must be disjoint, and the returned/reopened set must
 match the original. Expected cumulative HTTP counts are 16/32/32/32. The model
 wait requires the requested start, so a stale previous-window delivery cannot
-satisfy the check. These new phases are NOT yet passing.
+satisfy the check. This extension initially failed; the follow-up below records
+its resolution.
 
 The first Synapse attempt passed initial HTTP16 but retired on scroll. A focused
 Core regression then demonstrated that update_reader_window reused accepted raw
@@ -1148,14 +1149,57 @@ After that correction, the live Synapse test no longer reported immediate
 retirement but timed out before delivering a model at the new start
 (observed_total=0). Servicing the ordinary Core event stream concurrently did not
 resolve it; that experimental change was removed. The unresolved delivery issue
-is Todo #8. Evidence: `/tmp/koushi-avatar-scroll-synapse{,-green,-drained}.log`.
+was tracked as Todo #8 and resolved in the follow-up below. Evidence: `/tmp/koushi-avatar-scroll-synapse{,-green,-drained}.log`.
 No deadline, population or request-count requirement was weakened, and no
 scroll/return/cache success is claimed for the expanded lane.
 
 Fresh Core library gate: 1,031 passed, nine ignored (four Rust test workers).
 Core QA unit gate: 104 passed. Format, Rust test-structure and whitespace passed.
-Evidence: `/tmp/koushi-avatar-scroll-regression.log`. These unit successes do not
-resolve either the Synapse live transition or the upstream Tuwunel blocker.
+Evidence: `/tmp/koushi-avatar-scroll-regression.log`. At that checkpoint, these
+unit successes did not resolve the live transition or upstream Tuwunel blocker.
+
+## #839 scoped completion notifications: full Synapse window flow green
+
+Resolved Todo #8. Temporary count-only tracing showed that the moved model at
+start=32 was successfully published, delivered and ACKed, and all 32 media HTTP
+requests completed. The timeout was waiting for an image-completion reprojection,
+not failure to deliver the initial moved model. Tracing was removed after use;
+no IDs/URIs were printed by the temporary probes.
+
+Two defects were independently reproduced in the existing runtime projection
+regression:
+
+- Completion dependencies used frozen raw SDK URI hints instead of current
+  projection URIs. Current room-profile URI changes therefore failed to schedule
+  reader work, while obsolete hints remained indexed (RED). The runtime now passes
+  current resource identities into the existing charged ProfileRegistration;
+  raw identity/owner data stays unchanged. No second registry was introduced.
+- AvatarThumbnailUpdated notified scopes only when reduction emitted a global
+  Profile/RoomList/LiveSignals UI effect. A scope-only resource need not be in any
+  such projection. A no-global-effect action reproduced the lost notification
+  (RED). Indexed scope notification now runs independently of global UI effects.
+
+The same runtime test is green and asserts both current-URI invalidation and
+absence of obsolete-URI invalidation. The complete Synapse 1,500-reader scenario
+now passes: initial/scroll/return/reopen cumulative media HTTP counts are
+16/32/32/32, with eight visible plus eight prefetch users per phase, disjoint moved
+identities, original identities on return, scoped PNG reads and the unchanged
+bounded quiet intervals. Evidence:
+`/tmp/koushi-reader-thumbnail-index-{red,green}.log`,
+`/tmp/koushi-reader-scope-effects-{red,green,synapse,regression}.log`.
+
+Fresh Core lib: 1,031 passed, nine ignored; QA unit: 104 passed. Format, Rust
+structure and whitespace checks passed. Temporary probe evidence is in private
+child logs; their count-only extraction is
+`/tmp/koushi-avatar-scroll-demand-summary.log` (parent run logs:
+`/tmp/koushi-avatar-scroll-{trace,mailbox,demand}.log`).
+The QA failure report now includes its actual cumulative media request count to
+avoid confusing missing image updates with missing initial models.
+
+Tuwunel remains blocked by its upstream receipt packing defect (Todo #7), with
+cross-repository changes awaiting user confirmation. In-flight cancellation,
+account retirement, remaining avatar surfaces and final PR/merge requirements
+remain open. This checkpoint is not overall goal completion.
 
 ## Latest user decisions: #839 approved, native check deferred
 

@@ -156,11 +156,18 @@ impl AppActor {
             resolved_anchor: ResolvedReaderAnchor::NotRequested,
         });
         let resources = std::mem::take(&mut resolved.avatar_resources);
+        // Index completion notifications by the actual projection, not frozen
+        // SDK hints which current room/global profiles can replace or remove.
+        let thumbnail_sources: Vec<_> = resources
+            .iter()
+            .map(|resource| resource.mxc_uri.clone())
+            .collect();
         self.view_scopes
             .publish_current(work.scope, model, resources, &resolved)?;
         // Still the same await-free actor turn and the work remains Running:
         // no subsequent job can read the slot until completion below.
-        self.view_scopes.accept_reader_raw(work, raw)?;
+        self.view_scopes
+            .accept_reader_raw(work, raw, thumbnail_sources.into_iter())?;
         Ok(())
     }
 }

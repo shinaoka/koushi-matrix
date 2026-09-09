@@ -36,7 +36,13 @@ async fn accept_profile_raw(registry: &ViewScopeRegistry, work: &mut ReaderWork,
     };
     let _epoch = raw.bind_test_owner(&source).await;
     let retained = registry.retain_reader_raw(work, raw).unwrap();
-    registry.accept_reader_raw(work, retained).unwrap();
+    registry
+        .accept_reader_raw(
+            work,
+            retained,
+            std::iter::once(format!("mxc://example.org/{user_id}")),
+        )
+        .unwrap();
 }
 
 #[tokio::test]
@@ -72,7 +78,9 @@ async fn window_updates_refetch_changed_ranges_and_preserve_source_invalidation(
         };
         let _epoch = raw.bind_test_owner(&source()).await;
         let retained = registry.retain_reader_raw(&mut work, raw.clone()).unwrap();
-        registry.accept_reader_raw(&mut work, retained).unwrap();
+        registry
+            .accept_reader_raw(&mut work, retained, std::iter::empty())
+            .unwrap();
         let resolved = raw.into_resolved(koushi_state::CatalogLocale::En);
         let model = ViewModel::ReaderReady(ReaderWindow {
             source: source(),
@@ -161,7 +169,13 @@ async fn avatar_observation_requires_a_live_source_even_with_an_installed_model(
     };
     let epoch = raw.bind_test_owner(&source()).await;
     let retained = registry.retain_reader_raw(&mut work, raw.clone()).unwrap();
-    registry.accept_reader_raw(&mut work, retained).unwrap();
+    registry
+        .accept_reader_raw(
+            &mut work,
+            retained,
+            std::iter::once("mxc://example.invalid/observed-reader-avatar".to_owned()),
+        )
+        .unwrap();
     let mut resolved = raw.clone().into_resolved(koushi_state::CatalogLocale::En);
     let resources = std::mem::take(&mut resolved.avatar_resources);
     let mut model = ViewModel::ReaderReady(ReaderWindow {
@@ -590,7 +604,7 @@ async fn accepted_raw_is_scope_owned_and_reused_without_mutating_its_hints() {
     let _epoch = raw.bind_test_owner(&source()).await;
     let retained = registry.retain_reader_raw(&mut work, raw).unwrap();
     registry
-        .accept_reader_raw(&mut work, retained.clone())
+        .accept_reader_raw(&mut work, retained.clone(), std::iter::empty())
         .unwrap();
     {
         let mut replacement = retained.raw.clone();
@@ -601,7 +615,9 @@ async fn accepted_raw_is_scope_owned_and_reused_without_mutating_its_hints() {
             Some(crate::view_scope_lifecycle::ScopeError::SourceRetired)
         );
         assert_eq!(
-            registry.accept_reader_raw(&mut work, replacement).err(),
+            registry
+                .accept_reader_raw(&mut work, replacement, std::iter::empty())
+                .err(),
             Some(crate::view_scope_lifecycle::ScopeError::SourceRetired),
             "same public source cannot silently adopt a replacement actor"
         );
@@ -614,7 +630,7 @@ async fn accepted_raw_is_scope_owned_and_reused_without_mutating_its_hints() {
         assert_eq!(other.scope, narrow.id());
         assert_eq!(
             registry
-                .accept_reader_raw(&mut other, retained.clone())
+                .accept_reader_raw(&mut other, retained.clone(), std::iter::empty())
                 .err(),
             Some(crate::view_scope_lifecycle::ScopeError::InvalidRevision)
         );

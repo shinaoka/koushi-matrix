@@ -42,7 +42,14 @@ pub(super) async fn run_avatar_demand_scenario(config: &QaConfig) -> Result<(), 
         account_key,
         ..
     } = participant;
-    let result = run_window(&mut conn, &account_key, room, event, &proxy).await;
+    let result = run_window(&mut conn, &account_key, room, event, &proxy)
+        .await
+        .map_err(|error| {
+            format!(
+                "{error} media_http_requests={}",
+                proxy.media_read_forwarded_count()
+            )
+        });
     let cleanup = cleanup_logged_in_runtime(conn, runtime, account_key, "avatar cleanup").await;
     result?;
     cleanup?;
