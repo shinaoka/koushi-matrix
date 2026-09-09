@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
+    sync::Arc,
 };
 
 /// Stable identities observed by a surface, never renderer-selected media URLs.
@@ -92,7 +93,7 @@ pub enum AvatarDemandError {
     Capacity,
 }
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 struct ScopeDemand {
     revision: u64,
     // A missing avatar remains a visible identity, but creates no fetch demand.
@@ -103,7 +104,9 @@ struct ScopeDemand {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AvatarDemandState {
     context: AvatarDemandContext,
-    scopes: BTreeMap<u64, ScopeDemand>,
+    // Snapshot copies retain immutable per-scope payloads instead of duplicating
+    // every resolved URI while the account actor still holds an older snapshot.
+    scopes: BTreeMap<u64, Arc<ScopeDemand>>,
 }
 
 impl fmt::Debug for AvatarDemandState {
@@ -150,7 +153,7 @@ impl AvatarDemandState {
         if self.scopes.len() >= VIEW_SCOPE_CAPACITY {
             return Err(AvatarDemandError::Capacity);
         }
-        self.scopes.insert(scope, ScopeDemand::default());
+        self.scopes.insert(scope, Arc::new(ScopeDemand::default()));
         Ok(())
     }
 
@@ -178,11 +181,11 @@ impl AvatarDemandState {
         if visible.len() > AVATAR_VISIBLE_CAPACITY || prefetch.len() > AVATAR_PREFETCH_CAPACITY {
             return Err(AvatarDemandError::Capacity);
         }
-        *current = ScopeDemand {
+        *current = Arc::new(ScopeDemand {
             revision,
             visible,
             prefetch,
-        };
+        });
         Ok(())
     }
 

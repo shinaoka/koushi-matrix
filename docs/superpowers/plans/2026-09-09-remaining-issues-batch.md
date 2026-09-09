@@ -628,6 +628,30 @@ production change. Log: `/tmp/koushi-avatar-stale-input.log`; test-structure and
 whitespace checks also passed. The payload is synthetic transport data, not a
 native image-rendering check. Observation command/GUI integration remains pending.
 
+## #839 immutable scope payload retention
+
+Before adding retained-data reservations to observation commits, removed deep
+copies of every scope's resolved strings when a demand snapshot is cloned. Scope
+payloads now use immutable Arcs; replacement creates a new payload only for that
+scope and closing one snapshot does not mutate an older snapshot. Enabled the
+existing serde dependency's `rc` feature so the serialized shape is unchanged;
+no new package dependency was added.
+
+The sharing assertion first failed on different string allocation pointers, then
+passed along with serialization and independent-close checks. Six state tests,
+18 lifecycle tests and nine profile actor tests passed. After removing the now
+unneeded private payload Clone derive, the focused sharing/serialization check
+passed again. Logs: `/tmp/koushi-avatar-retention-red.log`,
+`/tmp/koushi-avatar-retention-green.log`,
+`/tmp/koushi-avatar-retention-regression.log`,
+`/tmp/koushi-avatar-retention-final.log`.
+
+This is a prerequisite, not completed byte-budget accounting. Retained demand
+reservations still need to travel with their payload owners through publication;
+they must not be freed merely when the current scope map removes an entry while
+AccountActor retains an older snapshot. No memory benchmark or completed
+observation/GUI migration is claimed.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated

@@ -125,6 +125,14 @@ fn demand_round_trips_but_debug_does_not_disclose_identities_or_resources() {
             vec![],
         )
         .unwrap();
+    let mut next = state.clone();
+    assert_eq!(
+        state.resources_by_priority()[0].as_ptr(),
+        next.resources_by_priority()[0].as_ptr(),
+        "snapshot copies must share retained scope payload"
+    );
+    next.close(1);
+    assert_eq!(state.resources_by_priority().len(), 1);
     let wire = serde_json::to_string(&state).unwrap();
     let restored: AvatarDemandState = serde_json::from_str(&wire).unwrap();
     assert_eq!(

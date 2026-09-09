@@ -5,7 +5,7 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 unicode-casefold = "0.2"
 unicode-normalization = "0.1"
 zeroize = "1"
