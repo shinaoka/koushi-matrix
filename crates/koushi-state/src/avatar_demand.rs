@@ -119,6 +119,24 @@ impl fmt::Debug for AvatarDemandState {
 }
 
 impl AvatarDemandState {
+    /// Retained scope payload accounting, including vector/string capacity.
+    /// Core attaches the reservation to the same immutable payload lifetime.
+    pub fn scope_payload_bytes(&self, scope: u64) -> Option<usize> {
+        let data = self.scopes.get(&scope)?;
+        let mut bytes =
+            std::mem::size_of::<ScopeDemand>().checked_add(2 * std::mem::size_of::<usize>())?;
+        for rows in [&data.visible, &data.prefetch] {
+            bytes = bytes.checked_add(
+                rows.capacity()
+                    .checked_mul(std::mem::size_of::<Option<String>>())?,
+            )?;
+            for value in rows.iter().flatten() {
+                bytes = bytes.checked_add(value.capacity())?;
+            }
+        }
+        Some(bytes)
+    }
+
     pub fn scope_ids(&self) -> impl Iterator<Item = u64> + '_ {
         self.scopes.keys().copied()
     }

@@ -172,6 +172,90 @@ impl ViewConsumer {
         Ok(())
     }
 
+    /// Commit resolved reader demand. Context comes from AppActor's current
+    /// session, never from deserialized host input; host inputs are IDs/revisions.
+    pub(crate) fn observe_reader_avatars(
+        &self,
+        id: koushi_protocol::view::ViewScopeId,
+        revision: ViewRevision,
+        sequence: u64,
+        context: &koushi_state::AvatarDemandContext,
+        visible: &[String],
+        prefetch: &[String],
+    ) -> Result<(), ScopeError> {
+        if visible.len() > koushi_state::AVATAR_VISIBLE_CAPACITY
+            || prefetch.len() > koushi_state::AVATAR_PREFETCH_CAPACITY
+        {
+            return Err(ScopeError::Capacity);
+        }
+        self.with_live_reader_avatar_source(id, revision, |rows| {
+            let resolve = |ids: &[String]| {
+                ids.iter()
+                    .map(|id| rows.avatar_mxc(id).map(|uri| uri.map(str::to_owned)))
+                    .collect::<Result<Vec<_>, ScopeError>>()
+            };
+            let visible = resolve(visible)?;
+            let prefetch = resolve(prefetch)?;
+            let mut state = self
+                .0
+                .registry
+                .state
+                .lock()
+                .expect("view registry poisoned");
+            let control = state
+                .scopes
+                .get(&id)
+                .filter(|entry| entry.owner == self.0.id)
+                .map(|entry| entry.control.clone())
+                .ok_or(ScopeError::NotOwned)?;
+            let retired = control.retired.lock().expect("view control poisoned");
+            if state.closed
+                || self.0.closed.load(std::sync::atomic::Ordering::Acquire)
+                || retired.is_some()
+            {
+                return Err(ScopeError::Closed);
+            }
+            if !control
+                .reader
+                .lock()
+                .expect("reader request poisoned")
+                .as_ref()
+                .is_some_and(|reader| {
+                    reader.source.timeline.key.account_key.0 == context.account_id
+                })
+            {
+                return Err(ScopeError::InactiveSession);
+            }
+            if control
+                .mailbox
+                .lock()
+                .expect("view mailbox poisoned")
+                .installed_revision()
+                != Some(revision)
+            {
+                return Err(ScopeError::InvalidRevision);
+            }
+            let mut next = match &state.avatar_demand {
+                Some(current) => current.as_ref().clone(),
+                None => super::ChargedAvatarDemand::new(
+                    koushi_state::AvatarDemandState::new(context.clone()),
+                    &self.0.registry.budget,
+                )?,
+            };
+            next.replace(
+                context,
+                id.0,
+                sequence,
+                visible,
+                prefetch,
+                &self.0.registry.budget,
+            )?;
+            state.avatar_demand = Some(std::sync::Arc::new(next));
+            self.0.registry.reader_work.notify_one();
+            Ok(())
+        })
+    }
+
     /// Reader-only observation commit. The accepted raw source owns its charge;
     /// hold source authority and recheck the installed model before the callback.
     pub(crate) fn with_live_reader_avatar_source<R>(

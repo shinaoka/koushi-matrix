@@ -92,7 +92,56 @@ async fn avatar_observation_requires_a_live_source_even_with_an_installed_model(
             .unwrap(),
         42
     );
+    let context = koushi_state::AvatarDemandContext {
+        account_id: "account".into(),
+        session_generation: 1,
+    };
+    consumer
+        .observe_reader_avatars(
+            scope.id(),
+            revision,
+            1,
+            &context,
+            &["@a:example.org".into()],
+            &[],
+        )
+        .unwrap();
+    let installed = registry.avatar_demand_for_context(Some(&context)).unwrap();
+    assert_eq!(
+        installed.scope_ids().collect::<Vec<_>>(),
+        vec![scope.id().0]
+    );
+    assert_eq!(
+        consumer.observe_reader_avatars(scope.id(), revision, 1, &context, &[], &[]),
+        Err(ScopeError::InvalidRevision)
+    );
+    assert_eq!(
+        consumer.observe_reader_avatars(
+            scope.id(),
+            revision,
+            2,
+            &context,
+            &["@foreign:example.org".into()],
+            &[]
+        ),
+        Err(ScopeError::InvalidModel)
+    );
+    assert_eq!(
+        consumer.observe_reader_avatars(
+            scope.id(),
+            revision,
+            2,
+            &context,
+            &vec!["@a:example.org".into(); 257],
+            &[]
+        ),
+        Err(ScopeError::Capacity)
+    );
     epoch.lock().unwrap().valid = false;
+    assert_eq!(
+        consumer.observe_reader_avatars(scope.id(), revision, 2, &context, &[], &[]),
+        Err(ScopeError::SourceUnavailable)
+    );
     assert!(consumer.avatar_source(scope.id(), revision).is_ok());
     assert_eq!(
         consumer

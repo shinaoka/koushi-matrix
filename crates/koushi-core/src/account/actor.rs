@@ -547,7 +547,8 @@ pub(crate) enum AccountMessage {
 #[derive(Clone)]
 pub struct AccountActorHandle {
     tx: mpsc::Sender<AccountMessage>,
-    avatar_demand_tx: tokio::sync::watch::Sender<Option<Arc<koushi_state::AvatarDemandState>>>,
+    avatar_demand_tx:
+        tokio::sync::watch::Sender<Option<Arc<crate::view_scope_lifecycle::ChargedAvatarDemand>>>,
     avatar_session_generation: Arc<AtomicU64>,
     navigation_projection: NavigationProjectionIngress,
     focused_projection_rx:
@@ -572,9 +573,9 @@ impl AccountActorHandle {
         }
     }
 
-    pub(crate) fn publish_avatar_demand(
+    pub(crate) fn publish_avatar_demand_snapshot(
         &self,
-        demand: Option<Arc<koushi_state::AvatarDemandState>>,
+        demand: Option<Arc<crate::view_scope_lifecycle::ChargedAvatarDemand>>,
     ) {
         self.avatar_demand_tx.send_if_modified(|current| {
             let unchanged = match (&*current, &demand) {
@@ -588,6 +589,24 @@ impl AccountActorHandle {
             *current = demand;
             true
         });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn publish_avatar_demand(
+        &self,
+        demand: Option<Arc<koushi_state::AvatarDemandState>>,
+    ) {
+        // Fixture convenience only; production publishers must supply the
+        // reservation owned by their runtime's existing ViewBudget.
+        self.publish_avatar_demand_snapshot(demand.map(|demand| {
+            Arc::new(
+                crate::view_scope_lifecycle::ChargedAvatarDemand::new(
+                    (*demand).clone(),
+                    &crate::view_budget::ViewBudget::default(),
+                )
+                .expect("small test demand fits budget"),
+            )
+        }));
     }
 
     pub(crate) async fn send(&self, msg: AccountMessage) -> bool {
@@ -1022,8 +1041,8 @@ pub struct AccountActor {
     /// instead of being accepted into the new (or absent) session's state.
     pub(super) avatar_session_generation: Arc<AtomicU64>,
     pub(super) avatar_demand_rx:
-        tokio::sync::watch::Receiver<Option<Arc<koushi_state::AvatarDemandState>>>,
-    pub(super) avatar_demand: Option<Arc<koushi_state::AvatarDemandState>>,
+        tokio::sync::watch::Receiver<Option<Arc<crate::view_scope_lifecycle::ChargedAvatarDemand>>>,
+    pub(super) avatar_demand: Option<Arc<crate::view_scope_lifecycle::ChargedAvatarDemand>>,
 }
 
 impl AccountActor {

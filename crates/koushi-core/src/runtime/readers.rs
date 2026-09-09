@@ -31,8 +31,9 @@ impl AppActor {
             ),
             _ => None,
         };
-        self.account_actor
-            .publish_avatar_demand(self.view_scopes.avatar_demand_for_context(context.as_ref()));
+        self.account_actor.publish_avatar_demand_snapshot(
+            self.view_scopes.avatar_demand_for_context(context.as_ref()),
+        );
         // One admitted job per fair actor turn. Admission errors already retire
         // the affected scope; never wait for budget inside this actor.
         let Ok(Some(work)) = self.view_scopes.take_reader_work() else {

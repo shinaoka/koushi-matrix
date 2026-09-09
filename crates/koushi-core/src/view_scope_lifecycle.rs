@@ -16,6 +16,8 @@ use tokio::sync::Notify;
 
 use crate::view_budget::{ViewBudget, ViewReservation};
 
+mod avatar_demand;
+pub(crate) use avatar_demand::ChargedAvatarDemand;
 mod mailbox;
 mod model;
 mod producer;
@@ -70,7 +72,7 @@ impl Drop for ViewRuntimeLifetime {
 #[derive(Default)]
 struct RegistryState {
     closed: bool,
-    avatar_demand: Option<Arc<koushi_state::AvatarDemandState>>,
+    avatar_demand: Option<Arc<ChargedAvatarDemand>>,
     scopes: HashMap<ViewScopeId, Entry>,
     reader_queue: VecDeque<ViewScopeId>,
     profile_readers: HashMap<String, HashSet<ViewScopeId>>,
@@ -297,7 +299,7 @@ impl ViewScopeRegistry {
     pub(crate) fn avatar_demand_for_context(
         &self,
         context: Option<&koushi_state::AvatarDemandContext>,
-    ) -> Option<Arc<koushi_state::AvatarDemandState>> {
+    ) -> Option<Arc<ChargedAvatarDemand>> {
         let mut state = self.state.lock().expect("view registry poisoned");
         let demand = state.avatar_demand.as_ref()?;
         if context != Some(demand.context()) {
@@ -817,7 +819,7 @@ mod tests {
                     vec![],
                 )
                 .unwrap();
-            let demand = Arc::new(demand);
+            let demand = Arc::new(ChargedAvatarDemand::new(demand, &registry.budget).unwrap());
             registry.state.lock().unwrap().avatar_demand = Some(demand.clone());
             assert!(Arc::ptr_eq(
                 &registry.avatar_demand_for_context(Some(&context)).unwrap(),

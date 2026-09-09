@@ -652,6 +652,37 @@ they must not be freed merely when the current scope map removes an entry while
 AccountActor retains an older snapshot. No memory benchmark or completed
 observation/GUI migration is claimed.
 
+## #839 charged demand publication and reader observation commit
+
+Added a Core-owned publication wrapper that carries per-scope ViewBudget
+reservations alongside the immutable payloads. Snapshot clones share both payload
+and reservation; removing a current scope does not uncharge a copy still held by
+AccountActor. The watch and registry now carry this wrapper. Production publishing
+requires an already charged value; the former uncharged fixture helper exists
+only under `cfg(test)` and constructs a charged value before using the same path.
+Accounting covers retained vector/string capacity and logical map/context data;
+it is not a process-heap measurement.
+
+Added the reader-specific observation commit: visible/prefetch limits, stable-ID
+resolution from installed rows, live-source guard, final owner/consumer/revision
+checks, and budgeted atomic scope replacement. A successful commit installs the
+publication and wakes the existing AppActor work path. A failed reservation or
+invalid observation leaves the previous demand/revision intact.
+
+New budget tests prove delayed release and atomic capacity rejection. Reader tests
+cover successful commit, duplicate sequence, foreign identity, oversized input
+and retired source. Missing APIs first produced compile REDs; after implementation,
+20 lifecycle tests, nine profile actor tests and six state tests passed. Normal
+`cargo check -p koushi-core` passed; it still reports unused observation entrypoints
+because public command/GUI wiring is unfinished. The focused reader check passed
+again after the final consumer-liveness check. Formatting, structure and whitespace
+checks passed.
+
+Logs: `/tmp/koushi-avatar-budget-{red,green}.log`,
+`/tmp/koushi-avatar-observation-{red,green,regression,check,final}.log`.
+Remaining: portable CoreConnection/adapter observation entrypoint, remaining source
+families, GUI migration/removal of old URI APIs, diagnostics and 1,500-target QA.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated
