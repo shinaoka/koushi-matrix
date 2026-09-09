@@ -1220,6 +1220,45 @@ fixed product bug. It proves stale host observation and closed-scope rejection;
 it does not substitute for stale in-flight completion or active cancellation
 checks. Tuwunel and the remaining UI/PR work are still outstanding.
 
+## #839 real shared in-flight cancellation on Synapse
+
+Extended the existing QaTcpProxy media-read control, not the product downloader
+or a second proxy. It can withhold media response bytes after the GET has been
+written upstream, count currently held responses, and observe downstream EOF or
+connection reset while held. It retains no URL/header/credential. The gate has a
+30-second failure ceiling, polls socket closure with a 25 ms read timeout, restores
+normal reads after release, and the scenario releases it on both success and
+error. No sync response is held.
+
+A real TCP unit fixture proves withholding, downstream close detection, normal
+sync forwarding while the media gate is closed, and response delivery after
+release. The first test attempt failed because the new helper APIs did not exist;
+that is harness development evidence, not a product RED. All 105 QA unit tests
+now pass (`/tmp/koushi-media-hold-{missing-api,unit}.log`,
+`/tmp/koushi-avatar-cancel-unit.log`).
+
+After the existing four 1,500-reader phases, the real scenario opens a cold window
+at index 64 with 16 interests (eight visible/eight prefetch). Exactly six GETs
+reach the server and are held. A second scope observes the same identities;
+closing and dropping the first leaves the six requests held and unduplicated
+during a 250 ms observation interval. Closing and dropping the final scope must
+produce six downstream connection closures and zero held responses within the
+existing deadline. Releasing the gate must not start the ten queued interests;
+a second 250 ms interval requires the same request count. This is bounded live
+network evidence, not a claim of an actor scheduling barrier. Peer-close counters
+are checked before any proxy disable/shutdown, so teardown is not counted as the
+successful cancellation evidence.
+
+Synapse passed: initial/scroll/return/reopen HTTP16/32/32/32, then
+`avatar_shared_inflight=ok avatar_cancelled_connections=6 media_http_requests=38`.
+The final mandatory scenario token is emitted only after this phase also passes.
+Evidence: `/tmp/koushi-avatar-cancel-synapse.log`.
+
+This adds actual active-request and queued-work cancellation plus shared-resource
+lifetime evidence. Account retirement and stale completion across sessions still
+need their own coverage; Tuwunel is still blocked by its separately identified
+upstream defect. Remaining avatar surfaces and final PR/merge work are open.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated

@@ -6,6 +6,93 @@ use super::{
 };
 
 #[test]
+fn held_media_responses_detect_peer_close_and_release_without_holding_sync() {
+    use std::{
+        io::{Read, Write},
+        net::{Shutdown, TcpListener, TcpStream},
+        time::{Duration, Instant},
+    };
+    let server = TcpListener::bind("127.0.0.1:0").unwrap();
+    server.set_nonblocking(true).unwrap();
+    let proxy =
+        super::QaTcpProxy::start(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+    let serving = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        for _ in 0..3 {
+            let mut stream = loop {
+                match server.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline);
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("fixture accept failed: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let mut headers = Vec::new();
+            while !headers.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                headers.push(byte[0]);
+                assert!(headers.len() < 4096);
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .unwrap();
+        }
+    });
+    let request = |path: &str| {
+        let mut client = TcpStream::connect(proxy.listen_addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        write!(
+            client,
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        client
+    };
+    let wait = |condition: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !condition() {
+            assert!(Instant::now() < deadline, "media gate did not settle");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    proxy.hold_media_responses();
+    let cancelled = request("/_matrix/client/v1/media/download/example.invalid/one");
+    wait(&|| proxy.media_responses_held_count() == 1);
+    cancelled
+        .set_read_timeout(Some(Duration::from_millis(30)))
+        .unwrap();
+    assert!(matches!(
+        cancelled.peek(&mut [0]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    ));
+    cancelled.shutdown(Shutdown::Both).unwrap();
+    drop(cancelled);
+    wait(&|| proxy.media_peer_closed_count() == 1 && proxy.media_responses_held_count() == 0);
+    let mut sync = request("/_matrix/client/v3/sync");
+    let mut response = String::new();
+    sync.read_to_string(&mut response).unwrap();
+    assert!(response.ends_with("ok"));
+    let mut released = request("/_matrix/client/v1/media/download/example.invalid/two");
+    wait(&|| proxy.media_responses_held_count() == 1);
+    proxy.release_media_responses();
+    response.clear();
+    released.read_to_string(&mut response).unwrap();
+    assert!(response.ends_with("ok"));
+    wait(&|| proxy.media_responses_held_count() == 0);
+    assert_eq!(proxy.media_read_forwarded_count(), 2);
+    assert_eq!(proxy.media_peer_closed_count(), 1);
+    serving.join().unwrap();
+}
+
+#[test]
 fn proxy_counts_actual_media_reads_without_counting_uploads_or_sync() {
     use std::{
         io::{Read, Write},

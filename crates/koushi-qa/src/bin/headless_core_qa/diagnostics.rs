@@ -561,7 +561,7 @@ pub(super) fn verification_state_flow_id(state: &VerificationFlowState) -> Optio
 
 pub(super) struct QaTcpProxy {
     listen_addr: SocketAddr,
-    media_read_forwarded: Arc<AtomicUsize>,
+    media_reads: Arc<QaMediaReadControl>,
     enabled: Arc<AtomicBool>,
     room_send_forwarded: Arc<AtomicUsize>,
     room_send_responses_completed: Arc<AtomicUsize>,
@@ -819,6 +819,71 @@ impl Default for QaReadStateProxyControl {
     }
 }
 
+#[derive(Default)]
+struct QaMediaReadControl {
+    forwarded: AtomicUsize,
+    hold: AtomicBool,
+    held: AtomicUsize,
+    peer_closed: AtomicUsize,
+}
+
+impl QaMediaReadControl {
+    // Requests have reached the real upstream. Withhold response bytes, while
+    // observing downstream close. This control stores only flags and counts.
+    fn wait_for_release(&self, client: &TcpStream) -> io::Result<()> {
+        if !self.hold.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        self.held.fetch_add(1, Ordering::SeqCst);
+        let result = (|| {
+            client.set_read_timeout(Some(Duration::from_millis(25)))?;
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            while self.hold.load(Ordering::SeqCst) {
+                if std::time::Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "QA media response hold expired",
+                    ));
+                }
+                match client.peek(&mut [0]) {
+                    Ok(0) => {
+                        self.peer_closed.fetch_add(1, Ordering::SeqCst);
+                        return Err(io::Error::new(
+                            io::ErrorKind::ConnectionAborted,
+                            "QA media downstream closed",
+                        ));
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                        ) => {}
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted
+                        ) =>
+                    {
+                        self.peer_closed.fetch_add(1, Ordering::SeqCst);
+                        return Err(error);
+                    }
+                    Err(error) => return Err(error),
+                    Ok(_) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "unexpected pipelined QA media data",
+                        ));
+                    }
+                }
+            }
+            Ok(())
+        })();
+        self.held.fetch_sub(1, Ordering::SeqCst);
+        result?;
+        client.set_read_timeout(None)
+    }
+}
+
 impl QaTcpProxy {
     pub(super) fn start(target_homeserver: &str) -> Result<Self, String> {
         let target = parse_http_homeserver_addr(target_homeserver)?;
@@ -831,7 +896,7 @@ impl QaTcpProxy {
             .local_addr()
             .map_err(|e| format!("send_queue proxy local_addr failed: {e}"))?;
         let enabled = Arc::new(AtomicBool::new(true));
-        let media_read_forwarded = Arc::new(AtomicUsize::new(0));
+        let media_reads = Arc::new(QaMediaReadControl::default());
         let room_send_forwarded = Arc::new(AtomicUsize::new(0));
         let room_send_responses_completed = Arc::new(AtomicUsize::new(0));
         let running = Arc::new(AtomicBool::new(true));
@@ -843,7 +908,7 @@ impl QaTcpProxy {
         ));
 
         let thread_enabled = enabled.clone();
-        let thread_media_read_forwarded = media_read_forwarded.clone();
+        let thread_media_reads = media_reads.clone();
         let thread_room_send_forwarded = room_send_forwarded.clone();
         let thread_room_send_responses_completed = room_send_responses_completed.clone();
         let thread_running = running.clone();
@@ -866,7 +931,7 @@ impl QaTcpProxy {
                             thread_read_state_control.clone(),
                             thread_room_send_forwarded.clone(),
                             thread_room_send_responses_completed.clone(),
-                            thread_media_read_forwarded.clone(),
+                            thread_media_reads.clone(),
                         );
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -883,7 +948,7 @@ impl QaTcpProxy {
 
         Ok(Self {
             listen_addr,
-            media_read_forwarded,
+            media_reads,
             enabled,
             room_send_forwarded,
             room_send_responses_completed,
@@ -911,7 +976,23 @@ impl QaTcpProxy {
     /// HTTP media reads forwarded by this proxy, not cache hits or rendered rows.
     /// Includes retries and both original downloads and server thumbnails.
     pub(super) fn media_read_forwarded_count(&self) -> usize {
-        self.media_read_forwarded.load(Ordering::SeqCst)
+        self.media_reads.forwarded.load(Ordering::SeqCst)
+    }
+
+    pub(super) fn hold_media_responses(&self) {
+        self.media_reads.hold.store(true, Ordering::SeqCst);
+    }
+
+    pub(super) fn release_media_responses(&self) {
+        self.media_reads.hold.store(false, Ordering::SeqCst);
+    }
+
+    pub(super) fn media_responses_held_count(&self) -> usize {
+        self.media_reads.held.load(Ordering::SeqCst)
+    }
+
+    pub(super) fn media_peer_closed_count(&self) -> usize {
+        self.media_reads.peer_closed.load(Ordering::SeqCst)
     }
 
     pub(super) fn room_send_forwarded_count(&self) -> usize {
@@ -1084,7 +1165,7 @@ fn spawn_proxy_pair(
     read_state_control: Arc<(Mutex<QaReadStateProxyControl>, Condvar)>,
     room_send_forwarded: Arc<AtomicUsize>,
     room_send_responses_completed: Arc<AtomicUsize>,
-    media_read_forwarded: Arc<AtomicUsize>,
+    media_reads: Arc<QaMediaReadControl>,
 ) {
     thread::spawn(move || {
         let _ = proxy_single_http_request(
@@ -1095,7 +1176,7 @@ fn spawn_proxy_pair(
             read_state_control,
             room_send_forwarded,
             room_send_responses_completed,
-            media_read_forwarded,
+            media_reads,
         );
         let _ = client.shutdown(Shutdown::Both);
     });
@@ -1109,7 +1190,7 @@ fn proxy_single_http_request(
     read_state_control: Arc<(Mutex<QaReadStateProxyControl>, Condvar)>,
     room_send_forwarded: Arc<AtomicUsize>,
     room_send_responses_completed: Arc<AtomicUsize>,
-    media_read_forwarded: Arc<AtomicUsize>,
+    media_reads: Arc<QaMediaReadControl>,
 ) -> io::Result<()> {
     let mut request_head = Vec::new();
     {
@@ -1186,7 +1267,8 @@ fn proxy_single_http_request(
     }
     io::Write::write_all(&mut server, &request)?;
     if request_kind == QaProxyRequestKind::MediaRead {
-        media_read_forwarded.fetch_add(1, Ordering::SeqCst);
+        media_reads.forwarded.fetch_add(1, Ordering::SeqCst);
+        media_reads.wait_for_release(client)?;
     }
     io::copy(&mut server, client)?;
     if count_forwarded_room_send {

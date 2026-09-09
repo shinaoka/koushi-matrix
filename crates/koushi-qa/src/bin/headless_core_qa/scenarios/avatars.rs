@@ -50,6 +50,7 @@ pub(super) async fn run_avatar_demand_scenario(config: &QaConfig) -> Result<(), 
                 proxy.media_read_forwarded_count()
             )
         });
+    proxy.release_media_responses();
     let cleanup = cleanup_logged_in_runtime(conn, runtime, account_key, "avatar cleanup").await;
     result?;
     cleanup?;
@@ -280,7 +281,105 @@ async fn run_window(
         );
     }
     reader.close_handle().close();
+    drop(reader);
+    verify_shared_cancellation(conn, source, proxy).await
+}
+
+async fn verify_shared_cancellation(
+    conn: &CoreConnection,
+    source: ReceiptSourceRef,
+    proxy: &QaTcpProxy,
+) -> Result<(), String> {
+    let limit = ReaderWindowLimit::try_from(16).unwrap();
+    let mut first = conn
+        .subscribe_reader(source.clone(), 64, limit)
+        .map_err(|_| "avatar cancellation scope rejected".to_owned())?;
+    let (revision, window) = next_window(&mut first, 64).await?;
+    let targets: Vec<_> = window
+        .rows
+        .iter()
+        .filter(|row| row.avatar.is_some())
+        .map(|row| row.user_id.clone())
+        .collect();
+    if targets.len() != 16
+        || window.rows.iter().any(|row| {
+            matches!(
+                row.avatar,
+                Some(koushi_state::AvatarThumbnailState::Ready { .. })
+            )
+        })
+    {
+        return Err("avatar cancellation fixture is not cold".to_owned());
+    }
+    let before = proxy.media_read_forwarded_count();
+    let closed_before = proxy.media_peer_closed_count();
+    proxy.hold_media_responses();
+    first
+        .observe_avatars(revision, 1, &targets[..8], &targets[8..])
+        .map_err(|_| "avatar cancellation observation rejected".to_owned())?;
+    wait_media_connections(proxy, 6, closed_before).await?;
+    if proxy.media_read_forwarded_count() != before + 6 {
+        return Err("avatar active request bound exceeded".to_owned());
+    }
+    let mut shared = conn
+        .subscribe_reader(source, 64, limit)
+        .map_err(|_| "avatar shared cancellation scope rejected".to_owned())?;
+    let (revision, window) = next_window(&mut shared, 64).await?;
+    if window
+        .rows
+        .iter()
+        .map(|row| &row.user_id)
+        .ne(targets.iter())
+    {
+        return Err("avatar shared cancellation identities changed".to_owned());
+    }
+    shared
+        .observe_avatars(revision, 1, &targets[..8], &targets[8..])
+        .map_err(|_| "avatar shared cancellation observation rejected".to_owned())?;
+    first.close_handle().close();
+    drop(first);
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    if proxy.media_read_forwarded_count() != before + 6
+        || proxy.media_responses_held_count() != 6
+        || proxy.media_peer_closed_count() != closed_before
+    {
+        return Err("avatar shared active work was interrupted or duplicated".to_owned());
+    }
+    shared.close_handle().close();
+    drop(shared);
+    wait_media_connections(proxy, 0, closed_before + 6).await?;
+    proxy.release_media_responses();
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    if proxy.media_read_forwarded_count() != before + 6 {
+        return Err("avatar queued work escaped cancellation".to_owned());
+    }
+    println!(
+        "avatar_shared_inflight=ok avatar_cancelled_connections=6 media_http_requests={}",
+        proxy.media_read_forwarded_count()
+    );
     Ok(())
+}
+
+async fn wait_media_connections(
+    proxy: &QaTcpProxy,
+    held: usize,
+    closed: usize,
+) -> Result<(), String> {
+    tokio::time::timeout(EVENT_TIMEOUT, async {
+        while proxy.media_responses_held_count() != held
+            || proxy.media_peer_closed_count() != closed
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        format!(
+            "avatar connection wait timed out held={} closed={}",
+            proxy.media_responses_held_count(),
+            proxy.media_peer_closed_count()
+        )
+    })
 }
 
 async fn next_window(
