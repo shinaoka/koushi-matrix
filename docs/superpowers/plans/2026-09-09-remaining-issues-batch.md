@@ -286,7 +286,15 @@ Adding a synthetic prev_batch makes both recovery and cancellation exercise real
 pagination. Both focused tests pass. Fresh Core lib gate after the avatar task
 identity fix and this coverage: 1015 passed, 9 existing ignored, zero failures
 (`/tmp/koushi-batch-core-latest.log`). Local homeserver ignore/unignore and refill
-failure/coalescing coverage remain outstanding.
+failure/coalescing coverage remain outstanding at that checkpoint.
+
+Refill-failure follow-up: added a controlled HTTP 403 response after SDK cache
+reset, checked the typed pagination Failed event, and checked that exactly one
+messages request was made through a 300ms post-failure observation interval.
+All three ignored-reset tests pass (`/tmp/koushi-ignore-failure.log`): recovery,
+explicit cancellation, and non-retryable failure. This bounded negative check
+is not a claim about every future retry trigger; explicit new user demand is
+still permitted. Local-homeserver ignore/unignore and coalescing coverage remain.
 
 ## Native evidence availability checkpoint
 

@@ -49,12 +49,24 @@ async fn wait_for(
 
 #[tokio::test]
 async fn ignored_user_cache_reset_refills_without_new_events_or_viewport_requests() {
-    exercise_ignored_reset(false).await;
+    exercise_ignored_reset(ResetCase::Recover).await;
 }
 
 #[tokio::test]
 async fn explicit_cancel_stops_cache_reset_refill_without_rescheduling() {
-    exercise_ignored_reset(true).await;
+    exercise_ignored_reset(ResetCase::Cancel).await;
+}
+
+#[tokio::test]
+async fn failed_cache_reset_refill_reports_failure_without_automatic_retry() {
+    exercise_ignored_reset(ResetCase::Fail).await;
+}
+
+#[derive(Clone, Copy)]
+enum ResetCase {
+    Recover,
+    Cancel,
+    Fail,
 }
 
 async fn message_request_count(server: &MatrixMockServer) -> usize {
@@ -67,7 +79,8 @@ async fn message_request_count(server: &MatrixMockServer) -> usize {
         .count()
 }
 
-async fn exercise_ignored_reset(cancel_refill: bool) {
+async fn exercise_ignored_reset(case: ResetCase) {
+    let cancel_refill = matches!(case, ResetCase::Cancel);
     let server = MatrixMockServer::new().await;
     let client = server.client_builder().build().await;
     client.event_cache().subscribe().unwrap();
@@ -206,6 +219,15 @@ async fn exercise_ignored_reset(cancel_refill: bool) {
                 .mount(server.server())
                 .await;
         }
+        if matches!(case, ResetCase::Fail) {
+            wiremock::Mock::given(wiremock::matchers::path_regex(r"/messages$"))
+                .respond_with(wiremock::ResponseTemplate::new(403).set_body_json(
+                    serde_json::json!({"errcode": "M_FORBIDDEN", "error": "synthetic denial"}),
+                ))
+                .with_priority(1)
+                .mount(server.server())
+                .await;
+        }
         for ignore in [true, false] {
             let users = if ignore { vec![bob.to_owned()] } else { vec![] };
             actor
@@ -231,6 +253,24 @@ async fn exercise_ignored_reset(cancel_refill: bool) {
                 !items.iter().any(|item| item.sender.is_some())
             })
             .await?;
+            if matches!(case, ResetCase::Fail) {
+                stage = "refill-failed";
+                wait_for(&mut events, &mut items, |event, _| {
+                    matches!(
+                        event,
+                        CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+                            state: PaginationState::Failed { .. },
+                            ..
+                        })
+                    )
+                })
+                .await?;
+                // This non-retryable response has completed; observe a bounded
+                // quiet interval for an accidental actor-driven retry loop.
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                assert_eq!(message_request_count(&server).await, initial_requests + 1);
+                break;
+            }
             if cancel_refill {
                 stage = "refill-request-started";
                 tokio::time::timeout(Duration::from_secs(2), async {
