@@ -14,6 +14,7 @@ const ADDRESS_TOKENS = ["room_address_preview_create_share=ok", "room_address_co
 const IGNORE_RECOVERY_TOKEN = "ignored_user_history_recovery=ok";
 
 export const HEADLESS_LOCAL_QA_SCENARIO_TOKENS = Object.freeze({
+  avatar_demand: Object.freeze(["avatar_window_requests=ok"]),
   directory: Object.freeze(["directory_query=ok", "directory_join=ok", ...ADDRESS_TOKENS]),
   live_signals: Object.freeze(["live_signals=ok", IGNORE_RECOVERY_TOKEN]),
   all: Object.freeze([...ADDRESS_TOKENS, IGNORE_RECOVERY_TOKEN]),

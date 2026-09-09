@@ -35,6 +35,7 @@ describe("qa token contract", () => {
   });
 
   test.each([
+    ["avatar_demand", "avatar_window_requests=ok"],
     ["directory", "room_address_preview_create_share=ok"],
     ["directory", "room_address_collision=ok"],
     ["live_signals", "ignored_user_history_recovery=ok"],

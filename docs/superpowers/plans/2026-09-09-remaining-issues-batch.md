@@ -1074,6 +1074,49 @@ download, in-flight cancellation, account retirement, or the 1,500-reader Core
 scenario. Those checks, remaining surface migration and final delivery remain
 open; no overall completion claim is made.
 
+## #839 dedicated 1,500-reader Core QA: Synapse green, Tuwunel blocked
+
+Added the dedicated `avatar_demand` scenario to the Node runner and Core registry,
+with required `--core` and mandatory `avatar_window_requests=ok`. It is separate
+from `all`, like other dedicated scenarios. The Node fixture returns only
+room/event/count metadata through `KOUSHI_QA_AVATAR_FIXTURE`; Core authentication
+and product operations still use CoreCommand. The SDK smoke leg is skipped for
+this Core-only scenario.
+
+The Core flow explicitly prepares fixture member metadata through LoadRoomSettings,
+then obtains a fresh timeline source and a maximum-32-row reader window. It waits
+for at least 1,500 readers within a fixed deadline, requires 16 image-bearing
+identities, observes eight visible plus eight prefetch, and reads all 16 Ready
+PNGs through ACK-qualified scoped resources. No media request may precede the
+observation. Initial and reopen phases require exactly 16 total HTTP media reads,
+including 250 ms bounded no-extra-request intervals. Metadata preparation is
+separate from viewport demand; this is not proof of lazy People-profile loading.
+
+Synapse passed the full dedicated scenario:
+`qa:headless-local -- --server=synapse --scenario=avatar_demand --core --timeout-ms=240000`.
+Both phases recorded 16 HTTP reads, with no extra read on reopen. Evidence:
+`/tmp/koushi-avatar-scale-synapse.log`.
+
+Tuwunel 1.7.1 remains a failing acceptance case. After correcting the known QA
+fresh-source acquisition and waiting for population updates, its Core model
+remained at total_count=1 until timeout. Direct server-only diagnostics using the
+same Simplified Sliding Sync endpoint and fixture confirmed an HTTP-200 initial
+response with one receipt user on Tuwunel, versus 1,500 on Synapse. No alternative
+sync backend was used. This localizes the missing population upstream of Core;
+server persistence versus response construction still needs investigation.
+Earlier fixture creation results proved accepted seed requests, not receipt
+readback completeness. No threshold reduction, skip or fallback was added.
+Evidence: `/tmp/koushi-avatar-scale-tuwunel-settle.log`,
+`/tmp/koushi-avatar-scale-server-receipts.log`, and
+`/tmp/koushi-avatar-scale-synapse-server-receipts.log`.
+
+43 frontend/script tests, 104 Core QA unit tests, typecheck, lint and Rust test
+structure passed (`/tmp/koushi-avatar-scale-final-checks.log`). The no-Core CLI
+guard also rejected invocation before server startup. These passes do not turn
+the failing Tuwunel scenario green. Todo #7 tracks that unresolved server-side
+population boundary. Large-window scrolling/in-flight cancellation/account
+retirement, remaining UI surfaces and final gates/PR/merge are still outstanding.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated

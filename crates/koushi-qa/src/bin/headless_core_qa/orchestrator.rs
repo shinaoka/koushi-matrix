@@ -92,6 +92,11 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
         run_timeline_reconnect_scenario(&config).await?;
         return Ok(scenario_report(&config.server_kind, scenario));
     }
+    if scenario == QaScenario::AvatarDemand {
+        println!("safety=ok");
+        super::scenario_avatars::run_avatar_demand_scenario(&config).await?;
+        return Ok(scenario_report(&config.server_kind, scenario));
+    }
     if scenario == QaScenario::ReadStateConvergence {
         println!("safety=ok");
         run_read_state_convergence_scenario(&config).await?;

@@ -35,12 +35,13 @@ import {
 } from "./lib/qa-token-contract.mjs";
 import { writeValidatedQaOutputFiles } from "./lib/qa-output-artifacts.mjs";
 import { assertSdkSubmoduleSynced } from "./lib/sdk-submodule-status.mjs";
-import { setFixtureAvatar } from "./lib/avatar-demand-fixture.mjs";
+import { setFixtureAvatar, seedAvatarDemandFixture } from "./lib/avatar-demand-fixture.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const localSecretsRoot = join(repoRoot, ".local-secrets", "headless-local-qa");
 const checks = [
   "scenario safety",
+  "scenario avatar_demand",
   "scenario login_sync",
   "scenario session_status",
   "scenario e2ee_trust",
@@ -161,6 +162,9 @@ async function run() {
   if (scenarios.includes("redact_edit_convergence") && !runCoreQa) {
     throw new Error("--scenario=redact_edit_convergence requires --core because it validates Core state");
   }
+  if (scenarios.includes("avatar_demand") && !runCoreQa) {
+    throw new Error("--scenario=avatar_demand requires --core because it validates Core state");
+  }
   if (scenarios.includes("read_state_convergence") && !runCoreQa) {
     throw new Error("--scenario=read_state_convergence requires --core because it validates Core state");
   }
@@ -223,7 +227,7 @@ async function runForServer(serverKind, scenario) {
   try {
     await waitForHomeserver(homeserver, serverProcess, timeoutMs, logPath);
 
-    if (scenario !== "timeline_stress" && scenario !== "encryption_debug") {
+    if (scenario !== "timeline_stress" && scenario !== "encryption_debug" && scenario !== "avatar_demand") {
       const sdkUsers = await registerQaUsers(homeserver, "sdk");
 
       const qaResult = runHeadlessQa({
@@ -271,13 +275,16 @@ async function registerQaUsers(homeserver, label, scenario) {
   const passwordA = `koushi-desktop-local-a-${userSuffix}`;
   const passwordB = `koushi-desktop-local-b-${userSuffix}`;
   const passwordC = `koushi-desktop-local-c-${userSuffix}`;
-  await registerUser(homeserver, userA, passwordA);
+  const registrationA = await registerUser(homeserver, userA, passwordA);
   const registrationB = await registerUser(homeserver, userB, passwordB);
   if (scenario === "live_signals" || scenario === "all") {
     await setFixtureAvatar(homeserver, registrationB);
   }
   await registerUser(homeserver, userC, passwordC);
-  return { userA, passwordA, userB, passwordB, userC };
+  const avatarFixture = scenario === "avatar_demand"
+    ? await seedAvatarDemandFixture({ homeserver, ownerAccessToken: registrationA.access_token, runId: userSuffix })
+    : undefined;
+  return { userA, passwordA, userB, passwordB, userC, avatarFixture };
 }
 
 function runHeadlessQa({
@@ -357,6 +364,7 @@ function runCoreHeadlessQa({
   logPath,
   scenario,
   qaLabel = "core",
+  avatarFixture,
   replayExistingStress = false
 }) {
   const runDataDir = join(logPath, "..", `core-qa-data-${qaLabel}`);
@@ -381,6 +389,9 @@ function runCoreHeadlessQa({
   };
   if (userC) {
     env.KOUSHI_LOCAL_QA_USER_C = userC;
+  }
+  if (avatarFixture) {
+    env.KOUSHI_QA_AVATAR_FIXTURE = JSON.stringify(avatarFixture);
   }
   for (const name of [
     "KOUSHI_QA_STRESS_SPACES",
