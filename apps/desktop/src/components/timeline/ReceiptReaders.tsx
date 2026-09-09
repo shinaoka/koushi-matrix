@@ -94,6 +94,7 @@ export function ReceiptReaders({
   const readerResourceIdentity = readerResourceRefs.join("\u0000");
   const appliedReaderRevisionRef = useRef<string | null>(null);
   const readerSequenceRef = useRef(0);
+  const avatarObservationSequenceRef = useRef(0n);
   const readerRowRefs = useRef(new Map<string, HTMLSpanElement>());
   const pendingReaderFocusRef = useRef<{ index: number; sequence: string } | null>(null);
   const sourceRef = useRef(source);
@@ -163,19 +164,16 @@ export function ReceiptReaders({
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [open]);
   useEffect(() => {
+    if (!open || sourceIdentity) return;
+    // Until a committed source exists, keep the bounded summary usable.
+    setReaderRows(compactRows);
+    setReaderStart(0);
+    setReaderTotal(totalCount);
+    setReaderState("ready");
+  }, [compactRows, open, sourceIdentity, totalCount]);
+  useEffect(() => {
     const activeSource = sourceRef.current;
-    if (!open) return;
-    if (!activeSource) {
-      // A timeline that has not committed a projection request cannot open a
-      // Rust reader scope. Keep the bounded compact summary usable instead of
-      // showing a permanent loading state; a later committed source reruns
-      // this effect and upgrades the popup to the full window.
-      setReaderRows(compactRows);
-      setReaderStart(0);
-      setReaderTotal(totalCount);
-      setReaderState("ready");
-      return;
-    }
+    if (!open || !activeSource) return;
     let cancelled = false;
     let scope: string | null = null;
     void api
@@ -197,6 +195,7 @@ export function ReceiptReaders({
       setReaderScope(null);
       appliedReaderRevisionRef.current = null;
       readerSequenceRef.current = 0;
+      avatarObservationSequenceRef.current = 0n;
       pendingReaderFocusRef.current = null;
       setFocusedReaderUserId(null);
       setReaderRevision(null);
@@ -207,7 +206,7 @@ export function ReceiptReaders({
       setReaderRows([]);
       setReaderState("loading");
     };
-  }, [compactRows, open, sourceIdentity, totalCount]);
+  }, [open, sourceIdentity]);
   useEffect(() => {
     if (!readerScope) return;
     let cancelled = false;
@@ -300,6 +299,57 @@ export function ReceiptReaders({
       for (const url of ownedObjectUrls) URL.revokeObjectURL(url);
     };
   }, [readerInstalledRevision, readerResourceIdentity, readerScope]);
+  useEffect(() => {
+    const popup = popupRef.current;
+    if (!open || !popup || !readerScope || !readerInstalledRevision || readerInstalledRevision !== readerRevision) return;
+    let frame: number | null = null;
+    let lastGeometry = "";
+    const report = () => {
+      frame = null;
+      const bounds = popup.getBoundingClientRect();
+      const visible: string[] = [];
+      const nearby: Array<{ id: string; distance: number }> = [];
+      if (bounds.height > 0 && bounds.width > 0) {
+        for (const row of readerRows) {
+          const rect = readerRowRefs.current.get(row.user_id)?.getBoundingClientRect();
+          if (!rect || rect.height <= 0 || rect.width <= 0) continue;
+          if (rect.bottom > bounds.top && rect.top < bounds.bottom) visible.push(row.user_id);
+          else nearby.push({ id: row.user_id, distance: Math.max(bounds.top - rect.bottom, rect.top - bounds.bottom) });
+        }
+      }
+      const prefetch = nearby.sort((a, b) => a.distance - b.distance).slice(0, 8).map((row) => row.id);
+      const geometry = JSON.stringify([visible, prefetch]);
+      if (geometry === lastGeometry) return;
+      lastGeometry = geometry;
+      void api.observeReceiptReaderAvatars(readerScope, {
+        installed_revision: readerInstalledRevision,
+        sequence: String(++avatarObservationSequenceRef.current),
+        visible_user_ids: visible,
+        prefetch_user_ids: prefetch
+      }).catch(() => {
+        // A newer Rust model/session may invalidate an in-flight observation.
+        // Do not repair or retry Matrix demand in the renderer.
+      });
+    };
+    const schedule = () => {
+      if (frame === null) frame = requestAnimationFrame(report);
+    };
+    report();
+    popup.addEventListener("scroll", schedule);
+    window.addEventListener("resize", schedule);
+    const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
+    resize?.observe(popup);
+    for (const row of readerRows) {
+      const element = readerRowRefs.current.get(row.user_id);
+      if (element) resize?.observe(element);
+    }
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      popup.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
+      resize?.disconnect();
+    };
+  }, [open, readerInstalledRevision, readerRevision, readerRows, readerScope]);
   const readerRemainingCount = source
     ? Math.max(readerTotal - readerStart - readerRows.length, 0)
     : Math.max(overflowCount, 0);
@@ -461,7 +511,6 @@ export function ReceiptReaders({
                         className="receipt-reader-avatar"
                         colorSeed={row.user_id}
                         fallback={row.initials}
-                        onRequestAvatarThumbnail={onRequestAvatarThumbnail}
                         sourceUrl={
                           readerInstalledRevision && row.avatar?.kind === "ready"
                             ? readerResourceUrls[row.avatar.source_ref] ?? null

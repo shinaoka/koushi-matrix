@@ -771,6 +771,33 @@ Receipt popup geometry reporting is not yet connected to this API. Other source
 families, Rust-driven source invalidation/re-resolution, removal of old renderer
 URI demand, 1,500-target QA, final gates and PR/merge remain pending.
 
+## #839 full reader popup geometry reporting
+
+Connected the opened reader popup to typed observations after the displayed model
+has been acknowledged. Reports contain intersecting row IDs and at most eight
+geometrically nearby candidates, not resource identities. Scroll/window resize and
+popup/row ResizeObserver notifications coalesce through one animation frame;
+unchanged geometry does not re-report. Sequence uses bigint/string, and cleanup
+cancels pending measurement and removes listeners. Full reader rows no longer use
+the legacy URI request callback; compact summaries still do and remain to migrate.
+
+Separated the no-source compact fallback from subscription lifetime. A compact
+summary/count update no longer tears down a live reader with the same source.
+The missing geometry report first failed its component assertion. With original
+subscription dependencies restored as an isolated baseline, the same test also
+failed on a second subscription; restoring source/open-only lifetime turned green.
+
+All six reader component tests, typecheck and frontend lint passed. Coverage
+includes pre-ACK suppression, visible/prefetch IDs, scroll and resize, stable
+subscription, close and cancellation of a queued measurement. Geometry is mocked
+in jsdom; this is not browser/native layout or actual-download evidence.
+Logs: `/tmp/koushi-reader-geometry-red.log`,
+`/tmp/koushi-reader-summary-churn-red.log`,
+`/tmp/koushi-reader-geometry-verified.log`.
+
+Remaining work still includes other surfaces, Rust-driven source re-resolution,
+old global URI demand removal, browser/live-server scale evidence and final gates.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated
