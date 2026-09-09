@@ -3900,7 +3900,9 @@ pub(super) async fn run_media_stage(
     conn_b: &mut CoreConnection,
     key_a: &TimelineKey,
     key_b: &TimelineKey,
+    proxy: &QaTcpProxy,
 ) -> Result<(), String> {
+    let media_reads_before = proxy.media_read_forwarded_count();
     const MEDIA_BYTES: &[u8] = b"koushi-desktop synthetic media fixture";
     const MEDIA_CAPTION: &str = "matrix desktop media caption";
     const MEDIA_CAPTION_EDITED: &str = "matrix desktop media caption edited";
@@ -3990,6 +3992,15 @@ pub(super) async fn run_media_stage(
         "media download",
     )
     .await?;
+    let media_reads = proxy
+        .media_read_forwarded_count()
+        .saturating_sub(media_reads_before);
+    if media_reads == 0 {
+        return Err(
+            "media download completed without an observed upstream HTTP media request".to_owned(),
+        );
+    }
+    println!("media_http_requests={media_reads}");
     println!("recv_media=ok");
 
     // Editing a captioned media message must replace only the caption. A

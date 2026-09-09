@@ -113,6 +113,17 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
         return Ok(scenario_report(&config.server_kind, scenario));
     }
 
+    // Measure actual media HTTP traffic through the existing local QA proxy.
+    // Keep it alive for the whole runtime/session lifetime, including restarts.
+    let media_proxy = scenario
+        .should_run_stage(QaStage::Media)
+        .then(|| super::diagnostics::QaTcpProxy::start(&config.homeserver))
+        .transpose()?;
+    let config = media_proxy
+        .as_ref()
+        .map(|proxy| config.with_homeserver(proxy.homeserver_url()))
+        .unwrap_or(config);
+
     // One CoreRuntime per synthetic user (two-device topology).
     let data_dir_a = qa_data_dir("a");
     let data_dir_b = qa_data_dir("b");
@@ -853,8 +864,8 @@ pub(super) async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<
         println!("unpin_event=ok");
     }
 
-    if scenario.should_run_stage(QaStage::Media) {
-        run_media_stage(&mut conn_a, &mut conn_b, &key_a, &key_b).await?;
+    if let Some(proxy) = &media_proxy {
+        run_media_stage(&mut conn_a, &mut conn_b, &key_a, &key_b, proxy).await?;
     }
 
     if scenario.should_run_stage(QaStage::LinkPreview) {

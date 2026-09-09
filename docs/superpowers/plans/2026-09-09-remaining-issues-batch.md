@@ -910,6 +910,26 @@ its test. The 1,500-member disposable Tuwunel/Synapse scenario still needs to
 consume it and has not run. No new success token or server acceptance claim is
 made here. Remaining surface migration and final delivery are also open.
 
+## #839 media counter connected to disposable-server QA
+
+The existing media stage now routes its runtime sessions through QaTcpProxy and
+requires a positive observed upstream media-read delta before `recv_media=ok`.
+The proxy lives through session restarts and uses the existing configured server
+identity. It emits only `media_http_requests=<count>`; it does not expose resource
+identities. This makes the counter production-used by QA, rather than test-only.
+
+The 104 headless-core-qa unit tests passed. The normal documented command
+`qa:headless-local -- --server=both --scenario=media --core --timeout-ms=240000`
+passed on disposable Tuwunel and Synapse. Both recorded `media_http_requests=1`
+and completed the existing media/caption/edit/restore-cleanup checks. Evidence:
+`/tmp/koushi-qa-media-live-tests.log` and
+`/tmp/koushi-qa-media-live-both.log`.
+
+This establishes that SDK media reads traverse the measured path on both real
+backends. It is not the 1,500-member/avatar demand scenario, and proves neither
+avatar cancellation nor viewport request bounds by itself. Those requirements
+and the remaining surface migration/final delivery remain open.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated
