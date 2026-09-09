@@ -1,6 +1,6 @@
 use super::cleanup::cleanup_logged_in_runtime;
 use super::diagnostics::QaTcpProxy;
-use super::event_wait::wait_for_room_in_room_list;
+use super::event_wait::{wait_for_logged_out, wait_for_room_in_room_list};
 use super::participants::{QaParticipantLoginGate, login_synced_participant_for_qa, qa_data_dir};
 use super::registry::EVENT_TIMEOUT;
 use super::*;
@@ -42,16 +42,28 @@ pub(super) async fn run_avatar_demand_scenario(config: &QaConfig) -> Result<(), 
         account_key,
         ..
     } = participant;
-    let result = run_window(&mut conn, &account_key, room, event, &proxy)
-        .await
-        .map_err(|error| {
-            format!(
-                "{error} media_http_requests={}",
-                proxy.media_read_forwarded_count()
-            )
-        });
+    let result = async {
+        let source = run_window(&mut conn, &account_key, room, event, &proxy).await?;
+        verify_account_retirement(&mut conn, &account_key, source, &proxy).await
+    }
+    .await
+    .map_err(|error| {
+        format!(
+            "{error} media_http_requests={}",
+            proxy.media_read_forwarded_count()
+        )
+    });
     proxy.release_media_responses();
-    let cleanup = cleanup_logged_in_runtime(conn, runtime, account_key, "avatar cleanup").await;
+    let cleanup = if matches!(
+        conn.snapshot().session,
+        koushi_state::SessionState::Ready(_)
+    ) {
+        cleanup_logged_in_runtime(conn, runtime, account_key, "avatar cleanup").await
+    } else {
+        drop(conn);
+        runtime.shutdown().await;
+        Ok(())
+    };
     result?;
     cleanup?;
     println!("avatar_window_requests=ok");
@@ -64,7 +76,7 @@ async fn run_window(
     room: &str,
     event: &str,
     proxy: &QaTcpProxy,
-) -> Result<(), String> {
+) -> Result<ReceiptSourceRef, String> {
     wait_for_room_in_room_list(conn, room, "avatar room").await?;
     // Explicit fixture metadata preparation through a normal product command;
     // viewport resolution itself must not acquire all member images.
@@ -282,7 +294,8 @@ async fn run_window(
     }
     reader.close_handle().close();
     drop(reader);
-    verify_shared_cancellation(conn, source, proxy).await
+    verify_shared_cancellation(conn, source.clone(), proxy).await?;
+    Ok(source)
 }
 
 async fn verify_shared_cancellation(
@@ -291,26 +304,7 @@ async fn verify_shared_cancellation(
     proxy: &QaTcpProxy,
 ) -> Result<(), String> {
     let limit = ReaderWindowLimit::try_from(16).unwrap();
-    let mut first = conn
-        .subscribe_reader(source.clone(), 64, limit)
-        .map_err(|_| "avatar cancellation scope rejected".to_owned())?;
-    let (revision, window) = next_window(&mut first, 64).await?;
-    let targets: Vec<_> = window
-        .rows
-        .iter()
-        .filter(|row| row.avatar.is_some())
-        .map(|row| row.user_id.clone())
-        .collect();
-    if targets.len() != 16
-        || window.rows.iter().any(|row| {
-            matches!(
-                row.avatar,
-                Some(koushi_state::AvatarThumbnailState::Ready { .. })
-            )
-        })
-    {
-        return Err("avatar cancellation fixture is not cold".to_owned());
-    }
+    let (first, revision, targets) = cold_reader(conn, source.clone(), 64).await?;
     let before = proxy.media_read_forwarded_count();
     let closed_before = proxy.media_peer_closed_count();
     proxy.hold_media_responses();
@@ -358,6 +352,99 @@ async fn verify_shared_cancellation(
         proxy.media_read_forwarded_count()
     );
     Ok(())
+}
+
+async fn verify_account_retirement(
+    conn: &mut CoreConnection,
+    account: &AccountKey,
+    source: ReceiptSourceRef,
+    proxy: &QaTcpProxy,
+) -> Result<(), String> {
+    let (mut reader, revision, targets) = cold_reader(conn, source, 96).await?;
+    let before = proxy.media_read_forwarded_count();
+    let closed_before = proxy.media_peer_closed_count();
+    proxy.hold_media_responses();
+    reader
+        .observe_avatars(revision, 1, &targets[..8], &targets[8..])
+        .map_err(|_| "avatar retirement observation rejected".to_owned())?;
+    wait_media_connections(proxy, 6, closed_before).await?;
+    if proxy.media_read_forwarded_count() != before + 6 {
+        return Err("avatar retirement active bound exceeded".to_owned());
+    }
+    // Keep the owning subscription alive. Neither scope close/drop nor SyncStop
+    // may be the cause of cancellation in this phase.
+    let logout = conn.next_request_id();
+    conn.command(CoreCommand::Account(AccountCommand::Logout {
+        request_id: logout,
+    }))
+    .await
+    .map_err(|_| "avatar retirement logout submission failed".to_owned())?;
+    wait_for_logged_out(conn, logout, account, "avatar retirement logout").await?;
+    let retired = tokio::time::timeout(EVENT_TIMEOUT, reader.next_delivery())
+        .await
+        .map_err(|_| "avatar session retirement delivery timed out".to_owned())?;
+    if !matches!(
+        retired,
+        Some(ViewDelivery::Retired {
+            reason: koushi_protocol::view::ViewRetirement::SessionRetired,
+            ..
+        })
+    ) {
+        return Err("avatar scope did not retire with its session".to_owned());
+    }
+    if !matches!(
+        reader.observe_avatars(revision, u64::MAX, &targets[..8], &targets[8..]),
+        Err(koushi_core::runtime::ScopeError::Closed
+            | koushi_core::runtime::ScopeError::InactiveSession)
+    ) {
+        return Err("avatar retired session accepted an observation".to_owned());
+    }
+    wait_media_connections(proxy, 0, closed_before + 6).await?;
+    proxy.release_media_responses();
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    if proxy.media_read_forwarded_count() != before + 6 {
+        return Err("avatar work escaped account retirement".to_owned());
+    }
+    println!(
+        "avatar_account_retirement=ok media_http_requests={}",
+        proxy.media_read_forwarded_count()
+    );
+    Ok(())
+}
+
+async fn cold_reader(
+    conn: &CoreConnection,
+    source: ReceiptSourceRef,
+    start: u64,
+) -> Result<
+    (
+        koushi_core::runtime::ReaderSubscription,
+        koushi_protocol::view::ViewRevision,
+        Vec<String>,
+    ),
+    String,
+> {
+    let mut reader = conn
+        .subscribe_reader(source, start, ReaderWindowLimit::try_from(16).unwrap())
+        .map_err(|_| "avatar cold scope rejected".to_owned())?;
+    let (revision, window) = next_window(&mut reader, start).await?;
+    let targets: Vec<_> = window
+        .rows
+        .iter()
+        .filter(|row| row.avatar.is_some())
+        .map(|row| row.user_id.clone())
+        .collect();
+    if targets.len() != 16
+        || window.rows.iter().any(|row| {
+            matches!(
+                row.avatar,
+                Some(koushi_state::AvatarThumbnailState::Ready { .. })
+            )
+        })
+    {
+        return Err("avatar fixture window is not cold".to_owned());
+    }
+    Ok((reader, revision, targets))
 }
 
 async fn wait_media_connections(

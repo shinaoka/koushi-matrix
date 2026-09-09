@@ -1255,9 +1255,37 @@ The final mandatory scenario token is emitted only after this phase also passes.
 Evidence: `/tmp/koushi-avatar-cancel-synapse.log`.
 
 This adds actual active-request and queued-work cancellation plus shared-resource
-lifetime evidence. Account retirement and stale completion across sessions still
-need their own coverage; Tuwunel is still blocked by its separately identified
+lifetime evidence. Account retirement was not covered at this checkpoint; the
+following phase adds logout coverage. Stale completion across sessions remains a
+separate requirement. Tuwunel is still blocked by its separately identified
 upstream defect. Remaining avatar surfaces and final PR/merge work are open.
+
+## #839 account logout retires a retained scope and active requests
+
+Added a cold index-96 window after the shared-scope cancellation phase. It holds
+16 interests (eight visible/eight prefetch), with exactly six requests forwarded
+and response bytes withheld. The owning ReaderSubscription remains alive while
+the test sends AccountCommand::Logout directly: no prior SyncStop, scope close,
+or owner drop can explain cancellation in this phase.
+
+After the correlated logout event, the still-owned scope must deliver exactly
+SessionRetired and reject an old observation (Closed or InactiveSession, depending
+on whether session-context clearing has already been observed). The test requires
+six further downstream connection closures, zero held responses, and no queued
+request after gate release during the unchanged bounded interval. Runtime shutdown
+is performed after these assertions; successful logout is not followed by a second
+logout. Error cleanup still uses the existing logged-in cleanup when appropriate.
+The two cancellation phases share the cold-window setup helper.
+
+Synapse passed the whole scenario: prior phases HTTP16/32/32/32, shared cancellation
+HTTP38, and `avatar_account_retirement=ok media_http_requests=44`. All 105 QA unit
+tests passed. Evidence: `/tmp/koushi-avatar-retirement-{unit,synapse}.log`.
+This is additional successful coverage, not a newly fixed product RED.
+
+This proves logout retirement and cancellation with a surviving owner. It does not
+claim cross-account switch/relogin isolation or deliberately delivered stale task
+completion; the held connections were canceled before their bytes were forwarded.
+Tuwunel, remaining product-surface migration and final gates/PR/merge remain open.
 
 ## Latest user decisions: #839 approved, native check deferred
 
