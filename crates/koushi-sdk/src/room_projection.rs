@@ -691,6 +691,9 @@ mod room_permission_tests {
 }
 
 #[cfg(test)]
+mod share_link_tests;
+
+#[cfg(test)]
 mod space_member_projection_tests;
 
 #[cfg(test)]
@@ -1592,6 +1595,11 @@ pub(super) async fn matrix_room_settings_snapshot(
             .into_iter()
             .map(|alias| alias.to_string())
             .collect(),
+        share_link: room
+            .matrix_to_permalink()
+            .await
+            .ok()
+            .map(|uri| uri.to_string()),
         join_rule: room
             .join_rule()
             .as_ref()

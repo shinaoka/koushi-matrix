@@ -168,6 +168,7 @@ pub struct MatrixRoomSettingsSnapshot {
     pub avatar_url: Option<String>,
     pub canonical_alias: Option<String>,
     pub alternate_aliases: Vec<String>,
+    pub share_link: Option<String>,
     pub join_rule: MatrixRoomJoinRule,
     pub history_visibility: MatrixRoomHistoryVisibility,
     pub permissions: MatrixRoomPermissionFacts,

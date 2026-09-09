@@ -132,32 +132,6 @@ fn serialized_member_original_display_label(state: &AppState, user_id: &str) -> 
 }
 
 #[test]
-fn room_settings_share_link_prefers_aliases_then_room_id() {
-    assert_eq!(
-        koushi_state::room_settings_share_link(
-            "!fallback:example.invalid",
-            Some("#canonical:example.invalid"),
-            &["#alternate:example.invalid".to_owned()]
-        )
-        .as_deref(),
-        Some("https://matrix.to/#/%23canonical%3Aexample.invalid")
-    );
-    assert_eq!(
-        koushi_state::room_settings_share_link(
-            "!fallback:example.invalid",
-            Some("   "),
-            &["  ".to_owned(), "#alternate:example.invalid".to_owned()]
-        )
-        .as_deref(),
-        Some("https://matrix.to/#/%23alternate%3Aexample.invalid")
-    );
-    assert_eq!(
-        koushi_state::room_settings_share_link("!fallback:example.invalid", None, &[]).as_deref(),
-        Some("https://matrix.to/#/!fallback%3Aexample.invalid")
-    );
-}
-
-#[test]
 fn room_settings_snapshot_load_projects_member_display_labels_from_aliases() {
     let mut state = ready_state();
     let room_id = "!room:example.invalid";

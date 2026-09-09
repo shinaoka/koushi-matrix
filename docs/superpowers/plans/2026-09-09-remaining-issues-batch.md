@@ -163,6 +163,17 @@ proof and GUI remain. Inspected pinned SDK `Room::matrix_to_permalink`: canonica
 alias, otherwise alternate alias, otherwise room ID with SDK-computed via servers.
 Use this method exactly rather than inventing a room alias or routing server.
 
+Sharing checkpoint: the public RoomSettingsSnapshot already had `share_link` and
+GUI consumers; no second public DTO field was needed. Replaced the existing
+state-layer manual percent-encoding/alias selection helper with the SDK
+`Room::matrix_to_permalink()` result in the SDK snapshot and direct Core mapping.
+Removed the unused state helper and moved its alias-selection coverage to an
+actual SDK synced-room test, covering canonical/alternate aliases, canonical
+changes and alias removal/room-ID fallback. This test was compile-RED on the
+missing SDK field, then GREEN. SDK lib 144/144, Core mapping 1/1, state room
+management 16/16 passed. No both-server share-link proof or GUI acceptance claim
+is made yet; those checks remain.
+
 ## Remaining investigation and implementation
 
 - #847: Core ignored-sender suppression is reversible per-item. The pinned SDK

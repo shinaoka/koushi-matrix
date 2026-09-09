@@ -350,6 +350,7 @@ fn space_role_unrelated_comparison_ignores_only_target_user_entry() {
 #[test]
 fn room_management_wrappers_use_settings_privacy_and_moderation_apis() {
     let snapshot = MatrixRoomSettingsSnapshot {
+        share_link: None,
         room_id: "!room:example.invalid".to_owned(),
         name: Some("Synthetic Room".to_owned()),
         topic: Some("Synthetic topic".to_owned()),
@@ -391,6 +392,7 @@ fn room_management_wrappers_use_settings_privacy_and_moderation_apis() {
 #[test]
 fn room_setting_update_projects_the_sent_change_into_the_success_snapshot() {
     let original = MatrixRoomSettingsSnapshot {
+        share_link: None,
         room_id: "!room:example.invalid".to_owned(),
         name: Some("Original Room".to_owned()),
         topic: Some("Original topic".to_owned()),
@@ -452,6 +454,7 @@ fn room_setting_update_projects_the_sent_change_into_the_success_snapshot() {
 #[test]
 fn room_member_power_level_projection_updates_role_in_success_snapshot() {
     let original = MatrixRoomSettingsSnapshot {
+        share_link: None,
         room_id: "!room:example.invalid".to_owned(),
         name: Some("Original Room".to_owned()),
         topic: Some("Original topic".to_owned()),
