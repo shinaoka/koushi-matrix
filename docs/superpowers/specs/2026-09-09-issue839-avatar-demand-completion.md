@@ -1,6 +1,8 @@
 # #839: complete shared avatar-demand ownership
 
-Status: proposed canon amendment; approval required before implementation.
+Status: approved by the user (「承認」); implementation in progress.
+The subsequent user instruction defers #855 macOS WebView verification to their
+later check. It is not a blocker for this batch and is not verified evidence.
 Scope: the remaining #839 contract, not #859 virtualization replacement.
 
 ## Source-grounded starting point
@@ -98,6 +100,7 @@ Rust instead of copying SwiftUI or React ownership. No upstream code is copied.
 
 ## Approval boundary
 
-This changes the cross-actor/public observation contract. Approval authorizes the
-canon amendment and Phase A implementation, not bypassing any headless evidence,
-GUI migration, CI, human PR approval or the goal's final audit.
+The user approved this cross-actor/public observation contract and its canon
+amendment. Phase A may proceed without another design-approval request. Required
+headless evidence, GUI migration, CI, human PR approval and the final audit remain
+in force. Material departures from this design still require reconsideration.

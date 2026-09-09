@@ -436,14 +436,19 @@ successful test was rerun for this documentation-only audit.
 These mappings are not Issue closure, final-SHA CI or a goal-completion audit.
 The #839 design approval and native #855 evidence remain outstanding.
 
-## Native evidence availability checkpoint
+## Latest user decisions: #839 approved, native check deferred
 
-The current execution host reports Linux. Existing GitHub workflows include a
-macOS cargo-check job and release packaging, but no macOS WebView layout/GUI
-verification lane. Neither is evidence for #855's native baseline acceptance.
-A macOS GUI environment or an explicitly supplied native verification result is
-still required; do not dispatch a release workflow to obtain unrelated evidence.
-This blocks final acceptance, not the remaining Linux/headless implementation.
+The user explicitly approved the #839 avatar-demand design (「承認」). Updated
+its status and the overview/state-machine canon before implementation. Earlier
+approval-wait checkpoints above are historical, not current blockers.
+
+The subsequent instruction 「macOSはあとでチェックするのでいい」 transfers #855
+macOS WebView verification to a later user check and removes it from this batch's
+implementation/PR/merge blockers. Native verification remains **not performed**;
+Linux/Chromium, macOS cargo-check and release packaging are not substitutes.
+The final handoff must disclose the deferral, not claim native acceptance evidence.
+All other goal requirements, including #839 real request-count evidence, final
+local/CI gates, human PR approval and merge/main verification, remain required.
 
 ## Remaining investigation and implementation
 

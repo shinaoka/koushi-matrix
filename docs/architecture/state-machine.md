@@ -2353,12 +2353,20 @@ stateDiagram-v2
   `LiveSignalsChanged` after existing profile/room-list effects. Duplicate
   thumbnail state and unrelated MXCs are inert; no new action or renderer-side
   profile join is required.
-- Visible avatar demand is a bounded renderer request: intersection cleanup
-  releases its reference, Tauri returns only an opaque decimal request sequence,
-  and Core cancels the matching waiter or active/queued fetch without publishing
-  a terminal event for the released demand. Shared MXCs remain single-flight
-  until their final consumer releases them; account teardown still uses the
-  session-generation fence. Within one session, a completion must also match the
+- Avatar observations are bounded, connection-owned, account/session-qualified
+  scope updates containing stable source identities/windows and monotonically
+  ordered revisions, not renderer-selected MXCs. Retired/stale or oversized input
+  is rejected rather than truncated. Each scope admits at most 256 visible and
+  eight prefetch identities, using the existing 64-scope budget. Rust resolves and
+  serializes demand, prioritizing visible resources before prefetch. AppActor's
+  latest-wins watch handoff makes scope removal durable; it must not depend on a
+  best-effort cancellation message. AccountActor reconciles the demand using its
+  existing six active/256 queued downloader; excess live demand is deferred and
+  reconsidered as capacity becomes available, not lost or put in an unbounded
+  queue. React owns neither a demand/ref-count registry nor retries. Core cancels
+  a released waiter's active/queued fetch without a terminal event for that
+  released demand. Shared MXCs remain single-flight until their final consumer
+  releases them; account teardown still uses the session-generation fence. Within one session, a completion must also match the
   currently registered fetch task identity for that MXC. An already queued result
   from a canceled task must not settle or remove a later replacement's waiters,
   populate its cache, or decrement its active-fetch count. The existing task

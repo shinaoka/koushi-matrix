@@ -573,11 +573,18 @@ An in-process actor system in `koushi-core`:
   Compact output is all readers through four, three plus exact overflow from five;
   full-reader windows preserve the exact total without publishing all records.
   React joins finished compact summaries by event ID only; it never joins profile
-  maps, orders readers, or formats receipt dates. It performs only DOM visibility
-  demand discovery for avatar thumbnails; the App registry reference-counts
-  visible/snapshot consumers and Core owns download, retry, capacity, cancellation,
-  and terminal state. Visibility qualifies both the committed timeline display and
-  receipt-model revisions. The old room-wide full-reader map is removed from the
+  maps, orders readers, or formats receipt dates. For avatars it reports only
+  source-revision-qualified visible identities/windows through connection-owned
+  scopes. Rust owns resolved demand, visible-before-prefetch priority, shared
+  consumption, download, retry, capacity, cancellation and terminal state; React
+  must not maintain an MXC request/ref-count registry. The existing 64-scope budget
+  admits at most 256 visible and eight prefetch identities per avatar scope.
+  AppActor publishes durable latest-wins demand to the existing AccountActor
+  downloader; scope retirement removes demand even under mailbox pressure.
+  Visibility qualifies both the committed timeline display and receipt-model
+  revisions. The same contract serves senders, compact/full readers, People,
+  Space members, room/Space/invite icons and own profile; see the approved
+  [avatar demand contract](../superpowers/specs/2026-09-09-issue839-avatar-demand-completion.md). The old room-wide full-reader map is removed from the
   production path rather than retained as a fallback or embedded TimelineItem
   cache.
   See the [receipt vertical](../superpowers/specs/2026-09-06-receipt-reader-vertical.md)
@@ -656,8 +663,8 @@ The cache is an entry-and-byte-bounded LRU: access refreshes recency, eviction
 or session clear releases the owned bytes, and an item larger than the byte
 bound fails before a Ready reference is published. It must never persist
 automatic avatar/link-preview plaintext or return `file://` URLs for them. Legacy
-plaintext thumbnail directories remain cleanup-only. After renderer visibility
-submits an avatar MXC, `AccountActor` owns single-flight deduplication, bounded
+plaintext thumbnail directories remain cleanup-only. After Rust resolves scoped
+visibility observations into avatar resources, `AccountActor` owns single-flight deduplication, bounded
 concurrency, two network attempts, terminal Ready/Failed caching and session-
 generation teardown; React owns no retry classifier or attempt counter.
 
