@@ -106,6 +106,13 @@ export function RoomInfoPanel({
     "idle"
   );
   const rotationEpochRef = useRef(0);
+  const copyEpochRef = useRef(0);
+  const [copyStatus, setCopyStatus] = useState<"copied" | "failed" | null>(null);
+  useEffect(() => {
+    setCopyStatus(null);
+    copyEpochRef.current += 1;
+    return () => { copyEpochRef.current += 1; };
+  }, [roomId, shareLink]);
 
   useEffect(() => {
     setNameDraft(settings?.name ?? roomName);
@@ -154,11 +161,15 @@ export function RoomInfoPanel({
     !settingsPending;
   const statusBadges = roomStatusBadges(isEncrypted, Boolean(room?.is_dm), settings);
 
-  function copyShareLink() {
-    if (!shareLink) {
-      return;
+  async function copyShareLink() {
+    if (!shareLink) return;
+    const epoch = ++copyEpochRef.current;
+    try {
+      await navigator.clipboard.writeText(shareLink);
+      if (epoch === copyEpochRef.current) setCopyStatus("copied");
+    } catch {
+      if (epoch === copyEpochRef.current) setCopyStatus("failed");
     }
-    void navigator.clipboard?.writeText(shareLink).catch(() => undefined);
   }
 
   if (!room) {
@@ -199,6 +210,14 @@ export function RoomInfoPanel({
           </button>
         ) : null}
       </div>
+
+      {shareLink ? (
+        <div className="settings-detail-list">
+          {settings?.canonical_alias ? <DetailRow label={t("dialog.roomAddress")} value={settings.canonical_alias} /> : null}
+          <DetailRow label={t("room.shareUrl")} value={shareLink} />
+          {copyStatus ? <p role="status">{t(copyStatus === "copied" ? "room.shareLinkCopied" : "room.shareLinkCopyFailed")}</p> : null}
+        </div>
+      ) : null}
 
       <div className="settings-summary-grid" aria-label={t("room.summary")}>
         <SummaryTile label={t("room.type")} value={room.is_dm ? t("room.directMessage") : t("search.scopeRoom")} />

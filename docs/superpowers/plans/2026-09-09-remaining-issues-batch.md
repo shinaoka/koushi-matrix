@@ -233,7 +233,18 @@ form. The synthetic IME sequence must execute keydown and implicit submit in one
 browser task, matching the existing zero-delay form fence; separate Playwright
 round trips incorrectly expire that fence. Final focused Playwright and lint
 passed. Room-info UI copy feedback/alias/no-alias checks and broader final gates
-remain.
+remain at that checkpoint.
+
+Room-info checkpoint: existing UI only had a copy button and silently discarded
+clipboard failures. Added visible Rust-projected full alias and share URL, plus
+localized success/failure feedback; clipboard failures never claim success.
+Copy completion is fenced to the current room/link and component lifetime. The
+existing component test was extended and failed before the fix, then passed.
+English/Japanese copy-success and copy-failure coverage now passes as part of
+22 RoomInfoPanel tests. Typecheck/lint passed for the production change; subsequent
+locale test expansion also passed. SDK alias-change/no-alias coverage and local
+public sharing join evidence are already recorded above. Additional UI alias-change/
+no-alias lifecycle coverage, whole frontend suite and final gates remain.
 
 ## Remaining investigation and implementation
 

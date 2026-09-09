@@ -192,6 +192,9 @@ export type MessageId =
   | "dialog.privateRoom"
   | "dialog.publicRoom"
   | "dialog.roomAddress"
+  | "room.shareUrl"
+  | "room.shareLinkCopied"
+  | "room.shareLinkCopyFailed"
   | "dialog.roomAddressInUse"
   | "dialog.roomAddressAbout"
   | "dialog.roomAddressHelp"
@@ -1507,6 +1510,9 @@ const en: Catalog = {
   "dialog.newDmTitle": "New DM",
   "dialog.privateRoom": "Private room",
   "dialog.publicRoom": "Public room",
+  "room.shareUrl": "Room URL",
+  "room.shareLinkCopied": "Room link copied.",
+  "room.shareLinkCopyFailed": "Could not copy the link. Select and copy the URL instead.",
   "dialog.roomAddress": "Room address",
   "dialog.roomAddressInUse": "This address is already in use. Choose a different room-specific name and try again.",
   "dialog.roomAddressAbout": "About room addresses ↗",
@@ -2729,6 +2735,9 @@ const ja: Catalog = {
   "dialog.newDmTitle": "新しいDM",
   "dialog.privateRoom": "非公開ルーム",
   "dialog.publicRoom": "公開ルーム",
+  "room.shareUrl": "ルームURL",
+  "room.shareLinkCopied": "ルームのリンクをコピーしました。",
+  "room.shareLinkCopyFailed": "リンクをコピーできませんでした。URLを選択してコピーしてください。",
   "dialog.roomAddress": "ルームアドレス",
   "dialog.roomAddressInUse": "このアドレスは使用済みです。別のルーム固有の名前に変更して、もう一度作成してください。",
   "dialog.roomAddressAbout": "ルームアドレスについて ↗",
