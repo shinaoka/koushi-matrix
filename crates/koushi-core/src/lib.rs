@@ -76,8 +76,8 @@ pub use native_artifact::{
 pub use runtime::{
     COMMAND_INBOX_CAPACITY, CommandSubmitError, CoreCommandHandle, CoreConnection, CoreRuntime,
     EVENT_QUEUE_CAPACITY, EventNavigationError, EventStreamLag, OutcomeCorrelation,
-    ReaderSubscription, ReaderSubscriptionCloser, RequestOutcome, RequestOutcomeError,
-    RequestOutcomeExpectation, RoomOperationKind, SelectRoomError,
+    ReaderSubscription, ReaderSubscriptionCloser, ReaderSubscriptionControl, RequestOutcome,
+    RequestOutcomeError, RequestOutcomeExpectation, RoomOperationKind, SelectRoomError,
 };
 pub use sliding_sync_diagnostics::{
     DiagnosticAgeBucket, SlidingSyncDiagnostics, SlidingSyncDiagnosticsSnapshot,

@@ -41,7 +41,7 @@ pub use crate::view_scope_lifecycle::ScopeError;
 pub use connection::CoreConnectionTestControl;
 pub use connection::{
     CommandSubmitError, CoreCommandHandle, CoreConnection, EventNavigationError, EventStreamLag,
-    ReaderSubscription, ReaderSubscriptionCloser, SelectRoomError,
+    ReaderSubscription, ReaderSubscriptionCloser, ReaderSubscriptionControl, SelectRoomError,
 };
 pub use koushi_protocol::state_update::CoreCommandAdmission;
 pub use request_outcome::{

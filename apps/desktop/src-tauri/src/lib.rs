@@ -83,6 +83,7 @@ const SKIP_KEYCHAIN_PERSISTENCE_ENV: &str = "KOUSHI_SKIP_KEYCHAIN_PERSISTENCE";
 pub(crate) struct ReaderSubscriptionEntry {
     pub(crate) subscription: Arc<TokioMutex<ReaderSubscription>>,
     pub(crate) close: ReaderSubscriptionCloser,
+    pub(crate) control: koushi_core::ReaderSubscriptionControl,
 }
 
 pub struct CoreRuntimeState {

@@ -721,6 +721,31 @@ format, test-structure and whitespace passed. Logs:
 The portable reader API is now reachable; desktop adapter/TypeScript/GUI wiring,
 other source families, full request-count QA and final gates remain unfinished.
 
+## #839 reader controls independent of pending receive
+
+Adapter inspection found that `receive_receipt_reader` holds the subscription
+mutex during its pending receive. Sending observations through that mutex would
+wait for the very delivery the observation must trigger; existing window/ACK/
+resource operations also used that mutex.
+
+Added `ReaderSubscriptionControl`, a capability over the same consumer and scope
+ID, not another owner/registry. It does not retain OwnedViewScope and shares the
+existing close signal. Subscription convenience methods delegate to it. Desktop
+entries retain the control capability; ACK/window/resource commands now use it
+without acquiring the receiving subscription mutex. Removed the obsolete internal
+OwnedViewScope window-update forwarding method.
+
+The new API initially produced compile RED (not a reproduced native deadlock).
+A headless test holds a real delivery future pending while observation, ACK,
+window-update and resource operations return through the control path; close
+settles the pending receive and rejects further observations. 23 connection and
+21 lifecycle tests passed. Desktop library cargo check, formatting, structure and
+whitespace passed. Logs: `/tmp/koushi-reader-control-{red,green,regression}.log`,
+`/tmp/koushi-reader-control-tauri-check.log`.
+
+The desktop observation command/DTO and frontend invocation still remain to be
+added; other avatar source families and scale/GUI evidence are not completed.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated

@@ -112,7 +112,23 @@ pub struct ReaderSubscription {
     close_rx: watch::Receiver<bool>,
 }
 
+/// Non-receiving capability for one subscription. Does not retain the scope
+/// owner or require the mutex held by a pending delivery.
+#[derive(Clone)]
+pub struct ReaderSubscriptionControl {
+    consumer: crate::view_scope_lifecycle::ViewConsumer,
+    scope: koushi_protocol::view::ViewScopeId,
+    close_rx: watch::Receiver<bool>,
+}
+
 impl ReaderSubscription {
+    pub fn control(&self) -> ReaderSubscriptionControl {
+        ReaderSubscriptionControl {
+            consumer: self.consumer.clone(),
+            scope: self.scope.id(),
+            close_rx: self.close_rx.clone(),
+        }
+    }
     pub fn id(&self) -> koushi_protocol::view::ViewScopeId {
         self.scope.id()
     }
@@ -151,7 +167,48 @@ impl ReaderSubscription {
         &self,
         revision: koushi_protocol::view::ViewRevision,
     ) -> Result<(), crate::view_scope_lifecycle::ScopeError> {
-        self.consumer.ack_model(self.scope.id(), revision)
+        self.control().ack_model(revision)
+    }
+
+    pub fn observe_avatars(
+        &self,
+        revision: koushi_protocol::view::ViewRevision,
+        sequence: u64,
+        visible: &[String],
+        prefetch: &[String],
+    ) -> Result<(), crate::view_scope_lifecycle::ScopeError> {
+        self.control()
+            .observe_avatars(revision, sequence, visible, prefetch)
+    }
+
+    pub fn update_window(
+        &self,
+        request: koushi_protocol::view::ReaderWindowRequest,
+    ) -> Result<(), crate::view_scope_lifecycle::ScopeError> {
+        self.control().update_window(request)
+    }
+
+    pub fn resource_content(
+        &self,
+        revision: koushi_protocol::view::ViewRevision,
+        source_ref: &str,
+    ) -> Result<
+        Option<crate::renderable_thumbnail::RenderableThumbnailContent>,
+        crate::view_scope_lifecycle::ScopeError,
+    > {
+        self.control().resource_content(revision, source_ref)
+    }
+}
+
+impl ReaderSubscriptionControl {
+    pub fn ack_model(
+        &self,
+        revision: koushi_protocol::view::ViewRevision,
+    ) -> Result<(), crate::view_scope_lifecycle::ScopeError> {
+        if *self.close_rx.borrow() {
+            return Err(crate::view_scope_lifecycle::ScopeError::Closed);
+        }
+        self.consumer.ack_model(self.scope, revision)
     }
 
     /// Report visible and bounded prefetch user IDs from an acknowledged model.
@@ -166,20 +223,19 @@ impl ReaderSubscription {
         if *self.close_rx.borrow() {
             return Err(crate::view_scope_lifecycle::ScopeError::Closed);
         }
-        self.consumer.observe_current_reader_avatars(
-            self.scope.id(),
-            revision,
-            sequence,
-            visible,
-            prefetch,
-        )
+        self.consumer
+            .observe_current_reader_avatars(self.scope, revision, sequence, visible, prefetch)
     }
 
     pub fn update_window(
         &self,
         request: koushi_protocol::view::ReaderWindowRequest,
     ) -> Result<(), crate::view_scope_lifecycle::ScopeError> {
-        self.scope.update_reader_window(
+        if *self.close_rx.borrow() {
+            return Err(crate::view_scope_lifecycle::ScopeError::Closed);
+        }
+        self.consumer.update_reader_window(
+            self.scope,
             request.installed_revision,
             request.sequence,
             request.target,
@@ -201,7 +257,7 @@ impl ReaderSubscription {
             return Err(crate::view_scope_lifecycle::ScopeError::Closed);
         }
         self.consumer
-            .resource(self.scope.id(), revision, source_ref)
+            .resource(self.scope, revision, source_ref)
             .map(|lease| lease.map(|lease| lease.content()))
     }
 }

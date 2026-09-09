@@ -8,9 +8,7 @@ use std::{
 
 use koushi_protocol::{
     RuntimeConnectionId,
-    view::{
-        ReaderWindowLimit, ReaderWindowTarget, ViewModel, ViewRetirement, ViewRevision, ViewScopeId,
-    },
+    view::{ViewModel, ViewRetirement, ViewRevision, ViewScopeId},
 };
 use tokio::sync::Notify;
 
@@ -655,22 +653,6 @@ impl OwnedViewScope {
     #[cfg(test)]
     pub(crate) fn ack_retirement(&self) -> Result<(), ScopeError> {
         ViewConsumer(self.consumer.clone()).ack_retirement(self.id)
-    }
-
-    pub(crate) fn update_reader_window(
-        &self,
-        installed_revision: ViewRevision,
-        sequence: u64,
-        target: ReaderWindowTarget,
-        limit: ReaderWindowLimit,
-    ) -> Result<(), ScopeError> {
-        ViewConsumer(self.consumer.clone()).update_reader_window(
-            self.id,
-            installed_revision,
-            sequence,
-            target,
-            limit,
-        )
     }
 }
 

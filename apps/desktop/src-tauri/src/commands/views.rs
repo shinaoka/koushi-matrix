@@ -20,6 +20,7 @@ pub async fn subscribe_receipt_reader(
     let scope = subscription.id();
     let entry = crate::ReaderSubscriptionEntry {
         close: subscription.close_handle(),
+        control: subscription.control(),
         subscription: std::sync::Arc::new(tokio::sync::Mutex::new(subscription)),
     };
     state.reader_subscriptions.lock().await.insert(scope, entry);
@@ -56,9 +57,7 @@ pub async fn read_receipt_reader_resource(
         .cloned()
         .ok_or_else(|| "reader scope is not owned by this window".to_owned())?;
     entry
-        .subscription
-        .lock()
-        .await
+        .control
         .resource_content(revision, &source_ref)
         .map(|content| {
             content.map(|content| ReceiptReaderResourceContent {
@@ -83,9 +82,7 @@ pub async fn update_receipt_reader_window(
         .cloned()
         .ok_or_else(|| "reader scope is not owned by this window".to_owned())?;
     entry
-        .subscription
-        .lock()
-        .await
+        .control
         .update_window(request)
         .map_err(|error| format!("reader window update failed: {error:?}"))
 }
@@ -104,9 +101,7 @@ pub async fn ack_receipt_reader(
         .cloned()
         .ok_or_else(|| "reader scope is not owned by this window".to_owned())?;
     entry
-        .subscription
-        .lock()
-        .await
+        .control
         .ack_model(revision)
         .map_err(|error| format!("reader ACK failed: {error:?}"))
 }
