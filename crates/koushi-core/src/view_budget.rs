@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-const MAX_SCOPES: usize = 64;
+use koushi_state::VIEW_SCOPE_CAPACITY as MAX_SCOPES;
 const MAX_BYTES: usize = 256 * 1024 * 1024;
 
 /// Shared admission ledger for charged model/raw/builder/control data, not a heap estimate.

@@ -2,6 +2,7 @@
 // (and the `prelude`), not the module tree. Feature modules are crate-internal so
 // consumers depend on the stable root API rather than reaching into module internals.
 mod action;
+mod avatar_demand;
 mod composer_document;
 mod composer_revision;
 mod composer_shortcuts;
@@ -15,6 +16,10 @@ mod submission;
 mod typography_profile;
 
 pub use action::{AppAction, AuthSecret, IdentityResetAuthRequest, LoginRequest, RecoveryRequest};
+pub use avatar_demand::{
+    AVATAR_PREFETCH_CAPACITY, AVATAR_VISIBLE_CAPACITY, AvatarDemandContext, AvatarDemandError,
+    AvatarDemandState, VIEW_SCOPE_CAPACITY,
+};
 pub use composer_document::{ComposerDocument, ComposerInline};
 pub use composer_revision::{ComposerDraftRevision, ComposerDraftRevisionError};
 pub use composer_shortcuts::{

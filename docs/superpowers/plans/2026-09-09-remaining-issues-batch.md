@@ -436,6 +436,28 @@ successful test was rerun for this documentation-only audit.
 These mappings are not Issue closure, final-SHA CI or a goal-completion audit.
 The #839 design approval and native #855 evidence remain outstanding.
 
+## #839 Phase A: resolved demand state foundation
+
+Added `koushi-state/src/avatar_demand.rs`: serializable account/session-qualified
+scope demand with atomic monotonic observations, explicit closure, 256 visible /
+eight prefetch bounds, visible-first resource deduplication and private-data-free
+Debug. Missing avatar rows remain placeholders and produce no resource request.
+Core's existing ViewBudget now imports the same 64-scope constant rather than
+maintaining a second numeric definition.
+
+The new contract test initially failed to compile because the API did not exist;
+this is a missing-contract RED, not a reproduced runtime scheduler regression.
+After implementation all four state tests passed. All 16 existing Core
+view-scope-lifecycle tests also passed, as did Rust test structure, leaf boundary
+and diff whitespace checks. Logs: `/tmp/koushi-avatar-demand-contract-red.log`,
+`/tmp/koushi-avatar-demand-contract-green.log`,
+`/tmp/koushi-avatar-scope-budget-check.log`.
+
+This is a foundation only: the AppActor watch handoff, AccountActor reconciliation,
+source-resolution/retirement integration, GUI migration and 1,500-target actual
+network evidence are still pending. The ledger is not yet the live demand owner;
+none of the new state tests proves runtime cancellation or scheduling by itself.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated
