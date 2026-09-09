@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use koushi_state::{AppAction, AuthFailureKind, VerificationCancelReason};
-
 use tokio::sync::oneshot;
 
 use super::{
@@ -13,10 +12,11 @@ use super::{
     secure_backup_inspection_admission, secure_backup_inspection_completion_action,
     secure_backup_monitor_wakeup_is_current, secure_backup_retry_delay,
 };
-use crate::account::actor::AccountMessage;
+use crate::account::actor::{AccountActorHandle, AccountMessage};
 use crate::account::test_support::{
-    acknowledge_next_verified_projection, inspect_session_runtime, inspect_sync_owners,
-    login_gated_actor, shutdown_and_ack, spawn_actor_with_dirs, test_request_id,
+    acknowledge_next_verified_projection, consume_initial_unknown_trust_projection,
+    inspect_secure_backup_owners, inspect_session_runtime, inspect_sync_owners, login_gated_actor,
+    shutdown_and_ack, spawn_actor_with_dirs, test_request_id,
 };
 use crate::account::verification::incoming_verification_request_id;
 use koushi_protocol::command::AccountCommand;
@@ -28,6 +28,75 @@ use koushi_protocol::failure::CoreFailure;
 use koushi_protocol::ids::{AccountKey, RequestId, RuntimeConnectionId};
 
 use tempfile::tempdir;
+
+/// Verified-promoted actor with a short connectivity-wait deadline so the
+/// deadline expiry is observable in real time without long sleeps.
+async fn verified_actor_with_short_deadline(
+    wait: Duration,
+) -> (
+    AccountActorHandle,
+    tokio::sync::mpsc::Receiver<Vec<AppAction>>,
+) {
+    let (handle, mut action_rx) = login_gated_actor().await;
+    handle
+        .send(AccountMessage::ConfigureSecureBackupDeferWait { wait })
+        .await;
+    consume_initial_unknown_trust_projection(&mut action_rx).await;
+    assert!(
+        handle
+            .send(AccountMessage::CurrentDeviceTrustChanged {
+                generation: 2,
+                trust: koushi_state::CurrentDeviceTrustState::Verified,
+            })
+            .await
+    );
+    acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+    (handle, action_rx)
+}
+
+async fn recv_gate_action_matching(
+    handle: &AccountActorHandle,
+    action_rx: &mut tokio::sync::mpsc::Receiver<Vec<AppAction>>,
+    pred: fn(&koushi_state::SecureBackupGateState) -> bool,
+) -> koushi_state::SecureBackupGateState {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let remaining = deadline
+            .checked_duration_since(tokio::time::Instant::now())
+            .expect("gate action timeout");
+        let actions = tokio::time::timeout(remaining, action_rx.recv())
+            .await
+            .expect("gate action deadline")
+            .expect("account action channel");
+        crate::account::test_support::route_sliding_sync_effects(handle, &actions).await;
+        for action in actions {
+            if let AppAction::SecureBackupGateChanged(gate) = &action
+                && pred(gate)
+            {
+                return gate.clone();
+            }
+        }
+    }
+}
+
+async fn assert_no_gate_action_within(
+    action_rx: &mut tokio::sync::mpsc::Receiver<Vec<AppAction>>,
+    window: Duration,
+) {
+    let quiet = tokio::time::timeout(window, async {
+        loop {
+            let actions = action_rx.recv().await.expect("account action channel");
+            if let Some(gate) = actions.iter().find_map(|action| match action {
+                AppAction::SecureBackupGateChanged(gate) => Some(gate),
+                _ => None,
+            }) {
+                panic!("unexpected SecureBackupGateChanged: {gate:?}");
+            }
+        }
+    })
+    .await;
+    assert!(quiet.is_err(), "no SecureBackupGateChanged expected");
+}
 
 fn ready_secure_backup_inspection() -> koushi_sdk::MatrixSecureBackupInspection {
     koushi_sdk::MatrixSecureBackupInspection {
@@ -810,4 +879,129 @@ fn identity_reset_sdk_results_project_actions_and_typed_events() {
 
     let debug = format!("{events:?}");
     assert!(!debug.contains("@alice:example.test"));
+}
+
+fn is_blocked_failed_timeout(gate: &koushi_state::SecureBackupGateState) -> bool {
+    matches!(
+        gate,
+        koushi_state::SecureBackupGateState::BlockedFailed {
+            failure: koushi_state::SecureBackupGateFailureKind::Timeout
+        }
+    )
+}
+
+/// #860 regression: a deferred (connectivity-unproven) inspection must own a
+/// deadline; expiry leaves Checking for a retryable BlockedFailed{Timeout}
+/// even when no connectivity notification ever arrives, and a stale replay of
+/// the expiry must not project a second terminal.
+#[tokio::test]
+async fn deferred_inspection_deadline_exits_checking_without_connectivity() {
+    let (handle, mut action_rx) =
+        verified_actor_with_short_deadline(Duration::from_millis(50)).await;
+    handle.send(AccountMessage::InspectSecureBackup).await;
+    let owners = inspect_secure_backup_owners(&handle).await;
+    assert!(owners.inspection_pending, "defer must set pending");
+    assert!(!owners.has_inspection_task);
+    assert!(owners.has_defer_deadline, "defer must arm a deadline task");
+    let armed_serial = owners.defer_serial;
+    let gate = recv_gate_action_matching(&handle, &mut action_rx, is_blocked_failed_timeout).await;
+    assert!(is_blocked_failed_timeout(&gate));
+    let owners = inspect_secure_backup_owners(&handle).await;
+    assert!(!owners.inspection_pending);
+    assert!(
+        !owners.has_defer_deadline,
+        "fired deadline must be released"
+    );
+    // Stale replay: same generation/serial must not project a second terminal.
+    let generation = owners.trust_generation;
+    assert!(
+        handle
+            .send(AccountMessage::SecureBackupDeferredDeadlineExpired {
+                generation,
+                deadline_serial: armed_serial,
+            })
+            .await
+    );
+    assert_no_gate_action_within(&mut action_rx, Duration::from_millis(300)).await;
+    shutdown_and_ack(&handle).await;
+}
+
+/// Repeated InspectSecureBackup requests while deferred must coalesce onto the
+/// original deadline instead of extending the wait indefinitely.
+#[tokio::test]
+async fn repeated_defers_coalesce_onto_one_deadline() {
+    let (handle, mut action_rx) =
+        verified_actor_with_short_deadline(Duration::from_millis(120)).await;
+    handle.send(AccountMessage::InspectSecureBackup).await;
+    // second defer before expiry must keep the original deadline task
+    handle.send(AccountMessage::InspectSecureBackup).await;
+    let owners = inspect_secure_backup_owners(&handle).await;
+    assert!(owners.inspection_pending && owners.has_defer_deadline);
+    assert!(is_blocked_failed_timeout(
+        &recv_gate_action_matching(&handle, &mut action_rx, is_blocked_failed_timeout).await
+    ));
+    assert_no_gate_action_within(&mut action_rx, Duration::from_millis(300)).await;
+    shutdown_and_ack(&handle).await;
+}
+
+/// Proven connectivity before the deadline disarms it and admits the
+/// inspection instead of failing the gate.
+#[tokio::test]
+async fn proven_connectivity_before_deadline_disarms_deadline_and_starts_inspection() {
+    let (handle, mut action_rx) = verified_actor_with_short_deadline(Duration::from_secs(30)).await;
+    handle.send(AccountMessage::InspectSecureBackup).await;
+    let owners = inspect_secure_backup_owners(&handle).await;
+    assert!(owners.has_defer_deadline);
+    handle
+        .send(AccountMessage::SyncConnectivityChanged { proven: true })
+        .await;
+    let owners = inspect_secure_backup_owners(&handle).await;
+    assert!(
+        !owners.has_defer_deadline,
+        "proven must disarm the deadline"
+    );
+    assert!(!owners.inspection_pending);
+    assert!(
+        owners.has_inspection_task,
+        "proven must admit the inspection"
+    );
+    shutdown_and_ack(&handle).await;
+}
+
+/// Retry must ask the sync owner to re-project its current status when
+/// connectivity is still unproven, instead of only re-running admission
+/// against a possibly stale proven flag.
+#[tokio::test]
+async fn retry_when_unproven_requests_sync_status_reprojection() {
+    let (handle, mut action_rx) =
+        verified_actor_with_short_deadline(Duration::from_millis(50)).await;
+    handle
+        .send(AccountMessage::Command(
+            AccountCommand::RetrySecureBackupInspection {
+                request_id: test_request_id(),
+            },
+        ))
+        .await;
+    // SyncCommand::Start re-projection: the sync owner projects its status.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let remaining = deadline
+            .checked_duration_since(tokio::time::Instant::now())
+            .expect("sync status reprojection timeout");
+        let actions = tokio::time::timeout(remaining, action_rx.recv())
+            .await
+            .expect("account action deadline")
+            .expect("account action channel");
+        if actions
+            .iter()
+            .any(|action| matches!(action, AppAction::SyncStatusChanged { .. }))
+        {
+            break;
+        }
+    }
+    // The retry deferred (still unproven) and the deadline still fires.
+    assert!(is_blocked_failed_timeout(
+        &recv_gate_action_matching(&handle, &mut action_rx, is_blocked_failed_timeout).await
+    ));
+    shutdown_and_ack(&handle).await;
 }

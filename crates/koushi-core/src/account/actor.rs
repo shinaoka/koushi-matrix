@@ -3,7 +3,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     sync::{Arc, Mutex, atomic::AtomicU64},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 #[cfg(any(test, feature = "test-hooks"))]
@@ -51,7 +51,8 @@ use super::account_management::PendingUiaOperation;
 use super::local_data_cleanup::{PendingDeviceCleanup, record_device_cleanup_offer};
 use super::profile::AVATAR_DOWNLOAD_CONCURRENCY;
 use super::recovery_backup::{
-    PendingRecoveryCompletion, PendingRecoveryTask, secure_backup_monitor_wakeup_is_current,
+    PendingRecoveryCompletion, PendingRecoveryTask, SECURE_BACKUP_CONNECTIVITY_WAIT_TIMEOUT,
+    secure_backup_monitor_wakeup_is_current,
 };
 #[cfg(any(test, feature = "test-hooks"))]
 use super::session_lifecycle::PendingOidcFlow;
@@ -275,10 +276,24 @@ pub(crate) enum AccountMessage {
     ConfigureAccountManagementDiscovery {
         result: oneshot::Receiver<Option<String>>,
     },
+    #[cfg(test)]
+    InspectSecureBackupOwners {
+        response: oneshot::Sender<SecureBackupOwnersSnapshot>,
+    },
+    #[cfg(test)]
+    ConfigureSecureBackupDeferWait {
+        wait: Duration,
+    },
     CheckCurrentDeviceTrust,
     InspectSecureBackup,
     SyncConnectivityChanged {
         proven: bool,
+    },
+    /// Fired when the connectivity-wait deadline for a deferred inspection
+    /// expires. The serial/generation fencing decides whether it is current.
+    SecureBackupDeferredDeadlineExpired {
+        generation: u64,
+        deadline_serial: u64,
     },
     SecureBackupInspectionFinished {
         generation: u64,
@@ -546,6 +561,19 @@ pub(crate) enum AccountMessage {
         ignored_user_ids: Option<BTreeSet<String>>,
     },
     Shutdown,
+}
+
+/// cfg(test)-only snapshot of the secure-backup inspection owner state.
+#[cfg(test)]
+pub(super) struct SecureBackupOwnersSnapshot {
+    pub(super) inspection_pending: bool,
+    pub(super) has_inspection_task: bool,
+    pub(super) has_monitor_task: bool,
+    pub(super) has_defer_deadline: bool,
+    pub(super) proven: bool,
+    pub(super) trust_generation: u64,
+    pub(super) monitor_serial: u64,
+    pub(super) defer_serial: u64,
 }
 
 /// Handle to the AccountActor background task.
@@ -850,6 +878,13 @@ pub struct AccountActor {
     pub(super) recovery_key_delivery_pending: bool,
     pub(super) secure_backup_inspection_task: Option<crate::executor::JoinHandle<()>>,
     pub(super) secure_backup_monitor_task: Option<crate::executor::JoinHandle<()>>,
+    /// One-shot deadline task owned while an inspection is deferred waiting
+    /// for proven sync connectivity (#860): no deferred wait may be open-ended.
+    pub(super) secure_backup_defer_deadline_task: Option<crate::executor::JoinHandle<()>>,
+    /// Fences deferred-deadline wakeups; bumped on disarm and on consumption
+    /// so stale or replayed expiries cannot re-fail the gate.
+    pub(super) secure_backup_defer_serial: u64,
+    pub(super) secure_backup_connectivity_wait: Duration,
     pub(super) secure_backup_monitor_serial: u64,
     pub(super) secure_backup_inspection_pending: bool,
     pub(super) sync_connectivity_proven: bool,
@@ -1160,6 +1195,9 @@ impl AccountActor {
             recovery_key_delivery_pending: false,
             secure_backup_inspection_task: None,
             secure_backup_monitor_task: None,
+            secure_backup_defer_deadline_task: None,
+            secure_backup_defer_serial: 0,
+            secure_backup_connectivity_wait: SECURE_BACKUP_CONNECTIVITY_WAIT_TIMEOUT,
             secure_backup_monitor_serial: 0,
             secure_backup_inspection_pending: false,
             sync_connectivity_proven: false,
@@ -2048,6 +2086,13 @@ impl AccountActor {
                 AccountMessage::SyncConnectivityChanged { proven } => {
                     self.handle_sync_connectivity_changed(proven).await;
                 }
+                AccountMessage::SecureBackupDeferredDeadlineExpired {
+                    generation,
+                    deadline_serial,
+                } => {
+                    self.handle_secure_backup_defer_deadline_expired(generation, deadline_serial)
+                        .await;
+                }
                 AccountMessage::SecureBackupInspectionFinished {
                     generation,
                     started_at,
@@ -2105,6 +2150,23 @@ impl AccountActor {
                 #[cfg(test)]
                 AccountMessage::InspectPendingDeviceCleanup { response } => {
                     let _ = response.send(self.pending_device_cleanup.is_some());
+                }
+                #[cfg(test)]
+                AccountMessage::InspectSecureBackupOwners { response } => {
+                    let _ = response.send(SecureBackupOwnersSnapshot {
+                        inspection_pending: self.secure_backup_inspection_pending,
+                        has_inspection_task: self.secure_backup_inspection_task.is_some(),
+                        has_monitor_task: self.secure_backup_monitor_task.is_some(),
+                        has_defer_deadline: self.secure_backup_defer_deadline_task.is_some(),
+                        proven: self.sync_connectivity_proven,
+                        trust_generation: self.trust_generation,
+                        monitor_serial: self.secure_backup_monitor_serial,
+                        defer_serial: self.secure_backup_defer_serial,
+                    });
+                }
+                #[cfg(test)]
+                AccountMessage::ConfigureSecureBackupDeferWait { wait } => {
+                    self.secure_backup_connectivity_wait = wait;
                 }
                 #[cfg(any(test, feature = "test-hooks"))]
                 AccountMessage::InspectSyncOwners { response } => {
@@ -2519,7 +2581,15 @@ impl AccountActor {
             } => {
                 self.handle_recover_secure_backup(request_id, request).await;
             }
-            AccountCommand::RetrySecureBackupInspection { .. } => {
+            AccountCommand::RetrySecureBackupInspection { request_id } => {
+                if self.session_promoted && !self.sync_connectivity_proven {
+                    // The deferred wait may have missed the proven edge (#860):
+                    // ask the sync owner to re-project its current status so a
+                    // healthy Running sync can still admit the inspection.
+                    // Start re-projects without restarting a Running sync.
+                    self.route_sync_command(SyncCommand::Start { request_id })
+                        .await;
+                }
                 self.start_secure_backup_inspection();
             }
             AccountCommand::ChangeSecureBackupPassphrase {
