@@ -458,6 +458,35 @@ source-resolution/retirement integration, GUI migration and 1,500-target actual
 network evidence are still pending. The ledger is not yet the live demand owner;
 none of the new state tests proves runtime cancellation or scheduling by itself.
 
+## #839 Phase A: AccountActor watch reconciliation
+
+Added the latest-wins demand input to AccountActor and its internal handle.
+The existing session-generation counter is now shared atomically with the
+publisher; it is not a second generation counter. Incoming demand must match both
+the actor's active account and generation. Pending watch updates are consumed
+before queued messages/completions, and scope removal does not require a mailbox
+slot. The existing downloader/in-flight map serves scoped resources without
+manufacturing command request IDs. Command waiters remain supported during the
+migration; their API is still scheduled for retirement with the GUI callers.
+
+Reconciliation preserves active/shared resources, cancels unneeded work, rebuilds
+scoped queued resources in visible-first order, and keeps excess demand in the
+bounded state rather than caching Capacity as a terminal failure. Completion
+reconsiders that deferred demand. No second downloader or persistent URI demand
+registry was added.
+
+A MatrixMockServer test publishes 20 observed resources, sees exactly six actual
+media requests start, clears demand, and verifies no queued request or retry after
+the delayed response interval. The initial test failed because the new handle API
+was absent. After implementation, all six profile actor tests and five local-data
+cleanup tests passed; formatting, test structure and leaf boundary checks passed.
+Logs: `/tmp/koushi-avatar-watch-red.log`, `/tmp/koushi-avatar-watch-green.log`,
+`/tmp/koushi-avatar-watch-regression.log`.
+
+AppActor/source-resolution publication and connection/scope lifecycle integration
+are still pending; currently only the new test publishes scoped demand. This is
+not yet the live renderer migration, nor the required 1,500-target server proof.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated

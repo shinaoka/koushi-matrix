@@ -58,6 +58,20 @@ impl fmt::Debug for AvatarDemandState {
 }
 
 impl AvatarDemandState {
+    pub fn context(&self) -> &AvatarDemandContext {
+        &self.context
+    }
+
+    pub fn contains_resource(&self, resource: &str) -> bool {
+        self.scopes.values().any(|scope| {
+            scope
+                .visible
+                .iter()
+                .chain(&scope.prefetch)
+                .any(|candidate| candidate.as_deref() == Some(resource))
+        })
+    }
+
     pub fn new(context: AvatarDemandContext) -> Self {
         Self {
             context,

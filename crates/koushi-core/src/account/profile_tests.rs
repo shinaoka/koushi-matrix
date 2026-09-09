@@ -359,6 +359,66 @@ async fn canceling_last_avatar_waiter_aborts_active_fetch_and_admits_pending_wor
 }
 
 #[tokio::test]
+async fn scoped_avatar_watch_cancels_active_and_queued_demand() {
+    let _cache_guard = crate::renderable_thumbnail::test_cache_lock();
+    let server = MatrixMockServer::new().await;
+    server
+        .mock_authed_media_download()
+        .respond_with(ResponseTemplate::new(500).set_delay(Duration::from_secs(1)))
+        .mount()
+        .await;
+    let session = test_session(&server).await;
+    let account_id = session.info.user_id.clone();
+    let cred_dir = tempdir().unwrap();
+    let data_dir = tempdir().unwrap();
+    let (handle, _actions, _events) = spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+    assert!(
+        handle
+            .install_residency_test_session(std::sync::Arc::new(session))
+            .await
+    );
+    let context = handle.avatar_demand_context(account_id);
+    let mut demand = koushi_state::AvatarDemandState::new(context.clone());
+    demand.open(1).unwrap();
+    demand
+        .replace(
+            &context,
+            1,
+            1,
+            (0..20)
+                .map(|id| Some(format!("mxc://localhost/scoped-{id}")))
+                .collect(),
+            vec![],
+        )
+        .unwrap();
+    handle.publish_avatar_demand(Some(std::sync::Arc::new(demand)));
+    async fn requests(server: &MatrixMockServer) -> usize {
+        server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter(|request| request.url.path().contains("/media/download/"))
+            .count()
+    }
+    timeout(Duration::from_secs(3), async {
+        while requests(&server).await < 6 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("six scoped fetches start");
+    handle.publish_avatar_demand(None);
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert_eq!(
+        requests(&server).await,
+        6,
+        "closed demand must neither retry nor start queued fetches"
+    );
+    shutdown_and_ack(&handle).await;
+}
+
+#[tokio::test]
 async fn canceled_avatar_completion_cannot_settle_a_replacement_in_the_same_session() {
     let _cache_guard = crate::renderable_thumbnail::test_cache_lock();
     let server = MatrixMockServer::new().await;

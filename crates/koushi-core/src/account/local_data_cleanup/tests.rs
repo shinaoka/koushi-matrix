@@ -508,7 +508,9 @@ async fn reset_local_data_clears_current_account_persistence_and_signs_out_local
         avatar_download_semaphore: Arc::new(Semaphore::new(AVATAR_DOWNLOAD_CONCURRENCY)),
         avatar_fetch_tasks: tokio::task::JoinSet::new(),
         avatar_fetch_abort_handles: HashMap::new(),
-        avatar_session_generation: 0,
+        avatar_session_generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        avatar_demand_rx: tokio::sync::watch::channel(None).1,
+        avatar_demand: None,
     };
     let request_id = test_request_id();
 
