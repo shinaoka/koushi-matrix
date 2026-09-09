@@ -57,7 +57,10 @@ async fn avatar_observation_requires_a_live_source_even_with_an_installed_model(
             user_id: "@a:example.org".into(),
             display_name: None,
             original_display_label: String::new(),
-            avatar: None,
+            avatar: Some(koushi_state::AvatarImage {
+                mxc_uri: "mxc://example.invalid/observed-reader-avatar".into(),
+                thumbnail: koushi_state::AvatarThumbnailState::NotRequested,
+            }),
             timestamp_ms: None,
         }],
         profiles: vec![],
@@ -67,7 +70,8 @@ async fn avatar_observation_requires_a_live_source_even_with_an_installed_model(
     let epoch = raw.bind_test_owner(&source()).await;
     let retained = registry.retain_reader_raw(&mut work, raw.clone()).unwrap();
     registry.accept_reader_raw(&mut work, retained).unwrap();
-    let resolved = raw.into_resolved(koushi_state::CatalogLocale::En);
+    let mut resolved = raw.into_resolved(koushi_state::CatalogLocale::En);
+    let resources = std::mem::take(&mut resolved.avatar_resources);
     let model = ViewModel::ReaderReady(ReaderWindow {
         source: source(),
         total_count: 1,
@@ -78,15 +82,19 @@ async fn avatar_observation_requires_a_live_source_even_with_an_installed_model(
         dependency_revision: 1,
         resolved_anchor: ResolvedReaderAnchor::NotRequested,
     });
+    assert!(!serde_json::to_string(&model).unwrap().contains("mxc://"));
     let revision = registry
-        .publish_current(scope.id(), model, vec![], &resolved)
+        .publish_current(scope.id(), model, resources, &resolved)
         .unwrap();
     let _delivery = scope.next_delivery().await.unwrap();
     consumer.ack_model(scope.id(), revision).unwrap();
     assert_eq!(
         consumer
             .with_live_reader_avatar_source(scope.id(), revision, |rows| {
-                assert_eq!(rows.avatar_mxc("@a:example.org")?, None);
+                assert_eq!(
+                    rows.avatar_mxc("@a:example.org")?,
+                    Some("mxc://example.invalid/observed-reader-avatar")
+                );
                 Ok(42)
             })
             .unwrap(),
@@ -107,6 +115,10 @@ async fn avatar_observation_requires_a_live_source_even_with_an_installed_model(
         )
         .unwrap();
     let installed = registry.avatar_demand_for_context(Some(&context)).unwrap();
+    assert_eq!(
+        installed.resources_by_priority(),
+        ["mxc://example.invalid/observed-reader-avatar"]
+    );
     assert_eq!(
         installed.scope_ids().collect::<Vec<_>>(),
         vec![scope.id().0]

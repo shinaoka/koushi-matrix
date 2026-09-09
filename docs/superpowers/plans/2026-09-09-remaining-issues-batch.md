@@ -683,6 +683,18 @@ Logs: `/tmp/koushi-avatar-budget-{red,green}.log`,
 Remaining: portable CoreConnection/adapter observation entrypoint, remaining source
 families, GUI migration/removal of old URI APIs, diagnostics and 1,500-target QA.
 
+## #839 non-placeholder reader observation evidence
+
+Strengthened the reader observation fixture from an avatar-less row to an actual
+NotRequested avatar identity. It now verifies stable user-ID resolution into the
+charged demand snapshot while serialized reader rows contain no MXC URI. The
+existing invalid-sequence/identity/capacity/retired-source assertions also pass
+with this nonempty demand. No production fix was necessary. Focused test,
+structure and whitespace passed; logs:
+`/tmp/koushi-avatar-reader-identity.log` and
+`/tmp/koushi-avatar-reader-identity-final.log`.
+Public command/GUI wiring remains pending; this is not an end-to-end download test.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated
