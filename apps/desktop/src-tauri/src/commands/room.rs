@@ -689,6 +689,18 @@ pub async fn update_room_member_role(
 }
 
 #[tauri::command]
+pub fn preview_room_address(
+    name: String,
+    alias_localpart: Option<String>,
+    state: State<'_, CoreRuntimeState>,
+) -> koushi_state::RoomAddressPreview {
+    state
+        .runtime
+        .attach()
+        .preview_room_address(&name, alias_localpart.as_deref())
+}
+
+#[tauri::command]
 pub async fn create_room(
     options: koushi_protocol::CreateRoomOptions,
     app: AppHandle,

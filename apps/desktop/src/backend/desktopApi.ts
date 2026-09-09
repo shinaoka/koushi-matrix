@@ -20,6 +20,7 @@ import type {
   ComposerSurface,
   ComposerTarget,
   CreateRoomRequest,
+  RoomAddressPreview,
   DesktopSnapshot,
   DirectoryQuery,
   DisplayPlatform,
@@ -412,6 +413,7 @@ export interface DesktopApi {
     powerLevel: number,
     confirmed: boolean
   ): Promise<CommandSettlement>;
+  previewRoomAddress(name: string, aliasLocalpart: string | null): Promise<RoomAddressPreview>;
   createRoom(request: CreateRoomRequest): Promise<CommandSettlement>;
   createSpace(name: string): Promise<CommandSettlement>;
   setSpaceChild(spaceId: string, childRoomId: string, viaServer: string): Promise<CommandAdmission>;

@@ -198,6 +198,13 @@ cleanup. Logs: `/tmp/koushi-batch-address-tuwunel.log`,
 locally. Tuwunel predates the bounded-observation adjustment and will be covered
 again by the final gate. GUI/IME/localized feedback remains unimplemented.
 
+Phase B transport checkpoint: registered `preview_room_address` in Tauri, delegating
+to CoreConnection without parsing or generating aliases in the frontend. Added the
+matching RoomAddressPreview TS mirror and DesktopApi method. The frontend transport
+test was runtime-RED (missing method), then all 28 client tests passed; TypeScript
+typecheck and Tauri cargo check passed. Dialog state/rendering and collision error
+presentation are the next step; no completed GUI behavior is claimed.
+
 ## Remaining investigation and implementation
 
 - #847: Core ignored-sender suppression is reversible per-item. The pinned SDK

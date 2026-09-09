@@ -1048,6 +1048,7 @@ pub fn run() {
             commands::search::start_room_crawl,
             commands::search::stop_room_crawl,
             commands::directory::query_directory,
+            commands::room::preview_room_address,
             commands::room::create_room,
             commands::room::create_space,
             commands::directory::join_directory_room,

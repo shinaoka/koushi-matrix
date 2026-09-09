@@ -15,6 +15,15 @@ describe("TauriDesktopApi", () => {
     vi.clearAllMocks();
   });
 
+  test("passes raw room address drafts to Rust and returns its preview unchanged", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+    const preview = { localpart: "設計", full_alias: "#設計:example.invalid", error: null };
+    vi.mocked(invoke).mockResolvedValueOnce(preview);
+    const api = new TauriDesktopApi();
+    expect(await api.previewRoomAddress("設計", null)).toEqual(preview);
+    expect(invoke).toHaveBeenCalledWith("preview_room_address", { name: "設計", aliasLocalpart: null });
+  });
+
   test("gets the diagnostic snapshot without private arguments", async () => {
     vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
 
