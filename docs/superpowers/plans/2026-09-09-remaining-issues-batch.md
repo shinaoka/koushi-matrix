@@ -879,6 +879,17 @@ not other avatar surfaces or the required both-server 1,500-target scenario.
 Global renderer URI demand removal, broader final gates and single PR/merge are
 still pending.
 
+## #839 refresh boundary coverage
+
+Added direct state coverage for the new refresh path: visible/prefetch overflow
+leaves prior demand intact; changed bindings preserve older snapshots; refresh
+does not consume host sequence numbers; closed scopes cannot be revived; and a
+new scope remains a new cache consumer even when it shares an existing URI.
+`cargo test -p koushi-state --test avatar_demand` passed all five tests, logged in
+`/tmp/koushi-avatar-refresh-boundaries.log`. This is additional coverage of the
+existing implementation, not a newly reproduced product defect or new RED claim.
+Other surfaces, actual large-server scenarios and final delivery remain open.
+
 ## Latest user decisions: #839 approved, native check deferred
 
 The user explicitly approved the #839 avatar-demand design (「承認」). Updated

@@ -112,6 +112,55 @@ fn scope_and_window_limits_reject_atomically_without_counting_placeholders_as_re
 }
 
 #[test]
+fn source_refresh_preserves_observation_order_and_rejects_overflow_and_closed_scopes() {
+    let context = context();
+    let mut state = AvatarDemandState::new(context.clone());
+    state.open(1).unwrap();
+    state
+        .replace(&context, 1, 10, resources(&["old"]), vec![])
+        .unwrap();
+    let before = state.clone();
+    for (visible, prefetch) in [(257, 0), (0, 9)] {
+        assert_eq!(
+            state.refresh(1, vec![None; visible], vec![None; prefetch]),
+            Err(AvatarDemandError::Capacity)
+        );
+        assert!(state.same_resource_demand(&before));
+    }
+    assert_eq!(state.refresh(1, resources(&["new"]), vec![]), Ok(true));
+    assert_eq!(before.resources_by_priority(), ["old"]);
+    assert_eq!(state.resources_by_priority(), ["new"]);
+    assert!(!state.same_resource_demand(&before));
+    let refreshed = state.clone();
+    assert_eq!(state.refresh(1, resources(&["new"]), vec![]), Ok(false));
+    assert_eq!(
+        state.replace(&context, 1, 10, resources(&["stale"]), vec![]),
+        Err(AvatarDemandError::StaleObservation)
+    );
+    state
+        .replace(&context, 1, 11, resources(&["new"]), vec![])
+        .unwrap();
+    assert!(
+        state.same_resource_demand(&refreshed),
+        "host counters are not resource interests"
+    );
+    state.open(2).unwrap();
+    state
+        .replace(&context, 2, 1, resources(&["new"]), vec![])
+        .unwrap();
+    assert!(
+        !state.same_resource_demand(&refreshed),
+        "a new consumer must still receive cached state"
+    );
+    state.close(1);
+    assert_eq!(
+        state.refresh(1, resources(&["late"]), vec![]),
+        Err(AvatarDemandError::Closed)
+    );
+    assert_eq!(state.resources_by_priority(), ["new"]);
+}
+
+#[test]
 fn demand_round_trips_but_debug_does_not_disclose_identities_or_resources() {
     let context = context();
     let mut state = AvatarDemandState::new(context.clone());
