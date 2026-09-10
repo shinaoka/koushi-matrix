@@ -983,6 +983,7 @@ export type MessageId =
   | "timeline.reactionSenderUnknown"
   | "timeline.readBy"
   | "timeline.readReceiptOverflow"
+  | "timeline.readReceiptFailed"
   | "timeline.readMarker"
   | "timeline.readStateSyncing"
   | "timeline.readStateNotSynced"
@@ -2322,6 +2323,7 @@ const en: Catalog = {
   "timeline.reactionSenderUnknown": "{count} people",
   "timeline.readBy": "Read by {count}",
   "timeline.readReceiptOverflow": "{count} more",
+  "timeline.readReceiptFailed": "Could not load the reader list. Please try again.",
   "timeline.readMarker": "Read up to here",
   "timeline.readStateSyncing": "Syncing read state",
   "timeline.readStateNotSynced": "Read state not synced",
@@ -3547,6 +3549,7 @@ const ja: Catalog = {
   "timeline.reactionSenderUnknown": "{count} 人",
   "timeline.readBy": "{count} 人が既読",
   "timeline.readReceiptOverflow": "他 {count} 人",
+  "timeline.readReceiptFailed": "既読者の一覧を読み込めませんでした。もう一度お試しください。",
   "timeline.readMarker": "ここまで既読",
   "timeline.readStateSyncing": "既読状態を同期中",
   "timeline.readStateNotSynced": "既読状態を同期できません",

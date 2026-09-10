@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import { t } from "../../i18n/messages";
+import { getActiveLocale, t } from "../../i18n/messages";
 import { peopleFacingLabel } from "../../app/uiShared";
 import {
   FloatingLayer,
@@ -13,7 +13,7 @@ import { api } from "../../backend/appRuntime";
 import type { LiveReadReceipt } from "../../domain/types";
 
 /** Reader popup width; the panel narrows to the pane when it is smaller. */
-const RECEIPT_POPUP_INLINE_SIZE_PX = 260;
+const RECEIPT_POPUP_INLINE_SIZE_PX = 420;
 /**
  * Reader popup height follows the row count (#360).
  *
@@ -22,7 +22,7 @@ const RECEIPT_POPUP_INLINE_SIZE_PX = 260;
  * slack — two readers rendered as two ~55px rows with a large blank gap. These
  * mirror the `--receipt-tooltip-*` CSS tokens; keep them in step.
  */
-const RECEIPT_POPUP_ROW_BLOCK_SIZE_PX = 17;
+const RECEIPT_POPUP_ROW_BLOCK_SIZE_PX = 20;
 const RECEIPT_POPUP_ROW_GAP_PX = 3;
 const RECEIPT_POPUP_PADDING_BLOCK_PX = 8;
 const RECEIPT_POPUP_BORDER_BLOCK_PX = 1;
@@ -356,7 +356,7 @@ export function ReceiptReaders({
   const placement = useFloatingPlacement({
     align: "end",
     anchorRef,
-    blockSize: receiptPopupBlockSize(readerRows.length),
+    blockSize: receiptPopupBlockSize(readerRows.length + (readerRemainingCount > 0 ? 1 : 0)),
     inlineSize: RECEIPT_POPUP_INLINE_SIZE_PX,
     placement: "above",
     resolveBoundaryElement: receiptPopupBoundaryElement
@@ -484,7 +484,7 @@ export function ReceiptReaders({
               {readerState === "loading" && readerRows.length === 0 ? (
                 <span role="status">{t("timeline.loading")}</span>
               ) : readerState === "failed" ? (
-                <span role="status">{t("navigation.failed")}</span>
+                <span role="status">{t("timeline.readReceiptFailed")}</span>
               ) : (
                 <>
                   {readerRows.map((row, index) => (
@@ -517,7 +517,14 @@ export function ReceiptReaders({
                             : undefined
                         }
                       />
-                      <span dir="auto">{formatReaderRow(row)}</span>
+                      <span className="receipt-reader-name" dir="auto" title={row.display_label}>
+                        {row.display_label}
+                      </span>
+                      {row.timestamp ? (
+                        <span className="receipt-reader-time">
+                          {formatReceiptTimestamp(Number(row.timestamp.unix_ms), row.timestamp.locale)}
+                        </span>
+                      ) : null}
                     </span>
                   ))}
                   {readerRemainingCount > 0 ? (
@@ -546,9 +553,10 @@ function compactReaderRow(receipt: LiveReadReceipt): ReaderRow {
     display_label: receiptDisplayName(receipt),
     original_display_label: receipt.original_display_label,
     initials: receiptInitials(receipt),
-    // Compact summaries intentionally do not format timestamps. The opened
-    // window carries the Rust-resolved locale and validated timestamp value.
-    timestamp: null,
+    timestamp: receipt.timestamp_ms === null ? null : {
+      unix_ms: String(receipt.timestamp_ms),
+      locale: getActiveLocale() === "ja" ? "ja" : "en"
+    },
     avatar: receipt.avatar?.thumbnail ?? null
   };
 }

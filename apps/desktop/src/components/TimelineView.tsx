@@ -3542,7 +3542,10 @@ export const TimelineView = memo(function TimelineView({
                   contentEventId && receiptProjectionRequestId
                     ? {
                         key: timelineKey,
-                        projection_request_id: receiptProjectionRequestId,
+                        projection_request_id: {
+                          connection_id: String(receiptProjectionRequestId.connection_id),
+                          sequence: String(receiptProjectionRequestId.sequence)
+                        },
                         generation: String(generation),
                         event_id: contentEventId
                       }

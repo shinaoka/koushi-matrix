@@ -3970,6 +3970,22 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 6px;
+  block-size: 20px;
+  min-inline-size: 0;
+  white-space: nowrap;
+}
+
+.receipt-reader-name {
+  min-inline-size: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.receipt-reader-time {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-weight: 400;
 }
 
 .receipt-tooltip .receipt-reader-row .receipt-reader-avatar {
@@ -3999,8 +4015,10 @@ button:disabled {
 }
 
 .receipt-tooltip > [role="list"] {
+  display: grid;
+  gap: var(--receipt-tooltip-gap);
   overflow: visible;
-  white-space: normal;
+  white-space: nowrap;
 }
 
 .receipt-overflow {
@@ -4027,6 +4045,7 @@ button:disabled {
   align-content: start;
   padding-block: var(--receipt-tooltip-padding-block);
   padding-inline: var(--receipt-tooltip-padding-inline);
+  padding-inline-end: 28px;
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
   color: var(--text);
