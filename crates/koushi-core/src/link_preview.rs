@@ -7,6 +7,7 @@ use koushi_state::AvatarThumbnailState;
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters};
 use matrix_sdk::ruma::MxcUri;
 use matrix_sdk::ruma::events::room::MediaSource as SdkMediaSource;
+use matrix_sdk::ruma::html::Html;
 use regex::Regex;
 use url::Url;
 
@@ -240,6 +241,66 @@ pub fn extract_link_ranges(text: &str) -> Vec<TimelineLinkRange> {
     ranges
 }
 
+/// Block-level Matrix HTML elements at whose boundaries a line separator breaks
+/// a URL candidate. Inline runs (`strong`, `em`, `code`, `a`, ...) stay
+/// contiguous so URLs split across inline formatting are still detected.
+fn is_block_element(tag: &str) -> bool {
+    matches!(
+        tag,
+        "p" | "div"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "blockquote"
+            | "ul"
+            | "ol"
+            | "li"
+            | "pre"
+            | "br"
+            | "hr"
+            | "table"
+            | "thead"
+            | "tbody"
+            | "tr"
+            | "th"
+            | "td"
+            | "caption"
+            | "details"
+            | "summary"
+    )
+}
+
+/// Text of `html` with a `\n` between block-level elements and `<br>`, keeping
+/// inline-concatenated runs intact. Used only for URL boundary detection; the
+/// stored formatted plain text and its offsets are left untouched.
+fn plain_text_with_block_separators(html: &Html) -> String {
+    fn collect(nodes: impl Iterator<Item = matrix_sdk::ruma::html::NodeRef>, out: &mut String) {
+        for node in nodes {
+            if let Some(text) = node.as_text() {
+                out.push_str(&text.borrow());
+                continue;
+            }
+            let block = node
+                .as_element()
+                .is_some_and(|element| is_block_element(element.name.local.as_ref()));
+            if block && !out.is_empty() {
+                out.push('\n');
+            }
+            collect(node.children(), out);
+            if block && !out.is_empty() {
+                out.push('\n');
+            }
+        }
+    }
+
+    let mut text = String::new();
+    collect(html.children(), &mut text);
+    text
+}
+
 pub fn extract_urls(body: Option<&str>, formatted: Option<&TimelineFormattedBody>) -> Vec<String> {
     let mut urls = Vec::new();
     let mut seen = HashSet::new();
@@ -256,7 +317,12 @@ pub fn extract_urls(body: Option<&str>, formatted: Option<&TimelineFormattedBody
         collect(body);
     }
     if let Some(formatted) = formatted {
-        collect(&formatted.plain_text);
+        // Scan the sanitized formatted HTML with paragraph and <br> boundaries
+        // preserved instead of the concatenated plain text, so a URL followed by
+        // a new paragraph cannot swallow the next word into a phantom URL (#870).
+        collect(&plain_text_with_block_separators(&Html::parse(
+            &formatted.html,
+        )));
         // Extract hrefs from sanitized HTML without parsing the full DOM.
         let href_re = href_regex();
         for cap in href_re.captures_iter(&formatted.html) {
