@@ -942,7 +942,7 @@ describe("TimelineView", () => {
     ).toBeNull();
   });
 
-  it("autosaves sender aliases from the message action menu", () => {
+  it("saves sender aliases from the message action menu on Done", () => {
     const onSetLocalUserAlias = vi.fn();
     const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
       InitialItems: {
@@ -977,7 +977,8 @@ describe("TimelineView", () => {
       target: { value: "Builder Bob" }
     });
 
-    expect(screen.queryByRole("button", { name: "Save alias" })).toBeNull();
+    expect(onSetLocalUserAlias).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(onSetLocalUserAlias).toHaveBeenCalledWith(
       "@bob:example.invalid",
       "Builder Bob"

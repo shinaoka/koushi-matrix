@@ -291,10 +291,10 @@ export function ProfilePanel({
   const [aliasDraft, setAliasDraft] = useState("");
   const [showAliasForm, setShowAliasForm] = useState(false);
 
-  function updateAliasDraft(nextAlias: string) {
-    setAliasDraft(nextAlias);
-    onSetLocalUserAlias?.(userId, nextAlias.trim() || null);
-  }
+  useEffect(() => {
+    setAliasDraft("");
+    setShowAliasForm(false);
+  }, [userId, contextId]);
 
   return (
     <section className="people-panel profile-panel" aria-labelledby="profile-title">
@@ -409,6 +409,7 @@ export function ProfilePanel({
               className="profile-alias-form"
               onSubmit={(event) => {
                 event.preventDefault();
+                onSetLocalUserAlias?.(userId, aliasDraft.trim() || null);
                 setShowAliasForm(false);
               }}
             >
@@ -417,7 +418,7 @@ export function ProfilePanel({
                 value={aliasDraft}
                 syncKey={userId}
                 aria-label={t("room.aliasInput")}
-                onChange={(event) => updateAliasDraft(event.currentTarget.value)}
+                onChange={(event) => setAliasDraft(event.currentTarget.value)}
               />
               <button
                 className="dialog-button secondary"

@@ -1468,7 +1468,8 @@ test("local aliases dispatch typed account command and render Rust-projected lab
   const profilePanel = page.getByLabel("Context panel");
   await profilePanel.getByRole("button", { name: t("people.setAlias") }).click();
   const aliasInput = profilePanel.getByRole("textbox", { name: "Alias" });
-  await aliasInput.fill("Desk Alias");
+  await aliasInput.pressSequentially("Desk Alias");
+  expect(await invocationCount(page, "set_local_user_alias")).toBe(0);
   await profilePanel.getByRole("button", { name: "Done" }).click();
 
   await expect.poll(() => invocationCount(page, "set_local_user_alias")).toBe(1);
@@ -1513,8 +1514,10 @@ test("local aliases dispatch typed account command and render Rust-projected lab
   await timelineAliasRow.getByRole("button", { name: "Message actions" }).click();
   await timelineAliasRow.getByRole("menuitem", { name: "Edit alias for Desk Alias" }).click();
   const timelineAliasInput = page.getByRole("textbox", { name: "Alias" });
-  await timelineAliasInput.fill("Timeline Alias");
-  await page.getByRole("button", { name: "Done" }).click();
+  await timelineAliasInput.fill("");
+  await timelineAliasInput.pressSequentially("Timeline Alias");
+  expect(await invocationCount(page, "set_local_user_alias")).toBe(1);
+  await timelineAliasInput.press("Enter");
   await expect.poll(() => invocationCount(page, "set_local_user_alias")).toBe(2);
   await expect
     .poll(async () =>
@@ -1549,6 +1552,7 @@ test("local aliases dispatch typed account command and render Rust-projected lab
   await profilePanel.getByRole("button", { name: t("people.setAlias") }).click();
   const clearAliasInput = profilePanel.getByRole("textbox", { name: "Alias" });
   await clearAliasInput.fill("");
+  expect(await invocationCount(page, "set_local_user_alias")).toBe(2);
   await profilePanel.getByRole("button", { name: "Done" }).click();
   await expect.poll(() => invocationCount(page, "set_local_user_alias")).toBe(3);
   await expect
