@@ -26,6 +26,85 @@ fn deduplication_and_cap() {
 }
 
 #[test]
+fn formatted_paragraph_boundary_does_not_swallow_next_word() {
+    // Regression for #870: the raw formatted plain text concatenates paragraphs
+    // into ".../projectYou can try this.", which used to yield two candidates.
+    let formatted = fmt_body_with_html(
+        "<p>https://example.invalid/project</p><p>You can try this.</p>",
+        "https://example.invalid/projectYou can try this.",
+    );
+    let body = "https://example.invalid/project\n\nYou can try this.";
+    assert_eq!(
+        extract_urls(Some(body), Some(&formatted)),
+        vec!["https://example.invalid/project"]
+    );
+}
+
+#[test]
+fn formatted_paragraph_boundary_terminates_url_without_plain_body() {
+    let formatted = fmt_body_with_html(
+        "<p>https://example.invalid/project</p><p>You can try this.</p>",
+        "https://example.invalid/projectYou can try this.",
+    );
+    assert_eq!(
+        extract_urls(None, Some(&formatted)),
+        vec!["https://example.invalid/project"]
+    );
+}
+
+#[test]
+fn formatted_br_boundary_terminates_url() {
+    let formatted = fmt_body_with_html(
+        "<p>Visit https://example.invalid/project<br>then next line</p>",
+        "Visit https://example.invalid/projectthen next line",
+    );
+    assert_eq!(
+        extract_urls(None, Some(&formatted)),
+        vec!["https://example.invalid/project"]
+    );
+}
+
+#[test]
+fn formatted_inline_formatting_keeps_split_url_intact() {
+    let formatted = fmt_body_with_html(
+        "<p>https://example.invalid/a<strong>b</strong></p>",
+        "https://example.invalid/ab",
+    );
+    assert_eq!(
+        extract_urls(None, Some(&formatted)),
+        vec!["https://example.invalid/ab"]
+    );
+}
+
+#[test]
+fn formatted_anchor_and_matrix_mention_yield_one_candidate() {
+    let html = r##"<p><a href="https://matrix.to/#/%40alice%3Aexample.invalid">@alice</a> check <a href="https://example.invalid/project">https://example.invalid/project</a></p>"##;
+    let formatted = fmt_body_with_html(html, "@alice check https://example.invalid/project");
+    assert_eq!(
+        extract_urls(
+            Some("@alice check https://example.invalid/project"),
+            Some(&formatted)
+        ),
+        vec!["https://example.invalid/project"]
+    );
+}
+
+#[test]
+fn formatted_distinct_urls_in_adjacent_paragraphs_stay_separate() {
+    let formatted = fmt_body_with_html(
+        "<p>https://one.example.invalid/a</p><p>https://two.example.invalid/b</p>",
+        "https://one.example.invalid/ahttps://two.example.invalid/b",
+    );
+    assert_eq!(
+        extract_urls(None, Some(&formatted)),
+        vec![
+            "https://one.example.invalid/a",
+            "https://two.example.invalid/b"
+        ]
+    );
+}
+
+#[test]
 fn extract_hrefs_from_formatted_html() {
     let formatted = fmt_body_with_html(
         r##"<p>See <a href="https://matrix.org">matrix</a> and <a href='https://rust-lang.org'>rust</a>.</p>"##,

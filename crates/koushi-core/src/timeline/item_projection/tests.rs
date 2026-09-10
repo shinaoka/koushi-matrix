@@ -577,6 +577,30 @@ fn message_projection_extracts_formatted_spoiler_spans_with_reason() {
 }
 
 #[test]
+fn formatted_message_paragraph_boundary_yields_one_preview_candidate() {
+    // Regression for #870: a URL paragraph followed by a separate paragraph must
+    // not concatenate into a phantom candidate like ".../projectYou" because the
+    // formatted plain text loses the paragraph boundary.
+    let msgtype = MessageType::Text(TextMessageEventContent::html(
+        "https://example.invalid/project\n\nYou can try this.",
+        "<p>https://example.invalid/project</p><p>You can try this.</p>",
+    ));
+
+    let projection = message_projection_from_msgtype(
+        &msgtype,
+        "https://example.invalid/project\n\nYou can try this.",
+    );
+    let formatted = projection
+        .formatted
+        .as_ref()
+        .expect("html formatted_body should project");
+
+    let urls = crate::link_preview::extract_urls(projection.body.as_deref(), Some(formatted));
+
+    assert_eq!(urls, vec!["https://example.invalid/project"]);
+}
+
+#[test]
 fn message_projection_sanitizes_formatted_html_and_extracts_code_blocks() {
     let msgtype = MessageType::Text(TextMessageEventContent::html(
         "plain fallback",
