@@ -74,7 +74,8 @@ export type TimelineKind =
 
 export interface ReceiptSourceRef {
   key: TimelineKey;
-  projection_request_id: RequestId;
+  /** Scoped view identities use decimal strings, unlike legacy timeline events. */
+  projection_request_id: { connection_id: string; sequence: string };
   generation: string;
   event_id: string;
 }

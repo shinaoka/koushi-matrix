@@ -2112,22 +2112,16 @@ export const TimelineView = memo(function TimelineView({
     setAliasTarget(null);
     setAliasDraft("");
   }, []);
+  useEffect(closeAliasDialog, [closeAliasDialog, timelineKeyHash]);
   const submitAliasDialog = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
+      if (aliasTarget) {
+        onSetLocalUserAlias?.(aliasTarget.userId, aliasDraft.trim() || null);
+      }
       closeAliasDialog();
     },
-    [closeAliasDialog]
-  );
-  const updateAliasDraft = useCallback(
-    (nextAlias: string) => {
-      setAliasDraft(nextAlias);
-      if (!aliasTarget || !onSetLocalUserAlias) {
-        return;
-      }
-      onSetLocalUserAlias(aliasTarget.userId, nextAlias.trim() || null);
-    },
-    [aliasTarget, onSetLocalUserAlias]
+    [aliasDraft, aliasTarget, closeAliasDialog, onSetLocalUserAlias]
   );
   const effectiveForwardDestinations =
     forwardDestinations.length > 0
@@ -3542,7 +3536,10 @@ export const TimelineView = memo(function TimelineView({
                   contentEventId && receiptProjectionRequestId
                     ? {
                         key: timelineKey,
-                        projection_request_id: receiptProjectionRequestId,
+                        projection_request_id: {
+                          connection_id: String(receiptProjectionRequestId.connection_id),
+                          sequence: String(receiptProjectionRequestId.sequence)
+                        },
                         generation: String(generation),
                         event_id: contentEventId
                       }
@@ -3616,7 +3613,7 @@ export const TimelineView = memo(function TimelineView({
               aria-label={t("room.aliasInput")}
               value={aliasDraft}
               syncKey={aliasTarget.userId}
-              onChange={(event) => updateAliasDraft(event.currentTarget.value)}
+              onChange={(event) => setAliasDraft(event.currentTarget.value)}
               autoFocus
             />
             <div className="dialog-actions">

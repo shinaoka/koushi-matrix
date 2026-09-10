@@ -24,7 +24,7 @@ function source(account: string, generation: string): ReceiptSourceRef {
       account_key: account,
       kind: { Room: { room_id: "!room:example.org" } }
     },
-    projection_request_id: { connection_id: 1, sequence: 2 },
+    projection_request_id: { connection_id: "1", sequence: "2" },
     generation,
     event_id: "$event:example.org"
   };

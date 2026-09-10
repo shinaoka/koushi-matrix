@@ -7,7 +7,7 @@ build gates. AGENTS.md remains the operational how-to (permissions, install
 caveats, recovery steps); durable rules discovered there are promoted to
 REPOSITORY_RULES.md or this document.
 
-Last amended: 2026-09-07.
+Last amended: 2026-09-10.
 
 ## Design Simplicity
 
@@ -420,8 +420,10 @@ Rules:
    place for catalog prose or generic English fallbacks such as `Member`. React
    must not infer DM targets from room titles.
    Alias set/edit/clear GUI controls may own only dialog visibility and input
-   draft text. They dispatch the typed `set_local_user_alias(user_id,
-   alias|null)` command and wait for Rust-shaped snapshots or
+   draft text. Alias drafts are submitted once with Done or a non-composing
+   Enter, never per keystroke. Dismissal or a target change discards the unsaved
+   draft. IME candidate-confirmation Enter does not submit. They dispatch the
+   typed `set_local_user_alias(user_id, alias|null)` command and wait for Rust-shaped snapshots or
    `TimelineEvent::DisplayLabelsUpdated` before visible names change. Browser
    headless coverage for alias UI must assert both the typed command arguments
    and the Rust-projected `display_label` / `original_display_label` rendering.

@@ -793,11 +793,12 @@ npm --prefix apps/desktop run test -- --run src/components/TimelineView.live-sta
   `local_aliases` or the global profile cache.
 - Local alias GUI affordances dispatch only the typed `set_local_user_alias(user_id, alias)`
   account command. React may own dialog visibility and input draft text,
-  including trimming empty input to a clear, but it must not update member rows,
+  including trimming empty input to a clear. Done/non-composing Enter submits
+  once; input changes and dismissal do not save (#866). It must not update member rows,
   DM titles, timeline labels, receipts, or mention candidates locally. The bounded
-  `alias:${userId}` mutation lane is a renderer-specific autosave transport/result
+  `alias:${userId}` mutation lane is a renderer-specific confirmed-edit transport/result
   owner, not alias state: Tauri returns a pre-terminal snapshot and browser results
-  share one generation, so it serializes started input writes, skips superseded
+  share one generation, so it serializes submitted edits, skips superseded
   pending writes and applies only the latest result. Rust still exclusively owns
   durable aliases, `Saving`/failure, reconciliation and every display projection.
 - Room summaries use the same Rust-owned display projection:
