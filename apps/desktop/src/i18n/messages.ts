@@ -338,6 +338,10 @@ export type MessageId =
   | "panel.userSettings"
   | "panel.people"
   | "panel.profile"
+  | "people.membership"
+  | "people.membershipJoined"
+  | "people.membershipInvited"
+  | "people.membershipUnknown"
   | "people.memberCount"
   | "people.memberActions"
   | "people.openProfile"
@@ -1663,6 +1667,10 @@ const en: Catalog = {
   "panel.userSettings": "User settings",
   "panel.people": "People",
   "panel.profile": "Profile",
+  "people.membership": "Membership",
+  "people.membershipJoined": "Joined",
+  "people.membershipInvited": "Invited",
+  "people.membershipUnknown": "Unknown",
   "people.memberCount": "{count} members",
   "people.memberActions": "Member actions",
   "people.openProfile": "Open profile for {name}",
@@ -2889,6 +2897,10 @@ const ja: Catalog = {
   "panel.userSettings": "ユーザー設定",
   "panel.people": "メンバー",
   "panel.profile": "プロフィール",
+  "people.membership": "参加状態",
+  "people.membershipJoined": "参加済み",
+  "people.membershipInvited": "招待中",
+  "people.membershipUnknown": "不明",
   "people.memberCount": "メンバー {count}人",
   "people.memberActions": "メンバー操作",
   "people.openProfile": "{name}のプロフィールを開く",

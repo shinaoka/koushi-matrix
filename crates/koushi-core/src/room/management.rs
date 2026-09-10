@@ -45,6 +45,7 @@ fn room_member_summary_from_sdk(member: MatrixRoomMemberSummary) -> RoomMemberSu
         .unwrap_or(member.user_id.as_str())
         .to_owned();
     RoomMemberSummary {
+        membership: member.membership,
         user_id: member.user_id,
         display_name: member.display_name,
         display_label: display_label.clone(),
@@ -502,6 +503,7 @@ mod tests {
                 can_unban: false,
             },
             members: vec![MatrixRoomMemberSummary {
+                membership: koushi_state::RoomMemberMembership::Invited,
                 user_id: "@member:example.invalid".to_owned(),
                 display_name: Some("Private member".to_owned()),
                 avatar_url: Some("mxc://example.invalid/member-avatar".to_owned()),
@@ -528,6 +530,10 @@ mod tests {
         let member = mapped.members.first().expect("member summary");
         assert_eq!(member.power_level, Some(50));
         assert_eq!(member.role, RoomMemberRole::Moderator);
+        assert_eq!(
+            member.membership,
+            koushi_state::RoomMemberMembership::Invited
+        );
         let debug = format!("{mapped:?}");
         assert!(!debug.contains("Private room"), "{debug}");
         assert!(!debug.contains("Private topic"), "{debug}");

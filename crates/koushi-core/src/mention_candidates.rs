@@ -119,3 +119,6 @@ fn match_rank<'a>(normalized_query: &str, terms: impl Iterator<Item = &'a str>) 
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod membership_tests;

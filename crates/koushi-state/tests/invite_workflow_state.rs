@@ -54,6 +54,7 @@ fn user_profile(user_id: &str, display_label: &str, terms: &[&str]) -> UserProfi
 
 fn room_member(user_id: &str, display_label: &str) -> RoomMemberSummary {
     RoomMemberSummary {
+        membership: koushi_state::RoomMemberMembership::Joined,
         user_id: user_id.to_owned(),
         display_name: Some(display_label.to_owned()),
         display_label: display_label.to_owned(),

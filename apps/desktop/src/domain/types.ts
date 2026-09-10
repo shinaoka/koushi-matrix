@@ -1477,6 +1477,7 @@ export interface RoomSettingsSnapshot {
 }
 
 export interface RoomMemberSummary {
+  membership: "joined" | "invited" | "unknown";
   user_id: string;
   display_name: string | null;
   display_label: string;

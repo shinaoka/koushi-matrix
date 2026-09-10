@@ -167,7 +167,8 @@ describe("SpaceInfoPanel", () => {
                 avatar_url: null,
                 power_level: 0,
                 role: "user",
-      role_options: []
+                membership: "joined" as const,
+                role_options: []
               }
             ]
           },

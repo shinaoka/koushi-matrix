@@ -234,7 +234,9 @@ function PeopleListRow({
             ) : null}
           </span>
           <span className="people-list-meta" dir="auto">
-            {roomMemberRoleLabel(member.role)}
+            <span>{roomMemberMembershipLabel(member.membership)}</span>
+            {" · "}
+            <span>{roomMemberRoleLabel(member.role)}</span>
           </span>
         </span>
       </button>
@@ -341,6 +343,10 @@ export function ProfilePanel({
       </div>
       {member ? (
         <div className="profile-room-details">
+          <div className="profile-detail-row">
+            <span>{t("people.membership")}</span>
+            <strong>{roomMemberMembershipLabel(member.membership)}</strong>
+          </div>
           <div className="profile-detail-row">
             <span>{t("room.memberRole")}</span>
             {roomId ? (
@@ -557,4 +563,15 @@ function ModerationButton({
       {label}
     </button>
   );
+}
+
+function roomMemberMembershipLabel(membership: RoomMemberSummary["membership"]): string {
+  switch (membership) {
+    case "joined":
+      return t("people.membershipJoined");
+    case "invited":
+      return t("people.membershipInvited");
+    default:
+      return t("people.membershipUnknown");
+  }
 }

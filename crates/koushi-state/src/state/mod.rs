@@ -163,9 +163,9 @@ pub use directory::{
 // ── Re-exports: room_management ─────────────────────────────────────────────
 pub use room_management::{
     RoomHistoryVisibility, RoomJoinRule, RoomManagementOperationKind, RoomManagementOperationState,
-    RoomManagementState, RoomMemberRole, RoomMemberRoleOption, RoomMemberSummary,
-    RoomModerationAction, RoomPermissionFacts, RoomSettingChange, RoomSettingsSnapshot,
-    UserTrustState,
+    RoomManagementState, RoomMemberMembership, RoomMemberRole, RoomMemberRoleOption,
+    RoomMemberSummary, RoomModerationAction, RoomPermissionFacts, RoomSettingChange,
+    RoomSettingsSnapshot, UserTrustState,
 };
 
 // ── Re-exports: e2ee ────────────────────────────────────────────────────────

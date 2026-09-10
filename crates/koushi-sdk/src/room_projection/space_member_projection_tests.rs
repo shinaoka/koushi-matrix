@@ -241,6 +241,7 @@ fn space_member_projection_debug_redacts_identifiers_and_profiles() {
 #[test]
 fn local_member_profile_debug_redacts_identifiers_names_and_mxc_uris() {
     let summary = super::MatrixRoomMemberSummary {
+        membership: koushi_state::RoomMemberMembership::Joined,
         user_id: "@private:example.invalid".to_owned(),
         display_name: Some("Private member".to_owned()),
         avatar_url: Some("mxc://example.invalid/member-avatar".to_owned()),

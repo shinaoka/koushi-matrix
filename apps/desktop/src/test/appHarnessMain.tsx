@@ -2929,6 +2929,7 @@ mock.setCommandResponse("load_room_settings", ({ roomId }: { roomId: string }) =
               avatar_url: null,
               power_level: 100,
               role: "administrator",
+              membership: "joined" as const,
               role_options: [
                 { power_level: 50, role: "moderator", requires_confirmation: true },
                 { power_level: 0, role: "user", requires_confirmation: true }
@@ -2942,6 +2943,7 @@ mock.setCommandResponse("load_room_settings", ({ roomId }: { roomId: string }) =
               avatar_url: null,
               power_level: 50,
               role: "moderator",
+              membership: "joined" as const,
               role_options: [
                 { power_level: 100, role: "administrator", requires_confirmation: true },
                 { power_level: 0, role: "user", requires_confirmation: false }
@@ -2955,6 +2957,7 @@ mock.setCommandResponse("load_room_settings", ({ roomId }: { roomId: string }) =
               avatar_url: null,
               power_level: 0,
               role: "user",
+              membership: "joined" as const,
               role_options: [
                 { power_level: 100, role: "administrator", requires_confirmation: true },
                 { power_level: 50, role: "moderator", requires_confirmation: false }

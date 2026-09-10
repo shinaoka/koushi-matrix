@@ -503,6 +503,7 @@
               "avatar_url": null,
               "display_label": "Fixture User",
               "display_name": "Fixture User",
+              "membership": "joined",
               "original_display_label": "Fixture User",
               "power_level": 100,
               "role": "administrator",

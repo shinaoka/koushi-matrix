@@ -368,6 +368,7 @@ fn room_management_wrappers_use_settings_privacy_and_moderation_apis() {
             can_unban: false,
         },
         members: vec![super::MatrixRoomMemberSummary {
+            membership: koushi_state::RoomMemberMembership::Joined,
             user_id: "@member:example.invalid".to_owned(),
             display_name: Some("Synthetic Member".to_owned()),
             avatar_url: None,
@@ -472,6 +473,7 @@ fn room_member_power_level_projection_updates_role_in_success_snapshot() {
             can_unban: true,
         },
         members: vec![super::MatrixRoomMemberSummary {
+            membership: koushi_state::RoomMemberMembership::Joined,
             user_id: "@member:example.invalid".to_owned(),
             display_name: Some("Synthetic Member".to_owned()),
             avatar_url: None,
