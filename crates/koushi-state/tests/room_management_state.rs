@@ -75,6 +75,7 @@ fn editable_settings(room_id: &str) -> RoomSettingsSnapshot {
         },
         members: vec![
             RoomMemberSummary {
+                membership: koushi_state::RoomMemberMembership::Joined,
                 user_id: "@user-a:example.invalid".to_owned(),
                 display_name: Some("User A".to_owned()),
                 display_label: "User A".to_owned(),
@@ -86,6 +87,7 @@ fn editable_settings(room_id: &str) -> RoomSettingsSnapshot {
                 user_trust: None,
             },
             RoomMemberSummary {
+                membership: koushi_state::RoomMemberMembership::Joined,
                 user_id: "@target:example.invalid".to_owned(),
                 display_name: Some("Target".to_owned()),
                 display_label: "Target".to_owned(),
@@ -792,6 +794,7 @@ fn room_management_logout_clears_state() {
 #[test]
 fn avatar_metadata_debug_redacts_mxc_and_user_room_associations() {
     let member = RoomMemberSummary {
+        membership: koushi_state::RoomMemberMembership::Joined,
         user_id: "@member:example.invalid".to_owned(),
         display_name: Some("Member".to_owned()),
         display_label: "Member".to_owned(),

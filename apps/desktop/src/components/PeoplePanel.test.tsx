@@ -92,6 +92,7 @@ describe("PeoplePanel", () => {
       avatar_url: null,
       power_level: 100,
       role: "administrator",
+      membership: "joined" as const,
       role_options: []
     },
     {
@@ -102,6 +103,7 @@ describe("PeoplePanel", () => {
       avatar_url: null,
       power_level: 50,
       role: "moderator",
+      membership: "joined" as const,
       role_options: []
     },
     {
@@ -112,6 +114,7 @@ describe("PeoplePanel", () => {
       avatar_url: null,
       power_level: 0,
       role: "user",
+      membership: "joined" as const,
       role_options: []
     }
   ];
@@ -139,6 +142,48 @@ describe("PeoplePanel", () => {
     expect(screen.getByText("You")).toBeTruthy();
   });
 
+  test("distinguishes invited members from joined members in the list and profile", () => {
+    const invited = { ...members[0], membership: "invited" as const };
+    const joined = { ...members[1], membership: "joined" as const };
+    const settings = roomManagement([invited, joined]);
+    const view = render(
+      <PeoplePanel
+        currentUserId="@current:example.invalid"
+        roomOrSpace={baseRoom}
+        roomManagement={settings}
+        onOpenProfile={() => undefined}
+      />
+    );
+    expect(screen.getByText("Invited")).toBeTruthy();
+    expect(screen.getByText("Joined")).toBeTruthy();
+    view.unmount();
+    render(
+      <ProfilePanel
+        userId={invited.user_id}
+        currentUserId="@current:example.invalid"
+        roomOrSpace={baseRoom}
+        roomManagement={settings}
+        profileUsers={{}}
+        onBack={() => undefined}
+      />
+    );
+    expect(screen.getByText("Invited")).toBeTruthy();
+    expect(screen.queryByText("Joined")).toBeNull();
+  });
+
+  test("does not present unknown membership as joined", () => {
+    render(
+      <PeoplePanel
+        currentUserId="@current:example.invalid"
+        roomOrSpace={baseRoom}
+        roomManagement={roomManagement([{ ...members[0], membership: "unknown" }])}
+        onOpenProfile={() => undefined}
+      />
+    );
+    expect(screen.getByText("Unknown")).toBeTruthy();
+    expect(screen.queryByText("Joined")).toBeNull();
+  });
+
   test("bounds rendered rows for large member lists", () => {
     const manyMembers: RoomMemberSummary[] = Array.from({ length: 300 }, (_, index) => {
       const suffix = String(index).padStart(3, "0");
@@ -150,7 +195,8 @@ describe("PeoplePanel", () => {
         avatar_url: null,
         power_level: 0,
         role: "user",
-      role_options: []
+        membership: "joined" as const,
+        role_options: []
       };
     });
 
@@ -254,7 +300,8 @@ describe("PeoplePanel", () => {
         avatar_url: null,
         power_level: 50,
         role: "moderator",
-      role_options: []
+        membership: "joined" as const,
+        role_options: []
       }
     ];
     render(
@@ -402,6 +449,7 @@ describe("ProfilePanel", () => {
       avatar_url: null,
       power_level: 100,
       role: "administrator",
+      membership: "joined" as const,
       role_options: [
         { power_level: 50, role: "moderator", requires_confirmation: true },
         { power_level: 0, role: "user", requires_confirmation: true }
@@ -511,6 +559,7 @@ describe("ProfilePanel", () => {
       ...members[0],
       power_level: 75,
       role: "moderator" as const,
+      membership: "joined" as const,
       role_options: [
         { power_level: 50, role: "moderator" as const, requires_confirmation: false },
         { power_level: 0, role: "user" as const, requires_confirmation: false }

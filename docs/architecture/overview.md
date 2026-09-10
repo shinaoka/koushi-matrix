@@ -176,6 +176,12 @@ Crate responsibilities:
   including Rust-projected member display labels, role facts, and power facts,
   and dispatches typed commands only; it must not decide whether a user can edit
   settings, edit roles, or moderate members locally.
+  Room member summaries retain SDK membership separately from power-level roles:
+  People and profile views label joined and invited members explicitly. Missing
+  membership in older snapshots is unknown, never inferred as joined from a
+  `User` role. Mention eligibility remains joined-only. Element Web marks invite
+  tiles and Element X iOS separates invited/joined members; desktop uses explicit
+  status labels in its existing list and profile layout.
   Room list/title labels are also Rust projections: `RoomSummary.display_label`
   is the normal display value for room headers, sidebar entries, forward/search
   metadata, space child rows, and native attention labels. `display_name` stays

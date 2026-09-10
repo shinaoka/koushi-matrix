@@ -1412,6 +1412,7 @@ fn frontend_app_state_golden_matches_maximally_populated_state() {
                 can_unban: true,
             },
             members: vec![RoomMemberSummary {
+                membership: koushi_state::RoomMemberMembership::Joined,
                 user_id: "@fixture:example.invalid".to_owned(),
                 display_name: Some("Fixture User".to_owned()),
                 display_label: "Fixture User".to_owned(),

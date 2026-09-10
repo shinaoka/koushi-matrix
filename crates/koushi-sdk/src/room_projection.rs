@@ -372,6 +372,7 @@ impl fmt::Debug for MatrixSpaceMemberEntry {
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct MatrixRoomMemberSummary {
+    pub membership: koushi_state::RoomMemberMembership,
     pub user_id: String,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
@@ -385,6 +386,7 @@ impl fmt::Debug for MatrixRoomMemberSummary {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("MatrixRoomMemberSummary")
+            .field("membership", &self.membership)
             .field("user_id", &"UserId(..)")
             .field(
                 "display_name",
@@ -952,6 +954,7 @@ async fn matrix_joined_member_snapshot(
         .map(|member| {
             let power_level = matrix_room_member_power_level(member.power_level());
             MatrixRoomMemberSummary {
+                membership: koushi_state::RoomMemberMembership::Joined,
                 user_id: member.user_id().to_string(),
                 display_name: member.display_name().map(ToOwned::to_owned),
                 avatar_url: member.avatar_url().map(ToString::to_string),
@@ -1681,6 +1684,15 @@ async fn matrix_room_member_summaries(
             .flatten()
             .map(matrix_user_trust_state_from_sdk_identity);
         summaries.push(MatrixRoomMemberSummary {
+            membership: match member.membership() {
+                matrix_sdk::ruma::events::room::member::MembershipState::Join => {
+                    koushi_state::RoomMemberMembership::Joined
+                }
+                matrix_sdk::ruma::events::room::member::MembershipState::Invite => {
+                    koushi_state::RoomMemberMembership::Invited
+                }
+                _ => koushi_state::RoomMemberMembership::Unknown,
+            },
             user_id: member.user_id().to_string(),
             display_name: member.display_name().map(ToOwned::to_owned),
             avatar_url: member.avatar_url().map(ToString::to_string),

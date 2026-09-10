@@ -1162,6 +1162,7 @@ fn core_event_wire_format_matches_checked_in_contract_artifact() {
             can_unban: true,
         },
         members: vec![koushi_state::RoomMemberSummary {
+            membership: koushi_state::RoomMemberMembership::Joined,
             user_id: "@member:example.test".to_owned(),
             display_name: Some("Synthetic Member".to_owned()),
             display_label: "Synthetic Member".to_owned(),

@@ -140,8 +140,19 @@ pub struct RoomMemberRoleOption {
     pub requires_confirmation: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RoomMemberMembership {
+    Joined,
+    Invited,
+    #[default]
+    Unknown,
+}
+
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RoomMemberSummary {
+    #[serde(default)]
+    pub membership: RoomMemberMembership,
     pub user_id: String,
     pub display_name: Option<String>,
     pub display_label: String,
@@ -160,6 +171,7 @@ impl fmt::Debug for RoomMemberSummary {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("RoomMemberSummary")
+            .field("membership", &self.membership)
             .field("user_id", &"UserId(..)")
             .field(
                 "display_name",
