@@ -22,7 +22,7 @@ const management: RoomManagementState = {
       can_kick: false, can_ban: false, can_unban: false },
     members: ["bob", "other"].map(name => ({ user_id: `@${name}:example.invalid`,
       display_name: "Reader", display_label: "Reader", original_display_label: "Reader",
-      avatar_url: null, power_level: 0, role: "user", role_options: [] }))
+      avatar_url: null, power_level: 0, role: "user", membership: "joined", role_options: [] }))
   }
 };
 
