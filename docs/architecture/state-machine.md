@@ -1534,6 +1534,9 @@ stateDiagram-v2
   disappearance lookup retains the last accepted record; bounded-window absence
   changes visibility only. The service admits at most 120 roots per active Room
   owner and rejects over-cap admission without evicting accepted roots.
+- A retained root body stays renderable during aggregate refresh and after an
+  aggregate failure. Pending/failed display placeholders apply only when no
+  root body has been accepted; operation status remains on the service record.
 - Rust State mirrors only explicit Observed/Ready/Failed/Cleared/RoomCleared
   actions. It does not keep an active-window set, roll activity backward, or
   reject a terminal because the current window omitted a reply.

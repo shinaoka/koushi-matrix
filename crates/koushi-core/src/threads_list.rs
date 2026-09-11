@@ -174,8 +174,15 @@ impl ThreadRootProjectionRecord {
             activity_timestamp_ms: self.activity.activity_timestamp_ms,
             item: self.root_item.clone(),
             aggregate: effective_aggregate(self),
-            pending: self.is_pending(),
-            failure_kind: self.failure_kind(),
+            // Summary refreshes must not replace an accepted root body with
+            // a hydration placeholder. Keep operation status on the record;
+            // only roots without content need a loading/error display row.
+            pending: self.root_item.is_none() && self.is_pending(),
+            failure_kind: if self.root_item.is_none() {
+                self.failure_kind()
+            } else {
+                None
+            },
         }
     }
 
