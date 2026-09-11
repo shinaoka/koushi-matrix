@@ -9,6 +9,9 @@
 A desktop client for [Matrix](https://matrix.org), the open protocol for
 secure, decentralized communication.
 
+Join our public Matrix room:
+[#koushi-matrix:matrix.org](https://matrix.to/#/#koushi-matrix:matrix.org).
+
 **Koushi** (コウシ) is a deliberate double pun in Japanese:
 
 - **光子** — *photon*: light, signal, speed, communication.
