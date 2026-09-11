@@ -489,3 +489,50 @@ cross the typed failure or diagnostic boundary. Upstreaming intent: propose the
 generation watch and retryable new-session fence as separate opt-in APIs; retain
 only the smallest downstream layer if upstream adopts equivalent lifecycle and
 full-query/pre-share primitives.
+
+## 2026-09-11: removed the superseded committed room-updates fence
+
+Fork branch `chore/drop-superseded-committed-fence`, merged to the fork's
+`main` as `a04792c7a` (based on the previously pinned `e85bc9e76`; the gitlink
+now tracks fork `main`).
+
+The committed room-updates response fence was introduced for the legacy `/sync`
+adapter that issue #412 removed. It had no production consumer left:
+
+- Koushi reads the `RoomListService` room-subscription checkpoint plus the
+  committed all-rooms sequence, not `EventCache`'s committed response fence.
+- The event cache only needs its own `latest_sync_observation`, which is
+  retained.
+
+Removed from the vendored SDK: `CommittedRoomUpdatesResponse`,
+`CommittedRoomTimelineObservation`, `CommittedRoomUpdateMembership`,
+`EventCache::subscribe_to_committed_room_updates_responses`,
+`EventCache::subscribe_to_committed_room_timeline_observations`,
+`Client::latest_room_updates_response_sequence`, the
+`SequencedRoomUpdates`/`RoomUpdatesPublicationSequence` wrapper, and the
+retained observation map with its senders and publish block. The event cache is
+fed again by the upstream `Client::subscribe_to_all_room_updates` broadcast, and
+`handle_room_updates` no longer takes an unused `response_sequence`.
+`Room::reshare_room_key`, an unused wrapper left over from the removed manual
+index-0 resend work, is also dropped. `SyncSettings::save_sync_token` and its
+non-persisting sync plumbing are dropped as well: issue #412 removed the
+verification-only filtered sync that used them, and no Koushi path sets the
+option.
+
+Net diff against the pinned revision: 10 files, +32 / -713 (of which 169 lines
+are fork tests that only exercised the removed fence, plus three
+`save_sync_token` tests). Upstreaming intent: none; this is removal of
+downstream-only APIs, not a new upstream proposal.
+
+Verified: `cargo check -p matrix-sdk -p matrix-sdk-ui --all-targets` passes;
+`matrix-sdk-ui` `committed_all_rooms_response` tests pass; the
+`event_cache::live_tail_refresh` integration tests pass (7/7). The pre-existing
+flaky `event_cache::threads::test_multiple_valid_edits_update_thread_summary`
+fails nondeterministically both with and without this change (1/6 failures at
+the pinned revision), so it is not a regression from this removal.
+
+Not yet done in this pass: the remaining test-only fork API (`repair_timeline_gap`
+has no production caller) and the 825-commit upstream rebase. A trial merge of
+`upstream/main` into the pinned revision conflicts in 24 files, concentrated in
+`event_cache`, `room_list_service`, `timeline`, and `matrix-sdk-base`/crypto
+identity handling.
