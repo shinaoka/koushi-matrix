@@ -1683,3 +1683,6 @@ pub(super) fn timeline_diffs_include_prepend(diffs: &[TimelineDiff]) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod thread_refresh_tests;
