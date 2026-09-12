@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ImeInlineMentionEditor,
   ImeSafeForm,
+  inlineMentionEditorSelection,
+  setInlineMentionEditorSelection,
   ImeTextArea,
   ImeTextField,
   SecureImeTextField,
@@ -85,6 +87,71 @@ afterEach(() => {
 });
 
 describe("IME text controls", () => {
+
+describe("mention caret anchors (#875)", () => {
+  const bareMentionDocument: ComposerDocument = {
+    version: 2,
+    inlines: [
+      {
+        kind: "mention",
+        target: { kind: "user", user_id: "@alice:example.invalid", display_label: "Alice" },
+        display_label: "Alice"
+      }
+    ]
+  };
+
+  it("renders a zero-width text box on both sides of a mention with no text beside it", () => {
+    render(<ControlledMentionEditor initial={bareMentionDocument} />);
+    const control = screen.getByRole("textbox", { name: "message" }) as HTMLDivElement;
+    const children = Array.from(control.childNodes) as HTMLElement[];
+    expect(children).toHaveLength(3);
+    expect(children[0].hasAttribute("data-composer-caret-anchor")).toBe(true);
+    expect(children[0].textContent).toBe("\u200b");
+    expect(children[1].hasAttribute("data-composer-mention")).toBe(true);
+    expect(children[2].hasAttribute("data-composer-caret-anchor")).toBe(true);
+  });
+
+  it("keeps a mention flanked by text free of caret anchors", () => {
+    render(<ControlledMentionEditor />);
+    const control = screen.getByRole("textbox", { name: "message" }) as HTMLDivElement;
+    expect(control.querySelectorAll("[data-composer-caret-anchor]")).toHaveLength(0);
+  });
+
+  it("maps both mention boundaries to a text box outside the pill", () => {
+    render(<ControlledMentionEditor initial={bareMentionDocument} />);
+    const control = screen.getByRole("textbox", { name: "message" }) as HTMLDivElement;
+    const mention = control.querySelector<HTMLElement>("[data-composer-mention]");
+    if (!mention) throw new Error("missing mention");
+
+    for (const offset of [0, 1]) {
+      setInlineMentionEditorSelection(control, offset);
+      const selection = window.getSelection();
+      expect(selection?.anchorNode?.nodeType).toBe(Node.TEXT_NODE);
+      const anchor = (selection?.anchorNode as Text).parentElement;
+      expect(anchor?.hasAttribute("data-composer-caret-anchor")).toBe(true);
+      // The browser paints a collapsed parent-level caret against a guess; the
+      // anchor keeps it on real text outside the pill.
+      expect(selection?.anchorNode === control).toBe(false);
+      expect(inlineMentionEditorSelection(control)).toEqual({ start: offset, end: offset });
+    }
+  });
+
+  it("keeps the anchor character out of the document the composer publishes", () => {
+    const onChange = vi.fn();
+    render(<ControlledMentionEditor initial={bareMentionDocument} onChange={onChange} />);
+    const control = screen.getByRole("textbox", { name: "message" }) as HTMLDivElement;
+    expect(control.textContent).toContain("\u200b");
+
+    setInlineMentionEditorSelection(control, 0);
+    beforeInput(control, "insertText", "hi");
+
+    const published = onChange.mock.lastCall?.[0] as ComposerDocument;
+    expect(published.inlines[0]).toEqual({ kind: "text", text: "hi" });
+    expect(published.inlines[1]).toMatchObject({ kind: "mention", display_label: "Alice" });
+    expect(JSON.stringify(published)).not.toContain("\u200b");
+    expect(inlineMentionEditorSelection(control)).toEqual({ start: 2, end: 2 });
+  });
+});
 
 describe("trailing newline rendering (#471)", () => {
   it("renders a trailing <br> sentinel when the document ends with a newline", () => {
