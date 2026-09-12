@@ -257,7 +257,10 @@ describe("TimelineView", () => {
     changeInlineEditorText(textarea, "@");
     expect(await screen.findByRole("option", { name: "Alice @alice:example.invalid" })).toBeTruthy();
     fireEvent.click(screen.getByRole("option", { name: "Alice @alice:example.invalid" }));
-    expect(textarea.textContent).toBe("@Alice ");
+    // #875: the pill carries a zero-width caret anchor on its outside so the
+    // browser paints the caret clear of the pill; it never reaches the document.
+    expect(textarea.querySelector("[data-composer-caret-anchor]")).not.toBeNull();
+    expect(textarea.textContent?.replaceAll("\u200b", "")).toBe("@Alice ");
     expect(document.querySelector(".composer-mention-pills")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: /save edit/i }));
