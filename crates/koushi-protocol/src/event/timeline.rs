@@ -825,6 +825,12 @@ pub struct TimelineItem {
     pub link_previews: Option<Vec<LinkPreview>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub link_ranges: Vec<TimelineLinkRange>,
+    /// User ids this message's `m.mentions` named (#874). The renderer derives
+    /// mention pills from the message instead of client-local profile labels,
+    /// so the same event renders the same way for every viewer. Empty for
+    /// items that are not messages.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mentioned_user_ids: Vec<String>,
     #[serde(default)]
     pub reactions: Vec<ReactionGroup>,
     #[serde(default)]

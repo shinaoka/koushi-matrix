@@ -337,7 +337,55 @@ describe("ContextualRightPanel", () => {
     expect(markup).toContain('dir="auto"');
   });
 
-  test("TimelineItemRow renders mention pills from Rust-owned profile data", () => {
+  test("TimelineItemRow renders a mention pill for an id the message mentions", () => {
+    const markup = renderToStaticMarkup(
+      <TimelineItemRow
+        item={{
+          id: { Event: { event_id: "$event:example.invalid" } },
+          sender: "@alice:example.invalid",
+          body: "Hello @Alice Alias",
+          timestamp_ms: 1_800_000_000_000,
+          in_reply_to_event_id: null,
+          thread_root: null,
+          thread_summary: null,
+          can_react: true,
+          is_redacted: false,
+          is_hidden: false,
+          can_redact: false,
+          is_edited: false,
+          can_edit: true,
+          reactions: [],
+          // #874: the pill follows the message's `m.mentions`, not the viewer's
+          // loaded profiles.
+          mentioned_user_ids: ["@alice:example.invalid"]
+        }}
+        roomId="!room:example.invalid"
+        onReply={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
+        onEdit={() => undefined}
+        onRedact={() => undefined}
+        mentionProfileUsers={{
+          "@alice:example.invalid": {
+            user_id: "@alice:example.invalid",
+            display_name: "Alice Upstream",
+            display_label: "Alice Alias",
+            original_display_label: "Alice Upstream",
+            mention_search_terms: ["Alice Alias", "Alice Upstream", "@alice:example.invalid"],
+            avatar: null
+          }
+        }}
+      />
+    );
+
+    expect(markup).toContain('class="message-mention-pill"');
+    expect(markup).toContain('data-mention-user-id="@alice:example.invalid"');
+    expect(markup).toContain("@Alice Alias");
+  });
+
+  test("TimelineItemRow leaves text that only looks like a mention unstyled", () => {
+    // #874: the same text with no `m.mentions` notifies nobody and must not
+    // borrow the pill because a profile happens to carry that label.
     const markup = renderToStaticMarkup(
       <TimelineItemRow
         item={{
@@ -375,8 +423,7 @@ describe("ContextualRightPanel", () => {
       />
     );
 
-    expect(markup).toContain('class="message-mention-pill"');
-    expect(markup).toContain('data-mention-user-id="@alice:example.invalid"');
+    expect(markup).not.toContain("message-mention-pill");
     expect(markup).toContain("@Alice Alias");
   });
 

@@ -488,6 +488,7 @@ fn timeline_message_item(event_id: &str, sender: &str) -> TimelineItem {
         media: None,
         link_previews: None,
         link_ranges: Vec::new(),
+        mentioned_user_ids: Vec::new(),
         reactions: Vec::new(),
         can_react: true,
         is_redacted: false,
