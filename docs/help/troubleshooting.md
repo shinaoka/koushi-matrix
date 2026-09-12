@@ -50,7 +50,7 @@ unexpected.
 ## Notifications are missing
 
 Check **Room info** for **Mute** or **Mentions only**, then check global
-notification settings in **User settings** and the operating system's
+notification settings in **User settings → Notifications** and the operating system's
 notification permission for Koushi. An unread badge and a desktop notification
 are different signals.
 

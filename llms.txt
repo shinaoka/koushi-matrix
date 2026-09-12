@@ -21,6 +21,7 @@ passwords, recovery keys, tokens, or private message content.
 ## Using Koushi
 
 - [Getting started](docs/help/getting-started.md): Install Koushi, sign in, open your first conversation, and find settings.
+- [Settings and help](docs/help/settings.md): Find every setting by category, keyboard shortcuts, and the GitHub URL for AI assistance.
 - [Rooms and Spaces](docs/help/rooms-and-spaces.md): Join or create rooms, manage invitations, and navigate Spaces and direct messages.
 - [Messaging](docs/help/messaging.md): Send text and files, edit messages, reply, and use threads.
 - [Search](docs/help/search.md): Find past messages and manage local history indexing.

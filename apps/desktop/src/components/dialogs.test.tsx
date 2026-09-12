@@ -97,7 +97,7 @@ describe("ResetLocalDataConfirmationDialog", () => {
       />
     );
 
-    expect(markup).toContain('role="dialog"');
+    expect(markup).toContain("<dialog ");
     expect(markup).toContain('aria-modal="true"');
     expect(markup).toContain('aria-label="Reset local data"');
     expect(markup).toContain(

@@ -57,6 +57,16 @@ The root llms.txt uses relative links that work from a GitHub file view, a raw
 file URL, or a checked-out tree at the same revision. Keep those files together
 if serving them elsewhere. No separate full-text bundle is maintained.
 
+## Before opening or updating a PR
+
+Use the repository [PR checklist](../.github/pull_request_template.md). For every
+affected feature, compare the manual with the code and relevant tests: menu
+paths, labels, prerequisites, expected outcomes, and limitations. Record the
+result in the PR validation section. When settings move, update the
+[settings location map](help/settings.md) and any task page using those paths.
+If no manual change is needed, explain why. Passing link checks does not replace
+this review. The requirement also lives in [repository rules](../REPOSITORY_RULES.md).
+
 ## Verification scope
 
 CI runs generator/checker tests and `--check`. The check covers:

@@ -196,6 +196,7 @@ test("Rust display updates keep an old root whole without room backfill", async 
 
   await clearInvocations(page);
   await page.getByRole("button", { name: t("workspace.userSettings") }).click();
+  await page.getByRole("tab", { name: "Preferences", exact: true }).click();
   const placementToggle = page.getByRole("switch", {
     name: t("settings.threadRootLatestReply")
   });
@@ -223,7 +224,8 @@ test("Rust display updates keep an old root whole without room backfill", async 
   expect((await displayRowIds(page)).filter((id) => id === `thread-root:${ROOT_EVENT_ID}`)).toHaveLength(1);
   expect(await invocationCount(page, "paginate_timeline_backwards")).toBe(0);
 
-  await root.getByRole("button", { name: /^Open thread,/ }).click({ force: true });
+  await page.keyboard.press("Escape");
+  await root.getByRole("button", { name: /^Open thread,/ }).click();
   await expect.poll(() => latestInvocationArgs(page, "open_thread")).toEqual({
     roomId: ROOM_ID,
     rootEventId: ROOT_EVENT_ID,

@@ -32,7 +32,7 @@ history, not diagnostic information.
 ## Recover missing encrypted history
 
 1. Check whether session verification or secure backup setup is still pending.
-2. Open **User settings → Security & Privacy → Open recovery**. In the
+2. Open **User settings → Encryption → Open recovery**. In the
    **Encryption Recovery** form, enter the supported recovery key or security
    phrase and choose **Recover**.
 3. Let recovery and synchronization finish, then reopen the affected room.

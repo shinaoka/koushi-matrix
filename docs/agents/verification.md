@@ -157,6 +157,15 @@ Priorities, in order:
 3. Security and privacy — secret leakage, private data in Debug/logs/QA output.
 4. Contract correctness — state machine, command/event, and DTO shapes.
 
+User-guide consistency is part of this pre-PR check. Use the
+[PR checklist](../../.github/pull_request_template.md) and compare affected
+instructions with the implementation and tests: menu/category paths, UI labels,
+prerequisites, outcomes, and limitations. Update the guide and
+[settings location map](../help/settings.md) in the same PR when behavior or
+placement changes; otherwise explain why no manual change is needed. Run
+`node scripts/user-help.mjs --check` for navigation and generated llms.txt.
+A passing link check alone does not establish that instructions are correct.
+
 Scope notes that repeatedly matter:
 
 - Read `Cargo.toml` and `src/lib.rs` alongside a change that adds feature gates,

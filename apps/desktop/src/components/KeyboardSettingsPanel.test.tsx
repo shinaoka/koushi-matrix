@@ -65,7 +65,7 @@ describe("KeyboardSettingsPanel", () => {
     expect(markup).toContain("Composer");
     expect(markup).toContain("Room List");
     expect(markup).toContain("Ctrl/Cmd");
-    expect(markup).toContain("Keyboard settings");
+    expect(markup).not.toContain("Keyboard settings");
     expect(markup).toContain("same");
     expect(markup).toContain("deferred");
   });

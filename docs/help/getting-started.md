@@ -44,8 +44,9 @@ search results, or a thread can appear on the right.
 
 ## Find settings
 
-Select **User settings** at the bottom of the left rail. Its sections include
-appearance, notifications, keyboard, search history, and security. Settings for
+Select **User settings** at the bottom of the left rail. A foreground dialog
+opens with categories on the left and the selected settings on the right. See
+[Settings and help](settings.md) for the location of every setting. Settings for
 a particular room are available through **Room info** in that room's header.
 
 For keyboard behavior, open **User settings → Keyboard**. This shows the

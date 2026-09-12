@@ -7,7 +7,7 @@ pub(super) const MENU_EVENT_NAME: &str = "koushi-desktop://menu";
 const MENU_ID_ABOUT: &str = "about_koushi";
 const MENU_ID_OPEN_USER_SETTINGS: &str = "open_user_settings";
 const MENU_ID_SIGN_OUT: &str = "sign_out";
-const MENU_ID_SHOW_KEYBOARD_SETTINGS: &str = "show_keyboard_settings";
+const MENU_ID_SHOW_HELP: &str = "show_help";
 const MENU_ID_TOGGLE_RIGHT_PANEL: &str = "toggle_right_panel";
 pub(super) const MENU_ID_TOGGLE_FULLSCREEN: &str = "toggle_fullscreen";
 
@@ -55,10 +55,10 @@ pub(crate) fn desktop_menu_items() -> Vec<DesktopMenuItem> {
             accelerator: "CmdOrCtrl+.",
         },
         DesktopMenuItem {
-            id: MENU_ID_SHOW_KEYBOARD_SETTINGS,
-            label: "Keyboard Shortcuts",
+            id: MENU_ID_SHOW_HELP,
+            label: "Koushi Help",
             menu: "help",
-            accelerator: "CmdOrCtrl+/",
+            accelerator: "",
         },
         #[cfg(target_os = "macos")]
         DesktopMenuItem {
@@ -93,7 +93,7 @@ pub(super) fn desktop_menu_action_id(menu_id: &str) -> Option<&'static str> {
         MENU_ID_OPEN_USER_SETTINGS => Some("openUserSettings"),
         MENU_ID_SIGN_OUT => Some("logout"),
         MENU_ID_TOGGLE_RIGHT_PANEL => Some("toggleRightPanel"),
-        MENU_ID_SHOW_KEYBOARD_SETTINGS => Some("showKeyboardSettings"),
+        MENU_ID_SHOW_HELP => Some("showHelp"),
         MENU_ID_TOGGLE_FULLSCREEN => Some("toggleFullscreen"),
         _ => None,
     }
@@ -105,7 +105,7 @@ pub(super) fn build_desktop_menu<R: tauri::Runtime, M: Manager<R>>(
     let open_user_settings = menu_item(manager, MENU_ID_OPEN_USER_SETTINGS)?;
     let sign_out = menu_item(manager, MENU_ID_SIGN_OUT)?;
     let toggle_right_panel = menu_item(manager, MENU_ID_TOGGLE_RIGHT_PANEL)?;
-    let show_keyboard_settings = menu_item(manager, MENU_ID_SHOW_KEYBOARD_SETTINGS)?;
+    let show_help = menu_item(manager, MENU_ID_SHOW_HELP)?;
 
     #[cfg(target_os = "macos")]
     let toggle_fullscreen = menu_item(manager, MENU_ID_TOGGLE_FULLSCREEN)?;
@@ -151,7 +151,7 @@ pub(super) fn build_desktop_menu<R: tauri::Runtime, M: Manager<R>>(
         builder.build()?
     };
     let help_menu = SubmenuBuilder::new(manager, "Help")
-        .item(&show_keyboard_settings)
+        .item(&show_help)
         .build()?;
 
     MenuBuilder::new(manager)
@@ -185,5 +185,20 @@ fn menu_item<R: tauri::Runtime, M: Manager<R>>(
         builder.build(manager)
     } else {
         builder.accelerator(item.accelerator).build(manager)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{desktop_menu_action_id, desktop_menu_items};
+
+    #[test]
+    fn help_menu_dispatches_help_without_a_keyboard_shortcut() {
+        let items = desktop_menu_items();
+        let help = items.iter().find(|item| item.menu == "help").unwrap();
+        assert_eq!(help.label, "Koushi Help");
+        assert!(help.accelerator.is_empty());
+        assert_eq!(desktop_menu_action_id(help.id), Some("showHelp"));
+        assert_eq!(desktop_menu_action_id("show_keyboard_settings"), None);
     }
 }

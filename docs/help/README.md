@@ -19,6 +19,7 @@ your preferred language.
 ## Using Koushi
 
 - [Getting started](getting-started.md): Install Koushi, sign in, open your first conversation, and find settings.
+- [Settings and help](settings.md): Find every setting by category, keyboard shortcuts, and the GitHub URL for AI assistance.
 - [Rooms and Spaces](rooms-and-spaces.md): Join or create rooms, manage invitations, and navigate Spaces and direct messages.
 - [Messaging](messaging.md): Send text and files, edit messages, reply, and use threads.
 - [Search](search.md): Find past messages and manage local history indexing.

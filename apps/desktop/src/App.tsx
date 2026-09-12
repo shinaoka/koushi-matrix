@@ -1,3 +1,4 @@
+import { HelpDialog } from "./components/HelpDialog";
 import {
   type FormEvent,
   type CSSProperties,
@@ -768,6 +769,12 @@ function composerDraftApiAccount(scope: ComposerDraftScope): {
 }
 
 export function App() {
+  const [helpOpen, setHelpOpen] = useState(false);
+  const showHelp = useCallback(() => setHelpOpen(true), []);
+  return <><AppContent onShowHelp={showHelp} />{helpOpen ? <HelpDialog onClose={() => setHelpOpen(false)} /> : null}</>;
+}
+
+function AppContent({ onShowHelp }: { onShowHelp: () => void }) {
   const snapshot = useAppStore(selectSnapshot);
   const snapshotRef = useRef(snapshot);
   const secureBackupShellAccountRef = useRef<string | null>(null);
@@ -1668,8 +1675,8 @@ export function App() {
 
   function handleShortcutAction(shortcutId: string): boolean {
     switch (shortcutId) {
-      case "showKeyboardSettings":
-        runInBackground(setRightPanelModeClosingFocusedContext("keyboardSettings"));
+      case "showHelp":
+        onShowHelp();
         return true;
       case "openUserSettings":
         runInBackground(setRightPanelModeClosingFocusedContext("userSettings"));
@@ -2041,6 +2048,7 @@ export function App() {
 
   useEffect(() => {
     function onKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.defaultPrevented || document.querySelector("dialog[open]")) return;
       const shortcutId = shortcutIdForKeyboardEvent(event);
       if (!shortcutId) {
         return;
@@ -5748,7 +5756,7 @@ export function App() {
     searchResults.length === 0 &&
     searchCrawlerHasPendingIndexing(snapshot.state.domain.search_crawler);
   const effectiveRightPanelMode = effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot);
-  const rightPanelOpen = effectiveRightPanelMode !== "closed";
+  const rightPanelOpen = !["closed", "userSettings", "keyboardSettings"].includes(effectiveRightPanelMode);
   const fittedShellWidths = fitShellWidths(
     sidebarWidth,
     rightPanelWidth,
@@ -5857,9 +5865,6 @@ export function App() {
             runInBackground(openExternalHttpUrl(safeExternalUrl));
           }}
           onCopyDiagnostics={() => copyDiagnostics(snapshot)}
-          onOpenKeyboardSettings={() => {
-            runInBackground(setRightPanelModeClosingFocusedContext("keyboardSettings"));
-          }}
           onOpenDiagnostics={() => {
             runInBackground(openDiagnostics());
           }}
@@ -6256,9 +6261,6 @@ export function App() {
           }}
           onPaginateThreadsList={(scope) => {
             runInBackground(paginateThreadsList(scope));
-          }}
-          onOpenKeyboardSettings={() => {
-            runInBackground(setRightPanelModeClosingFocusedContext("keyboardSettings"));
           }}
           onOpenRecovery={() => {
             runInBackground(setRightPanelModeClosingFocusedContext("recovery"));

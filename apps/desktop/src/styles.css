@@ -8654,3 +8654,76 @@ kbd {
   font-size: 12px;
   font-weight: 700;
 }
+
+/* Native dialogs use the browser top layer, outside contextual-pane clipping. */
+.app-modal {
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0;
+  max-inline-size: calc(100vw - 32px);
+  max-block-size: calc(100dvh - 32px);
+  box-shadow: 0 24px 64px rgb(0 0 0 / 28%);
+}
+.app-modal::backdrop { background: rgb(15 27 45 / 45%); }
+.app-modal[open] { display: flex; flex-direction: column; }
+.app-modal-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+  border-block-end: 1px solid var(--line);
+}
+.app-modal-header h2 { margin: 0; font-size: 18px; }
+.user-settings-modal { inline-size: 1040px; block-size: 760px; overflow: hidden; }
+.user-settings-modal .user-settings-panel {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 0;
+  padding: 0;
+  min-block-size: 0;
+  overflow: hidden;
+}
+.settings-category-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  overflow-y: auto;
+  border-inline-end: 1px solid var(--line);
+}
+.settings-category-list button {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 7px;
+  padding: 11px 12px;
+  text-align: start;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.settings-category-list button[aria-selected="true"] { background: var(--brand-weak); color: var(--brand); font-weight: 700; }
+.settings-category-list button:hover { background: var(--surface-hover); }
+.settings-category-content { min-inline-size: 0; min-block-size: 0; padding: 20px 24px; overflow: auto; }
+.settings-category { display: grid; gap: 20px; }
+.settings-category[hidden] { display: none; }
+.settings-category > .settings-section:first-child { margin-block-start: 0; padding-block-start: 0; }
+.help-modal { inline-size: 540px; }
+.help-content { padding: 20px; overflow-wrap: anywhere; }
+.help-content p:first-child { margin-block-start: 0; }
+.help-repository-url { user-select: text; font-family: monospace; }
+.help-copy-status { min-block-size: 1.5em; margin-block-end: 0; color: var(--text-muted); }
+@media (max-width: 620px) {
+  .user-settings-modal .user-settings-panel { grid-template-columns: 130px minmax(0, 1fr); }
+  .settings-category-list { padding: 8px; }
+  .settings-category-list button { padding: 10px 6px; }
+  .settings-category-content { padding: 12px; }
+}
+
+.confirmation-modal { width: 480px; }
+.confirmation-content { padding: 0 20px 20px; overflow-y: auto; }
