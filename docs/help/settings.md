@@ -22,12 +22,12 @@ Japanese category names are included to help find them in a translated app.
 
 | Category | Settings and actions |
 | --- | --- |
-| Account (アカウント) | Language (system default, English, Japanese); profile display name and avatar; saved-account switching; account management page when provided by the server; change password and deactivate account when supported. |
+| Account (アカウント) | Language (Default (English), English, Japanese); profile display name and avatar; saved-account switching; account management page when provided by the server; change password and deactivate account when supported. |
 | Sessions (セッション) | Homeserver, user ID, device ID/name, verification, cross-signing, backup and local-store information; Sign out. This is current-session information, not a list of all remote devices. |
 | Appearance (外観) | Theme; display density; UI font and emoji style. |
 | Notifications (通知) | Desktop notifications, notification sounds and badge counts. Operating-system permissions also apply. |
 | Preferences (環境設定) | Code-block wrapping; URL previews in unencrypted/encrypted rooms; hiding removed messages; close to tray where configurable; automatic update checks and restart to install on macOS; automatic loading of older messages; placement of threaded conversations at their latest reply. |
-| Keyboard (キーボード) | Send-message shortcut (Enter or the platform modifier+Enter); reference list of supported keyboard shortcuts. |
+| Keyboard (キーボード) | Send-message shortcut (Enter or the platform modifier+Enter); reference list of keyboard shortcuts and their availability. |
 | Security & Privacy (セキュリティとプライバシー) | Sending read receipts and typing notifications. |
 | Encryption (暗号化) | Identity/session verification and trust; secure backup setup and passphrase changes; recovery; encrypted room-key import/export; local-encryption diagnostics and local-data reset. Actions appear according to the current encryption state. |
 | Search history (検索履歴) | Crawl speed; indexing of media captions and file names; pause/resume crawler; crawler activity, per-room progress and start/stop actions; rebuild search database. |
