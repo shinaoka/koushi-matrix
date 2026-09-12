@@ -1358,3 +1358,110 @@ fn display_diff_application_normalizes_duplicate_render_identities() {
     apply_timeline_diffs_to_display_items(&mut display_items, &[TimelineDiff::Clear]);
     assert!(display_items.is_empty());
 }
+
+#[test]
+fn thread_replies_do_not_evict_the_ordinary_rows_from_the_live_edge_window() {
+    // #873: the room live-edge window was sized in canonical items, so a run of
+    // suppressed thread replies filled it and the ordinary history drained away
+    // one row per reply until only the thread root remained.
+    let mut canonical_items = synthetic_projection_items(8);
+    let root_event_id = "$canonical-0:test";
+    let mut state =
+        DisplayProjectionState::from_canonical_window(&canonical_items, 0..canonical_items.len());
+    let context = DisplayProjectionContext::bounded_live_edge();
+
+    for index in 0..(ROOM_REPLAY_INITIAL_ITEMS_MAX + 10) {
+        let mut reply = timeline_item(
+            &format!("$reply-{index}:test"),
+            Some("reply"),
+            "@sender:test",
+            false,
+        );
+        reply.thread_root = Some(root_event_id.to_owned());
+        project_sdk_batch(
+            &mut canonical_items,
+            &mut state,
+            &[TimelineDiff::PushBack { item: reply }],
+            &context,
+        );
+    }
+
+    let visible = state
+        .display_items()
+        .iter()
+        .filter_map(timeline_item_event_id)
+        .collect::<Vec<_>>();
+    for index in 0..8 {
+        let ordinary = format!("$canonical-{index}:test");
+        assert!(
+            visible.iter().any(|event_id| event_id == &ordinary),
+            "ordinary row {ordinary} was evicted by thread replies: {visible:?}"
+        );
+    }
+    assert!(
+        !visible
+            .iter()
+            .any(|event_id| event_id.starts_with("$reply-")),
+        "thread replies must not render as room rows: {visible:?}"
+    );
+}
+
+#[test]
+fn reset_window_counts_displayed_rows_not_canonical_items() {
+    // #873: a Reset rebuilds the window from the canonical tail. The same rule
+    // has to hold there, or a resumed room loses its history on arrival.
+    let mut items = synthetic_projection_items(8);
+    for index in 0..(ROOM_REPLAY_INITIAL_ITEMS_MAX + 10) {
+        let mut reply = timeline_item(
+            &format!("$reply-{index}:test"),
+            Some("reply"),
+            "@sender:test",
+            false,
+        );
+        reply.thread_root = Some("$canonical-0:test".to_owned());
+        items.push(reply);
+    }
+    let start = super::live_edge_window_start(&items, ROOM_REPLAY_INITIAL_ITEMS_MAX);
+
+    assert_eq!(start, 0, "every ordinary row is inside the window");
+}
+
+#[test]
+fn live_edge_window_retains_one_reply_slot_per_root() {
+    // #873: replies stay in the window only as far as LatestReply placement
+    // needs them — the newest canonical index per root. The bounded window must
+    // not grow with the thread, or protecting the ordinary rows above would just
+    // move the memory and per-batch cost into the reply tail.
+    let mut canonical_items = synthetic_projection_items(8);
+    let mut state =
+        DisplayProjectionState::from_canonical_window(&canonical_items, 0..canonical_items.len());
+    let context = DisplayProjectionContext::bounded_live_edge();
+
+    for index in 0..(ROOM_REPLAY_INITIAL_ITEMS_MAX * 3) {
+        let mut reply = timeline_item(
+            &format!("$reply-{index}:test"),
+            Some("reply"),
+            "@sender:test",
+            false,
+        );
+        reply.thread_root = Some("$canonical-0:test".to_owned());
+        project_sdk_batch(
+            &mut canonical_items,
+            &mut state,
+            &[TimelineDiff::PushBack { item: reply }],
+            &context,
+        );
+    }
+
+    let reply_slots = state
+        .slots
+        .iter()
+        .filter(|slot| slot.item.thread_root.is_some())
+        .count();
+    assert_eq!(
+        reply_slots, 1,
+        "only the newest reply of a root stays in the window"
+    );
+    // Eight ordinary rows (one of them the thread root) and the retained reply.
+    assert_eq!(state.slots.len(), 9);
+}
