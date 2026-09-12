@@ -115,6 +115,7 @@ fn settings_loaded_replaces_values_without_requiring_a_session() {
         search_crawler: koushi_state::SearchCrawlerSettings::default(),
         sidebar: koushi_state::SidebarSettings::default(),
         window: WindowSettings::default(),
+        updates: Default::default(),
         legacy_frontend_preferences_imported: false,
     };
 

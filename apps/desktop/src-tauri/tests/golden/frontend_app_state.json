@@ -730,6 +730,9 @@
             "emoji": "system",
             "font": "system"
           },
+          "updates": {
+            "auto_check": true
+          },
           "window": {
             "close_to_tray": true
           }
@@ -780,7 +783,7 @@
         "platform": "linux"
       }
     },
-    "schema_version": 6,
+    "schema_version": 7,
     "ui": {
       "basic_operation": {
         "kind": "creatingRoom",

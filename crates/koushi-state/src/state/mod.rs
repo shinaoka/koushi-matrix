@@ -87,7 +87,8 @@ pub use settings::{
     RoomNotificationSettings, RoomPreference, RoomPreferencesState, RoomUrlPreviews, SettingsPatch,
     SettingsPersistenceState, SettingsState, SettingsValues, SidebarCategory,
     SidebarCollapsedSections, SidebarSettings, TextDirectionPreference, ThemePreference,
-    ThreadListOrder, TimelineSettings, TimelineThreadRootOrder, TypographySettings, WindowSettings,
+    ThreadListOrder, TimelineSettings, TimelineThreadRootOrder, TypographySettings,
+    UpdatesSettings, WindowSettings,
 };
 
 // ── Re-exports: profile ─────────────────────────────────────────────────────

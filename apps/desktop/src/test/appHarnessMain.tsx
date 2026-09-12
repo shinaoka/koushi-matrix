@@ -236,7 +236,7 @@ function readySnapshot(
   return {
     state_generation: 0,
     state: {
-        schema_version: 6,
+        schema_version: 7,
         domain: {
           session: { kind: "ready", homeserver: HOMESERVER, user_id: USER_ID, device_id: DEVICE_ID },
           session_lock_reason: null,
@@ -330,6 +330,7 @@ function defaultSettingsState(): DesktopSnapshot["state"]["domain"]["settings"] 
         encrypted_url_previews_enabled: true
       },
       window: { close_to_tray: true },
+      updates: { auto_check: true },
       media: {
         image_upload_compression_policy: {
           threshold_bytes: 1048576,
@@ -442,6 +443,7 @@ function applySettingsPatch(
     notifications: patch.notifications ?? values.notifications,
     display: patch.display ?? values.display,
     window: patch.window ?? values.window,
+    updates: patch.updates ?? values.updates,
     media: patch.media ?? values.media,
     timeline: patch.timeline ?? values.timeline,
     search_crawler: patch.search_crawler ?? values.search_crawler,

@@ -583,6 +583,16 @@ export type MessageId =
   | "settings.hideRedacted"
   | "settings.closeToTray"
   | "settings.closeToTrayDescription"
+  | "settings.autoUpdate"
+  | "settings.autoUpdateDescription"
+  | "settings.updateIdle"
+  | "settings.updateChecking"
+  | "settings.updateDownloading"
+  | "settings.updateReady"
+  | "settings.updateRestart"
+  | "settings.updateInstalling"
+  | "settings.updateCheckFailed"
+  | "settings.updateInstallFailed"
   | "settings.notificationBadges"
   | "settings.notificationDesktop"
   | "settings.notificationSound"
@@ -1914,6 +1924,19 @@ const en: Catalog = {
   "settings.closeToTray": "Close button minimises to tray",
   "settings.closeToTrayDescription":
     "Keep Koushi running in the tray when the window is closed. Quit from the tray menu to exit.",
+  "settings.autoUpdate": "Automatically check for updates",
+  "settings.autoUpdateDescription":
+    "Download verified macOS updates in the background. You choose when to restart.",
+  "settings.updateIdle": "Koushi will check for updates automatically.",
+  "settings.updateChecking": "Checking for updates…",
+  "settings.updateDownloading": "Downloading and verifying Koushi {version}…",
+  "settings.updateReady": "Koushi {version} is ready to install.",
+  "settings.updateRestart": "Restart to install",
+  "settings.updateInstalling": "Installing Koushi {version}…",
+  "settings.updateCheckFailed":
+    "Koushi could not check or download this update. You can keep using the app.",
+  "settings.updateInstallFailed":
+    "Koushi could not replace this installation. Move it to a writable Applications folder or download the latest release manually.",
   "settings.urlPreviews": "URL previews",
   "settings.urlPreviewsEnabled": "Show link previews",
   "settings.urlPreviewsDescription": "Load previews for links in messages",
@@ -3143,6 +3166,19 @@ const ja: Catalog = {
   "settings.closeToTray": "閉じるボタンでトレイに最小化",
   "settings.closeToTrayDescription":
     "ウィンドウを閉じても Koushi をトレイで実行し続けます。終了するにはトレイメニューの終了を使います。",
+  "settings.autoUpdate": "アップデートを自動確認",
+  "settings.autoUpdateDescription":
+    "検証済みのmacOSアップデートをバックグラウンドでダウンロードします。再起動するタイミングは選べます。",
+  "settings.updateIdle": "Koushiはアップデートを自動確認します。",
+  "settings.updateChecking": "アップデートを確認しています…",
+  "settings.updateDownloading": "Koushi {version}をダウンロードして検証しています…",
+  "settings.updateReady": "Koushi {version}をインストールできます。",
+  "settings.updateRestart": "再起動してインストール",
+  "settings.updateInstalling": "Koushi {version}をインストールしています…",
+  "settings.updateCheckFailed":
+    "アップデートを確認またはダウンロードできませんでした。アプリはそのまま利用できます。",
+  "settings.updateInstallFailed":
+    "この場所のKoushiを更新できませんでした。書き込み可能なアプリケーションフォルダへ移動するか、最新版を手動でダウンロードしてください。",
   "settings.urlPreviews": "URLプレビュー",
   "settings.urlPreviewsEnabled": "リンクプレビューを表示",
   "settings.urlPreviewsDescription": "メッセージ内のリンクのプレビューを読み込む",

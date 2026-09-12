@@ -155,7 +155,7 @@ function snapshotForPanelMode(
 ): Pick<DesktopSnapshot, "state" | "thread"> {
   return {
     state: {
-      schema_version: 6,
+      schema_version: 7,
       domain: {
         session_lock_reason: null,
         session:
@@ -198,6 +198,7 @@ function snapshotForPanelMode(
               encrypted_url_previews_enabled: false
             },
             window: { close_to_tray: true },
+            updates: { auto_check: true },
             media: {
               image_upload_compression_policy: {
                 threshold_bytes: 1048576,

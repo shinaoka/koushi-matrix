@@ -6,6 +6,7 @@ test("constructs one event adapter without subscribing eagerly", async () => {
   vi.resetModules();
   const port = {
     listenCoreEvents: vi.fn(),
+    listenDesktopUpdates: vi.fn(),
     listenMenuActions: vi.fn(),
     listenStateUpdates: vi.fn()
   };
@@ -16,6 +17,7 @@ test("constructs one event adapter without subscribing eagerly", async () => {
 
   expect(createTauriDesktopEventPort).toHaveBeenCalledOnce();
   expect(port.listenCoreEvents).not.toHaveBeenCalled();
+  expect(port.listenDesktopUpdates).not.toHaveBeenCalled();
   expect(port.listenMenuActions).not.toHaveBeenCalled();
   expect(port.listenStateUpdates).not.toHaveBeenCalled();
 });

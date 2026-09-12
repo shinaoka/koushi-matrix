@@ -29,6 +29,7 @@ describe("UserSettingsPanel", () => {
         encrypted_url_previews_enabled: false
       },
       window: { close_to_tray: true },
+      updates: { auto_check: true },
       media: {
         image_upload_compression_policy: {
           threshold_bytes: 1048576,

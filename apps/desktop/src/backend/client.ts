@@ -14,6 +14,7 @@ import type {
   CommandSettlement,
   ActivityTab,
   DesktopSnapshot,
+  DesktopUpdateState,
   ComposerKeyEvent,
   ComposerResolvedAction,
   ComposerResolverOptions,
@@ -69,6 +70,14 @@ export class TauriDesktopApi implements DesktopApi {
   constructor(private readonly invokeCommand: DesktopInvoke = invoke) {}
   async getSnapshot(): Promise<DesktopSnapshot> {
     return this.invokeCommand<DesktopSnapshot>("get_snapshot");
+  }
+
+  async getDesktopUpdateState(): Promise<DesktopUpdateState> {
+    return this.invokeCommand<DesktopUpdateState>("get_desktop_update_state");
+  }
+
+  async restartToInstallDesktopUpdate(): Promise<void> {
+    return this.invokeCommand<void>("restart_to_install_desktop_update");
   }
 
   async settlementSnapshot(): Promise<DesktopSnapshot> {

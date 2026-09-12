@@ -1128,6 +1128,33 @@ identically — and the awaited submit is bounded by the adapter's core-command
 submit timeout with its error ignored, so a wedged core can never leave the exit
 held forever.
 
+### Desktop Application Updates
+
+Desktop application updates are a platform-adapter lifecycle, separate from
+Matrix/Core state. Persisted policy is Rust-owned
+`SettingsValues.updates.auto_check`; the Tauri adapter owns the updater plugin,
+the current check/download/install state, and the verified pending artifact.
+React renders the typed adapter projection and dispatches only the settings
+patch or restart-to-install intent. It must not fetch manifests, compare
+versions, verify signatures, retain update bytes, or replace an application.
+
+The projection is platform-neutral (`unsupported`, `idle`, `checking`,
+`downloading`, `ready`, `failed`, or `installing`). Only macOS arm64 is enabled
+for the first release. Windows and Linux report `unsupported` until a separate
+change provides signed artifacts and an approved install contract; their normal
+installer builds must not require the macOS updater signing secret.
+
+When automatic checks are enabled, the adapter checks after startup and at most
+once per 24-hour interval, and checks once when the setting changes from off to
+on. Checks, downloads, signature verification, and failures are non-blocking and
+must not delay Core startup, login, or ordinary application use. The Tauri
+updater plugin performs version comparison, download, signature verification,
+and installation. A verified download becomes `ready`; installation and
+relaunch occur only after an explicit user action so in-progress composer work
+is not discarded. Public failure state is coarse and never includes response
+bodies, release URLs, local paths, signatures, key material, or raw library
+errors.
+
 ### Desktop Viewport Synchronization
 
 Live desktop viewport synchronization is Rust-owned at the Tauri adapter

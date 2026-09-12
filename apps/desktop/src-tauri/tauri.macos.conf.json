@@ -1,0 +1,13 @@
+{
+  "bundle": {
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/shinaoka/koushi-matrix/releases/latest/download/latest.json"
+      ],
+      "pubkey": ""
+    }
+  }
+}

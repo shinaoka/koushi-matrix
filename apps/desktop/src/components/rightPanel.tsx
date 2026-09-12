@@ -7,6 +7,7 @@ import type {
   AttachmentScope,
   AttachmentSort,
   DesktopSnapshot,
+  DesktopUpdateState,
   DisplayDensity,
   FilesViewScope,
   ComposerDocument,
@@ -78,6 +79,7 @@ export function ContextualRightPanel({
   activeSpaceName,
   accountManagementUrl = null,
   displayDensity = "comfortable",
+  desktopUpdate = { kind: "unsupported" },
   encryptedComposerBlocked = false,
   isRecoveryBusy,
   mode,
@@ -161,6 +163,7 @@ export function ContextualRightPanel({
   onSubmitIdentityResetOAuth,
   onSubmitIdentityResetPassword,
   onUpdateSettings = () => undefined,
+  onRestartToInstallDesktopUpdate = () => undefined,
   onRebuildSearchIndex = () => undefined,
   onSetRoomUrlPreviewOverride = () => undefined,
   onRepairRoomTimeline = () => undefined,
@@ -199,6 +202,7 @@ export function ContextualRightPanel({
   activeSpace: DesktopSnapshot["state"]["domain"]["spaces"][number] | null;
   activeSpaceName: string;
   displayDensity?: DisplayDensity;
+  desktopUpdate?: DesktopUpdateState;
   encryptedComposerBlocked?: boolean;
   isRecoveryBusy: boolean;
   mode: RightPanelMode;
@@ -305,6 +309,7 @@ export function ContextualRightPanel({
   onSubmitIdentityResetOAuth: (flowId: number) => void;
   onSubmitIdentityResetPassword: (flowId: number, password: string) => void;
   onUpdateSettings?: (patch: SettingsPatch) => void;
+  onRestartToInstallDesktopUpdate?: () => void;
   onRebuildSearchIndex?: () => void;
   onSetRoomUrlPreviewOverride?: (roomId: string, enabled: boolean) => void;
   onRepairRoomTimeline?: (roomId: string) => void | Promise<void>;
@@ -458,6 +463,7 @@ export function ContextualRightPanel({
           currentSession={currentSavedSession(snapshot)}
           currentSessionStatus={snapshot.state.domain.current_session_status}
           displayDensity={displayDensity}
+          desktopUpdate={desktopUpdate}
           e2eeTrust={snapshot.state.domain.e2ee_trust}
           localEncryption={snapshot.state.domain.local_encryption}
           keyboardLabelProfile={shortcutLabelProfileFromLocaleProfile(snapshot.state.domain.locale_profile)}
@@ -490,6 +496,7 @@ export function ContextualRightPanel({
           onSubmitIdentityResetOAuth={onSubmitIdentityResetOAuth}
           onSubmitIdentityResetPassword={onSubmitIdentityResetPassword}
           onUpdateSettings={onUpdateSettings}
+          onRestartToInstallDesktopUpdate={onRestartToInstallDesktopUpdate}
           onRebuildSearchIndex={onRebuildSearchIndex}
           onSwitchAccount={onSwitchAccount}
           accountManagement={snapshot.state.domain.account_management}

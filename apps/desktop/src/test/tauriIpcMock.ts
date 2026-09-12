@@ -299,6 +299,7 @@ export function defaultSnapshotResponse() {
             encrypted_url_previews_enabled: true
           },
           window: { close_to_tray: true },
+          updates: { auto_check: true },
           media: {
             image_upload_compression_policy: {
               threshold_bytes: 1048576,
@@ -509,7 +510,7 @@ export function defaultSnapshotResponse() {
     else ui[key] = value;
   }
   return {
-    state: { schema_version: 6, domain, ui },
+    state: { schema_version: 7, domain, ui },
     sidebar: {
       active_space_id: null,
       account_home: {

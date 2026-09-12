@@ -703,6 +703,12 @@ fn settings_patch_field_names(patch: &SettingsPatch) -> Vec<&'static str> {
     if patch.sidebar.is_some() {
         fields.push("sidebar");
     }
+    if patch.window.is_some() {
+        fields.push("window");
+    }
+    if patch.updates.is_some() {
+        fields.push("updates");
+    }
     fields
 }
 

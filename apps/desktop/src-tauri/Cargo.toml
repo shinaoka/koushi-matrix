@@ -36,6 +36,7 @@ tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSDockTile", "NSWindow", "NSSound", "NSView"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSUserDefaults"] }
+tauri-plugin-updater = "2.11.0"
 
 [dev-dependencies]
 koushi-core = { path = "../../../crates/koushi-core", features = ["test-hooks"] }

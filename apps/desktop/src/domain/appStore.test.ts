@@ -1318,7 +1318,7 @@ describe("session-scoped optional delta merge", () => {
 function makeSnapshot(): DesktopSnapshot {
   return {
     state: {
-      schema_version: 6,
+      schema_version: 7,
       domain: {
         session: { kind: "ready", homeserver: "https://example.invalid", user_id: "@user:example.invalid", device_id: "DEVICE" },
         session_lock_reason: null,
@@ -1347,6 +1347,7 @@ function makeSnapshot(): DesktopSnapshot {
               encrypted_url_previews_enabled: false
             },
             window: { close_to_tray: true },
+            updates: { auto_check: true },
             media: {
               image_upload_compression_policy: {
                 threshold_bytes: 1048576,
