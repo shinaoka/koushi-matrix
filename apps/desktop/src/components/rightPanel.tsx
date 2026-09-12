@@ -53,7 +53,7 @@ import {
   type TimelineTransport
 } from "./TimelineView";
 import { FilesView } from "./FilesView";
-import { KeyboardSettingsPanel } from "./KeyboardSettingsPanel";
+import { ModalDialog } from "./ModalDialog";
 import { RoomInfoPanel } from "./RoomInfoPanel";
 import { SpaceInfoPanel } from "./SpaceInfoPanel";
 import { ThreadsListView } from "./ThreadsListView";
@@ -117,7 +117,6 @@ export function ContextualRightPanel({
   onBackToPeople,
   onRefreshFilesView,
   onPaginateThreadsList,
-  onOpenKeyboardSettings,
   onOpenRecovery,
   onManageAccount = () => undefined,
   onRefreshCurrentSessionStatus = () => undefined,
@@ -244,7 +243,6 @@ export function ContextualRightPanel({
   onBackToPeople?: () => void;
   onRefreshFilesView: (scope: AttachmentScope, filter: AttachmentFilter, sort: AttachmentSort) => void;
   onPaginateThreadsList: (scope: ThreadsListScope) => void;
-  onOpenKeyboardSettings: () => void;
   onOpenRecovery: () => void;
   onManageAccount?: () => void;
   onRefreshCurrentSessionStatus?: () => void;
@@ -442,24 +440,11 @@ export function ContextualRightPanel({
     );
   }
 
-  if (mode === "keyboardSettings") {
+  if (mode === "userSettings" || mode === "keyboardSettings") {
     return (
-      <aside className="thread-pane" aria-label={t("panel.context")}>
-        <PanelHeader title={t("panel.keyboard")} onClose={onClosePanel} />
-        <KeyboardSettingsPanel
-          labelProfile={shortcutLabelProfileFromLocaleProfile(snapshot.state.domain.locale_profile)}
-          settings={snapshot.state.domain.settings}
-          onUpdateSettings={onUpdateSettings}
-        />
-      </aside>
-    );
-  }
-
-  if (mode === "userSettings") {
-    return (
-      <aside className="thread-pane" aria-label={t("panel.context")}>
-        <PanelHeader title={t("panel.userSettings")} onClose={onClosePanel} />
+      <ModalDialog title={t("panel.userSettings")} className="user-settings-modal" onClose={onClosePanel}>
         <UserSettingsPanel
+          initialCategory={mode === "keyboardSettings" ? "keyboard" : "account"}
           currentSession={currentSavedSession(snapshot)}
           currentSessionStatus={snapshot.state.domain.current_session_status}
           displayDensity={displayDensity}
@@ -485,7 +470,6 @@ export function ContextualRightPanel({
           onChangeSecureBackupPassphrase={onChangeSecureBackupPassphrase}
           onEnableKeyBackup={onEnableKeyBackup}
           onOpenRecovery={onOpenRecovery}
-          onOpenKeyboardSettings={onOpenKeyboardSettings}
           onProbeLocalEncryption={onProbeLocalEncryption}
           onResetLocalData={onResetLocalData}
           onLogout={onLogout}
@@ -515,7 +499,7 @@ export function ContextualRightPanel({
           onDisplayDensityChange={onDisplayDensityChange}
           rooms={snapshot.state.domain.rooms}
         />
-      </aside>
+      </ModalDialog>
     );
   }
 

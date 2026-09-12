@@ -924,7 +924,6 @@ describe("ContextualRightPanel", () => {
         onOpenFiles={() => undefined}
         onRefreshFilesView={() => undefined}
         onPaginateThreadsList={() => undefined}
-        onOpenKeyboardSettings={() => undefined}
         onRecoverySecretPresenceChange={() => undefined}
         onReply={() => undefined}
         onResultSelect={() => undefined}
@@ -979,7 +978,6 @@ describe("ContextualRightPanel", () => {
         onOpenFiles={() => undefined}
         onRefreshFilesView={() => undefined}
         onPaginateThreadsList={() => undefined}
-        onOpenKeyboardSettings={() => undefined}
         onRecoverySecretPresenceChange={() => undefined}
         onReply={() => undefined}
         onResultSelect={() => undefined}
@@ -1058,7 +1056,6 @@ describe("ContextualRightPanel", () => {
         onOpenFiles={() => undefined}
         onRefreshFilesView={() => undefined}
         onPaginateThreadsList={() => undefined}
-        onOpenKeyboardSettings={() => undefined}
         onRecoverySecretPresenceChange={() => undefined}
         onReply={() => undefined}
         onResultSelect={() => undefined}
@@ -1132,7 +1129,6 @@ describe("ContextualRightPanel", () => {
         onOpenFiles={() => undefined}
         onRefreshFilesView={() => undefined}
         onPaginateThreadsList={() => undefined}
-        onOpenKeyboardSettings={() => undefined}
         onRecoverySecretPresenceChange={() => undefined}
         onReply={() => undefined}
         onResultSelect={() => undefined}
@@ -1222,7 +1218,6 @@ describe("ContextualRightPanel", () => {
         onOpenFiles={() => undefined}
         onRefreshFilesView={() => undefined}
         onPaginateThreadsList={() => undefined}
-        onOpenKeyboardSettings={() => undefined}
         onRecoverySecretPresenceChange={() => undefined}
         onReply={() => undefined}
         onResultSelect={() => undefined}
@@ -1282,7 +1277,6 @@ describe("ContextualRightPanel", () => {
         onOpenFiles={() => undefined}
         onRefreshFilesView={() => undefined}
         onPaginateThreadsList={() => undefined}
-        onOpenKeyboardSettings={() => undefined}
         onRecoverySecretPresenceChange={() => undefined}
         onReply={() => undefined}
         onResultSelect={() => undefined}
@@ -1342,7 +1336,6 @@ describe("ContextualRightPanel", () => {
         onOpenFiles={() => undefined}
         onRefreshFilesView={() => undefined}
         onPaginateThreadsList={() => undefined}
-        onOpenKeyboardSettings={() => undefined}
         onRecoverySecretPresenceChange={() => undefined}
         onReply={() => undefined}
         onResultSelect={() => undefined}
@@ -1528,7 +1521,6 @@ describe("ContextualRightPanel", () => {
         onOpenFiles={() => undefined}
         onRefreshFilesView={() => undefined}
         onPaginateThreadsList={() => undefined}
-        onOpenKeyboardSettings={() => undefined}
         onRecoverySecretPresenceChange={() => undefined}
         onReply={() => undefined}
         onResultSelect={() => undefined}
@@ -2168,7 +2160,6 @@ describe("TopBar sync state rendering", () => {
         searchQuery=""
         searchScope="allRooms"
         sync="running"
-        onOpenKeyboardSettings={() => undefined}
         onRestartSync={() => undefined}
         onSearchQueryChange={() => undefined}
         onSearchScopeChange={() => undefined}
@@ -2192,7 +2183,6 @@ describe("TopBar sync state rendering", () => {
         searchQuery=""
         searchScope="allRooms"
         sync="running"
-        onOpenKeyboardSettings={() => undefined}
         onRestartSync={() => undefined}
         onSearchQueryChange={() => undefined}
         onSearchScopeChange={() => undefined}
@@ -2213,7 +2203,6 @@ describe("TopBar sync state rendering", () => {
       searchInputRef: { current: null },
       searchQuery: "",
       searchScope: "allRooms" as const,
-      onOpenKeyboardSettings: () => undefined,
       onRestartSync: () => undefined,
       onSearchQueryChange: () => undefined,
       onSearchScopeChange: () => undefined

@@ -6,7 +6,7 @@ glue. Vendored upstream code must keep its original license and copyright
 notices; local changes to vendored code must remain easy to upstream or
 revert.
 
-Last amended: 2026-09-07.
+Last amended: 2026-09-12.
 
 ## Read Order And Authority
 
@@ -671,6 +671,13 @@ To reduce conflicts on these files:
   message bodies, raw SDK errors, and local paths must never appear in it.
 
 ## Documentation And Work Records
+
+- Before opening or updating a PR that changes user-visible behavior, check the
+  matching user-guide instructions against the implementation: menu/category
+  paths, UI labels, prerequisites, outcomes, and limitations. Update affected
+  pages in the same PR, or record why no help change is needed. Settings moves
+  also update `docs/help/settings.md`. Check the generated llms.txt and links;
+  mechanical link checks do not replace this content review.
 
 - Dated implementation plans are subordinate to the normative docs. When an
   implementation discovery changes architecture or rules, amend the canon

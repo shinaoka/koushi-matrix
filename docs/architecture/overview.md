@@ -5,7 +5,7 @@ Dated specs and plans under `docs/superpowers/` are implementation guides
 toward this document and must not contradict it. Amend this document first
 when a design change is needed, then update or supersede the affected specs.
 
-Last amended: 2026-09-09.
+Last amended: 2026-09-12.
 
 The evidence-based classification of remaining frontend-owned resources and
 semantic migration candidates is maintained in
@@ -1908,3 +1908,15 @@ and keeps the same QA hierarchy.
 - **Phase 15+:** finish desktop interaction completeness, E2EE trust
   implementation and GUI, performance/soak, distribution hardening,
   platform credential-store evidence, signing/notarization, and release.
+
+## User Settings And Help Presentation
+
+User settings open as a modal in the browser top layer, above the three-pane
+workspace. They do not occupy or resize the contextual right pane. The dialog
+has a left category list and a separately scrolling selected page on the right;
+both fit within the viewport. Category selection and modal visibility are
+transient presentation state; all setting values and update results remain
+Rust-owned. Keyboard reference and send-key preferences belong to the Keyboard
+category. Help offers the public repository URL, a copy action, and a short
+instruction to ask an AI assistant. It must be usable before sign-in and must
+not collect or copy account details or messages.

@@ -34,7 +34,7 @@ test("the three-pane shell exposes landmarks and reachable keyboard focus stops"
 
   expect(labels).toContain("Search");
   expect(labels).toContain("Search scope");
-  expect(labels).toContain("Keyboard settings");
+  expect(labels).not.toContain("Keyboard settings");
   expect(labels).toContain("Harness Space");
   expect(labels).toContain("Create space");
   expect(labels).toContain("User settings");

@@ -1,3 +1,4 @@
+import { ModalDialog } from "./ModalDialog";
 // Dialog components extracted from App.tsx.
 // Imports: React, lucide-react, i18n, domain types, uiShared.
 
@@ -67,20 +68,8 @@ export function ResetLocalDataConfirmationDialog({
   confirmLabel?: string;
 }) {
   return (
-    <div
-      className="dialog-overlay"
-      role="dialog"
-      aria-modal="true"
-      aria-label={title}
-      onKeyDown={(event) => {
-        if (event.key === "Escape" && !isBusy) {
-          event.preventDefault();
-          onCancel();
-        }
-      }}
-    >
-      <div className="dialog-box">
-        <div className="dialog-title">{title}</div>
+    <ModalDialog title={title} className="confirmation-modal" showCloseButton={false} dismissible={!isBusy} onClose={onCancel}>
+      <div className="confirmation-content">
         <p>{copy}</p>
         <div className="dialog-actions">
           <button type="button" className="dialog-button" disabled={isBusy} onClick={onCancel}>
@@ -91,7 +80,7 @@ export function ResetLocalDataConfirmationDialog({
           </button>
         </div>
       </div>
-    </div>
+    </ModalDialog>
   );
 }
 

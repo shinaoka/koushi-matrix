@@ -32,12 +32,7 @@ describe("shortcut registry", () => {
   });
 
   test("records Element-compatible settings and navigation shortcuts", () => {
-    expect(shortcutById("showKeyboardSettings")).toMatchObject({
-      labelMessageId: "shortcut.showKeyboardSettings",
-      keys: ["Ctrl/Cmd", "/"],
-      parity: "same",
-      implemented: true
-    });
+    expect(shortcutById("showKeyboardSettings")).toBeUndefined();
     expect(shortcutById("openUserSettings")).toMatchObject({
       labelMessageId: "shortcut.openUserSettings",
       keys: ["Cmd", ","],
@@ -76,11 +71,6 @@ describe("shortcut registry", () => {
       nativeMenu: "app"
     });
     expect(menuAccelerators()).toContainEqual({
-      id: "showKeyboardSettings",
-      accelerator: "CmdOrCtrl+/",
-      nativeMenu: "help"
-    });
-    expect(menuAccelerators()).toContainEqual({
       id: "toggleFullscreen",
       accelerator: "Ctrl+Command+F",
       nativeMenu: "view"
@@ -96,7 +86,7 @@ describe("shortcut registry", () => {
         shiftKey: false,
         altKey: false
       })
-    ).toBe("showKeyboardSettings");
+    ).toBeNull();
     expect(
       shortcutIdForKeyboardEvent({
         key: ",",
@@ -196,9 +186,8 @@ describe("shortcut registry", () => {
   });
 
   test("accepts native menu payloads only for registered implemented actions", () => {
-    expect(shortcutActionFromMenuPayload("showKeyboardSettings")).toBe(
-      "showKeyboardSettings"
-    );
+    expect(shortcutActionFromMenuPayload("showKeyboardSettings")).toBeNull();
+    expect(shortcutActionFromMenuPayload("showHelp")).toBe("showHelp");
     expect(shortcutActionFromMenuPayload("openUserSettings")).toBe("openUserSettings");
     expect(shortcutActionFromMenuPayload("logout")).toBe("logout");
     expect(shortcutActionFromMenuPayload("toggleRightPanel")).toBe("toggleRightPanel");
