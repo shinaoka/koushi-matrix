@@ -1610,7 +1610,7 @@ impl TimelineActor {
     pub(super) fn handle_replay_initial_items(&mut self, cause_request_id: Option<RequestId>) {
         let window = replay_initial_items_window_range(
             &self.key.kind,
-            self.navigation_items.len(),
+            &self.navigation_items,
             &self.viewport_observation,
         );
         let items = self.navigation_items[window.clone()].to_vec();
@@ -1823,23 +1823,22 @@ pub(super) fn replay_initial_items_window(
     items: &[TimelineItem],
     observation: &TimelineViewportObservation,
 ) -> Vec<TimelineItem> {
-    items[replay_initial_items_window_range(kind, items.len(), observation)].to_vec()
+    items[replay_initial_items_window_range(kind, items, observation)].to_vec()
 }
 
+/// The same live-edge rule the display projection applies, so a replay in a test
+/// cannot pass while the projection has moved on.
 fn replay_initial_items_window_range(
     kind: &TimelineKind,
-    item_count: usize,
+    items: &[TimelineItem],
     observation: &TimelineViewportObservation,
 ) -> std::ops::Range<usize> {
-    let start = if matches!(kind, TimelineKind::Room { .. })
-        && observation.at_bottom
-        && item_count > ROOM_REPLAY_INITIAL_ITEMS_MAX
-    {
-        item_count - ROOM_REPLAY_INITIAL_ITEMS_MAX
+    let start = if matches!(kind, TimelineKind::Room { .. }) && observation.at_bottom {
+        super::display_projection::live_edge_window_start(items, ROOM_REPLAY_INITIAL_ITEMS_MAX)
     } else {
         0
     };
-    start..item_count
+    start..items.len()
 }
 
 pub(super) fn should_hydrate_empty_initial_room_timeline(
