@@ -19,7 +19,9 @@ use crate::read_state::{
     ReadOperation, ReadOperationFence, ReadPersistenceSnapshot, ReadStateEngine, ReadStateKey,
     ReadTarget, ReadWaiterId, ReadWaiterTerminal, ReadWakeResult,
 };
-use koushi_protocol::event::{CoreEvent, LiveSignalsEvent, TimelineItem, TimelineReadStateSync};
+use koushi_protocol::event::{
+    CoreEvent, LiveSignalsEvent, TimelineBottomArrival, TimelineItem, TimelineReadStateSync,
+};
 use koushi_protocol::failure::{CoreFailure, ReadStateFailureKind, TimelineFailureKind};
 use koushi_protocol::ids::{RequestId, TimelineKey, TimelineKind};
 
@@ -1927,7 +1929,19 @@ fn viewed_boundary_target<'a>(
     navigation_items: &'a [TimelineItem],
     display_items: &'a [TimelineItem],
     last_visible_event_id: &str,
+    bottom_arrival: TimelineBottomArrival,
 ) -> Option<(usize, &'a TimelineItem)> {
+    // #872: inside a thread, a live edge the client scrolled to is not something
+    // the reader read. Opening a thread snapped it to the newest reply, and that
+    // snap alone acknowledged the attention count the same open had just
+    // computed, so the badge and the "Thread notifications" pill were never
+    // observable. A bottom the reader reached — or content that fits entirely on
+    // screen — still reads.
+    if matches!(kind, TimelineKind::Thread { .. })
+        && bottom_arrival == TimelineBottomArrival::Programmatic
+    {
+        return None;
+    }
     let (target_index, target_item) = navigation_items
         .iter()
         .enumerate()
@@ -1964,6 +1978,7 @@ impl TimelineActor {
             &self.navigation_items,
             self.display_projection.display_items(),
             last_visible_event_id,
+            self.viewport_observation.bottom_arrival,
         )?;
         let koushi_protocol::event::TimelineItemId::Event { event_id } = &target_item.id else {
             return None;

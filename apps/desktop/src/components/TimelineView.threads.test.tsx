@@ -395,6 +395,8 @@ describe("TimelineView", () => {
           "$thread-root:example.invalid",
           [fullRangeGapId],
           false,
+          // #872: the observation reports how the viewport arrived.
+          "user",
           null
         );
       });
@@ -460,6 +462,8 @@ describe("TimelineView", () => {
           "$thread-reply:example.invalid",
           [fullRangeGapId],
           false,
+          // #872: the observation reports how the viewport arrived.
+          "user",
           null
         );
       });
@@ -586,6 +590,8 @@ describe("TimelineView", () => {
           "$persisted-thread-root:example.invalid",
           [gapId],
           false,
+          // #872: the observation reports how the viewport arrived.
+          "user",
           null
         );
       });
@@ -668,6 +674,9 @@ describe("TimelineView", () => {
           "$persisted-live:example.invalid",
           [],
           true,
+          // #872: the wheel was followed by the client's own live-edge placement,
+          // which is what moved the viewport to the bottom.
+          "programmatic",
           null
         );
       });
@@ -701,6 +710,8 @@ describe("TimelineView", () => {
           "$persisted-thread-reply:example.invalid",
           [],
           false,
+          // #872: the observation reports how the viewport arrived.
+          "user",
           null
         );
       });
@@ -739,6 +750,8 @@ describe("TimelineView", () => {
           "$other-room-event:example.invalid",
           [],
           true,
+          // #872: switching rooms placed this viewport, so no reader arrived.
+          "programmatic",
           null
         );
       });

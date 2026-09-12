@@ -1520,3 +1520,6 @@ export function threadTimelineKey(
     kind: { Thread: { room_id: roomId, root_event_id: rootEventId } }
   };
 }
+
+/** How a timeline viewport reached its current live edge (#872). */
+export type TimelineBottomArrival = "user" | "content_fits" | "programmatic";
