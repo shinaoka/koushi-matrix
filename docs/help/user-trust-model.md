@@ -1,5 +1,7 @@
 # User Trust Model
 
+[User guide and version selection](README.md)
+
 Koushi separates user trust, device state, and the final send decision. This
 keeps the normal Matrix case from looking more dangerous than it is.
 
@@ -9,7 +11,7 @@ keeps the normal Matrix case from looking more dangerous than it is.
 
 This is the normal state for people you have not checked through another
 channel. Messages can still be encrypted and sent. If a conversation needs
-stronger assurance, verify the user with QR, emoji, or SAS.
+stronger assurance, use the verification options offered for that user.
 
 ### Verified
 
