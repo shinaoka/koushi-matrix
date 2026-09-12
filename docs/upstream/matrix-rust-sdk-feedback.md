@@ -548,11 +548,20 @@ The gitlink moved from the 2026-06-10 base `a04792c7a` to upstream
 
 ### Retained customizations (ported onto the new upstream structures)
 
+Each entry lists its rationale, the concrete call sites (SDK and Koushi), and the
+regression tests that guard it, so later stages can judge a removal without
+re-deriving the usage.
+
 - **ngram / CJK search** (explicitly excluded from removal):
   `SearchIndexStoreKind::{UnencryptedDirectoryWithConfig,
   EncryptedDirectoryWithConfig, InMemoryWithConfig}`, `encrypted_directory_ngram`,
   the ngram tokenizer registration in `search_index`, and the CJK search
-  candidates API. Regression tests: `test_search_index_store_kind_can_configure_ngram_tokenizer`
+  candidates API.
+  Call sites: `crates/koushi-sdk/src/search.rs` (builds the encrypted index store
+  with `encrypted_directory_ngram`); SDK
+  `crates/matrix-sdk/src/search_index/mod.rs` (store kinds, `room_message_body`)
+  and `crates/matrix-sdk-search/src/{config.rs,schema.rs,index/mod.rs}`.
+  Regression tests: `test_search_index_store_kind_can_configure_ngram_tokenizer`
   (matrix-sdk), `test_ngram_search_matches_japanese_substring` and
   `ngram_schema_uses_named_body_tokenizer` (matrix-sdk-search), plus the
   Koushi `search_crawler` and `edit_redact_search` QA scenarios.
@@ -562,36 +571,71 @@ The gitlink moved from the 2026-06-10 base `a04792c7a` to upstream
   (`RoomLiveTailRefresh*`) and `RoomTimelineSyncObservation`. Ported onto
   upstream's `StateLockReadGuard`/`StateLockWriteGuard` and
   `states::selectors`; `latest_sync_observation` feeds the room-subscription
-  checkpoints. Regression tests: the `event_cache` integration targets plus
-  Koushi's `timeline`, `timeline_nav` and gap-repair tests. At the old fork
-  head the committed per-room response fence was already removed as unused;
-  the sync observation itself is still consumed by Koushi's
+  checkpoints.
+  Call sites: `crates/koushi-sdk/src/timeline.rs`
+  (`inspect_room_timeline_gaps`, `repair_room_timeline_gap`,
+  `refresh_room_live_tail`, `MatrixCommittedRoomTimelineCheckpoint::from_room_subscription`),
+  `crates/koushi-core/src/timeline/navigation.rs` (`live_restore_from_cache`),
+  `crates/koushi-core/src/timeline/gap_repair.rs`; SDK
+  `crates/matrix-sdk/src/event_cache/caches/room/{pagination.rs,live_tail.rs,state.rs,mod.rs}`
+  and `crates/matrix-sdk-ui/src/room_list_service/mod.rs` (checkpoint capture).
+  Regression tests: the `event_cache` integration targets plus Koushi's
+  `timeline`, `timeline_nav` and gap-repair tests. At the old fork head the
+  committed per-room response fence was already removed as unused; the sync
+  observation itself is still consumed by Koushi's
   `MatrixCommittedRoomTimelineCheckpoint`.
 - **Redaction replay**: `pending_redactions` re-applies a persisted redaction
-  when its target only arrives later (or is delivered again). Regression test:
-  `test_search_index_redaction_preserves_edit_aware_cache_hit`,
+  when its target only arrives later (or is delivered again).
+  Call sites: SDK-internal in `crates/matrix-sdk/src/event_cache/caches/room/state.rs`
+  (`pending_redactions`, `rebuild_pending_redactions_with_store`,
+  `apply_pending_redaction_to_event`, hooked from `new` and
+  `post_process_upserted_events`); consumers are the search index
+  (`crates/matrix-sdk/src/search_index/mod.rs`) and Koushi's thread aggregates
+  read through the store (`crates/matrix-sdk-ui/src/timeline/thread_list_service.rs`).
+  Regression tests: `test_search_index_redaction_preserves_edit_aware_cache_hit`,
   `test_search_index_redaction_removes_redacted_event_when_cache_misses`.
-- **Room subscriptions**: `RoomListService::subscribe_to_rooms_with_generation`
-  / `reconcile_room_subscriptions_with_generation` and the per-room
-  `RoomSubscriptionCheckpoint`, now implemented on top of the standard
+- **Room subscriptions**: `reconcile_room_subscriptions_with_generation` and the
+  per-room `RoomSubscriptionCheckpoint`, now implemented on top of the standard
   `SlidingSync::set_room_subscriptions` plus `subscribed_rooms()`. Generation
-  tracking stays application-level. Regression tests:
-  `koushi-core-testkit` room-subscription residency plus the Koushi
-  `room_space`/`invites_dm` QA scenarios.
+  tracking stays application-level.
+  Call sites: `crates/koushi-core/src/timeline/manager.rs`
+  (`reconcile_room_subscriptions_with_generation`, `actual_subscribed_rooms`,
+  `subscription_generation`), `crates/koushi-core/src/timeline/actor.rs`
+  (checkpoint messages), `crates/koushi-sdk/src/timeline.rs`
+  (`MatrixRoomSubscriptionCheckpoint`, `MatrixCommittedRoomTimelineCheckpoint`);
+  SDK `crates/matrix-sdk-ui/src/room_list_service/mod.rs` and
+  `crates/matrix-sdk/src/sliding_sync/mod.rs` (`subscribed_rooms`).
+  Regression tests: `koushi-core-testkit` room-subscription residency plus the
+  Koushi `room_space`/`invites_dm` QA scenarios.
 - **Encryption sync readiness**: `EncryptionSyncGenerationGuard` and the
   `begin_encryption_sync_generation` wiring in `run_iterations`/`sync`,
   adapted to upstream's stream API.
+  Call sites: SDK producer `crates/matrix-sdk-ui/src/encryption_sync_service.rs`
+  with the state in `crates/matrix-sdk/src/encryption/readiness.rs`; Koushi
+  consumers `crates/koushi-core/src/sync.rs`,
+  `crates/koushi-core/src/sync/observer.rs`,
+  `crates/koushi-core/src/account/trust_gate.rs`, `crates/koushi-sdk/src/sync.rs`.
 - **Crypto**: key-query response leases (`acquire_key_query_response_lease`,
   `covered_users`, multi-in-flight request metadata), the deferred
   unknown-device verification replay, rotation-reason diagnostics and the
-  X.509 signature-upload field. Regression tests:
-  `machine::tests::interactive_verification` (32 tests),
+  X.509 signature-upload field.
+  Call sites: SDK
+  `crates/matrix-sdk-crypto/src/{identities/manager.rs,machine/mod.rs,verification/{machine.rs,requests.rs},room_key_diagnostics.rs}`;
+  Koushi consumers `crates/koushi-sdk/src/e2ee.rs`,
+  `crates/koushi-core/src/room_key_receive.rs`,
+  `crates/koushi-core/src/timeline/room_key_recovery.rs`.
+  Regression tests: `machine::tests::interactive_verification` (32 tests),
   `room_key_receive_diagnostics` (5), `persisted_rotation_reason` (4),
   `sas_start` replay (2).
 - **Timeline**: lazy-reveal live pagination
   (`live_lazy_paginate_backwards_with_reveal`) and gap-repair projection
   settlement (`complete_gap_repair_projection`,
   `wait_for_gap_repair_projection`, `GapRepairProjectionSettlement`).
+  Call sites: SDK `crates/matrix-sdk-ui/src/timeline/{controller/mod.rs,tasks.rs,pagination.rs}`;
+  Koushi `crates/koushi-core/src/timeline/gap_repair.rs`
+  (`wait_for_gap_repair_projection`). Regression tests:
+  `timeline::tests::event_filter`'s gap-repair cases and Koushi's gap-repair
+  tests.
 
 ### Removed (upstream supersedes them, or they were unused)
 
