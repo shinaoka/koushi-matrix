@@ -22,8 +22,6 @@
   --upload-output-option-gap: 2px;
   --upload-output-group-padding: 3px;
   --upload-output-toolbar-gap: 6px;
-  --upload-preview-viewport-min-size: 140px;
-  --upload-preview-viewport-size: 240px;
   color-scheme: light dark;
 
   --font-system-ui:
@@ -109,6 +107,7 @@
   --workspace-badge-border-width: 2px;
   --workspace-mention-dot-size: 9px;
   --macos-traffic-light-inline-space: 96px;
+  --shell-titlebar-block-size: 44px;
   --search-scope-column: 130px;
   --nav-badge-size: 18px;
   --nav-badge-padding-inline: 5px;
@@ -612,7 +611,7 @@ button:disabled {
 
 .desktop {
   display: grid;
-  grid-template-rows: 44px minmax(0, 1fr);
+  grid-template-rows: var(--shell-titlebar-block-size) minmax(0, 1fr);
   block-size: 100%;
   min-block-size: 0;
   min-width: 0;
@@ -630,6 +629,12 @@ button:disabled {
   color: var(--text);
   background: var(--rail);
   border-bottom: 1px solid var(--line);
+}
+
+/* Native macOS window buttons sit above the WebView, including its top layer.
+   Body-portaled overlays reserve the same vertical space as the shell titlebar. */
+:root:has(.titlebar[data-platform="macos"]) {
+  --native-titlebar-safe-block: var(--shell-titlebar-block-size);
 }
 
 .titlebar[data-platform="macos"] {
@@ -4559,6 +4564,7 @@ button:disabled {
 }
 
 .timeline-media-viewer-overlay {
+  padding-block-start: var(--native-titlebar-safe-block, 0px);
   position: fixed;
   inset: 0;
   z-index: 140;
@@ -5276,16 +5282,20 @@ mark {
   color: var(--brand);
 }
 
+.upload-staging-overlay {
+  padding: 12px;
+  padding-block-start: calc(12px + var(--native-titlebar-safe-block, 0px));
+}
+
 .upload-staging-dialog {
-  /* #515: three-row layout — header / scroll body / footer — bounded to the
-     available vertical space so a tall staging panel never pushes the send
-     action or the composer out of the window. */
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 8px;
-  margin: 0 20px 10px;
-  padding: 10px;
-  max-height: min(80vh, 640px);
+  inline-size: 100%;
+  block-size: 100%;
+  min-inline-size: 0;
+  min-block-size: 0;
+  padding: 12px;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -5310,11 +5320,7 @@ mark {
 }
 
 .upload-staging-list {
-  /* #515: the staging list is the fallback vertical scroll owner; min-height: 0
-     lets the middle grid row collapse so the list scrolls instead of the panel
-     overflowing. Contain overscroll so the timeline behind it never moves.
-     A single staged file fills the row in a tall window so its preview, not
-     this list, is what scrolls. */
+  /* Multiple attachments and very short windows scroll inside the modal. */
   display: grid;
   gap: 8px;
   min-height: 0;
@@ -5322,15 +5328,8 @@ mark {
   overscroll-behavior: contain;
 }
 
-/* For the common one-file flow, keep output choices and the caption editor
-   stationary. The prepared preview becomes the flexible row and owns any
-   inspection scrolling, so editing controls never disappear below a list
-   scrollbar. Multi-file staging retains the scrollable card list above. */
+/* Each card keeps the filename, fitted image, and editing controls together. */
 .upload-staging-item {
-  /* Rows: filename, preview, per-file controls. The preview is the only
-     flexible row (see the tall-window rule below), so the filename and the
-     controls keep their intrinsic height and stay pinned when the list has to
-     scroll. */
   display: grid;
   gap: 6px;
   padding: 8px;
@@ -5339,15 +5338,7 @@ mark {
   background: var(--surface-hover);
 }
 
-/* Output controls and the caption field stay reachable even when the list has
-   to scroll (many staged files, a very short window, or an image too tall for
-   the card), so only the preview ever moves out of view. They sit below the
-   preview, so they pin to the end of the scroll box while the filename above
-   it pins to the start; the filename wins the overlap in a very short box. */
 .upload-staging-controls {
-  position: sticky;
-  inset-block-end: 0;
-  z-index: 1;
   display: grid;
   gap: 6px;
   padding-block-start: 4px;
@@ -5362,8 +5353,7 @@ mark {
   gap: 8px;
 }
 
-/* Pinned at the start of the scroll box, above the pinned controls, so the card
-   keeps naming its file however far the preview has scrolled. */
+/* Keep the filename visible while its card scrolls through a short window. */
 .upload-staging-item > .upload-staging-file {
   position: sticky;
   inset-block-start: 0;
@@ -5482,75 +5472,41 @@ mark {
   font-size: 11px;
 }
 
-/* Show the bounded pan surface before attachment decisions and the compact
-   caption editor. Large images retain their prepared pixel dimensions inside
-   this viewport so users can inspect them by scrolling in either direction. */
+/* Staging always fits the entire image; pixel inspection lives in its popup. */
 .upload-preview-shell {
   position: relative;
   min-inline-size: 0;
-  max-inline-size: 100%;
+  min-block-size: 0;
 }
 
 .upload-preview-viewport {
   position: relative;
-  box-sizing: border-box;
   inline-size: 100%;
+  block-size: clamp(180px, 42dvh, 480px);
   min-inline-size: 0;
-  max-inline-size: 100%;
-  /* Never collapses below a usable size. Outside the tall-window rule below it
-     keeps no fixed height: a preview taller than the card grows the item and
-     the staging list absorbs the overflow, with the per-file controls pinned,
-     rather than the panel overflowing the window. */
-  min-block-size: clamp(
-    var(--upload-preview-viewport-min-size),
-    22dvh,
-    var(--upload-preview-viewport-size)
-  );
-  overflow: auto;
-  overscroll-behavior: contain;
+  overflow: hidden;
   border-radius: 7px;
   background: repeating-conic-gradient(
       color-mix(in srgb, var(--line) 38%, var(--surface)) 0 25%,
       var(--surface) 0 50%
-    )
-    0 / 16px 16px;
+    ) 0 / 16px 16px;
 }
 
-.upload-preview-mode {
-  position: absolute;
-  z-index: 2;
-  inset-block-start: 6px;
-  inset-inline-end: 6px;
+.upload-preview-open {
   display: flex;
-  gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--surface-raised) 92%, transparent);
-  box-shadow: 0 1px 4px rgb(0 0 0 / 14%);
-}
-
-.upload-preview-mode-option {
-  min-block-size: 24px;
-  padding: 2px 7px;
+  align-items: center;
+  justify-content: center;
+  inline-size: 100%;
+  block-size: 100%;
+  padding: 0;
   border: 0;
-  border-radius: 4px;
   background: transparent;
-  color: var(--text-muted);
-  font: inherit;
-  font-size: 11px;
-  cursor: pointer;
+  cursor: zoom-in;
 }
 
-.upload-preview-mode-option[aria-pressed="true"] {
-  background: var(--brand-weak);
-  color: var(--brand);
-  font-weight: 650;
-}
-
-.upload-preview-mode-option:focus-visible {
+.upload-preview-open:focus-visible {
   outline: 2px solid var(--brand);
-  outline-offset: 1px;
+  outline-offset: -2px;
 }
 
 .upload-preview-viewport[data-recompressing="true"] .upload-staging-preview,
@@ -5574,44 +5530,67 @@ mark {
 .upload-staging-preview {
   display: block;
   inline-size: auto;
-  min-inline-size: 0;
   block-size: auto;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--surface);
-}
-
-.upload-preview-viewport[data-preview-mode="fit"] .upload-staging-preview {
   max-inline-size: 100%;
   max-block-size: 100%;
+  object-fit: contain;
 }
 
-.upload-preview-viewport[data-preview-mode="actual"] .upload-staging-preview {
+@media (min-height: 480px) {
+  .upload-staging-list.is-single .upload-staging-item.has-preview {
+    grid-template-rows: auto minmax(180px, 1fr) auto;
+    min-block-size: 0;
+  }
+
+  .upload-staging-list.is-single .upload-preview-viewport {
+    block-size: 100%;
+  }
+}
+
+.upload-actual-size-dialog {
+  inline-size: calc(100vw - 48px);
+  block-size: calc(100dvh - 48px - var(--native-titlebar-safe-block, 0px));
+  margin-block-start: calc(24px + var(--native-titlebar-safe-block, 0px));
   max-inline-size: none;
   max-block-size: none;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  overflow: hidden;
 }
 
-@media (min-height: 760px) {
-  .upload-staging-list.is-single {
-    overflow-y: hidden;
-  }
+.upload-actual-size-dialog[open] {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 8px;
+}
 
-  /* Filename, preview, controls: only the preview row is flexible, so the
-     single card fills the list exactly and the list never becomes a scroll
-     owner at this height. */
-  .upload-staging-list.is-single .upload-staging-item.has-preview {
-    grid-template-rows: auto minmax(0, 1fr) auto;
-    min-block-size: 0;
-  }
+.upload-actual-size-dialog::backdrop {
+  background: rgb(0 0 0 / 70%);
+}
 
-  .upload-staging-list.is-single .upload-staging-item.has-preview .upload-preview-shell {
-    min-block-size: 0;
-  }
+.upload-actual-size-dialog h2 {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
-  .upload-staging-list.is-single .upload-staging-item.has-preview .upload-preview-viewport {
-    block-size: 100%;
-    min-block-size: var(--upload-preview-viewport-min-size);
-  }
+.upload-actual-size-viewport {
+  min-inline-size: 0;
+  min-block-size: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.upload-actual-size-viewport img {
+  display: block;
+  inline-size: auto;
+  block-size: auto;
+  max-inline-size: none;
+  max-block-size: none;
 }
 
 .upload-staging-preview-placeholder {

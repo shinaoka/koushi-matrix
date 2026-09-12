@@ -1929,8 +1929,11 @@ test("thread composer delayed write is root isolated across churn", async ({
       items: [{ filename: "thread-fixture.pdf", mimeType: "application/pdf" }]
     });
   await expect(page.getByText("thread-fixture.pdf", { exact: true })).toBeVisible();
-  // Thread attachments are sent from the thread's staging panel too.
-  await contextPanel.getByRole("button", { name: "Send attachments" }).click();
+  // Window-level staging retains the thread attachment target.
+  await page
+    .getByRole("dialog", { name: t("upload.dialogTitle"), exact: true })
+    .getByRole("button", { name: t("upload.sendAttachments") })
+    .click();
   await expect.poll(() => invocationCount(page, "send_prepared_uploads")).toBe(1);
   await expect
     .poll(async () =>

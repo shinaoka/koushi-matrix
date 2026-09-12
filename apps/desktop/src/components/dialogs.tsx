@@ -39,6 +39,7 @@ import {
 } from "../app/uiShared";
 import { ImeSafeForm, ImeTextField } from "./ImeTextControl";
 import { Composer } from "./composer";
+import { FloatingLayer } from "./floatingLayer";
 import { documentFromText } from "../domain/composerDocument";
 import { diagnosticReportPreview } from "../domain/diagnostics";
 
@@ -552,7 +553,7 @@ function useDialogFocusTrap(overlayRef: RefObject<HTMLDivElement | null>): void 
       return;
     }
     function onKeyDown(event: globalThis.KeyboardEvent) {
-      if (event.key !== "Tab") {
+      if (event.key !== "Tab" || event.defaultPrevented) {
         return;
       }
       const currentOverlay = overlayRef.current;
@@ -951,6 +952,12 @@ export function UploadStagingDialog({
   onRecentEmojisChange?: (emojis: string[]) => void | Promise<void>;
   roomName?: string;
 }) {
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  useDialogFocusTrap(overlayRef);
+  useEffect(() => {
+    closeButtonRef.current?.focus();
+  }, []);
   const sendable = uploadStagingItemsAreSendable(items);
   const sendButtonRef = useRef<HTMLButtonElement>(null);
   const pendingCaptionUpdatesRef = useRef(new Set<Promise<void>>());
@@ -967,127 +974,129 @@ export function UploadStagingDialog({
   };
 
   return (
-    <section
-      className="upload-staging-dialog"
-      role="dialog"
-      aria-label={t("upload.dialogTitle")}
-    >
-      <div className="upload-staging-header">
-        <h2>{t("upload.dialogTitle")}</h2>
-        <button className="icon-button" type="button" aria-label={t("upload.clear")} onClick={onClear}>
-          <X size={ICON_SIZE.small} />
-        </button>
-      </div>
-      <div className={`upload-staging-list${items.length === 1 ? " is-single" : ""}`}>
-        {items.map((item, index) => (
-          <article
-            className={`upload-staging-item${
-              item.kind.kind === "image" && item.preparation.kind === "ready"
-                ? " has-preview"
-                : ""
-            }`}
-            key={item.staged_id}
-          >
-            {/* The filename heads the card and stays pinned at the top of the
-                scroll box, so the file a caption belongs to is always named. */}
-            <div className="upload-staging-file">
-              {item.kind.kind === "image" ? (
-                <ImageIcon size={ICON_SIZE.control} aria-hidden="true" />
-              ) : (
-                <FileText size={ICON_SIZE.control} aria-hidden="true" />
-              )}
-              <span className="upload-staging-name" dir="auto">
-                {item.filename || t("composer.attachmentFallback")}
-              </span>
-              <span className="upload-staging-meta">
-                {formatUploadBytes(item.byte_count)}
-              </span>
-            </div>
-            {item.kind.kind === "image" && item.preparation.kind === "ready" ? (
-              <PreparedUploadPreview item={item} loadPreview={loadPreview} />
-            ) : null}
-            {/* The decisions for this file stay pinned below its preview: the
-                preview is the only part that leaves the visible box, so the
-                output controls and the caption field never move out of reach
-                when the staging list has to scroll. */}
-            <div className="upload-staging-controls">
-              {item.preparation.kind === "preparing" ? (
-                <p className="upload-staging-status">{t("upload.preparing")}</p>
-              ) : item.preparation.kind === "failed" ? (
-                <div className="upload-staging-failure">
-                  <p className="upload-staging-status is-error">{t("upload.preparationFailed")}</p>
-                  <div className="upload-staging-failure-actions">
-                    <button className="dialog-button" type="button" onClick={() => void onRetryPreparation(item.staged_id)}>
-                      {t("upload.retryPreparation")}
-                    </button>
-                    {item.preparation.can_use_original ? (
-                      <button className="dialog-button" type="button" onClick={() => void onUseOriginal(item.staged_id)}>
-                        {t("upload.useOriginal")}
-                      </button>
-                    ) : null}
+    <FloatingLayer>
+      <div ref={overlayRef} className="dialog-overlay upload-staging-overlay">
+        <section
+          className="upload-staging-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-label={t("upload.dialogTitle")}
+        >
+          <div className="upload-staging-header">
+            <h2>{t("upload.dialogTitle")}</h2>
+            <button ref={closeButtonRef} className="icon-button" type="button" aria-label={t("upload.clear")} onClick={onClear}>
+              <X size={ICON_SIZE.small} />
+            </button>
+          </div>
+          <div className={`upload-staging-list${items.length === 1 ? " is-single" : ""}`}>
+            {items.map((item, index) => (
+              <article
+                className={`upload-staging-item${
+                  item.kind.kind === "image" && item.preparation.kind === "ready"
+                    ? " has-preview"
+                    : ""
+                }`}
+                key={item.staged_id}
+              >
+                {/* The filename heads the card and stays pinned at the top of the
+                    scroll box, so the file a caption belongs to is always named. */}
+                <div className="upload-staging-file">
+                  {item.kind.kind === "image" ? (
+                    <ImageIcon size={ICON_SIZE.control} aria-hidden="true" />
+                  ) : (
+                    <FileText size={ICON_SIZE.control} aria-hidden="true" />
+                  )}
+                  <span className="upload-staging-name" dir="auto">
+                    {item.filename || t("composer.attachmentFallback")}
+                  </span>
+                  <span className="upload-staging-meta">
+                    {formatUploadBytes(item.byte_count)}
+                  </span>
+                </div>
+                {item.kind.kind === "image" && item.preparation.kind === "ready" ? (
+                  <PreparedUploadPreview item={item} loadPreview={loadPreview} />
+                ) : null}
+                {/* Output choices and the caption follow the fitted preview. */}
+                <div className="upload-staging-controls">
+                  {item.preparation.kind === "preparing" ? (
+                    <p className="upload-staging-status">{t("upload.preparing")}</p>
+                  ) : item.preparation.kind === "failed" ? (
+                    <div className="upload-staging-failure">
+                      <p className="upload-staging-status is-error">{t("upload.preparationFailed")}</p>
+                      <div className="upload-staging-failure-actions">
+                        <button className="dialog-button" type="button" onClick={() => void onRetryPreparation(item.staged_id)}>
+                          {t("upload.retryPreparation")}
+                        </button>
+                        {item.preparation.can_use_original ? (
+                          <button className="dialog-button" type="button" onClick={() => void onUseOriginal(item.staged_id)}>
+                            {t("upload.useOriginal")}
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : item.kind.kind === "image" ? (
+                    <UploadOutputToolbar
+                      item={item}
+                      preparation={item.preparation}
+                      onSelectOutput={onSelectOutput}
+                    />
+                  ) : null}
+                  <div className="upload-staging-caption">
+                    <Composer
+                      editorOnly
+                      surface={surface}
+                      composerMode={{ kind: "plain" }}
+                      isSending={false}
+                      stagedUploadsReady={sendable}
+                      mathModeEnabled={mathModeEnabled}
+                      recentEmojis={recentEmojis}
+                      onRecentEmojisChange={onRecentEmojisChange}
+                      mentionCandidates={mentionCandidates}
+                      mentionCandidatesLoading={mentionCandidatesLoading}
+                      resolveComposerKeyAction={resolveComposerKeyAction}
+                      document={item.caption ?? documentFromText("")}
+                      draftKey={item.staged_id}
+                      ariaLabel={t("upload.captionForFile", { filename: item.filename })}
+                      placeholder={t("upload.captionForFile", { filename: item.filename })}
+                      roomName={roomName}
+                      onCancelReply={() => undefined}
+                      onDocumentChange={(document) => {
+                        const update = Promise.resolve(onUpdateCaption(item.staged_id, document));
+                        pendingCaptionUpdatesRef.current.add(update);
+                        void update.then(
+                          () => pendingCaptionUpdatesRef.current.delete(update),
+                          () => pendingCaptionUpdatesRef.current.delete(update)
+                        );
+                      }}
+                      onMathModeChange={onMathModeChange}
+                      onMentionQueryChange={onMentionQueryChange}
+                      onSend={sendAttachments}
+                      onSendStagedUploads={sendable ? sendAttachments : undefined}
+                      onTabToSend={
+                        index === items.length - 1 && sendable
+                          ? () => sendButtonRef.current?.focus()
+                          : undefined
+                      }
+                    />
                   </div>
                 </div>
-              ) : item.kind.kind === "image" ? (
-                <UploadOutputToolbar
-                  item={item}
-                  preparation={item.preparation}
-                  onSelectOutput={onSelectOutput}
-                />
-              ) : null}
-              <div className="upload-staging-caption">
-                <Composer
-                  editorOnly
-                  surface={surface}
-                  composerMode={{ kind: "plain" }}
-                  isSending={false}
-                  stagedUploadsReady={sendable}
-                  mathModeEnabled={mathModeEnabled}
-                  recentEmojis={recentEmojis}
-                  onRecentEmojisChange={onRecentEmojisChange}
-                  mentionCandidates={mentionCandidates}
-                  mentionCandidatesLoading={mentionCandidatesLoading}
-                  resolveComposerKeyAction={resolveComposerKeyAction}
-                  document={item.caption ?? documentFromText("")}
-                  draftKey={item.staged_id}
-                  ariaLabel={t("upload.captionForFile", { filename: item.filename })}
-                  placeholder={t("upload.captionForFile", { filename: item.filename })}
-                  roomName={roomName}
-                  onCancelReply={() => undefined}
-                  onDocumentChange={(document) => {
-                    const update = Promise.resolve(onUpdateCaption(item.staged_id, document));
-                    pendingCaptionUpdatesRef.current.add(update);
-                    void update.then(
-                      () => pendingCaptionUpdatesRef.current.delete(update),
-                      () => pendingCaptionUpdatesRef.current.delete(update)
-                    );
-                  }}
-                  onMathModeChange={onMathModeChange}
-                  onMentionQueryChange={onMentionQueryChange}
-                  onSend={sendAttachments}
-                  onSendStagedUploads={sendable ? sendAttachments : undefined}
-                  onTabToSend={
-                    index === items.length - 1 && sendable
-                      ? () => sendButtonRef.current?.focus()
-                      : undefined
-                  }
-                />
-              </div>
-            </div>
-          </article>
-        ))}
+              </article>
+            ))}
+          </div>
+          <div className="upload-staging-actions">
+            <button
+              ref={sendButtonRef}
+              className="dialog-button primary upload-staging-send"
+              type="button"
+              disabled={!sendable}
+              onClick={sendAttachments}
+            >
+              {t("upload.sendAttachments")}
+            </button>
+          </div>
+        </section>
       </div>
-      <div className="upload-staging-actions">
-        <button
-          ref={sendButtonRef}
-          className="dialog-button primary upload-staging-send"
-          type="button"
-          disabled={!sendable}
-          onClick={sendAttachments}
-        >
-          {t("upload.sendAttachments")}
-        </button>
-      </div>
-    </section>
+    </FloatingLayer>
   );
 }
 
@@ -1230,8 +1239,6 @@ function formatPreparedDimensions(width: number | null, height: number | null): 
     : formatUploadDimensions({ width, height });
 }
 
-type UploadPreviewMode = "fit" | "actual";
-
 function PreparedUploadPreview({
   item,
   loadPreview
@@ -1240,9 +1247,9 @@ function PreparedUploadPreview({
   loadPreview: (stagedId: string, variantId: string) => Promise<number[]>;
 }) {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [previewMode, setPreviewMode] = useState<UploadPreviewMode>("fit");
+  const [actualSizeOpen, setActualSizeOpen] = useState(false);
+  const previewButtonRef = useRef<HTMLButtonElement>(null);
   const activePreviewUrlRef = useRef<string | null>(null);
-  const viewportRef = useRef<HTMLDivElement | null>(null);
   // The preview follows the Rust-owned selection: find the prepared output for
   // the selected pair. While a pair is `pending` there is none yet, so the
   // previously loaded preview stays on screen.
@@ -1310,55 +1317,87 @@ function PreparedUploadPreview({
     };
   }, []);
 
-  const selectPreviewMode = (mode: UploadPreviewMode) => {
-    setPreviewMode(mode);
-    // Each inspection mode starts from a predictable top-left origin. This is
-    // local presentation state; prepared output selection remains Rust-owned.
-    const viewport = viewportRef.current;
-    if (viewport) {
-      viewport.scrollLeft = 0;
-      viewport.scrollTop = 0;
-    }
-  };
-
-  // One fixed-height viewport that never collapses: recompression dims the
-  // current preview instead of unmounting it.
   return (
     <div className="upload-preview-shell">
       <div
-        ref={viewportRef}
         className="upload-preview-viewport"
-        data-preview-mode={previewMode}
+        data-preview-mode="fit"
         data-recompressing={recompressing ? "true" : undefined}
       >
         {previewUrl ? (
-          <img className="upload-staging-preview" src={previewUrl} alt={t("upload.previewAlt")} />
+          <button
+            type="button"
+            ref={previewButtonRef}
+            className="upload-preview-open"
+            aria-label={t("upload.previewActualSize")}
+            title={t("upload.previewActualSize")}
+            onClick={() => setActualSizeOpen(true)}
+          >
+            <img className="upload-staging-preview" src={previewUrl} alt={t("upload.previewAlt")} />
+          </button>
         ) : (
           <div className="upload-staging-preview-placeholder" aria-label={t("upload.previewAlt")} />
         )}
-        {recompressing ? (
-          <span className="upload-preview-progress" role="presentation" />
-        ) : null}
+        {recompressing ? <span className="upload-preview-progress" role="presentation" /> : null}
       </div>
-      <div className="upload-preview-mode" role="group" aria-label={t("upload.previewMode")}>
-        <button
-          type="button"
-          className="upload-preview-mode-option"
-          aria-pressed={previewMode === "fit"}
-          onClick={() => selectPreviewMode("fit")}
-        >
-          {t("upload.previewFit")}
-        </button>
-        <button
-          type="button"
-          className="upload-preview-mode-option"
-          aria-pressed={previewMode === "actual"}
-          onClick={() => selectPreviewMode("actual")}
-        >
-          {t("upload.previewActualSize")}
-        </button>
-      </div>
+      {actualSizeOpen && previewUrl ? (
+        <UploadActualSizePreview
+          url={previewUrl}
+          filename={item.filename}
+          onClose={() => {
+            setActualSizeOpen(false);
+            // WebKit does not focus buttons on pointer activation, so native
+            // dialog focus restoration alone cannot return to this trigger.
+            previewButtonRef.current?.focus();
+          }}
+        />
+      ) : null}
     </div>
+  );
+}
+
+function UploadActualSizePreview({ url, filename, onClose }: {
+  url: string;
+  filename: string;
+  onClose: () => void;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    dialog?.showModal();
+    return () => dialog?.close();
+  }, []);
+
+  const close = () => {
+    // Close while connected so the browser restores focus to the image trigger.
+    dialogRef.current?.close();
+    onClose();
+  };
+
+  return (
+    <FloatingLayer>
+      <dialog
+        ref={dialogRef}
+        className="upload-actual-size-dialog"
+        aria-label={t("upload.previewActualSize")}
+        onCancel={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          close();
+        }}
+        onKeyDown={(event) => event.stopPropagation()}
+      >
+        <div className="upload-staging-header">
+          <h2 dir="auto">{filename}</h2>
+          <button type="button" className="icon-button" aria-label={t("action.close", { title: t("upload.previewActualSize") })} onClick={close}>
+            <X size={ICON_SIZE.small} />
+          </button>
+        </div>
+        <div className="upload-actual-size-viewport" tabIndex={0}>
+          <img src={url} alt={t("upload.previewAlt")} />
+        </div>
+      </dialog>
+    </FloatingLayer>
   );
 }
 
