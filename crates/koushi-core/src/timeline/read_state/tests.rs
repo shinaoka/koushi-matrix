@@ -50,8 +50,9 @@ use super::{
 };
 
 use super::super::test_support::{
-    fake_rid, live_tail_test_manager, room_key, test_timeline_actor_handle,
+    fake_rid, live_tail_test_manager, room_key, test_timeline_actor_handle, timeline_item,
 };
+use super::viewed_boundary_target;
 
 #[test]
 fn private_read_receipt_target_advances_to_hidden_edit_notification() {
@@ -3040,4 +3041,74 @@ async fn stale_production_receipt_diff_result_is_discarded_after_generation_repl
         action_rx.try_recv().is_err(),
         "a stale actor generation must not publish the receipt batch"
     );
+}
+
+#[test]
+fn room_viewport_cannot_read_a_reply_the_room_never_renders() {
+    // #872: the room timeline reports a thread root row's activity event id as
+    // the visible identity while the reply itself is never drawn. Reading it
+    // would consume the room's unread badge on content the user never saw.
+    let ordinary = timeline_item("$m1:test", Some("hello"), "@other:test", false);
+    let root = timeline_item("$root:test", Some("thread root"), "@other:test", false);
+    let reply = timeline_item("$r1:test", Some("reply"), "@other:test", false);
+    let navigation = vec![ordinary.clone(), root.clone(), reply.clone()];
+    let room_display = vec![ordinary.clone(), root.clone()];
+
+    assert!(
+        viewed_boundary_target(&room_key().kind, &navigation, &room_display, "$r1:test").is_none(),
+        "a reply the room does not render must not be read"
+    );
+    // The guard is exactly "is this event a displayed row": the same reply reads
+    // when the projection does render it.
+    assert_eq!(
+        viewed_boundary_target(
+            &room_key().kind,
+            &navigation,
+            &[ordinary.clone(), root.clone(), reply.clone()],
+            "$r1:test",
+        )
+        .map(|(index, _)| index),
+        Some(2)
+    );
+    // A displayed bottom row with no newer canonical item still reads.
+    assert_eq!(
+        viewed_boundary_target(
+            &room_key().kind,
+            &[ordinary.clone(), root.clone()],
+            &room_display,
+            "$root:test",
+        )
+        .map(|(index, _)| index),
+        Some(1)
+    );
+}
+
+#[test]
+fn thread_viewport_still_reads_its_own_displayed_replies() {
+    // In a thread timeline the replies are the displayed rows, so the room-only
+    // guard must not block them.
+    let reply = timeline_item("$r1:test", Some("reply"), "@other:test", false);
+    let thread_kind = TimelineKind::Thread {
+        room_id: "!r:test".to_owned(),
+        root_event_id: "$root:test".to_owned(),
+    };
+
+    assert_eq!(
+        viewed_boundary_target(&thread_kind, &[reply.clone()], &[reply], "$r1:test")
+            .map(|(index, _)| index),
+        Some(0)
+    );
+}
+
+#[test]
+fn viewport_reads_only_the_bottom_row_it_reports() {
+    let first = timeline_item("$m1:test", Some("one"), "@other:test", false);
+    let second = timeline_item("$m2:test", Some("two"), "@other:test", false);
+    let navigation = vec![first.clone(), second.clone()];
+    let display = vec![first, second.clone()];
+
+    // The reported bottom row is the newest eligible item: read.
+    assert!(viewed_boundary_target(&room_key().kind, &navigation, &display, "$m2:test").is_some());
+    // A stale observation naming an older row must not read past it.
+    assert!(viewed_boundary_target(&room_key().kind, &navigation, &display, "$m1:test").is_none());
 }
