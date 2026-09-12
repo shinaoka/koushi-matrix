@@ -613,6 +613,12 @@ The gitlink moved from the 2026-06-10 base `a04792c7a` to upstream
 - `subscribe_to_thread` / `subscribe_to_pinned_events` / `thread_pagination`
   wrappers on `RoomEventCache` → `EventCache::thread`/`pinned_events`. Koushi
   had no caller.
+- `RoomPagination::repair_timeline_gap` (the outcome-only wrapper) and
+  `RoomListService::subscribe_to_rooms_with_generation`: both were public but
+  had no production caller, so PR #12 removed them. Tests use
+  `repair_timeline_gap_with_projection` (the path Koushi's
+  `koushi-sdk::repair_room_timeline_gap` calls) and
+  `reconcile_room_subscriptions_with_generation` instead.
 - `SlidingSync::reconcile_subscriptions` and `SlidingSyncSubscriptionDelta`
   (the fork's differential reconciliation from #518): with room subscriptions on
   the standard `set_room_subscriptions` plus `subscribed_rooms()` they had no
@@ -624,7 +630,7 @@ The gitlink moved from the 2026-06-10 base `a04792c7a` to upstream
 Running the SDK's own suites against the merged revision exposed fork behaviors
 that the merge had silently dropped and one regression introduced by the port.
 All are fixed in `shinaoka/matrix-rust-sdk-work` PRs #9 (`5ba0c4790`), #10
-(`f622e82db`) and #11 (`bec5f680b`):
+(`f622e82db`), #11 (`bec5f680b`) and #12 (`526be0aa2`):
 
 - Room-subscription settings expand the `$ME` member placeholder again (the fork
   hardening from issue #285), with the upstream request-shape expectations
