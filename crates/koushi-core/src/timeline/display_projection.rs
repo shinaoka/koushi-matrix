@@ -181,6 +181,15 @@ impl DisplayMembershipCell {
     fn visible_len(&self) -> usize {
         usize::from(matches!(self, Self::Slot(_)))
     }
+
+    /// #873: a visible slot that becomes a displayed row. Thread replies are
+    /// suppressed by the projection, so they must not consume display capacity.
+    fn renderable_len(&self) -> usize {
+        match self {
+            Self::Gap(_) => 0,
+            Self::Slot(item) => usize::from(item.thread_root.is_none()),
+        }
+    }
 }
 
 type DisplayMembershipLink = Option<Box<DisplayMembershipNode>>;
@@ -192,6 +201,7 @@ struct DisplayMembershipNode {
     priority: u64,
     canonical_len: usize,
     visible_len: usize,
+    renderable_len: usize,
 }
 
 struct PendingDisplayMembershipNode {
@@ -205,6 +215,7 @@ impl DisplayMembershipNode {
     fn new(cell: DisplayMembershipCell, priority: u64) -> Box<Self> {
         let canonical_len = cell.canonical_len();
         let visible_len = cell.visible_len();
+        let renderable_len = cell.renderable_len();
         Box::new(Self {
             cell,
             left: None,
@@ -212,6 +223,7 @@ impl DisplayMembershipNode {
             priority,
             canonical_len,
             visible_len,
+            renderable_len,
         })
     }
 
@@ -222,6 +234,9 @@ impl DisplayMembershipNode {
         self.visible_len = display_membership_visible_len(&self.left)
             .saturating_add(self.cell.visible_len())
             .saturating_add(display_membership_visible_len(&self.right));
+        self.renderable_len = display_membership_renderable_len(&self.left)
+            .saturating_add(self.cell.renderable_len())
+            .saturating_add(display_membership_renderable_len(&self.right));
     }
 }
 
@@ -231,6 +246,32 @@ fn display_membership_canonical_len(link: &DisplayMembershipLink) -> usize {
 
 fn display_membership_visible_len(link: &DisplayMembershipLink) -> usize {
     link.as_ref().map_or(0, |node| node.visible_len)
+}
+
+fn display_membership_renderable_len(link: &DisplayMembershipLink) -> usize {
+    link.as_ref().map_or(0, |node| node.renderable_len)
+}
+
+/// In-order walk over visible reply slots, as `(canonical_index, thread_root)`.
+fn collect_reply_slots(
+    link: &DisplayMembershipLink,
+    canonical_index: &mut usize,
+    replies: &mut Vec<(usize, String)>,
+) {
+    let Some(node) = link else {
+        return;
+    };
+    collect_reply_slots(&node.left, canonical_index, replies);
+    match &node.cell {
+        DisplayMembershipCell::Gap(len) => *canonical_index = canonical_index.saturating_add(*len),
+        DisplayMembershipCell::Slot(item) => {
+            if let Some(root_event_id) = item.thread_root.as_deref() {
+                replies.push((*canonical_index, root_event_id.to_owned()));
+            }
+            *canonical_index = canonical_index.saturating_add(1);
+        }
+    }
+    collect_reply_slots(&node.right, canonical_index, replies);
 }
 
 struct DisplayMembershipRope {
@@ -339,6 +380,10 @@ impl DisplayMembershipRope {
 
     fn visible_len(&self) -> usize {
         display_membership_visible_len(&self.root)
+    }
+
+    fn renderable_visible_len(&self) -> usize {
+        display_membership_renderable_len(&self.root)
     }
 
     fn next_priority(&mut self) -> u64 {
@@ -572,30 +617,93 @@ impl DisplayMembershipRope {
         self.root = None;
     }
 
-    fn hide_first_visible(&mut self, link: &mut DisplayMembershipLink, remaining: &mut usize) {
-        if *remaining == 0 || display_membership_visible_len(link) == 0 {
+    fn hide_first_visible(
+        &mut self,
+        link: &mut DisplayMembershipLink,
+        remaining_slots: &mut usize,
+        remaining_rows: &mut usize,
+    ) {
+        if (*remaining_slots == 0 && *remaining_rows == 0)
+            || display_membership_visible_len(link) == 0
+        {
             return;
         }
         let Some(node) = link.as_mut() else {
             return;
         };
         self.record_structural_node_visit();
-        self.hide_first_visible(&mut node.left, remaining);
-        if *remaining > 0 && matches!(node.cell, DisplayMembershipCell::Slot(_)) {
+        self.hide_first_visible(&mut node.left, remaining_slots, remaining_rows);
+        if (*remaining_slots > 0 || *remaining_rows > 0)
+            && matches!(node.cell, DisplayMembershipCell::Slot(_))
+        {
+            let renderable = node.cell.renderable_len() == 1;
             node.cell = DisplayMembershipCell::Gap(1);
-            *remaining -= 1;
+            *remaining_slots = remaining_slots.saturating_sub(1);
+            if renderable {
+                *remaining_rows = remaining_rows.saturating_sub(1);
+            }
         }
-        self.hide_first_visible(&mut node.right, remaining);
+        self.hide_first_visible(&mut node.right, remaining_slots, remaining_rows);
         node.refresh();
+    }
+
+    /// #873: keep only the newest visible reply of each thread root.
+    ///
+    /// `LatestReply` thread placement reads the latest reply's canonical index
+    /// from inside the window, so one reply slot per root has to stay. The older
+    /// ones render nothing and only consume the bounded window, which is how a
+    /// busy thread used to evict the room's ordinary history.
+    fn retain_newest_reply_per_root(&mut self) {
+        let mut replies = Vec::<(usize, String)>::new();
+        let mut canonical_index = 0_usize;
+        collect_reply_slots(&self.root, &mut canonical_index, &mut replies);
+        if replies.len() < 2 {
+            return;
+        }
+        let mut newest = HashMap::<String, usize>::new();
+        for (ordinal, (_, root_event_id)) in replies.iter().enumerate() {
+            newest.insert(root_event_id.clone(), ordinal);
+        }
+        let stale = replies
+            .iter()
+            .enumerate()
+            .filter(|(ordinal, (_, root_event_id))| {
+                newest.get(root_event_id.as_str()) != Some(ordinal)
+            })
+            .map(|(_, (canonical_index, _))| *canonical_index)
+            .collect::<Vec<_>>();
+        for canonical_index in stale {
+            self.hide_at(canonical_index);
+        }
+    }
+
+    fn hide_at(&mut self, index: usize) {
+        let Some((left, mut middle, right)) = self.split_one(index) else {
+            return;
+        };
+        if matches!(middle.cell, DisplayMembershipCell::Slot(_)) {
+            middle.cell = DisplayMembershipCell::Gap(1);
+        }
+        middle.refresh();
+        let left = self.merge(left, Some(middle));
+        self.root = self.merge(left, right);
     }
 
     fn trim_to_live_edge(&mut self, max_items: Option<usize>) {
         let Some(max_items) = max_items else {
             return;
         };
-        let mut excess = self.visible_len().saturating_sub(max_items);
+        self.retain_newest_reply_per_root();
+        // #873: `max_items` bounds the displayed rows, not the canonical slots
+        // that carry them. A suppressed thread reply renders nothing, so a tail
+        // of replies must not evict the ordinary history beside it. The reply
+        // slots that stay (one per root) still get a bounded allowance.
+        let mut excess_rows = self.renderable_visible_len().saturating_sub(max_items);
+        let mut excess_slots = self
+            .visible_len()
+            .saturating_sub(max_items.saturating_mul(2));
         let mut root = self.root.take();
-        self.hide_first_visible(&mut root, &mut excess);
+        self.hide_first_visible(&mut root, &mut excess_slots, &mut excess_rows);
         self.root = root;
     }
 
@@ -816,7 +924,7 @@ fn project_sdk_batch(
                 *canonical_items = items.clone();
                 let start = context
                     .max_live_edge_items
-                    .map(|max_items| canonical_items.len().saturating_sub(max_items))
+                    .map(|max_items| live_edge_window_start(canonical_items, max_items))
                     .unwrap_or(0);
                 membership = DisplayMembershipRope::from_canonical_window(
                     canonical_items,
@@ -857,6 +965,25 @@ fn normalize_display_projection_slots(slots: &[DisplayProjectionSlot]) -> Vec<Ti
         .filter(|slot| seen.insert(timeline_item_render_id(&slot.item)))
         .map(|slot| slot.item.clone())
         .collect()
+}
+
+/// #873: first canonical index of the live-edge window.
+///
+/// The window is sized in *displayed rows*, so a run of suppressed thread
+/// replies at the live edge cannot push the ordinary history out of it. Replies
+/// keep a bounded allowance of their own because `LatestReply` thread placement
+/// reads the latest reply's canonical index from inside the window.
+pub(super) fn live_edge_window_start(items: &[TimelineItem], max_items: usize) -> usize {
+    let mut rows = 0_usize;
+    for index in (0..items.len()).rev() {
+        if items[index].thread_root.is_none() {
+            if rows == max_items {
+                return index + 1;
+            }
+            rows += 1;
+        }
+    }
+    0
 }
 
 fn project_display_items(
