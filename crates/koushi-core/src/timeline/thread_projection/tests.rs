@@ -993,8 +993,6 @@ fn thread_summary_projection_preserves_ready_latest_event_id() {
             identifier: TimelineEventItemId::EventId(latest_event_id.clone()),
         })),
         num_replies: 1,
-        public_read_receipt_event_id: None,
-        private_read_receipt_event_id: None,
     };
 
     let dto = thread_summary_from_sdk(summary);

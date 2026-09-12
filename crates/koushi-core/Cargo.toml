@@ -15,7 +15,7 @@ koushi-state = { path = "../koushi-state" }
 koushi-store = { path = "../koushi-store" }
 base64 = "0.22"
 eyeball = "0.8"
-eyeball-im = "0.8"
+eyeball-im = "0.9"
 futures-util = "0.3"
 regex = "1"
 matrix-sdk = { workspace = true }
@@ -26,7 +26,7 @@ serde_json = "1"
 tempfile = "3"
 thiserror = "2"
 url = "2"
-vodozemac = "0.10"
+vodozemac = { git = "https://github.com/matrix-org/vodozemac/", rev = "cfc4eee", features = ["insecure-pk-encryption", "experimental-session-config"] }
 # Confined to executor.rs and channel plumbing per Platform Portability rule 2.
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 

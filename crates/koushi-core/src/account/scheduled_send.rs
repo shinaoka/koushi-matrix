@@ -279,7 +279,7 @@ impl AccountActor {
             .update_server_delayed_event(
                 session,
                 delay_id,
-                matrix_sdk::ruma::api::client::delayed_events::update_delayed_event::unstable::UpdateAction::Cancel,
+                matrix_sdk::ruma::api::client::delayed_events::update_delayed_event::UpdateAction::Cancel,
             )
             .await
         {
@@ -322,7 +322,7 @@ impl AccountActor {
             .update_server_delayed_event(
                 session,
                 delay_id,
-                matrix_sdk::ruma::api::client::delayed_events::update_delayed_event::unstable::UpdateAction::Cancel,
+                matrix_sdk::ruma::api::client::delayed_events::update_delayed_event::UpdateAction::Cancel,
             )
             .await
             .is_err()
@@ -429,10 +429,10 @@ impl AccountActor {
         &self,
         session: &MatrixClientSession,
         delay_id: String,
-        action: matrix_sdk::ruma::api::client::delayed_events::update_delayed_event::unstable::UpdateAction,
+        action: matrix_sdk::ruma::api::client::delayed_events::update_delayed_event::UpdateAction,
     ) -> Result<(), ()> {
         let request =
-            matrix_sdk::ruma::api::client::delayed_events::update_delayed_event::unstable::Request::new(
+            matrix_sdk::ruma::api::client::delayed_events::update_delayed_event::unstable_v1::Request::new(
                 delay_id, action,
             );
         session

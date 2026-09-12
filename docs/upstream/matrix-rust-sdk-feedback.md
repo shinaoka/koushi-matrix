@@ -6,9 +6,11 @@ This note separates SDK-upstreamable material from desktop-product decisions. El
 
 ## Fork Maintenance Snapshot
 
-As of 2026-07-27, the checked-in SDK gitlink follows the maintained
-`shinaoka/matrix-rust-sdk-work` fork on a branch rebased onto that fork's
-`origin/main` commit `35672e96a`. The fork is expected to be managed and
+As of 2026-09-12, the checked-in SDK gitlink follows the maintained
+`shinaoka/matrix-rust-sdk-work` fork at commit `a3754f6be` on `main`, which is
+upstream `matrix-org/matrix-rust-sdk` `6602de58e` (2026-09-11) merged into the
+previous pin `a04792c7a` plus the retained Koushi customizations. The
+2026-07-27 snapshot below described the state before that upgrade. The fork is expected to be managed and
 maintained for a while; local SDK patches should therefore stay as small topic
 commits with clear upstream intent instead of being squashed into an opaque
 vendor snapshot.
@@ -536,3 +538,90 @@ has no production caller) and the 825-commit upstream rebase. A trial merge of
 `upstream/main` into the pinned revision conflicts in 24 files, concentrated in
 `event_cache`, `room_list_service`, `timeline`, and `matrix-sdk-base`/crypto
 identity handling.
+
+## 2026-09-12: upstream SDK upgrade to 6602de58e
+
+The gitlink moved from the 2026-06-10 base `a04792c7a` to upstream
+`6602de58e` (825 upstream commits). The fork merge is
+`shinaoka/matrix-rust-sdk-work` PR #8 (merge commit `fc780574d`), followed by
+`a3754f6be` for test-target adaptations.
+
+### Retained customizations (ported onto the new upstream structures)
+
+- **ngram / CJK search** (explicitly excluded from removal):
+  `SearchIndexStoreKind::{UnencryptedDirectoryWithConfig,
+  EncryptedDirectoryWithConfig, InMemoryWithConfig}`, `encrypted_directory_ngram`,
+  the ngram tokenizer registration in `search_index`, and the CJK search
+  candidates API. Regression tests: `test_search_index_store_kind_can_configure_ngram_tokenizer`
+  (matrix-sdk), `test_ngram_search_matches_japanese_substring` and
+  `ngram_schema_uses_named_body_tokenizer` (matrix-sdk-search), plus the
+  Koushi `search_crawler` and `edit_redact_search` QA scenarios.
+- **Event cache**: persisted gap inspection/repair (`RoomTimelineGapHandle`,
+  `RoomTimelineGapRepair*`, `inspect_timeline_gaps`), cache-only back
+  pagination (`run_backwards_cache_only`), live-tail refresh
+  (`RoomLiveTailRefresh*`) and `RoomTimelineSyncObservation`. Ported onto
+  upstream's `StateLockReadGuard`/`StateLockWriteGuard` and
+  `states::selectors`; `latest_sync_observation` feeds the room-subscription
+  checkpoints. Regression tests: the `event_cache` integration targets plus
+  Koushi's `timeline`, `timeline_nav` and gap-repair tests. At the old fork
+  head the committed per-room response fence was already removed as unused;
+  the sync observation itself is still consumed by Koushi's
+  `MatrixCommittedRoomTimelineCheckpoint`.
+- **Redaction replay**: `pending_redactions` re-applies a persisted redaction
+  when its target only arrives later (or is delivered again). Regression test:
+  `test_search_index_redaction_preserves_edit_aware_cache_hit`,
+  `test_search_index_redaction_removes_redacted_event_when_cache_misses`.
+- **Room subscriptions**: `RoomListService::subscribe_to_rooms_with_generation`
+  / `reconcile_room_subscriptions_with_generation` and the per-room
+  `RoomSubscriptionCheckpoint`, now implemented on top of the standard
+  `SlidingSync::set_room_subscriptions` plus `subscribed_rooms()`. Generation
+  tracking stays application-level. Regression tests:
+  `koushi-core-testkit` room-subscription residency plus the Koushi
+  `room_space`/`invites_dm` QA scenarios.
+- **Encryption sync readiness**: `EncryptionSyncGenerationGuard` and the
+  `begin_encryption_sync_generation` wiring in `run_iterations`/`sync`,
+  adapted to upstream's stream API.
+- **Crypto**: key-query response leases (`acquire_key_query_response_lease`,
+  `covered_users`, multi-in-flight request metadata), the deferred
+  unknown-device verification replay, rotation-reason diagnostics and the
+  X.509 signature-upload field. Regression tests:
+  `machine::tests::interactive_verification` (32 tests),
+  `room_key_receive_diagnostics` (5), `persisted_rotation_reason` (4),
+  `sas_start` replay (2).
+- **Timeline**: lazy-reveal live pagination
+  (`live_lazy_paginate_backwards_with_reveal`) and gap-repair projection
+  settlement (`complete_gap_repair_projection`,
+  `wait_for_gap_repair_projection`, `GapRepairProjectionSettlement`).
+
+### Removed (upstream supersedes them, or they were unused)
+
+- `RoomEventCacheSubscriber` (upstream's generic
+  `event_cache::Subscriber`), and the fork's `room/subscriber.rs`.
+- Search-index redaction/replacement hardening in `matrix-sdk`: upstream's
+  `IndexableEvent`, media caption/filename and poll indexing, and
+  `check_validity_of_replacement_events` cross-sender validation are strictly
+  stronger. Replacement: upstream's `handle_room_message`/`handle_room_redaction`
+  and media/poll handlers.
+- `Room::subscribe_to_rooms` and the fork's private
+  `SlidingSync::subscribe_to_rooms` helper → `SlidingSync::set_room_subscriptions`
+  (+ `RoomListService::set_room_subscriptions`).
+- `refresh_event_focused_cache` / `get_or_create_event_focused_cache` on
+  `RoomEventCache` → `EventCache::event_focused` (upstream now owns the
+  focused-cache lifecycle). Koushi had no production caller.
+- Encrypted-room reply/thread-root extraction in the timeline controller
+  metadata → upstream's `extract_reply_and_thread_root`.
+- `subscribe_to_thread` / `subscribe_to_pinned_events` / `thread_pagination`
+  wrappers on `RoomEventCache` → `EventCache::thread`/`pinned_events`. Koushi
+  had no caller.
+
+### Still open for stages 2-4
+
+- Simplify the room-list readiness checks and the custom checkpoints tied to
+  sync responses (Stage 2's remaining bullet).
+- Timeline gap-repair/history simplification around the standard focus and
+  pagination APIs (Stage 3).
+- Re-evaluate the crypto deferred-replay and readiness fences, and add
+  private-data-free activation counters (Stage 4).
+- Real-world validation by the user (startup, login, send/receive, Japanese
+  ngram search, room switching, invites, reconnect, restore) has not been
+  performed for this upgrade.
