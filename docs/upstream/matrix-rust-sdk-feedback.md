@@ -614,6 +614,48 @@ The gitlink moved from the 2026-06-10 base `a04792c7a` to upstream
   wrappers on `RoomEventCache` → `EventCache::thread`/`pinned_events`. Koushi
   had no caller.
 
+### Follow-up: behaviors restored after running the SDK suites (PR #9)
+
+Running the SDK's own suites against the merged revision exposed fork behaviors
+that the merge had silently dropped and one regression introduced by the port.
+All are fixed in `shinaoka/matrix-rust-sdk-work` PR #9 (merge commit `5ba0c4790`):
+
+- Room-subscription settings expand the `$ME` member placeholder again (the fork
+  hardening from issue #285), with the upstream request-shape expectations
+  updated. Regression: `room_list_service` integration tests plus
+  `all_rooms_request_matches_element_x_26_07_28`.
+- The targeted gap repair flushes linked-chunk updates to the store before
+  post-processing; without it a joined gap was reported as `Progress` instead of
+  `BoundariesJoined`. Regression: the five `event_cache::test_*gap*`
+  integration tests.
+- `RoomEventCache::clear()` (test-only) is back for the persisted gap-repair
+  tests.
+- The classic-sync token guard only drops tokens shaped like `s<stream>_...`
+  instead of every non-numeric token, which had discarded valid opaque Sliding
+  Sync tokens and broken the to-device token reload.
+- `ReadReceiptSnapshot::changes_since` compares receipts explicitly; imbl 7's
+  `OrdMap::diff` skips shared subtrees before comparing values, so a
+  timestamp-only receipt update was reported as unchanged.
+
+### Known gaps discovered in the same pass
+
+- `cargo test -p matrix-sdk --lib` cannot complete in this revision: the
+  fork-added `event_cache::redecryptor::tests::test_event_is_redecrypted_even_if_key_arrives_while_event_processing`
+  hangs at both the previous pin and this revision, while upstream's identical
+  test passes. The fork-only delta that causes the hang still needs to be
+  isolated. Treat SDK `--lib` runs as incomplete until then.
+- Upstream serializes every cache kind (room, thread, pinned, event-focused) on
+  one event-cache state lock (`states::StateLock`), so an in-flight
+  event-focused pagination blocks room-cache reads for its whole network
+  request. The fork's per-cache locking is gone; evaluate this for Stage 3.
+- A redaction replayed from `pending_redactions` reaches only the room cache's
+  copy of an event. Upstream keeps room and thread copies in separate linked
+  chunks, so the thread copy stays unredacted and a thread aggregate can count
+  it after a store reopen
+  (`timeline::thread_list_service::tests::test_relation_aggregate_matches_after_persistent_reopen`,
+  ignored with that reason). Stage 3 owns verifying/replacing the thread
+  aggregate behavior.
+
 ### Still open for stages 2-4
 
 - Simplify the room-list readiness checks and the custom checkpoints tied to
