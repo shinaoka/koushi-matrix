@@ -618,7 +618,8 @@ The gitlink moved from the 2026-06-10 base `a04792c7a` to upstream
 
 Running the SDK's own suites against the merged revision exposed fork behaviors
 that the merge had silently dropped and one regression introduced by the port.
-All are fixed in `shinaoka/matrix-rust-sdk-work` PR #9 (merge commit `5ba0c4790`):
+All are fixed in `shinaoka/matrix-rust-sdk-work` PRs #9 (`5ba0c4790`) and #10
+(`f622e82db`):
 
 - Room-subscription settings expand the `$ME` member placeholder again (the fork
   hardening from issue #285), with the upstream request-shape expectations
@@ -636,14 +637,23 @@ All are fixed in `shinaoka/matrix-rust-sdk-work` PR #9 (merge commit `5ba0c4790`
 - `ReadReceiptSnapshot::changes_since` compares receipts explicitly; imbl 7's
   `OrdMap::diff` skips shared subtrees before comparing values, so a
   timestamp-only receipt update was reported as unchanged.
+- `RoomEventCacheState::new` no longer performs a store write while rebuilding
+  the pending-redaction map unless the replay actually changed an in-memory
+  event, which is what made the SDK lib suite hang.
+
+### Fixed in the same pass (PR #10)
+
+- `cargo test -p matrix-sdk --lib` used to hang in the fork-added
+  `event_cache::redecryptor::tests::test_event_is_redecrypted_even_if_key_arrives_while_event_processing`.
+  `RoomEventCacheState::new` drained and flushed the linked chunk's pending store
+  updates unconditionally after rebuilding the pending-redaction map, so creating
+  a cache performed a store write that upstream's `new` never does; with a
+  delayable store (the test's `DelayingStore`) that blocked cache creation.
+  The flush now runs only when the replay actually replaced an in-memory event.
+  The SDK lib suite completes again (663 passed).
 
 ### Known gaps discovered in the same pass
 
-- `cargo test -p matrix-sdk --lib` cannot complete in this revision: the
-  fork-added `event_cache::redecryptor::tests::test_event_is_redecrypted_even_if_key_arrives_while_event_processing`
-  hangs at both the previous pin and this revision, while upstream's identical
-  test passes. The fork-only delta that causes the hang still needs to be
-  isolated. Treat SDK `--lib` runs as incomplete until then.
 - Upstream serializes every cache kind (room, thread, pinned, event-focused) on
   one event-cache state lock (`states::StateLock`), so an in-flight
   event-focused pagination blocks room-cache reads for its whole network
