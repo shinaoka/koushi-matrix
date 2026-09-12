@@ -47,6 +47,7 @@ fn observe_timeline_viewport_command_routes_viewport_facts_only() {
             ordinal: 2,
         }],
         false,
+        TimelineBottomArrival::User,
         None,
     );
     let debug = format!("{command:?}");
@@ -96,6 +97,7 @@ fn observe_timeline_viewport_routes_thread_identity() {
         Some("$reply".to_owned()),
         Vec::new(),
         true,
+        TimelineBottomArrival::User,
         Some("$root".to_owned()),
     );
     let CoreCommand::Timeline(TimelineCommand::ObserveViewport { key, .. }) = command else {
@@ -127,6 +129,7 @@ fn observe_timeline_viewport_parses_full_range_topology_revision() {
         None,
         visible_gap_ids,
         false,
+        TimelineBottomArrival::User,
         None,
     );
 

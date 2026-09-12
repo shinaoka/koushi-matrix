@@ -907,6 +907,7 @@ fn tauri_command_routes_build_expected_core_commands() {
         Some("$last-visible".to_owned()),
         Vec::new(),
         false,
+        TimelineBottomArrival::User,
         None,
     ) {
         CoreCommand::Timeline(TimelineCommand::ObserveViewport {

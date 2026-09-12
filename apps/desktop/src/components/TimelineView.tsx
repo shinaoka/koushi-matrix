@@ -127,6 +127,7 @@ import { t } from "../i18n/messages";
 import type {
 MediaTransferProgress,
 CoreEventPayload,
+TimelineBottomArrival,
 TimelineItem,
 TimelineKey,
 TimelineMessageSource,
@@ -161,6 +162,14 @@ type TimelineScrollDiagnostics,
 type TimelineScrollWriteReason,
 type TimelineViewportIntentKind
 } from "../domain/timelineScrollDiagnostics";
+
+/** Scroll writes that place the viewport somewhere the client chose (#872). */
+const CLIENT_PLACEMENT_SCROLL_WRITES: ReadonlySet<TimelineScrollWriteReason> = new Set([
+  "liveEdge",
+  "jumpToEvent",
+  "jumpToBottom",
+  "roomRestore"
+]);
 import {
 applyGlobalResync,
 applyRoomKeyRequestStateChanged,
@@ -557,6 +566,13 @@ export const TimelineView = memo(function TimelineView({
   const mountedItemDomIdsRef = useRef<Set<string>>(new Set());
   /** Set by wheel/touch/keyboard/scrollbar intent; consumed by the next scroll event. */
   const userScrollInputPendingRef = useRef(false);
+  /**
+   * #872: how the viewport reached its current position. A pane the client
+   * scrolled itself — the thread open-time snap and its measured follow-up — is
+   * not the reader reading, so the read state may not take it as one. Starts at
+   * "user": content the client never had to scroll is on screen as rendered.
+   */
+  const bottomArrivalRef = useRef<TimelineBottomArrival>("user");
   const pendingScrollFrameUserInputRef = useRef(false);
   /** Coalesces ResizeObserver-driven live-edge corrections. */
   const viewportIntentResizeFrameRef = useRef<TimelineScheduledFrame | null>(null);
@@ -936,7 +952,14 @@ export const TimelineView = memo(function TimelineView({
           action();
           return { scrollTop: container.scrollTop, scrollHeight: container.scrollHeight };
         });
-        if (changed) updateScrollDiagnostics((current) => recordTimelineScrollWrite(current, reason));
+        if (changed) {
+          updateScrollDiagnostics((current) => recordTimelineScrollWrite(current, reason));
+          // Compensation writes preserve the reader's position; only a placement
+          // the client chose (live edge, jump, restore) changes who arrived here.
+          if (CLIENT_PLACEMENT_SCROLL_WRITES.has(reason)) {
+            bottomArrivalRef.current = "programmatic";
+          }
+        }
         if (reason === "roomRestore") captureStableAnchor(container);
       } finally {
         const writeGeneration = owner.currentWriteGeneration();
@@ -1184,6 +1207,7 @@ export const TimelineView = memo(function TimelineView({
     if (viewportIntentRef.current.kind === "live-edge") viewportTransactionRef.current.invalidate("input");
     noteUserViewportInput();
     userScrollInputPendingRef.current = true;
+    bottomArrivalRef.current = "user";
     markScrollActivityActive();
     if (
       options.keepLiveEdgeAtBottom &&
@@ -2180,6 +2204,11 @@ export const TimelineView = memo(function TimelineView({
         visible.lastVisibleEventId,
         visible.visibleGapIds,
         effectiveAtBottom,
+        // Content shorter than the viewport is on screen as rendered, whatever
+        // scrolled it last.
+        container.scrollHeight <= container.clientHeight + SCROLL_EDGE_TOLERANCE_PX
+          ? "content_fits"
+          : bottomArrivalRef.current,
         viewportThreadRootEventId
       )
       .catch(() => undefined);

@@ -406,6 +406,25 @@ pub struct TimelineViewportObservation {
     #[serde(default)]
     pub visible_gap_ids: Vec<TimelineGapId>,
     pub at_bottom: bool,
+    /// How the viewport arrived at its current position (#872). The renderer
+    /// reports the fact; the read-state machine decides whether it counts as
+    /// reading. Defaults to `Programmatic`, the conservative answer for a
+    /// sender that does not report it.
+    #[serde(default)]
+    pub bottom_arrival: TimelineBottomArrival,
+}
+/// How a timeline viewport reached its current live edge (#872).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimelineBottomArrival {
+    /// The reader scrolled, tapped, or typed their way there.
+    User,
+    /// The content is shorter than the viewport, so every row is on screen.
+    ContentFits,
+    /// The client scrolled itself there: the open-time snap and the follow-up
+    /// snap once variable-height rows have been measured.
+    #[default]
+    Programmatic,
 }
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct TimelineGapId {

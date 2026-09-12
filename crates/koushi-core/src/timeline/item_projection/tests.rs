@@ -44,9 +44,9 @@ fn live_receipt_summary_compacts_large_reader_input_with_exact_total() {
     assert_eq!(summaries[0].total_count, 1_500);
 }
 use koushi_protocol::event::{
-    LinkPreview, LinkPreviewState, TimelineFormattedBody, TimelineItemId, TimelineMessageKind,
-    TimelineNoticeI18n, TimelineNoticeI18nKey, TimelineSendFailureReason, TimelineSendState,
-    TimelineSpoilerSpan, TimelineViewportObservation,
+    LinkPreview, LinkPreviewState, TimelineBottomArrival, TimelineFormattedBody, TimelineItemId,
+    TimelineMessageKind, TimelineNoticeI18n, TimelineNoticeI18nKey, TimelineSendFailureReason,
+    TimelineSendState, TimelineSpoilerSpan, TimelineViewportObservation,
 };
 
 use koushi_protocol::failure::TimelineFailureKind;
@@ -262,6 +262,7 @@ fn visible_missing_reply_detail_event_ids_only_returns_visible_unrequested_missi
             first_visible_event_id: Some("$first-visible:test".to_owned()),
             last_visible_event_id: Some("$already-requested:test".to_owned()),
             visible_gap_ids: Vec::new(),
+            bottom_arrival: TimelineBottomArrival::User,
             at_bottom: false,
         },
         &requested,

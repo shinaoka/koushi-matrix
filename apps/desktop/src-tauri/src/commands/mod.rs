@@ -29,8 +29,8 @@ use koushi_protocol::{
     IntentNoOpReason, IntentOutcome, MediaDownloadSelection, PaginationDirection, RequestId,
     RoomCommand, RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand, SearchScope,
     SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SetAvatarRequest, SyncCommand,
-    TimelineBatchId, TimelineCommand, TimelineEvent, TimelineGapId, TimelineGeneration,
-    TimelineKey, TimelineKind, TimelineViewportObservation,
+    TimelineBatchId, TimelineBottomArrival, TimelineCommand, TimelineEvent, TimelineGapId,
+    TimelineGeneration, TimelineKey, TimelineKind, TimelineViewportObservation,
 };
 use koushi_state::{
     ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentSort, AuthSecret,

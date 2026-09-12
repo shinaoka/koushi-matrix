@@ -24,9 +24,9 @@ use crate::executor;
 use crate::link_preview::LinkPreviewContext;
 use koushi_protocol::command::TimelineCommand;
 use koushi_protocol::event::{
-    CoreEvent, PaginationDirection, PaginationState, ThreadSummaryDto, TimelineEvent,
-    TimelineFormattedBody, TimelineItemId, TimelineReadStateSync, TimelineUnreadPosition,
-    TimelineViewportObservation,
+    CoreEvent, PaginationDirection, PaginationState, ThreadSummaryDto, TimelineBottomArrival,
+    TimelineEvent, TimelineFormattedBody, TimelineItemId, TimelineReadStateSync,
+    TimelineUnreadPosition, TimelineViewportObservation,
 };
 use koushi_protocol::failure::{CoreFailure, TimelineFailureKind};
 #[cfg(any(test, feature = "test-hooks"))]
@@ -133,6 +133,7 @@ fn eligibility_skips_redacted_and_own_rows_for_first_unread_and_newer_count() {
     let observation = TimelineViewportObservation {
         first_visible_event_id: Some("$marker:test".to_owned()),
         last_visible_event_id: Some("$marker:test".to_owned()),
+        bottom_arrival: TimelineBottomArrival::User,
         at_bottom: false,
         ..TimelineViewportObservation::default()
     };
@@ -249,6 +250,7 @@ fn resubscribe_replay_keeps_scrolled_room_context_complete() {
         &key.kind,
         &items,
         &TimelineViewportObservation {
+            bottom_arrival: TimelineBottomArrival::User,
             at_bottom: false,
             first_visible_event_id: Some("$event-10:test".to_owned()),
             last_visible_event_id: Some("$event-20:test".to_owned()),
@@ -287,6 +289,7 @@ fn resubscribe_replay_keeps_focused_timeline_context_complete() {
         &key.kind,
         &items,
         &TimelineViewportObservation {
+            bottom_arrival: TimelineBottomArrival::User,
             at_bottom: true,
             ..TimelineViewportObservation::default()
         },
@@ -2031,6 +2034,7 @@ fn timeline_navigation_marks_first_unread_inside_viewport() {
             first_visible_event_id: Some("$unread:test".to_owned()),
             last_visible_event_id: Some("$newer:test".to_owned()),
             visible_gap_ids: Vec::new(),
+            bottom_arrival: TimelineBottomArrival::User,
             at_bottom: true,
         },
         Some("@me:test"),
@@ -2065,6 +2069,7 @@ fn timeline_navigation_separates_local_viewed_and_server_confirmed_boundaries() 
             first_visible_event_id: Some("$local:test".to_owned()),
             last_visible_event_id: Some("$local:test".to_owned()),
             visible_gap_ids: Vec::new(),
+            bottom_arrival: TimelineBottomArrival::User,
             at_bottom: true,
         },
         Some("@me:test"),
@@ -2105,6 +2110,7 @@ fn timeline_navigation_reports_unread_below_viewport_and_newer_count() {
             first_visible_event_id: Some("$read:test".to_owned()),
             last_visible_event_id: Some("$visible:test".to_owned()),
             visible_gap_ids: Vec::new(),
+            bottom_arrival: TimelineBottomArrival::User,
             at_bottom: false,
         },
         Some("@me:test"),
@@ -2143,6 +2149,7 @@ fn timeline_navigation_does_not_count_read_history_below_viewport_as_newer() {
             first_visible_event_id: Some("$visible:test".to_owned()),
             last_visible_event_id: Some("$visible:test".to_owned()),
             visible_gap_ids: Vec::new(),
+            bottom_arrival: TimelineBottomArrival::User,
             at_bottom: false,
         },
         Some("@me:test"),
@@ -2168,6 +2175,7 @@ fn timeline_navigation_does_not_count_newer_events_without_read_marker() {
             first_visible_event_id: Some("$visible:test".to_owned()),
             last_visible_event_id: Some("$visible:test".to_owned()),
             visible_gap_ids: Vec::new(),
+            bottom_arrival: TimelineBottomArrival::User,
             at_bottom: false,
         },
         Some("@me:test"),
@@ -2208,6 +2216,7 @@ fn timeline_navigation_ignores_own_local_and_synthetic_items_for_unread_counts()
             first_visible_event_id: Some("$read:test".to_owned()),
             last_visible_event_id: Some("$remote:test".to_owned()),
             visible_gap_ids: Vec::new(),
+            bottom_arrival: TimelineBottomArrival::User,
             at_bottom: true,
         },
         Some("@me:test"),

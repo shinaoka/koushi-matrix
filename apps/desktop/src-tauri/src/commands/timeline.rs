@@ -170,6 +170,7 @@ pub(super) fn build_observe_timeline_viewport_command(
     last_visible_event_id: Option<String>,
     visible_gap_ids: Vec<TimelineGapId>,
     at_bottom: bool,
+    bottom_arrival: TimelineBottomArrival,
     thread_root_event_id: Option<String>,
 ) -> CoreCommand {
     let key = match thread_root_event_id {
@@ -190,6 +191,7 @@ pub(super) fn build_observe_timeline_viewport_command(
             last_visible_event_id,
             visible_gap_ids,
             at_bottom,
+            bottom_arrival,
         },
     })
 }
