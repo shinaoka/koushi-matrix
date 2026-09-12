@@ -6635,6 +6635,21 @@ mark {
   font-size: 12px;
 }
 
+/* #880: keep the role control compact and let the name keep its width and
+   ellipsis, so narrow panels and long/Japanese names never wrap the row. */
+.space-members-role-control {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  min-inline-size: 0;
+  max-inline-size: 50%;
+}
+
+.space-members-role-control select {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+}
+
 .space-members-invite,
 .space-members-cancel {
   flex: 0 0 auto;
