@@ -606,3 +606,34 @@ test("retry button dispatches download_media after failure", async ({ page }) =>
     .poll(() => page.evaluate(() => window.__harness.invocationsOf("download_media").length))
     .toBeGreaterThanOrEqual(1);
 });
+
+test("macOS media viewer leaves the native window buttons above its toolbar", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 520 });
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    snapshot.state.domain.locale_profile.platform = "macos";
+    window.__harness.setSnapshot(snapshot);
+  });
+  const titlebar = page.locator('.titlebar[data-platform="macos"]');
+  await expect(titlebar).toBeVisible();
+  const titlebarBottom = await titlebar.evaluate((element) => element.getBoundingClientRect().bottom);
+  const eventId = "$media-native-titlebar:example.invalid";
+  await seedTimelineItems(page, [makeImageItem(eventId)]);
+  await pushMediaDownloadState(page, eventId, {
+    kind: "ready",
+    source_url: "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==",
+    width: 800, height: 600, mime_type: "image/jpeg"
+  });
+  await page.locator(`[data-event-id="${eventId}"]`).getByRole("button", { name: t("timeline.mediaOpenFile") }).click();
+  const viewer = page.getByRole("dialog", { name: t("timeline.mediaViewer") });
+  await expect(viewer).toBeVisible();
+  const toolbar = await viewer.locator(".timeline-media-viewer-toolbar").boundingBox();
+  expect(toolbar!.y).toBeGreaterThanOrEqual(titlebarBottom);
+  const bounds = (await viewer.boundingBox())!;
+  expect(bounds.y + bounds.height).toBeLessThanOrEqual(520);
+  await expect(viewer.getByRole("button", { name: "Close media viewer" })).toBeInViewport();
+  await expect(viewer.locator(".timeline-media-viewer-image")).toBeInViewport();
+  await page.keyboard.press("Escape");
+  await expect(viewer).toHaveCount(0);
+});

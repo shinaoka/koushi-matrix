@@ -1,26 +1,3 @@
-/**
- * Headless geometry regression: the Upload attachments staging panel must
- * stay inside the application viewport at short window heights, with the
- * dialog header and Send attachments action visible. At ordinary sizes the
- * image viewport precedes compact output and caption controls; at extreme
- * sizes the staging list remains a fallback scroll owner (#515).
- *
- * Before the fix the staging dialog had no viewport-bounded max-height and no
- * internal scroll region, so with a tall portrait image the caption field,
- * output controls, or Send attachments action were clipped off the window with
- * no way to reach them. The same component is embedded in the main composer
- * and the thread composer, so both surfaces are covered.
- *
- * The per-file controls (filename, caption field, Resize/Format toolbar) are
- * pinned inside the staging list, so when the list does have to scroll it is
- * only the preview that leaves the visible box — the caption field and the
- * output choices for the file stay where the user left them.
- *
- * These tests drive the real attach flow through the harness and measure
- * rendered geometry (dialog bounds, scroll region overflow, scrollTop
- * movement), so they fail on the symptom rather than on a hard-coded height.
- */
-
 import { expect, test, type Page } from "@playwright/test";
 import { t } from "../src/i18n/messages";
 
@@ -100,232 +77,134 @@ function expectStagingBounded(
   }
 }
 
-test("main composer keeps upload controls visible while only the preview pans", async ({
-  page
-}) => {
-  await page.setViewportSize(STANDARD_VIEWPORT);
-  await gotoReadyShell(page);
-  // Production timelines can have a very large virtual scroll extent. The
-  // flex parent must size the timeline from the remaining viewport height,
-  // rather than using that virtual extent as its flex basis and shrinking the
-  // staging panel down to its header.
-  await page.evaluate(() => {
-    const timeline = document.querySelector<HTMLElement>(".timeline-scroll");
-    if (timeline) {
-      timeline.style.height = "100000px";
-    }
-  });
-  await page.evaluate(() => {
-    window.__harness.setCommandResponse("download_media", () => window.__harness.currentSnapshot());
-    window.__harness.clearInvocations();
-  });
-
-  await page.getByRole("button", { name: "Attach file", exact: true }).click();
-  await page
-    .locator('input[type="file"][aria-label="Attach file input"]')
-    .setInputFiles(stagedPortraitImage());
-
-  const dialog = page.getByRole("dialog", { name: t("upload.dialogTitle") });
-  await expect(dialog).toBeVisible();
-  await expect(dialog.locator(".upload-staging-list")).toBeVisible();
-  await expect(dialog.locator(".upload-preview-viewport")).toBeVisible();
-  await expect(dialog.locator(".upload-output-toolbar")).toBeVisible();
-
-  const controlAndPreviewGeometry = await dialog.evaluate((element) => {
-    const toolbar = element.querySelector<HTMLElement>(".upload-output-toolbar");
-    const preview = element.querySelector<HTMLElement>(".upload-preview-viewport");
-    const caption = element.querySelector<HTMLElement>(".upload-staging-caption");
-    const captionEditor = caption?.querySelector<HTMLElement>(".composer-inline-editor");
-    if (!toolbar || !preview || !caption || !captionEditor) return null;
-    const toolbarBox = toolbar.getBoundingClientRect();
-    const previewBox = preview.getBoundingClientRect();
-    const captionBox = caption.getBoundingClientRect();
-    const captionEditorBox = captionEditor.getBoundingClientRect();
-    return {
-      previewBottom: previewBox.bottom,
-      toolbarTop: toolbarBox.top,
-      toolbarBottom: toolbarBox.bottom,
-      captionTop: captionBox.top,
-      captionEditorHeight: captionEditorBox.height,
-      previewOverflowX: getComputedStyle(preview).overflowX,
-      previewOverflowY: getComputedStyle(preview).overflowY
-    };
-  });
-  expect(controlAndPreviewGeometry).not.toBeNull();
-  expect(controlAndPreviewGeometry!.previewBottom).toBeLessThanOrEqual(
-    controlAndPreviewGeometry!.toolbarTop
-  );
-  expect(controlAndPreviewGeometry!.toolbarBottom).toBeLessThanOrEqual(
-    controlAndPreviewGeometry!.captionTop
-  );
-  expect(controlAndPreviewGeometry!.captionEditorHeight).toBeLessThanOrEqual(48);
-  expect(controlAndPreviewGeometry!.previewOverflowX).toBe("auto");
-  expect(controlAndPreviewGeometry!.previewOverflowY).toBe("auto");
-
-  const geometry = await stagingGeometry(page);
-  expect(geometry).not.toBeNull();
-  expectStagingBounded(geometry!, "main staging");
-
-  // At an ordinary height, the single attachment list is not a scroll owner:
-  // the caption and output controls stay fixed while only the preview pans.
-  expect(geometry!.list).not.toBeNull();
-  const list = geometry!.list!;
-  expect(list.overflow).toBe("hidden");
-  expect(list.scrollHeight).toBe(list.height);
-
-  // Header and Send attachments stay visible while inspecting the preview.
-  await expect(dialog.getByRole("heading", { name: t("upload.dialogTitle") })).toBeVisible();
-  await expect(
-    dialog.getByRole("button", { name: t("upload.sendAttachments") })
-  ).toBeVisible();
-
-  // A large prepared image pans in both directions inside its own viewport;
-  // neither the staging list nor the page moves with it.
-  const previewLocator = dialog.locator(".upload-preview-viewport");
-  const previewImage = previewLocator.locator(".upload-staging-preview");
-  await expect(previewImage).toBeVisible();
-  await expect(dialog.getByRole("button", { name: t("upload.previewFit") })).toHaveAttribute(
-    "aria-pressed",
-    "true"
-  );
-  await previewImage.evaluate((image) => {
-    image.style.inlineSize = "1200px";
-  });
-  await expect
-    .poll(async () => previewLocator.evaluate((preview) => preview.scrollWidth))
-    .toBe(await previewLocator.evaluate((preview) => preview.clientWidth));
-  await dialog.getByRole("button", { name: t("upload.previewActualSize") }).click();
-  await expect(previewLocator).toHaveAttribute("data-preview-mode", "actual");
-  // React may reconcile a test-only inline style during the mode update; set
-  // the synthetic oversized dimensions again after the real user action.
-  await previewImage.evaluate((image) => {
-    image.style.inlineSize = "1200px";
-  });
-  await expect
-    .poll(async () => previewLocator.evaluate((preview) => preview.scrollWidth))
-    .toBeGreaterThan(await previewLocator.evaluate((preview) => preview.clientWidth));
-  await previewLocator.hover();
-  await page.mouse.wheel(160, 160);
-  await expect
-    .poll(async () => previewLocator.evaluate((preview) => preview.scrollTop))
-    .toBeGreaterThan(0);
-  await expect
-    .poll(async () => previewLocator.evaluate((preview) => preview.scrollLeft))
-    .toBeGreaterThan(0);
-  const after = await stagingGeometry(page);
-  expect(after!.list!.scrollTop).toBe(0);
-  expect(after!.pageScrollY).toBe(0);
-});
-
-test("per-file upload controls stay pinned while the staging list scrolls", async ({ page }) => {
-  // A window tall enough for ordinary use but not for the whole card: the
-  // staging list must scroll here, and when it does the filename, caption
-  // field, and output controls have to stay inside the visible list box so the
-  // preview is the only part that moves out of view.
-  await page.setViewportSize(MID_VIEWPORT);
-  await gotoReadyShell(page);
-  await page.evaluate(() => {
-    window.__harness.setCommandResponse("download_media", () => window.__harness.currentSnapshot());
-    window.__harness.clearInvocations();
-  });
-
-  await page.getByRole("button", { name: "Attach file", exact: true }).click();
-  await page
-    .locator('input[type="file"][aria-label="Attach file input"]')
-    .setInputFiles(stagedPortraitImage());
-
-  const dialog = page.getByRole("dialog", { name: t("upload.dialogTitle") });
-  await expect(dialog).toBeVisible();
-  const preview = dialog.locator(".upload-preview-viewport");
-  await expect(preview).toBeVisible();
-  // Emulate a large prepared image so the card cannot fit the list.
-  await dialog.locator(".upload-staging-preview").evaluate((image) => {
-    image.style.inlineSize = "1400px";
-  });
-
-  const listLocator = dialog.locator(".upload-staging-list");
-  await listLocator.hover({ position: { x: 20, y: 20 } });
-  for (let index = 0; index < 6; index += 1) {
-    await page.mouse.wheel(0, 120);
+for (const surface of ["main", "thread"] as const) {
+  for (const viewport of [STANDARD_VIEWPORT, MID_VIEWPORT, SHORT_VIEWPORT]) {
+    test(`${surface} attachment dialog fills the window and fits the whole image at ${viewport.height}px`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await gotoReadyShell(page);
+      if (surface === "thread") {
+        await page.getByRole("button", { name: /2 replies/ }).click();
+      }
+      const pane = surface === "thread" ? page.locator('aside[aria-label="Context panel"]') : page;
+      await pane.getByRole("button", { name: "Attach file", exact: true }).click();
+      await pane.locator('input[type="file"][aria-label="Attach file input"]').setInputFiles(stagedPortraitImage());
+      const dialog = page.getByRole("dialog", { name: t("upload.dialogTitle"), exact: true });
+      await expect(dialog).toBeVisible();
+      await expect(dialog).toHaveAttribute("aria-modal", "true");
+      const bounds = await dialog.boundingBox();
+      expect(bounds!.x).toBeLessThanOrEqual(16);
+      expect(bounds!.y).toBeLessThanOrEqual(16);
+      expect(bounds!.width).toBeGreaterThanOrEqual(viewport.width - 32);
+      expect(bounds!.height).toBeGreaterThanOrEqual(viewport.height - 32);
+      expectStagingBounded((await stagingGeometry(page))!, surface);
+      const image = dialog.locator(".upload-staging-preview");
+      await expect(image).toBeVisible();
+      await image.evaluate((img: HTMLImageElement) => img.decode());
+      const geometry = await image.evaluate((img: HTMLImageElement) => {
+        const box = img.getBoundingClientRect();
+        const preview = img.closest(".upload-preview-viewport")!;
+        const frame = preview.getBoundingClientRect();
+        return { width: box.width, height: box.height, ratio: img.naturalWidth / img.naturalHeight,
+          inside: box.top >= frame.top && box.bottom <= frame.bottom + 1 && box.left >= frame.left && box.right <= frame.right + 1,
+          frameHeight: frame.height, scrollHeight: preview.scrollHeight, clientHeight: preview.clientHeight };
+      });
+      expect(geometry.inside).toBe(true);
+      expect(geometry.frameHeight).toBeGreaterThanOrEqual(180);
+      expect(geometry.width / geometry.height).toBeCloseTo(geometry.ratio, 2);
+      expect(geometry.scrollHeight).toBe(geometry.clientHeight);
+      await expect(dialog.getByRole("group", { name: t("upload.previewMode") })).toHaveCount(0);
+      await expect(dialog.locator(".upload-output-toolbar")).toBeInViewport();
+      await expect(dialog.getByRole("textbox")).toBeInViewport();
+      await expect(dialog.getByRole("button", { name: t("upload.sendAttachments") })).toBeInViewport();
+    });
   }
+}
 
-  const pinned = await dialog.evaluate((element) => {
-    const box = (selector: string) => {
-      const node = element.querySelector<HTMLElement>(selector);
-      return node ? node.getBoundingClientRect() : null;
-    };
-    const list = element.querySelector<HTMLElement>(".upload-staging-list");
-    const listBox = box(".upload-staging-list");
-    const caption = box(".upload-staging-caption");
-    const toolbar = box(".upload-output-toolbar");
-    if (!list || !listBox || !caption || !toolbar) return null;
-    return {
-      listScrollTop: list.scrollTop,
-      listScrolls: list.scrollHeight > list.clientHeight,
-      listTop: listBox.top,
-      listBottom: listBox.bottom,
-      captionTop: caption.top,
-      toolbarBottom: toolbar.bottom
-    };
-  });
-  expect(pinned).not.toBeNull();
-  // The list is the fallback scroll owner and it did move.
-  expect(pinned!.listScrolls).toBe(true);
-  expect(pinned!.listScrollTop).toBeGreaterThan(0);
-  // …yet the per-file controls are still fully inside the visible list box.
-  expect(pinned!.captionTop).toBeGreaterThanOrEqual(pinned!.listTop - 1);
-  expect(pinned!.toolbarBottom).toBeLessThanOrEqual(pinned!.listBottom + 1);
-  await expect(dialog.getByRole("heading", { name: t("upload.dialogTitle") })).toBeVisible();
-  await expect(dialog.getByRole("button", { name: t("upload.sendAttachments") })).toBeVisible();
-});
-
-test("thread composer staging panel stays bounded and scrolls at a short viewport", async ({
-  page
-}) => {
+test("clicking the fitted image opens a separate original-size popup and restores focus on close", async ({ page }) => {
   await page.setViewportSize(SHORT_VIEWPORT);
   await gotoReadyShell(page);
-  await page.evaluate(() => {
-    window.__harness.setCommandResponse("download_media", () => window.__harness.currentSnapshot());
-    window.__harness.clearInvocations();
-  });
-
-  // Open the thread panel through the real user path.
-  await page.getByRole("button", { name: /2 replies/ }).click();
-  const contextPanel = page.locator('aside[aria-label="Context panel"]');
-  const threadComposer = page.getByRole("textbox", { name: t("timeline.threadComposer") });
-  await expect(threadComposer).toBeVisible();
-
-  await contextPanel.getByRole("button", { name: "Attach file", exact: true }).click();
-  await contextPanel
-    .locator('input[type="file"][aria-label="Attach file input"]')
-    .setInputFiles(stagedPortraitImage());
-
-  const dialog = page.getByRole("dialog", { name: t("upload.dialogTitle") });
-  await expect(dialog).toBeVisible();
-
-  const geometry = await stagingGeometry(page);
-  expect(geometry).not.toBeNull();
-  expectStagingBounded(geometry!, "thread staging");
-
-  expect(geometry!.list).not.toBeNull();
-  const list = geometry!.list!;
-  expect(list.overflow).toBe("auto");
-  expect(list.scrollHeight).toBeGreaterThan(list.height);
-
-  await expect(dialog.getByRole("heading", { name: t("upload.dialogTitle") })).toBeVisible();
-  await expect(
-    dialog.getByRole("button", { name: t("upload.sendAttachments") })
-  ).toBeVisible();
-
-  // Wheel outside the nested preview so the staging list, rather than the
-  // preview's two-axis pan surface, owns this fallback scroll gesture.
-  await contextPanel.locator(".upload-staging-file").hover();
-  for (let index = 0; index < 4; index += 1) {
-    await page.mouse.wheel(0, 120);
-  }
-  await expect
-    .poll(async () => (await stagingGeometry(page))!.list!.scrollTop)
-    .toBeGreaterThan(0);
-  const after = await stagingGeometry(page);
-  expect(after!.pageScrollY).toBe(0);
+  const buffer = Buffer.from(await page.evaluate(() => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1600;
+    canvas.height = 1200;
+    canvas.getContext("2d")!.fillRect(0, 0, 1600, 1200);
+    return canvas.toDataURL("image/png").split(",")[1];
+  }), "base64");
+  await page.getByRole("button", { name: "Attach file", exact: true }).click();
+  await page.locator('input[type="file"][aria-label="Attach file input"]').setInputFiles({ name: "synthetic-landscape.png", mimeType: "image/png", buffer });
+  const staging = page.getByRole("dialog", { name: t("upload.dialogTitle"), exact: true });
+  const trigger = staging.getByRole("button", { name: t("upload.previewActualSize"), exact: true });
+  await expect(staging.locator(".upload-staging-preview")).toBeVisible();
+  await trigger.click();
+  const popup = page.getByRole("dialog", { name: t("upload.previewActualSize"), exact: true });
+  await expect(popup).toBeVisible();
+  const img = popup.getByRole("img");
+  await img.evaluate((image: HTMLImageElement) => image.decode());
+  expect(await img.evaluate((image: HTMLImageElement) => ({ width: image.clientWidth, height: image.clientHeight }))).toEqual({ width: 1600, height: 1200 });
+  const scroll = popup.locator(".upload-actual-size-viewport");
+  await scroll.hover();
+  await page.mouse.wheel(160, 160);
+  await expect.poll(() => scroll.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  await expect.poll(() => scroll.evaluate((el) => el.scrollLeft)).toBeGreaterThan(0);
+  await page.keyboard.press("Escape");
+  await expect(popup).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  await expect(staging).toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect(popup).toBeVisible();
+  await popup.getByRole("button", { name: t("action.close", { title: t("upload.previewActualSize") }), exact: true }).click();
+  await expect(popup).toHaveCount(0);
+  await expect(trigger).toBeFocused();
 });
+
+for (const count of [1, 3]) {
+  test(`${count} attachments remain reachable in a very short window`, async ({ page }) => {
+    await page.setViewportSize({ width: 900, height: 360 });
+    await gotoReadyShell(page);
+    await page.getByRole("button", { name: "Attach file", exact: true }).click();
+    await page.locator('input[type="file"][aria-label="Attach file input"]').setInputFiles(
+      Array.from({ length: count }, (_, index) => ({ ...stagedPortraitImage(), name: `synthetic-${index}.png` }))
+    );
+    const dialog = page.getByRole("dialog", { name: t("upload.dialogTitle"), exact: true });
+    await expect(dialog).toBeVisible();
+    const caption = dialog.getByRole("textbox").last();
+    await caption.fill("Synthetic caption");
+    await expect(caption).toBeInViewport();
+    expectStagingBounded((await stagingGeometry(page))!, "short staging");
+    await expect(dialog.getByRole("button", { name: t("upload.sendAttachments") })).toBeInViewport();
+    expect((await stagingGeometry(page))!.list!.scrollTop).toBeGreaterThan(0);
+    expect((await stagingGeometry(page))!.pageScrollY).toBe(0);
+  });
+}
+
+for (const height of [800, 520]) {
+  test(`macOS attachment dialogs stay below the native titlebar at ${height}px`, async ({ page }) => {
+    await page.setViewportSize({ width: 1200, height });
+    await gotoReadyShell(page);
+    await page.evaluate(() => {
+      const snapshot = window.__harness.currentSnapshot();
+      snapshot.state.domain.locale_profile.platform = "macos";
+      window.__harness.setSnapshot(snapshot);
+    });
+    const titlebar = page.locator('.titlebar[data-platform="macos"]');
+    await expect(titlebar).toBeVisible();
+    const titlebarBottom = await titlebar.evaluate((element) => element.getBoundingClientRect().bottom);
+    await page.getByRole("button", { name: "Attach file", exact: true }).click();
+    await page.locator('input[type="file"][aria-label="Attach file input"]').setInputFiles(stagedPortraitImage());
+    const dialog = page.getByRole("dialog", { name: t("upload.dialogTitle"), exact: true });
+    await expect(dialog).toBeVisible();
+    expect((await dialog.boundingBox())!.y).toBeGreaterThanOrEqual(titlebarBottom);
+    expectStagingBounded((await stagingGeometry(page))!, "macOS staging");
+    await expect(dialog.getByRole("button", { name: t("upload.sendAttachments") })).toBeInViewport();
+    await expect(dialog.locator(".upload-staging-preview")).toBeVisible();
+    await dialog.locator(".upload-preview-open").click();
+    const popup = page.getByRole("dialog", { name: t("upload.previewActualSize"), exact: true });
+    await expect(popup).toBeVisible();
+    const box = (await popup.boundingBox())!;
+    expect(box.y).toBeGreaterThanOrEqual(titlebarBottom);
+    expect(box.y + box.height).toBeLessThanOrEqual(height);
+    await popup.getByRole("button", { name: t("action.close", { title: t("upload.previewActualSize") }) }).click();
+    await expect(popup).toHaveCount(0);
+    await expect(dialog).toBeVisible();
+  });
+}

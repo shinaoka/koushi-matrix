@@ -151,84 +151,20 @@ describe("styles.css token system", () => {
     }
   });
 
-  test("upload staging panel bounds to available height with a dedicated scroll owner (#515)", () => {
-    const timeline = selectorBlock(".timeline-scroll");
-    // A long virtual timeline must consume the remaining height instead of
-    // shrinking composer siblings from its intrinsic scroll extent.
-    expect(timeline).toMatch(/flex:\s*1\s+1\s+0/);
-
+  test("attachment layout separates fitted staging from actual-size scrolling", () => {
     const dialog = selectorBlock(".upload-staging-dialog");
-    // Three-row layout: header / minmax(0, 1fr) scroll body / footer.
     expect(dialog).toMatch(/grid-template-rows:\s*auto\s+minmax\(0,\s*1fr\)\s+auto/);
-    // Bounded to the available vertical space and never overflow-clipped
-    // without a scroll owner (the panel itself must not scroll the page).
-    expect(dialog).toMatch(/max-height:\s*min\(80vh,\s*640px\)/);
+    expect(dialog).toMatch(/block-size:\s*100%/);
     expect(dialog).toMatch(/overflow:\s*hidden/);
-
     const list = selectorBlock(".upload-staging-list");
-    // The list is the vertical scroll owner: it can collapse below content
-    // size and scrolls, containing overscroll so the timeline never moves.
-    expect(list).toMatch(/min-height:\s*0/);
     expect(list).toMatch(/overflow-y:\s*auto/);
     expect(list).toMatch(/overscroll-behavior:\s*contain/);
-
-    const singleList = selectorBlock(".upload-staging-list.is-single");
-    // A single attachment keeps its editor fixed; any vertical pressure is
-    // absorbed by the bounded image preview instead of scrolling the caption.
-    expect(singleList).toMatch(/overflow-y:\s*hidden/);
-
-    const singlePreviewItem = selectorBlock(
-      ".upload-staging-list.is-single .upload-staging-item.has-preview"
-    );
-    expect(singlePreviewItem).toMatch(
-      /grid-template-rows:\s*auto\s+minmax\(0,\s*1fr\)\s+auto/
-    );
-    expect(singlePreviewItem).toMatch(/min-block-size:\s*0/);
-
-    const singlePreview = selectorBlock(
-      ".upload-staging-list.is-single .upload-staging-item.has-preview .upload-preview-viewport"
-    );
-    expect(singlePreview).toMatch(/block-size:\s*100%/);
-    expect(singlePreview).toMatch(
-      /min-block-size:\s*var\(--upload-preview-viewport-min-size\)/
-    );
-
-    const preview = selectorBlock(".upload-preview-viewport");
-    // A prepared image pans inside its own bounded surface; controls outside
-    // this viewport do not move when the user inspects a large image.
-    expect(preview).toMatch(/overflow:\s*auto/);
-    expect(preview).toMatch(/overscroll-behavior:\s*contain/);
-    expect(preview).toMatch(/inline-size:\s*100%/);
-    expect(preview).toMatch(/min-inline-size:\s*0/);
-
-    const fittedPreview = selectorBlock(
-      '.upload-preview-viewport[data-preview-mode="fit"] .upload-staging-preview'
-    );
-    expect(fittedPreview).toMatch(/max-inline-size:\s*100%/);
-    expect(fittedPreview).toMatch(/max-block-size:\s*100%/);
-
-    const actualPreview = selectorBlock(
-      '.upload-preview-viewport[data-preview-mode="actual"] .upload-staging-preview'
-    );
-    expect(actualPreview).toMatch(/max-inline-size:\s*none/);
-    expect(actualPreview).toMatch(/max-block-size:\s*none/);
-
-    const compactCaptionEditor = selectorBlock(
-      ".upload-staging-caption .composer-inline-editor"
-    );
-    expect(compactCaptionEditor).toMatch(/min-block-size:\s*48px/);
-    expect(compactCaptionEditor).toMatch(/max-block-size:\s*112px/);
-
-    const compactCaptionToolbar = selectorBlock(
-      ".upload-staging-caption .composer-tools"
-    );
-    expect(compactCaptionToolbar).toMatch(/height:\s*30px/);
-
-    const previewImage = selectorBlock(".upload-staging-preview");
-    // Prepared output dimensions must remain visible: forcing a 100% minimum
-    // would upscale resized variants and make them look unchanged but blurrier.
-    expect(previewImage).toMatch(/min-inline-size:\s*0/);
-    expect(previewImage).not.toMatch(/min-inline-size:\s*100%/);
+    const image = selectorBlock(".upload-staging-preview");
+    expect(image).toMatch(/max-inline-size:\s*100%/);
+    expect(image).toMatch(/max-block-size:\s*100%/);
+    const actual = selectorBlock(".upload-actual-size-viewport img");
+    expect(actual).toMatch(/max-inline-size:\s*none/);
+    expect(actual).toMatch(/max-block-size:\s*none/);
   });
 
   test("selected room row uses a logical brand start bar", () => {

@@ -139,35 +139,13 @@ describe("UploadStagingDialog", () => {
     expect(screen.getByRole("textbox", { name: "Caption for synthetic.png" })).toBeTruthy();
   });
 
-  it("defaults previews to fit and switches actual-size inspection back to the top left", () => {
-    render(
-      dialog([
-        stagedImage("", {
-          kind: "ready",
-          variants: [],
-          selected: { resize: "original", format: "keep" },
-          pending: null,
-          generation: 0
-        })
-      ])
-    );
-    const viewport = document.querySelector<HTMLElement>(".upload-preview-viewport");
-    expect(viewport).not.toBeNull();
-    expect(viewport!.dataset.previewMode).toBe("fit");
-
-    const group = screen.getByRole("group", { name: "Preview size" });
-    const fit = within(group).getByRole("button", { name: "Fit" });
-    const actual = within(group).getByRole("button", { name: "100%" });
-    expect(fit.getAttribute("aria-pressed")).toBe("true");
-    expect(actual.getAttribute("aria-pressed")).toBe("false");
-
-    viewport!.scrollLeft = 30;
-    viewport!.scrollTop = 40;
-    fireEvent.click(actual);
-    expect(viewport!.dataset.previewMode).toBe("actual");
-    expect(viewport!.scrollLeft).toBe(0);
-    expect(viewport!.scrollTop).toBe(0);
-    expect(actual.getAttribute("aria-pressed")).toBe("true");
+  it("renders attachment staging as a modal outside its clipped composer container", () => {
+    const { container } = render(dialog([stagedImage("", { kind: "preparing" })]));
+    const modal = screen.getByRole("dialog", { name: t("upload.dialogTitle") });
+    expect(modal.getAttribute("aria-modal")).toBe("true");
+    expect(container.contains(modal)).toBe(false);
+    expect(document.body.contains(modal)).toBe(true);
+    expect(screen.queryByRole("group", { name: t("upload.previewMode") })).toBeNull();
   });
 
   it("renders the shared caption editor and emits a structured document from formatting", () => {
@@ -492,8 +470,10 @@ describe("UploadStagingDialog", () => {
     const last = screen.getByRole("textbox", { name: "Caption for second.png" });
     const send = screen.getByRole("button", { name: "Send attachments" });
 
+    first.focus();
     fireEvent.keyDown(first, { key: "Tab" });
-    expect(document.activeElement).toBe(document.body);
+    expect(document.activeElement).toBe(first);
+    last.focus();
     fireEvent.keyDown(last, { key: "Tab" });
     expect(document.activeElement).toBe(send);
   });
