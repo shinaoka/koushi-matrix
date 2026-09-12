@@ -65,13 +65,14 @@ use super::{
     edited_content_for_edit_target, edited_document_content_for_edit_target,
     has_user_visible_content, link_ranges_for_message_projection,
     megolm_message_index_from_original_json, membership_change_projection,
-    message_edit_target_token, message_projection_from_msgtype, msgtype_carries_editable_caption,
-    project_local_megolm_rotation_reason, reaction_groups_from_sdk,
-    reply_quote_from_message_projection, reset_loading_link_previews_to_pending,
-    room_name_notice_projection, state_event_notice_body, state_event_notice_projection,
-    timeline_item_can_edit, timeline_item_can_react, timeline_item_can_redact,
-    timeline_item_should_be_hidden, validate_cancel_send, validate_redact_reaction,
-    validate_retry_send, validate_send_reaction, visible_missing_reply_detail_event_ids,
+    mentioned_user_ids_from_event_json, message_edit_target_token, message_projection_from_msgtype,
+    msgtype_carries_editable_caption, project_local_megolm_rotation_reason,
+    reaction_groups_from_sdk, reply_quote_from_message_projection,
+    reset_loading_link_previews_to_pending, room_name_notice_projection, state_event_notice_body,
+    state_event_notice_projection, timeline_item_can_edit, timeline_item_can_react,
+    timeline_item_can_redact, timeline_item_should_be_hidden, validate_cancel_send,
+    validate_redact_reaction, validate_retry_send, validate_send_reaction,
+    visible_missing_reply_detail_event_ids,
 };
 
 use super::super::test_support::{fake_rid, room_key, timeline_item};
@@ -327,6 +328,64 @@ fn editable_document_uses_formatted_links_for_duplicate_mention_identity() {
     );
     assert!(
         matches!(document.inlines.last(), Some(ComposerInline::Text { text }) if text.ends_with("typed @Same"))
+    );
+}
+
+#[test]
+fn mentioned_user_ids_come_from_the_event_mentions_metadata() {
+    assert_eq!(
+        mentioned_user_ids_from_event_json(&serde_json::json!({
+            "content": {
+                "body": "@Alice please look",
+                "format": "org.matrix.custom.html",
+                "formatted_body": "<a href=\"https://matrix.to/#/%40alice%3Aexample.test\">@Alice</a> please look",
+                "m.mentions": { "user_ids": ["@alice:example.test"] }
+            }
+        })),
+        vec!["@alice:example.test"]
+    );
+}
+
+#[test]
+fn mentioned_user_ids_ignore_text_that_only_looks_like_a_mention() {
+    // Raw "@Alice" without `m.mentions` names nobody, so no viewer may render a
+    // pill for it (#874).
+    assert!(
+        mentioned_user_ids_from_event_json(&serde_json::json!({
+            "content": { "body": "@Alice please look" }
+        }))
+        .is_empty()
+    );
+}
+
+#[test]
+fn mentioned_user_ids_ignore_room_mentions() {
+    assert!(
+        mentioned_user_ids_from_event_json(&serde_json::json!({
+            "content": { "body": "@room", "m.mentions": { "room": true } }
+        }))
+        .is_empty()
+    );
+}
+
+#[test]
+fn mentioned_user_ids_follow_the_edit_replacement() {
+    assert_eq!(
+        mentioned_user_ids_from_event_json(&serde_json::json!({
+            "content": {
+                "body": "* @Bob",
+                "m.mentions": { "user_ids": ["@alice:example.test"] },
+                "m.relates_to": {
+                    "rel_type": "m.replace",
+                    "event_id": "$original:example.test",
+                    "m.new_content": {
+                        "body": "@Bob",
+                        "m.mentions": { "user_ids": ["@bob:example.test"] }
+                    }
+                }
+            }
+        })),
+        vec!["@bob:example.test"]
     );
 }
 

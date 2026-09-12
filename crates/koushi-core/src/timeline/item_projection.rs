@@ -1568,6 +1568,21 @@ fn effective_message_content(raw: &serde_json::Value) -> Option<&serde_json::Val
     )
 }
 
+pub(super) fn mentioned_user_ids_from_event_json(raw: &serde_json::Value) -> Vec<String> {
+    mention_intent_from_event_json(raw)
+        .map(|intent| {
+            intent
+                .targets
+                .into_iter()
+                .filter_map(|target| match target {
+                    MentionTarget::User { user_id, .. } => Some(user_id),
+                    MentionTarget::Room { .. } | MentionTarget::RoomMention { .. } => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn mention_intent_from_event_json(raw: &serde_json::Value) -> Option<MentionIntent> {
     let effective_content = effective_message_content(raw)?;
     let mentions = effective_content.get("m.mentions")?;
@@ -2449,8 +2464,10 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 media.is_some(),
                 is_redacted,
             );
+            let mut mentioned_user_ids = Vec::new();
             if let Some(raw) = original_json_for_event_item(event_item) {
                 actions.editable_document = composer_document_from_event_json(&raw);
+                mentioned_user_ids = mentioned_user_ids_from_event_json(&raw);
             }
             let is_hidden = timeline_item_should_be_hidden_for_key(
                 key,
@@ -2485,6 +2502,7 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 media,
                 link_previews: None,
                 link_ranges,
+                mentioned_user_ids,
                 reactions,
                 can_react,
                 is_redacted,
@@ -2525,6 +2543,7 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 media: None,
                 link_previews: None,
                 link_ranges: Vec::new(),
+                mentioned_user_ids: Vec::new(),
                 reactions: Vec::new(),
                 can_react: false,
                 is_redacted: false,

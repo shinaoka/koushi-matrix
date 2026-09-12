@@ -330,6 +330,8 @@ export interface TimelineItem {
   media?: TimelineMedia | null;
   link_previews?: LinkPreview[];
   link_ranges?: TimelineLinkRange[];
+  /** User ids this message's `m.mentions` named (#874). Absent when none. */
+  mentioned_user_ids?: string[];
   reactions: ReactionGroup[];
   can_react: boolean;
   is_redacted: boolean;

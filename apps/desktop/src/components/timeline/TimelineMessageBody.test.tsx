@@ -185,3 +185,44 @@ describe("renderFormattedBody math bounds", () => {
     expect(renderToString).not.toHaveBeenCalled();
   });
 });
+
+describe("renderFormattedBody mention pills (#874)", () => {
+  const mentionHtml =
+    '<a href="https://matrix.to/#/%40alice%3Aexample.test">@Alice</a> and <a href="https://matrix.to/#/%40bob%3Aexample.test">@Bob</a>';
+
+  const render = (mentionedUserIds: ReadonlySet<string>) =>
+    renderToStaticMarkup(
+      renderFormattedBody(
+        {
+          html: mentionHtml,
+          plain_text: "@Alice and @Bob",
+          code_blocks: []
+        } satisfies TimelineFormattedBody,
+        [],
+        false,
+        () => undefined,
+        [],
+        { revealed: new Set<string>(), reveal: () => undefined },
+        undefined,
+        mentionedUserIds
+      )
+    );
+
+  test("draws the pill only for the user the message mentions", () => {
+    const markup = render(new Set(["@alice:example.test"]));
+
+    expect(markup).toContain('class="message-mention-pill"');
+    expect(markup).toContain('data-mention-user-id="@alice:example.test"');
+    // The unmentioned permalink stays an ordinary link.
+    expect(markup).not.toContain('data-mention-user-id="@bob:example.test"');
+    expect(markup.match(/message-mention-pill/g)).toHaveLength(1);
+  });
+
+  test("draws no pill for a message that mentions nobody", () => {
+    const markup = render(new Set());
+
+    expect(markup).not.toContain("message-mention-pill");
+    // Both anchors remain clickable links.
+    expect(markup.match(/<a /g)).toHaveLength(2);
+  });
+});
