@@ -369,7 +369,7 @@ export function SpaceMembersPanel({
 
       {inviteMode ? (
         <div className="space-members-invite" role="search">
-          <label className="visually-hidden" htmlFor="space-members-invite-input">
+          <label className="sr-only" htmlFor="space-members-invite-input">
             {t("dialog.inviteSearch")}
           </label>
           <ImeTextField
@@ -396,7 +396,7 @@ export function SpaceMembersPanel({
         </div>
       ) : (
         <div className="space-members-search" role="search">
-          <label className="visually-hidden" htmlFor="space-members-search-input">
+          <label className="sr-only" htmlFor="space-members-search-input">
             {t("spaceMembers.search")}
           </label>
           <ImeTextField
@@ -709,7 +709,11 @@ function SpaceMemberRow({
     onRequestAvatarThumbnail
   ]);
 
-  const roleLabel = memberRoleLabel(entry.role);
+  // #880: when the row carries its own role control, that control already
+  // states the role; a second chip would duplicate it and squeeze the name.
+  const roleSelectRendered =
+    sectionId === "joined" && state.can_edit_roles && entry.role_options.length > 0;
+  const roleLabel = roleSelectRendered ? null : memberRoleLabel(entry.role);
 
   return (
     <li
@@ -770,9 +774,9 @@ function SpaceMemberRow({
           ) : null}
         </span>
       </button>
-      {sectionId === "joined" && state.can_edit_roles && entry.role_options.length > 0 ? (
+      {roleSelectRendered ? (
         <label className="space-members-role-control">
-          <span className="visually-hidden">
+          <span className="sr-only">
             {t("spaceMembers.roleSelect", { name: entry.display_label })}
           </span>
           <select
