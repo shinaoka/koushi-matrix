@@ -138,6 +138,7 @@ export function ContextualRightPanel({
   onReloadSpaceMemberRoles = () => undefined,
   onRecoverySecretPresenceChange,
   onReply,
+  onOpenMatrixTarget,
   onResultSelect,
   onSubmitRecovery,
   onSwitchAccount,
@@ -274,6 +275,7 @@ export function ContextualRightPanel({
   onReloadSpaceMemberRoles?: () => void;
   onRecoverySecretPresenceChange: (value: boolean) => void;
   onReply: TimelineRowActionHandlers["onReply"];
+  onOpenMatrixTarget?: TimelineRowActionHandlers["onOpenMatrixTarget"];
   onResultSelect: (roomId: string, eventId: string) => void;
   onSubmitRecovery: (event: FormEvent<HTMLFormElement>) => void;
   onSwitchAccount: (session: SavedSessionInfo) => void;
@@ -788,6 +790,7 @@ export function ContextualRightPanel({
               transport={focusedTimelineTransport}
               suppressPaginationUi={true}
               onReply={onReply}
+              onOpenMatrixTarget={onOpenMatrixTarget}
               resolveComposerKeyAction={onResolveComposerKeyAction}
               liveSignals={snapshot.state.domain.live_signals}
               profileUsers={snapshot.state.domain.profile.users}
@@ -877,6 +880,7 @@ export function ContextualRightPanel({
             timelineKey={threadTimelineKeyValue}
             transport={timelineTransport}
             onReply={onReply}
+            onOpenMatrixTarget={onOpenMatrixTarget}
             onOpenThread={() => undefined}
             resolveComposerKeyAction={onResolveComposerKeyAction}
             liveSignals={snapshot.state.domain.live_signals}

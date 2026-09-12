@@ -3335,7 +3335,12 @@ export function App() {
    * instead of growing a second join flow.
    */
   async function openMatrixTarget(target: MatrixPermalinkTarget) {
-    if (target.kind !== "room") {
+    if (target.kind === "user") {
+      // #874: a `matrix.to` user permalink — a mention — names an account this
+      // client can show in place. Dropping it left mention clicks dead in the
+      // main timeline and sent the thread/search panes to the browser.
+      setSelectedProfileUserId(target.userId);
+      runInBackground(setRightPanelModeClosingFocusedContext("profile"));
       return;
     }
     const joined = snapshot?.state.domain.rooms.find(
@@ -6139,6 +6144,7 @@ export function App() {
           threadsListScope={openThreadsListScope}
           peoplePanelScope={peoplePanelScope}
           selectedProfileUserId={selectedProfileUserId}
+          onOpenMatrixTarget={openMatrixTarget}
           recoverySecretFilled={recoverySecretFilled}
           recoverySecretInputRef={recoverySecretRef}
           snapshot={snapshot}
