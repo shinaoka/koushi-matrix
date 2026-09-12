@@ -37,6 +37,7 @@ import type {
   AccountManagementCapabilities,
   AccountManagementState,
   CurrentSessionStatusState,
+  DesktopUpdateState,
   DisplaySettings,
   E2eeTrustState,
   DisplayPlatform,
@@ -48,15 +49,17 @@ import type {
   SettingsPatch,
   SettingsState,
   SecureBackupSetupIntent,
-  WindowSettings,
   ProfileState,
-  TimelineSettings
+  TimelineSettings,
+  UpdatesSettings,
+  WindowSettings
 } from "../domain/types";
 
 export function UserSettingsPanel({
   currentSession,
   currentSessionStatus = { status: "idle" },
   displayDensity = "comfortable",
+  desktopUpdate = { kind: "unsupported" },
   savedSessions,
   settings,
   searchCrawlerState,
@@ -68,6 +71,7 @@ export function UserSettingsPanel({
   accountManagementCapabilities,
   keyboardLabelProfile,
   onUpdateSettings,
+  onRestartToInstallDesktopUpdate = () => undefined,
   onRebuildSearchIndex,
   onSetDisplayName,
   onSetAvatar,
@@ -107,6 +111,7 @@ export function UserSettingsPanel({
   currentSession: SavedSessionInfo | null;
   currentSessionStatus?: CurrentSessionStatusState;
   displayDensity?: DisplayDensity;
+  desktopUpdate?: DesktopUpdateState;
   savedSessions: SavedSessionInfo[];
   settings: SettingsState;
   searchCrawlerState?: SearchCrawlerState;
@@ -119,6 +124,7 @@ export function UserSettingsPanel({
   keyboardLabelProfile?: ShortcutLabelProfile;
   onOpenKeyboardSettings: () => void;
   onUpdateSettings: (patch: SettingsPatch) => void;
+  onRestartToInstallDesktopUpdate?: () => void;
   onRebuildSearchIndex?: () => void;
   onSetDisplayName: (displayName: string | null) => void;
   onSetAvatar: (file: File) => void;
@@ -186,6 +192,7 @@ export function UserSettingsPanel({
   const selectedNotifications = settings.values.notifications;
   const selectedDisplay = settings.values.display;
   const selectedWindow = settings.values.window;
+  const selectedUpdates = settings.values.updates;
   // macOS hides on close unconditionally (overview.md, "Desktop Window
   // Lifecycle And Tray"), so the setting has nothing to control there.
   const closeToTrayIsConfigurable = platform !== "macos";
@@ -597,6 +604,14 @@ export function UserSettingsPanel({
               settingKey="close_to_tray"
               current={selectedWindow}
               onSelect={onUpdateSettings}
+            />
+          ) : null}
+          {platform === "macos" ? (
+            <DesktopUpdateControls
+              current={selectedUpdates}
+              state={desktopUpdate}
+              onSelect={onUpdateSettings}
+              onRestart={onRestartToInstallDesktopUpdate}
             />
           ) : null}
         </div>
@@ -1017,6 +1032,76 @@ function WindowToggle({
       </span>
     </button>
   );
+}
+
+export function DesktopUpdateControls({
+  current,
+  state,
+  onSelect,
+  onRestart
+}: {
+  current: UpdatesSettings;
+  state: DesktopUpdateState;
+  onSelect: (patch: SettingsPatch) => void;
+  onRestart: () => void;
+}) {
+  return (
+    <>
+      <button
+        className="settings-toggle-row"
+        type="button"
+        role="switch"
+        aria-checked={current.auto_check}
+        aria-label={t("settings.autoUpdate")}
+        onClick={() => onSelect({ updates: { auto_check: !current.auto_check } })}
+      >
+        <span className="settings-toggle-copy">
+          <span className="settings-toggle-label">
+            <RefreshCcw size={15} aria-hidden="true" />
+            <span>{t("settings.autoUpdate")}</span>
+          </span>
+          <span className="settings-toggle-description">
+            {t("settings.autoUpdateDescription")}
+          </span>
+        </span>
+        <span className="settings-switch-track" aria-hidden="true">
+          <span className="settings-switch-thumb" />
+        </span>
+      </button>
+      {state.kind !== "unsupported" ? (
+        <div className="settings-update-status" aria-live="polite">
+          <p className="settings-status-text">{desktopUpdateStatusText(state)}</p>
+          {state.kind === "ready" ? (
+            <button className="profile-settings-action" type="button" onClick={onRestart}>
+              <RefreshCcw size={14} aria-hidden="true" />
+              {t("settings.updateRestart")}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function desktopUpdateStatusText(state: DesktopUpdateState): string {
+  switch (state.kind) {
+    case "idle":
+      return t("settings.updateIdle");
+    case "checking":
+      return t("settings.updateChecking");
+    case "downloading":
+      return t("settings.updateDownloading", { version: state.version });
+    case "ready":
+      return t("settings.updateReady", { version: state.version });
+    case "installing":
+      return t("settings.updateInstalling", { version: state.version });
+    case "failed":
+      return state.stage === "install"
+        ? t("settings.updateInstallFailed")
+        : t("settings.updateCheckFailed");
+    case "unsupported":
+      return "";
+  }
 }
 
 function sessionMatches(left: SavedSessionInfo | null, right: SavedSessionInfo): boolean {

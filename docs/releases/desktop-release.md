@@ -42,6 +42,17 @@ Claude Code and OpenCode have equivalent discovery entry points under
 - Never expose GitHub Environment secrets or copy signing material into the
   repository, logs, release notes, or artifacts.
 
+The protected `release-macos` Environment also owns the updater trust material:
+
+- `KOUSHI_UPDATER_PUBLIC_KEY` is an Environment variable embedded into the
+  macOS binary for signature verification;
+- `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` are
+  Environment secrets used only while producing the updater archive.
+
+Generate this keypair offline with the Tauri signer. Never commit or print the
+private key or password. A normal local build without the public key keeps the
+update adapter in `unsupported` and does not make update requests.
+
 ## Prepare the release PR
 
 1. Fetch `origin/main` and confirm the worktree state. Preserve unrelated user
@@ -78,13 +89,16 @@ The workflow:
    `main` commit;
 2. rejects an already-used release tag;
 3. runs the lockfile, full, and runtime-only npm vulnerability gates;
-4. builds the macOS arm64 DMG using the protected `release-macos` Environment;
-5. verifies signatures, notarization tickets, stapling, and Gatekeeper trust;
+4. builds the macOS arm64 DMG and signed updater archive using the protected
+   `release-macos` Environment;
+5. verifies both apps' signatures, notarization tickets, stapling, and
+   Gatekeeper trust;
 6. builds the unsigned Windows x64 NSIS trial installer;
 7. builds the unsigned Linux x64 AppImage, deb, and RPM packages;
-8. creates SHA-256 files for every installer;
-9. waits for all platform jobs, verifies the downloaded checksums, creates a
-   hidden draft Release, uploads every artifact, and finally publishes it.
+8. creates SHA-256 files for every installer and updater archive;
+9. creates `latest.json` from the verified archive signature;
+10. waits for all platform jobs, verifies the downloaded checksums, creates a
+    hidden draft Release, uploads every artifact, and finally publishes it.
 
 No public partial release is created when a platform build or verification gate
 fails.
@@ -109,6 +123,9 @@ Confirm that the release contains every installer and its `.sha256`
 file:
 
 - `Koushi-macos-arm64.dmg`
+- `Koushi-macos-arm64.app.tar.gz`
+- `Koushi-macos-arm64.app.tar.gz.sig`
+- `latest.json`
 - `Koushi-windows-x64-unsigned.exe`
 - `Koushi-linux-x64.AppImage`
 - `Koushi-linux-x64.deb`
@@ -117,6 +134,7 @@ file:
 Stable download links:
 
 - <https://github.com/shinaoka/koushi-matrix/releases/latest/download/Koushi-macos-arm64.dmg>
+- <https://github.com/shinaoka/koushi-matrix/releases/latest/download/latest.json>
 - <https://github.com/shinaoka/koushi-matrix/releases/latest/download/Koushi-windows-x64-unsigned.exe>
 - <https://github.com/shinaoka/koushi-matrix/releases/latest/download/Koushi-linux-x64.AppImage>
 - <https://github.com/shinaoka/koushi-matrix/releases/latest/download/Koushi-linux-x64.deb>

@@ -60,6 +60,8 @@ describe("desktop release scripts", () => {
     expect(output).toContain("msi");
     expect(output).toContain("nsis");
     expect(output).toContain("macOS.hardenedRuntime");
+    expect(output).toContain("macOS.createUpdaterArtifacts");
+    expect(output).toContain("macOS.updater.endpoint");
     expect(output).toContain("windows.signCommand");
     expect(output).toContain("windows.wix.upgradeCode");
     expect(output).toContain("security.assetProtocol.enable");
@@ -81,6 +83,9 @@ describe("desktop release scripts", () => {
     delete missingEnvironment.APPLE_ID;
     delete missingEnvironment.APPLE_PASSWORD;
     delete missingEnvironment.APPLE_TEAM_ID;
+    delete missingEnvironment.KOUSHI_UPDATER_PUBLIC_KEY;
+    delete missingEnvironment.TAURI_SIGNING_PRIVATE_KEY;
+    delete missingEnvironment.TAURI_SIGNING_PRIVATE_KEY_PASSWORD;
     delete missingEnvironment.WINDOWS_CERTIFICATE_THUMBPRINT;
     delete missingEnvironment.WINDOWS_SIGN_COMMAND;
 
@@ -92,6 +97,8 @@ describe("desktop release scripts", () => {
     expect(missing.status).toBe(1);
     expect(missing.stderr).toContain("env.APPLE_SIGNING_IDENTITY");
     expect(missing.stderr).toContain("env.appleNotarization");
+    expect(missing.stderr).toContain("env.KOUSHI_UPDATER_PUBLIC_KEY");
+    expect(missing.stderr).toContain("env.TAURI_SIGNING_PRIVATE_KEY");
 
     const configured = spawnSync(process.execPath, [script, "--macos-signing"], {
       cwd: repoRoot,
@@ -102,6 +109,9 @@ describe("desktop release scripts", () => {
         APPLE_ID: "synthetic@example.invalid",
         APPLE_PASSWORD: "synthetic-app-password",
         APPLE_TEAM_ID: "SYNTHETIC",
+        KOUSHI_UPDATER_PUBLIC_KEY: "synthetic-public-key",
+        TAURI_SIGNING_PRIVATE_KEY: "synthetic-private-key",
+        TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "synthetic-password",
       },
     });
     expect(configured.status).toBe(0);
@@ -127,6 +137,9 @@ describe("desktop release scripts", () => {
             APPLE_API_ISSUER: "synthetic-issuer",
             APPLE_API_KEY: "SYNTHETIC",
             APPLE_API_KEY_PATH: apiKeyPath,
+            KOUSHI_UPDATER_PUBLIC_KEY: "synthetic-public-key",
+            TAURI_SIGNING_PRIVATE_KEY: "synthetic-private-key",
+            TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "synthetic-password",
           },
         }
       );
@@ -251,6 +264,11 @@ describe("desktop release scripts", () => {
       "hdiutil attach",
       "spctl --assess",
       "Koushi-macos-arm64.dmg",
+      "KOUSHI_UPDATER_PUBLIC_KEY",
+      "TAURI_SIGNING_PRIVATE_KEY",
+      "Koushi-macos-arm64.app.tar.gz.sig",
+      "scripts/desktop-updater-manifest.mjs",
+      "latest.json",
       "Koushi-windows-x64-unsigned.exe",
       "build:linux",
       "Koushi-linux-x64.AppImage",

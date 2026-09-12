@@ -14,8 +14,10 @@ if (!checkConfig) {
 }
 
 const tauriConfigPath = join(repoRoot, "apps/desktop/src-tauri/tauri.conf.json");
+const tauriMacosConfigPath = join(repoRoot, "apps/desktop/src-tauri/tauri.macos.conf.json");
 const packagePath = join(repoRoot, "apps/desktop/package.json");
 const tauriConfig = JSON.parse(readFileSync(tauriConfigPath, "utf8"));
+const tauriMacosConfig = JSON.parse(readFileSync(tauriMacosConfigPath, "utf8"));
 const packageJson = JSON.parse(readFileSync(packagePath, "utf8"));
 const failures = [];
 const notes = [];
@@ -44,6 +46,18 @@ requireCheck(macOS.hardenedRuntime === true, "macOS.hardenedRuntime", "hardened 
 requireCheck(Boolean(macOS.minimumSystemVersion), "macOS.minimumSystemVersion", "minimum macOS version set");
 requireCheck("signingIdentity" in macOS, "macOS.signingIdentity", "signing identity key is explicit");
 requireCheck(Boolean(macOS.entitlements), "macOS.entitlements", "entitlements file configured");
+requireCheck(
+  tauriMacosConfig.bundle?.createUpdaterArtifacts === true,
+  "macOS.createUpdaterArtifacts",
+  "signed updater archives are enabled only for macOS"
+);
+requireCheck(
+  tauriMacosConfig.plugins?.updater?.endpoints?.includes(
+    "https://github.com/shinaoka/koushi-matrix/releases/latest/download/latest.json"
+  ),
+  "macOS.updater.endpoint",
+  "stable GitHub Release manifest endpoint configured"
+);
 
 const windows = bundle.windows ?? {};
 requireCheck(windows.digestAlgorithm === "sha256", "windows.digestAlgorithm", "SHA-256 signing digest configured");
@@ -145,6 +159,21 @@ requireCheck(
 );
 
 if (macosSigning) {
+  requireCheck(
+    Boolean(process.env.KOUSHI_UPDATER_PUBLIC_KEY),
+    "env.KOUSHI_UPDATER_PUBLIC_KEY",
+    "required to verify downloaded macOS updates"
+  );
+  requireCheck(
+    Boolean(process.env.TAURI_SIGNING_PRIVATE_KEY),
+    "env.TAURI_SIGNING_PRIVATE_KEY",
+    "required to sign macOS updater archives"
+  );
+  requireCheck(
+    Boolean(process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD),
+    "env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
+    "required to unlock the macOS updater signing key"
+  );
   requireCheck(
     Boolean(process.env.APPLE_SIGNING_IDENTITY),
     "env.APPLE_SIGNING_IDENTITY",

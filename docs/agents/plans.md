@@ -10,6 +10,9 @@ code and the canon win; fix whichever document is wrong.
 
 ## Runtime and roadmap
 
+- macOS auto-update with portable desktop state (#878):
+  [2026-09-12-issue878-macos-auto-update.md](../superpowers/plans/2026-09-12-issue878-macos-auto-update.md)
+
 - Scoped receipt-reader vertical (#839/#840/#846):
   [2026-09-06-issue839-scoped-readers.md](../superpowers/plans/2026-09-06-issue839-scoped-readers.md)
 

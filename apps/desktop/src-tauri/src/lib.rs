@@ -1,5 +1,6 @@
 #![recursion_limit = "256"]
 
+mod app_updates;
 mod commands;
 mod core_event_forwarder;
 mod desktop_menu;
@@ -641,6 +642,15 @@ pub fn run() {
         }));
     }
 
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.plugin(
+            tauri_plugin_updater::Builder::new()
+                .pubkey(app_updates::configured_updater_public_key().unwrap_or_default())
+                .build(),
+        );
+    }
+
     builder
         .plugin(tauri_plugin_deep_link::init())
         .register_uri_scheme_protocol("koushi-thumbnail", move |_, request| {
@@ -681,6 +691,7 @@ pub fn run() {
             );
             // synchronous snapshot connection for the window-close gate
             let window_lifecycle_connection = runtime.attach();
+            let update_settings_connection = runtime.attach();
             let core_state = CoreRuntimeState {
                 runtime,
                 connection: TokioMutex::new(command_conn),
@@ -693,6 +704,8 @@ pub fn run() {
                 reader_subscriptions: TokioMutex::new(HashMap::new()),
             };
             app.manage(core_state);
+            app.manage(app_updates::DesktopUpdateManager::new());
+            app_updates::spawn_auto_update_loop(app.handle().clone(), update_settings_connection);
             install_oidc_deep_link_handler(app)?;
 
             let menu = build_desktop_menu(app)?;
@@ -893,6 +906,8 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            commands::app_updates::get_desktop_update_state,
+            commands::app_updates::restart_to_install_desktop_update,
             commands::diagnostics::get_diagnostic_snapshot,
             commands::diagnostics::observe_viewport_sync,
             commands::session::get_snapshot,

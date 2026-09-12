@@ -73,4 +73,18 @@ describe("Tauri desktop event port", () => {
     expect(stateListener).toHaveBeenCalledOnce();
     expect(stateListener).toHaveBeenCalledWith(envelope);
   });
+
+  test("forwards desktop update state on its adapter channel", async () => {
+    const updateListener = vi.fn();
+    const port = createTauriDesktopEventPort();
+
+    await expect(port.listenDesktopUpdates(updateListener)).resolves.toBe(unlisten);
+    expect(listen).toHaveBeenCalledWith("koushi-desktop://update", expect.any(Function));
+    const envelopeListener = vi.mocked(listen).mock.calls[0]?.[1] as (
+      event: { payload: { kind: "ready"; version: string } }
+    ) => void;
+    envelopeListener({ payload: { kind: "ready", version: "1.2.3" } });
+
+    expect(updateListener).toHaveBeenCalledWith({ kind: "ready", version: "1.2.3" });
+  });
 });

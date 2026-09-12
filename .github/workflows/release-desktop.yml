@@ -7,6 +7,7 @@ on:
       - apps/desktop/package.json
       - apps/desktop/src-tauri/Cargo.toml
       - apps/desktop/src-tauri/tauri.conf.json
+      - apps/desktop/src-tauri/tauri.macos.conf.json
   workflow_dispatch:
 
 concurrency:
@@ -72,6 +73,9 @@ jobs:
       APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
       APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
       APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      KOUSHI_UPDATER_PUBLIC_KEY: ${{ vars.KOUSHI_UPDATER_PUBLIC_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -184,9 +188,28 @@ jobs:
           spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
           cleanup_mount
           trap - EXIT
+
+          updater_count="$(find "$bundle_root/macos" -maxdepth 1 -name '*.app.tar.gz' -print | wc -l | tr -d ' ')"
+          [[ "$updater_count" == "1" ]]
+          updater_archive="$(find "$bundle_root/macos" -maxdepth 1 -name '*.app.tar.gz' -print)"
+          updater_signature="$updater_archive.sig"
+          [[ -s "$updater_signature" ]]
+
+          updater_extract="$(mktemp -d "$RUNNER_TEMP/koushi-updater.XXXXXX")"
+          tar -xzf "$updater_archive" -C "$updater_extract"
+          updater_app_count="$(find "$updater_extract" -maxdepth 1 -name '*.app' -print | wc -l | tr -d ' ')"
+          [[ "$updater_app_count" == "1" ]]
+          updater_app="$(find "$updater_extract" -maxdepth 1 -name '*.app' -print)"
+          codesign --verify --deep --strict --verbose=2 "$updater_app"
+          xcrun stapler validate "$updater_app"
+          spctl --assess --type execute --verbose=4 "$updater_app"
+
           mkdir -p release-assets
           cp "$dmg" "release-assets/$RELEASE_ASSET"
+          cp "$updater_archive" "release-assets/Koushi-macos-arm64.app.tar.gz"
+          cp "$updater_signature" "release-assets/Koushi-macos-arm64.app.tar.gz.sig"
           (cd release-assets && shasum -a 256 "$RELEASE_ASSET" > "$RELEASE_ASSET.sha256")
+          (cd release-assets && shasum -a 256 Koushi-macos-arm64.app.tar.gz > Koushi-macos-arm64.app.tar.gz.sha256)
 
       - name: Upload verified macOS release asset
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -377,6 +400,8 @@ jobs:
       RELEASE_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
       RELEASE_TARGET: ${{ github.sha }}
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
       - name: Download verified installers
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -388,6 +413,15 @@ jobs:
         run: |
           cd release-assets
           sha256sum --check ./*.sha256
+
+      - name: Create signed updater manifest
+        run: |
+          node scripts/desktop-updater-manifest.mjs \
+            --version "$RELEASE_VERSION" \
+            --target darwin-aarch64 \
+            --url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/Koushi-macos-arm64.app.tar.gz" \
+            --signature-file release-assets/Koushi-macos-arm64.app.tar.gz.sig \
+            --output release-assets/latest.json
 
       - name: Create hidden draft with all assets
         run: |

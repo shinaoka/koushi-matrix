@@ -149,6 +149,8 @@ pub struct SettingsValues {
     #[serde(default)]
     pub window: WindowSettings,
     #[serde(default)]
+    pub updates: UpdatesSettings,
+    #[serde(default)]
     pub legacy_frontend_preferences_imported: bool,
 }
 
@@ -197,6 +199,9 @@ impl SettingsValues {
         if let Some(window) = patch.window {
             self.window = window;
         }
+        if let Some(updates) = patch.updates {
+            self.updates = updates;
+        }
     }
 }
 
@@ -217,6 +222,7 @@ impl Default for SettingsValues {
             search_crawler: SearchCrawlerSettings::default(),
             sidebar: SidebarSettings::default(),
             window: WindowSettings::default(),
+            updates: UpdatesSettings::default(),
             legacy_frontend_preferences_imported: false,
         }
     }
@@ -508,6 +514,23 @@ impl Default for WindowSettings {
     }
 }
 
+/// Cross-platform desktop update preference.
+///
+/// The desktop adapter decides whether the current release target supports
+/// updates. Keeping only the user policy here avoids platform-specific state in
+/// the reusable application model.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UpdatesSettings {
+    #[serde(default = "default_true")]
+    pub auto_check: bool,
+}
+
+impl Default for UpdatesSettings {
+    fn default() -> Self {
+        Self { auto_check: true }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 /// Media settings.
 ///
@@ -642,4 +665,6 @@ pub struct SettingsPatch {
     pub sidebar: Option<SidebarSettings>,
     #[serde(default)]
     pub window: Option<WindowSettings>,
+    #[serde(default)]
+    pub updates: Option<UpdatesSettings>,
 }

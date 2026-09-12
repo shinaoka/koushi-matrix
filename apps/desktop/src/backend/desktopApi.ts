@@ -23,6 +23,7 @@ import type {
   CreateRoomRequest,
   RoomAddressPreview,
   DesktopSnapshot,
+  DesktopUpdateState,
   DirectoryQuery,
   DisplayPlatform,
   FilesViewScope,
@@ -111,6 +112,8 @@ export interface ReceiptReaderResourceContent {
 
 export interface DesktopApi {
   getSnapshot(): Promise<DesktopSnapshot>;
+  getDesktopUpdateState(): Promise<DesktopUpdateState>;
+  restartToInstallDesktopUpdate(): Promise<void>;
   settlementSnapshot(): Promise<DesktopSnapshot>;
   resyncSnapshot(): Promise<DesktopSnapshot>;
   getDiagnosticSnapshot(): Promise<DiagnosticLogSnapshot>;

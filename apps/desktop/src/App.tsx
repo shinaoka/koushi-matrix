@@ -33,7 +33,12 @@ import {
   type ComposerDraftOperationCapture,
   type ComposerDraftScope
 } from "./domain/composerDraftLifecycle";
-import type { ComposerDocument, ComposerDraftRevision, TimelinePaneState } from "./domain/types";
+import type {
+  ComposerDocument,
+  ComposerDraftRevision,
+  DesktopUpdateState,
+  TimelinePaneState
+} from "./domain/types";
 import {
   documentFromText,
   plainBodyFromDocument
@@ -793,6 +798,9 @@ export function App() {
     submissionAccountOwnerRef.current
   );
   const [schemaMismatchVersion, setSchemaMismatchVersion] = useState<number | null>(null);
+  const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdateState>({
+    kind: isTauriRuntime() ? "idle" : "unsupported"
+  });
   // #87 Phase 4 IPC contract guard (fail-closed at the data boundary): every snapshot enters
   // render state through this setter, so we reject one whose schema_version does not match the
   // renderer's SNAPSHOT_SCHEMA_VERSION — a stale flat (v1) snapshot or a mismatched Rust/TS
@@ -1761,6 +1769,35 @@ export function App() {
       unlisten?.();
     };
   }, [setSnapshot]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    const listenerReady = desktopEventPort.listenDesktopUpdates((state) => {
+      if (!disposed) setDesktopUpdate(state);
+    });
+    runInBackground(
+      listenerReady
+        .then((dispose) => {
+          if (disposed) {
+            dispose();
+          } else {
+            unlisten = dispose;
+          }
+          return api.getDesktopUpdateState();
+        })
+        .then((state) => {
+          if (!disposed) setDesktopUpdate(state);
+        })
+    );
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -6133,6 +6170,7 @@ export function App() {
           activeSpaceName={activeSpaceName}
           accountManagementUrl={snapshot.state.domain.account_management_url}
           displayDensity={displayDensity}
+          desktopUpdate={desktopUpdate}
           encryptedComposerBlocked={encryptedComposerBlocked}
           isRecoveryBusy={isBusy}
           mode={effectiveRightPanelMode}
@@ -6392,6 +6430,9 @@ export function App() {
           }}
           onUpdateSettings={(patch) => {
             runInBackground(updateSettings(patch));
+          }}
+          onRestartToInstallDesktopUpdate={() => {
+            runInBackground(api.restartToInstallDesktopUpdate());
           }}
           onSetRoomUrlPreviewOverride={(roomId, enabled) => {
             runInBackground(setRoomUrlPreviewOverride(roomId, enabled));

@@ -4306,6 +4306,35 @@ stateDiagram-v2
 - The complete `NavigationState` Debug representation exposes counts/booleans
   and coarse kinds only; it never exposes IDs, local names/icons or anchors.
 
+## Desktop Application Updates
+
+The desktop adapter owns one process-wide update lifecycle. It is independent
+of account/session readiness and consumes the Rust-owned
+`SettingsValues.updates.auto_check` preference.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unsupported: platform is not enabled
+    [*] --> Idle: platform is enabled
+    Idle --> Checking: startup/24h/setting enabled
+    Checking --> Idle: no newer release
+    Checking --> Downloading: newer release found
+    Checking --> Failed: check failed
+    Downloading --> Ready: download and signature verification succeeded
+    Downloading --> Failed: download or verification failed
+    Ready --> Installing: RestartToInstall
+    Installing --> Failed: installation failed
+```
+
+- A disabled `auto_check` preference issues no network request. Turning it off
+  suppresses later scheduled checks; turning it on triggers one check.
+- Duplicate triggers while checking, downloading, ready, or installing are
+  ignored. There is one verified pending artifact slot.
+- `ready` exposes only the release version. `failed` exposes only a coarse
+  stage/kind and is recoverable; it never blocks startup or login.
+- Installation and relaunch require explicit user intent. macOS is the only
+  enabled platform in this phase; Windows and Linux remain `unsupported`.
+
 ### UI readability #130
 
 - Home is the account-level activity surface. The Home rail button opens

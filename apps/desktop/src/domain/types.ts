@@ -42,14 +42,14 @@ export type ComposerDraftAccountOwner = SavedSessionInfo;
 
 /**
  * IPC snapshot contract version. Must match `dto.rs`'s `SNAPSHOT_SCHEMA_VERSION`.
- * Bumped to 4 for the required secure backup gate DTO field.
+ * Version 7 adds the desktop update preference.
  */
-export const SNAPSHOT_SCHEMA_VERSION = 6;
+export const SNAPSHOT_SCHEMA_VERSION = 7;
 
 /**
  * Snapshot state. #87 Phase 4 sectioned this into domain (Matrix/product, Rust-owned,
  * mobile-reusable) and ui (desktop presentation/view/navigation). `schema_version` is the
- * IPC contract version (5 = active-session account-management DTO); the App boundary asserts it so a stale flat (v1)
+ * IPC contract version; the App boundary asserts it so a stale flat (v1)
  * snapshot or a mismatched build fails loudly.
  */
 export interface AppState {
@@ -137,6 +137,7 @@ export interface SettingsValues {
   notifications: NotificationSettings;
   display: DisplaySettings;
   window: WindowSettings;
+  updates: UpdatesSettings;
   media: MediaSettings;
   timeline: TimelineSettings;
   sidebar: SidebarSettings;
@@ -155,6 +156,7 @@ export interface SettingsPatch {
   notifications?: NotificationSettings;
   display?: DisplaySettings;
   window?: WindowSettings;
+  updates?: UpdatesSettings;
   media?: MediaSettings;
   timeline?: TimelineSettings;
   sidebar?: SidebarSettings;
@@ -269,6 +271,19 @@ export interface DisplaySettings {
 export interface WindowSettings {
   close_to_tray: boolean;
 }
+
+export interface UpdatesSettings {
+  auto_check: boolean;
+}
+
+export type DesktopUpdateState =
+  | { kind: "unsupported" }
+  | { kind: "idle" }
+  | { kind: "checking" }
+  | { kind: "downloading"; version: string }
+  | { kind: "ready"; version: string }
+  | { kind: "failed"; stage: "check" | "download_or_verify" | "install" }
+  | { kind: "installing"; version: string };
 
 export interface MediaSettings {
   image_upload_compression_policy: ImageUploadCompressionPolicy;
