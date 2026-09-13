@@ -731,20 +731,26 @@ All are fixed in `shinaoka/matrix-rust-sdk-work` PRs #9 (`5ba0c4790`), #10
 
 ### Still open for stages 2-4
 
-- Stage 3 read-receipt structures: evaluated on 2026-09-13 and kept, with
-  measurements and rationale (see the Stage 3 section below).
 - Stage 2 is complete (2026-09-13): the duplicated room-range-readiness
   publisher was removed, and the remaining readiness surfaces were evaluated
   and kept because each serves a distinct, tested purpose (committed-response
   event stream with handoff evidence, authoritative entries snapshot, upstream
   loading state). See below.
-- Timeline gap-repair/history simplification around the standard focus and
-  pagination APIs (Stage 3).
-- Re-evaluate the crypto deferred-replay and readiness fences, and add
-  private-data-free activation counters (Stage 4).
+- Stage 3 is evaluated and complete on the automated side (2026-09-13):
+  read-receipt structures measured and kept; gap-repair/cache-restoration and
+  thread-aggregate patches verified as having no upstream equivalent; the
+  pending-redaction parity loss from Stage 1 fixed; the single event-cache state
+  lock evaluated and corrected. See the Stage 3 sections below.
+- Stage 4 is implemented on the automated side (2026-09-13): the deferred
+  verification-request delivery and the repeated-SAS-start protection are
+  verified as still needed, no migration is possible, and private-data-free
+  activation counters are now observable in the product. See the Stage 4 section
+  below.
+- Stages 3 and 4 real-world validation: performed once at the end, per the
+  user's decision of 2026-09-13, instead of after each stage.
 - Stage 1 real-world validation was confirmed by the user on 2026-09-13
   (startup, login, restart with room-list restore, send/receive, Japanese ngram
-  search); each later stage still needs its own real-world validation.
+  search).
 
 ## 2026-09-13: Stage 2 — one publisher for room-range readiness
 
@@ -921,3 +927,65 @@ ordering, so a cheaper-but-wrong diff fails.
 **Upstreaming intent:** propose `ReadReceiptSnapshot` + `changes_since` upstream
 together with this incrementality evidence; the fork patch can then be deleted at
 the next SDK upgrade.
+
+## 2026-09-13: Stage 4 — verification protections verified and made observable
+
+Stage 4 asks to establish whether the deferred replay of verification requests
+from unknown devices and the protection against repeated SAS start events are
+still needed, to migrate the incoming request path if the custom subscription API
+is removed, to simplify the send-delay conditions and the custom observation of
+key/backup/verification state, and to add counters free of personal data that
+show when these protections activate — treating "did not activate during ordinary
+use" as insufficient evidence on its own.
+
+**Findings.**
+
+- **Deferred delivery and the SAS replay protection are still needed.** Upstream
+  `6602de58e` has no `subscribe_to_incoming_verification_requests` and no
+  `IncomingVerificationRequestDelivery`: it emits verification requests once, so a
+  request that arrives while the sender's device keys are unknown, or that the
+  application cannot yet hand to its UI, is lost. The fork's subscription is a
+  single-owner, bounded lease queue: `commit()` acknowledges application and
+  `Drop` returns an uncommitted request to the queue. Koushi consumes it
+  (`crates/koushi-sdk/src/e2ee.rs`'s incoming-request observer drives
+  `crates/koushi-core/src/account/verification.rs`). The repeated-SAS-start guard
+  (`RequestState::receive_start` keeps the adopted remote SAS for the same peer,
+  device and flow) likewise has no upstream counterpart.
+- **No migration is possible**: there is no standard API for the incoming request
+  path at this revision, so nothing is removed and the "migrate if removed"
+  clause does not apply.
+- **Send-delay and observation surface**: the remaining fork-added crypto items
+  are load-bearing. `discard_room_key_after_member_reload`,
+  `discard_room_key_for_membership_change` and `discard_room_key_with_reason` are
+  called by the SDK itself (`matrix-sdk-base/src/client.rs`,
+  `matrix-sdk/src/encryption/mod.rs`) and pinned by the
+  `persisted_rotation_reason` tests; `current_outbound_group_session_id`,
+  `receive_any_event` and `get_own_user_identity_data` are used internally or by
+  the crypto tests. The private-data-free observation surface
+  (`room_key_receive_counters`, `room_key_rotation_reason`,
+  `set_room_key_diagnostic_observer`) stays.
+- **Activation counters added.**
+  `IncomingVerificationRequestProtectionCounters` counts unknown-sender
+  deferrals, key-query replays, deliveries released without a commit, and
+  suppressed repeated SAS starts — counts only, with no user, device, room or
+  event identifiers and no content. It is exposed as
+  `OlmMachine::incoming_verification_request_protection_counters` and
+  `Encryption::incoming_verification_request_protection_counters`, and Koushi
+  records it as the `core.verification_protection_summary` diagnostic on session
+  restore (`crates/koushi-core/src/account/verification.rs`), with a test that
+  the event carries no private identifiers.
+- **Rare-condition reproduction tests are preserved** and now also assert that
+  the protection they exercise is counted:
+  `test_unknown_sender_verification_request_is_recovered_after_key_query`, the
+  uncommitted-lease delivery test, and
+  `test_replayed_sas_start_keeps_adopted_responder_sas`, alongside
+  `test_unknown_sender_scheduling_failure_remains_retryable`,
+  `test_unknown_sender_verification_request_queue_is_fifo_bounded`,
+  `test_unknown_sender_verification_request_expires_before_key_query_replay`,
+  `test_applied_key_query_response_is_not_failed_by_pending_replay_and_reschedules_retry`
+  and `test_cancelled_post_commit_key_query_replay_remains_schedulable`.
+
+**Upstreaming intent:** propose the bounded lease-queue subscription, the SAS
+replay guard and the activation counters upstream together with these
+reproduction tests; until then they stay fork-maintained and are observable in
+the product through the diagnostic summary.

@@ -81,12 +81,14 @@ pub use e2ee::{
     recover_e2ee_blocking, request_device_verification, request_late_decryption,
     request_own_user_sas_verification, request_room_key_for_event, reset_identity,
     restore_key_backup, room_key_receive_diagnostics, room_key_rotation_reason,
+    incoming_verification_request_protection_counters,
     room_key_withheld_codes, room_key_withheld_stream, start_own_user_sas_verification,
     start_sas_verification,
 };
 
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]
+pub use matrix_sdk_base::crypto::IncomingVerificationRequestProtectionCounters;
 pub use e2ee::inbound_group_session_index0_summary;
 
 #[cfg(not(target_family = "wasm"))]
