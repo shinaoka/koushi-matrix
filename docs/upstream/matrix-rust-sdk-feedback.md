@@ -731,6 +731,8 @@ All are fixed in `shinaoka/matrix-rust-sdk-work` PRs #9 (`5ba0c4790`), #10
 
 ### Still open for stages 2-4
 
+- Stage 3 read-receipt structures: evaluated on 2026-09-13 and kept, with
+  measurements and rationale (see the Stage 3 section below).
 - Stage 2 is complete (2026-09-13): the duplicated room-range-readiness
   publisher was removed, and the remaining readiness surfaces were evaluated
   and kept because each serves a distinct, tested purpose (committed-response
@@ -872,3 +874,50 @@ pending-redaction registry, the pre-insertion redaction in both caches, and the
 restored regression test. It follows upstream's cache layout (no re-forking of
 the cache structure) and keeps all identifiers out of `Debug` output, so it
 should be reviewable as an ordinary bug fix.
+
+## 2026-09-13: Stage 3 — read-receipt structures evaluated (kept, with measurements)
+
+Stage 3 asks for the custom read-receipt structures and incremental
+notifications to be evaluated, including performance in large rooms, before
+anything is replaced.
+
+**What exists today (fork-only).** Upstream has no `ReadReceiptSnapshot` (0
+occurrences at `6602de58e`) and exposes only
+`EventTimelineItem::read_receipts() -> &IndexMap<OwnedUserId, Receipt>`. The fork
+adds `ReadReceiptSnapshot` — a persistent `OrdMap<OwnedUserId, IndexedReceipt>`,
+an insertion-order `Vector<OwnedUserId>` for the compatibility order, and a
+lazily materialized `IndexMap` behind upstream's accessor — plus
+`changes_since(previous)`, which reports exactly the changed, removed and added
+readers (an explicit value comparison, because imbl's `OrdMap::diff` skips
+shared subtrees before comparing values and therefore misses a timestamp-only
+update). Consumers: `crates/koushi-core/src/timeline/receipt_index.rs`
+(`ReceiptReaderIndex::update` walks only the diff, keeps a sorted reader order
+with binary-search insert/remove, and invalidates/renews a `ReceiptEpoch` only
+when the set actually changed) and
+`crates/koushi-core/src/timeline/receipt_endpoints.rs` (endpoint projection).
+
+**Measurements** (release build, worst case: one event with an extreme number of
+readers; the per-update cost is bounded by that event's readers, which is exactly
+the incrementality the index relies on):
+
+| operation | time |
+| --- | --- |
+| snapshot build, 50,000 readers | 28.6 ms |
+| `clone` x 1,000 | 192 us total (~0.19 us each, persistent maps) |
+| `changes_since` with 1 change over 50,000 readers | 14.6 ms (O(readers)) |
+| 1,000 `insert`s, then `clone` | 2.6 ms |
+
+**Decision: keep.** Upstream offers no snapshot/diff API, so a replacement would
+mean materializing and cloning the full `IndexMap` on every receipt update (the
+cost the lazily built compatibility map exists to avoid) plus a full re-sort per
+update in Koushi. The linear scan in `changes_since` is a correctness
+requirement, not an accident, and its cost is bounded by that event's readers
+(tens in practice).
+
+**Regression test:** `large_receipt_set_reports_only_changed_readers`
+(`matrix-sdk-ui`) pins the 10,000-reader diff contract, including the documented
+ordering, so a cheaper-but-wrong diff fails.
+
+**Upstreaming intent:** propose `ReadReceiptSnapshot` + `changes_since` upstream
+together with this incrementality evidence; the fork patch can then be deleted at
+the next SDK upgrade.
