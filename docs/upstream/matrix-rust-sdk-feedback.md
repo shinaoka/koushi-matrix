@@ -585,15 +585,23 @@ re-deriving the usage.
   observation itself is still consumed by Koushi's
   `MatrixCommittedRoomTimelineCheckpoint`.
 - **Redaction replay**: `pending_redactions` re-applies a persisted redaction
-  when its target only arrives later (or is delivered again).
-  Call sites: SDK-internal in `crates/matrix-sdk/src/event_cache/caches/room/state.rs`
+  when its target only arrives later (or is delivered again). Since 2026-09-13 the
+  registry lives in the per-room cache internals (`CachesInternals`) and is shared
+  by the room cache and every per-thread cache: both redact pending targets before
+  inserting an event into a chunk, and entries stay in the registry after they are
+  applied, because a target already seen in the room chunk can still be written
+  into a thread chunk afterwards (see the Stage 3 section below).
+  Call sites: SDK-internal in `crates/matrix-sdk/src/event_cache/caches/{mod.rs,room/state.rs,thread/{mod.rs,state.rs}}`
   (`pending_redactions`, `rebuild_pending_redactions_with_store`,
-  `apply_pending_redaction_to_event`, hooked from `new` and
-  `post_process_upserted_events`); consumers are the search index
-  (`crates/matrix-sdk/src/search_index/mod.rs`) and Koushi's thread aggregates
-  read through the store (`crates/matrix-sdk-ui/src/timeline/thread_list_service.rs`).
+  `apply_pending_redaction_to_event`, `redact_pending_events`, hooked from `new`,
+  the sync insertion paths and `post_process_upserted_events`); consumers are the
+  search index (`crates/matrix-sdk/src/search_index/mod.rs`) and Koushi's thread
+  aggregates read through the store
+  (`crates/matrix-sdk-ui/src/timeline/thread_list_service.rs`).
   Regression tests: `test_search_index_redaction_preserves_edit_aware_cache_hit`,
-  `test_search_index_redaction_removes_redacted_event_when_cache_misses`.
+  `test_search_index_redaction_removes_redacted_event_when_cache_misses` and
+  `test_relation_aggregate_matches_after_persistent_reopen` (restored to an active
+  test by the Stage 3 fix).
 - **Room subscriptions**: `reconcile_room_subscriptions_with_generation` and the
   per-room `RoomSubscriptionCheckpoint`, now implemented on top of the standard
   `SlidingSync::set_room_subscriptions` plus `subscribed_rooms()`. Generation
@@ -713,13 +721,13 @@ All are fixed in `shinaoka/matrix-rust-sdk-work` PRs #9 (`5ba0c4790`), #10
   one event-cache state lock (`states::StateLock`), so an in-flight
   event-focused pagination blocks room-cache reads for its whole network
   request. The fork's per-cache locking is gone; evaluate this for Stage 3.
-- A redaction replayed from `pending_redactions` reaches only the room cache's
-  copy of an event. Upstream keeps room and thread copies in separate linked
-  chunks, so the thread copy stays unredacted and a thread aggregate can count
-  it after a store reopen
-  (`timeline::thread_list_service::tests::test_relation_aggregate_matches_after_persistent_reopen`,
-  ignored with that reason). Stage 3 owns verifying/replacing the thread
-  aggregate behavior.
+- ~~A redaction replayed from `pending_redactions` reaches only the room cache's
+  copy of an event.~~ **Fixed on 2026-09-13** (Stage 3): this was a parity loss
+  from the Stage 1 upgrade, not an upstream gap — the pre-upgrade pin
+  `a04792c7a` carried
+  `timeline::thread_list_service::tests::test_relation_aggregate_matches_after_persistent_reopen`
+  *without* `#[ignore]` and with a byte-identical body, and upstream has no
+  `pending_redactions` at all. See the 2026-09-13 Stage 3 section below.
 
 ### Still open for stages 2-4
 
@@ -822,3 +830,45 @@ remain.
   seam, not an unused API — the room-list integration tests need it to force a
   session expiry (`expire_session`), and this crate has no `testing` feature to
   gate it behind.
+
+## 2026-09-13: Stage 3 — shared pending redactions (restores a Stage 1 parity loss)
+
+**What was lost:** the Stage 1 upgrade merge stopped replaying a
+"redaction that arrived before its target" into the copy that upstream's
+separate per-thread cache writes. `pending_redactions` does not exist upstream
+at all (`git show 6602de58e:.../room/state.rs | grep -c pending_redactions` → 0);
+the mechanism and its regression test were added together by fork commit
+`873cbf497 fix(threads): converge aggregates across redactions`; at the
+pre-upgrade pin `a04792c7a` that test carried no `#[ignore]` and its body is
+byte-identical to the current one. The upgrade therefore filed a live
+regression as a "known gap", which this section corrects.
+
+**Root cause (probe-verified):** the room cache's replay replaced only the copy
+`find_event` located, and `persistence.rs::find_event_relations` resolves
+relations **from the store**. The per-thread cache later wrote its own
+`LinkedChunkId::Thread(room, root)` copy of the target with the raw event, so a
+thread/relation aggregate counted a redacted reply after a store reopen.
+
+**Fix:** the registry moved from the room cache state to the per-room cache
+internals (`CachesInternals::pending_redactions`, shared `Arc<Mutex<HashMap<OwnedEventId, Event>>>`)
+so the room cache and every per-thread cache of that room see the same entries.
+Both caches now redact pending targets *before* an event is inserted into a chunk
+(`redact_pending_events`, sharing `RoomEventCacheState::apply_redaction_to_event`),
+so the chunk item, the queued store updates and the store copy all carry the
+redacted form whichever cache writes that copy. Entries are **kept** after being
+applied, because a target already present in the room chunk can still be written
+into a thread chunk later; the registry is bounded by the room's stored
+redactions. `test_relation_aggregate_matches_after_persistent_reopen` no longer
+carries `#[ignore]`.
+
+**Verification:** `cargo test -p matrix-sdk --lib` 649 passed;
+`cargo test -p matrix-sdk --features testing --test integration` 443 passed;
+`cargo test -p matrix-sdk-ui` lib 387 passed / 0 ignored (was 386 + 1 ignored),
+integration 213 passed / 1 ignored, plus 10. Details in the Koushi PR that bumps
+the gitlink.
+
+**Upstreaming intent:** propose as a small self-contained patch — the shared
+pending-redaction registry, the pre-insertion redaction in both caches, and the
+restored regression test. It follows upstream's cache layout (no re-forking of
+the cache structure) and keeps all identifiers out of `Debug` output, so it
+should be reviewable as an ordinary bug fix.
