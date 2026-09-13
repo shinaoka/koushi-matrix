@@ -723,12 +723,62 @@ All are fixed in `shinaoka/matrix-rust-sdk-work` PRs #9 (`5ba0c4790`), #10
 
 ### Still open for stages 2-4
 
-- Simplify the room-list readiness checks and the custom checkpoints tied to
-  sync responses (Stage 2's remaining bullet).
+- Stage 2: the duplicated room-range-readiness publisher was removed on
+  2026-09-13 (see below). Remaining: evaluate whether the committed all-rooms
+  response observable can also fold into the authoritative entries snapshot,
+  and whether any readiness derivation can move onto the standard
+  `RoomListLoadingState`/`RoomListService` state without losing the
+  response correlation the room-subscription checkpoints need.
 - Timeline gap-repair/history simplification around the standard focus and
   pagination APIs (Stage 3).
 - Re-evaluate the crypto deferred-replay and readiness fences, and add
   private-data-free activation counters (Stage 4).
-- Real-world validation by the user (startup, login, send/receive, Japanese
-  ngram search, room switching, invites, reconnect, restore) has not been
-  performed for this upgrade.
+- Stage 1 real-world validation was confirmed by the user on 2026-09-13
+  (startup, login, restart with room-list restore, send/receive, Japanese ngram
+  search); each later stage still needs its own real-world validation.
+
+## 2026-09-13: Stage 2 — one publisher for room-range readiness
+
+The fork published room-range readiness twice from the same predicate
+(`RoomListRangeLoadingState::from_states(list_state, service_state)` equals
+`FullyLoaded`):
+
+- a standalone `RoomList::range_loading_state` observable, refreshed by a
+  dedicated background task over `SlidingSyncList::state_stream()` and
+  `RoomListService` state, with its own public accessor, and
+- the authoritative `RoomListEntriesSnapshot::range_fully_loaded()`, backed by
+  the observed committed all-rooms response (`AllRoomsObservedIds`) — the same
+  response that carries the room-subscription checkpoints.
+
+Removed the first: the observable, its background task and the
+`range_loading_state()` accessor. `RoomListRangeLoadingState` remains the shared
+predicate and is now crate-internal. Connection state (`RoomListService`/
+`SyncService`), room-list data readiness (committed all-rooms response plus the
+entries snapshot) and completion of UI updates stay distinct, and
+application-level generation tracking (`RoomSubscriptionReconcile`,
+`RoomSubscriptionGeneration`) is unchanged.
+
+Call sites after the change: SDK
+`crates/matrix-sdk-ui/src/room_list_service/{room_list.rs,all_rooms.rs}`
+(snapshot assembly and response tracker); Koushi
+`crates/koushi-core/src/room/list_observer.rs` seeds and refreshes readiness
+from `all_rooms.current_entries_snapshot().range_fully_loaded()`. The
+`RoomListObservationCommand::Refresh` wake sent from
+`crates/koushi-core/src/room/actor.rs` on sync responses already re-read that
+snapshot, so no readiness transition lost its trigger.
+
+Regression tests: `all_rooms_range_loading_state_becomes_full_only_after_final_growing_range`
+and `fully_loaded_all_rooms_entries_preserve_persisted_joined_room`
+(`matrix-sdk-ui`; they keep their invariants and now assert the committed
+response observable and the entries snapshot), plus the `room_list_service`
+integration target. Also removed an unused `use std::fmt`
+(`matrix-sdk/src/sliding_sync/mod.rs`) and an unused test binding left over from
+the previous fork work.
+
+Verification: SDK `cargo test -p matrix-sdk-ui` (lib 386 passed / 1 ignored,
+integration 213 passed / 1 ignored and 10 passed) and
+`cargo test -p matrix-sdk --lib` (649 passed); Koushi workspace gate,
+`koushi-core` (1065 passed / 9 ignored), `koushi-core-testkit`,
+`koushi-desktop --lib` (140); headless core QA `--scenario=all` on `tuwunel`
+and `synapse` (199 checks each); native Linux GUI lane `local-login`
+(rebuilt), `local-send`, `local-activity`.
