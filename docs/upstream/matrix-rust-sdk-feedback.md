@@ -723,12 +723,11 @@ All are fixed in `shinaoka/matrix-rust-sdk-work` PRs #9 (`5ba0c4790`), #10
 
 ### Still open for stages 2-4
 
-- Stage 2: the duplicated room-range-readiness publisher was removed on
-  2026-09-13 (see below). Remaining: evaluate whether the committed all-rooms
-  response observable can also fold into the authoritative entries snapshot,
-  and whether any readiness derivation can move onto the standard
-  `RoomListLoadingState`/`RoomListService` state without losing the
-  response correlation the room-subscription checkpoints need.
+- Stage 2 is complete (2026-09-13): the duplicated room-range-readiness
+  publisher was removed, and the remaining readiness surfaces were evaluated
+  and kept because each serves a distinct, tested purpose (committed-response
+  event stream with handoff evidence, authoritative entries snapshot, upstream
+  loading state). See below.
 - Timeline gap-repair/history simplification around the standard focus and
   pagination APIs (Stage 3).
 - Re-evaluate the crypto deferred-replay and readiness fences, and add
@@ -782,3 +781,44 @@ integration 213 passed / 1 ignored and 10 passed) and
 `koushi-desktop --lib` (140); headless core QA `--scenario=all` on `tuwunel`
 and `synapse` (199 checks each); native Linux GUI lane `local-login`
 (rebuilt), `local-send`, `local-activity`.
+
+Real-world checks for the stage on this revision: room switching (GUI lane),
+invite receive/accept (`rooms` 2 to 3, `No pending invites`), disconnect then
+reconnect (`reconnecting` within 2 s, `running` 2 s after the server returned,
+live message rendered 1 s later), and room-list restore after restart (ready
+with 2 rooms in 2 s, no login). The user confirmed the stage works in practice.
+
+### Why the committed all-rooms response observable stays
+
+Evaluated for the same Stage 2 bullet: `RoomListService::committed_all_rooms_response()`
+and the authoritative `RoomListEntriesSnapshot` are not interchangeable, so both
+remain.
+
+- `CommittedAllRoomsResponse` is a per-response *event stream* carrying
+  `pos_present()` and `sequence()`. Koushi's sync observer
+  (`crates/koushi-core/src/sync.rs`, `crates/koushi-core/src/sync/observer.rs`)
+  uses each response to advance `last_committed_sequence` and to decide startup
+  handoff evidence (`committed_response_is_handoff_evidence`: `pos_present &&
+  sequence > last_committed_sequence`), which feeds `ReplacementRecoveryProof`.
+  A poll of the current projection cannot express "this response, with a
+  position, was committed after the previous one".
+- `pos_present` does not exist on the entries snapshot at all
+  (`crates/matrix-sdk-ui/src/room_list_service/all_rooms.rs`), so folding would
+  add a field rather than remove one.
+- Covered by `sync::tests::any_new_positioned_commit_is_startup_handoff_evidence`
+  and the room-list integration tests for the committed observable
+  (`committed_all_rooms_response_observable_waits_for_committed_response`,
+  `committed_all_rooms_response_observable_ignores_failure_then_advances`).
+- The remaining readiness surfaces keep the three concerns the Stage 2 bullet
+  requires separate: connection state (`sync_service::State`), room-list data
+  readiness (the committed all-rooms response plus the authoritative entries
+  snapshot), and completion of the UI projection
+  (`RoomListReconcileResult` and
+  `project_live_entries_and_ack_if_reconciled` in
+  `crates/koushi-core/src/room/list_observer.rs`). Application-level generation
+  tracking (`ReplacementRecoveryProof` sequences,
+  `RoomSubscriptionReconcile.generation`) is unchanged.
+- `RoomListService::sliding_sync_for_testing()` stays as well: it is a test
+  seam, not an unused API — the room-list integration tests need it to force a
+  session expiry (`expire_session`), and this crate has no `testing` feature to
+  gate it behind.
