@@ -86,9 +86,10 @@ pub use e2ee::{
     start_sas_verification,
 };
 
+pub use matrix_sdk_base::crypto::IncomingVerificationRequestProtectionCounters;
+
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]
-pub use matrix_sdk_base::crypto::IncomingVerificationRequestProtectionCounters;
 pub use e2ee::inbound_group_session_index0_summary;
 
 #[cfg(not(target_family = "wasm"))]
