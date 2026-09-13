@@ -717,10 +717,16 @@ All are fixed in `shinaoka/matrix-rust-sdk-work` PRs #9 (`5ba0c4790`), #10
 
 ### Known gaps discovered in the same pass
 
-- Upstream serializes every cache kind (room, thread, pinned, event-focused) on
+- ~~Upstream serializes every cache kind (room, thread, pinned, event-focused) on
   one event-cache state lock (`states::StateLock`), so an in-flight
   event-focused pagination blocks room-cache reads for its whole network
-  request. The fork's per-cache locking is gone; evaluate this for Stage 3.
+  request.~~ **Evaluated on 2026-09-13 and corrected** (Stage 3 below): the lock
+  is one `RwLock` per client shared by every room and cache kind
+  (`EventCacheInner::state`), and network waits are **not** taken under it —
+  pagination holds the write guard only to persist results, and the live-tail
+  commit holds it across store I/O and post-processing. A write therefore
+  delays reads of other rooms for the duration of that bounded work, not for a
+  network request.
 - ~~A redaction replayed from `pending_redactions` reaches only the room cache's
   copy of an event.~~ **Fixed on 2026-09-13** (Stage 3): this was a parity loss
   from the Stage 1 upgrade, not an upstream gap — the pre-upgrade pin
@@ -732,7 +738,10 @@ All are fixed in `shinaoka/matrix-rust-sdk-work` PRs #9 (`5ba0c4790`), #10
 ### Still open for stages 2-4
 
 - Stage 3 read-receipt structures: evaluated on 2026-09-13 and kept, with
-  measurements and rationale (see the Stage 3 section below).
+  measurements and rationale (see the Stage 3 sections below).
+- Stage 3 gap repair/cache restoration, thread aggregates and the event-cache
+  state lock: evaluated on 2026-09-13 and kept, with the per-item verification
+  recorded below.
 - Stage 2 is complete (2026-09-13): the duplicated room-range-readiness
   publisher was removed, and the remaining readiness surfaces were evaluated
   and kept because each serves a distinct, tested purpose (committed-response
@@ -921,3 +930,57 @@ ordering, so a cheaper-but-wrong diff fails.
 **Upstreaming intent:** propose `ReadReceiptSnapshot` + `changes_since` upstream
 together with this incrementality evidence; the fork patch can then be deleted at
 the next SDK upgrade.
+
+## 2026-09-13: Stage 3 — gap repair, thread aggregates and the event-cache state lock (evaluated)
+
+Stage 3's remaining bullets ask for simplification/removal work that is only
+allowed once upstream equivalence is established. This section records that
+verification.
+
+**Gap repair and cache restoration (bullet 1).** Compared the fork's
+`crates/matrix-sdk/src/event_cache` delta against upstream `6602de58e`:
+`live_tail.rs` is fork-only (380 lines, no upstream file), `pagination.rs` adds
+`inspect_timeline_gaps`, `repair_timeline_gap_inner`/`_task`/`_with_projection`,
+`run_backwards_cache_only`, `run_backwards_once_serialized`, `pagination_operation_lock`
+and the `RoomTimelineGap*`/`CacheOnlyBackOutcome` types, and `room/mod.rs` adds
+`RoomTimelineSyncObservation`/`latest_sync_observation`. Upstream has no gap
+inspection or repair API, no cache-only back pagination and no live-tail or
+sync-observation surface at all; the fork's machinery is built on the standard
+pagination primitives rather than duplicating them, and every added item is
+consumed — Koushi through `crates/koushi-sdk/src/timeline.rs`
+(`inspect_room_timeline_gaps`, `repair_room_timeline_gap`,
+`refresh_room_live_tail`, `MatrixCommittedRoomTimelineCheckpoint`) and the SDK's
+own timeline path (`crates/matrix-sdk-ui/src/timeline/pagination.rs` calls
+`run_backwards_cache_only`). No dead or ungated test-only surface remains: the
+live-tail commit hook is already `#[cfg(feature = "testing")]` and
+`#[doc(hidden)]`. Decision: **keep** — there is no upstream equivalent to
+converge on, and re-expressing the machinery on the standard focus APIs would be
+a rewrite without an upstream counterpart, not a simplification.
+
+**Thread aggregates after edits, redactions and duplicate delivery (bullet 3).**
+Function-set comparison of
+`crates/matrix-sdk-ui/src/timeline/thread_list_service.rs` shows additions only
+and no `resolve_thread_relation_aggregate` upstream, so upstream provides no
+equivalent correctness and nothing may be removed:
+
+| Risk area | Fork-only code | Regression tests |
+| --- | --- | --- |
+| edits | `latest_valid_replacement` | `test_relation_aggregate_preserves_original_identity_and_new_content`, `test_edit_before_original_replay_matches_in_order_aggregate` |
+| redactions | `is_redaction_event`, `is_redacted_raw_event` | `test_redaction_of_latest_reply_reconciles_exact_aggregate`, `test_redaction_reconciles_all_tracked_roots`, `test_relation_aggregate_matches_after_persistent_reopen` (restored by #899) |
+| duplicate delivery / batch order | `requires_full_reconciliation`, `collect_affected_roots`, `tracked_roots`, `apply_aggregate`, `aggregate_projection`, resolver gates | `test_bundled_proof_keeps_latest_and_count_until_local_count_is_proven`, `test_queued_newer_batch_wins_after_first_resolver_is_released`, `test_serial_batches_leave_the_latest_final_aggregate` |
+
+Decision: **keep**, consumed by `crates/koushi-core/src/timeline/thread_projection.rs`
+and `crates/koushi-core/src/threads_list.rs`.
+
+**Event-cache state lock (known gap).** `EventCacheInner` owns one
+`states::StateLock` (`RwLock<State>`), shared by every room and every cache kind;
+each room's `Caches` receives the same lock. The write guard is taken to persist
+pagination results (`pagination.rs`: read guard to build the request, network
+outside the lock, write guard to store the outcome) and, for the fork's
+live-tail commit, across the store writes and post-processing
+(`live_tail.rs`). No network wait is performed while holding it. So the real
+effect is that a cache write briefly delays reads of other rooms for the
+duration of that bounded store work — not, as the earlier note in this file
+claimed, for the duration of a network request. Decision: **no change** (it is
+upstream's design, the effect is bounded, and a fork-side per-cache lock would
+diverge from upstream); the earlier note is corrected above.
