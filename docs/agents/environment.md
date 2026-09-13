@@ -148,6 +148,23 @@ when pre-building manually, also set `VITE_KOUSHI_QA_TITLE=1`, or run one lane
 without `--skip-build` first to produce a QA-title binary the remaining
 `--skip-build` lanes can reuse.
 
+When the Tauri CLI itself cannot run because its file watcher exhausts
+`fs.inotify.max_user_watches` on a busy machine, build the same binary without
+the CLI and point the lane at it:
+
+```bash
+VITE_KOUSHI_QA_TITLE=1 npm --prefix apps/desktop run build
+cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml --profile dev \
+  --features tauri/custom-protocol
+npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-login --server=tuwunel \
+  --skip-build --app-binary=target/debug/koushi-desktop
+```
+
+`tauri/custom-protocol` makes `tauri-build` report `dev = false`, so the binary
+serves the bundled `dist` instead of `devUrl`. Without it, a plain
+`cargo build --profile dev` loads `http://127.0.0.1:5173` and the lane times out
+waiting for the auth screen, which looks like a product failure but is not.
+
 After changing frontend render code, run one lane without `--skip-build` before
 returning to the fast loop. A stale binary can miss new DOM contracts and fail
 in ways that look like product bugs.
