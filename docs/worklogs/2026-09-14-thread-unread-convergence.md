@@ -79,3 +79,14 @@ retain their notifications. Thread notification counting and explicit receipt
 boundaries remain unchanged. The focused receipt suite passes 22 tests and an
 independent final review approved the actual diff. This is synthetic behavioral
 evidence; real-account badge convergence still needs observation after update.
+
+
+The follow-up build 2733.0 was installed and inspected through native
+accessibility: the real-account badge still showed one notification/mention.
+Therefore the edit-ownership fix is not claimed to resolve the reported badge.
+The SDK cache suite passed 76 tests and Core passed 1,072 (9 ignored).
+Additional privacy-preserving diagnostics record cache push flags and indexed
+relation targets, plus the Room active receipt position and local counts at
+actor startup. These are startup snapshots, not continuous recount telemetry;
+a Thread actor label still observes the Room cache. No message content or raw
+identifiers are added. Independent review approved the diagnostic fields.

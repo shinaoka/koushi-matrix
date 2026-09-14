@@ -92,6 +92,9 @@ fn event_cache_structured_fields_include_relation_presence_without_ids() {
                 DiagnosticValue::Count(1_783_076_820_000 / 60_000),
             ),
             ("timestamp_present", DiagnosticValue::Boolean(true)),
+            ("push_actions_present", DiagnosticValue::Boolean(false)),
+            ("push_notify", DiagnosticValue::Boolean(false)),
+            ("push_highlight", DiagnosticValue::Boolean(false)),
             ("relation", DiagnosticValue::Token("m.thread")),
             ("relates_to_present", DiagnosticValue::Boolean(true)),
             ("relation_event_present", DiagnosticValue::Boolean(true)),
@@ -99,6 +102,10 @@ fn event_cache_structured_fields_include_relation_presence_without_ids() {
             ("thread_root_present", DiagnosticValue::Boolean(true)),
         ]
     );
+    let mut notifying_item = item.clone();
+    notifying_item.set_push_actions(vec![matrix_sdk::ruma::push::Action::Notify]);
+    let notifying = event_cache_item_diagnostic_event("cache_initial", &key, "item", Some(4), &notifying_item);
+    assert!(notifying.fields.iter().any(|field| field.key == "push_notify" && field.value == DiagnosticValue::Boolean(true)));
     let serialized = serde_json::to_string(&event).expect("diagnostic event serializes");
     for private_value in [
         "$private-cache-event:test",
