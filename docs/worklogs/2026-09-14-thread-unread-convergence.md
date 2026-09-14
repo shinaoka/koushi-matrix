@@ -90,3 +90,18 @@ relation targets, plus the Room active receipt position and local counts at
 actor startup. These are startup snapshots, not continuous recount telemetry;
 a Thread actor label still observes the Room cache. No message content or raw
 identifiers are added. Independent review approved the diagnostic fields.
+
+
+## Cached count reconciliation follow-up
+
+SDK `a9e655491` recomputes persisted RoomInfo counts when a room cache is
+subscribed with a complete loaded suffix from the active receipt. Missing
+boundaries and gaps preserve existing counts. The synthetic RED test returned
+notifications=1 instead of 0 before the change; focused GREEN and the expanded
+77-test event-cache suite passed. Independent final diff review approved. The
+test seeds restored state; it does not simulate a process restart.
+
+Before installing this build, native inspection already showed room unread=0
+and all six thread replies in the previous app. Therefore the disappearance
+cannot be attributed to the new subscription repair; later sync can already
+trigger the corrected filter. The repair addresses recovery without new sync.

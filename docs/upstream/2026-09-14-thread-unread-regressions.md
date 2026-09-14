@@ -91,7 +91,7 @@ boundaries, and thread notification retention.
 
 ## 3. Reconcile persisted counts when opening a cached room
 
-Candidate follow-up; currently an uncommitted SDK change, not a submitted patch.
+Local follow-up commit `a9e655491`; independently reviewed with no blocking findings. Not submitted upstream.
 Do not present this as an upstream regression proven by historical bisect.
 
 Correcting a filter does not necessarily repair already persisted RoomInfo
@@ -157,5 +157,4 @@ identify the temporary originals. These excerpts omit compiler machine paths,
 timestamps, process IDs, and unrelated output; they are not full raw logs.
 
 Before opening upstream PRs, record a clean upstream reproduction, full target
-revision, final ported commit IDs, and review results. The third candidate also
-needs final review and a durable restart test if restart recovery is claimed.
+revision, final ported commit IDs, and review results. The third change also needs a durable restart test if restart recovery is claimed.
