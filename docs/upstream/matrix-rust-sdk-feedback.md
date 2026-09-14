@@ -50,6 +50,22 @@ or SDK boundary without logging private Matrix payloads.
 
 ## Upstreamable Patch Material
 
+- Unthreaded receipt boundaries on thread replies (2026-09-14, local SDK
+  topic commit `b65d72ba8`, based on `f9d55baf7`) fixes
+  `crates/matrix-sdk/src/event_cache/caches/read_receipts.rs`. With threading
+  enabled, filtering replies before receipt matching loses explicit room
+  receipts whose event ID is a reply. Match active, incoming and persisted
+  receipts against all event IDs, and pass the selected boundary through count
+  reset; keep replies excluded from room counts and implicit own-message read
+  advancement. This cannot be repaired through a public client wrapper because
+  SDK event-cache recomputation owns receipt selection and local notification
+  counts. Sending a newer receipt merely hides the failure and can incorrectly
+  read unseen messages. Upstream intent: submit this minimal matching fix and
+  synthetic regressions as one SDK bugfix, then drop the topic patch when
+  incorporated upstream. The focused read-receipt suite passes all 20 tests;
+  the new boundary regression failed before the fix. Independent review found
+  no blockers. No upstream PR has been opened by this local installation task.
+
 - Element X Megolm send parity cleanup (issue #795, 2026-09-05) removes the
   Koushi-only readiness fence, repeated/duplicate pre-share, initial-share
   repair, manual force-new/discard/share-index-0/resend-index-0 APIs, and their

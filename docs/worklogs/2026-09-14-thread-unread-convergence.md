@@ -46,6 +46,8 @@ promotion, and local-versus-server notification selection. After the fixes:
 
 - Core library: 1,072 passed, 9 ignored, no failures.
 - SDK event-cache read receipt suite: 20 passed.
+- Headless Core QA binary tests: 105 passed (unit tests, not a live homeserver
+  scenario run).
 - Related TimelineView thread and settings UI tests: 47 passed.
 - Frontend typecheck/build, release configuration preflight, agent-doc checks,
   and whitespace checks passed.
