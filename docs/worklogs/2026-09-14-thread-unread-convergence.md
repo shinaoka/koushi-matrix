@@ -105,3 +105,14 @@ Before installing this build, native inspection already showed room unread=0
 and all six thread replies in the previous app. Therefore the disappearance
 cannot be attributed to the new subscription repair; later sync can already
 trigger the corrected filter. The repair addresses recovery without new sync.
+
+
+Build 2736.0 (desktop `1a8867d2`, SDK `a9e655491`) was signed, installed
+to `/Applications/Koushi.app`, and relaunched. Signature verification and
+source/installed executable SHA-256 equality passed. Core: 1,072 passed,
+9 ignored. Frontend and app build passed. Native UI after relaunch showed
+room unread=0. The thread summary showed six replies; accessibility initially
+exposed two event action groups and four after reopening, so this observation
+does not establish that all six replies are simultaneously rendered or resolve
+the separate one-visible-reply report. Old application backup and installation
+manifest are under `artifacts/cache-recount-2736/` (local, untracked).
