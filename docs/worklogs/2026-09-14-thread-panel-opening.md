@@ -43,3 +43,13 @@ the opening readiness change: 1,077 passed, 9 ignored.
 
 The earlier unread PR #909 merged at f0344d182a29f636e91f20932fd2838148cb1786;
 its monitor has been stopped. This follow-up is on codex/fix-thread-panel-open.
+
+
+Final build 2739.0 (source `87f6c561`) was signed, installed, and relaunched;
+source/installed binary hash and signature checks passed. Full frontend suite:
+1,348 passed. Native click verification confirmed the six-reply summary opens
+the panel, and close/reopen also leaves the panel open. Room unread remained
+zero. The reopened loaded view exposed three latest reply groups, so this
+verification does not claim all six replies are simultaneously loaded after
+every reopen. The earlier 2738 first-open observation exposed all seven groups.
+No raw real-account UI text or diagnostic dump was saved in the repository.
