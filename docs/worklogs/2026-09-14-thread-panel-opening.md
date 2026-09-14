@@ -24,3 +24,22 @@ deadline, and cancellation releasing the stream. Independent review approved
 behavior and canon; its missing diagnostic allowlist finding was fixed and
 covered by a token test. This unit evidence does not by itself prove the user's
 particular failed open had no other cause. Installed-app validation follows.
+
+
+Build 2738.0 was installed and native accessibility confirmed that clicking the
+six-reply summary opened the panel with seven event groups (root plus replies).
+Reopening stayed open but exposed only one event group. This revealed a second
+independent lifecycle defect: the frontend InitialItems handler replaced actor
+generation and items but retained the old actor's EndReached pagination state,
+suppressing automatic loading of the replacement actor's partial cache.
+
+A new headless store test failed (expected Idle, actual EndReached). Resetting
+both projected pagination directions only on actor-generation changes makes
+the 59-test store suite pass; same-actor replay retains its state. Typecheck
+passes. Review approved this projection invalidation. Core emits pagination
+completion through its existing actor-generation fence, preventing late old
+actor completions from overwriting the replacement's state. Core suite after
+the opening readiness change: 1,077 passed, 9 ignored.
+
+The earlier unread PR #909 merged at f0344d182a29f636e91f20932fd2838148cb1786;
+its monitor has been stopped. This follow-up is on codex/fix-thread-panel-open.

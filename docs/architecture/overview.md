@@ -916,6 +916,11 @@ path and publishes no InitialItems. The existing Room empty-hydration policy rem
 non-fatal. `NewThreadDraft` stays immediately composer-capable and performs no
 initial history page.
 
+The frontend pagination projection belongs to the Core actor generation. A new
+actor InitialItems resets projected pagination to Idle in both directions; a
+same-actor replay preserves it. A closed actor's EndReached must not suppress
+loading a replacement actor's partially restored cache.
+
 The runtime assigns each attached consumer a `RuntimeConnectionId`; the
 attached connection allocates a monotonically increasing `sequence` within that
 connection. The full `RequestId` is therefore unique on the shared event

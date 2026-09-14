@@ -535,12 +535,16 @@ function applyInitialItems(
 ): TimelineStoreState {
   const k = keyStr(payload.key);
   const existing = store.keys.get(k) ?? emptyKeyState();
+  const actorChanged = existing.actorGeneration !== (payload.actor_generation ?? 0);
   const indexed = indexedTimelineItems(payload.items);
   const next = new Map(store.keys);
   next.set(k, {
     ...existing,
     generation: payload.generation,
     actorGeneration: payload.actor_generation ?? 0,
+    // EndReached belongs to the previous actor's loaded window, not the key forever.
+    paginationBackward: actorChanged ? "Idle" : existing.paginationBackward,
+    paginationForward: actorChanged ? "Idle" : existing.paginationForward,
     projectionRequestId: payload.request_id,
     items: indexed.items,
     itemIndexById: indexed.itemIndexById,
