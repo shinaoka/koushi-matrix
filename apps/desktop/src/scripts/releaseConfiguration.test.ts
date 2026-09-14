@@ -7,6 +7,27 @@ import { describe,expect,test } from "vitest";
 import { gitTrackedFiles,repoRoot,runScript } from "./releaseTestSupport";
 
 describe("desktop release scripts", () => {
+  test.each([false, true])("macOS build wires the updater key into Tauri config (signed=%s)", (signed) => {
+    const environment = { ...process.env };
+    delete environment.KOUSHI_UPDATER_PUBLIC_KEY;
+    delete environment.TAURI_SIGNING_PRIVATE_KEY;
+    delete environment.TAURI_SIGNING_PRIVATE_KEY_PASSWORD;
+    if (signed) {
+      environment.KOUSHI_UPDATER_PUBLIC_KEY = "synthetic-public-key";
+      environment.TAURI_SIGNING_PRIVATE_KEY = "synthetic-private-key";
+      environment.TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "synthetic-password";
+    }
+    const result = spawnSync(process.execPath, [
+      "scripts/desktop-build-dmg.mjs", "--print-command", ...(signed ? ["--signed"] : [])
+    ], { cwd: repoRoot, encoding: "utf8", env: environment });
+    expect(result.status).toBe(0);
+    const config = JSON.parse(result.stdout.match(/--config (.+)/)?.[1] ?? "null");
+    expect(config.bundle.createUpdaterArtifacts).toBe(signed);
+    expect(config.plugins?.updater?.pubkey).toBe(signed ? "synthetic-public-key" : undefined);
+    expect(result.stdout).not.toContain("synthetic-private-key");
+    expect(result.stdout).not.toContain("synthetic-password");
+  });
+
   test.each([undefined, "aarch64-apple-darwin", "x86_64-apple-darwin"])(
     "macOS build requests an updater-enabled app bundle alongside the DMG (%s)",
     (target) => {

@@ -30,6 +30,14 @@ printStorageNotice();
 
 const bundleVersion = macOSBundleVersion();
 const buildEnvironment = localSigningEnvironment();
+const updaterPublicKey = buildEnvironment.KOUSHI_UPDATER_PUBLIC_KEY?.trim();
+const buildConfig = {
+  bundle: {
+    macOS: { bundleVersion },
+    createUpdaterArtifacts: args.has("--signed") || Boolean(updaterPublicKey)
+  },
+  ...(updaterPublicKey ? { plugins: { updater: { pubkey: updaterPublicKey } } } : {})
+};
 const buildCommand = [
   "run",
   "tauri",
@@ -38,7 +46,7 @@ const buildCommand = [
   "--bundles",
   "app,dmg",
   "--config",
-  JSON.stringify({ bundle: { macOS: { bundleVersion } } })
+  JSON.stringify(buildConfig)
 ];
 if (target) {
   buildCommand.push("--target", target);

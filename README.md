@@ -153,6 +153,11 @@ The wrapper runs the release preflight check, then builds the native DMG with:
 npm --prefix apps/desktop run tauri -- build --bundles app,dmg
 ```
 
+The wrapper also supplies the macOS bundle version and updater configuration.
+Release builds pass `KOUSHI_UPDATER_PUBLIC_KEY` to Tauri's updater configuration
+and require signed updater artifacts. Local builds without an updater key omit
+updater artifacts; use the wrapper for this configuration.
+
 Useful variants:
 
 ```bash

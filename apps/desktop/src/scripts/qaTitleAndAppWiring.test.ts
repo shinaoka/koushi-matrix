@@ -1,7 +1,8 @@
+import { execFileSync } from "node:child_process";
 import { existsSync,readFileSync } from "node:fs";
 import { describe,expect,test } from "vitest";
 
-import { readLinuxProductionSource } from "./releaseTestSupport";
+import { readLinuxProductionSource,repoRoot,runScript } from "./releaseTestSupport";
 
 describe("desktop release scripts", () => {
   test("mac GUI smoke does not send Cmd+Q while cleaning up", () => {
@@ -66,7 +67,15 @@ describe("desktop release scripts", () => {
     );
 
     expect(source).toContain('git", ["rev-list", "--count", "HEAD"]');
-    expect(source).toContain("JSON.stringify({ bundle: { macOS: { bundleVersion } } })");
+    const output = runScript("scripts/desktop-build-dmg.mjs", ["--print-command"]);
+    const config = JSON.parse(output.match(/--config (.+)/)?.[1] ?? "null");
+    const commitCount = execFileSync("git", ["rev-list", "--count", "HEAD"], {
+      cwd: repoRoot, encoding: "utf8"
+    }).trim();
+    const dirty = execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], {
+      cwd: repoRoot, encoding: "utf8"
+    }).trim();
+    expect(config.bundle.macOS.bundleVersion).toBe(`${commitCount}.${dirty ? "1" : "0"}`);
     expect(source).toContain('"find-identity", "-v", "-p", "codesigning"');
     expect(source).toContain("validIdentities.some");
     expect(source).toContain("APPLE_SIGNING_IDENTITY is not a valid local code-signing identity");
