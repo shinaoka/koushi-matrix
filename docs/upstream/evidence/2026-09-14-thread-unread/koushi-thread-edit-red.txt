@@ -1,0 +1,6 @@
+running 1 test
+test event_cache::caches::read_receipts::tests::thread_edit_does_not_leave_room_notification_after_thread_is_read ... FAILED
+assertion `left == right` failed: a thread edit belongs to the thread, not the room
+  left: 1
+ right: 0
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 651 filtered out; finished in 0.01s

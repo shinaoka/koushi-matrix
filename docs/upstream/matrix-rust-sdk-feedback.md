@@ -50,6 +50,8 @@ or SDK boundary without logging private Matrix payloads.
 
 ## Upstreamable Patch Material
 
+The [2026-09-14 thread unread evidence packet](2026-09-14-thread-unread-regressions.md) records exact historical revisions, separate reproduction cases, sanitized RED/GREEN results, and patch export instructions. It distinguishes fork test evidence from still-pending clean upstream verification.
+
 - Thread-related edit notification ownership (2026-09-14, local SDK topic
   `9aac22df2`) follows the receipt-boundary fix below. A read main message
   followed by a thread reply and a notifying edit of that reply reproduced

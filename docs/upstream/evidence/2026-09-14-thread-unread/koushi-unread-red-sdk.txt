@@ -1,0 +1,6 @@
+running 1 test
+test event_cache::caches::read_receipts::tests::unthreaded_receipt_on_thread_reply_preserves_room_read_boundary ... FAILED
+assertion `left == right` failed: an explicit room receipt can use a reply as its chronological boundary
+  left: 1
+ right: 0
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 650 filtered out; finished in 0.01s
