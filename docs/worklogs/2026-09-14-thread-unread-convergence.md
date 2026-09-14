@@ -62,3 +62,20 @@ unconfirmed without post-toggle viewport/pagination evidence.
 
 The lockfile's desktop package version was synchronized to the existing 0.9.0
 manifest by Cargo. No product version bump was introduced by this fix.
+
+## Follow-up: residual notification after installation
+
+The next supplied diagnostic showed Room navigation unread/newer counts at zero
+and successful room and thread receipt requests, but SDK notification/mention
+counts still at one. The first fix therefore did not resolve the reported
+notification badge. It was insufficient to test only direct thread replies.
+
+A new failing SDK test reproduced the exact count combination using a notifying
+edit of a thread reply after the main read boundary. `m.replace` has no direct
+thread relation; its target determines its thread ownership. SDK topic
+`9aac22df2` adds that lookup to the Room filter, including a target evicted from
+the loaded window but present in the event store. Main edits and unknown targets
+retain their notifications. Thread notification counting and explicit receipt
+boundaries remain unchanged. The focused receipt suite passes 22 tests and an
+independent final review approved the actual diff. This is synthetic behavioral
+evidence; real-account badge convergence still needs observation after update.

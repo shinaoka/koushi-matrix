@@ -50,6 +50,24 @@ or SDK boundary without logging private Matrix payloads.
 
 ## Upstreamable Patch Material
 
+- Thread-related edit notification ownership (2026-09-14, local SDK topic
+  `9aac22df2`) follows the receipt-boundary fix below. A read main message
+  followed by a thread reply and a notifying edit of that reply reproduced
+  `num_unread=0` with `num_notifications=1`: the Room filter excluded the reply
+  but admitted its `m.replace`. The filter now resolves one-hop relation targets
+  with the same ownership convention as the thread aggregator. It scans loaded
+  events once, checks each unique missing target in the already-locked event
+  store, and retains unknown/main targets. No network or additional outer lock
+  is introduced. Explicit receipts still match excluded event boundaries;
+  implicit own-event receipts use the scoped filter. A client wrapper cannot
+  correct these authoritative SDK counters without hiding valid notifications.
+  Tests cover loaded/stored reply targets, Thread notifications, main/unknown
+  edit notifications, own thread edits, threading disabled, and explicit edit
+  boundaries. The original reproducer failed before the fix; the focused
+  receipt suite passes 22 tests. Independent review approved the change.
+  Upstream intent: submit the ownership fix with regressions and remove the
+  topic once upstream includes it. No upstream PR has been submitted here.
+
 - Unthreaded receipt boundaries on thread replies (2026-09-14, local SDK
   topic commit `b65d72ba8`, based on `f9d55baf7`) fixes
   `crates/matrix-sdk/src/event_cache/caches/read_receipts.rs`. With threading
