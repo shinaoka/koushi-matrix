@@ -7,6 +7,19 @@ import { describe,expect,test } from "vitest";
 import { gitTrackedFiles,repoRoot,runScript } from "./releaseTestSupport";
 
 describe("desktop release scripts", () => {
+  test.each([undefined, "aarch64-apple-darwin", "x86_64-apple-darwin"])(
+    "macOS build requests an updater-enabled app bundle alongside the DMG (%s)",
+    (target) => {
+      const args = ["--print-command"];
+      if (target) args.push("--target", target);
+      const output = runScript("scripts/desktop-build-dmg.mjs", args);
+      const bundles = output.match(/--bundles (\S+)/)?.[1].split(",");
+
+      expect(bundles).toEqual(["app", "dmg"]);
+      if (target) expect(output).toContain(`--target ${target}`);
+    }
+  );
+
   test("tracked text artifacts contain no previous branding residue", () => {
     const oldLatinBrand = "Ru" + "ri";
     const oldLowerBrand = oldLatinBrand.toLowerCase();

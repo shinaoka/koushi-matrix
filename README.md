@@ -150,7 +150,7 @@ The repository-root shell entry point forwards the same options to that build:
 The wrapper runs the release preflight check, then builds the native DMG with:
 
 ```bash
-npm --prefix apps/desktop run tauri -- build --bundles dmg
+npm --prefix apps/desktop run tauri -- build --bundles app,dmg
 ```
 
 Useful variants:

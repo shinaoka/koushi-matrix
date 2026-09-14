@@ -36,7 +36,7 @@ const buildCommand = [
   "--",
   "build",
   "--bundles",
-  "dmg",
+  "app,dmg",
   "--config",
   JSON.stringify({ bundle: { macOS: { bundleVersion } } })
 ];
@@ -192,6 +192,6 @@ function printUsage() {
   console.log(
     "Usage: npm --prefix apps/desktop run build:dmg [-- --signed|--skip-preflight] [--target TARGET]"
   );
-  console.log("Builds the local macOS DMG via Tauri: tauri build --bundles dmg");
+  console.log("Builds the local macOS app and DMG via Tauri: tauri build --bundles app,dmg");
   printStorageNotice();
 }
