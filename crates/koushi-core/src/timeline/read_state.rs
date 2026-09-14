@@ -1942,22 +1942,36 @@ fn viewed_boundary_target<'a>(
     {
         return None;
     }
+    if matches!(kind, TimelineKind::Room { .. }) {
+        // A reordered root can expose a reply's activity identity. It proves
+        // the viewport reached this row, not that the hidden reply was read.
+        let last_row = display_items
+            .iter()
+            .rev()
+            .find(|item| is_attention_eligible_event(item))?;
+        let activity_id = last_row
+            .display_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.activity_event_id.as_deref());
+        if timeline_item_event_id(last_row) != Some(last_visible_event_id)
+            && activity_id != Some(last_visible_event_id)
+        {
+            return None;
+        }
+        return navigation_items.iter().enumerate().rev().find(|(_, item)| {
+            is_attention_eligible_event(item)
+                && item.thread_root.is_none()
+                && display_items.iter().any(|displayed| {
+                    timeline_item_event_id(displayed) == timeline_item_event_id(item)
+                })
+        });
+    }
     let (target_index, target_item) = navigation_items
         .iter()
         .enumerate()
         .rev()
         .find(|(_, item)| is_attention_eligible_event(item))?;
-    let koushi_protocol::event::TimelineItemId::Event { event_id } = &target_item.id else {
-        return None;
-    };
-    if event_id != last_visible_event_id {
-        return None;
-    }
-    if matches!(kind, TimelineKind::Room { .. })
-        && !display_items
-            .iter()
-            .any(|item| timeline_item_event_id(item) == Some(event_id.as_str()))
-    {
+    if timeline_item_event_id(target_item) != Some(last_visible_event_id) {
         return None;
     }
     Some((target_index, target_item))
@@ -2068,6 +2082,7 @@ impl TimelineActor {
                     return false;
                 }
                 let snapshot = derive_timeline_navigation_snapshot(
+                    &self.key.kind,
                     &self.navigation_items,
                     self.fully_read_event_id.as_deref(),
                     &self.viewport_observation,

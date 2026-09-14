@@ -846,6 +846,7 @@ async fn restore_terminal_flush_publishes_two_projected_batches_once_then_reboun
     ));
 
     let navigation_snapshot = derive_timeline_navigation_snapshot(
+        &room_key().kind,
         &canonical_items,
         None,
         &TimelineViewportObservation::default(),
@@ -1464,4 +1465,40 @@ fn live_edge_window_retains_one_reply_slot_per_root() {
     );
     // Eight ordinary rows (one of them the thread root) and the retained reply.
     assert_eq!(state.slots.len(), 9);
+}
+
+#[test]
+fn thread_reply_items_survive_room_order_setting_toggle() {
+    let root = timeline_item("$root:test", Some("root"), "@other:test", false);
+    let mut items = vec![root];
+    for index in 0..6 {
+        let mut reply = timeline_item(
+            &format!("$reply-{index}:test"),
+            Some("reply"),
+            "@other:test",
+            false,
+        );
+        reply.thread_root = Some("$root:test".to_owned());
+        items.push(reply);
+    }
+    let mut projection = DisplayProjectionState::from_canonical_window(&items, 0..items.len());
+    let mut model = projection.display_items().to_vec();
+    for order in [
+        TimelineThreadRootOrder::LatestReply,
+        TimelineThreadRootOrder::RootEvent,
+        TimelineThreadRootOrder::LatestReply,
+    ] {
+        let context = DisplayProjectionContext::for_timeline(
+            &thread_key().kind,
+            &TimelineViewportObservation::default(),
+            false,
+        )
+        .with_thread_roots(order, Vec::new());
+        let diffs = projection.reproject(&context);
+        apply_timeline_diffs_to_items(&mut model, &diffs);
+        assert_eq!(
+            model.iter().map(|item| &item.id).collect::<Vec<_>>(),
+            items.iter().map(|item| &item.id).collect::<Vec<_>>()
+        );
+    }
 }

@@ -139,6 +139,7 @@ fn eligibility_skips_redacted_and_own_rows_for_first_unread_and_newer_count() {
     };
 
     let snapshot = derive_timeline_navigation_snapshot(
+        &room_key().kind,
         &items,
         Some("$marker:test"),
         &observation,
@@ -2028,6 +2029,7 @@ fn timeline_navigation_marks_first_unread_inside_viewport() {
     ];
 
     let snapshot = derive_timeline_navigation_snapshot(
+        &room_key().kind,
         &items,
         Some("$read:test"),
         &TimelineViewportObservation {
@@ -2060,6 +2062,7 @@ fn timeline_navigation_separates_local_viewed_and_server_confirmed_boundaries() 
         timeline_item("$local:test", Some("local"), "@alice:test", false),
     ];
     let snapshot = derive_timeline_navigation_snapshot_with_read_state(
+        &room_key().kind,
         &items,
         Some("$server:test"),
         Some("$server:test"),
@@ -2104,6 +2107,7 @@ fn timeline_navigation_reports_unread_below_viewport_and_newer_count() {
     ];
 
     let snapshot = derive_timeline_navigation_snapshot(
+        &room_key().kind,
         &items,
         Some("$visible:test"),
         &TimelineViewportObservation {
@@ -2143,6 +2147,7 @@ fn timeline_navigation_does_not_count_read_history_below_viewport_as_newer() {
     ];
 
     let snapshot = derive_timeline_navigation_snapshot(
+        &room_key().kind,
         &items,
         Some("$read-marker:test"),
         &TimelineViewportObservation {
@@ -2169,6 +2174,7 @@ fn timeline_navigation_does_not_count_newer_events_without_read_marker() {
     ];
 
     let snapshot = derive_timeline_navigation_snapshot(
+        &room_key().kind,
         &items,
         None,
         &TimelineViewportObservation {
@@ -2210,6 +2216,7 @@ fn timeline_navigation_ignores_own_local_and_synthetic_items_for_unread_counts()
     ];
 
     let snapshot = derive_timeline_navigation_snapshot(
+        &room_key().kind,
         &items,
         Some("$read:test"),
         &TimelineViewportObservation {
@@ -2246,6 +2253,7 @@ fn unread_consistency_diagnostic_correlates_thread_receipt_with_latest_reply_pro
     reply.thread_root = Some("$root:test".to_owned());
     let canonical_items = vec![root.clone(), reply];
     let snapshot = derive_timeline_navigation_snapshot(
+        &thread_key().kind,
         &canonical_items,
         Some("$root:test"),
         &TimelineViewportObservation::default(),
@@ -2630,8 +2638,13 @@ fn navigation_display_anchor_advances_past_own_messages_after_marker() {
     let items = vec![other, own1, own2];
     let observation = TimelineViewportObservation::default();
 
-    let snapshot =
-        derive_timeline_navigation_snapshot(&items, Some("$other"), &observation, Some("@alice"));
+    let snapshot = derive_timeline_navigation_snapshot(
+        &room_key().kind,
+        &items,
+        Some("$other"),
+        &observation,
+        Some("@alice"),
+    );
 
     assert_eq!(snapshot.read_marker_event_id, Some("$other".to_owned()));
     assert_eq!(snapshot.first_unread_event_id, None);
@@ -2648,8 +2661,13 @@ fn navigation_display_anchor_stays_at_marker_when_no_own_messages_after() {
     let items = vec![other, remote];
     let observation = TimelineViewportObservation::default();
 
-    let snapshot =
-        derive_timeline_navigation_snapshot(&items, Some("$other"), &observation, Some("@alice"));
+    let snapshot = derive_timeline_navigation_snapshot(
+        &room_key().kind,
+        &items,
+        Some("$other"),
+        &observation,
+        Some("@alice"),
+    );
 
     assert_eq!(snapshot.first_unread_event_id, Some("$remote".to_owned()));
     assert_eq!(snapshot.read_marker_display_event_id, None);
@@ -2662,8 +2680,13 @@ fn navigation_display_anchor_advances_from_own_marker_to_later_own_message() {
     let items = vec![own1, own2];
     let observation = TimelineViewportObservation::default();
 
-    let snapshot =
-        derive_timeline_navigation_snapshot(&items, Some("$own1"), &observation, Some("@alice"));
+    let snapshot = derive_timeline_navigation_snapshot(
+        &room_key().kind,
+        &items,
+        Some("$own1"),
+        &observation,
+        Some("@alice"),
+    );
 
     assert_eq!(snapshot.read_marker_event_id, Some("$own1".to_owned()));
     assert_eq!(snapshot.first_unread_event_id, None);
@@ -2671,4 +2694,83 @@ fn navigation_display_anchor_advances_from_own_marker_to_later_own_message() {
         snapshot.read_marker_display_event_id,
         Some("$own2".to_owned())
     );
+}
+
+#[test]
+fn room_navigation_does_not_recount_hidden_thread_replies() {
+    let marker = timeline_item("$read:test", Some("read"), "@other:test", false);
+    let mut items = vec![marker];
+    for index in 0..5 {
+        let mut reply = timeline_item(
+            &format!("$reply-{index}:test"),
+            Some("reply"),
+            "@other:test",
+            false,
+        );
+        reply.thread_root = Some("$root:test".to_owned());
+        items.push(reply);
+    }
+    let observation = TimelineViewportObservation {
+        first_visible_event_id: Some("$read:test".to_owned()),
+        last_visible_event_id: Some("$read:test".to_owned()),
+        at_bottom: false,
+        ..Default::default()
+    };
+    let snapshot = derive_timeline_navigation_snapshot(
+        &room_key().kind,
+        &items,
+        Some("$read:test"),
+        &observation,
+        Some("@me:test"),
+    );
+    assert_eq!(snapshot.unread_event_count, 0);
+    assert_eq!(snapshot.newer_event_count, 0);
+    assert_eq!(snapshot.first_unread_event_id, None);
+}
+
+#[test]
+fn room_navigation_preserves_hidden_receipt_position_and_thread_scope() {
+    let first = timeline_item("$first:test", Some("first"), "@other:test", false);
+    let mut reply = timeline_item("$reply:test", Some("reply"), "@other:test", false);
+    reply.thread_root = Some("$root:test".to_owned());
+    let later = timeline_item("$later:test", Some("later"), "@other:test", false);
+    let mut own_reply = timeline_item("$own:test", Some("own reply"), "@me:test", false);
+    own_reply.thread_root = Some("$root:test".to_owned());
+    let items = vec![first, reply, later, own_reply];
+    let observation = TimelineViewportObservation {
+        first_visible_event_id: Some("$first:test".to_owned()),
+        last_visible_event_id: Some("$first:test".to_owned()),
+        at_bottom: false,
+        ..Default::default()
+    };
+    let room = derive_timeline_navigation_snapshot(
+        &room_key().kind,
+        &items,
+        Some("$reply:test"),
+        &observation,
+        Some("@me:test"),
+    );
+    assert_eq!(room.unread_event_count, 1);
+    assert_eq!(room.newer_event_count, 1);
+    assert_eq!(room.first_unread_event_id.as_deref(), Some("$later:test"));
+    let read_room = derive_timeline_navigation_snapshot(
+        &room_key().kind,
+        &items,
+        Some("$later:test"),
+        &observation,
+        Some("@me:test"),
+    );
+    assert_eq!(
+        read_room.read_marker_display_event_id, None,
+        "an own hidden reply must not move the room divider"
+    );
+    let thread = derive_timeline_navigation_snapshot(
+        &thread_key().kind,
+        &items[..2],
+        Some("$first:test"),
+        &observation,
+        Some("@me:test"),
+    );
+    assert_eq!(thread.unread_event_count, 1);
+    assert_eq!(thread.newer_event_count, 1);
 }

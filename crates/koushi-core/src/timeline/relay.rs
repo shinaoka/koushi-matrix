@@ -768,6 +768,7 @@ impl TimelineActor {
         }
         if let Some(action) = thread_attention_action {
             let snapshot = derive_timeline_navigation_snapshot(
+                &self.key.kind,
                 &self.navigation_items,
                 self.fully_read_event_id.as_deref(),
                 &self.viewport_observation,

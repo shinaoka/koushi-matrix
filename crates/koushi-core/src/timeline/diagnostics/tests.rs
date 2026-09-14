@@ -999,3 +999,34 @@ fn manager_coordinator_fails_new_registration_on_exact_correlation_collision() {
             if request_id == fake_rid(7422)
     ));
 }
+
+#[tokio::test]
+async fn read_receipt_repair_uses_local_notification_count() {
+    use matrix_sdk::ruma::room_id;
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    let room = server
+        .sync_joined_room(&client, room_id!("!local-count:example.test"))
+        .await;
+    room.update_room_info(|mut info| {
+        info.set_read_receipts(matrix_sdk_base::read_receipts::ReadReceipts {
+            num_unread: 0,
+            num_notifications: 1,
+            num_mentions: 1,
+            ..Default::default()
+        });
+        (
+            info,
+            matrix_sdk_base::RoomInfoNotableUpdateReasons::READ_RECEIPT,
+        )
+    })
+    .await;
+    assert_eq!(
+        u64::from(room.unread_notification_counts().notification_count),
+        0
+    );
+    assert_eq!(room.num_unread_notifications(), 1);
+    let context = super::room_latest_receipt_context(&room);
+    assert_eq!(context.notification_count, 1);
+}

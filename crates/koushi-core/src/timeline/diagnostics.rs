@@ -1650,10 +1650,7 @@ pub(super) fn private_read_receipt_event_id_for_fully_read<'a>(
 ) -> &'a str {
     if context.unread_messages == 0
         && context.notification_count > 0
-        && matches!(
-            context.latest_event_relation_type,
-            Some("m.replace" | "m.thread")
-        )
+        && context.latest_event_relation_type == Some("m.replace")
         && let Some(latest_event_id) = context.latest_event_id
         && !latest_event_id.trim().is_empty()
     {
@@ -1679,7 +1676,6 @@ pub(super) fn private_read_receipt_event_id_from_room_for_fully_read(
 }
 
 fn room_latest_receipt_context(room: &matrix_sdk::Room) -> RoomLatestReceiptContext {
-    let unread_notifications = room.unread_notification_counts();
     let (event_id, relation_type) = match room.latest_event() {
         matrix_sdk::latest_events::LatestEventValue::Remote(timeline_event) => (
             timeline_event
@@ -1694,7 +1690,7 @@ fn room_latest_receipt_context(room: &matrix_sdk::Room) -> RoomLatestReceiptCont
         event_id,
         relation_type,
         unread_messages: room.num_unread_messages(),
-        notification_count: unread_notifications.notification_count.into(),
+        notification_count: room.num_unread_notifications(),
     }
 }
 

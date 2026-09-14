@@ -850,7 +850,11 @@ Rust keeps the local viewed boundary separate from server-confirmed read state.
 Only a current Room or Thread actor may admit an at-bottom, gap-free, latest
 attention-eligible event with exact position and actor-generation evidence.
 Room observations require the atomic fully-read/private-unthreaded key and, when
-receipt privacy permits, the room-wide public key. Thread observations require
+receipt privacy permits, the room-wide public key. Resolving a displayed root's
+activity identity must not promote either receipt to an unseen thread reply.
+Hidden-edit notification repair uses the same SDK-local notification counter as
+the room list; server notification counters are not interchangeable with it.
+Thread observations require
 only their per-root threaded key; Focused timelines never originate automatic
 read intent. React renders `pending`/`failed`/`synced`/`notRequested` and the
 Rust-derived divider but sends no viewport-derived receipt commands.
@@ -1709,7 +1713,10 @@ stateDiagram-v2
   `unread_event_count`, `unread_position`, `newer_event_count`, and
   `can_jump_to_bottom` from Rust-owned item order. Local echoes, synthetic
   rows, hidden rows, and the current user's own events do not create unread
-  counts.
+  counts. Room navigation also excludes thread replies: their unread state belongs
+  to their Thread timeline. Canonical positions are retained, including hidden
+  replies, so an existing unthreaded read marker can still define the boundary.
+  Room own-message divider advancement likewise excludes thread replies.
 - `NavigationUpdated` is emitted only when the projection changes. Diff-driven
   updates are emitted after the corresponding `ItemsUpdated` event so the GUI
   has the referenced rows before it renders or scrolls to an anchor.

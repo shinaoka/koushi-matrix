@@ -1659,6 +1659,7 @@ impl TimelineActor {
     }
     pub(super) fn emit_navigation_if_changed(&mut self) {
         let snapshot = derive_timeline_navigation_snapshot_with_read_state(
+            &self.key.kind,
             &self.navigation_items,
             self.fully_read_event_id.as_deref(),
             self.server_confirmed_read_event_id.as_deref(),
@@ -1707,6 +1708,7 @@ impl TimelineActor {
         terminal: Option<(RequestId, TimelineAnchorRestoreStatus)>,
     ) -> Option<bool> {
         let navigation_snapshot = derive_timeline_navigation_snapshot_with_read_state(
+            &self.key.kind,
             &self.navigation_items,
             self.fully_read_event_id.as_deref(),
             self.server_confirmed_read_event_id.as_deref(),
@@ -1886,12 +1888,14 @@ fn activity_row_from_timeline_item(room_id: &str, item: &TimelineItem) -> Option
 }
 
 pub(super) fn derive_timeline_navigation_snapshot(
+    kind: &TimelineKind,
     items: &[TimelineItem],
     fully_read_event_id: Option<&str>,
     observation: &TimelineViewportObservation,
     own_user_id: Option<&str>,
 ) -> TimelineNavigationSnapshot {
     derive_timeline_navigation_snapshot_with_read_state(
+        kind,
         items,
         fully_read_event_id,
         fully_read_event_id,
@@ -1903,6 +1907,7 @@ pub(super) fn derive_timeline_navigation_snapshot(
 }
 
 pub(super) fn derive_timeline_navigation_snapshot_with_read_state(
+    kind: &TimelineKind,
     items: &[TimelineItem],
     fully_read_event_id: Option<&str>,
     server_confirmed_read_event_id: Option<&str>,
@@ -1941,14 +1946,16 @@ pub(super) fn derive_timeline_navigation_snapshot_with_read_state(
         return snapshot;
     };
     snapshot.newer_event_count =
-        newer_unread_event_count(items, observation, own_user_id, read_marker_index);
+        newer_unread_event_count(kind, items, observation, own_user_id, read_marker_index);
     snapshot.can_jump_to_bottom = snapshot.newer_event_count > 0;
 
     let unread_items: Vec<(usize, &TimelineItem)> = items
         .iter()
         .enumerate()
         .skip(read_marker_index.saturating_add(1))
-        .filter(|(_, item)| is_unread_navigation_item(item, own_user_id))
+        .filter(|(_, item)| {
+            navigation_item_in_scope(kind, item) && is_unread_navigation_item(item, own_user_id)
+        })
         .collect();
 
     snapshot.unread_event_count = unread_items.len() as u64;
@@ -1968,7 +1975,9 @@ pub(super) fn derive_timeline_navigation_snapshot_with_read_state(
             .iter()
             .enumerate()
             .skip(read_marker_index)
-            .filter(|(_, item)| is_own_visible_event(item, own_user_id))
+            .filter(|(_, item)| {
+                navigation_item_in_scope(kind, item) && is_own_visible_event(item, own_user_id)
+            })
             .last()
             .and_then(|(_, item)| timeline_item_event_id(item).map(ToOwned::to_owned));
     }
@@ -2191,7 +2200,14 @@ fn is_own_visible_event(item: &TimelineItem, own_user_id: Option<&str>) -> bool 
     matches!(item.id, TimelineItemId::Event { .. })
 }
 
+// Preserve canonical indices for hidden receipt targets, but do not count
+// thread replies as main-conversation unread events.
+fn navigation_item_in_scope(kind: &TimelineKind, item: &TimelineItem) -> bool {
+    !matches!(kind, TimelineKind::Room { .. }) || item.thread_root.is_none()
+}
+
 fn newer_unread_event_count(
+    kind: &TimelineKind,
     items: &[TimelineItem],
     observation: &TimelineViewportObservation,
     own_user_id: Option<&str>,
@@ -2210,7 +2226,9 @@ fn newer_unread_event_count(
     items
         .iter()
         .skip(first_newer_unread_index)
-        .filter(|item| is_unread_navigation_item(item, own_user_id))
+        .filter(|item| {
+            navigation_item_in_scope(kind, item) && is_unread_navigation_item(item, own_user_id)
+        })
         .count() as u64
 }
 
