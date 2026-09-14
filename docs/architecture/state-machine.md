@@ -1421,10 +1421,14 @@ stateDiagram-v2
   `PinnedReply`, an empty first SDK snapshot triggers one bounded scheduler-owned
   backward page before any InitialItems or success action is published. The
   reducer copies its accepted `ThreadOpenIntent` into the AppEffect; runtime and
-  manager carry a typed Core policy instead of rereading mutable state. Only a
-  settled page (including authoritative end-reached empty) and actual thread
-  timeline subscription success may drive `ThreadSubscribed` and move the pane
-  to `Open`. Non-end empty, pagination error, or subscription failure publishes
+  manager carry a typed Core policy instead of rereading mutable state. Only successful pagination plus either authoritative end-reached or visible
+  content observed on the pre-pagination SDK subscription, and actual thread
+  timeline subscription success, may drive `ThreadSubscribed` and move the pane
+  to `Open`. A non-end page waits for visible content on that same stream with
+  one 10-second deadline; an immediate empty snapshot is not failure. This is
+  content readiness, not an exact page-publication barrier. Remaining updates
+  continue through the actor subscription. Stream closure, deadline expiry,
+  pagination error, or subscription failure publishes
   no InitialItems and drives `ThreadSubscriptionFailed`,
   closes the pane, clears pane-level thread attention, and records a
   private-data-free recoverable error. `NewThreadDraft` skips this page.

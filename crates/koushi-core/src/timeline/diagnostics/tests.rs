@@ -1037,3 +1037,16 @@ async fn read_receipt_repair_uses_local_notification_count() {
     let context = super::room_latest_receipt_context(&room);
     assert_eq!(context.notification_count, 1);
 }
+
+#[test]
+fn initial_thread_backfill_stage_tokens_remain_distinct_and_closed() {
+    for stage in [
+        "initial_backfill_projection_wait",
+        "initial_backfill_projection_closed",
+        "initial_backfill_projection_deadline",
+        "initial_backfill_sdk_failed",
+    ] {
+        assert_eq!(super::timeline_stage_token(stage), stage);
+    }
+    assert_eq!(super::timeline_stage_token("untrusted detail"), "other");
+}

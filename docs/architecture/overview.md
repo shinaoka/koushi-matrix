@@ -907,9 +907,12 @@ Opening an `ExistingThread` or `PinnedReply` whose first SDK Thread snapshot is
 empty performs one bounded scheduler-owned backward page before any InitialItems
 or `ThreadSubscribed` success is published. The accepted Rust intent travels
 through AppEffect and an internal Core subscription policy; mutable reducer state
-is not reread later. End-reached plus empty is authoritative empty. A non-end
-empty page or SDK error takes the typed subscription-failure path and publishes
-no InitialItems. The existing Room empty-hydration policy remains separately
+is not reread later. End-reached plus empty is authoritative empty. For a non-end page, Core awaits visible content from the same SDK subscription
+created before pagination, bounded by one 10-second deadline. This checks
+content readiness, not full page-publication completion; the actor continues
+receiving subsequent updates. Immediate snapshot emptiness is not failure.
+Stream closure, deadline expiry, or SDK error takes the typed subscription-failure
+path and publishes no InitialItems. The existing Room empty-hydration policy remains separately
 non-fatal. `NewThreadDraft` stays immediately composer-capable and performs no
 initial history page.
 

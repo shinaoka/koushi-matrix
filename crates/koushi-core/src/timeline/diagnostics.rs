@@ -511,6 +511,11 @@ fn timeline_stage_token(value: &str) -> &'static str {
         "subscribe_rooms_done" => "subscribe_rooms_done",
         "build_begin" => "build_begin",
         "build_done" => "build_done",
+        "initial_backfill_projection_wait" => "initial_backfill_projection_wait",
+        "initial_backfill_projection_closed" => "initial_backfill_projection_closed",
+        "initial_backfill_projection_deadline" => "initial_backfill_projection_deadline",
+        "initial_backfill_sdk_failed" => "initial_backfill_sdk_failed",
+
         "spawn_begin" => "spawn_begin",
         "spawn_done" => "spawn_done",
         "initial_emitted" => "initial_emitted",

@@ -76,6 +76,33 @@ fn initial_thread_backfill_is_authoritative(end_reached: bool, item_count: usize
     end_reached || item_count > 0
 }
 
+async fn await_initial_thread_projection<S>(end_reached: bool, counts: S) -> bool
+where
+    S: futures_util::Stream<Item = usize>,
+{
+    if end_reached {
+        return true;
+    }
+    record_subscribe_stage("initial_backfill_projection_wait", None);
+    let wait = async move {
+        futures_util::pin_mut!(counts);
+        while let Some(count) = counts.next().await {
+            if initial_thread_backfill_is_authoritative(false, count) {
+                return true;
+            }
+        }
+        record_subscribe_stage("initial_backfill_projection_closed", None);
+        false
+    };
+    match tokio::time::timeout(std::time::Duration::from_secs(10), wait).await {
+        Ok(ready) => ready,
+        Err(_) => {
+            record_subscribe_stage("initial_backfill_projection_deadline", None);
+            false
+        }
+    }
+}
+
 /// Messages routed to the `TimelineManagerActor`.
 pub(crate) enum TimelineMessage {
     ReadReceiptWindow {
@@ -1880,7 +1907,7 @@ impl TimelineManagerActor {
             InitialBackfillPolicy::RequiredForExistingThread
         ) && matches!(key.kind, TimelineKind::Thread { .. })
         {
-            let (initial_items, _) = timeline.subscribe().await;
+            let (initial_items, initial_updates) = timeline.subscribe().await;
             if initial_items.is_empty() {
                 let _permit = self
                     .account_work
@@ -1889,9 +1916,19 @@ impl TimelineManagerActor {
                 let end_reached = timeline
                     .paginate_backwards(INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT)
                     .await
-                    .map_err(|_| TimelineFailureKind::Sdk)?;
-                let (settled_items, _) = timeline.subscribe().await;
-                if !initial_thread_backfill_is_authoritative(end_reached, settled_items.len()) {
+                    .map_err(|_| {
+                        trace("initial_backfill_sdk_failed");
+                        TimelineFailureKind::Sdk
+                    })?;
+                // Pagination publishes to a separate SDK relay. Keep the original
+                // stream so its eventual diffs cannot be missed by a new snapshot.
+                let counts = initial_updates.scan(initial_items, |items, diffs| {
+                    for diff in diffs {
+                        diff.apply(items);
+                    }
+                    futures_util::future::ready(Some(items.len()))
+                });
+                if !await_initial_thread_projection(end_reached, counts).await {
                     return Err(TimelineFailureKind::Sdk);
                 }
             }
@@ -2008,6 +2045,55 @@ mod tests {
     use super::super::test_source::item_body;
 
     use futures_util::StreamExt;
+
+    #[tokio::test]
+    async fn initial_thread_open_waits_for_delayed_projection() {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<usize>();
+        let receiver = futures_util::stream::unfold(receiver, |mut rx| async move {
+            rx.recv().await.map(|count| (count, rx))
+        });
+        let mut ready = Box::pin(super::await_initial_thread_projection(false, receiver));
+        assert!(futures_util::poll!(ready.as_mut()).is_pending(),
+            "successful pagination must not fail before its projection arrives");
+        sender.send(0).unwrap();
+        assert!(futures_util::poll!(ready.as_mut()).is_pending());
+        sender.send(2).unwrap();
+        assert!(ready.await);
+    }
+
+    #[tokio::test]
+    async fn initial_thread_projection_end_and_closed_stream() {
+        assert!(super::await_initial_thread_projection(true, futures_util::stream::pending()).await);
+        assert!(!super::await_initial_thread_projection(false, futures_util::stream::empty()).await);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn initial_thread_projection_deadline_is_not_extended_by_empty_updates() {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<usize>();
+        let receiver = futures_util::stream::unfold(receiver, |mut rx| async move {
+            rx.recv().await.map(|count| (count, rx))
+        });
+        let mut ready = Box::pin(super::await_initial_thread_projection(false, receiver));
+        assert!(futures_util::poll!(ready.as_mut()).is_pending());
+        tokio::time::advance(std::time::Duration::from_secs(9)).await;
+        sender.send(0).unwrap();
+        assert!(futures_util::poll!(ready.as_mut()).is_pending());
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        assert!(!ready.await);
+        assert!(sender.is_closed());
+    }
+
+    #[tokio::test]
+    async fn initial_thread_projection_cancellation_releases_subscription() {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<usize>();
+        let receiver = futures_util::stream::unfold(receiver, |mut rx| async move {
+            rx.recv().await.map(|count| (count, rx))
+        });
+        let mut ready = Box::pin(super::await_initial_thread_projection(false, receiver));
+        assert!(futures_util::poll!(ready.as_mut()).is_pending());
+        drop(ready);
+        assert!(sender.is_closed());
+    }
 
     #[test]
     fn existing_thread_initial_backfill_requires_items_or_authoritative_end() {
