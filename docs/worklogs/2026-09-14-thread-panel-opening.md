@@ -53,3 +53,30 @@ zero. The reopened loaded view exposed three latest reply groups, so this
 verification does not claim all six replies are simultaneously loaded after
 every reopen. The earlier 2738 first-open observation exposed all seven groups.
 No raw real-account UI text or diagnostic dump was saved in the repository.
+
+## Follow-up: hidden cached chunks
+
+A later sanitized trace showed initial_backfill_projection_wait followed by
+initial_backfill_projection_deadline at 10 seconds, before a subsequent
+subscription succeeded. Waiting alone cannot make a hidden-only chunk visible.
+The SDK UI Thread paginate_backwards operation uses run_backwards_once, which
+can stop after one stored chunk of edits/reactions even when older replies
+are already on disk.
+
+`initial_thread_hydrates_across_hidden_cached_chunks` seeds three stored chunks:
+root+reply, reaction only, edit only. It builds the real Thread timeline and
+calls the production Core hydration helper. Before the correction this fails
+the 2-second test deadline despite local visible history. After the correction
+it succeeds, projects the reply, and makes no relations/messages requests.
+
+Core uses public ThreadEventCache pagination run_backwards_until with a target
+of 100 raw events and holds the cache drop handles. One outer 10-second deadline
+covers pagination plus projection readiness. The same subscription is retained
+across pagination; typed failure and closed diagnostics remain. The SDK can
+consume more than the target when finishing a cached chunk. A window consisting
+entirely of hidden events without reaching history end remains subject to the
+bounded failure policy; this is not an unlimited history scan.
+
+Validation after both follow-up fixes: Core 1,082 passed / 9 ignored;
+frontend 1,348 passed; typecheck passed. Independent design and final-diff
+review approved. No SDK changes were needed for these follow-up fixes.

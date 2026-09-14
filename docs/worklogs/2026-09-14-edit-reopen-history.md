@@ -1,6 +1,6 @@
 # Reopening an edited message: pre-upgrade source comparison
 
-Source inspection on 2026-09-14, not yet a runtime reproduction or fix.
+Source inspection and deterministic SDK/Core reproduction on 2026-09-14.
 
 Compared Core immediately before the SDK upgrade (`fd52c723^`) and the old SDK
 pin `a04792c7a` with the current checkout. Both the old and current Core build
@@ -24,3 +24,24 @@ change only effective editable-content projection after a RED regression test.
 
 This evidence explains a re-edit draft rollback path. It does not prove that a
 server failed to save a submitted edit. No real message contents are included.
+
+## Reproduction and correction
+
+`reopening_edit_uses_latest_sdk_revision` and
+`reopening_thread_root_edit_uses_latest_sdk_revision` sync an original rich
+message followed by two replacements through a real SDK timeline. The second
+case includes a bundled thread summary and reply, then updates the root
+projection service. Before the fix both fail at revision 1: the SDK displays
+`first edited text @Project`, but the editable document is
+`original text @Project` (synthetic fixture text).
+
+Core now uses `latest_json()` only for editable-document and mentions
+projection, and reads replacement content from `content.m.new_content`.
+`edited_thread_root_keeps_latest_document_through_service_and_display` also
+verifies that the root service and relocated display retain each revision
+rather than a stale fallback. The previous mentions replacement fixture put
+m.new_content in the wrong location; it now uses the actual Matrix shape.
+
+All four added edit checks and the entire Core suite pass: 1,082 passed,
+9 ignored. This fixes a proven editor-prefill rollback, not a demonstrated
+server-side failure to save. No extra SDK patch or gitlink update is involved.

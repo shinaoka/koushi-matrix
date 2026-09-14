@@ -1502,3 +1502,42 @@ fn thread_reply_items_survive_room_order_setting_toggle() {
         );
     }
 }
+
+
+#[test]
+fn edited_thread_root_keeps_latest_document_through_service_and_display() {
+    let mut service = crate::threads_list::ThreadRootProjectionService::default();
+    let mut root = timeline_item(
+        "$root:example.test",
+        Some("original"),
+        "@alice:example.test",
+        false,
+    );
+    root.thread_summary = Some(koushi_protocol::event::ThreadSummaryDto {
+        reply_count: 1,
+        latest_event_id: Some("$reply:example.test".into()),
+        latest_sender: Some("@bob:example.test".into()),
+        latest_sender_label: None,
+        latest_body_preview: Some("reply".into()),
+        latest_timestamp_ms: Some(2),
+    });
+    let stale_fallback = root.clone();
+    for body in ["original", "first edit", "second edit"] {
+        root.actions.editable_document = Some(koushi_state::ComposerDocument::new(vec![
+            koushi_state::ComposerInline::Text { text: body.into() },
+        ]));
+        service.seed_canonical_root("!room:example.test", &root);
+        let data = service.display_data_for_room("!room:example.test");
+        assert_eq!(data.len(), 1);
+        let display = super::root_display_item(
+            &data[0],
+            &stale_fallback,
+            "$reply:example.test".into(),
+            Some(2),
+        );
+        assert_eq!(
+            display.actions.editable_document.unwrap().plain_body(),
+            body
+        );
+    }
+}

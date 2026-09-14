@@ -903,12 +903,22 @@ and retains DOM measurement, virtualization, date-divider presentation, scroll
 anchoring and layout settlement; it never infers projection death or thread
 placement from frontend timeline contents.
 
+Editable documents and mention metadata use the latest SDK event revision's
+effective message content (`content.m.new_content` for replacements). Original
+event JSON remains the source for source/crypto diagnostics. This applies also
+to canonical thread roots and their relocated display projections; re-editing
+must preserve the last accepted edit.
+
 Opening an `ExistingThread` or `PinnedReply` whose first SDK Thread snapshot is
-empty performs one bounded scheduler-owned backward page before any InitialItems
+empty performs one bounded scheduler-owned backward hydration request before any InitialItems
 or `ThreadSubscribed` success is published. The accepted Rust intent travels
 through AppEffect and an internal Core subscription policy; mutable reducer state
-is not reread later. End-reached plus empty is authoritative empty. For a non-end page, Core awaits visible content from the same SDK subscription
-created before pagination, bounded by one 10-second deadline. This checks
+is not reread later. Hydration uses the public Thread event-cache pagination API
+to target 100 raw events across cached chunks, including chunks containing
+only hidden edits or reactions. This is one bounded request, not one chunk or
+one HTTP call. Pagination and projection readiness share a 10-second deadline.
+End-reached plus empty is authoritative empty. For a non-end result, Core awaits
+visible content from the same SDK subscription created before pagination. This checks
 content readiness, not full page-publication completion; the actor continues
 receiving subsequent updates. Immediate snapshot emptiness is not failure.
 Stream closure, deadline expiry, or SDK error takes the typed subscription-failure

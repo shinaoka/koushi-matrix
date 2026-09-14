@@ -1561,7 +1561,7 @@ fn effective_message_content(raw: &serde_json::Value) -> Option<&serde_json::Val
             .get("m.relates_to")
             .and_then(|relation| {
                 (relation.get("rel_type")?.as_str() == Some("m.replace"))
-                    .then(|| relation.get("m.new_content"))
+                    .then(|| content.get("m.new_content"))
             })
             .flatten()
             .unwrap_or(content),
@@ -2465,7 +2465,11 @@ pub(super) fn sdk_item_to_timeline_item_with_send_states(
                 is_redacted,
             );
             let mut mentioned_user_ids = Vec::new();
-            if let Some(raw) = original_json_for_event_item(event_item) {
+            // Editing uses the effective revision; source/crypto projections
+            // deliberately continue to use original_json_for_event_item.
+            if let Some(raw) = event_item.latest_json()
+                .and_then(|raw| serde_json::from_str(raw.json().get()).ok())
+            {
                 actions.editable_document = composer_document_from_event_json(&raw);
                 mentioned_user_ids = mentioned_user_ids_from_event_json(&raw);
             }
