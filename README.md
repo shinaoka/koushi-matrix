@@ -95,16 +95,26 @@ cargo test -p koushi-search
 cargo test -p koushi-key
 ```
 
-For the desktop app:
+For the desktop app, validate the lockfile against the current npm advisory
+database, then reproduce the locked dependency graph with `npm ci` (not
+`npm install`) before testing:
 
 ```bash
 cd apps/desktop
-npm install
+npm audit --package-lock-only --audit-level=high
+npm ci
+npm audit --audit-level=high
+npm audit --omit=dev --audit-level=high
 npm test
 npm run typecheck
 npm run build
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
+
+The lockfile is the reproducible security boundary: if `npm audit` reports a
+`high` or `critical` finding, fix the dependency in `package-lock.json` and
+recreate the tree with `npm ci` rather than editing `node_modules`. See
+[`docs/agents/environment.md`](docs/agents/environment.md#npm-dependency-security-gate).
 
 `npm run build` validates and builds the React/Vite web shell into `dist/`;
 it does not produce a native Tauri desktop binary. Building the native app
