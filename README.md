@@ -132,9 +132,14 @@ npm run tauri build
 
 ### Build a macOS DMG
 
-On macOS, use the checked-in DMG wrapper script through the desktop package:
+On macOS, run the lockfile dependency-security gate, then use the checked-in
+DMG wrapper script through the desktop package:
 
 ```bash
+npm --prefix apps/desktop audit --package-lock-only --audit-level=high
+npm --prefix apps/desktop ci
+npm --prefix apps/desktop audit --audit-level=high
+npm --prefix apps/desktop audit --omit=dev --audit-level=high
 npm --prefix apps/desktop run build:dmg
 ```
 
@@ -174,10 +179,14 @@ Keychain service `koushi-desktop`.
 ### Build Linux packages
 
 Linux builds are untested by the maintainer; contributions from Linux users are
-welcome. On Linux, build the unsigned AppImage and deb packages through the
-desktop package:
+welcome. On Linux, run the lockfile dependency-security gate, then build the
+unsigned AppImage, deb, and RPM packages through the desktop package:
 
 ```bash
+npm --prefix apps/desktop audit --package-lock-only --audit-level=high
+npm --prefix apps/desktop ci
+npm --prefix apps/desktop audit --audit-level=high
+npm --prefix apps/desktop audit --omit=dev --audit-level=high
 npm --prefix apps/desktop run build:linux
 ```
 
@@ -188,6 +197,27 @@ build completes. Bundling requires the Tauri Linux system dependencies
 `pkg-config` on Debian/Ubuntu). Installed-app data is stored under
 `~/.local/share/koushi-desktop`; credentials use the freedesktop Secret
 Service (GNOME Keyring / KWallet) with the service name `koushi-desktop`.
+
+### Build Windows packages
+
+Windows builds are untested by the maintainer; contributions from Windows users
+are welcome. On Windows, run the lockfile dependency-security gate, then build
+the unsigned NSIS installer through the desktop package:
+
+```bash
+npm --prefix apps/desktop audit --package-lock-only --audit-level=high
+npm --prefix apps/desktop ci
+npm --prefix apps/desktop audit --audit-level=high
+npm --prefix apps/desktop audit --omit=dev --audit-level=high
+npm --prefix apps/desktop run build:windows
+```
+
+The script runs the release preflight check and `tauri build --bundles nsis
+--target x86_64-pc-windows-msvc`, validates exactly one freshly generated
+installer, and prints its absolute path and SHA-256. The installer is unsigned,
+so Windows SmartScreen may warn. Installed-app data is stored under
+`%APPDATA%\koushi-desktop`; credentials use Windows Credential Manager with the
+service name `koushi-desktop`.
 
 ## Deterministic README screenshot
 
