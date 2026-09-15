@@ -118,12 +118,15 @@ recreate the tree with `npm ci` rather than editing `node_modules`. See
 
 `npm run build` validates and builds the React/Vite web shell into `dist/`;
 it does not produce a native Tauri desktop binary. Building the native app
-requires the Rust, Cargo, and Tauri platform toolchain for your OS. Run the
-lockfile dependency-security gate above first; `tauri build` is also an
-npm-backed build:
+requires the Rust, Cargo, and Tauri platform toolchain for your OS. It is also
+an npm-backed build, so run the lockfile dependency-security gate first:
 
 ```bash
 cd apps/desktop
+npm audit --package-lock-only --audit-level=high
+npm ci
+npm audit --audit-level=high
+npm audit --omit=dev --audit-level=high
 npm run tauri build
 ```
 
